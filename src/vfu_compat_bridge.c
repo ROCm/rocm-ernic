@@ -1,7 +1,8 @@
 /*
  * Compatibility Bridge Implementation
  *
- * Implements the translation between QEMU and libvfio-user APIs.
+ * This file implements the wrapper functions that isolate QEMU code from
+ * our libvfio-user server. Only this file includes QEMU headers.
  *
  * Copyright (C) 2025
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -13,119 +14,372 @@
 #include <errno.h>
 #include <assert.h>
 
-/* Define this to get full QEMU headers */
-#define VFU_PVRDMA_INTERNAL_IMPL
-
 #include "vfu_compat_bridge.h"
 #include "vfu_pvrdma_internal.h"
+
+/* Now we can include QEMU headers */
+#define VFU_PVRDMA_INTERNAL_IMPL
+#include "from-qemu/hw/rdma/vmw/pvrdma.h"
+#include "from-qemu/hw/rdma/rdma_backend.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
 
 /*
- * DMA mapping implementation
- * 
- * In QEMU, this uses the AddressSpace API to map guest physical addresses.
- * In vfio-user, we use vfu_addr_to_sgl() and vfu_sgl_get() to map guest DMA regions.
+ * Device Management
  */
 
-void *rdma_pci_dma_map(PCIDevice *pci_dev, dma_addr_t addr, size_t len)
+pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
+                                     const char *ib_dev_name,
+                                     const char *eth_dev_name,
+                                     uint8_t port_num)
 {
-    vfu_ctx_t *vfu_ctx = pci_dev->vfu_ctx;
-    dma_sg_t *sg;
-    struct iovec iov;
-    void *buffer;
-    int ret;
+    PVRDMADev *pvrdma;
     
-    if (!vfu_ctx || !addr || !len) {
-        errno = EINVAL;
+    if (!vfu_dev) {
+        rdma_error_report("pvrdma_device_create: vfu_dev is NULL");
         return NULL;
     }
     
-    /* Allocate scatter-gather entry */
-    sg = alloca(dma_sg_size());
-    if (!sg) {
-        errno = ENOMEM;
+    /* Allocate QEMU PVRDMA device structure */
+    pvrdma = calloc(1, sizeof(PVRDMADev));
+    if (!pvrdma) {
+        rdma_error_report("Failed to allocate PVRDMADev");
         return NULL;
     }
     
-    /* Convert guest DMA address to scatter-gather list */
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)addr, len, 
-                          sg, 1, PROT_READ | PROT_WRITE);
-    if (ret < 0) {
-        rdma_error_report("Failed to convert DMA addr %#lx to SGL: %s",
-                         addr, strerror(errno));
-        return NULL;
+    /* Initialize PCIDevice wrapper for bridge functions */
+    pvrdma->parent_obj.vfu_dev = vfu_dev;
+    pvrdma->parent_obj.vfu_ctx = vfu_dev->vfu_ctx;
+    
+    /* Set backend device configuration */
+    if (ib_dev_name) {
+        pvrdma->backend_device_name = strdup(ib_dev_name);
     }
-    
-    /* Get host virtual address mapping */
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) {
-        rdma_error_report("Failed to get SGL mapping for addr %#lx: %s",
-                         addr, strerror(errno));
-        return NULL;
+    if (eth_dev_name) {
+        pvrdma->backend_eth_device_name = strdup(eth_dev_name);
     }
+    pvrdma->backend_port_num = port_num;
     
-    if (iov.iov_len < len) {
-        rdma_warn_report("DMA mapping shorter than requested: got %zu, wanted %zu",
-                        iov.iov_len, len);
-        /* Still usable, but caller should be aware */
-    }
+    /* Initialize device attributes with defaults */
+    pvrdma->dev_attr.max_qp = MAX_QP;
+    pvrdma->dev_attr.max_cq = MAX_CQ;
+    pvrdma->dev_attr.max_mr = MAX_MR;
+    pvrdma->dev_attr.max_pd = MAX_PD;
+    pvrdma->dev_attr.max_qp_rd_atom = MAX_QP_RD_ATOM;
+    pvrdma->dev_attr.max_qp_init_rd_atom = MAX_QP_INIT_RD_ATOM;
+    pvrdma->dev_attr.max_ah = MAX_AH;
+    pvrdma->dev_attr.max_srq = MAX_SRQ;
+    pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
     
-    buffer = iov.iov_base;
+    /* Initialize DSR info */
+    pvrdma->dsr_info.dsr = NULL;
+    pvrdma->dsr_info.dma = 0;
     
-    /* Store the SGL for later unmapping - we'll need a mapping table */
-    /* For now, just return the buffer */
-    return buffer;
+    /* Initialize stats */
+    memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
+    
+    /* Set interrupt mask to 0 (interrupts enabled) */
+    pvrdma->interrupt_mask = 0;
+    
+    rdma_info_report("PVRDMA device created (handle=%p)", pvrdma);
+    
+    return (pvrdma_handle_t)pvrdma;
 }
 
-void rdma_pci_dma_unmap(PCIDevice *pci_dev, void *buffer, size_t len)
+void pvrdma_device_destroy(pvrdma_handle_t handle)
 {
-    vfu_ctx_t *vfu_ctx = pci_dev->vfu_ctx;
-    dma_sg_t *sg;
-    struct iovec iov;
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
     
-    if (!vfu_ctx || !buffer) {
+    if (!pvrdma) {
         return;
     }
     
-    /* TODO: Look up the SGL from a mapping table */
-    /* For now, we'll just release directly */
+    /* Clean up backend */
+    rdma_backend_destroy(&pvrdma->backend_dev);
+    rdma_rm_fini(&pvrdma->rdma_dev_res);
     
-    sg = alloca(dma_sg_size());
-    if (!sg) {
-        return;
+    /* Free device names */
+    free(pvrdma->backend_device_name);
+    free(pvrdma->backend_eth_device_name);
+    
+    /* Free DSR if allocated */
+    if (pvrdma->dsr_info.dsr) {
+        free(pvrdma->dsr_info.dsr);
     }
     
-    /* Reconstruct iov for unmapping */
-    iov.iov_base = buffer;
-    iov.iov_len = len;
+    free(pvrdma);
     
-    /* Release the mapping */
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
+    rdma_info_report("PVRDMA device destroyed");
+}
+
+int pvrdma_device_realize(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    int rc;
+    
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+    
+    /* Initialize resource manager */
+    if (rdma_rm_init(&pvrdma->rdma_dev_res, &pvrdma->dev_attr) < 0) {
+        rdma_error_report("Failed to initialize resource manager");
+        return -EIO;
+    }
+    
+    /* Initialize RDMA backend */
+    rc = rdma_backend_init(&pvrdma->backend_dev, &pvrdma->rdma_dev_res,
+                          pvrdma->backend_device_name,
+                          pvrdma->backend_eth_device_name,
+                          pvrdma->backend_port_num,
+                          &pvrdma->dev_attr, NULL); /* No MAD chr_be */
+    
+    if (rc < 0) {
+        rdma_error_report("Failed to initialize RDMA backend (rc=%d)", rc);
+        rdma_rm_fini(&pvrdma->rdma_dev_res);
+        return rc;
+    }
+    
+    rdma_info_report("PVRDMA device realized successfully");
+    
+    return 0;
 }
 
 /*
- * Interrupt handling
+ * Register Access (BAR1)
+ */
+
+void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset,
+                       uint32_t value, unsigned size)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    
+    if (!pvrdma) {
+        return;
+    }
+    
+    pvrdma->stats.regs_writes++;
+    
+    /* Forward to QEMU register write handler */
+    pvrdma_regs_write(pvrdma, offset, value, size);
+}
+
+uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    uint32_t val = 0;
+    
+    if (!pvrdma) {
+        return 0;
+    }
+    
+    pvrdma->stats.regs_reads++;
+    
+    /* Forward to QEMU register read handler */
+    val = pvrdma_regs_read(pvrdma, offset, size);
+    
+    return val;
+}
+
+/*
+ * UAR Access (BAR2)
+ */
+
+void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset,
+                      uint32_t value, unsigned size)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    
+    if (!pvrdma) {
+        return;
+    }
+    
+    pvrdma->stats.uar_writes++;
+    
+    /* Forward to QEMU UAR write handler */
+    pvrdma_uar_write(pvrdma, offset, value, size);
+}
+
+uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    uint32_t val = 0;
+    
+    if (!pvrdma) {
+        return 0;
+    }
+    
+    /* Forward to QEMU UAR read handler */
+    val = pvrdma_uar_read(pvrdma, offset, size);
+    
+    return val;
+}
+
+/*
+ * Command Execution
+ */
+
+int pvrdma_exec_cmd(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+    
+    pvrdma->stats.commands++;
+    
+    /* Forward to QEMU command handler */
+    return pvrdma_exec_cmd(pvrdma);
+}
+
+/*
+ * Statistics
+ */
+
+void pvrdma_get_stats(pvrdma_handle_t handle,
+                     uint64_t *commands,
+                     uint64_t *regs_reads,
+                     uint64_t *regs_writes,
+                     uint64_t *uar_writes,
+                     uint64_t *interrupts)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    
+    if (!pvrdma) {
+        return;
+    }
+    
+    if (commands) *commands = pvrdma->stats.commands;
+    if (regs_reads) *regs_reads = pvrdma->stats.regs_reads;
+    if (regs_writes) *regs_writes = pvrdma->stats.regs_writes;
+    if (uar_writes) *uar_writes = pvrdma->stats.uar_writes;
+    if (interrupts) *interrupts = pvrdma->stats.interrupts;
+}
+
+/*
+ * DMA Mapping (called FROM QEMU code)
+ */
+
+void *rdma_pci_dma_map(void *pci_dev, dma_addr_t addr, dma_addr_t *plen, int dir)
+{
+    PCIDevice *dev = (PCIDevice *)pci_dev;
+    vfu_pvrdma_dev_t *vfu_dev;
+    vfu_ctx_t *vfu_ctx;
+    dma_sg_t sg;
+    struct iovec iov;
+    void *host_addr;
+    int ret;
+    
+    if (!dev || !dev->vfu_dev || !dev->vfu_ctx) {
+        rdma_error_report("rdma_pci_dma_map: invalid device pointer");
+        *plen = 0;
+        return NULL;
+    }
+    
+    vfu_dev = dev->vfu_dev;
+    vfu_ctx = dev->vfu_ctx;
+    
+    (void)dir; /* Direction not used with vfio-user */
+    
+    /* Convert guest address to scatter-gather entry */
+    sg.dma_addr = addr;
+    sg.region = 0;  /* libvfio-user will find the right region */
+    sg.length = *plen;
+    sg.offset = 0;
+    sg.mappable = true;
+    
+    /* Map the guest physical address */
+    ret = vfu_addr_to_sgl(vfu_ctx, addr, *plen, &sg, 1, PROT_READ | PROT_WRITE);
+    if (ret < 0) {
+        rdma_error_report("Failed to convert address %#lx to SGL: %s",
+                         addr, strerror(errno));
+        *plen = 0;
+        return NULL;
+    }
+    
+    /* Get host virtual address */
+    ret = vfu_sgl_get(vfu_ctx, &sg, &iov, 1, 0);
+    if (ret < 0) {
+        rdma_error_report("Failed to map SGL for address %#lx: %s",
+                         addr, strerror(errno));
+        *plen = 0;
+        return NULL;
+    }
+    
+    host_addr = iov.iov_base;
+    *plen = iov.iov_len;  /* Update with actual mapped length */
+    
+    rdma_debug_report("DMA map: guest=%#lx -> host=%p len=%zu",
+                     addr, host_addr, (size_t)*plen);
+    
+    return host_addr;
+}
+
+void rdma_pci_dma_unmap(void *pci_dev, void *buffer, dma_addr_t len,
+                        int dir, dma_addr_t access_len)
+{
+    PCIDevice *dev = (PCIDevice *)pci_dev;
+    vfu_ctx_t *vfu_ctx;
+    dma_sg_t sg;
+    struct iovec iov;
+    
+    (void)dir;
+    (void)access_len;
+    
+    if (!dev || !dev->vfu_ctx || !buffer) {
+        return;
+    }
+    
+    vfu_ctx = dev->vfu_ctx;
+    
+    /* Prepare IOV for unmap */
+    iov.iov_base = buffer;
+    iov.iov_len = len;
+    
+    /* We need a dummy SG for vfu_sgl_put */
+    sg.dma_addr = 0;  /* Unknown at this point */
+    sg.region = 0;
+    sg.length = len;
+    sg.offset = 0;
+    sg.mappable = true;
+    
+    /* Release the mapping */
+    vfu_sgl_put(vfu_ctx, &sg, &iov, 1);
+    
+    rdma_debug_report("DMA unmap: host=%p len=%zu", buffer, (size_t)len);
+}
+
+/*
+ * Interrupt Handling (called FROM QEMU code)
  */
 
 void post_interrupt(void *dev, unsigned vector)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)dev;
-    vfu_pvrdma_dev_t *vfu_dev = (vfu_pvrdma_dev_t *)((char *)pvrdma - 
-                                                       offsetof(vfu_pvrdma_dev_t, pvrdma));
-    vfu_ctx_t *vfu_ctx = vfu_dev->vfu_ctx;
+    vfu_pvrdma_dev_t *vfu_dev;
+    vfu_ctx_t *vfu_ctx;
     int ret;
     
-    if (!vfu_ctx) {
-        rdma_error_report("post_interrupt: vfu_ctx is NULL");
+    if (!pvrdma || !pvrdma->parent_obj.vfu_dev || !pvrdma->parent_obj.vfu_ctx) {
+        rdma_error_report("post_interrupt: invalid device pointer");
         return;
     }
+    
+    vfu_dev = pvrdma->parent_obj.vfu_dev;
+    vfu_ctx = pvrdma->parent_obj.vfu_ctx;
     
     if (vector >= RDMA_MAX_INTRS) {
         rdma_error_report("post_interrupt: invalid vector %u", vector);
         return;
     }
     
-    /* Trigger MSI-X interrupt */
+    /* Check interrupt mask */
+    if (pvrdma->interrupt_mask) {
+        rdma_debug_report("Interrupt vector %u masked", vector);
+        return;
+    }
+    
+    /* Trigger MSI-X interrupt via libvfio-user */
     ret = vfu_irq_trigger(vfu_ctx, vector);
     if (ret < 0) {
         rdma_error_report("Failed to trigger interrupt vector %u: %s",
@@ -137,4 +391,3 @@ void post_interrupt(void *dev, unsigned vector)
     
     rdma_debug_report("Triggered interrupt vector %u", vector);
 }
-

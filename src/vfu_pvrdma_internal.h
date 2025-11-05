@@ -1,8 +1,8 @@
 /*
- * Internal header for vfu_pvrdma server
+ * Internal Device Structure for vfu_pvrdma
  *
- * This header defines the main device structure that bridges libvfio-user
- * with the QEMU PVRDMA implementation.
+ * This header defines our main device structure without including QEMU headers.
+ * We use opaque handles to hide QEMU types.
  *
  * Copyright (C) 2025
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -15,80 +15,51 @@
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
 
-/* Forward declarations - avoid pulling in full QEMU headers */
-typedef struct PVRDMADev PVRDMADev;
-typedef struct PCIDevice PCIDevice;
-typedef uint64_t hwaddr;
-
-/* Only include full headers in .c files that need them */
-#ifdef VFU_PVRDMA_INTERNAL_IMPL
-#include "from-qemu/hw/rdma/vmw/pvrdma.h"
-#include "from-qemu/hw/rdma/rdma_backend.h"
-#include "from-qemu/hw/rdma/rdma_rm.h"
-#endif
+#include "vfu_compat_bridge.h"
 
 /* Forward declarations */
 typedef struct vfu_pvrdma_dev vfu_pvrdma_dev_t;
 
+/* BARs - from QEMU PVRDMA definitions */
+#define RDMA_BAR0_MSIX_SIZE  (16 * 1024)  /* 16 KB for MSI-X */
+#define RDMA_BAR1_REGS_SIZE  64            /* 64 DWORDs = 256 bytes */
+#define RDMA_BAR2_UAR_SIZE   (4096 * 168) /* 168 User Contexts */
+
+/* MSI-X interrupt vectors */
+#define RDMA_MAX_INTRS       3
+#define INTR_VEC_CMD_RING            0
+#define INTR_VEC_CMD_ASYNC_EVENTS    1
+#define INTR_VEC_CMD_COMPLETION_Q    2
+
 /**
  * vfu_pvrdma_dev - Main device structure
  * 
- * This structure contains both the QEMU PVRDMA device state and the
- * libvfio-user context, providing the bridge between the two frameworks.
+ * This structure contains both the libvfio-user context and a handle to
+ * the QEMU PVRDMA device implementation. The actual QEMU structures are
+ * hidden behind the opaque pvrdma_handle_t.
  */
 struct vfu_pvrdma_dev {
     /* libvfio-user context */
     vfu_ctx_t *vfu_ctx;
     
-    /* QEMU PVRDMA device structure */
-    PVRDMADev pvrdma;
-    
-    /* PCI Device wrapper for compatibility bridge */
-    PCIDevice pci_dev;
+    /* Opaque handle to QEMU PVRDMA device */
+    pvrdma_handle_t pvrdma_handle;
     
     /* BAR memory backing stores */
-    void *bar0_mem;             /* MSI-X BAR (16KB) */
-    void *bar1_mem;             /* Register BAR (256 bytes) */
-    void *bar2_mem;             /* UAR BAR (variable size) */
+    void *bar0_mem;  /* MSI-X table/PBA */
+    void *bar1_mem;  /* Registers */
+    void *bar2_mem;  /* UAR (User Access Region) */
     
-    /* Configuration from command line */
-    char *backend_device_name;  /* InfiniBand device name */
-    char *backend_eth_device;   /* Ethernet device name */
-    uint8_t backend_port_num;   /* IB port number */
+    /* Backend device configuration */
+    char *backend_device_name;   /* IB device (e.g., "mlx5_0") */
+    char *backend_eth_device;    /* Eth device (e.g., "eth0") */
+    uint8_t backend_port_num;    /* IB port number */
     
-    /* Runtime state */
-    bool verbose;
-    bool device_initialized;
-    bool device_active;
-    
-    /* DMA mapping table - for tracking vfu_addr_to_sgl mappings */
-    /* TODO: Implement proper mapping table */
+    /* Device state flags */
+    bool device_initialized;     /* Device structure created */
+    bool device_realized;        /* Backend initialized */
+    bool device_active;          /* Client connected and device running */
+    bool verbose;                /* Verbose logging enabled */
 };
 
-/**
- * Device register operations (from QEMU PVRDMA)
- */
-
-/* Register read/write (BAR1) */
-uint64_t pvrdma_regs_read(void *opaque, hwaddr addr, unsigned size);
-void pvrdma_regs_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
-
-/* UAR read/write (BAR2) */
-uint64_t pvrdma_uar_read(void *opaque, hwaddr addr, unsigned size);
-void pvrdma_uar_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
-
-/* Device control */
-int pvrdma_exec_cmd(PVRDMADev *dev);
-
-/**
- * Helper functions for device initialization
- */
-
-/* Initialize the QEMU PVRDMA device structures within our context */
-int vfu_pvrdma_init_device(vfu_pvrdma_dev_t *dev);
-
-/* Cleanup device */
-void vfu_pvrdma_cleanup_device(vfu_pvrdma_dev_t *dev);
-
 #endif /* VFU_PVRDMA_INTERNAL_H */
-

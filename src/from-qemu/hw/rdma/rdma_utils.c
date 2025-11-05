@@ -13,7 +13,15 @@
  *
  */
 
-#include "qemu/osdep.h"
+/* Minimal includes instead of qemu/osdep.h */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+
 #include "hw/pci/pci_device.h"
 #include "rdma_utils.h"
 

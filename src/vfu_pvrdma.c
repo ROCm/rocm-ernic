@@ -30,15 +30,9 @@
 #include <vfio-user/libvfio-user.h>
 #include <linux/pci_regs.h>
 
-/* Define this to get full QEMU headers in internal header */
-#define VFU_PVRDMA_INTERNAL_IMPL
-
-/* Internal headers */
+/* Internal headers - NO QEMU headers! */
 #include "vfu_pvrdma_internal.h"
 #include "vfu_compat_bridge.h"
-
-/* QEMU PVRDMA utilities */
-#include "from-qemu/hw/rdma/rdma_utils.h"
 
 /* PCI Device IDs for VMware PVRDMA */
 #define PCI_VENDOR_ID_VMWARE    0x15ad
@@ -120,13 +114,12 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
 /**
  * BAR1 (Registers) access callback
- * Forwards to QEMU PVRDMA register handlers
+ * Forwards to QEMU PVRDMA register handlers via wrapper API
  */
 static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     vfu_pvrdma_dev_t *dev = vfu_get_private(vfu_ctx);
-    PVRDMADev *pvrdma = &dev->pvrdma;
     uint32_t val;
     
     if (offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
@@ -145,14 +138,14 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     }
     
     if (is_write) {
-        /* Forward write to QEMU register handler */
+        /* Forward write to QEMU register handler via wrapper */
         memcpy(&val, buf, sizeof(val));
-        pvrdma_regs_write(pvrdma, offset, val, sizeof(val));
+        pvrdma_regs_write(dev->pvrdma_handle, offset, val, sizeof(val));
         
         vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 write: offset=%#lx val=%#x", offset, val);
     } else {
-        /* Forward read to QEMU register handler */
-        val = pvrdma_regs_read(pvrdma, offset, sizeof(val));
+        /* Forward read to QEMU register handler via wrapper */
+        val = pvrdma_regs_read(dev->pvrdma_handle, offset, sizeof(val));
         memcpy(buf, &val, sizeof(val));
         
         vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 read: offset=%#lx val=%#x", offset, val);
@@ -163,13 +156,12 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
 /**
  * BAR2 (UAR - User Access Region) access callback
- * Forwards to QEMU PVRDMA UAR handlers
+ * Forwards to QEMU PVRDMA UAR handlers via wrapper API
  */
 static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     vfu_pvrdma_dev_t *dev = vfu_get_private(vfu_ctx);
-    PVRDMADev *pvrdma = &dev->pvrdma;
     uint32_t val;
     
     if (offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
@@ -183,15 +175,14 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         /* UAR writes are typically doorbells */
         memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
         
-        /* Forward to QEMU UAR handler */
-        pvrdma_uar_write(pvrdma, offset, val, sizeof(val));
+        /* Forward to QEMU UAR handler via wrapper */
+        pvrdma_uar_write(dev->pvrdma_handle, offset, val, sizeof(val));
         
-        pvrdma->stats.uar_writes++;
         vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) write: offset=%#lx val=%#x", 
                 offset, val);
     } else {
         /* UAR reads */
-        val = pvrdma_uar_read(pvrdma, offset, sizeof(val));
+        val = pvrdma_uar_read(dev->pvrdma_handle, offset, sizeof(val));
         memcpy(buf, &val, (count < sizeof(val)) ? count : sizeof(val));
         
         vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) read: offset=%#lx val=%#x", 
@@ -213,7 +204,6 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     switch (type) {
         case VFU_RESET_DEVICE:
             /* Reset device state but keep context alive */
-            memset(&dev->pvrdma.stats, 0, sizeof(dev->pvrdma.stats));
             dev->device_active = false;
             break;
             
@@ -226,7 +216,6 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         case VFU_RESET_PCI_FLR:
             /* PCI Function Level Reset */
             vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
-            memset(&dev->pvrdma.stats, 0, sizeof(dev->pvrdma.stats));
             dev->device_active = false;
             break;
     }
@@ -258,40 +247,24 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
 }
 
 /**
- * Initialize PVRDMA device structure
+ * Initialize PVRDMA device structure via wrapper API
  */
 static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
 {
-    PVRDMADev *pvrdma = &dev->pvrdma;
+    /* Create PVRDMA device using wrapper API */
+    dev->pvrdma_handle = pvrdma_device_create(dev,
+                                               dev->backend_device_name,
+                                               dev->backend_eth_device,
+                                               dev->backend_port_num);
     
-    /* Initialize PCIDevice wrapper for compatibility bridge */
-    dev->pci_dev.vfu_dev = dev;
-    dev->pci_dev.vfu_ctx = dev->vfu_ctx;
+    if (!dev->pvrdma_handle) {
+        fprintf(stderr, "Failed to create PVRDMA device\n");
+        return -1;
+    }
     
-    /* Initialize device attributes with defaults from QEMU */
-    pvrdma->dev_attr.max_qp = MAX_QP;
-    pvrdma->dev_attr.max_cq = MAX_CQ;
-    pvrdma->dev_attr.max_mr = MAX_MR;
-    pvrdma->dev_attr.max_pd = MAX_PD;
-    pvrdma->dev_attr.max_qp_rd_atom = MAX_QP_RD_ATOM;
-    pvrdma->dev_attr.max_qp_init_rd_atom = MAX_QP_INIT_RD_ATOM;
-    pvrdma->dev_attr.max_ah = MAX_AH;
-    pvrdma->dev_attr.max_srq = MAX_SRQ;
-    pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
+    dev->device_initialized = true;
     
-    /* Set backend device names */
-    pvrdma->backend_device_name = dev->backend_device_name;
-    pvrdma->backend_eth_device_name = dev->backend_eth_device;
-    pvrdma->backend_port_num = dev->backend_port_num;
-    
-    /* Initialize DSR info */
-    pvrdma->dsr_info.dsr = NULL;
-    pvrdma->dsr_info.dma = 0;
-    
-    /* Initialize stats */
-    memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
-    
-    rdma_info_report("PVRDMA device initialized");
+    printf("PVRDMA device initialized successfully\n");
     
     return 0;
 }
@@ -343,10 +316,6 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
     if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem) {
         err(EXIT_FAILURE, "Failed to allocate BAR memory");
     }
-    
-    /* Initialize register memory backing store */
-    dev->pvrdma.regs_data = (uint32_t *)dev->bar1_mem;
-    dev->pvrdma.uar_data = (uint32_t *)dev->bar2_mem;
     
     /* Setup BAR0: MSI-X (16KB, memory-mapped) */
     ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
@@ -607,6 +576,11 @@ int main(int argc, char *argv[])
     
     /* Cleanup */
     vfu_destroy_ctx(vfu_ctx);
+    
+    /* Destroy PVRDMA device */
+    if (dev->pvrdma_handle) {
+        pvrdma_device_destroy(dev->pvrdma_handle);
+    }
     
     free(dev->bar0_mem);
     free(dev->bar1_mem);

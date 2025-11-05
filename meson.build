@@ -20,8 +20,8 @@ glib_dep = dependency('glib-2.0')
 ibverbs_dep = dependency('libibverbs', required: true)
 
 # RDMA backend sources from QEMU port
+# Note: rdma.c excluded - only contains QEMU type system registration
 rdma_backend_sources = files(
-  'src/from-qemu/hw/rdma/rdma.c',
   'src/from-qemu/hw/rdma/rdma_backend.c',
   'src/from-qemu/hw/rdma/rdma_utils.c',
   'src/from-qemu/hw/rdma/rdma_rm.c',

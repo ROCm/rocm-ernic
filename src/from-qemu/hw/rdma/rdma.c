@@ -12,7 +12,14 @@
  *
  */
 
-#include "qemu/osdep.h"
+/* Minimal includes instead of qemu/osdep.h */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include "hw/rdma/rdma.h"
 #include "qemu/module.h"
 
