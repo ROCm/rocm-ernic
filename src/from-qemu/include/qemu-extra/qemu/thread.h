@@ -90,6 +90,15 @@ static inline void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, in
 #define qemu_mutex_trylock(m) qemu_mutex_trylock_impl(m, __FILE__, __LINE__)
 #define qemu_mutex_unlock(m) qemu_mutex_unlock_impl(m, __FILE__, __LINE__)
 
+/* QEMU_LOCK_GUARD - automatic lock/unlock using C99 for-loop scope */
+#define QEMU_LOCK_GUARD(lock) \
+    WITH_QEMU_LOCK_GUARD(lock)
+
+/* Thread creation and management */
+int qemu_thread_create(QemuThread *thread, const char *name,
+                       void *(*start_routine)(void *), void *arg, int mode);
+void qemu_thread_exit(void *retval);
+
 /* Condition variable operations */
 static inline void qemu_cond_init(QemuCond *cond)
 {

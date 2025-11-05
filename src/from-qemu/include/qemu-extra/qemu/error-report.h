@@ -93,9 +93,9 @@ static inline void warn_report_once_cond(int *printed, const char *fmt, ...)
 }
 
 /* Global state - not used but stubbed for compatibility */
-static bool message_with_timestamp = false;
-static bool error_with_guestname = false;
-static const char *error_guest_name = NULL;
+static bool message_with_timestamp __attribute__((unused)) = false;
+static bool error_with_guestname __attribute__((unused)) = false;
+static const char *error_guest_name __attribute__((unused)) = NULL;
 
 #endif /* QEMU_ERROR_REPORT_H */
 

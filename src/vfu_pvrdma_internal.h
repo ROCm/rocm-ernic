@@ -21,9 +21,16 @@
 typedef struct vfu_pvrdma_dev vfu_pvrdma_dev_t;
 
 /* BARs - from QEMU PVRDMA definitions */
+/* BAR sizes - Note: Also defined in pvrdma.h, so we use guards to avoid redefinition warnings */
+#ifndef RDMA_BAR0_MSIX_SIZE
 #define RDMA_BAR0_MSIX_SIZE  (16 * 1024)  /* 16 KB for MSI-X */
+#endif
+#ifndef RDMA_BAR1_REGS_SIZE
 #define RDMA_BAR1_REGS_SIZE  64            /* 64 DWORDs = 256 bytes */
+#endif
+#ifndef RDMA_BAR2_UAR_SIZE
 #define RDMA_BAR2_UAR_SIZE   (4096 * 168) /* 168 User Contexts */
+#endif
 
 /* MSI-X interrupt vectors */
 #define RDMA_MAX_INTRS       3

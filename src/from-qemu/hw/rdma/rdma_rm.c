@@ -26,6 +26,11 @@
 /* #include "cpu.h" - Not needed for PVRDMA */
 /* #include "monitor/monitor.h" - Not needed for standalone */
 
+#include <sys/mman.h>       /* For munmap */
+#include "qemu/compiler.h"  /* For unlikely() */
+#include "qemu/bitmap.h"    /* For bitmap operations */
+#include "qemu/atomic.h"    /* For qatomic_set */
+#include "qemu/thread.h"    /* For QEMU_LOCK_GUARD */
 #include "rdma_utils.h"
 #include "rdma_backend.h"
 #include "rdma_rm.h"

@@ -32,7 +32,16 @@
 #include <rdma/rdma_cma.h>
 
 /* #include "contrib/rdmacm-mux/rdmacm-mux.h" - Not needed for standalone */
-#include "qemu/units.h"  /* For SCALE_MS, SCALE_US */
+#include "qemu/compiler.h"  /* For likely(), unlikely() */
+#include "qemu/cutils.h"    /* For ARRAY_SIZE, etc. */
+#include "qemu/units.h"     /* For SCALE_MS, SCALE_US */
+#include "qemu/atomic.h"    /* For qatomic_* operations */
+#include "qemu/bswap.h"     /* For be64_to_cpu, etc. */
+#include "qemu/timer.h"     /* For qemu_poll_ns */
+#include "qemu/thread.h"    /* For qemu_thread_* operations */
+#include "chardev/char-fe.h" /* For qemu_chr_fe_* operations */
+#include "qapi/qapi-events-rdma.h" /* For QAPI events */
+#include "hw/rdma/rdma.h"   /* For rdma_pci_dma_map/unmap */
 #include "rdma_utils.h"
 #include "rdma_rm.h"
 #include "rdma_backend.h"

@@ -24,6 +24,7 @@
 #include "hw/pci/pci.h"
 /* #include "cpu.h" - Not needed for PVRDMA */
 #include "qemu/cutils.h"
+#include "qemu/atomic.h"
 
 
 #include "../rdma_utils.h"
