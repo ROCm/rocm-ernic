@@ -1,0 +1,76 @@
+# Build directories
+/build/
+/builddir/
+*.o
+*.a
+*.so
+*.so.*
+
+# Meson build files
+/meson-logs/
+/meson-private/
+compile_commands.json
+
+# Executable
+/vfu_pvrdma
+
+# Editor and IDE files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+*.code-workspace
+.clangd/
+.cache/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+
+# Commit helper files (temporary)
+COMMIT_MSG_*.txt
+commit-*.sh
+do-*.sh
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Python cache (if any Python scripts added)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Patch files
+*.patch
+*.diff
+
+# Log files
+*.log
+
+# Tags and ctags
+tags
+.tags
+TAGS
+GTAGS
+GPATH
+GRTAGS
+
+# Static analysis
+*.gcov
+*.gcda
+*.gcno
+cov-int/
+
