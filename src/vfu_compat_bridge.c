@@ -162,10 +162,8 @@ void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset,
         return;
     }
     
-    pvrdma->stats.regs_writes++;
-    
-    /* Forward to QEMU register write handler */
-    pvrdma_regs_write(pvrdma, offset, value, size);
+    /* Forward to QEMU register write implementation */
+    pvrdma_regs_write_impl(pvrdma, offset, value, size);
 }
 
 uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
@@ -177,10 +175,8 @@ uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
         return 0;
     }
     
-    pvrdma->stats.regs_reads++;
-    
-    /* Forward to QEMU register read handler */
-    val = pvrdma_regs_read(pvrdma, offset, size);
+    /* Forward to QEMU register read implementation */
+    val = pvrdma_regs_read_impl(pvrdma, offset, size);
     
     return val;
 }
@@ -198,10 +194,8 @@ void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset,
         return;
     }
     
-    pvrdma->stats.uar_writes++;
-    
-    /* Forward to QEMU UAR write handler */
-    pvrdma_uar_write(pvrdma, offset, value, size);
+    /* Forward to QEMU UAR write implementation */
+    pvrdma_uar_write_impl(pvrdma, offset, value, size);
 }
 
 uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
@@ -213,8 +207,8 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
         return 0;
     }
     
-    /* Forward to QEMU UAR read handler */
-    val = pvrdma_uar_read(pvrdma, offset, size);
+    /* Forward to QEMU UAR read implementation */
+    val = pvrdma_uar_read_impl(pvrdma, offset, size);
     
     return val;
 }

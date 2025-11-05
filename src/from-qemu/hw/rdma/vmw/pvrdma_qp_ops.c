@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+#include "qemu/compiler.h"  /* For unlikely() */
 #include "../rdma_utils.h"
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"

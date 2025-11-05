@@ -135,4 +135,10 @@ static inline int set_reg_val(PVRDMADev *dev, hwaddr addr, uint32_t val)
 void post_interrupt(PVRDMADev *dev, unsigned vector);
 int pvrdma_exec_cmd(PVRDMADev *dev);
 
+/* Register/UAR handlers - implementations in pvrdma_main.c */
+uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size);
+void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+uint64_t pvrdma_uar_read_impl(void *opaque, hwaddr addr, unsigned size);
+void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+
 #endif

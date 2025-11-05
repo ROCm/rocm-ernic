@@ -394,7 +394,8 @@ static void reset_device(PVRDMADev *dev)
     pvrdma_stop(dev);
 }
 
-static uint64_t pvrdma_regs_read(void *opaque, hwaddr addr, unsigned size)
+/* Implementation function - called from bridge wrapper */
+uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
 {
     PVRDMADev *dev = opaque;
     uint32_t val;
@@ -411,8 +412,9 @@ static uint64_t pvrdma_regs_read(void *opaque, hwaddr addr, unsigned size)
     return val;
 }
 
-static void pvrdma_regs_write(void *opaque, hwaddr addr, uint64_t val,
-                              unsigned size)
+/* Implementation function - called from bridge wrapper */
+void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
+                             unsigned size)
 {
     PVRDMADev *dev = opaque;
 
@@ -460,8 +462,8 @@ static void pvrdma_regs_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 static const MemoryRegionOps regs_ops = {
-    .read = pvrdma_regs_read,
-    .write = pvrdma_regs_write,
+    .read = pvrdma_regs_read_impl,
+    .write = pvrdma_regs_write_impl,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
         .min_access_size = sizeof(uint32_t),
@@ -469,13 +471,15 @@ static const MemoryRegionOps regs_ops = {
     },
 };
 
-static uint64_t pvrdma_uar_read(void *opaque, hwaddr addr, unsigned size)
+/* Implementation function - called from bridge wrapper */
+uint64_t pvrdma_uar_read_impl(void *opaque, hwaddr addr, unsigned size)
 {
     return 0xffffffff;
 }
 
-static void pvrdma_uar_write(void *opaque, hwaddr addr, uint64_t val,
-                             unsigned size)
+/* Implementation function - called from bridge wrapper */
+void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
+                            unsigned size)
 {
     PVRDMADev *dev = opaque;
 
@@ -516,8 +520,8 @@ static void pvrdma_uar_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 static const MemoryRegionOps uar_ops = {
-    .read = pvrdma_uar_read,
-    .write = pvrdma_uar_write,
+    .read = pvrdma_uar_read_impl,
+    .write = pvrdma_uar_write_impl,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
         .min_access_size = sizeof(uint32_t),

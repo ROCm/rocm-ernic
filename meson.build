@@ -40,6 +40,12 @@ utility_sources = files(
   'src/from-qemu/utils/error-report.c'
 )
 
+# QEMU stub implementations
+qemu_stub_sources = files(
+  'src/from-qemu/qemu-stubs/qemu_stubs.c',
+  'src/from-qemu/qemu-stubs/qemu_type_stubs.c'
+)
+
 # Compatibility bridge layer
 bridge_sources = files(
   'src/vfu_compat_bridge.c'
@@ -75,7 +81,7 @@ add_project_arguments(
 # Build vfu_pvrdma executable with full PVRDMA backend
 executable('vfu_pvrdma',
   [server_sources, bridge_sources, rdma_backend_sources, 
-   pvrdma_device_sources, utility_sources],
+   pvrdma_device_sources, utility_sources, qemu_stub_sources],
   include_directories: inc_dirs,
   dependencies: [vfiouser_dep, glib_dep, ibverbs_dep],
   install: true,
