@@ -23,7 +23,6 @@
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 #include "cpu.h"
-#include "trace.h"
 #include "monitor/monitor.h"
 #include "hw/rdma/rdma.h"
 
@@ -391,7 +390,6 @@ static uint64_t pvrdma_regs_read(void *opaque, hwaddr addr, unsigned size)
         return -EINVAL;
     }
 
-    trace_pvrdma_regs_read(addr, val);
 
     return val;
 }
@@ -411,11 +409,9 @@ static void pvrdma_regs_write(void *opaque, hwaddr addr, uint64_t val,
 
     switch (addr) {
     case PVRDMA_REG_DSRLOW:
-        trace_pvrdma_regs_write(addr, val, "DSRLOW", "");
         dev->dsr_info.dma = val;
         break;
     case PVRDMA_REG_DSRHIGH:
-        trace_pvrdma_regs_write(addr, val, "DSRHIGH", "");
         dev->dsr_info.dma |= val << 32;
         load_dsr(dev);
         init_dsr_dev_caps(dev);
@@ -423,26 +419,21 @@ static void pvrdma_regs_write(void *opaque, hwaddr addr, uint64_t val,
     case PVRDMA_REG_CTL:
         switch (val) {
         case PVRDMA_DEVICE_CTL_ACTIVATE:
-            trace_pvrdma_regs_write(addr, val, "CTL", "ACTIVATE");
             activate_device(dev);
             break;
         case PVRDMA_DEVICE_CTL_UNQUIESCE:
-            trace_pvrdma_regs_write(addr, val, "CTL", "UNQUIESCE");
             unquiesce_device(dev);
             break;
         case PVRDMA_DEVICE_CTL_RESET:
-            trace_pvrdma_regs_write(addr, val, "CTL", "URESET");
             reset_device(dev);
             break;
         }
         break;
     case PVRDMA_REG_IMR:
-        trace_pvrdma_regs_write(addr, val, "INTR_MASK", "");
         dev->interrupt_mask = val;
         break;
     case PVRDMA_REG_REQUEST:
         if (val == 0) {
-            trace_pvrdma_regs_write(addr, val, "REQUEST", "");
             pvrdma_exec_cmd(dev);
         }
         break;
@@ -476,39 +467,27 @@ static void pvrdma_uar_write(void *opaque, hwaddr addr, uint64_t val,
     switch (addr & 0xFFF) { /* Mask with 0xFFF as each UC gets page */
     case PVRDMA_UAR_QP_OFFSET:
         if (val & PVRDMA_UAR_QP_SEND) {
-            trace_pvrdma_uar_write(addr, val, "QP", "SEND",
-                                   val & PVRDMA_UAR_HANDLE_MASK, 0);
             pvrdma_qp_send(dev, val & PVRDMA_UAR_HANDLE_MASK);
         }
         if (val & PVRDMA_UAR_QP_RECV) {
-            trace_pvrdma_uar_write(addr, val, "QP", "RECV",
-                                   val & PVRDMA_UAR_HANDLE_MASK, 0);
             pvrdma_qp_recv(dev, val & PVRDMA_UAR_HANDLE_MASK);
         }
         break;
     case PVRDMA_UAR_CQ_OFFSET:
         if (val & PVRDMA_UAR_CQ_ARM) {
-            trace_pvrdma_uar_write(addr, val, "CQ", "ARM",
-                                   val & PVRDMA_UAR_HANDLE_MASK,
-                                   !!(val & PVRDMA_UAR_CQ_ARM_SOL));
             rdma_rm_req_notify_cq(&dev->rdma_dev_res,
                                   val & PVRDMA_UAR_HANDLE_MASK,
                                   !!(val & PVRDMA_UAR_CQ_ARM_SOL));
         }
         if (val & PVRDMA_UAR_CQ_ARM_SOL) {
-            trace_pvrdma_uar_write(addr, val, "CQ", "ARMSOL - not supported", 0,
-                                   0);
+            rdma_warn_report("CQ ARM SOL not supported");
         }
         if (val & PVRDMA_UAR_CQ_POLL) {
-            trace_pvrdma_uar_write(addr, val, "CQ", "POLL",
-                                   val & PVRDMA_UAR_HANDLE_MASK, 0);
             pvrdma_cq_poll(&dev->rdma_dev_res, val & PVRDMA_UAR_HANDLE_MASK);
         }
         break;
     case PVRDMA_UAR_SRQ_OFFSET:
         if (val & PVRDMA_UAR_SRQ_RECV) {
-            trace_pvrdma_uar_write(addr, val, "QP", "SRQ",
-                                   val & PVRDMA_UAR_HANDLE_MASK, 0);
             pvrdma_srq_recv(dev, val & PVRDMA_UAR_HANDLE_MASK);
         }
         break;

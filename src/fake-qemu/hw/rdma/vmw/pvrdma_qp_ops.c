@@ -19,7 +19,6 @@
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"
 
-#include "trace.h"
 
 #include "pvrdma.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
@@ -77,10 +76,6 @@ static int pvrdma_post_cqe(PVRDMADev *dev, uint32_t cq_handle,
     cqe1->src_qp = wc->src_qp;
     cqe1->wc_flags = wc->wc_flags;
     cqe1->vendor_err = wc->vendor_err;
-
-    trace_pvrdma_post_cqe(cq_handle, cq->notify, cqe1->wr_id, cqe1->qp,
-                          cqe1->opcode, cqe1->status, cqe1->byte_len,
-                          cqe1->src_qp, cqe1->wc_flags, cqe1->vendor_err);
 
     pvrdma_ring_write_inc(ring);
 

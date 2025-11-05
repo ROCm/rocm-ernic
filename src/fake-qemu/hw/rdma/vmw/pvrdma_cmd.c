@@ -22,7 +22,6 @@
 #include "../rdma_rm.h"
 #include "../rdma_utils.h"
 
-#include "trace.h"
 #include "pvrdma.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 
@@ -69,7 +68,6 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
         rdma_error_report("Failed to remap memory for host_virt");
         goto out_unmap_tbl;
     }
-    trace_pvrdma_map_to_pdir_host_virt(curr_page, host_virt);
 
     rdma_pci_dma_unmap(pdev, curr_page, PAGE_SIZE);
 
@@ -98,9 +96,6 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
 
         mremap(curr_page, 0, PAGE_SIZE, MREMAP_MAYMOVE | MREMAP_FIXED,
                host_virt + PAGE_SIZE * addr_idx);
-
-        trace_pvrdma_map_to_pdir_next_page(addr_idx, curr_page, host_virt +
-                                           PAGE_SIZE * addr_idx);
 
         rdma_pci_dma_unmap(pdev, curr_page, PAGE_SIZE);
 
@@ -803,7 +798,6 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     dsr_info->rsp->hdr.ack = cmd_handlers[dsr_info->req->hdr.cmd].ack;
     dsr_info->rsp->hdr.err = err < 0 ? -err : 0;
 
-    trace_pvrdma_exec_cmd(dsr_info->req->hdr.cmd, dsr_info->rsp->hdr.err);
 
     dev->stats.commands++;
 

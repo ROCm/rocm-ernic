@@ -37,7 +37,7 @@ add_project_arguments('-Wimplicit-function-declaration',
 executable('pvrdma',
   [ rdma_sources, pvrdma_sources, other_sources],
   include_directories : incdir,
-  c_args: ['-D_GNU_SOURCE, -DTARGET_PAGE_SIZE=4096'],
+  c_args: ['-D_GNU_SOURCE', '-DTARGET_PAGE_SIZE=4096'],
   dependencies :
   [glibc_dep]
 )

@@ -18,7 +18,6 @@
 #include "cpu.h"
 #include "qemu/cutils.h"
 
-#include "trace.h"
 
 #include "../rdma_utils.h"
 #include "pvrdma_dev_ring.h"
@@ -79,7 +78,6 @@ void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
     if (tail & ~((ring->max_elems << 1) - 1) ||
         head & ~((ring->max_elems << 1) - 1) ||
         tail == head) {
-        trace_pvrdma_ring_next_elem_read_no_data(ring->name);
         return NULL;
     }
 

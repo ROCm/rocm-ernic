@@ -15,7 +15,6 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci_device.h"
-#include "trace.h"
 #include "rdma_utils.h"
 
 void *rdma_pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t len)
@@ -40,14 +39,11 @@ void *rdma_pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t len)
         return NULL;
     }
 
-    trace_rdma_pci_dma_map(addr, p, pci_len);
-
     return p;
 }
 
 void rdma_pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len)
 {
-    trace_rdma_pci_dma_unmap(buffer);
     if (buffer) {
         pci_dma_unmap(dev, buffer, len, DMA_DIRECTION_TO_DEVICE, 0);
     }

@@ -18,7 +18,6 @@
 #include "cpu.h"
 #include "monitor/monitor.h"
 
-#include "trace.h"
 #include "rdma_utils.h"
 #include "rdma_backend.h"
 #include "rdma_rm.h"
@@ -104,8 +103,6 @@ static inline void res_tbl_free(RdmaRmResTbl *tbl)
 
 static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
 {
-    trace_rdma_res_tbl_get(tbl->name, handle);
-
     if ((handle < tbl->tbl_sz) && (test_bit(handle, tbl->bitmap))) {
         return tbl->tbl + handle * tbl->res_sz;
     } else {
@@ -134,15 +131,11 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
 
     memset(tbl->tbl + *handle * tbl->res_sz, 0, tbl->res_sz);
 
-    trace_rdma_res_tbl_alloc(tbl->name, *handle);
-
     return tbl->tbl + *handle * tbl->res_sz;
 }
 
 static inline void rdma_res_tbl_dealloc(RdmaRmResTbl *tbl, uint32_t handle)
 {
-    trace_rdma_res_tbl_dealloc(tbl->name, handle);
-
     QEMU_LOCK_GUARD(&tbl->lock);
 
     if (handle < tbl->tbl_sz) {
@@ -213,8 +206,6 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     if (!mr) {
         return -ENOMEM;
     }
-    trace_rdma_rm_alloc_mr(*mr_handle, host_virt, guest_start, guest_length,
-                           access_flags);
 
     if (host_virt) {
         mr->virt = host_virt;
@@ -259,7 +250,6 @@ void rdma_rm_dealloc_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
 
     if (mr) {
         rdma_backend_destroy_mr(&mr->backend_mr);
-        trace_rdma_rm_dealloc_mr(mr_handle, mr->start);
         if (mr->start) {
             mr->virt -= (mr->start & (PAGE_SIZE - 1));
             munmap(mr->virt, mr->length);
@@ -449,7 +439,6 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     }
 
     *qpn = rdma_backend_qpn(&qp->backend_qp);
-    trace_rdma_rm_alloc_qp(rm_qpn, *qpn, qp_type);
     g_hash_table_insert(dev_res->qp_hash, g_bytes_new(qpn, sizeof(*qpn)), qp);
 
     return 0;
@@ -480,8 +469,6 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     } else if (qp->qp_type == IBV_QPT_GSI) {
         return 0;
     }
-
-    trace_rdma_rm_modify_qp(qp_handle, attr_mask, qp_state, sgid_idx);
 
     if (attr_mask & IBV_QP_STATE) {
         qp->qp_state = qp_state;
