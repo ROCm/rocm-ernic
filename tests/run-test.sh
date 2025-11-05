@@ -66,7 +66,7 @@ echo ""
 
 # Start server in background
 echo "=== Starting Server ==="
-"$SERVER" "$SOCKET_PATH" > "$SERVER_LOG" 2>&1 &
+"$SERVER" --socket "$SOCKET_PATH" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "Server started (PID $SERVER_PID)"
 
