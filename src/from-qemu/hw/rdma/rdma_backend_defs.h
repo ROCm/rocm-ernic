@@ -19,8 +19,20 @@
 #include "qemu/thread.h"
 #include "chardev/char-fe.h"
 #include <infiniband/verbs.h>
-#include "contrib/rdmacm-mux/rdmacm-mux.h"
+/* MAD multiplexer not needed for standalone operation */
+/* #include "contrib/rdmacm-mux/rdmacm-mux.h" */
 #include "rdma_utils.h"
+
+/* Stub for rdmacm-mux types (MAD handling not used) */
+typedef struct RdmaCmMuxMsg {
+    uint8_t op_code;
+    /* Rest stubbed */
+} RdmaCmMuxMsg;
+
+typedef struct RdmaCmMux {
+    CharBackend *chr_be;
+    int can_receive;
+} RdmaCmMux;
 
 typedef struct RdmaDeviceResources RdmaDeviceResources;
 

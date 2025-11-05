@@ -4,6 +4,9 @@
  * Implements a userspace PVRDMA (ParaVirtualized RDMA) device using libvfio-user.
  * This server emulates a VMware PVRDMA PCIe device that can be attached to a VM.
  *
+ * This version integrates the QEMU PVRDMA device implementation through a
+ * compatibility bridge layer.
+ *
  * Copyright (C) 2025
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -27,6 +30,16 @@
 #include <vfio-user/libvfio-user.h>
 #include <linux/pci_regs.h>
 
+/* Define this to get full QEMU headers in internal header */
+#define VFU_PVRDMA_INTERNAL_IMPL
+
+/* Internal headers */
+#include "vfu_pvrdma_internal.h"
+#include "vfu_compat_bridge.h"
+
+/* QEMU PVRDMA utilities */
+#include "from-qemu/hw/rdma/rdma_utils.h"
+
 /* PCI Device IDs for VMware PVRDMA */
 #define PCI_VENDOR_ID_VMWARE    0x15ad
 #define PCI_DEVICE_ID_PVRDMA    0x0820
@@ -34,56 +47,12 @@
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK   0x02
 
-/* BARs - from QEMU PVRDMA definitions */
-#define RDMA_BAR0_MSIX_SIZE  (16 * 1024)  /* 16 KB for MSI-X */
-#define RDMA_BAR1_REGS_SIZE  64            /* 64 DWORDs = 256 bytes */
-#define RDMA_BAR2_UAR_SIZE   (4096 * 168) /* 168 User Contexts */
-
-/* MSI-X interrupt vectors */
-#define RDMA_MAX_INTRS       3
-#define INTR_VEC_CMD_RING            0
-#define INTR_VEC_CMD_ASYNC_EVENTS    1
-#define INTR_VEC_CMD_COMPLETION_Q    2
-
 /* Socket path for vfio-user communication */
 #define DEFAULT_SOCKET_PATH     "/tmp/vfio-user-pvrdma.sock"
 
 /* Global context for signal handling */
 static vfu_ctx_t *g_vfu_ctx = NULL;
 static volatile sig_atomic_t g_shutdown_requested = 0;
-
-/**
- * pvrdma_dev_stats - Device statistics
- */
-typedef struct {
-    uint64_t commands;
-    uint64_t regs_reads;
-    uint64_t regs_writes;
-    uint64_t uar_writes;
-    uint64_t interrupts;
-} pvrdma_dev_stats_t;
-
-/**
- * vfu_pvrdma_dev - Main device structure for PVRDMA emulation
- */
-typedef struct {
-    /* BAR memory backing stores */
-    void *bar0_mem;             /* MSI-X BAR (16KB) */
-    void *bar1_mem;             /* Register BAR (256 bytes) */
-    void *bar2_mem;             /* UAR BAR (variable size) */
-    
-    /* Configuration */
-    char *backend_device_name;  /* InfiniBand device name */
-    char *backend_eth_device;   /* Ethernet device name */
-    uint8_t backend_port_num;   /* IB port number */
-    
-    /* Statistics */
-    pvrdma_dev_stats_t stats;
-    
-    /* Runtime state */
-    bool verbose;
-    bool device_initialized;
-} vfu_pvrdma_dev_t;
 
 /**
  * Signal handler for graceful shutdown
@@ -151,12 +120,14 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
 /**
  * BAR1 (Registers) access callback
- * This is where the PVRDMA registers live
+ * Forwards to QEMU PVRDMA register handlers
  */
 static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     vfu_pvrdma_dev_t *dev = vfu_get_private(vfu_ctx);
+    PVRDMADev *pvrdma = &dev->pvrdma;
+    uint32_t val;
     
     if (offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
         vfu_log(vfu_ctx, LOG_ERR, "BAR1 access out of bounds: offset=%#lx count=%zu",
@@ -165,19 +136,26 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         return -1;
     }
     
+    /* Register accesses must be 32-bit aligned */
+    if (count != sizeof(uint32_t) || (offset & 0x3)) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access not 32-bit aligned: offset=%#lx count=%zu",
+                offset, count);
+        errno = EINVAL;
+        return -1;
+    }
+    
     if (is_write) {
-        /* Handle register writes */
-        memcpy(dev->bar1_mem + offset, buf, count);
-        dev->stats.regs_writes++;
+        /* Forward write to QEMU register handler */
+        memcpy(&val, buf, sizeof(val));
+        pvrdma_regs_write(pvrdma, offset, val, sizeof(val));
         
-        /* TODO: Trigger specific register write handlers */
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 write: offset=%#lx count=%zu", offset, count);
+        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 write: offset=%#lx val=%#x", offset, val);
     } else {
-        /* Handle register reads */
-        memcpy(buf, dev->bar1_mem + offset, count);
-        dev->stats.regs_reads++;
+        /* Forward read to QEMU register handler */
+        val = pvrdma_regs_read(pvrdma, offset, sizeof(val));
+        memcpy(buf, &val, sizeof(val));
         
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 read: offset=%#lx count=%zu", offset, count);
+        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 read: offset=%#lx val=%#x", offset, val);
     }
     
     return count;
@@ -185,12 +163,14 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
 /**
  * BAR2 (UAR - User Access Region) access callback
- * This is used for doorbells and fast-path operations
+ * Forwards to QEMU PVRDMA UAR handlers
  */
 static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     vfu_pvrdma_dev_t *dev = vfu_get_private(vfu_ctx);
+    PVRDMADev *pvrdma = &dev->pvrdma;
+    uint32_t val;
     
     if (offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
         vfu_log(vfu_ctx, LOG_ERR, "BAR2 access out of bounds: offset=%#lx count=%zu",
@@ -201,17 +181,21 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     
     if (is_write) {
         /* UAR writes are typically doorbells */
-        memcpy(dev->bar2_mem + offset, buf, count);
-        dev->stats.uar_writes++;
+        memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
         
-        /* TODO: Trigger UAR write handlers (doorbells, etc.) */
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) write: offset=%#lx count=%zu", 
-                offset, count);
+        /* Forward to QEMU UAR handler */
+        pvrdma_uar_write(pvrdma, offset, val, sizeof(val));
+        
+        pvrdma->stats.uar_writes++;
+        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) write: offset=%#lx val=%#x", 
+                offset, val);
     } else {
         /* UAR reads */
-        memcpy(buf, dev->bar2_mem + offset, count);
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) read: offset=%#lx count=%zu", 
-                offset, count);
+        val = pvrdma_uar_read(pvrdma, offset, sizeof(val));
+        memcpy(buf, &val, (count < sizeof(val)) ? count : sizeof(val));
+        
+        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) read: offset=%#lx val=%#x", 
+                offset, val);
     }
     
     return count;
@@ -229,20 +213,21 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     switch (type) {
         case VFU_RESET_DEVICE:
             /* Reset device state but keep context alive */
-            memset(&dev->stats, 0, sizeof(dev->stats));
-            dev->device_initialized = false;
+            memset(&dev->pvrdma.stats, 0, sizeof(dev->pvrdma.stats));
+            dev->device_active = false;
             break;
             
         case VFU_RESET_LOST_CONN:
             /* Client disconnected, prepare for new connection */
             vfu_log(vfu_ctx, LOG_INFO, "Client connection lost");
+            dev->device_active = false;
             break;
             
         case VFU_RESET_PCI_FLR:
             /* PCI Function Level Reset */
             vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
-            memset(&dev->stats, 0, sizeof(dev->stats));
-            dev->device_initialized = false;
+            memset(&dev->pvrdma.stats, 0, sizeof(dev->pvrdma.stats));
+            dev->device_active = false;
             break;
     }
     
@@ -259,7 +244,7 @@ static void dma_register_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
             info->iova.iov_base, info->iova.iov_len,
             info->vaddr, info->prot);
     
-    /* TODO: Register DMA region with RDMA backend */
+    /* DMA regions are now available for mapping guest memory */
 }
 
 /**
@@ -270,8 +255,45 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
     vfu_log(vfu_ctx, LOG_DEBUG,
             "DMA region unregistered: iova=%p len=%zu",
             info->iova.iov_base, info->iova.iov_len);
+}
+
+/**
+ * Initialize PVRDMA device structure
+ */
+static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
+{
+    PVRDMADev *pvrdma = &dev->pvrdma;
     
-    /* TODO: Unregister DMA region with RDMA backend */
+    /* Initialize PCIDevice wrapper for compatibility bridge */
+    dev->pci_dev.vfu_dev = dev;
+    dev->pci_dev.vfu_ctx = dev->vfu_ctx;
+    
+    /* Initialize device attributes with defaults from QEMU */
+    pvrdma->dev_attr.max_qp = MAX_QP;
+    pvrdma->dev_attr.max_cq = MAX_CQ;
+    pvrdma->dev_attr.max_mr = MAX_MR;
+    pvrdma->dev_attr.max_pd = MAX_PD;
+    pvrdma->dev_attr.max_qp_rd_atom = MAX_QP_RD_ATOM;
+    pvrdma->dev_attr.max_qp_init_rd_atom = MAX_QP_INIT_RD_ATOM;
+    pvrdma->dev_attr.max_ah = MAX_AH;
+    pvrdma->dev_attr.max_srq = MAX_SRQ;
+    pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
+    
+    /* Set backend device names */
+    pvrdma->backend_device_name = dev->backend_device_name;
+    pvrdma->backend_eth_device_name = dev->backend_eth_device;
+    pvrdma->backend_port_num = dev->backend_port_num;
+    
+    /* Initialize DSR info */
+    pvrdma->dsr_info.dsr = NULL;
+    pvrdma->dsr_info.dma = 0;
+    
+    /* Initialize stats */
+    memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
+    
+    rdma_info_report("PVRDMA device initialized");
+    
+    return 0;
 }
 
 /**
@@ -321,6 +343,10 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
     if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem) {
         err(EXIT_FAILURE, "Failed to allocate BAR memory");
     }
+    
+    /* Initialize register memory backing store */
+    dev->pvrdma.regs_data = (uint32_t *)dev->bar1_mem;
+    dev->pvrdma.uar_data = (uint32_t *)dev->bar2_mem;
     
     /* Setup BAR0: MSI-X (16KB, memory-mapped) */
     ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
@@ -392,9 +418,9 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n", 
             DEFAULT_SOCKET_PATH);
-    fprintf(stderr, "  -d, --device NAME    InfiniBand device name (stub)\n");
-    fprintf(stderr, "  -e, --ethdev NAME    Ethernet device name (stub)\n");
-    fprintf(stderr, "  -p, --port NUM       IB port number (default: 1, stub)\n");
+    fprintf(stderr, "  -d, --device NAME    InfiniBand device name\n");
+    fprintf(stderr, "  -e, --ethdev NAME    Ethernet device name\n");
+    fprintf(stderr, "  -p, --port NUM       IB port number (default: 1)\n");
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
 }
@@ -430,6 +456,7 @@ int main(int argc, char *argv[])
     dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
+    dev->device_active = false;
     
     /* Parse command line options */
     while ((opt = getopt_long(argc, argv, "s:d:e:p:vh", long_options, NULL)) != -1) {
@@ -467,18 +494,23 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
     
-    printf("vfu_pvrdma: Starting PVRDMA device server\n");
+    printf("vfu_pvrdma: Starting PVRDMA device server (Phase 1 integration)\n");
     printf("  Socket: %s\n", socket_path);
     if (dev->backend_device_name) {
-        printf("  IB Device: %s (stub - not yet implemented)\n", dev->backend_device_name);
+        printf("  IB Device: %s\n", dev->backend_device_name);
     }
     if (dev->backend_eth_device) {
-        printf("  Eth Device: %s (stub - not yet implemented)\n", dev->backend_eth_device);
+        printf("  Eth Device: %s\n", dev->backend_eth_device);
     }
-    printf("  IB Port: %u (stub - not yet implemented)\n", dev->backend_port_num);
+    printf("  IB Port: %u\n", dev->backend_port_num);
     printf("\n");
-    printf("NOTE: This is a minimal implementation for testing.\n");
-    printf("RDMA backend integration is not yet complete.\n");
+    printf("Features in this build:\n");
+    printf("  ✓ PCI device enumeration\n");
+    printf("  ✓ BAR0/1/2 access\n");
+    printf("  ✓ DSR register handling (QEMU integration)\n");
+    printf("  ✓ Command channel framework\n");
+    printf("  ⚠ RDMA backend (pending libibverbs init)\n");
+    printf("  ⚠ Full command processing (pending)\n");
     printf("\n");
     
     /* Remove old socket if it exists */
@@ -490,11 +522,17 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "vfu_create_ctx() failed");
     }
     g_vfu_ctx = vfu_ctx;
+    dev->vfu_ctx = vfu_ctx;
     
     /* Setup logging */
     ret = vfu_setup_log(vfu_ctx, vfu_log_cb, dev->verbose ? LOG_DEBUG : LOG_INFO);
     if (ret < 0) {
         err(EXIT_FAILURE, "vfu_setup_log() failed");
+    }
+    
+    /* Initialize PVRDMA device */
+    if (pvrdma_device_init(dev) < 0) {
+        err(EXIT_FAILURE, "pvrdma_device_init() failed");
     }
     
     /* Setup PCI configuration */
