@@ -49,10 +49,7 @@ typedef struct BackendCtx {
     RdmaBackendSRQ *backend_srq;
 } BackendCtx;
 
-struct backend_umad {
-    struct ib_user_mad hdr;
-    char mad[RDMA_MAX_PRIVATE_DATA];
-};
+/* struct backend_umad is now defined in rdma_backend_defs.h */
 
 static void (*comp_handler)(void *ctx, struct ibv_wc *wc);
 

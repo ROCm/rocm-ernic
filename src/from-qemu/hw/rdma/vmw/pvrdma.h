@@ -131,16 +131,8 @@ static inline int set_reg_val(PVRDMADev *dev, hwaddr addr, uint32_t val)
     return 0;
 }
 
-static inline void post_interrupt(PVRDMADev *dev, unsigned vector)
-{
-    PCIDevice *pci_dev = PCI_DEVICE(dev);
-
-    if (likely(!dev->interrupt_mask)) {
-        dev->stats.interrupts++;
-        msix_notify(pci_dev, vector);
-    }
-}
-
+/* post_interrupt and pvrdma_exec_cmd are implemented in vfu_compat_bridge.c for standalone mode */
+void post_interrupt(PVRDMADev *dev, unsigned vector);
 int pvrdma_exec_cmd(PVRDMADev *dev);
 
 #endif

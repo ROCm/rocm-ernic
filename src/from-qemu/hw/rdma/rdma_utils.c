@@ -29,37 +29,7 @@
 #include "hw/pci/pci_device.h"
 #include "rdma_utils.h"
 
-void *rdma_pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t len)
-{
-    void *p;
-    dma_addr_t pci_len = len;
-
-    if (!addr) {
-        rdma_error_report("addr is NULL");
-        return NULL;
-    }
-
-    p = pci_dma_map(dev, addr, &pci_len, DMA_DIRECTION_TO_DEVICE);
-    if (!p) {
-        rdma_error_report("pci_dma_map fail, addr=0x%"PRIx64", len=%"PRId64,
-                          addr, pci_len);
-        return NULL;
-    }
-
-    if (pci_len != len) {
-        rdma_pci_dma_unmap(dev, p, pci_len);
-        return NULL;
-    }
-
-    return p;
-}
-
-void rdma_pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len)
-{
-    if (buffer) {
-        pci_dma_unmap(dev, buffer, len, DMA_DIRECTION_TO_DEVICE, 0);
-    }
-}
+/* DMA functions moved to vfu_compat_bridge.c for libvfio-user implementation */
 
 void rdma_protected_gqueue_init(RdmaProtectedGQueue *list)
 {

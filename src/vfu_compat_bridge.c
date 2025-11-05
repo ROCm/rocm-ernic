@@ -16,6 +16,9 @@
 #include <inttypes.h>  /* For PRId64, PRIx64 */
 #include <sys/mman.h>  /* For PROT_READ, PROT_WRITE */
 
+/* Define libvfio-user types we need - full structs to avoid incomplete type */
+#include <vfio-user/libvfio-user.h>
+
 #include "vfu_compat_bridge.h"
 #include "vfu_pvrdma_internal.h"
 
@@ -217,22 +220,8 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
 }
 
 /*
- * Command Execution
+ * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
-
-int pvrdma_exec_cmd(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    
-    if (!pvrdma) {
-        return -EINVAL;
-    }
-    
-    pvrdma->stats.commands++;
-    
-    /* Forward to QEMU command handler */
-    return pvrdma_exec_cmd(pvrdma);
-}
 
 /*
  * Statistics
@@ -262,48 +251,50 @@ void pvrdma_get_stats(pvrdma_handle_t handle,
  * DMA Mapping (called FROM QEMU code)
  */
 
-void *rdma_pci_dma_map(void *pci_dev, dma_addr_t addr, dma_addr_t *plen, int dir)
+/* Implement pci_dma_map - called by QEMU PVRDMA code via hw/pci/pci.h */
+void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
 {
-    PCIDevice *dev = (PCIDevice *)pci_dev;
-    vfu_pvrdma_dev_t *vfu_dev;
     vfu_ctx_t *vfu_ctx;
-    dma_sg_t sg;
+    dma_sg_t *sg;
     struct iovec iov;
     void *host_addr;
     int ret;
     
-    if (!dev || !dev->vfu_dev || !dev->vfu_ctx) {
+    if (!dev || !dev->vfu_ctx) {
         rdma_error_report("rdma_pci_dma_map: invalid device pointer");
         *plen = 0;
         return NULL;
     }
     
-    vfu_dev = dev->vfu_dev;
     vfu_ctx = dev->vfu_ctx;
     
     (void)dir; /* Direction not used with vfio-user */
     
-    /* Convert guest address to scatter-gather entry */
-    sg.dma_addr = addr;
-    sg.region = 0;  /* libvfio-user will find the right region */
-    sg.length = *plen;
-    sg.offset = 0;
-    sg.mappable = true;
+    /* Allocate scatter-gather entry */
+    sg = malloc(dma_sg_size());
+    if (!sg) {
+        rdma_error_report("Failed to allocate SG entry");
+        *plen = 0;
+        return NULL;
+    }
     
-    /* Map the guest physical address */
-    ret = vfu_addr_to_sgl(vfu_ctx, addr, *plen, &sg, 1, PROT_READ | PROT_WRITE);
+    /* Convert guest physical address to scatter-gather list */
+    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)addr, *plen, sg, 1,
+                          PROT_READ | PROT_WRITE);
     if (ret < 0) {
         rdma_error_report("Failed to convert address %#lx to SGL: %s",
                          addr, strerror(errno));
+        free(sg);
         *plen = 0;
         return NULL;
     }
     
     /* Get host virtual address */
-    ret = vfu_sgl_get(vfu_ctx, &sg, &iov, 1, 0);
+    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
     if (ret < 0) {
         rdma_error_report("Failed to map SGL for address %#lx: %s",
                          addr, strerror(errno));
+        free(sg);
         *plen = 0;
         return NULL;
     }
@@ -311,53 +302,43 @@ void *rdma_pci_dma_map(void *pci_dev, dma_addr_t addr, dma_addr_t *plen, int dir
     host_addr = iov.iov_base;
     *plen = iov.iov_len;  /* Update with actual mapped length */
     
+    /* Free SG - we only needed it for mapping */
+    free(sg);
+    
     rdma_debug_report("DMA map: guest=%#lx -> host=%p len=%zu",
                      addr, host_addr, (size_t)*plen);
     
     return host_addr;
 }
 
-void rdma_pci_dma_unmap(void *pci_dev, void *buffer, dma_addr_t len,
-                        int dir, dma_addr_t access_len)
+/* Implement pci_dma_unmap - called by QEMU PVRDMA code via hw/pci/pci.h */
+void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len,
+                   int dir, dma_addr_t access_len)
 {
-    PCIDevice *dev = (PCIDevice *)pci_dev;
-    vfu_ctx_t *vfu_ctx;
-    dma_sg_t sg;
-    struct iovec iov;
-    
+    (void)dev;
+    (void)buffer;
+    (void)len;
     (void)dir;
     (void)access_len;
     
-    if (!dev || !dev->vfu_ctx || !buffer) {
-        return;
-    }
+    /* For unmapping, we just need to tell libvfio-user about the buffer.
+     * Since we don't track the original sg from the map call, we can't
+     * properly call vfu_sgl_put. This is a limitation of the current
+     * pci_dma_unmap API which doesn't give us the original mapping info.
+     * 
+     * For now, we'll skip the unmap - libvfio-user will handle cleanup
+     * when regions are unmapped or the device is destroyed.
+     */
     
-    vfu_ctx = dev->vfu_ctx;
-    
-    /* Prepare IOV for unmap */
-    iov.iov_base = buffer;
-    iov.iov_len = len;
-    
-    /* We need a dummy SG for vfu_sgl_put */
-    sg.dma_addr = 0;  /* Unknown at this point */
-    sg.region = 0;
-    sg.length = len;
-    sg.offset = 0;
-    sg.mappable = true;
-    
-    /* Release the mapping */
-    vfu_sgl_put(vfu_ctx, &sg, &iov, 1);
-    
-    rdma_debug_report("DMA unmap: host=%p len=%zu", buffer, (size_t)len);
+    rdma_debug_report("DMA unmap: host=%p len=%zu (no-op)", buffer, (size_t)len);
 }
 
 /*
  * Interrupt Handling (called FROM QEMU code)
  */
 
-void post_interrupt(void *dev, unsigned vector)
+void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
 {
-    PVRDMADev *pvrdma = (PVRDMADev *)dev;
     vfu_pvrdma_dev_t *vfu_dev;
     vfu_ctx_t *vfu_ctx;
     int ret;

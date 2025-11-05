@@ -26,13 +26,6 @@
 /* Stub for rdmacm-mux types (MAD handling not used) */
 /* Forward declarations */
 struct ibv_mad_hdr;
-struct ib_user_mad {
-    uint32_t agent_id;
-    uint32_t status;
-    uint32_t timeout_ms;
-    uint32_t retries;
-    uint8_t  data[0];
-};
 
 /* RDMA constants */
 #define RDMA_MAX_PRIVATE_DATA 224
@@ -47,6 +40,36 @@ struct ib_user_mad {
 
 #define RDMACM_MUX_ERR_CODE_OK    0
 
+/* ib_user_mad stub - simplified structure */
+struct ib_user_mad {
+    uint32_t agent_id;
+    uint32_t status;
+    uint32_t timeout_ms;
+    uint32_t retries;
+    struct {
+        uint32_t qpn;
+        uint32_t qkey;
+        uint16_t lid;
+        uint8_t  sl;
+        uint8_t  path_bits;
+        uint8_t  grh_present;
+        uint8_t  gid_index;
+        uint8_t  hop_limit;
+        uint8_t  traffic_class;
+        uint8_t  gid[16];
+        uint32_t flow_label;
+        uint16_t pkey_index;
+        uint8_t  reserved[6];
+    } addr;
+    uint8_t  data[0];
+};
+
+/* Forward declare backend_umad (defined in rdma_backend.c) */
+struct backend_umad {
+    struct ib_user_mad hdr;
+    char mad[RDMA_MAX_PRIVATE_DATA];
+};
+
 struct RdmaCmMuxMsg {
     struct {
         uint32_t msg_type;
@@ -56,7 +79,7 @@ struct RdmaCmMuxMsg {
         union ibv_gid sgid;  /* Source GID */
     } hdr;
     uint32_t umad_len;
-    char umad[256];  /* Simplified - real struct is larger */
+    struct backend_umad umad;  /* MAD message data */
 };
 typedef struct RdmaCmMuxMsg RdmaCmMuxMsg;
 

@@ -45,23 +45,9 @@ static inline int pci_bus_num(PCIBus *bus)
 #define PCI_BASE_ADDRESS_SPACE_MEMORY  0x00
 #define PCI_BASE_ADDRESS_SPACE_IO      0x01
 
-/* Forward declare DMA functions - implemented in rdma_utils.c */
-void *rdma_pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t len);
-void rdma_pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len);
-
-/* Stub wrappers that call our bridge functions */
-static inline void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dir;  /* Direction not used */
-    return rdma_pci_dma_map(dev, addr, *len);
-}
-
-static inline void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir, uint64_t access_len)
-{
-    (void)dir;
-    (void)access_len;
-    rdma_pci_dma_unmap(dev, buffer, len);
-}
+/* PCI DMA functions - implemented in vfu_compat_bridge.c */
+void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir);
+void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir, uint64_t access_len);
 
 #endif /* QEMU_PCI_H */
 

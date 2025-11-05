@@ -113,17 +113,8 @@ void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset,
 uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
 
 /*
- * Command Execution
+ * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */
-
-/**
- * pvrdma_exec_cmd - Execute command from command ring
- * @handle: Device handle
- *
- * Processes one command from the device shared region command ring.
- * Returns: 0 on success, -errno on failure
- */
-int pvrdma_exec_cmd(pvrdma_handle_t handle);
 
 /*
  * Statistics
@@ -152,35 +143,6 @@ void pvrdma_get_stats(pvrdma_handle_t handle,
  * They need access to vfu_ctx which we get from the device.
  */
 
-/**
- * rdma_pci_dma_map - Map guest physical address to host virtual address
- * @pci_dev: PCIDevice pointer (actually our wrapper)
- * @addr: Guest physical address
- * @plen: Pointer to length (updated with actual mapped length)
- * @dir: DMA direction (not used with vfio-user)
- *
- * Returns: Host virtual address, or NULL on failure
- */
-void *rdma_pci_dma_map(void *pci_dev, dma_addr_t addr, dma_addr_t *plen, int dir);
-
-/**
- * rdma_pci_dma_unmap - Unmap previously mapped DMA region
- * @pci_dev: PCIDevice pointer
- * @buffer: Host virtual address from rdma_pci_dma_map()
- * @len: Length that was mapped
- * @dir: DMA direction
- * @access_len: How much was actually accessed
- */
-void rdma_pci_dma_unmap(void *pci_dev, void *buffer, dma_addr_t len,
-                        int dir, dma_addr_t access_len);
-
-/**
- * post_interrupt - Trigger MSI-X interrupt
- * @dev: PVRDMA device pointer (actually PVRDMADev)
- * @vector: Interrupt vector number (0-2)
- *
- * Called by QEMU code to trigger interrupts.
- */
-void post_interrupt(void *dev, unsigned vector);
+/* DMA functions are now pci_dma_map/unmap declared in hw/pci/pci.h */
 
 #endif /* VFU_COMPAT_BRIDGE_H */
