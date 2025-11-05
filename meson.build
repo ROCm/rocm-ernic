@@ -109,3 +109,6 @@ message('  - QEMU PVRDMA device logic')
 message('  - RDMA backend (libibverbs)')
 message('  - Resource manager')
 message('')
+
+# Tests subdirectory
+subdir('tests')

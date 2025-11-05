@@ -179,7 +179,8 @@ static void *comp_handler_thread(void *arg)
 
     while (backend_dev->comp_thread.run) {
         do {
-            rc = qemu_poll_ns(pfds, 1, THR_POLL_TO * (int64_t)SCALE_MS);
+            rc = qemu_poll_ns((struct pollfd *)pfds, 1,
+                              THR_POLL_TO * (int64_t)SCALE_MS);
             if (!rc) {
                 backend_dev->rdma_dev_res->stats.poll_cq_ppoll_to++;
             }
