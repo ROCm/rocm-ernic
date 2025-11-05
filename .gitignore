@@ -74,3 +74,6 @@ GRTAGS
 *.gcno
 cov-int/
 
+# Spell check generated files
+wordlist.dic
+
