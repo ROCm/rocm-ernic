@@ -2,7 +2,8 @@
 
 ## Current Status
 - ✅ Excellent architecture designed and implemented
-- ✅ Comprehensive documentation (IMPLEMENTATION_PLAN, INTEGRATION_STATUS, PHASE1_STATUS, STUB_HEADERS_STATUS)
+- ✅ Comprehensive documentation (IMPLEMENTATION_PLAN, INTEGRATION_STATUS,
+PHASE1_STATUS, STUB_HEADERS_STATUS)
 - ✅ Compatibility bridge layer created
 - ✅ Server code updated with proper structure
 - ⏳ Build blocked on QEMU header dependencies (70% resolved)
@@ -25,11 +26,13 @@ pvrdma_dev_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
 void pvrdma_device_destroy(pvrdma_dev_handle_t handle);
 
 /* Register access */
-void pvrdma_reg_write(pvrdma_dev_handle_t handle, uint64_t offset, uint32_t val);
+void pvrdma_reg_write(pvrdma_dev_handle_t handle, uint64_t offset,
+                      uint32_t val);
 uint32_t pvrdma_reg_read(pvrdma_dev_handle_t handle, uint64_t offset);
 
 /* UAR access */
-void pvrdma_uar_write(pvrdma_dev_handle_t handle, uint64_t offset, uint32_t val);
+void pvrdma_uar_write(pvrdma_dev_handle_t handle, uint64_t offset,
+                      uint32_t val);
 uint32_t pvrdma_uar_read(pvrdma_dev_handle_t handle, uint64_t offset);
 
 /* DSR management */
@@ -232,7 +235,8 @@ rping -c -a <ip> -v  # In another VM
 - Build fixes and iteration: 1-2 hours
 - **Total**: 4-7 hours
 
-After this, Phase 1 will be complete with a working build, and we can move to Phase 2 (DSR testing).
+After this, Phase 1 will be complete with a working build, and we can move to
+Phase 2 (DSR testing).
 
 ## Questions or Blockers?
 

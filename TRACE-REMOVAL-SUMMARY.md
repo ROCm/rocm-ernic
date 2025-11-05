@@ -1,7 +1,10 @@
 # QEMU Trace Infrastructure Removal Summary
 
 ## Overview
-Successfully removed all QEMU trace infrastructure from the vfu-rdma project. The trace system was already non-functional (headers were empty stubs), so all `trace_*()` calls were effectively no-ops that added unnecessary code complexity.
+Successfully removed all QEMU trace infrastructure from the vfu-rdma project.
+The trace system was already non-functional (headers were empty stubs), so all
+`trace_*()` calls were effectively no-ops that added unnecessary code
+complexity.
 
 ## Changes Made
 
@@ -9,11 +12,13 @@ Successfully removed all QEMU trace infrastructure from the vfu-rdma project. Th
 
 #### Core RDMA Files
 - **src/fake-qemu/hw/rdma/rdma_utils.h**
-  - Added `rdma_debug_report()` macro (optional debug logging via `RDMA_DEBUG` flag)
+  - Added `rdma_debug_report()` macro (optional debug logging via `RDMA_DEBUG`
+  flag)
   
 - **src/fake-qemu/hw/rdma/rdma_utils.c**
   - Removed `#include "trace.h"`
-  - Removed 2 trace calls: `trace_rdma_pci_dma_map()`, `trace_rdma_pci_dma_unmap()`
+  - Removed 2 trace calls: `trace_rdma_pci_dma_map()`,
+  `trace_rdma_pci_dma_unmap()`
 
 - **src/fake-qemu/hw/rdma/rdma_rm.c**
   - Removed `#include "trace.h"`
@@ -22,7 +27,8 @@ Successfully removed all QEMU trace infrastructure from the vfu-rdma project. Th
 - **src/fake-qemu/hw/rdma/rdma_backend.c**
   - Removed `#include "trace.h"`
   - Removed 17 trace calls for backend operations
-  - Removed custom `trace_mad_message()` function (was allocating/freeing without doing anything)
+  - Removed custom `trace_mad_message()` function (was allocating/freeing
+  without doing anything)
 
 #### PVRDMA Files
 - **src/fake-qemu/hw/rdma/vmw/pvrdma_main.c**
@@ -69,7 +75,8 @@ Successfully removed all QEMU trace infrastructure from the vfu-rdma project. Th
 1. **Simplified codebase** - Removed ~120+ lines of non-functional tracing code
 2. **Cleaner build** - No dependencies on QEMU's trace generation infrastructure
 3. **Better maintainability** - Fewer files to manage
-4. **Optional debugging** - New `rdma_debug_report()` macro provides simple debug logging when needed
+4. **Optional debugging** - New `rdma_debug_report()` macro provides simple
+debug logging when needed
 
 ## Existing Logging Mechanisms
 
@@ -100,7 +107,8 @@ grep -r '#include.*trace\.h' src/fake-qemu/hw/rdma/
 
 1. Test compilation to ensure no build errors
 2. If debug tracing is needed during development, compile with `-DRDMA_DEBUG`
-3. Consider adding specific debug prints where needed using `rdma_debug_report()`
+3. Consider adding specific debug prints where needed using
+`rdma_debug_report()`
 
 ## Patch File
 

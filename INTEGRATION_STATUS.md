@@ -3,7 +3,9 @@
 ## What We've Discovered
 
 ### From Linux Kernel Driver Analysis
-The kernel driver (`/home/stebates/Projects/kernel-tools/src/drivers/infiniband/hw/vmw_pvrdma/`) shows:
+The kernel driver
+(`/home/stebates/Projects/kernel-tools/src/drivers/infiniband/hw/vmw_pvrdma/`)
+shows:
 
 1. **Device Initialization Sequence:**
    - Driver allocates Device Shared Region (DSR) in guest memory

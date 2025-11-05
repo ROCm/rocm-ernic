@@ -1,7 +1,8 @@
 # PVRDMA Server Implementation Plan
 
 ## Overview
-Based on analysis of the Linux kernel driver and QEMU implementation, here's the roadmap for completing the PVRDMA device server.
+Based on analysis of the Linux kernel driver and QEMU implementation,
+here's the roadmap for completing the PVRDMA device server.
 
 ## Device Initialization Sequence
 

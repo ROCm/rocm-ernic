@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-This project is porting QEMU's PVRDMA (ParaVirtualized RDMA) device emulation to use **libvfio-user** for userspace device emulation. The goal is to run RDMA device emulation outside of QEMU as a standalone process.
+This project is porting QEMU's PVRDMA (ParaVirtualized RDMA) device emulation to
+use **libvfio-user** for userspace device emulation. The goal is to run RDMA
+device emulation outside of QEMU as a standalone process.
 
 **Current Status:** ✅ Trace infrastructure removed, code compiles cleanly
 
@@ -72,7 +74,8 @@ This project is porting QEMU's PVRDMA (ParaVirtualized RDMA) device emulation to
   vfio_user_dep = dependency('vfio-user', required: true)
   # or use direct library if pkg-config unavailable:
   # vfio_user_dep = declare_dependency(
-  #     include_directories: include_directories('/usr/local/include/vfio-user'),
+  #     include_directories:
+  #       include_directories('/usr/local/include/vfio-user'),
   #     link_args: ['-lvfio-user']
   # )
   ```
@@ -213,9 +216,11 @@ This project is porting QEMU's PVRDMA (ParaVirtualized RDMA) device emulation to
    - A library that can be embedded in other applications?
    - Both (library with example daemon)?
 
-2. **RDMACM MUX:** The code uses `qemu_chr_fe_*` for RDMA connection manager multiplexing
+2. **RDMACM MUX:** The code uses `qemu_chr_fe_*` for RDMA connection manager
+multiplexing
    - Do we need this functionality?
-   - If yes, how should it be implemented without QEMU's character device framework?
+   - If yes, how should it be implemented without QEMU's character device
+   framework?
    - Can it be replaced with direct socket communication?
 
 3. **VMXNET3 Dependency:** Code requires vmxnet3 device in PCI slot 0

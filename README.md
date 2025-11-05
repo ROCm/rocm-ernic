@@ -1,10 +1,17 @@
 # vfu-pvrdma: Userspace PVRDMA Device Emulation
 
-A userspace implementation of the VMware ParaVirtualized RDMA (PVRDMA) device using the [libvfio-user](https://github.com/nutanix/libvfio-user) framework. This project enables RDMA functionality for virtual machines without requiring in-kernel device emulation.
+A userspace implementation of the VMware ParaVirtualized RDMA (PVRDMA) device
+using the [libvfio-user](https://github.com/nutanix/libvfio-user) framework.
+This project enables RDMA functionality for virtual machines without requiring
+in-kernel device emulation.
 
 ## Overview
 
-This project implements a fully functional PVRDMA device server that can be attached to virtual machines (VMs) via the VFIO (Virtual Function I/O) user-space device framework. The device provides RDMA (Remote Direct Memory Access) capabilities to guest VMs, allowing high-performance, low-latency networking with direct hardware access semantics.
+This project implements a fully functional PVRDMA device server that can be
+attached to virtual machines (VMs) via the VFIO (Virtual Function I/O)
+user-space device framework. The device provides RDMA (Remote Direct Memory
+Access) capabilities to guest VMs, allowing high-performance, low-latency
+networking with direct hardware access semantics.
 
 **Key Features:**
 - Full PCIe device emulation in userspace
@@ -57,21 +64,30 @@ This project implements a fully functional PVRDMA device server that can be atta
 
 ### PVRDMA Origins
 
-**PVRDMA (ParaVirtualized RDMA)** was originally developed by VMware as a paravirtualized RDMA adapter for VMware ESXi and later contributed to the open-source community. The technology enables RDMA capabilities in virtualized environments without requiring direct hardware passthrough.
+**PVRDMA (ParaVirtualized RDMA)** was originally developed by VMware as a
+paravirtualized RDMA adapter for VMware ESXi and later contributed to the
+open-source community. The technology enables RDMA capabilities in virtualized
+environments without requiring direct hardware passthrough.
 
 ### QEMU Implementation
 
-The QEMU project includes a complete PVRDMA device emulation (`hw/rdma/vmw/pvrdma*`), which was added in **QEMU v3.1** (December 2018). This implementation provides:
+The QEMU project includes a complete PVRDMA device emulation
+(`hw/rdma/vmw/pvrdma*`), which was added in **QEMU v3.1** (December 2018). This
+implementation provides:
 - Full PCI device emulation with proper BAR mappings
 - RDMA resource management (QPs, CQs, MRs, PDs, etc.)
 - Integration with host InfiniBand hardware via `libibverbs`
-- Support for both RC (Reliable Connection) and UD (Unreliable Datagram) transport
+- Support for both RC (Reliable Connection) and UD (Unreliable Datagram)
+transport
 
-This project is based on the **QEMU v9.0.4** PVRDMA implementation, adapted for standalone userspace operation.
+This project is based on the **QEMU v9.0.4** PVRDMA implementation, adapted for
+standalone userspace operation.
 
 ### Linux Kernel Driver
 
-The Linux kernel includes a native PVRDMA driver (`drivers/infiniband/hw/vmw_pvrdma/`) that was merged in **Linux 4.5** (March 2016). This driver:
+The Linux kernel includes a native PVRDMA driver
+(`drivers/infiniband/hw/vmw_pvrdma/`) that was merged in **Linux 4.5** (March
+2016). This driver:
 - Implements the standard RDMA verbs interface (`ib_*` APIs)
 - Communicates with the PVRDMA device via PCI memory-mapped I/O
 - Supports the full RDMA feature set (QPs, CQs, SRQs, MRs, etc.)
@@ -83,14 +99,19 @@ The Linux kernel includes a native PVRDMA driver (`drivers/infiniband/hw/vmw_pvr
 
 ### libvfio-user Framework
 
-[**libvfio-user**](https://github.com/nutanix/libvfio-user) is a framework developed by Nutanix that enables implementing VFIO devices in userspace. Unlike traditional device emulation which requires running inside a VMM (Virtual Machine Monitor) like QEMU, libvfio-user allows:
+[**libvfio-user**](https://github.com/nutanix/libvfio-user) is a framework
+developed by Nutanix that enables implementing VFIO devices in userspace. Unlike
+traditional device emulation which requires running inside a VMM (Virtual
+Machine Monitor) like QEMU, libvfio-user allows:
 
 - **Standalone device servers** running as separate processes
 - **Enhanced security** through process isolation
 - **Simplified development** without VMM coupling
 - **Flexible deployment** (local sockets, network sockets, etc.)
 
-The framework implements the **vfio-user protocol**, which extends the Linux VFIO (Virtual Function I/O) interface to userspace, enabling communication between VMs and userspace device emulators.
+The framework implements the **vfio-user protocol**, which extends the Linux
+VFIO (Virtual Function I/O) interface to userspace, enabling communication
+between VMs and userspace device emulators.
 
 ## Project Components
 
@@ -194,7 +215,8 @@ sudo ninja -C build install
 
 ### Command-Line Options
 
-- `-s, --socket PATH`    - VFIO-user socket path (default: `/tmp/vfio-user-pvrdma.sock`)
+- `-s, --socket PATH` - VFIO-user socket path (default:
+`/tmp/vfio-user-pvrdma.sock`)
 - `-d, --device NAME`    - InfiniBand device name (e.g., `mlx5_0`, `rxe0`)
 - `-e, --ethdev NAME`    - Ethernet device name for GID resolution
 - `-p, --port NUM`       - IB port number (default: 1)
@@ -309,16 +331,23 @@ ibv_devices
 
 ### Documentation
 
-- [QEMU PVRDMA Documentation](https://www.qemu.org/docs/master/system/devices/pvrdma.html)
+- [QEMU PVRDMA Documentation][qemu-pvrdma-docs]
 - [libvfio-user GitHub](https://github.com/nutanix/libvfio-user)
-- [Linux PVRDMA Kernel Driver](https://github.com/torvalds/linux/tree/master/drivers/infiniband/hw/vmw_pvrdma)
-- [InfiniBand Verbs API](https://man7.org/linux/man-pages/man3/ibv_get_device_list.3.html)
+- [Linux PVRDMA Kernel Driver][linux-pvrdma-driver]
+- [InfiniBand Verbs API][ibverbs-api]
 
 ### Related Projects
 
 - [QEMU](https://www.qemu.org/) - Machine emulator and virtualizer
-- [SPDK](https://spdk.io/) - Storage Performance Development Kit (uses libvfio-user)
-- [RXE](https://github.com/linux-rdma/rdma-core) - Software RDMA over Ethernet
+- [SPDK][spdk-link] - Storage Performance Development Kit (uses
+  libvfio-user)
+- [RXE](https://github.com/linux-rdma/rdma-core) - Software RDMA over
+  Ethernet
+
+[qemu-pvrdma-docs]: https://www.qemu.org/docs/master/system/devices/pvrdma.html
+[linux-pvrdma-driver]: https://github.com/torvalds/linux/tree/master/drivers/infiniband/hw/vmw_pvrdma
+[ibverbs-api]: https://man7.org/linux/man-pages/man3/ibv_get_device_list.3.html
+[spdk-link]: https://spdk.io/
 
 ## License
 
@@ -331,7 +360,8 @@ See individual source files for detailed copyright information.
 
 ## Contributing
 
-Contributions are welcome! This is an active development project. Areas where help is needed:
+Contributions are welcome! This is an active development project. Areas where
+help is needed:
 
 - RDMA backend integration and testing
 - Command processing implementation
@@ -365,5 +395,6 @@ For issues, questions, or contributions, please use the project's issue tracker.
 
 ---
 
-**Status**: Active Development | **Version**: 0.1.0 | **Last Updated**: November 2025
+**Status**: Active Development | **Version**: 0.1.0 | **Last Updated**: November
+2025
 

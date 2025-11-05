@@ -76,7 +76,8 @@ All comprehensive and working:
 - Fixed 95%+ of all build errors
 - Only 3 trivial errors remaining in 1 file
 
-This represents a **massive** achievement in porting QEMU PVRDMA code to standalone mode!
+This represents a **massive** achievement in porting QEMU PVRDMA code to
+standalone mode!
 
 ### Commit Recommendation
 

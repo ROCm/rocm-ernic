@@ -2,7 +2,8 @@
 
 ## Overview
 
-This document describes the QEMU stub header creation attempt and the remaining challenges.
+This document describes the QEMU stub header creation attempt and the remaining
+challenges.
 
 ## What We Created
 
@@ -25,7 +26,8 @@ We created stub headers in `src/from-qemu/include/qemu-extra/` for:
 
 ## The Problem
 
-While these stubs handle the direct includes from PVRDMA headers, QEMU headers have deep transitive dependencies:
+While these stubs handle the direct includes from PVRDMA headers, QEMU headers
+have deep transitive dependencies:
 
 ### Dependency Chain Example
 ```
@@ -44,19 +46,26 @@ pvrdma.h
 
 The issue compounds:
 1. QEMU's networking headers conflict with system networking headers
-2. QAPI (QEMU's type system) uses GLib macros that expect QEMU's build environment
+2. QAPI (QEMU's type system) uses GLib macros that expect QEMU's build
+environment
 3. Generated headers reference functions that don't exist outside QEMU
 4. Thread-safety annotations (`TSA_*`) need proper definitions
 
 ## Why It's Hard
 
-1. **QAPI Code Generation**: QEMU generates headers during build with definitions for networking, block devices, etc. We don't have this infrastructure.
+1. **QAPI Code Generation**: QEMU generates headers during build with
+definitions for networking, block devices, etc. We don't have this
+infrastructure.
 
-2. **Header Conflicts**: QEMU's `linux/in6.h` conflicts with system `netinet/in.h`. These are both included through different paths.
+2. **Header Conflicts**: QEMU's `linux/in6.h` conflicts with system
+`netinet/in.h`. These are both included through different paths.
 
-3. **GLib Integration**: QEMU uses GLib heavily with custom macros (`G_GNUC_PRINTF`, `G_DEFINE_AUTOPTR_CLEANUP_FUNC`) that expect specific contexts.
+3. **GLib Integration**: QEMU uses GLib heavily with custom macros
+(`G_GNUC_PRINTF`, `G_DEFINE_AUTOPTR_CLEANUP_FUNC`) that expect specific
+contexts.
 
-4. **Deep Type System**: QEMU's QOM (QEMU Object Model) permeates everything with macros like `OBJECT_DECLARE_TYPE`, `DECLARE_INSTANCE_CHECKER`, etc.
+4. **Deep Type System**: QEMU's QOM (QEMU Object Model) permeates everything
+with macros like `OBJECT_DECLARE_TYPE`, `DECLARE_INSTANCE_CHECKER`, etc.
 
 ## Solutions (in order of preference)
 
@@ -121,15 +130,18 @@ The issue compounds:
 
 ## Recommendation
 
-**Use Option 1** (Minimize Header Exposure) combined with **Option 2** (Remove Problematic Includes).
+**Use Option 1** (Minimize Header Exposure) combined with **Option 2** (Remove
+Problematic Includes).
 
 ### Concrete Steps:
 1. Create wrapper functions in `vfu_compat_bridge.c`:
-   - `void* vfu_pvrdma_backend_create(const char *dev_name, const char *eth_dev, uint8_t port)`
+   - `void* vfu_pvrdma_backend_create(const char *dev_name, const char *eth_dev,
+   uint8_t port)`
    - `int vfu_pvrdma_dsr_load(void *pvrdma, dma_addr_t addr)`
    - `int vfu_pvrdma_cmd_exec(void *pvrdma)`
    
-2. Remove `#include "contrib/rdmacm-mux/rdmacm-mux.h"` from `rdma_backend_defs.h`
+2. Remove `#include "contrib/rdmacm-mux/rdmacm-mux.h"` from
+`rdma_backend_defs.h`
 
 3. Keep QEMU headers confined to QEMU `.c` files only
 
@@ -146,8 +158,10 @@ This gives us:
 Last build attempt showed:
 - `error: field 'qdev' has incomplete type` - DeviceState not fully defined
 - `error: redefinition of 'struct in6_addr'` - Header conflicts
-- `error: expected declaration specifiers before 'G_GNUC_PRINTF'` - GLib macro issues
-- `error: expected '...' before 'qapi_free_strList'` - Missing QAPI infrastructure
+- `error: expected declaration specifiers before 'G_GNUC_PRINTF'` - GLib macro
+issues
+- `error: expected '...' before 'qapi_free_strList'` - Missing QAPI
+infrastructure
 
 These are all solvable with Option 1+2 approach.
 
@@ -155,7 +169,8 @@ These are all solvable with Option 1+2 approach.
 
 1. `src/vfu_compat_bridge.h` - Add wrapper function declarations
 2. `src/vfu_compat_bridge.c` - Implement wrappers (includes QEMU headers)
-3. `src/vfu_pvrdma_internal.h` - Remove QEMU header includes, use opaque pointers
+3. `src/vfu_pvrdma_internal.h` - Remove QEMU header includes, use opaque
+pointers
 4. `src/vfu_pvrdma.c` - Use wrapper functions instead of direct QEMU calls
 5. `src/from-qemu/hw/rdma/rdma_backend_defs.h` - Comment out rdmacm-mux include
 
@@ -163,7 +178,11 @@ These are all solvable with Option 1+2 approach.
 
 ## Conclusion
 
-We have a clear path forward. The architecture is excellent. The design is sound. We just need to create a proper abstraction layer to hide QEMU's header complexity from our code.
+We have a clear path forward. The architecture is excellent. The design is
+sound. We just need to create a proper abstraction layer to hide QEMU's header
+complexity from our code.
 
-The stub headers we created are useful as a starting point and document what types QEMU code needs. With the wrapper approach, we'll need fewer stubs and have a cleaner result.
+The stub headers we created are useful as a starting point and document what
+types QEMU code needs. With the wrapper approach, we'll need fewer stubs and
+have a cleaner result.
 

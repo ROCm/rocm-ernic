@@ -2,7 +2,9 @@
 
 ## Summary
 
-Successfully implemented the wrapper function approach to isolate QEMU headers from our libvfio-user server code. The architecture is sound and ~90% complete. Build is blocked on remaining QEMU header stub requirements.
+Successfully implemented the wrapper function approach to isolate QEMU headers
+from our libvfio-user server code. The architecture is sound and ~90% complete.
+Build is blocked on remaining QEMU header stub requirements.
 
 ## What We Accomplished ✅
 
@@ -154,7 +156,9 @@ Current errors are all from QEMU header dependencies:
 
 ## Key Insight
 
-We're 90% there! The wrapper API works perfectly. We just need to finish isolating the QEMU sources from their deep dependencies. This is purely mechanical work now - no design decisions needed.
+We're 90% there! The wrapper API works perfectly. We just need to finish
+isolating the QEMU sources from their deep dependencies. This is purely
+mechanical work now - no design decisions needed.
 
 The hard architectural work is DONE. ✅
 
