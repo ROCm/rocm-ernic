@@ -13,4 +13,3 @@ typedef struct VMStateDescription {
 } VMStateDescription;
 
 #endif /* QEMU_HW_H */
-

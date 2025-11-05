@@ -17,8 +17,8 @@
 #ifndef RDMA_UTILS_H
 #define RDMA_UTILS_H
 
-#include <glib.h>  /* For GQueue, GSList */
-#include "qemu/thread.h"  /* For QemuMutex */
+#include <glib.h>        /* For GQueue, GSList */
+#include "qemu/thread.h" /* For QemuMutex */
 #include "qemu/error-report.h"
 #include "sysemu/dma.h"
 
@@ -26,19 +26,20 @@
 typedef struct PCIDevice PCIDevice;
 
 #define rdma_error_report(fmt, ...) \
-    error_report("%s: " fmt, "rdma", ## __VA_ARGS__)
+    error_report("%s: " fmt, "rdma", ##__VA_ARGS__)
 #define rdma_warn_report(fmt, ...) \
-    warn_report("%s: " fmt, "rdma", ## __VA_ARGS__)
+    warn_report("%s: " fmt, "rdma", ##__VA_ARGS__)
 #define rdma_info_report(fmt, ...) \
-    info_report("%s: " fmt, "rdma", ## __VA_ARGS__)
+    info_report("%s: " fmt, "rdma", ##__VA_ARGS__)
 
 /* Optional debug tracing - define RDMA_DEBUG to enable */
 #ifdef RDMA_DEBUG
 #define rdma_debug_report(fmt, ...) \
-    fprintf(stderr, "rdma-debug: " fmt "\n", ## __VA_ARGS__)
+    fprintf(stderr, "rdma-debug: " fmt "\n", ##__VA_ARGS__)
 #else
 #define rdma_debug_report(fmt, ...) \
-    do { } while (0)
+    do {                            \
+    } while (0)
 #endif
 
 typedef struct RdmaProtectedGQueue {

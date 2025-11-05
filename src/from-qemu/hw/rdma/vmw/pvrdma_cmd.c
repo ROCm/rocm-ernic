@@ -21,8 +21,8 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <inttypes.h>  /* For PRId64, PRIx64 */
-#include <sys/mman.h>  /* For mremap, MAP_FAILED, MREMAP_* */
+#include <inttypes.h> /* For PRId64, PRIx64 */
+#include <sys/mman.h> /* For mremap, MAP_FAILED, MREMAP_* */
 /* #include "cpu.h" - Not needed for PVRDMA */
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
@@ -95,8 +95,7 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
             }
         }
 
-        curr_page = rdma_pci_dma_map(pdev, (dma_addr_t)tbl[tbl_idx],
-                                     PAGE_SIZE);
+        curr_page = rdma_pci_dma_map(pdev, (dma_addr_t)tbl[tbl_idx], PAGE_SIZE);
         if (!curr_page) {
             rdma_error_report("Failed to map to page %d, dir %d", tbl_idx,
                               dir_idx);
@@ -150,8 +149,9 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
      * for pvrdma_port_state and pvrdma_mtu match those for
      * ibv_port_state and ibv_mtu, so we can cast them safely.
      */
-    resp->attrs.state = dev->func0->device_active ?
-        (enum pvrdma_port_state)attrs.state : PVRDMA_PORT_DOWN;
+    resp->attrs.state = dev->func0->device_active
+                            ? (enum pvrdma_port_state)attrs.state
+                            : PVRDMA_PORT_DOWN;
     resp->attrs.max_mtu = (enum pvrdma_mtu)attrs.max_mtu;
     resp->attrs.active_mtu = (enum pvrdma_mtu)attrs.active_mtu;
     resp->attrs.phys_state = attrs.phys_state;
@@ -246,7 +246,7 @@ static int destroy_mr(PVRDMADev *dev, union pvrdma_cmd_req *req,
     return 0;
 }
 
-static int create_cq_ring(PCIDevice *pci_dev , PvrdmaRing **ring,
+static int create_cq_ring(PCIDevice *pci_dev, PvrdmaRing **ring,
                           uint64_t pdir_dma, uint32_t nchunks, uint32_t cqe)
 {
     uint64_t *dir = NULL, *tbl = NULL;
@@ -282,8 +282,8 @@ static int create_cq_ring(PCIDevice *pci_dev , PvrdmaRing **ring,
     }
 
     sprintf(ring_name, "cq_ring_%" PRIx64, pdir_dma);
-    rc = pvrdma_ring_init(r, ring_name, pci_dev, &r->ring_state[1],
-                          cqe, sizeof(struct pvrdma_cqe),
+    rc = pvrdma_ring_init(r, ring_name, pci_dev, &r->ring_state[1], cqe,
+                          sizeof(struct pvrdma_cqe),
                           /* first page is ring state */
                           (dma_addr_t *)&tbl[1], nchunks - 1);
     if (rc) {
@@ -419,8 +419,8 @@ static int create_qp_rings(PCIDevice *pci_dev, uint64_t pdir_dma,
                       sizeof(struct pvrdma_sge) * smax_sge - 1);
 
     sprintf(ring_name, "qp_sring_%" PRIx64, pdir_dma);
-    rc = pvrdma_ring_init(sr, ring_name, pci_dev, sr->ring_state,
-                          scqe, wqe_sz, (dma_addr_t *)&tbl[1], spages);
+    rc = pvrdma_ring_init(sr, ring_name, pci_dev, sr->ring_state, scqe, wqe_sz,
+                          (dma_addr_t *)&tbl[1], spages);
     if (rc) {
         goto out_unmap_ring_state;
     }
@@ -431,9 +431,8 @@ static int create_qp_rings(PCIDevice *pci_dev, uint64_t pdir_dma,
         wqe_sz = pow2ceil(sizeof(struct pvrdma_rq_wqe_hdr) +
                           sizeof(struct pvrdma_sge) * rmax_sge - 1);
         sprintf(ring_name, "qp_rring_%" PRIx64, pdir_dma);
-        rc = pvrdma_ring_init(rr, ring_name, pci_dev, rr->ring_state,
-                              rcqe, wqe_sz, (dma_addr_t *)&tbl[1 + spages],
-                              rpages);
+        rc = pvrdma_ring_init(rr, ring_name, pci_dev, rr->ring_state, rcqe,
+                              wqe_sz, (dma_addr_t *)&tbl[1 + spages], rpages);
         if (rc) {
             goto out_free_sr;
         }
@@ -512,18 +511,16 @@ static int modify_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
 
     /* No need to verify sgid_index since it is u8 */
 
-    return rdma_rm_modify_qp(&dev->rdma_dev_res, &dev->backend_dev,
-                             cmd->qp_handle, cmd->attr_mask,
-                             cmd->attrs.ah_attr.grh.sgid_index,
-                             (union ibv_gid *)&cmd->attrs.ah_attr.grh.dgid,
-                             cmd->attrs.dest_qp_num,
-                             (enum ibv_qp_state)cmd->attrs.qp_state,
-                             cmd->attrs.qkey, cmd->attrs.rq_psn,
-                             cmd->attrs.sq_psn);
+    return rdma_rm_modify_qp(
+        &dev->rdma_dev_res, &dev->backend_dev, cmd->qp_handle, cmd->attr_mask,
+        cmd->attrs.ah_attr.grh.sgid_index,
+        (union ibv_gid *)&cmd->attrs.ah_attr.grh.dgid, cmd->attrs.dest_qp_num,
+        (enum ibv_qp_state)cmd->attrs.qp_state, cmd->attrs.qkey,
+        cmd->attrs.rq_psn, cmd->attrs.sq_psn);
 }
 
 static int query_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
-                     union pvrdma_cmd_resp *rsp)
+                    union pvrdma_cmd_resp *rsp)
 {
     struct pvrdma_cmd_query_qp *cmd = &req->query_qp;
     struct pvrdma_cmd_query_qp_resp *resp = &rsp->query_qp_resp;
@@ -532,10 +529,8 @@ static int query_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
     memset(resp, 0, sizeof(*resp));
 
     return rdma_rm_query_qp(&dev->rdma_dev_res, &dev->backend_dev,
-                            cmd->qp_handle,
-                            (struct ibv_qp_attr *)&resp->attrs,
-                            cmd->attr_mask,
-                            &init_attr);
+                            cmd->qp_handle, (struct ibv_qp_attr *)&resp->attrs,
+                            cmd->attr_mask, &init_attr);
 }
 
 static int destroy_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
@@ -605,8 +600,8 @@ static int destroy_uc(PVRDMADev *dev, union pvrdma_cmd_req *req,
 }
 
 static int create_srq_ring(PCIDevice *pci_dev, PvrdmaRing **ring,
-                           uint64_t pdir_dma, uint32_t max_wr,
-                           uint32_t max_sge, uint32_t nchunks)
+                           uint64_t pdir_dma, uint32_t max_wr, uint32_t max_sge,
+                           uint32_t nchunks)
 {
     uint64_t *dir = NULL, *tbl = NULL;
     PvrdmaRing *r;
@@ -615,8 +610,7 @@ static int create_srq_ring(PCIDevice *pci_dev, PvrdmaRing **ring,
     uint32_t wqe_sz;
 
     if (!nchunks || nchunks > PVRDMA_MAX_FAST_REG_PAGES) {
-        rdma_error_report("Got invalid page count for SRQ ring: %d",
-                          nchunks);
+        rdma_error_report("Got invalid page count for SRQ ring: %d", nchunks);
         return rc;
     }
 
@@ -683,8 +677,7 @@ static int create_srq(PVRDMADev *dev, union pvrdma_cmd_req *req,
     memset(resp, 0, sizeof(*resp));
 
     rc = create_srq_ring(PCI_DEVICE(dev), &ring, cmd->pdir_dma,
-                         cmd->attrs.max_wr, cmd->attrs.max_sge,
-                         cmd->nchunks);
+                         cmd->attrs.max_wr, cmd->attrs.max_sge, cmd->nchunks);
     if (rc) {
         return rc;
     }
@@ -718,9 +711,8 @@ static int modify_srq(PVRDMADev *dev, union pvrdma_cmd_req *req,
     struct pvrdma_cmd_modify_srq *cmd = &req->modify_srq;
 
     /* Only support SRQ limit */
-    if (!(cmd->attr_mask & IBV_SRQ_LIMIT) ||
-        (cmd->attr_mask & IBV_SRQ_MAX_WR))
-            return -EINVAL;
+    if (!(cmd->attr_mask & IBV_SRQ_LIMIT) || (cmd->attr_mask & IBV_SRQ_MAX_WR))
+        return -EINVAL;
 
     return rdma_rm_modify_srq(&dev->rdma_dev_res, cmd->srq_handle,
                               (struct ibv_srq_attr *)&cmd->attrs,
@@ -750,31 +742,31 @@ struct cmd_handler {
     uint32_t cmd;
     uint32_t ack;
     int (*exec)(PVRDMADev *dev, union pvrdma_cmd_req *req,
-            union pvrdma_cmd_resp *rsp);
+                union pvrdma_cmd_resp *rsp);
 };
 
 static struct cmd_handler cmd_handlers[] = {
-    {PVRDMA_CMD_QUERY_PORT,   PVRDMA_CMD_QUERY_PORT_RESP,        query_port},
-    {PVRDMA_CMD_QUERY_PKEY,   PVRDMA_CMD_QUERY_PKEY_RESP,        query_pkey},
-    {PVRDMA_CMD_CREATE_PD,    PVRDMA_CMD_CREATE_PD_RESP,         create_pd},
-    {PVRDMA_CMD_DESTROY_PD,   PVRDMA_CMD_DESTROY_PD_RESP_NOOP,   destroy_pd},
-    {PVRDMA_CMD_CREATE_MR,    PVRDMA_CMD_CREATE_MR_RESP,         create_mr},
-    {PVRDMA_CMD_DESTROY_MR,   PVRDMA_CMD_DESTROY_MR_RESP_NOOP,   destroy_mr},
-    {PVRDMA_CMD_CREATE_CQ,    PVRDMA_CMD_CREATE_CQ_RESP,         create_cq},
-    {PVRDMA_CMD_RESIZE_CQ,    PVRDMA_CMD_RESIZE_CQ_RESP,         NULL},
-    {PVRDMA_CMD_DESTROY_CQ,   PVRDMA_CMD_DESTROY_CQ_RESP_NOOP,   destroy_cq},
-    {PVRDMA_CMD_CREATE_QP,    PVRDMA_CMD_CREATE_QP_RESP,         create_qp},
-    {PVRDMA_CMD_MODIFY_QP,    PVRDMA_CMD_MODIFY_QP_RESP,         modify_qp},
-    {PVRDMA_CMD_QUERY_QP,     PVRDMA_CMD_QUERY_QP_RESP,          query_qp},
-    {PVRDMA_CMD_DESTROY_QP,   PVRDMA_CMD_DESTROY_QP_RESP,        destroy_qp},
-    {PVRDMA_CMD_CREATE_UC,    PVRDMA_CMD_CREATE_UC_RESP,         create_uc},
-    {PVRDMA_CMD_DESTROY_UC,   PVRDMA_CMD_DESTROY_UC_RESP_NOOP,   destroy_uc},
-    {PVRDMA_CMD_CREATE_BIND,  PVRDMA_CMD_CREATE_BIND_RESP_NOOP,  create_bind},
+    {PVRDMA_CMD_QUERY_PORT, PVRDMA_CMD_QUERY_PORT_RESP, query_port},
+    {PVRDMA_CMD_QUERY_PKEY, PVRDMA_CMD_QUERY_PKEY_RESP, query_pkey},
+    {PVRDMA_CMD_CREATE_PD, PVRDMA_CMD_CREATE_PD_RESP, create_pd},
+    {PVRDMA_CMD_DESTROY_PD, PVRDMA_CMD_DESTROY_PD_RESP_NOOP, destroy_pd},
+    {PVRDMA_CMD_CREATE_MR, PVRDMA_CMD_CREATE_MR_RESP, create_mr},
+    {PVRDMA_CMD_DESTROY_MR, PVRDMA_CMD_DESTROY_MR_RESP_NOOP, destroy_mr},
+    {PVRDMA_CMD_CREATE_CQ, PVRDMA_CMD_CREATE_CQ_RESP, create_cq},
+    {PVRDMA_CMD_RESIZE_CQ, PVRDMA_CMD_RESIZE_CQ_RESP, NULL},
+    {PVRDMA_CMD_DESTROY_CQ, PVRDMA_CMD_DESTROY_CQ_RESP_NOOP, destroy_cq},
+    {PVRDMA_CMD_CREATE_QP, PVRDMA_CMD_CREATE_QP_RESP, create_qp},
+    {PVRDMA_CMD_MODIFY_QP, PVRDMA_CMD_MODIFY_QP_RESP, modify_qp},
+    {PVRDMA_CMD_QUERY_QP, PVRDMA_CMD_QUERY_QP_RESP, query_qp},
+    {PVRDMA_CMD_DESTROY_QP, PVRDMA_CMD_DESTROY_QP_RESP, destroy_qp},
+    {PVRDMA_CMD_CREATE_UC, PVRDMA_CMD_CREATE_UC_RESP, create_uc},
+    {PVRDMA_CMD_DESTROY_UC, PVRDMA_CMD_DESTROY_UC_RESP_NOOP, destroy_uc},
+    {PVRDMA_CMD_CREATE_BIND, PVRDMA_CMD_CREATE_BIND_RESP_NOOP, create_bind},
     {PVRDMA_CMD_DESTROY_BIND, PVRDMA_CMD_DESTROY_BIND_RESP_NOOP, destroy_bind},
-    {PVRDMA_CMD_CREATE_SRQ,   PVRDMA_CMD_CREATE_SRQ_RESP,        create_srq},
-    {PVRDMA_CMD_QUERY_SRQ,    PVRDMA_CMD_QUERY_SRQ_RESP,         query_srq},
-    {PVRDMA_CMD_MODIFY_SRQ,   PVRDMA_CMD_MODIFY_SRQ_RESP,        modify_srq},
-    {PVRDMA_CMD_DESTROY_SRQ,  PVRDMA_CMD_DESTROY_SRQ_RESP,       destroy_srq},
+    {PVRDMA_CMD_CREATE_SRQ, PVRDMA_CMD_CREATE_SRQ_RESP, create_srq},
+    {PVRDMA_CMD_QUERY_SRQ, PVRDMA_CMD_QUERY_SRQ_RESP, query_srq},
+    {PVRDMA_CMD_MODIFY_SRQ, PVRDMA_CMD_MODIFY_SRQ_RESP, modify_srq},
+    {PVRDMA_CMD_DESTROY_SRQ, PVRDMA_CMD_DESTROY_SRQ_RESP, destroy_srq},
 };
 
 int pvrdma_exec_cmd(PVRDMADev *dev)
@@ -785,13 +777,13 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     dsr_info = &dev->dsr_info;
 
     if (!dsr_info->dsr) {
-            /* Buggy or malicious guest driver */
-            rdma_error_report("Exec command without dsr, req or rsp buffers");
-            goto out;
+        /* Buggy or malicious guest driver */
+        rdma_error_report("Exec command without dsr, req or rsp buffers");
+        goto out;
     }
 
-    if (dsr_info->req->hdr.cmd >= sizeof(cmd_handlers) /
-                      sizeof(struct cmd_handler)) {
+    if (dsr_info->req->hdr.cmd >=
+        sizeof(cmd_handlers) / sizeof(struct cmd_handler)) {
         rdma_error_report("Unsupported command");
         goto out;
     }

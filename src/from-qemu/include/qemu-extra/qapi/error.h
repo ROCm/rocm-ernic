@@ -26,7 +26,8 @@ static inline void error_setg(Error **errp, const char *fmt, ...)
     (void)fmt;
 }
 
-static inline void error_setg_errno(Error **errp, int os_errno, const char *fmt, ...)
+static inline void error_setg_errno(Error **errp, int os_errno, const char *fmt,
+                                    ...)
 {
     (void)errp;
     (void)os_errno;
@@ -41,4 +42,3 @@ static inline void error_propagate(Error **dst_errp, Error *local_err)
 }
 
 #endif /* QAPI_ERROR_H */
-

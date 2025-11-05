@@ -17,7 +17,8 @@ struct Object {
 typedef int (*ObjectIterator)(Object *obj, void *opaque);
 
 /* Stub function - not actually called in standalone */
-static inline int object_child_foreach(Object *obj, ObjectIterator it, void *opaque)
+static inline int object_child_foreach(Object *obj, ObjectIterator it,
+                                       void *opaque)
 {
     (void)obj;
     (void)it;
@@ -26,4 +27,3 @@ static inline int object_child_foreach(Object *obj, ObjectIterator it, void *opa
 }
 
 #endif /* QOM_OBJECT_H */
-

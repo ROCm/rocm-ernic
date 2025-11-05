@@ -33,30 +33,30 @@
 #define PAGE_SIZE 4096
 
 /* BARs */
-#define RDMA_MSIX_BAR_IDX    0
-#define RDMA_REG_BAR_IDX     1
-#define RDMA_UAR_BAR_IDX     2
-#define RDMA_BAR0_MSIX_SIZE  (16 * KiB)
-#define RDMA_BAR1_REGS_SIZE  64
-#define RDMA_BAR2_UAR_SIZE   (0x1000 * MAX_UCS) /* each uc gets page */
+#define RDMA_MSIX_BAR_IDX   0
+#define RDMA_REG_BAR_IDX    1
+#define RDMA_UAR_BAR_IDX    2
+#define RDMA_BAR0_MSIX_SIZE (16 * KiB)
+#define RDMA_BAR1_REGS_SIZE 64
+#define RDMA_BAR2_UAR_SIZE  (0x1000 * MAX_UCS) /* each uc gets page */
 
 /* MSIX */
-#define RDMA_MAX_INTRS       3
-#define RDMA_MSIX_TABLE      0x0000
-#define RDMA_MSIX_PBA        0x2000
+#define RDMA_MAX_INTRS  3
+#define RDMA_MSIX_TABLE 0x0000
+#define RDMA_MSIX_PBA   0x2000
 
 /* Interrupts Vectors */
-#define INTR_VEC_CMD_RING            0
-#define INTR_VEC_CMD_ASYNC_EVENTS    1
-#define INTR_VEC_CMD_COMPLETION_Q    2
+#define INTR_VEC_CMD_RING         0
+#define INTR_VEC_CMD_ASYNC_EVENTS 1
+#define INTR_VEC_CMD_COMPLETION_Q 2
 
 /* HW attributes */
-#define PVRDMA_HW_NAME       "pvrdma"
-#define PVRDMA_HW_VERSION    17
-#define PVRDMA_FW_VERSION    14
+#define PVRDMA_HW_NAME    "pvrdma"
+#define PVRDMA_HW_VERSION 17
+#define PVRDMA_FW_VERSION 14
 
 /* Some defaults */
-#define PVRDMA_PKEY          0xFFFF
+#define PVRDMA_PKEY 0xFFFF
 
 typedef struct DSRInfo {
     dma_addr_t dma;
@@ -102,8 +102,7 @@ struct PVRDMADev {
     PVRDMADevStats stats;
 };
 typedef struct PVRDMADev PVRDMADev;
-DECLARE_INSTANCE_CHECKER(PVRDMADev, PVRDMA_DEV,
-                         PVRDMA_HW_NAME)
+DECLARE_INSTANCE_CHECKER(PVRDMADev, PVRDMA_DEV, PVRDMA_HW_NAME)
 
 static inline int get_reg_val(PVRDMADev *dev, hwaddr addr, uint32_t *val)
 {
@@ -131,14 +130,17 @@ static inline int set_reg_val(PVRDMADev *dev, hwaddr addr, uint32_t val)
     return 0;
 }
 
-/* post_interrupt and pvrdma_exec_cmd are implemented in vfu_compat_bridge.c for standalone mode */
+/* post_interrupt and pvrdma_exec_cmd are implemented in vfu_compat_bridge.c for
+ * standalone mode */
 void post_interrupt(PVRDMADev *dev, unsigned vector);
 int pvrdma_exec_cmd(PVRDMADev *dev);
 
 /* Register/UAR handlers - implementations in pvrdma_main.c */
 uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size);
-void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
+                            unsigned size);
 uint64_t pvrdma_uar_read_impl(void *opaque, hwaddr addr, unsigned size);
-void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
+                           unsigned size);
 
 #endif

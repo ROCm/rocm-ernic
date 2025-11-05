@@ -11,8 +11,7 @@
 #define GiB (1024ULL * MiB)
 
 /* Time scale conversions */
-#define SCALE_MS 1000000ULL    /* milliseconds to nanoseconds */
-#define SCALE_US 1000ULL        /* microseconds to nanoseconds */
+#define SCALE_MS 1000000ULL /* milliseconds to nanoseconds */
+#define SCALE_US 1000ULL    /* microseconds to nanoseconds */
 
 #endif /* QEMU_UNITS_H */
-

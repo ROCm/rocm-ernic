@@ -1,6 +1,6 @@
 /*
  * QEMU Utility Function Stubs for Standalone PVRDMA Device
- * 
+ *
  * This file provides minimal stub implementations of QEMU utility functions
  * needed by the PVRDMA device code. These stubs allow the QEMU PVRDMA code
  * to link and run in a standalone libvfio-user environment.
@@ -17,7 +17,7 @@
 #include <endian.h>
 #include <errno.h>
 
-/* 
+/*
  * Atomic Operations
  * For standalone mode, we use simple non-atomic operations since we're
  * single-threaded in the device logic.
@@ -70,8 +70,7 @@ typedef struct QemuCond {
 } QemuCond;
 
 int qemu_thread_create(QemuThread *thread, const char *name,
-                       void *(*start_routine)(void *), void *arg,
-                       int mode)
+                       void *(*start_routine)(void *), void *arg, int mode)
 {
     (void)name;
     (void)mode;
@@ -237,16 +236,21 @@ typedef struct CharBackend CharBackend;
 bool qemu_chr_fe_backend_connected(CharBackend *be)
 {
     (void)be;
-    return false;  /* No character backend in standalone mode */
+    return false; /* No character backend in standalone mode */
 }
 
-int qemu_chr_fe_set_handlers(CharBackend *be, void *fd_can_read,
-                              void *fd_read, void *fd_event,
-                              void *be_change, void *opaque,
-                              void *context, bool sync_state)
+int qemu_chr_fe_set_handlers(CharBackend *be, void *fd_can_read, void *fd_read,
+                             void *fd_event, void *be_change, void *opaque,
+                             void *context, bool sync_state)
 {
-    (void)be; (void)fd_can_read; (void)fd_read; (void)fd_event;
-    (void)be_change; (void)opaque; (void)context; (void)sync_state;
+    (void)be;
+    (void)fd_can_read;
+    (void)fd_read;
+    (void)fd_event;
+    (void)be_change;
+    (void)opaque;
+    (void)context;
+    (void)sync_state;
     return 0;
 }
 
@@ -257,14 +261,18 @@ void qemu_chr_fe_disconnect(CharBackend *be)
 
 int qemu_chr_fe_read_all(CharBackend *be, uint8_t *buf, int len)
 {
-    (void)be; (void)buf; (void)len;
-    return -ENOTSUP;  /* No character backend in standalone mode */
+    (void)be;
+    (void)buf;
+    (void)len;
+    return -ENOTSUP; /* No character backend in standalone mode */
 }
 
 int qemu_chr_fe_write(CharBackend *be, const uint8_t *buf, int len)
 {
-    (void)be; (void)buf; (void)len;
-    return -ENOTSUP;  /* No character backend in standalone mode */
+    (void)be;
+    (void)buf;
+    (void)len;
+    return -ENOTSUP; /* No character backend in standalone mode */
 }
 
 /*
@@ -272,12 +280,14 @@ int qemu_chr_fe_write(CharBackend *be, const uint8_t *buf, int len)
  */
 
 void qapi_event_send_rdma_gid_status_changed(const char *netdev,
-                                              bool gid_status_changed,
-                                              uint64_t subnet_prefix,
-                                              uint64_t interface_id)
+                                             bool gid_status_changed,
+                                             uint64_t subnet_prefix,
+                                             uint64_t interface_id)
 {
-    (void)netdev; (void)gid_status_changed;
-    (void)subnet_prefix; (void)interface_id;
+    (void)netdev;
+    (void)gid_status_changed;
+    (void)subnet_prefix;
+    (void)interface_id;
     /* No-op in standalone mode */
 }
 
@@ -298,11 +308,13 @@ void rdma_backend_destroy(void *backend_dev)
 
 /*
  * DMA Mapping Wrappers
- * These forward to pci_dma_map/unmap which are implemented in vfu_compat_bridge.c
+ * These forward to pci_dma_map/unmap which are implemented in
+ * vfu_compat_bridge.c
  */
 
 extern void *pci_dma_map(void *dev, uint64_t addr, uint64_t *plen, int dir);
-extern void pci_dma_unmap(void *dev, void *buffer, uint64_t len, int dir, uint64_t access_len);
+extern void pci_dma_unmap(void *dev, void *buffer, uint64_t len, int dir,
+                          uint64_t access_len);
 
 void *rdma_pci_dma_map(void *dev, uint64_t addr, uint64_t len)
 {
@@ -314,4 +326,3 @@ void rdma_pci_dma_unmap(void *dev, void *buffer, uint64_t len)
 {
     pci_dma_unmap(dev, buffer, len, 0, len);
 }
-

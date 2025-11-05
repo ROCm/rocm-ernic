@@ -26,4 +26,3 @@ typedef struct DeviceClass DeviceClass;
 #define DEVICE(obj) ((DeviceState *)(obj))
 
 #endif /* QEMU_QDEV_CORE_H */
-

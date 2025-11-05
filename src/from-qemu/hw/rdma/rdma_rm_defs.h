@@ -16,30 +16,30 @@
 #ifndef RDMA_RM_DEFS_H
 #define RDMA_RM_DEFS_H
 
-#include <glib.h>  /* For GHashTable */
+#include <glib.h> /* For GHashTable */
 #include "rdma_backend_defs.h"
 
 #define PAGE_SIZE 4096
 
-#define MAX_PORTS             1 /* Do not change - we support only one port */
-#define MAX_PORT_GIDS         255
-#define MAX_GIDS              MAX_PORT_GIDS
-#define MAX_PORT_PKEYS        1
-#define MAX_PKEYS             MAX_PORT_PKEYS
-#define MAX_UCS               512
-#define MAX_MR_SIZE           (1UL << 27)
-#define MAX_QP                1024
-#define MAX_SGE               4
-#define MAX_CQ                2048
-#define MAX_MR                1024
-#define MAX_PD                1024
-#define MAX_QP_RD_ATOM        16
-#define MAX_QP_INIT_RD_ATOM   16
-#define MAX_AH                64
-#define MAX_SRQ               512
+#define MAX_PORTS           1 /* Do not change - we support only one port */
+#define MAX_PORT_GIDS       255
+#define MAX_GIDS            MAX_PORT_GIDS
+#define MAX_PORT_PKEYS      1
+#define MAX_PKEYS           MAX_PORT_PKEYS
+#define MAX_UCS             512
+#define MAX_MR_SIZE         (1UL << 27)
+#define MAX_QP              1024
+#define MAX_SGE             4
+#define MAX_CQ              2048
+#define MAX_MR              1024
+#define MAX_PD              1024
+#define MAX_QP_RD_ATOM      16
+#define MAX_QP_INIT_RD_ATOM 16
+#define MAX_AH              64
+#define MAX_SRQ             512
 
-#define MAX_RM_TBL_NAME             16
-#define MAX_CONSEQ_EMPTY_POLL_CQ    4096 /* considered as error above this */
+#define MAX_RM_TBL_NAME          16
+#define MAX_CONSEQ_EMPTY_POLL_CQ 4096 /* considered as error above this */
 
 typedef struct RdmaRmResTbl {
     char name[MAX_RM_TBL_NAME];

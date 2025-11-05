@@ -15,4 +15,3 @@ int test_bit(int nr, const unsigned long *addr);
 int find_first_zero_bit(const unsigned long *addr, unsigned long size);
 
 #endif /* QEMU_BITMAP_H */
-

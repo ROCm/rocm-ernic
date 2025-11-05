@@ -84,8 +84,7 @@ void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
     const uint32_t head = qatomic_read(&ring->ring_state->cons_head);
 
     if (tail & ~((ring->max_elems << 1) - 1) ||
-        head & ~((ring->max_elems << 1) - 1) ||
-        tail == head) {
+        head & ~((ring->max_elems << 1) - 1) || tail == head) {
         return NULL;
     }
 
@@ -139,8 +138,7 @@ void pvrdma_ring_free(PvrdmaRing *ring)
     }
 
     while (ring->npages--) {
-        rdma_pci_dma_unmap(ring->dev, ring->pages[ring->npages],
-                           PAGE_SIZE);
+        rdma_pci_dma_unmap(ring->dev, ring->pages[ring->npages], PAGE_SIZE);
     }
 
     g_free(ring->pages);

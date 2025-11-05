@@ -16,4 +16,3 @@ uint64_t BIT(int n);
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #endif /* QEMU_CUTILS_H */
-

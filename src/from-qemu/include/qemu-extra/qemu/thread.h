@@ -40,7 +40,8 @@ typedef struct QemuThread {
 /* Function pointers for mutex operations */
 typedef void (*QemuMutexLockFunc)(QemuMutex *m, const char *f, int l);
 typedef int (*QemuMutexTrylockFunc)(QemuMutex *m, const char *f, int l);
-typedef void (*QemuCondWaitFunc)(QemuCond *c, QemuMutex *m, const char *f, int l);
+typedef void (*QemuCondWaitFunc)(QemuCond *c, QemuMutex *m, const char *f,
+                                 int l);
 typedef bool (*QemuCondTimedWaitFunc)(QemuCond *c, QemuMutex *m, int ms,
                                       const char *f, int l);
 
@@ -59,40 +60,46 @@ static inline void qemu_mutex_destroy(QemuMutex *mutex)
     }
 }
 
-static inline void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, int line)
+static inline void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file,
+                                        int line)
 {
-    (void)file; (void)line;
+    (void)file;
+    (void)line;
     pthread_mutex_lock(&mutex->lock);
 }
 
-static inline int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, int line)
+static inline int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file,
+                                          int line)
 {
-    (void)file; (void)line;
+    (void)file;
+    (void)line;
     return pthread_mutex_trylock(&mutex->lock);
 }
 
-static inline void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, int line)
+static inline void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file,
+                                          int line)
 {
-    (void)file; (void)line;
+    (void)file;
+    (void)line;
     pthread_mutex_unlock(&mutex->lock);
 }
 
 /* Thread creation flags */
-#define QEMU_THREAD_JOINABLE  0
-#define QEMU_THREAD_DETACHED  1
+#define QEMU_THREAD_JOINABLE 0
+#define QEMU_THREAD_DETACHED 1
 
 /* Lock guard helper macro - simplified */
-#define WITH_QEMU_LOCK_GUARD(lock) \
-    for (int _guard = (qemu_mutex_lock(lock), 1); _guard; _guard = 0, qemu_mutex_unlock(lock))
+#define WITH_QEMU_LOCK_GUARD(lock)                        \
+    for (int _guard = (qemu_mutex_lock(lock), 1); _guard; \
+         _guard = 0, qemu_mutex_unlock(lock))
 
 /* Simplified macros without file/line tracking */
-#define qemu_mutex_lock(m) qemu_mutex_lock_impl(m, __FILE__, __LINE__)
+#define qemu_mutex_lock(m)    qemu_mutex_lock_impl(m, __FILE__, __LINE__)
 #define qemu_mutex_trylock(m) qemu_mutex_trylock_impl(m, __FILE__, __LINE__)
-#define qemu_mutex_unlock(m) qemu_mutex_unlock_impl(m, __FILE__, __LINE__)
+#define qemu_mutex_unlock(m)  qemu_mutex_unlock_impl(m, __FILE__, __LINE__)
 
 /* QEMU_LOCK_GUARD - automatic lock/unlock using C99 for-loop scope */
-#define QEMU_LOCK_GUARD(lock) \
-    WITH_QEMU_LOCK_GUARD(lock)
+#define QEMU_LOCK_GUARD(lock) WITH_QEMU_LOCK_GUARD(lock)
 
 /* Thread creation and management */
 int qemu_thread_create(QemuThread *thread, const char *name,
@@ -121,9 +128,10 @@ static inline void qemu_cond_broadcast(QemuCond *cond)
 }
 
 static inline void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex,
-                                      const char *file, int line)
+                                       const char *file, int line)
 {
-    (void)file; (void)line;
+    (void)file;
+    (void)line;
     pthread_cond_wait(&cond->cond, &mutex->lock);
 }
 
@@ -135,4 +143,3 @@ static inline void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex,
 #define TSA_REQUIRES(x)
 
 #endif /* QEMU_THREAD_H */
-

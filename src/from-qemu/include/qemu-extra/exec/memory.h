@@ -58,7 +58,7 @@ typedef struct MemoryRegionOps MemoryRegionOps;
 
 /* MemoryRegion initialization - no-ops */
 static inline void memory_region_init(MemoryRegion *mr, void *owner,
-                                     const char *name, uint64_t size)
+                                      const char *name, uint64_t size)
 {
     (void)owner;
     if (mr) {
@@ -68,24 +68,29 @@ static inline void memory_region_init(MemoryRegion *mr, void *owner,
 }
 
 static inline void memory_region_init_io(MemoryRegion *mr, void *owner,
-                                        const MemoryRegionOps *ops, void *opaque,
-                                        const char *name, uint64_t size)
+                                         const MemoryRegionOps *ops,
+                                         void *opaque, const char *name,
+                                         uint64_t size)
 {
-    (void)ops; (void)opaque;
+    (void)ops;
+    (void)opaque;
     memory_region_init(mr, owner, name, size);
 }
 
 /* Memory region operations - stubbed */
 static inline void memory_region_add_subregion(MemoryRegion *mr, hwaddr offset,
-                                              MemoryRegion *subregion)
+                                               MemoryRegion *subregion)
 {
-    (void)mr; (void)offset; (void)subregion;
+    (void)mr;
+    (void)offset;
+    (void)subregion;
 }
 
 static inline void memory_region_del_subregion(MemoryRegion *mr,
-                                              MemoryRegion *subregion)
+                                               MemoryRegion *subregion)
 {
-    (void)mr; (void)subregion;
+    (void)mr;
+    (void)subregion;
 }
 
 /* DMA types */
@@ -126,4 +131,3 @@ struct QEMUSGList {
 typedef struct QEMUSGList QEMUSGList;
 
 #endif /* QEMU_MEMORY_H */
-

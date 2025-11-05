@@ -79,9 +79,8 @@ static void pvrdma_format_statistics(RdmaProvider *obj, GString *buf)
     PVRDMADev *dev = PVRDMA_DEV(obj);
     PCIDevice *pdev = PCI_DEVICE(dev);
 
-    g_string_append_printf(buf, "%s, %x.%x\n",
-                           pdev->name, PCI_SLOT(pdev->devfn),
-                           PCI_FUNC(pdev->devfn));
+    g_string_append_printf(buf, "%s, %x.%x\n", pdev->name,
+                           PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
     g_string_append_printf(buf, "\tcommands         : %" PRId64 "\n",
                            dev->stats.commands);
     g_string_append_printf(buf, "\tregs_reads       : %" PRId64 "\n",
@@ -121,8 +120,9 @@ static int init_dev_ring(PvrdmaRing *ring, PvrdmaRingState **ring_state,
      */
     max_pages = PAGE_SIZE / sizeof(dma_addr_t) - 1;
     if (num_pages > max_pages) {
-        rdma_error_report("Maximum pages on a single directory must not exceed %d\n",
-                          max_pages);
+        rdma_error_report(
+            "Maximum pages on a single directory must not exceed %d\n",
+            max_pages);
         return -EINVAL;
     }
 
@@ -149,12 +149,11 @@ static int init_dev_ring(PvrdmaRing *ring, PvrdmaRingState **ring_state,
     }
     /* RX ring is the second */
     (*ring_state)++;
-    rc = pvrdma_ring_init(ring, name, pci_dev,
-                          (PvrdmaRingState *)*ring_state,
+    rc = pvrdma_ring_init(ring, name, pci_dev, (PvrdmaRingState *)*ring_state,
                           (num_pages - 1) * PAGE_SIZE /
-                          sizeof(struct pvrdma_cqne),
-                          sizeof(struct pvrdma_cqne),
-                          (dma_addr_t *)&tbl[1], (dma_addr_t)num_pages - 1);
+                              sizeof(struct pvrdma_cqne),
+                          sizeof(struct pvrdma_cqne), (dma_addr_t *)&tbl[1],
+                          (dma_addr_t)num_pages - 1);
     if (rc) {
         rc = -ENOMEM;
         goto out_free_ring_state;
@@ -210,8 +209,8 @@ static int load_dsr(PVRDMADev *dev)
     free_dsr(dev);
 
     /* Map to DSR */
-    dev->dsr_info.dsr = rdma_pci_dma_map(pci_dev, dev->dsr_info.dma,
-                              sizeof(struct pvrdma_device_shared_region));
+    dev->dsr_info.dsr = rdma_pci_dma_map(
+        pci_dev, dev->dsr_info.dma, sizeof(struct pvrdma_device_shared_region));
     if (!dev->dsr_info.dsr) {
         rdma_error_report("Failed to map to DSR");
         rc = -ENOMEM;
@@ -414,14 +413,15 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
 
 /* Implementation function - called from bridge wrapper */
 void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
-                             unsigned size)
+                            unsigned size)
 {
     PVRDMADev *dev = opaque;
 
     dev->stats.regs_writes++;
 
     if (set_reg_val(dev, addr, val)) {
-        rdma_error_report("Failed to set REG value, addr=0x%"PRIx64 ", val=0x%"PRIx64,
+        rdma_error_report("Failed to set REG value, addr=0x%" PRIx64
+                          ", val=0x%" PRIx64,
                           addr, val);
         return;
     }
@@ -465,10 +465,11 @@ static const MemoryRegionOps regs_ops = {
     .read = pvrdma_regs_read_impl,
     .write = pvrdma_regs_write_impl,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .impl = {
-        .min_access_size = sizeof(uint32_t),
-        .max_access_size = sizeof(uint32_t),
-    },
+    .impl =
+        {
+            .min_access_size = sizeof(uint32_t),
+            .max_access_size = sizeof(uint32_t),
+        },
 };
 
 /* Implementation function - called from bridge wrapper */
@@ -479,7 +480,7 @@ uint64_t pvrdma_uar_read_impl(void *opaque, hwaddr addr, unsigned size)
 
 /* Implementation function - called from bridge wrapper */
 void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
-                            unsigned size)
+                           unsigned size)
 {
     PVRDMADev *dev = opaque;
 
@@ -513,7 +514,8 @@ void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
     default:
-        rdma_error_report("Unsupported command, addr=0x%"PRIx64", val=0x%"PRIx64,
+        rdma_error_report("Unsupported command, addr=0x%" PRIx64
+                          ", val=0x%" PRIx64,
                           addr, val);
         break;
     }
@@ -523,10 +525,11 @@ static const MemoryRegionOps uar_ops = {
     .read = pvrdma_uar_read_impl,
     .write = pvrdma_uar_write_impl,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .impl = {
-        .min_access_size = sizeof(uint32_t),
-        .max_access_size = sizeof(uint32_t),
-    },
+    .impl =
+        {
+            .min_access_size = sizeof(uint32_t),
+            .max_access_size = sizeof(uint32_t),
+        },
 };
 
 static void init_pci_config(PCIDevice *pdev)
@@ -569,23 +572,24 @@ static void init_regs(PCIDevice *pdev)
 
 static void init_dev_caps(PVRDMADev *dev)
 {
-    size_t pg_tbl_bytes = PAGE_SIZE *
-                          (PAGE_SIZE / sizeof(uint64_t));
-    size_t wr_sz = MAX(sizeof(struct pvrdma_sq_wqe_hdr),
-                       sizeof(struct pvrdma_rq_wqe_hdr));
+    size_t pg_tbl_bytes = PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
+    size_t wr_sz =
+        MAX(sizeof(struct pvrdma_sq_wqe_hdr), sizeof(struct pvrdma_rq_wqe_hdr));
 
-    dev->dev_attr.max_qp_wr = pg_tbl_bytes /
-                              (wr_sz + sizeof(struct pvrdma_sge) *
-                              dev->dev_attr.max_sge) - PAGE_SIZE;
-                              /* First page is ring state  ^^^^ */
+    dev->dev_attr.max_qp_wr =
+        pg_tbl_bytes /
+            (wr_sz + sizeof(struct pvrdma_sge) * dev->dev_attr.max_sge) -
+        PAGE_SIZE;
+    /* First page is ring state  ^^^^ */
 
     dev->dev_attr.max_cqe = pg_tbl_bytes / sizeof(struct pvrdma_cqe) -
                             PAGE_SIZE; /* First page is ring state */
 
-    dev->dev_attr.max_srq_wr = pg_tbl_bytes /
-                                ((sizeof(struct pvrdma_rq_wqe_hdr) +
-                                sizeof(struct pvrdma_sge)) *
-                                dev->dev_attr.max_sge) - PAGE_SIZE;
+    dev->dev_attr.max_srq_wr =
+        pg_tbl_bytes /
+            ((sizeof(struct pvrdma_rq_wqe_hdr) + sizeof(struct pvrdma_sge)) *
+             dev->dev_attr.max_sge) -
+        PAGE_SIZE;
 }
 
 static int pvrdma_check_ram_shared(Object *obj, void *opaque)
@@ -600,9 +604,10 @@ static int pvrdma_check_ram_shared(Object *obj, void *opaque)
 }
 
 /*
- * Functions below (pvrdma_shutdown_notifier, pvrdma_check_ram_shared, pvrdma_realize)
- * are part of QEMU's device initialization flow. In our standalone libvfio-user server,
- * these are replaced by the wrapper API functions in vfu_compat_bridge.c
+ * Functions below (pvrdma_shutdown_notifier, pvrdma_check_ram_shared,
+ * pvrdma_realize) are part of QEMU's device initialization flow. In our
+ * standalone libvfio-user server, these are replaced by the wrapper API
+ * functions in vfu_compat_bridge.c
  */
 #if 0
 static void pvrdma_shutdown_notifier(Notifier *n, void *opaque)

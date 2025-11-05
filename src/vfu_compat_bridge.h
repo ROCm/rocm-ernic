@@ -25,11 +25,11 @@ typedef uint64_t hwaddr;
 
 /*
  * Opaque handle to PVRDMA device
- * 
+ *
  * This hides the QEMU PVRDMADev structure from our code.
  * Only vfu_compat_bridge.c knows the real type.
  */
-typedef void* pvrdma_handle_t;
+typedef void *pvrdma_handle_t;
 
 /*
  * PVRDMA Device Management
@@ -75,11 +75,11 @@ int pvrdma_device_realize(pvrdma_handle_t handle);
  * @value: Value to write
  * @size: Access size (typically 4 for 32-bit)
  */
-void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, 
-                       uint32_t value, unsigned size);
+void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
+                       unsigned size);
 
 /**
- * pvrdma_regs_read - Read from PVRDMA register  
+ * pvrdma_regs_read - Read from PVRDMA register
  * @handle: Device handle
  * @offset: Register offset
  * @size: Access size (typically 4 for 32-bit)
@@ -99,13 +99,13 @@ uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
  * @value: Value to write
  * @size: Access size
  */
-void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset,
-                      uint32_t value, unsigned size);
+void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
+                      unsigned size);
 
 /**
  * pvrdma_uar_read - Read from User Access Region
  * @handle: Device handle
- * @offset: UAR offset  
+ * @offset: UAR offset
  * @size: Access size
  *
  * Returns: UAR value
@@ -129,16 +129,13 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
  * @uar_writes: Pointer to receive UAR write count
  * @interrupts: Pointer to receive interrupt count
  */
-void pvrdma_get_stats(pvrdma_handle_t handle,
-                     uint64_t *commands,
-                     uint64_t *regs_reads,
-                     uint64_t *regs_writes,
-                     uint64_t *uar_writes,
-                     uint64_t *interrupts);
+void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
+                      uint64_t *regs_reads, uint64_t *regs_writes,
+                      uint64_t *uar_writes, uint64_t *interrupts);
 
 /*
  * Bridge Functions: DMA and Interrupts
- * 
+ *
  * These are called FROM QEMU code TO interact with libvfio-user.
  * They need access to vfu_ctx which we get from the device.
  */

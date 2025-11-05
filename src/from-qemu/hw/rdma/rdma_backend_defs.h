@@ -31,14 +31,14 @@ struct ibv_mad_hdr;
 #define RDMA_MAX_PRIVATE_DATA 224
 
 /* Stub RDMA CM MUX opcodes and message types */
-#define RDMACM_MUX_OP_CODE_REG    1
-#define RDMACM_MUX_OP_CODE_UNREG  2
-#define RDMACM_MUX_OP_CODE_MAD    3
+#define RDMACM_MUX_OP_CODE_REG   1
+#define RDMACM_MUX_OP_CODE_UNREG 2
+#define RDMACM_MUX_OP_CODE_MAD   3
 
-#define RDMACM_MUX_MSG_TYPE_REQ   1
-#define RDMACM_MUX_MSG_TYPE_RESP  2
+#define RDMACM_MUX_MSG_TYPE_REQ  1
+#define RDMACM_MUX_MSG_TYPE_RESP 2
 
-#define RDMACM_MUX_ERR_CODE_OK    0
+#define RDMACM_MUX_ERR_CODE_OK 0
 
 /* ib_user_mad stub - simplified structure */
 struct ib_user_mad {
@@ -50,18 +50,18 @@ struct ib_user_mad {
         uint32_t qpn;
         uint32_t qkey;
         uint16_t lid;
-        uint8_t  sl;
-        uint8_t  path_bits;
-        uint8_t  grh_present;
-        uint8_t  gid_index;
-        uint8_t  hop_limit;
-        uint8_t  traffic_class;
-        uint8_t  gid[16];
+        uint8_t sl;
+        uint8_t path_bits;
+        uint8_t grh_present;
+        uint8_t gid_index;
+        uint8_t hop_limit;
+        uint8_t traffic_class;
+        uint8_t gid[16];
         uint32_t flow_label;
         uint16_t pkey_index;
-        uint8_t  reserved[6];
+        uint8_t reserved[6];
     } addr;
-    uint8_t  data[0];
+    uint8_t data[0];
 };
 
 /* Forward declare backend_umad (defined in rdma_backend.c) */
@@ -74,12 +74,12 @@ struct RdmaCmMuxMsg {
     struct {
         uint32_t msg_type;
         uint32_t msg_len;
-        uint32_t op_code;  /* Operation code for GID registration */
-        int32_t err_code;  /* Error code for responses */
-        union ibv_gid sgid;  /* Source GID */
+        uint32_t op_code;   /* Operation code for GID registration */
+        int32_t err_code;   /* Error code for responses */
+        union ibv_gid sgid; /* Source GID */
     } hdr;
     uint32_t umad_len;
-    struct backend_umad umad;  /* MAD message data */
+    struct backend_umad umad; /* MAD message data */
 };
 typedef struct RdmaCmMuxMsg RdmaCmMuxMsg;
 

@@ -15,4 +15,3 @@ uint32_t cpu_to_be32(uint32_t val);
 uint16_t cpu_to_be16(uint16_t val);
 
 #endif /* QEMU_BSWAP_H */
-

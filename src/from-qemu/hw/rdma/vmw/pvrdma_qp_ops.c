@@ -22,7 +22,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#include "qemu/compiler.h"  /* For unlikely() */
+#include "qemu/compiler.h" /* For unlikely() */
 #include "../rdma_utils.h"
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"
@@ -172,9 +172,8 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             continue;
         }
 
-        sgid_idx = rdma_rm_get_backend_gid_index(&dev->rdma_dev_res,
-                                                 &dev->backend_dev,
-                                                 wqe->hdr.wr.ud.av.gid_index);
+        sgid_idx = rdma_rm_get_backend_gid_index(
+            &dev->rdma_dev_res, &dev->backend_dev, wqe->hdr.wr.ud.av.gid_index);
         if (sgid_idx <= 0) {
             rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
                               wqe->hdr.wr.ud.av.gid_index);
@@ -189,12 +188,11 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             continue;
         }
 
-        rdma_backend_post_send(&dev->backend_dev, &qp->backend_qp, qp->qp_type,
-                               (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge,
-                               sgid_idx, sgid,
-                               (union ibv_gid *)wqe->hdr.wr.ud.av.dgid,
-                               wqe->hdr.wr.ud.remote_qpn,
-                               wqe->hdr.wr.ud.remote_qkey, comp_ctx);
+        rdma_backend_post_send(
+            &dev->backend_dev, &qp->backend_qp, qp->qp_type,
+            (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge, sgid_idx, sgid,
+            (union ibv_gid *)wqe->hdr.wr.ud.av.dgid, wqe->hdr.wr.ud.remote_qpn,
+            wqe->hdr.wr.ud.remote_qkey, comp_ctx);
 
         pvrdma_ring_read_inc(ring);
 
@@ -278,14 +276,12 @@ void pvrdma_srq_recv(PVRDMADev *dev, uint32_t srq_handle)
 
         rdma_backend_post_srq_recv(&dev->backend_dev, &srq->backend_srq,
                                    (struct ibv_sge *)&wqe->sge[0],
-                                   wqe->hdr.num_sge,
-                                   comp_ctx);
+                                   wqe->hdr.num_sge, comp_ctx);
 
         pvrdma_ring_read_inc(ring);
 
         wqe = pvrdma_ring_next_elem_read(ring);
     }
-
 }
 
 void pvrdma_cq_poll(RdmaDeviceResources *dev_res, uint32_t cq_handle)

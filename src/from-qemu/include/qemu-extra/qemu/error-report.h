@@ -98,4 +98,3 @@ static bool error_with_guestname __attribute__((unused)) = false;
 static const char *error_guest_name __attribute__((unused)) = NULL;
 
 #endif /* QEMU_ERROR_REPORT_H */
-

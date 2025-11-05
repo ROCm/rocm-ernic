@@ -21,8 +21,8 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <inttypes.h>  /* For PRId64, PRIx64 */
-#include <fcntl.h>     /* For F_GETFL, F_SETFL, O_NONBLOCK */
+#include <inttypes.h> /* For PRId64, PRIx64 */
+#include <fcntl.h>    /* For F_GETFL, F_SETFL, O_NONBLOCK */
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -32,16 +32,16 @@
 #include <rdma/rdma_cma.h>
 
 /* #include "contrib/rdmacm-mux/rdmacm-mux.h" - Not needed for standalone */
-#include "qemu/compiler.h"  /* For likely(), unlikely() */
-#include "qemu/cutils.h"    /* For ARRAY_SIZE, etc. */
-#include "qemu/units.h"     /* For SCALE_MS, SCALE_US */
-#include "qemu/atomic.h"    /* For qatomic_* operations */
-#include "qemu/bswap.h"     /* For be64_to_cpu, etc. */
-#include "qemu/timer.h"     /* For qemu_poll_ns */
-#include "qemu/thread.h"    /* For qemu_thread_* operations */
-#include "chardev/char-fe.h" /* For qemu_chr_fe_* operations */
+#include "qemu/compiler.h"         /* For likely(), unlikely() */
+#include "qemu/cutils.h"           /* For ARRAY_SIZE, etc. */
+#include "qemu/units.h"            /* For SCALE_MS, SCALE_US */
+#include "qemu/atomic.h"           /* For qatomic_* operations */
+#include "qemu/bswap.h"            /* For be64_to_cpu, etc. */
+#include "qemu/timer.h"            /* For qemu_poll_ns */
+#include "qemu/thread.h"           /* For qemu_thread_* operations */
+#include "chardev/char-fe.h"       /* For qemu_chr_fe_* operations */
 #include "qapi/qapi-events-rdma.h" /* For QAPI events */
-#include "hw/rdma/rdma.h"   /* For rdma_pci_dma_map/unmap */
+#include "hw/rdma/rdma.h"          /* For rdma_pci_dma_map/unmap */
 #include "rdma_utils.h"
 #include "rdma_rm.h"
 #include "rdma_backend.h"
@@ -53,7 +53,7 @@
 
 typedef struct BackendCtx {
     void *up_ctx;
-    struct ibv_sge sge; /* Used to save MAD recv buffer */
+    struct ibv_sge sge;        /* Used to save MAD recv buffer */
     RdmaBackendQP *backend_qp; /* To maintain recv buffers */
     RdmaBackendSRQ *backend_srq;
 } BackendCtx;
@@ -97,8 +97,8 @@ static void clean_recv_mads(RdmaBackendDev *backend_dev)
     unsigned long cqe_ctx_id;
 
     do {
-        cqe_ctx_id = rdma_protected_gqueue_pop_int64(&backend_dev->
-                                                    recv_mads_list);
+        cqe_ctx_id =
+            rdma_protected_gqueue_pop_int64(&backend_dev->recv_mads_list);
         if (cqe_ctx_id != -ENOENT) {
             qatomic_inc(&backend_dev->rdma_dev_res->stats.missing_cqe);
             free_cqe_ctx(GINT_TO_POINTER(cqe_ctx_id),
@@ -114,7 +114,8 @@ static int rdma_poll_cq(RdmaDeviceResources *rdma_dev_res, struct ibv_cq *ibcq)
     struct ibv_wc wc[2];
     RdmaProtectedGSList *cqe_ctx_list;
 
-    WITH_QEMU_LOCK_GUARD(&rdma_dev_res->lock) {
+    WITH_QEMU_LOCK_GUARD(&rdma_dev_res->lock)
+    {
         do {
             ne = ibv_poll_cq(ibcq, ARRAY_SIZE(wc), wc);
 
@@ -122,7 +123,7 @@ static int rdma_poll_cq(RdmaDeviceResources *rdma_dev_res, struct ibv_cq *ibcq)
             for (i = 0; i < ne; i++) {
                 bctx = rdma_rm_get_cqe_ctx(rdma_dev_res, wc[i].wr_id);
                 if (unlikely(!bctx)) {
-                    rdma_error_report("No matching ctx for req %"PRId64,
+                    rdma_error_report("No matching ctx for req %" PRId64,
                                       wc[i].wr_id);
                     continue;
                 }
@@ -166,7 +167,8 @@ static void *comp_handler_thread(void *arg)
     flags = fcntl(backend_dev->channel->fd, F_GETFL);
     rc = fcntl(backend_dev->channel->fd, F_SETFL, flags | O_NONBLOCK);
     if (rc < 0) {
-        rdma_error_report("Failed to change backend channel FD to non-blocking");
+        rdma_error_report(
+            "Failed to change backend channel FD to non-blocking");
         return NULL;
     }
 
@@ -259,8 +261,8 @@ static int rdmacm_mux_send(RdmaBackendDev *backend_dev, RdmaCmMuxMsg *msg)
 
     msg->hdr.msg_type = RDMACM_MUX_MSG_TYPE_REQ;
     disable_rdmacm_mux_async(backend_dev);
-    rc = qemu_chr_fe_write(backend_dev->rdmacm_mux.chr_be,
-                           (const uint8_t *)msg, sizeof(*msg));
+    rc = qemu_chr_fe_write(backend_dev->rdmacm_mux.chr_be, (const uint8_t *)msg,
+                           sizeof(*msg));
     if (rc != sizeof(*msg)) {
         enable_rdmacm_mux_async(backend_dev);
         rdma_error_report("Failed to send request to rdmacm_mux (rc=%d)", rc);
@@ -300,7 +302,7 @@ static void start_comp_thread(RdmaBackendDev *backend_dev)
 }
 
 void rdma_backend_register_comp_handler(void (*handler)(void *ctx,
-                                                         struct ibv_wc *wc))
+                                                        struct ibv_wc *wc))
 {
     comp_handler = handler;
 }
@@ -347,8 +349,8 @@ static struct ibv_ah *create_ah(RdmaBackendDev *backend_dev, struct ibv_pd *pd,
         g_bytes_unref(ah_key);
     } else {
         struct ibv_ah_attr ah_attr = {
-            .is_global     = 1,
-            .port_num      = backend_dev->port_num,
+            .is_global = 1,
+            .port_num = backend_dev->port_num,
             .grh.hop_limit = 1,
         };
 
@@ -360,11 +362,11 @@ static struct ibv_ah *create_ah(RdmaBackendDev *backend_dev, struct ibv_pd *pd,
             g_hash_table_insert(ah_hash, ah_key, ah);
         } else {
             g_bytes_unref(ah_key);
-            rdma_error_report("Failed to create AH for gid <0x%" PRIx64", 0x%"PRIx64">",
+            rdma_error_report("Failed to create AH for gid <0x%" PRIx64
+                              ", 0x%" PRIx64 ">",
                               be64_to_cpu(dgid->global.subnet_prefix),
                               be64_to_cpu(dgid->global.interface_id));
         }
-
     }
 
     return ah;
@@ -478,12 +480,11 @@ static int mad_send(RdmaBackendDev *backend_dev, uint8_t sgid_idx,
     return 0;
 }
 
-void rdma_backend_post_send(RdmaBackendDev *backend_dev,
-                            RdmaBackendQP *qp, uint8_t qp_type,
-                            struct ibv_sge *sge, uint32_t num_sge,
-                            uint8_t sgid_idx, union ibv_gid *sgid,
-                            union ibv_gid *dgid, uint32_t dqpn, uint32_t dqkey,
-                            void *ctx)
+void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
+                            uint8_t qp_type, struct ibv_sge *sge,
+                            uint32_t num_sge, uint8_t sgid_idx,
+                            union ibv_gid *sgid, union ibv_gid *dgid,
+                            uint32_t dqpn, uint32_t dqkey, void *ctx)
 {
     BackendCtx *bctx;
     uint32_t bctx_id;
@@ -597,9 +598,9 @@ static unsigned int save_mad_recv_buffer(RdmaBackendDev *backend_dev,
     return 0;
 }
 
-void rdma_backend_post_recv(RdmaBackendDev *backend_dev,
-                            RdmaBackendQP *qp, uint8_t qp_type,
-                            struct ibv_sge *sge, uint32_t num_sge, void *ctx)
+void rdma_backend_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
+                            uint8_t qp_type, struct ibv_sge *sge,
+                            uint32_t num_sge, void *ctx)
 {
     BackendCtx *bctx;
     uint32_t bctx_id;
@@ -850,9 +851,9 @@ int rdma_backend_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     int rc, attr_mask;
 
     attr_mask = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT;
-    attr.qp_state        = IBV_QPS_INIT;
-    attr.pkey_index      = 0;
-    attr.port_num        = backend_dev->port_num;
+    attr.qp_state = IBV_QPS_INIT;
+    attr.pkey_index = 0;
+    attr.port_num = backend_dev->port_num;
 
     switch (qp_type) {
     case IBV_QPT_RC:
@@ -884,10 +885,9 @@ int rdma_backend_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                               uint32_t rq_psn, uint32_t qkey, bool use_qkey)
 {
     struct ibv_qp_attr attr = {};
-    union ibv_gid ibv_gid = {
-        .global.interface_id = dgid->global.interface_id,
-        .global.subnet_prefix = dgid->global.subnet_prefix
-    };
+    union ibv_gid ibv_gid = {.global.interface_id = dgid->global.interface_id,
+                             .global.subnet_prefix =
+                                 dgid->global.subnet_prefix};
     int rc, attr_mask;
 
     attr.qp_state = IBV_QPS_RTR;
@@ -897,16 +897,16 @@ int rdma_backend_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     switch (qp_type) {
     case IBV_QPT_RC:
-        attr.path_mtu               = IBV_MTU_1024;
-        attr.dest_qp_num            = dqpn;
-        attr.max_dest_rd_atomic     = 1;
-        attr.min_rnr_timer          = 12;
-        attr.ah_attr.port_num       = backend_dev->port_num;
-        attr.ah_attr.is_global      = 1;
-        attr.ah_attr.grh.hop_limit  = 1;
-        attr.ah_attr.grh.dgid       = ibv_gid;
+        attr.path_mtu = IBV_MTU_1024;
+        attr.dest_qp_num = dqpn;
+        attr.max_dest_rd_atomic = 1;
+        attr.min_rnr_timer = 12;
+        attr.ah_attr.port_num = backend_dev->port_num;
+        attr.ah_attr.is_global = 1;
+        attr.ah_attr.grh.hop_limit = 1;
+        attr.ah_attr.grh.dgid = ibv_gid;
         attr.ah_attr.grh.sgid_index = qp->sgid_idx;
-        attr.rq_psn                 = rq_psn;
+        attr.rq_psn = rq_psn;
 
         attr_mask |= IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
                      IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC |
@@ -943,9 +943,9 @@ int rdma_backend_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
 
     switch (qp_type) {
     case IBV_QPT_RC:
-        attr.timeout       = 14;
-        attr.retry_cnt     = 7;
-        attr.rnr_retry     = 7;
+        attr.timeout = 14;
+        attr.retry_cnt = 7;
+        attr.rnr_retry = 7;
         attr.max_rd_atomic = 1;
 
         attr_mask |= IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
@@ -1020,7 +1020,7 @@ int rdma_backend_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr)
 }
 
 int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
-                int srq_attr_mask)
+                            int srq_attr_mask)
 {
     if (!srq->ibsrq) {
         return -EINVAL;
@@ -1038,13 +1038,15 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
     rdma_protected_gslist_destroy(&srq->cqe_ctx_list);
 }
 
-#define CHK_ATTR(req, dev, member, fmt) ({ \
-    if (req->member > dev.member) { \
-        rdma_warn_report("%s = "fmt" is higher than host device capability "fmt, \
-                         #member, req->member, dev.member); \
-        req->member = dev.member; \
-    } \
-})
+#define CHK_ATTR(req, dev, member, fmt)                                     \
+    ({                                                                      \
+        if (req->member > dev.member) {                                     \
+            rdma_warn_report("%s = " fmt                                    \
+                             " is higher than host device capability " fmt, \
+                             #member, req->member, dev.member);             \
+            req->member = dev.member;                                       \
+        }                                                                   \
+    })
 
 static int init_device_caps(RdmaBackendDev *backend_dev,
                             struct ibv_device_attr *dev_attr)
@@ -1105,8 +1107,7 @@ static void process_incoming_mad_req(RdmaBackendDev *backend_dev,
         return;
     }
 
-    mad = rdma_pci_dma_map(backend_dev->dev, bctx->sge.addr,
-                           bctx->sge.length);
+    mad = rdma_pci_dma_map(backend_dev->dev, bctx->sge.addr, bctx->sge.length);
     if (!mad || bctx->sge.length < msg->umad_len + MAD_HDR_SIZE) {
         backend_dev->rdma_dev_res->stats.mad_rx_err++;
         complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_INV_MAD_BUFF,
@@ -1146,8 +1147,8 @@ static void rdmacm_mux_read(void *opaque, const uint8_t *buf, int size)
 
     if (msg->hdr.msg_type != RDMACM_MUX_MSG_TYPE_REQ &&
         msg->hdr.op_code != RDMACM_MUX_OP_CODE_MAD) {
-            rdma_error_report("Error: Not a MAD request, skipping");
-            return;
+        rdma_error_report("Error: Not a MAD request, skipping");
+        return;
     }
     process_incoming_mad_req(backend_dev, msg);
 }
@@ -1187,8 +1188,7 @@ static void mad_fini(RdmaBackendDev *backend_dev)
     rdma_protected_gqueue_destroy(&backend_dev->recv_mads_list);
 }
 
-int rdma_backend_get_gid_index(RdmaBackendDev *backend_dev,
-                               union ibv_gid *gid)
+int rdma_backend_get_gid_index(RdmaBackendDev *backend_dev, union ibv_gid *gid)
 {
     union ibv_gid sgid;
     int ret;
@@ -1220,9 +1220,8 @@ int rdma_backend_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
         return -EIO;
     }
 
-    qapi_event_send_rdma_gid_status_changed(ifname, true,
-                                            gid->global.subnet_prefix,
-                                            gid->global.interface_id);
+    qapi_event_send_rdma_gid_status_changed(
+        ifname, true, gid->global.subnet_prefix, gid->global.interface_id);
 
     return ret;
 }
@@ -1244,9 +1243,8 @@ int rdma_backend_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
         return -EIO;
     }
 
-    qapi_event_send_rdma_gid_status_changed(ifname, false,
-                                            gid->global.subnet_prefix,
-                                            gid->global.interface_id);
+    qapi_event_send_rdma_gid_status_changed(
+        ifname, false, gid->global.subnet_prefix, gid->global.interface_id);
 
     return 0;
 }

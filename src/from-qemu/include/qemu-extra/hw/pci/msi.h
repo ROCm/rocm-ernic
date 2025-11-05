@@ -9,4 +9,3 @@
 /* These are just stubs for compilation */
 
 #endif /* QEMU_MSI_H */
-

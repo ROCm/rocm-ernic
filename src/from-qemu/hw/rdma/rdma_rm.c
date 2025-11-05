@@ -21,16 +21,16 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <inttypes.h>  /* For PRId64, PRIx64 */
+#include <inttypes.h> /* For PRId64, PRIx64 */
 /* #include "qapi/error.h" - Not needed for standalone */
 /* #include "cpu.h" - Not needed for PVRDMA */
 /* #include "monitor/monitor.h" - Not needed for standalone */
 
-#include <sys/mman.h>       /* For munmap */
-#include "qemu/compiler.h"  /* For unlikely() */
-#include "qemu/bitmap.h"    /* For bitmap operations */
-#include "qemu/atomic.h"    /* For qatomic_set */
-#include "qemu/thread.h"    /* For QEMU_LOCK_GUARD */
+#include <sys/mman.h>      /* For munmap */
+#include "qemu/compiler.h" /* For unlikely() */
+#include "qemu/bitmap.h"   /* For bitmap operations */
+#include "qemu/atomic.h"   /* For qatomic_set */
+#include "qemu/thread.h"   /* For QEMU_LOCK_GUARD */
 #include "rdma_utils.h"
 #include "rdma_backend.h"
 #include "rdma_rm.h"
@@ -155,7 +155,6 @@ static inline void rdma_res_tbl_dealloc(RdmaRmResTbl *tbl, uint32_t handle)
         clear_bit(handle, tbl->bitmap);
         tbl->used--;
     }
-
 }
 
 int rdma_rm_alloc_pd(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
@@ -442,9 +441,8 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
 
     rc = rdma_backend_create_qp(&qp->backend_qp, qp_type, &pd->backend_pd,
                                 &scq->backend_cq, &rcq->backend_cq,
-                                is_srq ? &srq->backend_srq : NULL,
-                                max_send_wr, max_recv_wr, max_send_sge,
-                                max_recv_sge);
+                                is_srq ? &srq->backend_srq : NULL, max_send_wr,
+                                max_recv_wr, max_send_sge, max_recv_sge);
 
     if (rc) {
         rc = -EIO;
@@ -496,27 +494,26 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
 
         if (qp->qp_state == IBV_QPS_RTR) {
             /* Get backend gid index */
-            sgid_idx = rdma_rm_get_backend_gid_index(dev_res, backend_dev,
-                                                     sgid_idx);
+            sgid_idx =
+                rdma_rm_get_backend_gid_index(dev_res, backend_dev, sgid_idx);
             if (sgid_idx <= 0) { /* TODO check also less than bk.max_sgid */
                 rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
                                   sgid_idx);
                 return -EIO;
             }
 
-            ret = rdma_backend_qp_state_rtr(backend_dev, &qp->backend_qp,
-                                            qp->qp_type, sgid_idx, dgid, dqpn,
-                                            rq_psn, qkey,
-                                            attr_mask & IBV_QP_QKEY);
+            ret = rdma_backend_qp_state_rtr(
+                backend_dev, &qp->backend_qp, qp->qp_type, sgid_idx, dgid, dqpn,
+                rq_psn, qkey, attr_mask & IBV_QP_QKEY);
             if (ret) {
                 return -EIO;
             }
         }
 
         if (qp->qp_state == IBV_QPS_RTS) {
-            ret = rdma_backend_qp_state_rts(&qp->backend_qp, qp->qp_type,
-                                            sq_psn, qkey,
-                                            attr_mask & IBV_QP_QKEY);
+            ret =
+                rdma_backend_qp_state_rts(&qp->backend_qp, qp->qp_type, sq_psn,
+                                          qkey, attr_mask & IBV_QP_QKEY);
             if (ret) {
                 return -EIO;
             }
@@ -582,8 +579,8 @@ int rdma_rm_alloc_srq(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         return -ENOMEM;
     }
 
-    rc = rdma_backend_create_srq(&srq->backend_srq, &pd->backend_pd,
-                                 max_wr, max_sge, srq_limit);
+    rc = rdma_backend_create_srq(&srq->backend_srq, &pd->backend_pd, max_wr,
+                                 max_sge, srq_limit);
     if (rc) {
         rc = -EIO;
         goto out_dealloc_srq;
@@ -622,18 +619,15 @@ int rdma_rm_modify_srq(RdmaDeviceResources *dev_res, uint32_t srq_handle,
         return -EINVAL;
     }
 
-    if ((srq_attr_mask & IBV_SRQ_LIMIT) &&
-        (srq_attr->srq_limit == 0)) {
+    if ((srq_attr_mask & IBV_SRQ_LIMIT) && (srq_attr->srq_limit == 0)) {
         return -EINVAL;
     }
 
-    if ((srq_attr_mask & IBV_SRQ_MAX_WR) &&
-        (srq_attr->max_wr == 0)) {
+    if ((srq_attr_mask & IBV_SRQ_MAX_WR) && (srq_attr->max_wr == 0)) {
         return -EINVAL;
     }
 
-    return rdma_backend_modify_srq(&srq->backend_srq, srq_attr,
-                                   srq_attr_mask);
+    return rdma_backend_modify_srq(&srq->backend_srq, srq_attr, srq_attr_mask);
 }
 
 void rdma_rm_dealloc_srq(RdmaDeviceResources *dev_res, uint32_t srq_handle)
@@ -728,8 +722,8 @@ int rdma_rm_get_backend_gid_index(RdmaDeviceResources *dev_res,
 
     if (unlikely(dev_res->port.gid_tbl[sgid_idx].backend_gid_index == -1)) {
         dev_res->port.gid_tbl[sgid_idx].backend_gid_index =
-        rdma_backend_get_gid_index(backend_dev,
-                                   &dev_res->port.gid_tbl[sgid_idx].gid);
+            rdma_backend_get_gid_index(backend_dev,
+                                       &dev_res->port.gid_tbl[sgid_idx].gid);
     }
 
     return dev_res->port.gid_tbl[sgid_idx].backend_gid_index;
@@ -775,8 +769,8 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
     res_tbl_init("CQ", &dev_res->cq_tbl, dev_attr->max_cq, sizeof(RdmaRmCQ));
     res_tbl_init("MR", &dev_res->mr_tbl, dev_attr->max_mr, sizeof(RdmaRmMR));
     res_tbl_init("QP", &dev_res->qp_tbl, dev_attr->max_qp, sizeof(RdmaRmQP));
-    res_tbl_init("CQE_CTX", &dev_res->cqe_ctx_tbl, dev_attr->max_qp *
-                       dev_attr->max_qp_wr, sizeof(void *));
+    res_tbl_init("CQE_CTX", &dev_res->cqe_ctx_tbl,
+                 dev_attr->max_qp * dev_attr->max_qp_wr, sizeof(void *));
     res_tbl_init("UC", &dev_res->uc_tbl, MAX_UCS, sizeof(RdmaRmUC));
     res_tbl_init("SRQ", &dev_res->srq_tbl, dev_attr->max_srq,
                  sizeof(RdmaRmSRQ));

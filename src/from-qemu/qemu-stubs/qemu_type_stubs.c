@@ -1,6 +1,6 @@
 /*
  * QEMU Type System Stubs for Standalone PVRDMA Device
- * 
+ *
  * This file provides minimal stub implementations of QEMU's type system
  * and object model functions needed by the PVRDMA device code.
  */
@@ -36,14 +36,16 @@ void *OBJECT(void *obj)
 int PCI_FUNC(PCIDevice *dev)
 {
     /* Extract function number from devfn */
-    if (!dev) return 0;
+    if (!dev)
+        return 0;
     return dev->devfn & 0x07;
 }
 
 int PCI_SLOT(PCIDevice *dev)
 {
     /* Extract slot number from devfn */
-    if (!dev) return 0;
+    if (!dev)
+        return 0;
     return (dev->devfn >> 3) & 0x1f;
 }
 
@@ -61,7 +63,9 @@ void *object_dynamic_cast(Object *obj, const char *typename)
 bool object_property_get_bool(Object *obj, const char *name, void *errp)
 {
     /* Stub: return false for any property query */
-    (void)obj; (void)name; (void)errp;
+    (void)obj;
+    (void)name;
+    (void)errp;
     return false;
 }
 
@@ -69,11 +73,14 @@ bool object_property_get_bool(Object *obj, const char *name, void *errp)
  * PCI Functions
  */
 
-void pci_register_bar(PCIDevice *pci_dev, int region_num,
-                      uint8_t type, MemoryRegion *memory)
+void pci_register_bar(PCIDevice *pci_dev, int region_num, uint8_t type,
+                      MemoryRegion *memory)
 {
     /* In standalone mode, BAR registration is handled by libvfio-user */
-    (void)pci_dev; (void)region_num; (void)type; (void)memory;
+    (void)pci_dev;
+    (void)region_num;
+    (void)type;
+    (void)memory;
 }
 
 /*
@@ -85,4 +92,3 @@ void notifier_remove(Notifier *notifier)
     /* Stub: no-op in standalone mode */
     (void)notifier;
 }
-

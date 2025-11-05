@@ -24,23 +24,23 @@ typedef struct vfu_ctx vfu_ctx_t;
 
 /* Define DeviceState/DeviceClass fully to avoid incomplete type errors */
 struct DeviceState {
-    int dummy;  /* Minimal - PVRDMA doesn't use this */
+    int dummy; /* Minimal - PVRDMA doesn't use this */
 };
 
 struct DeviceClass {
-    int dummy;  /* Minimal - PVRDMA doesn't use this */
+    int dummy; /* Minimal - PVRDMA doesn't use this */
 };
 
 /* Minimal PCIDevice structure - only fields we need */
 struct PCIDevice {
-    struct DeviceState qdev;  /* Stubbed - required by QEMU type system */
+    struct DeviceState qdev; /* Stubbed - required by QEMU type system */
     /* Fields used by our compatibility bridge */
-    vfu_pvrdma_dev_t *vfu_dev;  /* Back-pointer to our device */
-    vfu_ctx_t *vfu_ctx;          /* libvfio-user context */
+    vfu_pvrdma_dev_t *vfu_dev; /* Back-pointer to our device */
+    vfu_ctx_t *vfu_ctx;        /* libvfio-user context */
     /* Additional fields used by PVRDMA code */
-    const char *name;            /* Device name */
-    uint8_t devfn;               /* Device/function number */
-    uint8_t config[256];         /* PCI config space */
+    const char *name;    /* Device name */
+    uint8_t devfn;       /* Device/function number */
+    uint8_t config[256]; /* PCI config space */
 };
 
 /* Minimal PCIDeviceClass - for type system */
@@ -53,8 +53,9 @@ struct PCIDeviceClass {
     const char *romfile;
 };
 
-/* PCI_DEVICE macro - cast to PCIDevice* (works due to parent_obj being first) */
-#define PCI_DEVICE(obj) ((PCIDevice *)(obj))
+/* PCI_DEVICE macro - cast to PCIDevice* (works due to parent_obj being first)
+ */
+#define PCI_DEVICE(obj)         ((PCIDevice *)(obj))
 #define PCI_DEVICE_CLASS(klass) ((PCIDeviceClass *)(klass))
 
 /* Type definitions for QEMU object model - stubbed */
@@ -65,7 +66,7 @@ struct PCIDeviceClass {
     /* Stubbed */
 
 #define OBJECT_DECLARE_TYPE(InstanceType, ClassType, MODULE_OBJ_NAME) \
-    typedef struct InstanceType InstanceType; \
+    typedef struct InstanceType InstanceType;                         \
     typedef struct ClassType ClassType;
 
 #define DECLARE_INSTANCE_CHECKER(InstanceType, OBJ_NAME, TYPE_NAME) \
@@ -73,11 +74,10 @@ struct PCIDeviceClass {
 
 /* Device types - stubbed */
 #define INTERFACE_CONVENTIONAL_PCI_DEVICE "conventional-pci-device"
-#define INTERFACE_PCIE_DEVICE "pci-express-device"
+#define INTERFACE_PCIE_DEVICE             "pci-express-device"
 
 /* PCI IDs */
-#define PCI_VENDOR_ID_VMWARE  0x15ad
+#define PCI_VENDOR_ID_VMWARE        0x15ad
 #define PCI_DEVICE_ID_VMWARE_PVRDMA 0x0820
 
 #endif /* QEMU_PCI_DEVICE_H */
-

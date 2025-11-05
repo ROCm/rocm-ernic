@@ -10,4 +10,3 @@
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
 #endif /* QEMU_COMPILER_H */
-

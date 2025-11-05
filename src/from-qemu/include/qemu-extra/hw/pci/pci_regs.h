@@ -21,11 +21,10 @@ void *object_dynamic_cast(struct Object *obj, const char *typename);
 bool object_property_get_bool(struct Object *obj, const char *name, void *errp);
 
 /* PCI functions */
-void pci_register_bar(struct PCIDevice *pci_dev, int region_num,
-                      uint8_t type, struct MemoryRegion *memory);
+void pci_register_bar(struct PCIDevice *pci_dev, int region_num, uint8_t type,
+                      struct MemoryRegion *memory);
 
 /* Notifier functions */
 void notifier_remove(struct Notifier *notifier);
 
 #endif /* HW_PCI_PCI_REGS_H */
-

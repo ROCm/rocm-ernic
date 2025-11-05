@@ -33,7 +33,7 @@
 
 #undef CONFIG_AUDIO_COREAUDIO
 
-#define CONFIG_AUDIO_DRIVERS "oss", 
+#define CONFIG_AUDIO_DRIVERS "oss",
 
 #undef CONFIG_AUDIO_DSOUND
 
@@ -53,9 +53,9 @@
 
 #define CONFIG_AVX512BW_OPT
 
-#define CONFIG_BDRV_RO_WHITELIST 
+#define CONFIG_BDRV_RO_WHITELIST
 
-#define CONFIG_BDRV_RW_WHITELIST 
+#define CONFIG_BDRV_RW_WHITELIST
 
 #undef CONFIG_BDRV_WHITELIST_TOOLS
 
@@ -195,7 +195,7 @@
 
 #undef CONFIG_KEYUTILS
 
-#define CONFIG_KVM_TARGETS "i386-softmmu" ,"x86_64-softmmu"
+#define CONFIG_KVM_TARGETS "i386-softmmu", "x86_64-softmmu"
 
 #define CONFIG_L2TPV3
 
@@ -297,7 +297,7 @@
 
 #define CONFIG_QEMU_DESKTOPDIR "/opt/qemu-10.1.2/share/applications"
 
-#define CONFIG_QEMU_FIRMWAREPATH "/opt/qemu-10.1.2/share/qemu-firmware", 
+#define CONFIG_QEMU_FIRMWAREPATH "/opt/qemu-10.1.2/share/qemu-firmware",
 
 #define CONFIG_QEMU_HELPERDIR "/opt/qemu-10.1.2/libexec"
 
@@ -514,4 +514,3 @@
 #define QEMU_VERSION_MICRO 2
 
 #define QEMU_VERSION_MINOR 1
-

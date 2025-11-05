@@ -11,7 +11,7 @@ typedef struct Notifier {
     /* Stubbed - we don't use notifiers */
 } Notifier;
 
-typedef void NotifierWithReturnFunc(struct Notifier *notifier, void *data, int *ret);
+typedef void NotifierWithReturnFunc(struct Notifier *notifier, void *data,
+                                    int *ret);
 
 #endif /* QEMU_NOTIFY_H */
-

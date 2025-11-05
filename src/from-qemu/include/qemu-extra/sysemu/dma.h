@@ -10,4 +10,3 @@
 #include "exec/memory.h"
 
 #endif /* QEMU_DMA_H */
-
