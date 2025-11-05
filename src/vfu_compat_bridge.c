@@ -13,6 +13,8 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
+#include <inttypes.h>  /* For PRId64, PRIx64 */
+#include <sys/mman.h>  /* For PROT_READ, PROT_WRITE */
 
 #include "vfu_compat_bridge.h"
 #include "vfu_pvrdma_internal.h"

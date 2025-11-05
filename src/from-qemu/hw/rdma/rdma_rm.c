@@ -21,9 +21,10 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include "qapi/error.h"
-#include "cpu.h"
-#include "monitor/monitor.h"
+#include <inttypes.h>  /* For PRId64, PRIx64 */
+/* #include "qapi/error.h" - Not needed for standalone */
+/* #include "cpu.h" - Not needed for PVRDMA */
+/* #include "monitor/monitor.h" - Not needed for standalone */
 
 #include "rdma_utils.h"
 #include "rdma_backend.h"

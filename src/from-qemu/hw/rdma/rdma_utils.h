@@ -17,8 +17,13 @@
 #ifndef RDMA_UTILS_H
 #define RDMA_UTILS_H
 
+#include <glib.h>  /* For GQueue, GSList */
+#include "qemu/thread.h"  /* For QemuMutex */
 #include "qemu/error-report.h"
 #include "sysemu/dma.h"
+
+/* Forward declarations */
+typedef struct PCIDevice PCIDevice;
 
 #define rdma_error_report(fmt, ...) \
     error_report("%s: " fmt, "rdma", ## __VA_ARGS__)

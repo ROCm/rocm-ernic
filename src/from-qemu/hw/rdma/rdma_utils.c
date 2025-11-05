@@ -21,6 +21,10 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <inttypes.h>
+
+/* GLib types for queue/list management */
+#include <glib.h>
 
 #include "hw/pci/pci_device.h"
 #include "rdma_utils.h"

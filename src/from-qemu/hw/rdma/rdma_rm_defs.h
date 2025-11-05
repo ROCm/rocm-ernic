@@ -16,6 +16,7 @@
 #ifndef RDMA_RM_DEFS_H
 #define RDMA_RM_DEFS_H
 
+#include <glib.h>  /* For GHashTable */
 #include "rdma_backend_defs.h"
 
 #define PAGE_SIZE 4096

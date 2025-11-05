@@ -21,11 +21,18 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include "qapi/qapi-events-rdma.h"
+#include <inttypes.h>  /* For PRId64, PRIx64 */
+#include <fcntl.h>     /* For F_GETFL, F_SETFL, O_NONBLOCK */
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netdb.h>
+/* #include "qapi/qapi-events-rdma.h" - Not needed for standalone */
 
 #include <infiniband/verbs.h>
+#include <rdma/rdma_cma.h>
 
-#include "contrib/rdmacm-mux/rdmacm-mux.h"
+/* #include "contrib/rdmacm-mux/rdmacm-mux.h" - Not needed for standalone */
+#include "qemu/units.h"  /* For SCALE_MS, SCALE_US */
 #include "rdma_utils.h"
 #include "rdma_rm.h"
 #include "rdma_backend.h"

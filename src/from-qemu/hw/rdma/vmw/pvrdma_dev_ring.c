@@ -22,7 +22,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include "hw/pci/pci.h"
-#include "cpu.h"
+/* #include "cpu.h" - Not needed for PVRDMA */
 #include "qemu/cutils.h"
 
 

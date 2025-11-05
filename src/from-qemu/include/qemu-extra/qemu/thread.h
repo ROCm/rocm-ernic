@@ -77,6 +77,14 @@ static inline void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, in
     pthread_mutex_unlock(&mutex->lock);
 }
 
+/* Thread creation flags */
+#define QEMU_THREAD_JOINABLE  0
+#define QEMU_THREAD_DETACHED  1
+
+/* Lock guard helper macro - simplified */
+#define WITH_QEMU_LOCK_GUARD(lock) \
+    for (int _guard = (qemu_mutex_lock(lock), 1); _guard; _guard = 0, qemu_mutex_unlock(lock))
+
 /* Simplified macros without file/line tracking */
 #define qemu_mutex_lock(m) qemu_mutex_lock_impl(m, __FILE__, __LINE__)
 #define qemu_mutex_trylock(m) qemu_mutex_trylock_impl(m, __FILE__, __LINE__)

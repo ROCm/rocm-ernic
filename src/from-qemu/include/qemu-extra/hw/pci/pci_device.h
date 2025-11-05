@@ -22,17 +22,30 @@ typedef uint64_t hwaddr;
 typedef struct vfu_pvrdma_dev vfu_pvrdma_dev_t;
 typedef struct vfu_ctx vfu_ctx_t;
 
+/* Define DeviceState/DeviceClass fully to avoid incomplete type errors */
+struct DeviceState {
+    int dummy;  /* Minimal - PVRDMA doesn't use this */
+};
+
+struct DeviceClass {
+    int dummy;  /* Minimal - PVRDMA doesn't use this */
+};
+
 /* Minimal PCIDevice structure - only fields we need */
 struct PCIDevice {
-    DeviceState qdev;  /* Stubbed - required by QEMU type system */
+    struct DeviceState qdev;  /* Stubbed - required by QEMU type system */
     /* Fields used by our compatibility bridge */
     vfu_pvrdma_dev_t *vfu_dev;  /* Back-pointer to our device */
     vfu_ctx_t *vfu_ctx;          /* libvfio-user context */
+    /* Additional fields used by PVRDMA code */
+    const char *name;            /* Device name */
+    uint8_t devfn;               /* Device/function number */
+    uint8_t config[256];         /* PCI config space */
 };
 
 /* Minimal PCIDeviceClass - for type system */
 struct PCIDeviceClass {
-    DeviceClass parent_class;
+    struct DeviceClass parent_class;
     uint16_t vendor_id;
     uint16_t device_id;
     uint8_t revision;

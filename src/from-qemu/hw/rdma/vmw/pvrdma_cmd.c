@@ -21,7 +21,9 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include "cpu.h"
+#include <inttypes.h>  /* For PRId64, PRIx64 */
+#include <sys/mman.h>  /* For mremap, MAP_FAILED, MREMAP_* */
+/* #include "cpu.h" - Not needed for PVRDMA */
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
 

@@ -8,7 +8,12 @@
 
 /* Minimal stub - PVRDMA has a func0 pointer but we don't use it */
 typedef struct VMXNET3State {
-    int dummy;  /* Stubbed */
+    int device_active;  /* Device active flag */
+    struct {
+        struct {
+            uint8_t a[6];  /* MAC address */
+        } macaddr;
+    } conf;  /* Simplified - real struct has more fields */
 } VMXNET3State;
 
 #define TYPE_VMXNET3 "vmxnet3"

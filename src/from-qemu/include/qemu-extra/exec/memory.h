@@ -8,22 +8,53 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
+/* Forward declarations to avoid conflicts */
+#ifndef QEMU_TYPEDEFS_H
+#define QEMU_TYPEDEFS_H
 typedef uint64_t hwaddr;
-typedef uint64_t Int128;  /* Simplified - QEMU uses int128_t */
+typedef uint64_t dma_addr_t;
+#endif
 
 /* Minimal MemoryRegion stub */
-typedef struct MemoryRegion {
+struct MemoryRegion {
     /* Stubbed - libvfio-user manages our BARs */
     const char *name;
-    hwaddr addr;
-    hwaddr size;
-} MemoryRegion;
+    uint64_t addr;
+    uint64_t size;
+};
+typedef struct MemoryRegion MemoryRegion;
 
 /* AddressSpace - stubbed, we use libvfio-user DMA */
-typedef struct AddressSpace {
+struct AddressSpace {
     int dummy;
-} AddressSpace;
+};
+typedef struct AddressSpace AddressSpace;
+
+/* Endianness enum */
+enum device_endian {
+    DEVICE_LITTLE_ENDIAN,
+    DEVICE_BIG_ENDIAN,
+    DEVICE_NATIVE_ENDIAN,
+};
+
+/* Memory region operations - callback structure */
+struct MemoryRegionOps {
+    uint64_t (*read)(void *opaque, uint64_t addr, unsigned size);
+    void (*write)(void *opaque, uint64_t addr, uint64_t data, unsigned size);
+    enum device_endian endianness;
+    /* Many other fields in real QEMU but we don't need them */
+    struct {
+        unsigned min_access_size;
+        unsigned max_access_size;
+    } impl;
+    struct {
+        unsigned min_access_size;
+        unsigned max_access_size;
+    } valid;
+};
+typedef struct MemoryRegionOps MemoryRegionOps;
 
 /* MemoryRegion initialization - no-ops */
 static inline void memory_region_init(MemoryRegion *mr, void *owner,
@@ -37,7 +68,7 @@ static inline void memory_region_init(MemoryRegion *mr, void *owner,
 }
 
 static inline void memory_region_init_io(MemoryRegion *mr, void *owner,
-                                        const void *ops, void *opaque,
+                                        const MemoryRegionOps *ops, void *opaque,
                                         const char *name, uint64_t size)
 {
     (void)ops; (void)opaque;
@@ -58,38 +89,41 @@ static inline void memory_region_del_subregion(MemoryRegion *mr,
 }
 
 /* DMA types */
-typedef uint64_t dma_addr_t;
-
-typedef enum {
+enum DMADirection {
     DMA_DIRECTION_TO_DEVICE = 0,
     DMA_DIRECTION_FROM_DEVICE = 1,
-} DMADirection;
+};
+typedef enum DMADirection DMADirection;
 
-typedef struct MemTxAttrs {
+struct MemTxAttrs {
     unsigned int dummy;
-} MemTxAttrs;
+};
+typedef struct MemTxAttrs MemTxAttrs;
 
 #define MEMTXATTRS_UNSPECIFIED ((MemTxAttrs){.dummy = 0})
 
-typedef enum {
+enum MemTxResult {
     MEMTX_OK,
     MEMTX_ERROR,
     MEMTX_DECODE_ERROR,
-} MemTxResult;
+};
+typedef enum MemTxResult MemTxResult;
 
 /* Scatter-gather list */
-typedef struct ScatterGatherEntry {
-    dma_addr_t base;
-    dma_addr_t len;
-} ScatterGatherEntry;
+struct ScatterGatherEntry {
+    uint64_t base;
+    uint64_t len;
+};
+typedef struct ScatterGatherEntry ScatterGatherEntry;
 
-typedef struct QEMUSGList {
+struct QEMUSGList {
     ScatterGatherEntry *sg;
     int nsg;
     int nalloc;
     size_t size;
     AddressSpace *as;
-} QEMUSGList;
+};
+typedef struct QEMUSGList QEMUSGList;
 
 #endif /* QEMU_MEMORY_H */
 

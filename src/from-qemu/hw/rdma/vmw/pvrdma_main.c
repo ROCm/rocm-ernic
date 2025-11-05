@@ -21,17 +21,18 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include "qapi/error.h"
-#include "qemu/module.h"
+#include <inttypes.h>
+/* #include "qapi/error.h" - Not needed for standalone */
+/* #include "qemu/module.h" - Not needed for standalone */
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "cpu.h"
-#include "monitor/monitor.h"
-#include "hw/rdma/rdma.h"
+/* #include "hw/qdev-properties.h" - Not needed for standalone */
+/* #include "hw/qdev-properties-system.h" - Not needed for standalone */
+/* #include "cpu.h" - Not needed for PVRDMA */
+/* #include "monitor/monitor.h" - Not needed for standalone */
+/* #include "hw/rdma/rdma.h" - QOM not used */
 
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"
@@ -40,10 +41,15 @@
 #include <infiniband/verbs.h>
 #include "pvrdma.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "sysemu/runstate.h"
+/* #include "sysemu/runstate.h" - Not needed for standalone */
 #include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 #include "pvrdma_qp_ops.h"
 
+/*
+ * QEMU device properties - not used in standalone mode
+ * Configuration is passed via command line to vfu_pvrdma instead
+ */
+#if 0
 static Property pvrdma_dev_properties[] = {
     DEFINE_PROP_STRING("netdev", PVRDMADev, backend_eth_device_name),
     DEFINE_PROP_STRING("ibdev", PVRDMADev, backend_device_name),
@@ -63,6 +69,10 @@ static Property pvrdma_dev_properties[] = {
     DEFINE_PROP_CHR("mad-chardev", PVRDMADev, mad_chr),
     DEFINE_PROP_END_OF_LIST(),
 };
+#endif /* Unused properties array */
+
+/* Forward declaration */
+typedef struct RdmaProvider RdmaProvider;
 
 static void pvrdma_format_statistics(RdmaProvider *obj, GString *buf)
 {
@@ -585,12 +595,29 @@ static int pvrdma_check_ram_shared(Object *obj, void *opaque)
     return 0;
 }
 
+/*
+ * Functions below (pvrdma_shutdown_notifier, pvrdma_check_ram_shared, pvrdma_realize)
+ * are part of QEMU's device initialization flow. In our standalone libvfio-user server,
+ * these are replaced by the wrapper API functions in vfu_compat_bridge.c
+ */
+#if 0
 static void pvrdma_shutdown_notifier(Notifier *n, void *opaque)
 {
     PVRDMADev *dev = container_of(n, PVRDMADev, shutdown_notifier);
     PCIDevice *pci_dev = PCI_DEVICE(dev);
 
     pvrdma_fini(pci_dev);
+}
+
+static int pvrdma_check_ram_shared(Object *obj, void *opaque)
+{
+    bool *shared = opaque;
+
+    if (object_dynamic_cast(obj, "memory-backend-ram")) {
+        *shared = object_property_get_bool(obj, "share", NULL);
+    }
+
+    return 0;
 }
 
 static void pvrdma_realize(PCIDevice *pdev, Error **errp)
@@ -679,7 +706,13 @@ out:
         error_append_hint(errp, "Device failed to load\n");
     }
 }
+#endif /* Unused QEMU functions commented out */
 
+/*
+ * QEMU type registration - not needed for standalone libvfio-user server
+ * The wrapper API in vfu_compat_bridge.c provides the glue
+ */
+#if 0
 static void pvrdma_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -717,3 +750,4 @@ static void register_types(void)
 }
 
 type_init(register_types)
+#endif

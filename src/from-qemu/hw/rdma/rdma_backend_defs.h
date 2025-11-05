@@ -24,15 +24,47 @@
 #include "rdma_utils.h"
 
 /* Stub for rdmacm-mux types (MAD handling not used) */
-typedef struct RdmaCmMuxMsg {
-    uint8_t op_code;
-    /* Rest stubbed */
-} RdmaCmMuxMsg;
+/* Forward declarations */
+struct ibv_mad_hdr;
+struct ib_user_mad {
+    uint32_t agent_id;
+    uint32_t status;
+    uint32_t timeout_ms;
+    uint32_t retries;
+    uint8_t  data[0];
+};
 
-typedef struct RdmaCmMux {
+/* RDMA constants */
+#define RDMA_MAX_PRIVATE_DATA 224
+
+/* Stub RDMA CM MUX opcodes and message types */
+#define RDMACM_MUX_OP_CODE_REG    1
+#define RDMACM_MUX_OP_CODE_UNREG  2
+#define RDMACM_MUX_OP_CODE_MAD    3
+
+#define RDMACM_MUX_MSG_TYPE_REQ   1
+#define RDMACM_MUX_MSG_TYPE_RESP  2
+
+#define RDMACM_MUX_ERR_CODE_OK    0
+
+struct RdmaCmMuxMsg {
+    struct {
+        uint32_t msg_type;
+        uint32_t msg_len;
+        uint32_t op_code;  /* Operation code for GID registration */
+        int32_t err_code;  /* Error code for responses */
+        union ibv_gid sgid;  /* Source GID */
+    } hdr;
+    uint32_t umad_len;
+    char umad[256];  /* Simplified - real struct is larger */
+};
+typedef struct RdmaCmMuxMsg RdmaCmMuxMsg;
+
+struct RdmaCmMux {
     CharBackend *chr_be;
     int can_receive;
-} RdmaCmMux;
+};
+typedef struct RdmaCmMux RdmaCmMux;
 
 typedef struct RdmaDeviceResources RdmaDeviceResources;
 
@@ -41,11 +73,6 @@ typedef struct RdmaBackendThread {
     bool run; /* Set by thread manager to let thread know it should exit */
     bool is_running; /* Set by the thread to report its status */
 } RdmaBackendThread;
-
-typedef struct RdmaCmMux {
-    CharBackend *chr_be;
-    int can_receive;
-} RdmaCmMux;
 
 typedef struct RdmaBackendDev {
     RdmaBackendThread comp_thread;
