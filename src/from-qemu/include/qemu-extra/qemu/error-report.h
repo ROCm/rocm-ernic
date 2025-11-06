@@ -45,29 +45,13 @@ static inline void info_vreport(const char *fmt, va_list ap)
     fprintf(stdout, "\n");
 }
 
-static inline void error_report(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    error_vreport(fmt, ap);
-    va_end(ap);
-}
-
-static inline void warn_report(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    warn_vreport(fmt, ap);
-    va_end(ap);
-}
-
-static inline void info_report(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    info_vreport(fmt, ap);
-    va_end(ap);
-}
+/* Declarations - implementations in error-report.c */
+void error_report(const char *fmt, ...);
+void warn_report(const char *fmt, ...);
+void info_report(const char *fmt, ...);
+void error_vreport(const char *fmt, va_list ap);
+void warn_vreport(const char *fmt, va_list ap);
+void info_vreport(const char *fmt, va_list ap);
 
 /* Location-aware variants - just ignore location */
 static inline void error_report_once_cond(int *printed, const char *fmt, ...)

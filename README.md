@@ -447,6 +447,126 @@ Triggered interrupt vector 2            # Completion notification
 [ibverbs-api]: https://man7.org/linux/man-pages/man3/ibv_get_device_list.3.html
 [spdk-link]: https://spdk.io/
 
+## Testing with Virtual Machines
+
+### Prerequisites
+
+**QEMU v10.1.2+ with vfio-user-pci support is required.**
+
+Verify QEMU installation:
+```bash
+/opt/qemu-v10.1.2/bin/qemu-system-x86_64 --version
+/opt/qemu-v10.1.2/bin/qemu-system-x86_64 -device help | grep vfio-user-pci
+```
+
+Expected output:
+```
+name "vfio-user-pci", bus PCI, desc "VFIO over socket PCI device assignment"
+```
+
+### Option 1: Automated Test Script
+
+The easiest way to test with a VM:
+
+```bash
+cd /home/stebates/Projects/vfu-rdma
+./scripts/test-vfio-user-vm.sh
+```
+
+This script will:
+1. Start the `vfu_pvrdma` server with appropriate settings
+2. Display instructions for launching a QEMU VM
+3. Handle cleanup on exit
+
+### Option 2: Manual VM Setup
+
+**Terminal 1 - Start vfu_pvrdma Server:**
+```bash
+cd /home/stebates/Projects/vfu-rdma
+sudo ./build/vfu_pvrdma \
+  --socket /tmp/vfio-user-pvrdma.sock \
+  --device mlx5_0 \
+  --port 1 \
+  --verbose
+```
+
+**Terminal 2 - Launch QEMU VM:**
+```bash
+cd /home/stebates/Projects/vfu-rdma
+VFIO_USER_SOCKET=/tmp/vfio-user-pvrdma.sock \
+VM_NAME=stebates-test-vm \
+  ./scripts/run-vm-vfio-user.sh
+```
+
+### Inside the Guest VM
+
+Once the VM boots (SSH on port 2222):
+```bash
+ssh -p 2222 ubuntu@localhost
+```
+
+**1. Check for PVRDMA Device:**
+```bash
+lspci -nn | grep 15ad
+# Expected: 00:XX.0 Network controller [0280]: VMware PVRDMA Device [15ad:0820]
+```
+
+**2. Load PVRDMA Driver:**
+```bash
+sudo modprobe vmw_pvrdma
+dmesg | grep vmw_pvrdma
+```
+
+Expected output:
+```
+[  X.XXXXXX] vmw_pvrdma 0000:00:XX.0: device version 1, dma mask 64
+[  X.XXXXXX] vmw_pvrdma 0000:00:XX.0: using DSR at 0xXXXXXXXXXXXX
+[  X.XXXXXX] vmw_pvrdma 0000:00:XX.0: initializing driver
+```
+
+**3. Verify RDMA Device:**
+```bash
+ibv_devices
+rdma link
+```
+
+Expected output:
+```
+    device          node GUID
+    ------          ---------
+    vmw_pvrdma0     xxxx:xxxx:xxxx:xxxx
+```
+
+**4. Run RDMA Tests:**
+```bash
+# Ping-pong test (needs another endpoint)
+ibv_rc_pingpong -d vmw_pvrdma0
+
+# Device info
+ibv_devinfo -d vmw_pvrdma0
+```
+
+### Creating New VM Images
+
+If you need a fresh VM image:
+```bash
+cd /home/stebates/Projects/qemu-minimal/qemu
+VM_NAME=my-rdma-test RELEASE=noble ./gen-vm
+```
+
+This creates a new Ubuntu Noble VM with cloud-init.
+
+### VM Configuration Notes
+
+The `run-vm-vfio-user.sh` script configures:
+- **VCPUs:** 4 (configurable via `VCPUS` env var)
+- **Memory:** 8 GB (configurable via `VMEM` env var)
+- **SSH Port:** 2222 (configurable via `SSH_PORT` env var)
+- **Machine Type:** Q35 with KVM acceleration
+- **PVRDMA Device:** Attached via vfio-user-pci device
+
+To exit QEMU: Press `Ctrl-A` then `X`
+
 ## License
 
 This project combines code from multiple sources:

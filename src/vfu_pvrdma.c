@@ -256,6 +256,8 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
  */
 static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
 {
+    int ret;
+    
     /* Create PVRDMA device using wrapper API */
     dev->pvrdma_handle =
         pvrdma_device_create(dev, dev->backend_device_name,
@@ -263,6 +265,13 @@ static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
 
     if (!dev->pvrdma_handle) {
         fprintf(stderr, "Failed to create PVRDMA device\n");
+        return -1;
+    }
+    
+    /* Realize the device - this initializes registers and backends */
+    ret = pvrdma_device_realize(dev->pvrdma_handle);
+    if (ret < 0) {
+        fprintf(stderr, "Failed to realize PVRDMA device\n");
         return -1;
     }
 
