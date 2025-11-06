@@ -29,6 +29,23 @@
 #include "from-qemu/hw/rdma/rdma_utils.h"
 
 /*
+ * DMA Mapping Tracking
+ * We must track SGL/iovec pairs to properly call vfu_sgl_put()
+ */
+typedef struct dma_mapping {
+    dma_addr_t guest_addr;
+    size_t len;
+    dma_sg_t *sg;
+    struct iovec iov;
+    void *host_addr;
+    vfu_ctx_t *vfu_ctx;
+} dma_mapping_t;
+
+#define MAX_DMA_MAPPINGS 256
+static dma_mapping_t dma_mappings[MAX_DMA_MAPPINGS];
+static int num_dma_mappings = 0;
+
+/*
  * Device Management
  */
 
@@ -349,12 +366,10 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     
     rdma_info_report("  iov.iov_base=%p iov.iov_len=%zu", host_addr, iov.iov_len);
 
-    /* Free SG - we only needed it for mapping */
-    free(sg);
-
     if (!host_addr) {
         rdma_error_report("DMA map: vfu_sgl_get returned NULL iov_base for guest=%#lx", addr);
         rdma_error_report("  This means the region is not memory-mapped");
+        free(sg);
         *plen = 0;
         return NULL;
     }
@@ -362,7 +377,126 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     rdma_info_report("=== DMA MAP SUCCESS: guest=%#lx -> host=%p len=%zu ===", 
                      addr, host_addr, (size_t)*plen);
 
+    /* 
+     * Store the SGL and iovec for later vfu_sgl_put().
+     * This is CRITICAL for memory coherency - writes won't be visible to the guest
+     * until we call vfu_sgl_put() on the same SGL/iovec pair.
+     */
+    if (num_dma_mappings >= MAX_DMA_MAPPINGS) {
+        rdma_error_report("DMA map: Mapping table full (%d entries)", MAX_DMA_MAPPINGS);
+        /* Still return the pointer, but we won't be able to properly release it */
+    } else {
+        dma_mappings[num_dma_mappings].guest_addr = addr;
+        dma_mappings[num_dma_mappings].len = *plen;
+        dma_mappings[num_dma_mappings].sg = sg;
+        dma_mappings[num_dma_mappings].iov = iov;
+        dma_mappings[num_dma_mappings].host_addr = host_addr;
+        dma_mappings[num_dma_mappings].vfu_ctx = vfu_ctx;
+        num_dma_mappings++;
+        rdma_info_report("DMA map: Stored mapping #%d (guest=%#lx)", num_dma_mappings, addr);
+    }
+
     return host_addr;
+}
+
+/*
+ * Helper: Flush DSR writes by doing put/get cycle
+ * This ensures cache coherency and notifies libvfio-user/QEMU of changes.
+ */
+void pvrdma_dsr_flush(void *handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    dma_addr_t dsr_guest_addr = pvrdma->dsr_info.dma;
+    
+    rdma_info_report(">>> pvrdma_dsr_flush: START - Flushing DSR at guest=%#lx", dsr_guest_addr);
+    
+    /* Find the DSR mapping */
+    for (int i = 0; i < num_dma_mappings; i++) {
+        dma_mapping_t *mapping = &dma_mappings[i];
+        
+        if (mapping->guest_addr == dsr_guest_addr) {
+            rdma_info_report("  Found DSR mapping #%d at host=%p", i, mapping->host_addr);
+            
+            /* Verify current values BEFORE flush */
+            struct pvrdma_device_shared_region *dsr = (struct pvrdma_device_shared_region *)mapping->host_addr;
+            rdma_info_report("  BEFORE flush: mode=%d gid_types=0x%x",
+                           dsr->caps.mode, dsr->caps.gid_types);
+            
+            /* Per libvfio-user samples/server.c pattern:
+             * Call vfu_sgl_put() to release and mark dirty.
+             * DO NOT immediately re-acquire - only get when needed for next access.
+             * 
+             * From server.c:
+             *   vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
+             *   memcpy(iov.iov_base, &buf[i * size], size);
+             *   vfu_sgl_put(vfu_ctx, sg, &iov, 1);  // <-- Release immediately!
+             */
+            rdma_info_report("  Calling vfu_sgl_put() to flush and RELEASE mapping...");
+            vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
+            
+            /* Mark mapping as released */
+            mapping->host_addr = NULL;
+            mapping->iov.iov_base = NULL;
+            mapping->iov.iov_len = 0;
+            
+            rdma_info_report("  vfu_sgl_put() complete - DSR released and marked dirty");
+            rdma_info_report("<<< pvrdma_dsr_flush: COMPLETE - DSR mapping RELEASED");
+            return;
+        }
+    }
+    
+    rdma_error_report("pvrdma_dsr_flush: ERROR - DSR mapping not found!");
+}
+
+/*
+ * Helper: Sync DMA writes back to guest by calling vfu_sgl_put()
+ * This releases the memory mapping and ensures writes are visible to the guest.
+ */
+int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
+{
+    (void)dev;
+    
+    rdma_info_report("=== DMA SYNC: Searching for mapping at guest=%#lx len=%zu ===",
+                     guest_addr, (size_t)len);
+
+    /* Find the mapping that contains this address */
+    for (int i = 0; i < num_dma_mappings; i++) {
+        dma_mapping_t *mapping = &dma_mappings[i];
+        
+        /* Check if this address is within the mapped region */
+        if (guest_addr >= mapping->guest_addr &&
+            guest_addr + len <= mapping->guest_addr + mapping->len) {
+            
+            rdma_info_report("DMA sync: Found mapping #%d: guest=%#lx len=%zu sg=%p",
+                             i, mapping->guest_addr, mapping->len, mapping->sg);
+            
+            /* Call vfu_sgl_put() to sync writes back to guest */
+            vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
+            
+            rdma_info_report("DMA sync: vfu_sgl_put() called - writes should now be visible");
+            
+            /* Now we need to re-acquire the mapping for future use */
+            int ret = vfu_sgl_get(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1, 0);
+            if (ret < 0) {
+                rdma_error_report("DMA sync: Failed to re-acquire mapping: %s", strerror(errno));
+                return -1;
+            }
+            
+            rdma_info_report("DMA sync: Mapping re-acquired successfully");
+            
+            /* Verify the write by reading back from the iovec */
+            if (len >= 4 && mapping->iov.iov_base) {
+                uint32_t *data = (uint32_t *)((char *)mapping->iov.iov_base + (guest_addr - mapping->guest_addr));
+                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at offset 0: 0x%08x", data[0]);
+                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at offset 4: 0x%08x", data[1]);
+            }
+            
+            return 0;
+        }
+    }
+    
+    rdma_error_report("DMA sync: No mapping found for guest=%#lx", guest_addr);
+    return -1;
 }
 
 /* Implement pci_dma_unmap - called by QEMU PVRDMA code via hw/pci/pci.h */

@@ -63,7 +63,11 @@ int pvrdma_ring_init(PvrdmaRing *ring, const char *name, PCIDevice *dev,
             rdma_error_report("Failed to map to page %d in ring %s", i, name);
             goto out_free;
         }
-        memset(ring->pages[i], 0, PAGE_SIZE);
+        /* NOTE: Don't memset guest-owned memory in vfio-user model.
+         * The guest driver initializes its own pages. In QEMU's internal
+         * model this worked because QEMU has direct RAM access, but in
+         * vfio-user we only get a mapped pointer that may not be writable. */
+        /* memset(ring->pages[i], 0, PAGE_SIZE); */
     }
 
     goto out;
