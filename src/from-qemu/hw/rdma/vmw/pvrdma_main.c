@@ -32,7 +32,7 @@
 /* #include "hw/qdev-properties-system.h" - Not needed for standalone */
 /* #include "cpu.h" - Not needed for PVRDMA */
 /* #include "monitor/monitor.h" - Not needed for standalone */
-/* #include "hw/rdma/rdma.h" - QOM not used */
+#include "hw/rdma/rdma.h"  /* Needed for rdma_pci_dma_map declaration */
 
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"
@@ -107,6 +107,8 @@ static int init_dev_ring(PvrdmaRing *ring, PvrdmaRingState **ring_state,
 {
     uint64_t *dir, *tbl;
     int max_pages, rc = 0;
+
+    rdma_info_report("init_dev_ring: ENTER ring=%s num_pages=%u", name, num_pages);
 
     if (!num_pages) {
         rdma_error_report("Ring pages count must be strictly positive");
@@ -209,8 +211,18 @@ static int load_dsr(PVRDMADev *dev)
     free_dsr(dev);
 
     /* Map to DSR */
-    dev->dsr_info.dsr = rdma_pci_dma_map(
+    rdma_info_report("load_dsr: About to map DSR at guest addr %#lx", (uint64_t)dev->dsr_info.dma);
+    void *dsr_ptr = rdma_pci_dma_map(
         pci_dev, dev->dsr_info.dma, sizeof(struct pvrdma_device_shared_region));
+    
+    /* Check as uint64_t to see actual value */
+    uint64_t dsr_as_int = (uint64_t)(uintptr_t)dsr_ptr;
+    rdma_info_report("load_dsr: rdma_pci_dma_map returned ptr=%p as_uint64=%#lx", dsr_ptr, dsr_as_int);
+    
+    dev->dsr_info.dsr = dsr_ptr;
+    uint64_t stored_as_int = (uint64_t)(uintptr_t)dev->dsr_info.dsr;
+    rdma_info_report("load_dsr: Stored in dev->dsr_info.dsr = %p as_uint64=%#lx", dev->dsr_info.dsr, stored_as_int);
+    
     if (!dev->dsr_info.dsr) {
         rdma_error_report("Failed to map to DSR");
         rc = -ENOMEM;
@@ -221,7 +233,11 @@ static int load_dsr(PVRDMADev *dev)
     dsr_info = &dev->dsr_info;
     dsr = dsr_info->dsr;
 
+    rdma_info_report("load_dsr: After shortcuts, dsr = %p", dsr);
+    rdma_info_report("load_dsr: Reading cmd_slot_dma from DSR...");
+    
     /* Map to command slot */
+    rdma_info_report("load_dsr: cmd_slot_dma = %#lx", (uint64_t)dsr->cmd_slot_dma);
     dsr_info->req = rdma_pci_dma_map(pci_dev, dsr->cmd_slot_dma,
                                      sizeof(union pvrdma_cmd_req));
     if (!dsr_info->req) {
@@ -278,6 +294,8 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
 {
     struct pvrdma_device_shared_region *dsr;
 
+    rdma_info_report("init_dsr_dev_caps: CALLED");
+
     if (!dev->dsr_info.dsr) {
         /* Buggy or malicious guest driver */
         rdma_error_report("Can't initialized DSR");
@@ -285,6 +303,7 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     }
 
     dsr = dev->dsr_info.dsr;
+    rdma_info_report("init_dsr_dev_caps: Setting caps.mode=ROCE, gid_types=ROCE_V1");
     dsr->caps.fw_ver = PVRDMA_FW_VERSION;
     dsr->caps.mode = PVRDMA_DEVICE_MODE_ROCE;
     dsr->caps.gid_types |= PVRDMA_GID_TYPE_FLAG_ROCE_V1;
@@ -407,6 +426,7 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
         return -EINVAL;
     }
 
+    rdma_info_report("BAR1 READ: offset=%#lx size=%u value=%#x", addr, size, val);
 
     return val;
 }
@@ -416,6 +436,8 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
                             unsigned size)
 {
     PVRDMADev *dev = opaque;
+
+    rdma_info_report("BAR1 WRITE: offset=%#lx size=%u value=%#lx", addr, size, val);
 
     dev->stats.regs_writes++;
 

@@ -266,6 +266,13 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     rdma_info_report("=== DMA MAP CALLED ===");
     rdma_info_report("  guest_addr=%#lx requested_len=%zu dir=%d", 
                      addr, plen ? (size_t)*plen : 0, dir);
+    
+    /* Check for obviously invalid addresses */
+    if (addr == 0) {
+        rdma_error_report("DMA map: guest address is NULL!");
+        if (plen) *plen = 0;
+        return NULL;
+    }
 
     if (!dev) {
         rdma_error_report("DMA map: NULL device pointer");

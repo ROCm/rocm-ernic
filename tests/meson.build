@@ -12,17 +12,16 @@ test_pci_client = executable(
     install: false
 )
 
-test_pvrdma_device = executable(
-    'test_pvrdma_device',
-    'test_pvrdma_device.c',
-    include_directories: [libvfiouser_inc],
-    link_args: libvfiouser_link,
-    install: false
-)
-
 test_bar1_read = executable(
     'test_bar1_read',
     'test_bar1_read.c',
+    dependencies: [],
+    install: false
+)
+
+test_dsr_trigger = executable(
+    'test_dsr_trigger',
+    'test_dsr_trigger.c',
     dependencies: [],
     install: false
 )
@@ -33,17 +32,6 @@ test(
     find_program('run-test.sh'),
     args: [
         meson.current_build_dir() / 'test_pci_client',
-        meson.project_build_root() / 'vfu_pvrdma'
-    ],
-    timeout: 30,
-    is_parallel: false
-)
-
-test(
-    'pvrdma-device-test',
-    find_program('run-test.sh'),
-    args: [
-        meson.current_build_dir() / 'test_pvrdma_device',
         meson.project_build_root() / 'vfu_pvrdma'
     ],
     timeout: 30,

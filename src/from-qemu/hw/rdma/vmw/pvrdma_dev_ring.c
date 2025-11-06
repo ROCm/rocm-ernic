@@ -25,6 +25,7 @@
 /* #include "cpu.h" - Not needed for PVRDMA */
 #include "qemu/cutils.h"
 #include "qemu/atomic.h"
+#include "glib-compat.h"
 
 
 #include "../rdma_utils.h"
