@@ -77,3 +77,13 @@ cov-int/
 # Spell check generated files
 wordlist.dic
 
+
+# Kernel module build artifacts
+*.mod
+*.mod.c
+*.mod.o
+*.o.cmd
+*.ko.cmd
+.*.cmd
+Module.symvers
+modules.order
