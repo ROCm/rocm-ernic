@@ -366,23 +366,68 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
 
 /**
  * Setup MSI-X interrupts
+ *
+ * MSI-X setup requires:
+ * 1. Add MSI-X capability to PCI config space
+ * 2. Setup interrupt vectors with vfu_setup_device_nr_irqs()
+ * 3. libvfio-user will then manage the table/PBA in BAR0
  */
 static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
 {
-    int ret;
-
-    /* Setup MSI-X with 3 interrupt vectors:
-     * 0: Command ring
-     * 1: Async events
-     * 2: Completion queue
+    ssize_t ret;
+    
+    /* MSI-X Table and PBA offsets within BAR0
+     * Table: starts at offset 0x0, size = vectors * 16 bytes
+     * PBA: starts at offset 0x2000 (8KB)
      */
+    #define MSIX_TABLE_OFFSET 0x0000
+    #define MSIX_PBA_OFFSET   0x2000
+    #define MSIX_TABLE_BIR    0  /* Table in BAR 0 */
+    #define MSIX_PBA_BIR      0  /* PBA in BAR 0 */
+
+    /* MSI-X capability structure (12 bytes total) */
+    struct {
+        uint8_t id;         /* Capability ID = 0x11 for MSI-X */
+        uint8_t next;       /* Next capability pointer (0 = none, filled by lib) */
+        uint16_t ctrl;      /* Message Control register */
+        uint32_t table;     /* Table Offset/BIR */
+        uint32_t pba;       /* PBA Offset/BIR */
+    } __attribute__((packed)) msix_cap;
+    
+    /* Build MSI-X capability structure */
+    msix_cap.id = PCI_CAP_ID_MSIX;  /* 0x11 */
+    msix_cap.next = 0;  /* Will be filled by libvfio-user if there are more caps */
+    
+    /* Message Control: bits [10:0] = Table Size-1 (so 2 for 3 vectors) 
+     * bit [14] = Function Mask (0 = not masked)
+     * bit [15] = MSI-X Enable (will be set by guest driver) 
+     */
+    msix_cap.ctrl = (RDMA_MAX_INTRS - 1) & 0x7FF;  /* Table size = 3-1 = 2 */
+    
+    /* Table Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
+    msix_cap.table = (MSIX_TABLE_OFFSET & 0xFFFFFFF8) | (MSIX_TABLE_BIR & 0x7);
+    
+    /* PBA Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
+    msix_cap.pba = (MSIX_PBA_OFFSET & 0xFFFFFFF8) | (MSIX_PBA_BIR & 0x7);
+
+    /* Add MSI-X capability to PCI config space at automatic position (pos=0) */
+    ret = vfu_pci_add_capability(vfu_ctx, 0, 0, &msix_cap);
+    if (ret < 0) {
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %m");
+        return ret;
+    }
+    
+    vfu_log(vfu_ctx, LOG_INFO, "Added MSI-X capability at offset 0x%zx", ret);
+
+    /* Setup interrupt vector count - libvfio-user will manage table/PBA */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_MSIX_IRQ, RDMA_MAX_INTRS);
     if (ret < 0) {
-        err(EXIT_FAILURE, "Failed to setup MSI-X interrupts");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup MSI-X IRQ count: %m");
+        return ret;
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, "MSI-X configured with %d vectors",
-            RDMA_MAX_INTRS);
+    vfu_log(vfu_ctx, LOG_INFO, "MSI-X configured: %d vectors, table=BAR%d:0x%x, pba=BAR%d:0x%x",
+            RDMA_MAX_INTRS, MSIX_TABLE_BIR, MSIX_TABLE_OFFSET, MSIX_PBA_BIR, MSIX_PBA_OFFSET);
 
     return 0;
 }
