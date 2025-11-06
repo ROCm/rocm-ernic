@@ -168,13 +168,14 @@ vfu-rdma/
 - **Dependencies**:
   - `libvfio-user` (installed in `/usr/local/`)
   - `libibverbs` (InfiniBand verbs library)
+  - `librdmacm` (RDMA Connection Manager library)
   - `glib-2.0`
 
 ### Installing Dependencies
 
 ```bash
 # Ubuntu/Debian
-sudo apt install meson ninja-build libibverbs-dev libglib2.0-dev
+sudo apt install meson ninja-build libibverbs-dev librdmacm-dev libglib2.0-dev
 
 # Build and install libvfio-user (if not already installed)
 cd /path/to/libvfio-user
@@ -401,6 +402,13 @@ configured
 **Problem:** `Client disconnected` immediately  
 **Cause:** Guest driver incompatibility or protocol mismatch  
 **Solution:** Use kernel 4.18+ with upstream `vmw_pvrdma` driver
+
+**Problem:** Build error: `fatal error: rdma/rdma_cma.h: No such file or directory`  
+**Cause:** Missing RDMA Connection Manager development headers  
+**Solution:** 
+```bash
+sudo apt install librdmacm-dev
+```
 
 **Problem:** Build warnings about implicit declarations  
 **Cause:** Stub headers don't fully replicate QEMU environment  
