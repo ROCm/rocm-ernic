@@ -62,11 +62,6 @@ inc_dirs = include_directories(
   'src/from-qemu/include/qemu-extra',
   '/usr/include/',
   '/usr/local/include',
-  '/home/stebates/Projects/qemu/build/',
-  '/home/stebates/Projects/qemu/include',
-  '/home/stebates/Projects/qemu/include/exec',
-  '/home/stebates/Projects/qemu/include/hw/core',
-  '/home/stebates/Projects/qemu/',
 )
 
 # Compiler arguments
