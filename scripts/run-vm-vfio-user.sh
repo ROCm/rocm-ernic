@@ -93,12 +93,12 @@ echo ""
 exec ${QEMU_PATH}qemu-system-${QARCH} \
    ${QARCH_ARGS} \
    -smp cpus=${VCPUS} \
-   -m ${VMEM} \
+   -object memory-backend-memfd,id=mem0,share=on,size=${VMEM}M \
+   -machine memory-backend=mem0 \
    ${FILESYSTEM_ARGS} \
    -nographic \
    -drive if=virtio,format=qcow2,file=${IMAGES}/${VM_NAME}.qcow2 \
    -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
    -device virtio-net-pci,netdev=net0 \
-   -chardev socket,id=vfio0,path=${VFIO_USER_SOCKET} \
-   -device vfio-user-pci,chardev=vfio0
+   -device '{"driver":"vfio-user-pci","socket":{"path":"'"${VFIO_USER_SOCKET}"'","type":"unix"}}'
 

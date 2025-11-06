@@ -30,7 +30,8 @@ typedef struct vfu_pvrdma_dev vfu_pvrdma_dev_t;
 #define RDMA_BAR1_REGS_SIZE 64 /* 64 DWORDs = 256 bytes */
 #endif
 #ifndef RDMA_BAR2_UAR_SIZE
-#define RDMA_BAR2_UAR_SIZE (4096 * 168) /* 168 User Contexts */
+/* Must be power of 2 when multiplied by sizeof(uint32_t) for PCI BAR */
+#define RDMA_BAR2_UAR_SIZE (4096 * 256) /* 256 pages = 1MB DWORDs = 4MB BAR (2^22) */
 #endif
 
 /* MSI-X interrupt vectors */
