@@ -36,8 +36,9 @@
 #include "vfu_compat_bridge.h"
 
 /* PCI Device IDs for VMware PVRDMA */
-#define PCI_VENDOR_ID_VMWARE 0x15ad
-#define PCI_DEVICE_ID_PVRDMA 0x0820
+/* AMD Emulated RDMA device IDs (for vfio-user) */
+#define PCI_VENDOR_ID_AMD 0x1022
+#define PCI_DEVICE_ID_AMD_EMRDMA 0x1484
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -297,10 +298,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
     }
 
     /* Set vendor/device IDs */
-    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_VMWARE, /* Vendor ID */
-                   PCI_DEVICE_ID_PVRDMA,          /* Device ID */
-                   PCI_VENDOR_ID_VMWARE,          /* Subsystem Vendor ID */
-                   PCI_DEVICE_ID_PVRDMA);         /* Subsystem ID */
+    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD,       /* Vendor ID */
+                   PCI_DEVICE_ID_AMD_EMRDMA,      /* Device ID */
+                   PCI_VENDOR_ID_AMD,             /* Subsystem Vendor ID */
+                   PCI_DEVICE_ID_AMD_EMRDMA);     /* Subsystem ID */
 
     /* Set PCI class code: Network Controller - Other */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class */
@@ -308,7 +309,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
                       0x00); /* Programming interface */
 
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
-            PCI_VENDOR_ID_VMWARE, PCI_DEVICE_ID_PVRDMA);
+            PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_EMRDMA);
 
     return 0;
 }
