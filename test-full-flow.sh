@@ -15,10 +15,10 @@ sudo pkill -9 qemu-system-x86 2>/dev/null || true
 sudo rm -f /tmp/vfio-user-pvrdma.sock 2>/dev/null || true
 sleep 1
 
-# Start server
-echo "[2/5] Starting vfu_pvrdma server..."
+# Start server with loopback backend
+echo "[2/5] Starting vfu_pvrdma server (loopback backend)..."
 cd /home/stebates/Projects/vfu-rdma
-sudo ./build/vfu_pvrdma -s /tmp/vfio-user-pvrdma.sock -v > /tmp/server.log 2>&1 &
+sudo ./build/vfu_pvrdma -s /tmp/vfio-user-pvrdma.sock --backend loopback -v > /tmp/server.log 2>&1 &
 SERVER_PID=$!
 
 # Wait for socket

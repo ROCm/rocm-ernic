@@ -260,9 +260,10 @@ static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
 {
     int ret;
     
-    /* Create PVRDMA device using wrapper API */
+    /* Create PVRDMA device using wrapper API with selected backend */
     dev->pvrdma_handle =
-        pvrdma_device_create(dev, dev->backend_device_name,
+        pvrdma_device_create(dev, dev->backend_type_str,
+                             dev->backend_device_name,
                              dev->backend_eth_device, dev->backend_port_num);
 
     if (!dev->pvrdma_handle) {
@@ -273,13 +274,15 @@ static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
     /* Realize the device - this initializes registers and backends */
     ret = pvrdma_device_realize(dev->pvrdma_handle);
     if (ret < 0) {
-        fprintf(stderr, "Failed to realize PVRDMA device\n");
+        fprintf(stderr, "Failed to realize PVRDMA device with backend '%s'\n",
+                dev->backend_type_str);
         return -1;
     }
 
     dev->device_initialized = true;
 
-    printf("PVRDMA device initialized successfully\n");
+    printf("PVRDMA device initialized successfully with '%s' backend\n",
+           dev->backend_type_str);
 
     return 0;
 }
@@ -442,11 +445,18 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
-    fprintf(stderr, "  -d, --device NAME    InfiniBand device name\n");
+    fprintf(stderr, "  -b, --backend TYPE   RDMA backend: none|loopback|verbs[:device]\n");
+    fprintf(stderr, "                       (default: none)\n");
+    fprintf(stderr, "  -d, --device NAME    InfiniBand device name (for verbs backend)\n");
     fprintf(stderr, "  -e, --ethdev NAME    Ethernet device name\n");
     fprintf(stderr, "  -p, --port NUM       IB port number (default: 1)\n");
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Backend Types:\n");
+    fprintf(stderr, "  none       - No RDMA backend (minimal stubs)\n");
+    fprintf(stderr, "  loopback   - Internal loopback emulation (for testing)\n");
+    fprintf(stderr, "  verbs[:dev]- libibverbs hardware backend\n");
 }
 
 /**
@@ -462,6 +472,7 @@ int main(int argc, char *argv[])
 
     static struct option long_options[] = {
         {"socket", required_argument, 0, 's'},
+        {"backend", required_argument, 0, 'b'},
         {"device", required_argument, 0, 'd'},
         {"ethdev", required_argument, 0, 'e'},
         {"port", required_argument, 0, 'p'},
@@ -476,17 +487,22 @@ int main(int argc, char *argv[])
     }
 
     /* Set defaults */
+    dev->backend_type_str = strdup("none");  /* Default to "none" backend */
     dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
     dev->device_active = false;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:d:e:p:vh", long_options, NULL)) !=
+    while ((opt = getopt_long(argc, argv, "s:b:d:e:p:vh", long_options, NULL)) !=
            -1) {
         switch (opt) {
         case 's':
             socket_path = optarg;
+            break;
+        case 'b':
+            free(dev->backend_type_str);
+            dev->backend_type_str = strdup(optarg);
             break;
         case 'd':
             dev->backend_device_name = strdup(optarg);
@@ -519,8 +535,9 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
-    printf("vfu_pvrdma: Starting PVRDMA device server (Phase 1 integration)\n");
+    printf("vfu_pvrdma: Starting PVRDMA device server (Multi-Backend Support)\n");
     printf("  Socket: %s\n", socket_path);
+    printf("  Backend: %s\n", dev->backend_type_str);
     if (dev->backend_device_name) {
         printf("  IB Device: %s\n", dev->backend_device_name);
     }
@@ -534,8 +551,8 @@ int main(int argc, char *argv[])
     printf("  ✓ BAR0/1/2 access\n");
     printf("  ✓ DSR register handling (QEMU integration)\n");
     printf("  ✓ Command channel framework\n");
-    printf("  ⚠ RDMA backend (pending libibverbs init)\n");
-    printf("  ⚠ Full command processing (pending)\n");
+    printf("  ✓ Multi-backend support (none/loopback/verbs)\n");
+    printf("  ⚠ Full command processing (in progress)\n");
     printf("\n");
 
     /* Remove old socket if it exists - try multiple approaches */

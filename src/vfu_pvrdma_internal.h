@@ -60,6 +60,7 @@ struct vfu_pvrdma_dev {
     void *bar2_mem; /* UAR (User Access Region) */
 
     /* Backend device configuration */
+    char *backend_type_str;    /* Backend type: none, loopback, verbs:device */
     char *backend_device_name; /* IB device (e.g., "mlx5_0") */
     char *backend_eth_device;  /* Eth device (e.g., "eth0") */
     uint8_t backend_port_num;  /* IB port number */

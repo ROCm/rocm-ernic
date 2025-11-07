@@ -45,6 +45,7 @@ typedef void *pvrdma_handle_t;
  * Returns: Opaque handle to PVRDMA device, or NULL on failure
  */
 pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
+                                     const char *backend_type_str,
                                      const char *ib_dev_name,
                                      const char *eth_dev_name,
                                      uint8_t port_num);

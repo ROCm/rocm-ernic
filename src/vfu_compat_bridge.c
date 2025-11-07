@@ -26,6 +26,7 @@
 #define VFU_PVRDMA_INTERNAL_IMPL
 #include "from-qemu/hw/rdma/vmw/pvrdma.h"
 #include "from-qemu/hw/rdma/rdma_backend.h"
+#include "from-qemu/hw/rdma/rdma_rm.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
 
 /*
@@ -50,10 +51,12 @@ static int num_dma_mappings = 0;
  */
 
 pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
+                                     const char *backend_type_str,
                                      const char *ib_dev_name,
                                      const char *eth_dev_name, uint8_t port_num)
 {
     PVRDMADev *pvrdma;
+    RdmaBackendType backend_type;
 
     if (!vfu_dev) {
         rdma_error_report("pvrdma_device_create: vfu_dev is NULL");
@@ -70,6 +73,14 @@ pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
     /* Initialize PCIDevice wrapper for bridge functions */
     pvrdma->parent_obj.vfu_dev = vfu_dev;
     pvrdma->parent_obj.vfu_ctx = vfu_dev->vfu_ctx;
+
+    /* Parse backend type */
+    backend_type = rdma_backend_get_type_from_string(backend_type_str);
+    rdma_info_report("Selected RDMA backend: %s", 
+                    rdma_backend_type_to_string(backend_type));
+
+    /* Store backend type in device for later use */
+    pvrdma->backend_dev.backend_type = backend_type;
 
     /* Set backend device configuration */
     if (ib_dev_name) {
@@ -114,9 +125,12 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         return;
     }
 
-    /* Clean up backend */
-    rdma_backend_destroy(&pvrdma->backend_dev);
-    rdma_rm_fini(&pvrdma->rdma_dev_res);
+    /* Clean up resource manager */
+    rdma_rm_fini(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
+                 pvrdma->backend_eth_device_name);
+
+    /* Clean up backend using the new abstraction */
+    rdma_backend_fini_with_ops(&pvrdma->backend_dev);
 
     /* Free device names */
     free(pvrdma->backend_device_name);
@@ -154,20 +168,28 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         return -EIO;
     }
 
-    /* Initialize RDMA backend - optional for now */
-    rc = rdma_backend_init(
-        &pvrdma->backend_dev, &pvrdma->rdma_dev_res,
-        pvrdma->backend_device_name, pvrdma->backend_eth_device_name,
-        pvrdma->backend_port_num, &pvrdma->dev_attr, NULL); /* No MAD chr_be */
-
-    if (rc < 0) {
-        rdma_warn_report("RDMA backend initialization failed (rc=%d) - continuing without backend", rc);
-        rdma_warn_report("Device will respond to PCI/register accesses but RDMA operations won't work");
-        /* Don't return error - allow device to realize for testing */
-    } else {
-        rdma_info_report("RDMA backend initialized successfully");
+    /* Initialize RDMA backend with selected backend type */
+    const char *backend_config = NULL;
+    
+    /* For verbs backend, pass device name as config */
+    if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_VERBS && 
+        pvrdma->backend_device_name) {
+        backend_config = pvrdma->backend_device_name;
     }
 
+    rc = rdma_backend_init_with_ops(&pvrdma->backend_dev,
+                                    pvrdma->backend_dev.backend_type,
+                                    backend_config);
+
+    if (rc < 0) {
+        rdma_error_report("RDMA backend initialization failed (rc=%d)", rc);
+        rdma_error_report("Backend type: %s", 
+                         rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
+        return -EIO;
+    }
+
+    rdma_info_report("RDMA backend '%s' initialized successfully",
+                    rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
     rdma_info_report("PVRDMA device realized successfully");
 
     return 0;

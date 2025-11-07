@@ -55,6 +55,16 @@ static inline uint32_t rdma_backend_mr_rkey(const RdmaBackendMR *mr)
     return mr->ibmr ? mr->ibmr->rkey : 0;
 }
 
+/* Multi-backend abstraction functions */
+const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);
+RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str);
+const char *rdma_backend_type_to_string(RdmaBackendType type);
+int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
+                                RdmaBackendType type,
+                                const char *config);
+void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
+
+/* Legacy verbs backend init (for compatibility) */
 int rdma_backend_init(RdmaBackendDev *backend_dev, PCIDevice *pdev,
                       RdmaDeviceResources *rdma_dev_res,
                       const char *backend_device_name, uint8_t port_num,
