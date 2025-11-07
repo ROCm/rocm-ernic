@@ -17,7 +17,7 @@
 
 /* Forward declarations of backend implementations */
 extern const RdmaBackendOps rdma_backend_ops_none;
-/* extern const RdmaBackendOps rdma_backend_ops_loopback; */  /* TODO */
+extern const RdmaBackendOps rdma_backend_ops_loopback;
 /* extern const RdmaBackendOps rdma_backend_ops_verbs; */     /* TODO */
 
 /**
@@ -28,7 +28,7 @@ extern const RdmaBackendOps rdma_backend_ops_none;
  */
 static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
     [RDMA_BACKEND_TYPE_NONE] = &rdma_backend_ops_none,
-    [RDMA_BACKEND_TYPE_LOOPBACK] = NULL,  /* TODO: &rdma_backend_ops_loopback */
+    [RDMA_BACKEND_TYPE_LOOPBACK] = &rdma_backend_ops_loopback,
     [RDMA_BACKEND_TYPE_VERBS] = NULL,     /* TODO: &rdma_backend_ops_verbs */
 };
 

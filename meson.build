@@ -23,8 +23,9 @@ ibverbs_dep = dependency('libibverbs', required: true)
 # Note: rdma.c excluded - only contains QEMU type system registration
 rdma_backend_sources = files(
   'src/from-qemu/hw/rdma/rdma_backend.c',
-  'src/from-qemu/hw/rdma/rdma_backend_core.c',    # Backend abstraction
-  'src/from-qemu/hw/rdma/rdma_backend_none.c',    # "None" backend
+  'src/from-qemu/hw/rdma/rdma_backend_core.c',      # Backend abstraction
+  'src/from-qemu/hw/rdma/rdma_backend_none.c',      # "None" backend
+  'src/from-qemu/hw/rdma/rdma_backend_loopback.c',  # "Loopback" backend
   'src/from-qemu/hw/rdma/rdma_utils.c',
   'src/from-qemu/hw/rdma/rdma_rm.c',
 )
