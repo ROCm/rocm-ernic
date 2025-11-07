@@ -54,28 +54,48 @@ int amd_emrdma_page_dir_init(struct amd_emrdma_dev *dev, struct amd_emrdma_page_
 {
 	u64 i;
 
-	if (npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES)
+	dev_info(&dev->pdev->dev, "page_dir_init: npages=%llu, alloc_pages=%d\n",
+		 npages, alloc_pages);
+
+	if (npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
+		dev_err(&dev->pdev->dev, "page_dir_init: npages > max (%llu > %d)\n",
+			npages, AMD_EMRDMA_PAGE_DIR_MAX_PAGES);
 		return -EINVAL;
+	}
 
 	memset(pdir, 0, sizeof(*pdir));
 
+	dev_info(&dev->pdev->dev, "page_dir_init: allocating dir (PAGE_SIZE=%lu)\n",
+		 PAGE_SIZE);
 	pdir->dir = dma_alloc_coherent(&dev->pdev->dev, PAGE_SIZE,
 				       &pdir->dir_dma, GFP_KERNEL);
-	if (!pdir->dir)
+	if (!pdir->dir) {
+		dev_err(&dev->pdev->dev, "page_dir_init: dma_alloc_coherent for dir failed\n");
 		goto err;
+	}
+	dev_info(&dev->pdev->dev, "page_dir_init: dir allocated at %p (dma=0x%llx)\n",
+		 pdir->dir, (unsigned long long)pdir->dir_dma);
 
 	pdir->ntables = AMD_EMRDMA_PAGE_DIR_TABLE(npages - 1) + 1;
+	dev_info(&dev->pdev->dev, "page_dir_init: allocating %llu tables\n", pdir->ntables);
 	pdir->tables = kcalloc(pdir->ntables, sizeof(*pdir->tables),
 			       GFP_KERNEL);
-	if (!pdir->tables)
+	if (!pdir->tables) {
+		dev_err(&dev->pdev->dev, "page_dir_init: kcalloc for tables failed\n");
 		goto err;
+	}
 
 	for (i = 0; i < pdir->ntables; i++) {
+		dev_info(&dev->pdev->dev, "page_dir_init: allocating table %llu\n", i);
 		pdir->tables[i] = dma_alloc_coherent(&dev->pdev->dev, PAGE_SIZE,
 						(dma_addr_t *)&pdir->dir[i],
 						GFP_KERNEL);
-		if (!pdir->tables[i])
+		if (!pdir->tables[i]) {
+			dev_err(&dev->pdev->dev, "page_dir_init: dma_alloc_coherent for table %llu failed\n", i);
 			goto err;
+		}
+		dev_info(&dev->pdev->dev, "page_dir_init: table %llu allocated at %p\n",
+			 i, pdir->tables[i]);
 	}
 
 	pdir->npages = npages;

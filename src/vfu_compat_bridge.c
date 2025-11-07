@@ -28,6 +28,8 @@
 #include "from-qemu/hw/rdma/rdma_backend.h"
 #include "from-qemu/hw/rdma/rdma_rm.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
+#include "from-qemu/include/qemu-extra/standard-headers/rdma/vmw_pvrdma-abi.h"
+#include "from-qemu/include/qemu-extra/standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 
 /*
  * DMA Mapping Tracking
@@ -115,6 +117,39 @@ pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
     pvrdma->dev_attr.max_ah = MAX_AH;
     pvrdma->dev_attr.max_srq = MAX_SRQ;
     pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
+    pvrdma->dev_attr.max_sge = MAX_SGE;  /* Required for calculations below */
+
+    /* Calculate dynamic device capabilities (from init_dev_caps in pvrdma_main.c) */
+    {
+        size_t pg_tbl_bytes = PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
+        size_t wr_sz = MAX(sizeof(struct pvrdma_sq_wqe_hdr), 
+                           sizeof(struct pvrdma_rq_wqe_hdr));
+
+        rdma_info_report("Calculating device capabilities:");
+        rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE, pg_tbl_bytes);
+
+        /* Calculate max_qp_wr */
+        pvrdma->dev_attr.max_qp_wr =
+            pg_tbl_bytes /
+                (wr_sz + sizeof(struct pvrdma_sge) * pvrdma->dev_attr.max_sge) -
+            PAGE_SIZE;  /* First page is ring state */
+
+        /* Calculate max_cqe */
+        pvrdma->dev_attr.max_cqe = pg_tbl_bytes / sizeof(struct pvrdma_cqe) -
+                                   PAGE_SIZE;  /* First page is ring state */
+
+        /* Calculate max_srq_wr */
+        pvrdma->dev_attr.max_srq_wr =
+            pg_tbl_bytes /
+                ((sizeof(struct pvrdma_rq_wqe_hdr) + sizeof(struct pvrdma_sge)) *
+                 pvrdma->dev_attr.max_sge) -
+            PAGE_SIZE;
+
+        rdma_info_report("  max_qp_wr=%d", pvrdma->dev_attr.max_qp_wr);
+        rdma_info_report("  max_cqe=%d", pvrdma->dev_attr.max_cqe);
+        rdma_info_report("  max_sge=%d", pvrdma->dev_attr.max_sge);
+        rdma_info_report("  max_srq_wr=%d", pvrdma->dev_attr.max_srq_wr);
+    }
 
     /* Initialize DSR info */
     pvrdma->dsr_info.dsr = NULL;

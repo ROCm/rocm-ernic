@@ -686,6 +686,11 @@ static void init_dev_caps(PVRDMADev *dev)
     size_t wr_sz =
         MAX(sizeof(struct pvrdma_sq_wqe_hdr), sizeof(struct pvrdma_rq_wqe_hdr));
 
+    rdma_info_report("init_dev_caps: CALLED");
+    rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE, pg_tbl_bytes);
+    rdma_info_report("  sizeof(pvrdma_cqe)=%zu", sizeof(struct pvrdma_cqe));
+    rdma_info_report("  max_sge=%d", dev->dev_attr.max_sge);
+
     dev->dev_attr.max_qp_wr =
         pg_tbl_bytes /
             (wr_sz + sizeof(struct pvrdma_sge) * dev->dev_attr.max_sge) -
@@ -700,6 +705,11 @@ static void init_dev_caps(PVRDMADev *dev)
             ((sizeof(struct pvrdma_rq_wqe_hdr) + sizeof(struct pvrdma_sge)) *
              dev->dev_attr.max_sge) -
         PAGE_SIZE;
+
+    rdma_info_report("init_dev_caps: RESULTS:");
+    rdma_info_report("  max_qp_wr=%d", dev->dev_attr.max_qp_wr);
+    rdma_info_report("  max_cqe=%d", dev->dev_attr.max_cqe);
+    rdma_info_report("  max_srq_wr=%d", dev->dev_attr.max_srq_wr);
 }
 
 static int pvrdma_check_ram_shared(Object *obj, void *opaque)

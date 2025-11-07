@@ -271,41 +271,54 @@ static int create_cq_ring(PCIDevice *pci_dev, PvrdmaRing **ring,
     int rc = -EINVAL;
     char ring_name[MAX_RING_NAME_SZ];
 
+    rdma_info_report(">>> create_cq_ring: ENTRY (pdir_dma=0x%lx, nchunks=%u, cqe=%u)",
+                     pdir_dma, nchunks, cqe);
+
     if (!nchunks || nchunks > PVRDMA_MAX_FAST_REG_PAGES) {
-        rdma_error_report("Got invalid nchunks: %d", nchunks);
+        rdma_error_report(">>> create_cq_ring: Invalid nchunks: %d (max=%d)", 
+                         nchunks, PVRDMA_MAX_FAST_REG_PAGES);
         return rc;
     }
 
+    rdma_info_report(">>> create_cq_ring: Mapping page directory...");
     dir = rdma_pci_dma_map(pci_dev, pdir_dma, PAGE_SIZE);
     if (!dir) {
-        rdma_error_report("Failed to map to CQ page directory");
+        rdma_error_report(">>> create_cq_ring: Failed to map page directory");
         goto out;
     }
+    rdma_info_report(">>> create_cq_ring: Page directory mapped at %p", dir);
 
+    rdma_info_report(">>> create_cq_ring: Mapping page table (dir[0]=0x%lx)...", dir[0]);
     tbl = rdma_pci_dma_map(pci_dev, dir[0], PAGE_SIZE);
     if (!tbl) {
-        rdma_error_report("Failed to map to CQ page table");
+        rdma_error_report(">>> create_cq_ring: Failed to map page table");
         goto out;
     }
+    rdma_info_report(">>> create_cq_ring: Page table mapped at %p", tbl);
 
     r = g_malloc(sizeof(*r));
     *ring = r;
 
+    rdma_info_report(">>> create_cq_ring: Mapping ring state (tbl[0]=0x%lx)...", tbl[0]);
     r->ring_state = rdma_pci_dma_map(pci_dev, tbl[0], PAGE_SIZE);
 
     if (!r->ring_state) {
-        rdma_error_report("Failed to map to CQ ring state");
+        rdma_error_report(">>> create_cq_ring: Failed to map ring state");
         goto out_free_ring;
     }
+    rdma_info_report(">>> create_cq_ring: Ring state mapped at %p", r->ring_state);
 
     sprintf(ring_name, "cq_ring_%" PRIx64, pdir_dma);
+    rdma_info_report(">>> create_cq_ring: Initializing ring '%s'...", ring_name);
     rc = pvrdma_ring_init(r, ring_name, pci_dev, &r->ring_state[1], cqe,
                           sizeof(struct pvrdma_cqe),
                           /* first page is ring state */
                           (dma_addr_t *)&tbl[1], nchunks - 1);
     if (rc) {
+        rdma_error_report(">>> create_cq_ring: pvrdma_ring_init failed: %d", rc);
         goto out_unmap_ring_state;
     }
+    rdma_info_report(">>> create_cq_ring: Ring initialized successfully");
 
     goto out;
 
@@ -320,6 +333,7 @@ out:
     rdma_pci_dma_unmap(pci_dev, tbl, PAGE_SIZE);
     rdma_pci_dma_unmap(pci_dev, dir, PAGE_SIZE);
 
+    rdma_info_report(">>> create_cq_ring: EXIT (rc=%d)", rc);
     return rc;
 }
 
@@ -339,24 +353,36 @@ static int create_cq(PVRDMADev *dev, union pvrdma_cmd_req *req,
     PvrdmaRing *ring = NULL;
     int rc;
 
+    rdma_info_report(">>> create_cq: ENTRY (cqe=%u, nchunks=%u, pdir_dma=0x%lx)",
+                     cmd->cqe, cmd->nchunks, cmd->pdir_dma);
+
     memset(resp, 0, sizeof(*resp));
 
     resp->cqe = cmd->cqe;
 
+    rdma_info_report(">>> create_cq: Calling create_cq_ring...");
     rc = create_cq_ring(PCI_DEVICE(dev), &ring, cmd->pdir_dma, cmd->nchunks,
                         cmd->cqe);
     if (rc) {
+        rdma_error_report(">>> create_cq: create_cq_ring failed: %d", rc);
         return rc;
     }
+    rdma_info_report(">>> create_cq: Ring created successfully");
 
+    rdma_info_report(">>> create_cq: Calling rdma_rm_alloc_cq...");
     rc = rdma_rm_alloc_cq(&dev->rdma_dev_res, &dev->backend_dev, cmd->cqe,
                           &resp->cq_handle, ring);
     if (rc) {
+        rdma_error_report(">>> create_cq: rdma_rm_alloc_cq failed: %d", rc);
         destroy_cq_ring(ring);
+    } else {
+        rdma_info_report(">>> create_cq: CQ allocated successfully, handle=%u", 
+                        resp->cq_handle);
     }
 
     resp->cqe = cmd->cqe;
 
+    rdma_info_report(">>> create_cq: EXIT (rc=%d)", rc);
     return rc;
 }
 

@@ -127,15 +127,28 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 
 	BUILD_BUG_ON(sizeof(struct amd_emrdma_cqe) != 64);
 
-	if (attr->flags)
+	dev_info(&dev->pdev->dev, "CQ create: ENTRY (entries=%d, flags=0x%x, is_kernel=%d)\n",
+		 entries, attr->flags, !udata);
+
+	if (attr->flags) {
+		dev_warn(&dev->pdev->dev, "CQ create: EOPNOTSUPP (flags=0x%x)\n", attr->flags);
 		return -EOPNOTSUPP;
+	}
 
 	entries = roundup_pow_of_two(entries);
-	if (entries < 1 || entries > dev->dsr->caps.max_cqe)
+	dev_info(&dev->pdev->dev, "CQ create: rounded entries=%d, max_cqe=%d\n",
+		 entries, dev->dsr->caps.max_cqe);
+	if (entries < 1 || entries > dev->dsr->caps.max_cqe) {
+		dev_warn(&dev->pdev->dev, "CQ create: EINVAL (entries check failed)\n");
 		return -EINVAL;
+	}
 
-	if (!atomic_add_unless(&dev->num_cqs, 1, dev->dsr->caps.max_cq))
+	dev_info(&dev->pdev->dev, "CQ create: checking CQ limit (num_cqs=%d, max_cq=%d)\n",
+		 atomic_read(&dev->num_cqs), dev->dsr->caps.max_cq);
+	if (!atomic_add_unless(&dev->num_cqs, 1, dev->dsr->caps.max_cq)) {
+		dev_warn(&dev->pdev->dev, "CQ create: ENOMEM (max CQs reached)\n");
 		return -ENOMEM;
+	}
 
 	cq->ibcq.cqe = entries;
 	cq->is_kernel = !udata;
@@ -170,12 +183,17 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 		goto err_umem;
 	}
 
+	dev_info(&dev->pdev->dev,
+		 "CQ create: about to init page dir (npages=%d, is_kernel=%d)\n",
+		 npages, cq->is_kernel);
 	ret = amd_emrdma_page_dir_init(dev, &cq->pdir, npages, cq->is_kernel);
 	if (ret) {
 		dev_warn(&dev->pdev->dev,
-			 "could not allocate page directory\n");
+			 "could not allocate page directory (ret=%d, npages=%d)\n",
+			 ret, npages);
 		goto err_umem;
 	}
+	dev_info(&dev->pdev->dev, "CQ create: page dir init succeeded\n");
 
 	/* Ring state is always the first page. Set in library for user cq. */
 	if (cq->is_kernel)
