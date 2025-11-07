@@ -168,10 +168,17 @@ int rdma_rm_alloc_pd(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
         goto out;
     }
 
-    ret = rdma_backend_create_pd(backend_dev, &pd->backend_pd);
-    if (ret) {
-        ret = -EIO;
-        goto out_tbl_dealloc;
+    /* Only create backend PD if we have a real backend */
+    if (backend_dev && backend_dev->context) {
+        ret = rdma_backend_create_pd(backend_dev, &pd->backend_pd);
+        if (ret) {
+            ret = -EIO;
+            goto out_tbl_dealloc;
+        }
+    } else {
+        /* No backend - just allocate the PD handle for tracking */
+        rdma_info_report("rdma_rm_alloc_pd: No backend, allocated PD handle %u (no-backend mode)", *pd_handle);
+        memset(&pd->backend_pd, 0, sizeof(pd->backend_pd));
     }
 
     pd->ctx_handle = ctx_handle;
