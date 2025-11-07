@@ -65,7 +65,8 @@ RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str)
         return RDMA_BACKEND_TYPE_NONE;
     }
     
-    if (!strcmp(backend_str, "loopback")) {
+    if (!strncmp(backend_str, "loopback", 8)) {
+        /* Match "loopback" or "loopback:..." */
         return RDMA_BACKEND_TYPE_LOOPBACK;
     }
     

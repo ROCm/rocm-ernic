@@ -454,9 +454,23 @@ static void usage(const char *progname)
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
-    fprintf(stderr, "  none       - No RDMA backend (minimal stubs)\n");
-    fprintf(stderr, "  loopback   - Internal loopback emulation (for testing)\n");
-    fprintf(stderr, "  verbs[:dev]- libibverbs hardware backend\n");
+    fprintf(stderr, "  none         - No RDMA backend (minimal stubs)\n");
+    fprintf(stderr, "  loopback[:opts] - Internal loopback emulation (for testing)\n");
+    fprintf(stderr, "               Options (comma-separated):\n");
+    fprintf(stderr, "                 preserve  - Use actual guest data (default)\n");
+    fprintf(stderr, "                 zeros     - Fill with 0x00\n");
+    fprintf(stderr, "                 ones      - Fill with 0xFF\n");
+    fprintf(stderr, "                 increment - Fill with 0x00,0x01,0x02,...\n");
+    fprintf(stderr, "                 decrement - Fill with 0xFF,0xFE,0xFD,...\n");
+    fprintf(stderr, "                 alternate - Fill with 0xAA,0x55,0xAA,...\n");
+    fprintf(stderr, "                 random    - Fill with random data\n");
+    fprintf(stderr, "                 md5       - Compute MD5 hash of data\n");
+    fprintf(stderr, "               Examples:\n");
+    fprintf(stderr, "                 loopback           - Use guest data, no MD5\n");
+    fprintf(stderr, "                 loopback:md5       - Use guest data, compute MD5\n");
+    fprintf(stderr, "                 loopback:random,md5 - Random data with MD5\n");
+    fprintf(stderr, "                 loopback:zeros     - All zeros, no MD5\n");
+    fprintf(stderr, "  verbs[:dev]  - libibverbs hardware backend\n");
 }
 
 /**

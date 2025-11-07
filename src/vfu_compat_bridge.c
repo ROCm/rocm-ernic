@@ -74,18 +74,32 @@ pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
     pvrdma->parent_obj.vfu_dev = vfu_dev;
     pvrdma->parent_obj.vfu_ctx = vfu_dev->vfu_ctx;
 
-    /* Parse backend type */
+    /* Parse backend type and extract config */
     backend_type = rdma_backend_get_type_from_string(backend_type_str);
     rdma_info_report("Selected RDMA backend: %s", 
                     rdma_backend_type_to_string(backend_type));
 
-    /* Store backend type in device for later use */
+    /* Store backend type and config in device for later use */
     pvrdma->backend_dev.backend_type = backend_type;
-
-    /* Set backend device configuration */
-    if (ib_dev_name) {
-        pvrdma->backend_device_name = strdup(ib_dev_name);
+    
+    /* Extract backend config (part after ':') from backend string */
+    const char *colon = strchr(backend_type_str, ':');
+    const char *backend_config_from_string = colon ? (colon + 1) : NULL;
+    
+    /* Set backend device configuration based on backend type */
+    if (backend_type == RDMA_BACKEND_TYPE_VERBS) {
+        /* For verbs backend, prefer explicit ib_dev_name, fallback to config string */
+        if (ib_dev_name) {
+            pvrdma->backend_device_name = strdup(ib_dev_name);
+        } else if (backend_config_from_string) {
+            pvrdma->backend_device_name = strdup(backend_config_from_string);
+        }
+    } else if (backend_config_from_string) {
+        /* For other backends (loopback, etc), use config from backend string */
+        pvrdma->backend_device_name = strdup(backend_config_from_string);
+        rdma_info_report("Backend config string: '%s'", pvrdma->backend_device_name);
     }
+    
     if (eth_dev_name) {
         pvrdma->backend_eth_device_name = strdup(eth_dev_name);
     }
@@ -169,13 +183,7 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     }
 
     /* Initialize RDMA backend with selected backend type */
-    const char *backend_config = NULL;
-    
-    /* For verbs backend, pass device name as config */
-    if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_VERBS && 
-        pvrdma->backend_device_name) {
-        backend_config = pvrdma->backend_device_name;
-    }
+    const char *backend_config = pvrdma->backend_device_name;  /* Config extracted from --backend string */
 
     rc = rdma_backend_init_with_ops(&pvrdma->backend_dev,
                                     pvrdma->backend_dev.backend_type,

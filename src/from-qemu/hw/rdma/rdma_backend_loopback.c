@@ -16,10 +16,21 @@
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
+#include <stdio.h>
 
 /*
  * Loopback Backend Data Structures
  */
+
+typedef enum {
+    LOOPBACK_DATA_PATTERN_ZEROS,       /* All 0x00 */
+    LOOPBACK_DATA_PATTERN_ONES,        /* All 0xFF */
+    LOOPBACK_DATA_PATTERN_INCREMENTING, /* 0x00, 0x01, 0x02, ... */
+    LOOPBACK_DATA_PATTERN_DECREMENTING, /* 0xFF, 0xFE, 0xFD, ... */
+    LOOPBACK_DATA_PATTERN_ALTERNATING,  /* 0xAA, 0x55, 0xAA, ... */
+    LOOPBACK_DATA_PATTERN_RANDOM,      /* Random data */
+    LOOPBACK_DATA_PATTERN_PRESERVE,    /* Use actual guest data (default) */
+} LoopbackDataPattern;
 
 typedef struct {
     uint32_t handle;
@@ -103,6 +114,10 @@ typedef struct {
     /* For loopback connections */
     GHashTable *qp_pairs;  /* local_qpn -> remote_qpn */
     
+    /* Data pattern configuration */
+    LoopbackDataPattern data_pattern;
+    bool compute_md5;  /* Whether to compute MD5 on data transfers */
+    
     QemuMutex lock;
 } LoopbackBackendPrivate;
 
@@ -113,6 +128,113 @@ typedef struct {
 static LoopbackBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 {
     return (LoopbackBackendPrivate *)backend_dev->backend_private;
+}
+
+static LoopbackDataPattern parse_data_pattern(const char *config)
+{
+    if (!config || strstr(config, "preserve")) {
+        return LOOPBACK_DATA_PATTERN_PRESERVE;
+    }
+    if (strstr(config, "zeros")) {
+        return LOOPBACK_DATA_PATTERN_ZEROS;
+    }
+    if (strstr(config, "ones")) {
+        return LOOPBACK_DATA_PATTERN_ONES;
+    }
+    if (strstr(config, "increment")) {
+        return LOOPBACK_DATA_PATTERN_INCREMENTING;
+    }
+    if (strstr(config, "decrement")) {
+        return LOOPBACK_DATA_PATTERN_DECREMENTING;
+    }
+    if (strstr(config, "alternate")) {
+        return LOOPBACK_DATA_PATTERN_ALTERNATING;
+    }
+    if (strstr(config, "random")) {
+        return LOOPBACK_DATA_PATTERN_RANDOM;
+    }
+    return LOOPBACK_DATA_PATTERN_PRESERVE;  /* Default */
+}
+
+static const char *data_pattern_name(LoopbackDataPattern pattern)
+{
+    switch (pattern) {
+    case LOOPBACK_DATA_PATTERN_ZEROS: return "zeros";
+    case LOOPBACK_DATA_PATTERN_ONES: return "ones";
+    case LOOPBACK_DATA_PATTERN_INCREMENTING: return "incrementing";
+    case LOOPBACK_DATA_PATTERN_DECREMENTING: return "decrementing";
+    case LOOPBACK_DATA_PATTERN_ALTERNATING: return "alternating";
+    case LOOPBACK_DATA_PATTERN_RANDOM: return "random";
+    case LOOPBACK_DATA_PATTERN_PRESERVE: return "preserve";
+    default: return "unknown";
+    }
+}
+
+static void generate_data_pattern(void *buffer, size_t length, 
+                                  LoopbackDataPattern pattern)
+{
+    uint8_t *buf = (uint8_t *)buffer;
+    
+    switch (pattern) {
+    case LOOPBACK_DATA_PATTERN_ZEROS:
+        memset(buf, 0x00, length);
+        break;
+        
+    case LOOPBACK_DATA_PATTERN_ONES:
+        memset(buf, 0xFF, length);
+        break;
+        
+    case LOOPBACK_DATA_PATTERN_INCREMENTING:
+        for (size_t i = 0; i < length; i++) {
+            buf[i] = (uint8_t)(i & 0xFF);
+        }
+        break;
+        
+    case LOOPBACK_DATA_PATTERN_DECREMENTING:
+        for (size_t i = 0; i < length; i++) {
+            buf[i] = (uint8_t)((0xFF - i) & 0xFF);
+        }
+        break;
+        
+    case LOOPBACK_DATA_PATTERN_ALTERNATING:
+        for (size_t i = 0; i < length; i++) {
+            buf[i] = (i % 2) ? 0x55 : 0xAA;
+        }
+        break;
+        
+    case LOOPBACK_DATA_PATTERN_RANDOM:
+        for (size_t i = 0; i < length; i++) {
+            buf[i] = (uint8_t)(g_random_int() & 0xFF);
+        }
+        break;
+        
+    case LOOPBACK_DATA_PATTERN_PRESERVE:
+        /* Don't modify the buffer - use actual guest data */
+        break;
+    }
+}
+
+static void compute_sge_md5(struct ibv_sge *sge, uint32_t num_sge, 
+                            char *md5_str, size_t md5_str_len)
+{
+    GChecksum *checksum = g_checksum_new(G_CHECKSUM_MD5);
+    uint32_t total_len = 0;
+    
+    /* Compute MD5 over all SGE data */
+    for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+        if (sge[i].addr && sge[i].length > 0) {
+            g_checksum_update(checksum, (const guchar *)sge[i].addr, sge[i].length);
+            total_len += sge[i].length;
+        }
+    }
+    
+    /* Get MD5 hex string */
+    const gchar *md5_hex = g_checksum_get_string(checksum);
+    snprintf(md5_str, md5_str_len, "%s", md5_hex);
+    
+    g_checksum_free(checksum);
+    
+    rdma_info_report("Loopback: Data MD5: %s (%u bytes)", md5_str, total_len);
 }
 
 static void loopback_post_completion(LoopbackCQ *cq, uint64_t wr_id,
@@ -161,10 +283,17 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
     priv->next_cq_handle = 1;
     priv->next_qpn = 100;  /* Start at 100 to avoid special QPs */
     
+    /* Parse configuration for data pattern and MD5 */
+    priv->data_pattern = parse_data_pattern(config);
+    priv->compute_md5 = (config && strstr(config, "md5")) ? true : false;
+    
     qemu_mutex_init(&priv->lock);
     
     backend_dev->backend_private = priv;
     
+    rdma_info_report("Loopback backend: Data pattern='%s', MD5=%s",
+                    data_pattern_name(priv->data_pattern),
+                    priv->compute_md5 ? "enabled" : "disabled");
     rdma_info_report("Loopback backend: Initialized successfully");
     return 0;
 }
@@ -498,13 +627,91 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     LoopbackBackendPrivate *priv = get_private(backend_dev);
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
     LoopbackQP *lqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
+    LoopbackQP *remote_qp = NULL;
+    LoopbackWR *recv_wr = NULL;
+    uint32_t total_len = 0;
+    uint32_t transferred = 0;
     
-    if (lqp && lqp->scq) {
-        /* For loopback, immediately post send completion */
-        loopback_post_completion(lqp->scq, (uint64_t)(uintptr_t)ctx,
-                                IBV_WC_SUCCESS, 0, qpn, IBV_WC_SEND);
+    if (!lqp) {
+        rdma_error_report("Loopback: post_send on unknown QP %u", qpn);
+        return;
+    }
+    
+    /* Calculate total send length and apply data pattern */
+    for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+        total_len += sge[i].length;
         
-        rdma_info_report("Loopback: Posted send from QP %u", qpn);
+        /* Generate data pattern if not PRESERVE */
+        if (priv->data_pattern != LOOPBACK_DATA_PATTERN_PRESERVE && 
+            sge[i].addr && sge[i].length > 0) {
+            generate_data_pattern((void *)sge[i].addr, sge[i].length, 
+                                 priv->data_pattern);
+        }
+    }
+    
+    /* Compute MD5 of send data if enabled */
+    if (priv->compute_md5 && total_len > 0 && num_sge > 0) {
+        char md5_str[33];
+        compute_sge_md5(sge, num_sge, md5_str, sizeof(md5_str));
+        rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s, MD5=%s",
+                        qpn, total_len, 
+                        data_pattern_name(priv->data_pattern), md5_str);
+    } else if (total_len > 0) {
+        rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s",
+                        qpn, total_len, data_pattern_name(priv->data_pattern));
+    }
+    
+    /* For UD QP, use dqpn; for connected QPs, use paired QP */
+    if (qp_type == IBV_QPT_UD) {
+        remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(dqpn));
+    } else {
+        /* For RC/UC, check if this QP has a remote pairing */
+        uint32_t remote_qpn = GPOINTER_TO_UINT(
+            g_hash_table_lookup(priv->qp_pairs, GUINT_TO_POINTER(qpn)));
+        if (remote_qpn) {
+            remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(remote_qpn));
+        } else {
+            /* Self-loopback: use same QP */
+            remote_qp = lqp;
+        }
+    }
+    
+    /* Try to match with a recv on remote/local QP */
+    if (remote_qp && !g_queue_is_empty(remote_qp->recv_queue)) {
+        qemu_mutex_lock(&remote_qp->lock);
+        recv_wr = g_queue_pop_head(remote_qp->recv_queue);
+        qemu_mutex_unlock(&remote_qp->lock);
+        
+        if (recv_wr) {
+            /* Perform "data transfer" - copy SGE info */
+            uint32_t recv_len = 0;
+            for (uint32_t i = 0; i < recv_wr->num_sge && i < 32; i++) {
+                recv_len += recv_wr->sge[i].length;
+            }
+            
+            /* Transfer as much as fits */
+            transferred = (total_len < recv_len) ? total_len : recv_len;
+            
+            /* Post recv completion on remote QP */
+            if (remote_qp->rcq) {
+                loopback_post_completion(remote_qp->rcq, recv_wr->wr_id,
+                                        IBV_WC_SUCCESS, transferred,
+                                        remote_qp->qpn, IBV_WC_RECV);
+            }
+            
+            g_free(recv_wr);
+            rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes)",
+                           qpn, remote_qp->qpn, transferred);
+        }
+    } else {
+        rdma_info_report("Loopback: Send QP %u (no matching recv, %u bytes)",
+                        qpn, total_len);
+    }
+    
+    /* Always post send completion */
+    if (lqp->scq) {
+        loopback_post_completion(lqp->scq, (uint64_t)(uintptr_t)ctx,
+                                IBV_WC_SUCCESS, total_len, qpn, IBV_WC_SEND);
     }
 }
 
