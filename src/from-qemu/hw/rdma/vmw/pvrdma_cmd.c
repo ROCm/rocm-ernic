@@ -26,6 +26,7 @@
 /* #include "cpu.h" - Not needed for PVRDMA */
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
+#include "hw/rdma/rdma.h"  /* For rdma_pci_dma_map declaration */
 
 #include "../rdma_backend.h"
 #include "../rdma_rm.h"
@@ -286,10 +287,23 @@ static int create_cq_ring(PCIDevice *pci_dev, PvrdmaRing **ring,
         rdma_error_report(">>> create_cq_ring: Failed to map page directory");
         goto out;
     }
-    rdma_info_report(">>> create_cq_ring: Page directory mapped at %p", dir);
+    /* Explicitly cast to uintptr_t to see the actual address */
+    uintptr_t dir_addr = (uintptr_t)dir;
+    rdma_info_report(">>> create_cq_ring: Page directory mapped at %p (as uintptr_t=0x%lx)", 
+                     dir, dir_addr);
 
-    rdma_info_report(">>> create_cq_ring: Mapping page table (dir[0]=0x%lx)...", dir[0]);
-    tbl = rdma_pci_dma_map(pci_dev, dir[0], PAGE_SIZE);
+    /* Dereference dir to get first page table address */
+    rdma_info_report(">>> create_cq_ring: About to dereference dir[0]...");
+    uint64_t page_table_addr = dir[0];
+    rdma_info_report(">>> create_cq_ring: dir[0] = 0x%lx", page_table_addr);
+    
+    if (page_table_addr == 0) {
+        rdma_error_report(">>> create_cq_ring: dir[0] is NULL!");
+        goto out;
+    }
+    
+    rdma_info_report(">>> create_cq_ring: Mapping page table (addr=0x%lx)...", page_table_addr);
+    tbl = rdma_pci_dma_map(pci_dev, page_table_addr, PAGE_SIZE);
     if (!tbl) {
         rdma_error_report(">>> create_cq_ring: Failed to map page table");
         goto out;
