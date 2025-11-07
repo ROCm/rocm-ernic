@@ -39,54 +39,58 @@ if (backend_dev && backend_dev->context) {
 
 ---
 
-## ⚠️ Needs Review for No-Backend Mode
-
-The following commands **likely need similar fixes** as they call backend functions:
+## ✅ Fixed for No-Backend Mode (Additional Commands)
 
 ### `destroy_pd` (Command 3)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_dealloc_pd()` → `rdma_backend_destroy_pd()`  
-**Action needed**: Add NULL check before calling backend
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: `rdma_backend_destroy_pd()` already handles NULL ibpd, added logging
 
 ### `create_mr` (Command 4)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_alloc_mr()` → likely calls `rdma_backend_create_mr()`  
-**Action needed**: Check `rdma_rm_alloc_mr()` implementation
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: Check `pd->backend_pd.ibpd` before calling `rdma_backend_create_mr()`, use handle as lkey when no backend
 
 ### `destroy_mr` (Command 5)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_dealloc_mr()` → likely calls backend  
-**Action needed**: Check `rdma_rm_dealloc_mr()` implementation
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: `rdma_backend_destroy_mr()` already handles NULL ibmr, added logging
 
 ### `create_cq` (Command 6)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_alloc_cq()` → likely calls `rdma_backend_create_cq()`  
-**Action needed**: Similar pattern to `create_pd`
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: Check `backend_dev && backend_dev->context` before calling `rdma_backend_create_cq()`
 
 ### `destroy_cq` (Command 8)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_dealloc_cq()` → likely calls backend  
-**Action needed**: Check for backend cleanup
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: `rdma_backend_destroy_cq()` already handles NULL ibcq, added logging
 
 ### `create_qp` (Command 9)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_alloc_qp()` → likely calls `rdma_backend_create_qp()`  
-**Action needed**: Similar pattern to `create_pd`
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: Check `pd->backend_pd.ibpd` before calling `rdma_backend_create_qp()`, use local QPN when no backend
 
 ### `modify_qp` (Command 10)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_modify_qp()` → likely calls backend  
-**Action needed**: State transitions need handling
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: Wrap all state transition calls (INIT/RTR/RTS) with `backend_dev && backend_dev->context` check
 
 ### `query_qp` (Command 11)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: Backend query  
-**Action needed**: Return default QP attributes
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: Return local QP state and default attributes when no backend
 
 ### `destroy_qp` (Command 12)
-**File**: `src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c`  
-**Calls**: `rdma_rm_dealloc_qp()` → backend cleanup  
-**Action needed**: Check for backend cleanup
+**Status**: ✅ **Fixed**  
+**File**: `src/from-qemu/hw/rdma/rdma_rm.c`  
+**Fix**: `rdma_backend_destroy_qp()` already handles NULL ibqp, added logging
+
+---
+
+## ⚠️ Remaining Commands (Lower Priority)
+
+The following commands are less commonly used but may still need no-backend support:
 
 ---
 

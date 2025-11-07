@@ -202,8 +202,10 @@ void rdma_rm_dealloc_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
     RdmaRmPD *pd = rdma_rm_get_pd(dev_res, pd_handle);
 
     if (pd) {
+        /* backend_destroy_pd already handles NULL ibpd gracefully */
         rdma_backend_destroy_pd(&pd->backend_pd);
         rdma_res_tbl_dealloc(&dev_res->pd_tbl, pd_handle);
+        rdma_info_report("rdma_rm_dealloc_pd: Deallocated PD handle %u", pd_handle);
     }
 }
 
@@ -232,18 +234,26 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         mr->length = guest_length;
         mr->virt += (mr->start & (PAGE_SIZE - 1));
 
-        ret = rdma_backend_create_mr(&mr->backend_mr, &pd->backend_pd, mr->virt,
-                                     mr->length, guest_start, access_flags);
-        if (ret) {
-            ret = -EIO;
-            goto out_dealloc_mr;
-        }
+        /* Only create backend MR if PD has a backend */
+        if (pd->backend_pd.ibpd) {
+            ret = rdma_backend_create_mr(&mr->backend_mr, &pd->backend_pd, mr->virt,
+                                         mr->length, guest_start, access_flags);
+            if (ret) {
+                ret = -EIO;
+                goto out_dealloc_mr;
+            }
 #ifdef LEGACY_RDMA_REG_MR
-        /* We keep mr_handle in lkey so send and recv get get mr ptr */
-        *lkey = *mr_handle;
+            /* We keep mr_handle in lkey so send and recv get get mr ptr */
+            *lkey = *mr_handle;
 #else
-        *lkey = rdma_backend_mr_lkey(&mr->backend_mr);
+            *lkey = rdma_backend_mr_lkey(&mr->backend_mr);
 #endif
+        } else {
+            /* No backend - generate a fake lkey from handle */
+            rdma_info_report("rdma_rm_alloc_mr: No backend, allocated MR handle %u (no-backend mode)", *mr_handle);
+            memset(&mr->backend_mr, 0, sizeof(mr->backend_mr));
+            *lkey = *mr_handle;  /* Use handle as lkey */
+        }
     }
 
     *rkey = -1;
@@ -268,12 +278,14 @@ void rdma_rm_dealloc_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
     RdmaRmMR *mr = rdma_rm_get_mr(dev_res, mr_handle);
 
     if (mr) {
+        /* backend_destroy_mr already handles NULL ibmr gracefully */
         rdma_backend_destroy_mr(&mr->backend_mr);
         if (mr->start) {
             mr->virt -= (mr->start & (PAGE_SIZE - 1));
             munmap(mr->virt, mr->length);
         }
         rdma_res_tbl_dealloc(&dev_res->mr_tbl, mr_handle);
+        rdma_info_report("rdma_rm_dealloc_mr: Deallocated MR handle %u", mr_handle);
     }
 }
 
@@ -332,10 +344,17 @@ int rdma_rm_alloc_cq(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     cq->opaque = opaque;
     cq->notify = CNT_CLEAR;
 
-    rc = rdma_backend_create_cq(backend_dev, &cq->backend_cq, cqe);
-    if (rc) {
-        rc = -EIO;
-        goto out_dealloc_cq;
+    /* Only create backend CQ if we have a real backend */
+    if (backend_dev && backend_dev->context) {
+        rc = rdma_backend_create_cq(backend_dev, &cq->backend_cq, cqe);
+        if (rc) {
+            rc = -EIO;
+            goto out_dealloc_cq;
+        }
+    } else {
+        /* No backend - just allocate the CQ handle for tracking */
+        rdma_info_report("rdma_rm_alloc_cq: No backend, allocated CQ handle %u with %u entries (no-backend mode)", *cq_handle, cqe);
+        memset(&cq->backend_cq, 0, sizeof(cq->backend_cq));
     }
 
     return 0;
@@ -370,9 +389,11 @@ void rdma_rm_dealloc_cq(RdmaDeviceResources *dev_res, uint32_t cq_handle)
         return;
     }
 
+    /* backend_destroy_cq already handles NULL ibcq gracefully */
     rdma_backend_destroy_cq(&cq->backend_cq);
 
     rdma_res_tbl_dealloc(&dev_res->cq_tbl, cq_handle);
+    rdma_info_report("rdma_rm_dealloc_cq: Deallocated CQ handle %u", cq_handle);
 }
 
 RdmaRmQP *rdma_rm_get_qp(RdmaDeviceResources *dev_res, uint32_t qpn)
@@ -446,17 +467,26 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     qp->opaque = opaque;
     qp->is_srq = is_srq;
 
-    rc = rdma_backend_create_qp(&qp->backend_qp, qp_type, &pd->backend_pd,
-                                &scq->backend_cq, &rcq->backend_cq,
-                                is_srq ? &srq->backend_srq : NULL, max_send_wr,
-                                max_recv_wr, max_send_sge, max_recv_sge);
+    /* Only create backend QP if PD has a backend */
+    if (pd->backend_pd.ibpd) {
+        rc = rdma_backend_create_qp(&qp->backend_qp, qp_type, &pd->backend_pd,
+                                    &scq->backend_cq, &rcq->backend_cq,
+                                    is_srq ? &srq->backend_srq : NULL, max_send_wr,
+                                    max_recv_wr, max_send_sge, max_recv_sge);
 
-    if (rc) {
-        rc = -EIO;
-        goto out_dealloc_qp;
+        if (rc) {
+            rc = -EIO;
+            goto out_dealloc_qp;
+        }
+
+        *qpn = rdma_backend_qpn(&qp->backend_qp);
+    } else {
+        /* No backend - use local QPN and zero out backend structure */
+        rdma_info_report("rdma_rm_alloc_qp: No backend, allocated QP handle %u (no-backend mode)", rm_qpn);
+        memset(&qp->backend_qp, 0, sizeof(qp->backend_qp));
+        *qpn = rm_qpn;  /* Use local QPN */
     }
-
-    *qpn = rdma_backend_qpn(&qp->backend_qp);
+    
     g_hash_table_insert(dev_res->qp_hash, g_bytes_new(qpn, sizeof(*qpn)), qp);
 
     return 0;
@@ -491,39 +521,45 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     if (attr_mask & IBV_QP_STATE) {
         qp->qp_state = qp_state;
 
-        if (qp->qp_state == IBV_QPS_INIT) {
-            ret = rdma_backend_qp_state_init(backend_dev, &qp->backend_qp,
-                                             qp->qp_type, qkey);
-            if (ret) {
-                return -EIO;
-            }
-        }
-
-        if (qp->qp_state == IBV_QPS_RTR) {
-            /* Get backend gid index */
-            sgid_idx =
-                rdma_rm_get_backend_gid_index(dev_res, backend_dev, sgid_idx);
-            if (sgid_idx <= 0) { /* TODO check also less than bk.max_sgid */
-                rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
-                                  sgid_idx);
-                return -EIO;
+        /* Only call backend state transitions if we have a backend */
+        if (backend_dev && backend_dev->context) {
+            if (qp->qp_state == IBV_QPS_INIT) {
+                ret = rdma_backend_qp_state_init(backend_dev, &qp->backend_qp,
+                                                 qp->qp_type, qkey);
+                if (ret) {
+                    return -EIO;
+                }
             }
 
-            ret = rdma_backend_qp_state_rtr(
-                backend_dev, &qp->backend_qp, qp->qp_type, sgid_idx, dgid, dqpn,
-                rq_psn, qkey, attr_mask & IBV_QP_QKEY);
-            if (ret) {
-                return -EIO;
-            }
-        }
+            if (qp->qp_state == IBV_QPS_RTR) {
+                /* Get backend gid index */
+                sgid_idx =
+                    rdma_rm_get_backend_gid_index(dev_res, backend_dev, sgid_idx);
+                if (sgid_idx <= 0) { /* TODO check also less than bk.max_sgid */
+                    rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
+                                      sgid_idx);
+                    return -EIO;
+                }
 
-        if (qp->qp_state == IBV_QPS_RTS) {
-            ret =
-                rdma_backend_qp_state_rts(&qp->backend_qp, qp->qp_type, sq_psn,
-                                          qkey, attr_mask & IBV_QP_QKEY);
-            if (ret) {
-                return -EIO;
+                ret = rdma_backend_qp_state_rtr(
+                    backend_dev, &qp->backend_qp, qp->qp_type, sgid_idx, dgid, dqpn,
+                    rq_psn, qkey, attr_mask & IBV_QP_QKEY);
+                if (ret) {
+                    return -EIO;
+                }
             }
+
+            if (qp->qp_state == IBV_QPS_RTS) {
+                ret =
+                    rdma_backend_qp_state_rts(&qp->backend_qp, qp->qp_type, sq_psn,
+                                              qkey, attr_mask & IBV_QP_QKEY);
+                if (ret) {
+                    return -EIO;
+                }
+            }
+        } else {
+            /* No backend - just track state locally */
+            rdma_info_report("rdma_rm_modify_qp: No backend, QP %u state transition to %d (no-backend mode)", qp_handle, qp_state);
         }
     }
 
@@ -541,7 +577,24 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
         return -EINVAL;
     }
 
-    return rdma_backend_query_qp(&qp->backend_qp, attr, attr_mask, init_attr);
+    /* Query backend if available, otherwise return local state */
+    if (backend_dev && backend_dev->context && qp->backend_qp.ibqp) {
+        return rdma_backend_query_qp(&qp->backend_qp, attr, attr_mask, init_attr);
+    } else {
+        /* No backend - return basic QP attributes */
+        rdma_info_report("rdma_rm_query_qp: No backend, returning local state for QP %u", qp_handle);
+        memset(attr, 0, sizeof(*attr));
+        attr->qp_state = qp->qp_state;
+        attr->cur_qp_state = qp->qp_state;
+        attr->path_mtu = IBV_MTU_1024;
+        attr->qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+        
+        if (init_attr) {
+            memset(init_attr, 0, sizeof(*init_attr));
+            init_attr->qp_type = qp->qp_type;
+        }
+        return 0;
+    }
 }
 
 void rdma_rm_dealloc_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle)
@@ -558,9 +611,11 @@ void rdma_rm_dealloc_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle)
         return;
     }
 
+    /* backend_destroy_qp handles NULL ibqp gracefully */
     rdma_backend_destroy_qp(&qp->backend_qp, dev_res);
 
     rdma_res_tbl_dealloc(&dev_res->qp_tbl, qp->qpn);
+    rdma_info_report("rdma_rm_dealloc_qp: Deallocated QP handle %u", qp_handle);
 }
 
 RdmaRmSRQ *rdma_rm_get_srq(RdmaDeviceResources *dev_res, uint32_t srq_handle)
