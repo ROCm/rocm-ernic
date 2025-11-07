@@ -23,6 +23,20 @@
 /* #include "contrib/rdmacm-mux/rdmacm-mux.h" */
 #include "rdma_utils.h"
 
+/* Forward declare backend ops (defined in rdma_backend_ops.h) */
+typedef struct RdmaBackendOps RdmaBackendOps;
+
+/**
+ * Backend Types
+ * Defined here to avoid circular dependency
+ */
+typedef enum {
+    RDMA_BACKEND_TYPE_NONE,      /* No backend - minimal stubs */
+    RDMA_BACKEND_TYPE_LOOPBACK,  /* Internal loopback emulation */
+    RDMA_BACKEND_TYPE_VERBS,     /* libibverbs hardware backend */
+    RDMA_BACKEND_TYPE_MAX
+} RdmaBackendType;
+
 /* Stub for rdmacm-mux types (MAD handling not used) */
 /* Forward declarations */
 struct ibv_mad_hdr;
@@ -98,13 +112,21 @@ typedef struct RdmaBackendThread {
 } RdmaBackendThread;
 
 typedef struct RdmaBackendDev {
+    /* Backend abstraction */
+    RdmaBackendType backend_type;
+    const RdmaBackendOps *backend_ops;
+    void *backend_private;  /* Backend-specific data */
+    
+    /* Common fields */
     RdmaBackendThread comp_thread;
     PCIDevice *dev;
     RdmaDeviceResources *rdma_dev_res;
+    uint8_t port_num;
+    
+    /* Verbs-specific fields (kept for verbs backend) */
     struct ibv_device *ib_dev;
     struct ibv_context *context;
     struct ibv_comp_channel *channel;
-    uint8_t port_num;
     RdmaProtectedGQueue recv_mads_list;
     RdmaCmMux rdmacm_mux;
 } RdmaBackendDev;
