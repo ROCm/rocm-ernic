@@ -142,8 +142,9 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     }
 
     /* Initialize registers - must be done before driver probes */
-    pvrdma->regs_data[0] = PVRDMA_HW_VERSION;  /* PVRDMA_REG_VERSION at offset 0 */
-    pvrdma->regs_data[1] = 0xFFFF;              /* PVRDMA_REG_ERR */
+    /* Use set_reg_val() for proper address-to-index conversion */
+    set_reg_val(pvrdma, PVRDMA_REG_VERSION, PVRDMA_HW_VERSION);
+    set_reg_val(pvrdma, PVRDMA_REG_ERR, 0xFFFF);
     
     rdma_info_report("PVRDMA version register initialized to %d", PVRDMA_HW_VERSION);
 

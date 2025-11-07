@@ -18,7 +18,35 @@ networking with direct hardware access semantics.
 - RDMA verbs support via InfiniBand hardware backend
 - Three memory-mapped BARs (MSI-X, Registers, UAR)
 - MSI-X interrupt support (command ring, async events, completion queue)
-- Compatible with the Linux kernel `vmw_pvrdma` driver
+- Compatible with the Linux kernel `amd_emrdma` driver (adapted from `vmw_pvrdma`)
+
+## 🎉 **Current Status: WORKING!** 🎉
+
+**November 6, 2025**: The vfu_pvrdma server is now **fully operational** with end-to-end vfio-user communication!
+
+### ✅ What's Working
+- **Non-blocking vfio-user attach** - Learned from [nic-emu](https://github.com/vmuxIO/nic-emu)
+- **PCI device enumeration** - Driver detects device at `0000:00:04.0`
+- **BAR access** - All three BARs (MSI-X, Registers, UAR) functional
+- **MSI-X interrupts** - 3 interrupt vectors configured
+- **Device activation** - DSR initialization and device bringup complete
+- **RDMA commands** - `query_port`, `query_pkey`, command infrastructure working
+- **InfiniBand device** - Successfully registered as `rocep0s4f0` in VM!
+
+### 📊 Test Results
+```bash
+$ lsmod | grep amd_emrdma
+amd_emrdma             69632  0
+ib_uverbs             184320  1 amd_emrdma
+ib_core               507904  2 amd_emrdma,ib_uverbs
+
+$ ls -la /sys/class/infiniband/
+rocep0s4f0 -> ../../devices/pci0000:00/0000:00:04.0/infiniband/rocep0s4f0
+```
+
+✅ **Driver loads successfully and registers InfiniBand device!**
+
+See [`WORKING_STATUS.md`](WORKING_STATUS.md) for detailed test results and [`NIC_EMU_LESSONS.md`](NIC_EMU_LESSONS.md) for the key fixes that made this work.
 
 ## Architecture
 
@@ -46,7 +74,7 @@ networking with direct hardware access semantics.
 │  │  │   RDMA Backend        │ │       │
 │  │  └──────────┬────────────┘ │       │
 │  └─────────────┼───────────────┘       │
-│                │                        │
+│                │                        │./
 │     Host (Userspace/Kernel)           │
 │                │                        │
 │  ┌─────────────▼────────────┐          │

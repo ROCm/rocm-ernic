@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <limits.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <syslog.h>
 #include <getopt.h>
 #include <assert.h>
@@ -537,12 +538,23 @@ int main(int argc, char *argv[])
     printf("  ⚠ Full command processing (pending)\n");
     printf("\n");
 
-    /* Remove old socket if it exists */
-    unlink(socket_path);
+    /* Remove old socket if it exists - try multiple approaches */
+    struct stat st;
+    if (stat(socket_path, &st) == 0) {
+        if (S_ISSOCK(st.st_mode)) {
+            printf("Removing stale socket file: %s\n", socket_path);
+            if (unlink(socket_path) != 0) {
+                warn("Failed to unlink existing socket");
+            }
+        }
+    }
+    
+    /* Give the system a moment to release the socket */
+    usleep(100000); /* 100ms */
 
-    /* Create libvfio-user context */
-    vfu_ctx =
-        vfu_create_ctx(VFU_TRANS_SOCK, socket_path, 0, dev, VFU_DEV_TYPE_PCI);
+    /* Create libvfio-user context with non-blocking attach */
+    vfu_ctx = vfu_create_ctx(VFU_TRANS_SOCK, socket_path, 
+                            LIBVFIO_USER_FLAG_ATTACH_NB, dev, VFU_DEV_TYPE_PCI);
     if (!vfu_ctx) {
         err(EXIT_FAILURE, "vfu_create_ctx() failed");
     }
@@ -595,21 +607,27 @@ int main(int argc, char *argv[])
     }
 
     vfu_log(vfu_ctx, LOG_INFO,
-            "Device realized, waiting for client connection");
+            "Device realized, waiting for client connection...");
 
     /* Main loop */
     while (!g_shutdown_requested) {
-        /* Attach to client */
+        /* Attach to client (non-blocking) */
         ret = vfu_attach_ctx(vfu_ctx);
         if (ret < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* No client yet, sleep and retry */
                 usleep(100000); /* 100ms */
                 continue;
+            } else if (errno == EINTR) {
+                /* Interrupted by signal, check shutdown flag */
+                continue;
             }
+            vfu_log(vfu_ctx, LOG_ERR, "vfu_attach_ctx() failed with errno=%d: %s", 
+                    errno, strerror(errno));
             err(EXIT_FAILURE, "vfu_attach_ctx() failed");
         }
 
-        vfu_log(vfu_ctx, LOG_INFO, "Client connected");
+        vfu_log(vfu_ctx, LOG_INFO, "Client connected!");
 
         /* Run device - process requests from client */
         while (!g_shutdown_requested) {

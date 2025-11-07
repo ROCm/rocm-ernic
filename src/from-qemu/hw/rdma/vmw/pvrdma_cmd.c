@@ -138,8 +138,24 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
         return -EINVAL;
     }
 
-    if (rdma_backend_query_port(&dev->backend_dev, &attrs)) {
-        return -ENOMEM;
+    /* Query backend if available, otherwise use defaults */
+    if (dev->backend_dev.context) {
+        if (rdma_backend_query_port(&dev->backend_dev, &attrs)) {
+            return -ENOMEM;
+        }
+    } else {
+        /* No backend - return reasonable defaults for PCI-only mode */
+        rdma_info_report("query_port: No backend, returning default port attributes");
+        memset(&attrs, 0, sizeof(attrs));
+        attrs.state = 4;  /* IBV_PORT_ACTIVE */
+        attrs.max_mtu = 5;  /* IBV_MTU_4096 */
+        attrs.active_mtu = 3;  /* IBV_MTU_1024 */
+        attrs.gid_tbl_len = 1;
+        attrs.port_cap_flags = (1 << 16);  /* IBV_PORT_CM_SUP */
+        attrs.max_msg_sz = 0x80000000;
+        attrs.pkey_tbl_len = 1;
+        attrs.active_width = 1;
+        attrs.active_speed = 1;
     }
 
     memset(resp, 0, sizeof(*resp));
@@ -149,9 +165,10 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
      * for pvrdma_port_state and pvrdma_mtu match those for
      * ibv_port_state and ibv_mtu, so we can cast them safely.
      */
-    resp->attrs.state = dev->func0->device_active
-                            ? (enum pvrdma_port_state)attrs.state
-                            : PVRDMA_PORT_DOWN;
+    /* In vfio-user mode (no func0), device is always active after activation */
+    resp->attrs.state = (dev->func0 && !dev->func0->device_active)
+                            ? PVRDMA_PORT_DOWN
+                            : (enum pvrdma_port_state)attrs.state;
     resp->attrs.max_mtu = (enum pvrdma_mtu)attrs.max_mtu;
     resp->attrs.active_mtu = (enum pvrdma_mtu)attrs.active_mtu;
     resp->attrs.phys_state = attrs.phys_state;
@@ -774,13 +791,19 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     int err = 0xFFFF;
     DSRInfo *dsr_info;
 
+    rdma_info_report(">>> pvrdma_exec_cmd: ENTRY");
+    
     dsr_info = &dev->dsr_info;
 
     if (!dsr_info->dsr) {
         /* Buggy or malicious guest driver */
         rdma_error_report("Exec command without dsr, req or rsp buffers");
+        rdma_error_report("  dsr_info->dsr = %p", dsr_info->dsr);
         goto out;
     }
+    
+    rdma_info_report(">>> pvrdma_exec_cmd: DSR is valid, req command = %u", 
+                     dsr_info->req->hdr.cmd);
 
     if (dsr_info->req->hdr.cmd >=
         sizeof(cmd_handlers) / sizeof(struct cmd_handler)) {
@@ -793,8 +816,11 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
         goto out;
     }
 
+    rdma_info_report(">>> pvrdma_exec_cmd: Executing command handler...");
     err = cmd_handlers[dsr_info->req->hdr.cmd].exec(dev, dsr_info->req,
                                                     dsr_info->rsp);
+    rdma_info_report(">>> pvrdma_exec_cmd: Command handler returned err = %d (0x%x)", err, err);
+    
     dsr_info->rsp->hdr.response = dsr_info->req->hdr.response;
     dsr_info->rsp->hdr.ack = cmd_handlers[dsr_info->req->hdr.cmd].ack;
     dsr_info->rsp->hdr.err = err < 0 ? -err : 0;
@@ -803,8 +829,10 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     dev->stats.commands++;
 
 out:
+    rdma_info_report(">>> pvrdma_exec_cmd: Setting PVRDMA_REG_ERR = 0x%x", err);
     set_reg_val(dev, PVRDMA_REG_ERR, err);
     post_interrupt(dev, INTR_VEC_CMD_RING);
 
+    rdma_info_report(">>> pvrdma_exec_cmd: EXIT (returning %d)", (err == 0) ? 0 : -EINVAL);
     return (err == 0) ? 0 : -EINVAL;
 }

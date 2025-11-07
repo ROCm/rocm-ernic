@@ -440,18 +440,29 @@ static void pvrdma_fini(PCIDevice *pdev)
 
 static void pvrdma_stop(PVRDMADev *dev)
 {
-    rdma_backend_stop(&dev->backend_dev);
+    /* Only stop backend if it was successfully initialized */
+    if (dev->backend_dev.context) {
+        rdma_backend_stop(&dev->backend_dev);
+    }
 }
 
 static void pvrdma_start(PVRDMADev *dev)
 {
-    rdma_backend_start(&dev->backend_dev);
+    /* Only start backend if it was successfully initialized */
+    if (dev->backend_dev.context) {
+        rdma_backend_start(&dev->backend_dev);
+    } else {
+        rdma_info_report("Backend not available, running in PCI-only mode");
+    }
 }
 
 static void activate_device(PVRDMADev *dev)
 {
+    rdma_info_report("activate_device: Activating device (backend=%s)",
+                     dev->backend_dev.context ? "available" : "not available");
     pvrdma_start(dev);
     set_reg_val(dev, PVRDMA_REG_ERR, 0);
+    rdma_info_report("activate_device: Device activated successfully");
 }
 
 static int unquiesce_device(PVRDMADev *dev)
@@ -478,7 +489,12 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
         return -EINVAL;
     }
 
-    rdma_info_report("BAR1 READ: offset=%#lx size=%u value=%#x", addr, size, val);
+    /* Log error register reads specially */
+    if (addr == PVRDMA_REG_ERR) {
+        rdma_info_report(">>> ERROR REGISTER READ: offset=0x%lx (PVRDMA_REG_ERR) value=%#x", addr, val);
+    } else {
+        rdma_info_report("BAR1 READ: offset=%#lx size=%u value=%#x", addr, size, val);
+    }
 
     return val;
 }
@@ -521,17 +537,26 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
         rdma_info_report("DSRHIGH write: Complete");
         break;
     case PVRDMA_REG_CTL:
+        rdma_info_report(">>> CTL register write: val=%u", (unsigned)val);
         switch (val) {
         case PVRDMA_DEVICE_CTL_ACTIVATE:
+            rdma_info_report(">>> ACTIVATE command received, calling activate_device()");
             activate_device(dev);
+            rdma_info_report(">>> activate_device() returned successfully");
             break;
         case PVRDMA_DEVICE_CTL_UNQUIESCE:
+            rdma_info_report(">>> UNQUIESCE command received");
             unquiesce_device(dev);
             break;
         case PVRDMA_DEVICE_CTL_RESET:
+            rdma_info_report(">>> RESET command received");
             reset_device(dev);
             break;
+        default:
+            rdma_info_report(">>> Unknown CTL command: %u", (unsigned)val);
+            break;
         }
+        rdma_info_report(">>> CTL register write complete");
         break;
     case PVRDMA_REG_IMR:
         dev->interrupt_mask = val;

@@ -1,0 +1,8 @@
+set pagination off
+set logging file /tmp/gdb.log
+set logging on
+run --socket /tmp/vfio-user-pvrdma.sock --verbose
+backtrace
+info registers
+quit
+
