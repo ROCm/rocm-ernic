@@ -87,3 +87,13 @@ wordlist.dic
 .*.cmd
 Module.symvers
 modules.order
+
+# Kernel module binaries (should never be tracked)
+*.ko
+*.mod
+*.mod.c
+*.o.cmd
+*.ko.cmd
+modules.order
+Module.symvers
+.cursor/

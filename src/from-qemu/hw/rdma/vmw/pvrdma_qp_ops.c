@@ -188,6 +188,9 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             continue;
         }
 
+        rdma_info_report(">>> pvrdma_qp_ops: Before post_send: qp=%p, &qp->backend_qp=%p",
+                         qp, &qp->backend_qp);
+
         rdma_backend_post_send(
             &dev->backend_dev, &qp->backend_qp, qp->qp_type,
             (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge, sgid_idx, sgid,
@@ -211,7 +214,10 @@ void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle)
         return;
     }
 
+    rdma_info_report(">>> pvrdma_qp_recv: qp=%p, qp->opaque=%p, &qp->opaque=%p",
+                     qp, qp->opaque, &qp->opaque);
     ring = &((PvrdmaRing *)qp->opaque)[1];
+    rdma_info_report(">>> pvrdma_qp_recv: Computed ring=%p", ring);
 
     wqe = pvrdma_ring_next_elem_read(ring);
     while (wqe) {

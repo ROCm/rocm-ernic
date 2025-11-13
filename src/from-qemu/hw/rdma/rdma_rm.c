@@ -490,7 +490,16 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     qp->qp_type = qp_type;
     qp->send_cq_handle = send_cq_handle;
     qp->recv_cq_handle = recv_cq_handle;
+    rdma_info_report(">>> rdma_rm_alloc_qp: sizeof(RdmaRmQP)=%zu, sizeof(RdmaBackendQP)=%zu",
+                     sizeof(RdmaRmQP), sizeof(RdmaBackendQP));
+    rdma_info_report(">>> rdma_rm_alloc_qp: Setting qp=%p, &qp->backend_qp=%p, &qp->opaque=%p",
+                     qp, &qp->backend_qp, &qp->opaque);
+    rdma_info_report(">>> rdma_rm_alloc_qp: Offset of opaque: %zu", 
+                     (size_t)((char*)&qp->opaque - (char*)qp));
+    rdma_info_report(">>> rdma_rm_alloc_qp: Passed opaque=%p", opaque);
+    rdma_info_report(">>> rdma_rm_alloc_qp: BEFORE: qp->opaque = %p", qp->opaque);
     qp->opaque = opaque;
+    rdma_info_report(">>> rdma_rm_alloc_qp: AFTER:  qp->opaque = %p", qp->opaque);
     qp->is_srq = is_srq;
 
     /* Create backend QP using vtable dispatch */
@@ -576,7 +585,7 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                 /* Get backend gid index if backend supports it */
                 if (backend_dev && qp->backend_qp.backend_ops->get_backend_gid_index) {
                     sgid_idx = qp->backend_qp.backend_ops->get_backend_gid_index(backend_dev, sgid_idx);
-                    if (sgid_idx <= 0) {
+                    if ((int8_t)sgid_idx < 0) {  /* GID index 0 is valid, only negative is error */
                         rdma_error_report("Failed to get backend sgid_idx for sgid_idx %d", sgid_idx);
                         return -EIO;
                     }

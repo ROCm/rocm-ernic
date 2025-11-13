@@ -126,6 +126,23 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     vfu_pvrdma_dev_t *dev = vfu_get_private(vfu_ctx);
     uint32_t val;
 
+    /* Defensive checks */
+    if (!dev) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access: dev is NULL!");
+        errno = EFAULT;
+        return -1;
+    }
+    if (!buf) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access: buf is NULL!");
+        errno = EFAULT;
+        return -1;
+    }
+    if (!dev->pvrdma_handle) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access: pvrdma_handle is NULL!");
+        errno = EFAULT;
+        return -1;
+    }
+
     if (offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
         vfu_log(vfu_ctx, LOG_ERR,
                 "BAR1 access out of bounds: offset=%#lx count=%zu", offset,
@@ -389,6 +406,13 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
     #define MSIX_TABLE_BIR    0  /* Table in BAR 0 */
     #define MSIX_PBA_BIR      0  /* PBA in BAR 0 */
 
+    /* Setup legacy INTx interrupt (required by some guests for PCI compliance) */
+    ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_INTX_IRQ, 1);
+    if (ret < 0) {
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %m");
+        return ret;
+    }
+
     /* MSI-X capability structure (12 bytes total) */
     struct {
         uint8_t id;         /* Capability ID = 0x11 for MSI-X */
@@ -430,7 +454,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
         return ret;
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, "MSI-X configured: %d vectors, table=BAR%d:0x%x, pba=BAR%d:0x%x",
+    vfu_log(vfu_ctx, LOG_INFO, 
+            "Interrupts configured: INTx=1, MSI-X=%d vectors (table=BAR%d:0x%x, pba=BAR%d:0x%x)",
             RDMA_MAX_INTRS, MSIX_TABLE_BIR, MSIX_TABLE_OFFSET, MSIX_PBA_BIR, MSIX_PBA_OFFSET);
 
     return 0;
@@ -661,22 +686,33 @@ int main(int argc, char *argv[])
         vfu_log(vfu_ctx, LOG_INFO, "Client connected!");
 
         /* Run device - process requests from client */
+        int loop_count = 0;
         while (!g_shutdown_requested) {
+            if (loop_count < 50 || loop_count % 10 == 0) {  /* Log first 50, then every 10th */
+                vfu_log(vfu_ctx, LOG_INFO, ">>> EVENT LOOP #%d: Calling vfu_run_ctx()...", loop_count);
+            }
             ret = vfu_run_ctx(vfu_ctx);
+            if (loop_count < 50 || loop_count % 10 == 0) {
+                vfu_log(vfu_ctx, LOG_INFO, ">>> EVENT LOOP #%d: vfu_run_ctx() returned %d (errno=%d)", 
+                        loop_count, ret, errno);
+            }
+            loop_count++;
             if (ret < 0) {
                 if (errno == ENOTCONN) {
-                    vfu_log(vfu_ctx, LOG_INFO, "Client disconnected");
+                    vfu_log(vfu_ctx, LOG_INFO, "Client disconnected after %d loops", loop_count);
                     break;
                 } else if (errno == EINTR) {
                     /* Interrupted by signal */
+                    vfu_log(vfu_ctx, LOG_INFO, "Interrupted by signal after %d loops", loop_count);
                     break;
                 } else {
-                    vfu_log(vfu_ctx, LOG_ERR, "vfu_run_ctx() failed: %s",
-                            strerror(errno));
+                    vfu_log(vfu_ctx, LOG_ERR, "vfu_run_ctx() failed after %d loops: %s",
+                            loop_count, strerror(errno));
                     break;
                 }
             }
         }
+        vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations", loop_count);
     }
 
     vfu_log(vfu_ctx, LOG_INFO, "Shutting down");
