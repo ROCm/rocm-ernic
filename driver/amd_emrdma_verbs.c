@@ -156,6 +156,9 @@ int amd_emrdma_query_port(struct ib_device *ibdev, u32 port,
 		amd_emrdma_port_cap_flags_to_ib(resp->attrs.port_cap_flags);
 	props->port_cap_flags |= IB_PORT_CM_SUP;
 	props->ip_gids = true;
+	
+	dev_info(&dev->pdev->dev, "query_port: state=%d gid_tbl_len=%d\n",
+		 props->state, props->gid_tbl_len);
 	props->max_msg_sz = resp->attrs.max_msg_sz;
 	props->bad_pkey_cntr = resp->attrs.bad_pkey_cntr;
 	props->qkey_viol_cntr = resp->attrs.qkey_viol_cntr;
@@ -191,7 +194,18 @@ int amd_emrdma_query_gid(struct ib_device *ibdev, u32 port, int index,
 	if (index >= dev->dsr->caps.gid_tbl_len)
 		return -EINVAL;
 
+	if (!dev->sgid_tbl) {
+		dev_err(&dev->pdev->dev, "query_gid: sgid_tbl is NULL!\n");
+		memset(gid, 0, sizeof(union ib_gid));
+		return -EINVAL;
+	}
+	
 	memcpy(gid, &dev->sgid_tbl[index], sizeof(union ib_gid));
+	
+	dev_info(&dev->pdev->dev, "query_gid: port=%u index=%d sgid_tbl[0]=%02x%02x::%02x gid=%02x%02x::%02x\n",
+		port, index, 
+		dev->sgid_tbl[0].raw[0], dev->sgid_tbl[0].raw[1], dev->sgid_tbl[0].raw[15],
+		gid->raw[0], gid->raw[1], gid->raw[15]);
 
 	return 0;
 }
@@ -234,6 +248,7 @@ int amd_emrdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index,
 enum rdma_link_layer amd_emrdma_port_link_layer(struct ib_device *ibdev,
 					    u32 port)
 {
+	/* Always report as Ethernet/RoCE to enable proper GID management */
 	return IB_LINK_LAYER_ETHERNET;
 }
 

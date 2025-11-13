@@ -64,6 +64,10 @@ static struct workqueue_struct *event_wq;
 
 static int amd_emrdma_add_gid(const struct ib_gid_attr *attr, void **context);
 static int amd_emrdma_del_gid(const struct ib_gid_attr *attr, void **context);
+static int amd_emrdma_add_gid_at_index(struct amd_emrdma_dev *dev,
+				   const union ib_gid *gid,
+				   u8 gid_type,
+				   int index);
 
 static ssize_t hca_type_show(struct device *device,
 			     struct device_attribute *attr, char *buf)
@@ -243,7 +247,20 @@ static int amd_emrdma_register_device(struct amd_emrdma_dev *dev)
 {
 	int ret = -1;
 
-	dev->ib_dev.node_guid = dev->dsr->caps.node_guid;
+	/* For standalone mode, generate a valid node_guid if not provided */
+	if (!dev->netdev && dev->dsr->caps.node_guid == 0) {
+		/* Generate a node GUID from PCI bus/device/function */
+		dev->ib_dev.node_guid = 0x0002c900ULL << 32 | 
+			(dev->pdev->bus->number << 16) |
+			(PCI_SLOT(dev->pdev->devfn) << 8) |
+			PCI_FUNC(dev->pdev->devfn);
+		dev_info(&dev->pdev->dev,
+			 "generated node_guid for standalone mode: %016llx\n",
+			 dev->ib_dev.node_guid);
+	} else {
+		dev->ib_dev.node_guid = dev->dsr->caps.node_guid;
+	}
+	
 	dev->sys_image_guid = dev->dsr->caps.sys_image_guid;
 	dev->flags = 0;
 	dev->ib_dev.num_comp_vectors = 1;
@@ -289,6 +306,16 @@ static int amd_emrdma_register_device(struct amd_emrdma_dev *dev)
 		goto err_srq_free;
 
 	dev->ib_active = true;
+
+	/*
+	 * RDMA core will now automatically call our add_gid callback for
+	 * each IP address on the associated netdev (loopback in standalone mode).
+	 * This populates both our local sgid_tbl and the kernel GID cache.
+	 */
+	dev_info(&dev->pdev->dev,
+		 "device registered successfully (node_guid=%016llx, netdev=%s)\n",
+		 dev->ib_dev.node_guid,
+		 dev->netdev ? dev->netdev->name : "none");
 
 	return 0;
 
@@ -643,7 +670,37 @@ static int amd_emrdma_add_gid_at_index(struct amd_emrdma_dev *dev,
 static int amd_emrdma_add_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct amd_emrdma_dev *dev = to_vdev(attr->device);
+	bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
+	
+	dev_info(&dev->pdev->dev, "add_gid called: index=%d gid=%pI6c netdev=%s%s\n",
+		 attr->index, &attr->gid,
+		 dev->netdev ? dev->netdev->name : "none",
+		 is_loopback ? " (loopback)" : "");
 
+	if (!dev->sgid_tbl) {
+		dev_warn(&dev->pdev->dev, "sgid table not initialized\n");
+		return -EINVAL;
+	}
+	
+	if (attr->index >= dev->dsr->caps.gid_tbl_len) {
+		return -EINVAL;
+	}
+
+	/*
+	 * For loopback-associated devices (standalone mode), skip the
+	 * CREATE_BIND device command which requires real network binding.
+	 * Just update the local GID table. The loopback backend doesn't
+	 * need actual network bindings - it operates purely in software.
+	 */
+	if (is_loopback) {
+		memcpy(&dev->sgid_tbl[attr->index], &attr->gid, sizeof(attr->gid));
+		dev_info(&dev->pdev->dev,
+			 "added GID to local table (loopback mode): index=%d\n",
+			 attr->index);
+		return 0;
+	}
+
+	/* For real netdev (vmxnet3), use full binding flow */
 	return amd_emrdma_add_gid_at_index(dev, &attr->gid,
 				       ib_gid_type_to_amd_emrdma(attr->gid_type),
 				       attr->index);
@@ -679,10 +736,31 @@ static int amd_emrdma_del_gid_at_index(struct amd_emrdma_dev *dev, int index)
 static int amd_emrdma_del_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct amd_emrdma_dev *dev = to_vdev(attr->device);
+	bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
 
+	dev_info(&dev->pdev->dev, "del_gid called: index=%d netdev=%s%s\n",
+		 attr->index,
+		 dev->netdev ? dev->netdev->name : "none",
+		 is_loopback ? " (loopback)" : "");
+
+	if (!dev->sgid_tbl || attr->index >= dev->dsr->caps.gid_tbl_len) {
+		return -EINVAL;
+	}
+
+	/*
+	 * For loopback-associated devices, just clear the local GID table.
+	 */
+	if (is_loopback) {
+		memset(&dev->sgid_tbl[attr->index], 0, sizeof(union ib_gid));
+		dev_info(&dev->pdev->dev,
+			 "removed GID from local table (loopback mode): index=%d\n",
+			 attr->index);
+		return 0;
+	}
+
+	/* For real netdev (vmxnet3), use full unbinding flow */
 	dev_dbg(&dev->pdev->dev, "removing gid at index %u from %s",
 		attr->index, dev->netdev->name);
-
 	return amd_emrdma_del_gid_at_index(dev, attr->index);
 }
 
@@ -998,8 +1076,23 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
 				 "paired device has no netdev (standalone mode)\n");
 		}
 	} else {
-		dev->netdev = NULL;
-		dev_info(&pdev->dev, "running in standalone mode (no netdev)\n");
+		/*
+		 * Standalone mode: Associate with loopback device to enable
+		 * automatic RDMA GID management. The RDMA core will populate
+		 * GIDs based on the netdev's IP addresses and call our add_gid
+		 * callback, allowing userspace to query GIDs via sysfs.
+		 */
+		struct net_device *lo_dev = dev_get_by_name(&init_net, "lo");
+		if (lo_dev) {
+			dev->netdev = lo_dev;
+			/* dev_hold not needed - dev_get_by_name already incremented refcount */
+			dev_info(&pdev->dev,
+				 "standalone mode: associated with loopback device for GID management\n");
+		} else {
+			dev->netdev = NULL;
+			dev_info(&pdev->dev,
+				 "standalone mode: no loopback device available (GID management limited)\n");
+		}
 	}
 
 	/* Interrupt setup */
