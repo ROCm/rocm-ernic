@@ -86,6 +86,11 @@ void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
 {
     struct ibv_wc wc = {};
 
+    if (!comp_handler) {
+        rdma_error_report("Completion handler not registered! Cannot post completion.");
+        return;
+    }
+
     wc.status = status;
     wc.vendor_err = vendor_err;
     wc.byte_len = byte_len;
@@ -349,6 +354,17 @@ void rdma_backend_poll_cq(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq)
     int polled;
 
     rdma_dev_res->stats.poll_cq_from_guest++;
+    
+    /* Check if backend provides custom poll_cq (e.g., loopback) */
+    if (cq->backend_dev && cq->backend_dev->backend_ops && 
+        cq->backend_dev->backend_ops->poll_cq) {
+        /* Backend handles polling directly (loopback posts completions synchronously) */
+        cq->backend_dev->backend_ops->poll_cq(rdma_dev_res, cq);
+        /* Loopback completions are already posted, nothing to poll */
+        return;
+    }
+    
+    /* For verbs backend, use standard ibv_poll_cq */
     polled = rdma_poll_cq(rdma_dev_res, cq->ibcq);
     if (!polled) {
         rdma_dev_res->stats.poll_cq_from_guest_empty++;

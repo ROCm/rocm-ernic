@@ -174,7 +174,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
 
         sgid_idx = rdma_rm_get_backend_gid_index(
             &dev->rdma_dev_res, &dev->backend_dev, wqe->hdr.wr.ud.av.gid_index);
-        if (sgid_idx <= 0) {
+        if ((int8_t)sgid_idx < 0) {  /* GID index 0 is valid, only negative is error */
             rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
                               wqe->hdr.wr.ud.av.gid_index);
             complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
