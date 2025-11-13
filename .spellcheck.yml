@@ -1,0 +1,95 @@
+matrix:
+- name: Markdown
+  aspell:
+    lang: en
+  dictionary:
+    encoding: utf-8
+  pipeline:
+  - pyspelling.filters.markdown:
+  - pyspelling.filters.html:
+    comments: false
+    ignores:
+    - code
+    - pre
+  sources:
+  - '**/*.md'
+  default_encoding: utf-8
+  
+# Project-specific technical terms
+wordlist:
+- RDMA
+- PVRDMA
+- vfio
+- libvfio
+- QEMU
+- qemu
+- VMware
+- AMD
+- InfiniBand
+- RoCE
+- verbs
+- libibverbs
+- ibv
+- MSI-X
+- PCIe
+- PCI
+- DMA
+- IOMMU
+- userspace
+- backend
+- loopback
+- GID
+- QP
+- CQ
+- MR
+- PD
+- SRQ
+- SGE
+- WR
+- CQE
+- MTU
+- PSN
+- RTR
+- RTS
+- INIT
+- memfd
+- meson
+- cmake
+- Makefile
+- src
+- struct
+- enum
+- typedef
+- inline
+- const
+- nullptr
+- nullptr_t
+- typeof
+- emrdma
+- amd_emrdma
+- ibverbs
+- rdmacm
+- uverbs
+- umem
+- netdev
+- vmxnet3
+- BDF
+- DSRHIGH
+- kallsyms
+- modprobe
+- insmod
+- rmmod
+- dmesg
+- lsmod
+- lspci
+- sysfs
+- procfs
+- netlink
+- ASan
+- AddressSanitizer
+- SEGV
+- vtable
+- GRH
+- AH
+- MD5
+

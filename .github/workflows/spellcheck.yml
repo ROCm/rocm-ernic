@@ -1,32 +1,19 @@
-name: vfu-rdma-spell-check
+name: Spell Check
 
 on:
-  workflow_dispatch:
-  pull_request:
-    branches:
-      - main
-      - master
-    paths:
-      - '**.md'
-      - '.wordlist.txt'
-      - '.spellcheck.yaml'
   push:
-    branches:
-      - main
-      - master
-    paths:
-      - '**.md'
-      - '.wordlist.txt'
-      - '.spellcheck.yaml'
+    branches: [ main, dev/*, test-* ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  spell-check:
-    name: spell-check
+  spellcheck:
     runs-on: ubuntu-latest
     steps:
-    - name: Check out code
-      uses: actions/checkout@v4
-    - name: GitHub Spellcheck Action
-      uses: rojopolis/spellcheck-github-actions@0.48.0
-      continue-on-error: true
-
+    - uses: actions/checkout@v4
+    
+    - name: Check spelling
+      uses: rojopolis/spellcheck-github-actions@0.38.0
+      with:
+        config_path: .spellcheck.yml
+        task_name: Markdown
