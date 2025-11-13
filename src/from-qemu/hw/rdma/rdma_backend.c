@@ -1218,6 +1218,11 @@ int rdma_backend_get_gid_index(RdmaBackendDev *backend_dev, union ibv_gid *gid)
     int ret;
     int i = 0;
 
+    /* For loopback backend (no context), return 0 as a valid backend GID index */
+    if (!backend_dev->context) {
+        return 0;
+    }
+
     do {
         ret = ibv_query_gid(backend_dev->context, backend_dev->port_num, i,
                             &sgid);

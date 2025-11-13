@@ -690,14 +690,40 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         qemu_mutex_unlock(&remote_qp->lock);
         
         if (recv_wr) {
-            /* Perform "data transfer" - copy SGE info */
-            uint32_t recv_len = 0;
-            for (uint32_t i = 0; i < recv_wr->num_sge && i < 32; i++) {
-                recv_len += recv_wr->sge[i].length;
-            }
+            /* Perform actual data transfer - copy from send SGEs to recv SGEs */
+            uint32_t send_offset = 0;
+            uint32_t recv_offset = 0;
+            uint32_t send_sge_idx = 0;
+            uint32_t recv_sge_idx = 0;
             
-            /* Transfer as much as fits */
-            transferred = (total_len < recv_len) ? total_len : recv_len;
+            transferred = 0;
+            
+            /* Copy data from send buffers to recv buffers */
+            while (send_sge_idx < num_sge && recv_sge_idx < recv_wr->num_sge) {
+                void *send_addr = (void *)(sge[send_sge_idx].addr + send_offset);
+                void *recv_addr = (void *)((uintptr_t)recv_wr->sge[recv_sge_idx].addr + recv_offset);
+                uint32_t send_remaining = sge[send_sge_idx].length - send_offset;
+                uint32_t recv_remaining = recv_wr->sge[recv_sge_idx].length - recv_offset;
+                uint32_t copy_len = (send_remaining < recv_remaining) ? send_remaining : recv_remaining;
+                
+                if (copy_len > 0 && send_addr && recv_addr) {
+                    memcpy(recv_addr, send_addr, copy_len);
+                    transferred += copy_len;
+                }
+                
+                send_offset += copy_len;
+                recv_offset += copy_len;
+                
+                /* Move to next SGE if current one exhausted */
+                if (send_offset >= sge[send_sge_idx].length) {
+                    send_sge_idx++;
+                    send_offset = 0;
+                }
+                if (recv_offset >= recv_wr->sge[recv_sge_idx].length) {
+                    recv_sge_idx++;
+                    recv_offset = 0;
+                }
+            }
             
             /* Post recv completion on remote QP */
             if (remote_qp->rcq) {
@@ -707,7 +733,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             }
             
             g_free(recv_wr);
-            rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes)",
+            rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes transferred)",
                            lqp->qpn, remote_qp->qpn, transferred);
         }
     } else {
@@ -728,14 +754,32 @@ static void loopback_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 {
     (void)backend_dev;
     (void)qp_type;
-    (void)sge;
-    (void)num_sge;
-    (void)ctx;
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
-    if (lqp) {
-        rdma_info_report("Loopback: Posted recv on QP %u", lqp->qpn);
+    
+    if (!lqp) {
+        rdma_error_report("Loopback: post_recv on unknown QP");
+        return;
     }
-    /* Recv completion would be posted when matching send arrives */
+    
+    /* Create and queue the receive work request */
+    LoopbackWR *recv_wr = g_new0(LoopbackWR, 1);
+    recv_wr->wr_id = (uint64_t)(uintptr_t)ctx;
+    recv_wr->num_sge = (num_sge < 32) ? num_sge : 32;
+    
+    /* Copy SGE list */
+    for (uint32_t i = 0; i < recv_wr->num_sge; i++) {
+        recv_wr->sge[i].addr = (void *)sge[i].addr;
+        recv_wr->sge[i].length = sge[i].length;
+        recv_wr->sge[i].lkey = sge[i].lkey;
+    }
+    
+    /* Queue the receive work request */
+    qemu_mutex_lock(&lqp->lock);
+    g_queue_push_tail(lqp->recv_queue, recv_wr);
+    qemu_mutex_unlock(&lqp->lock);
+    
+    rdma_info_report("Loopback: Posted recv on QP %u (wr_id=0x%lx, %u SGEs)",
+                    lqp->qpn, (unsigned long)recv_wr->wr_id, recv_wr->num_sge);
 }
 
 /*
