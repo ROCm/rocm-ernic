@@ -12,6 +12,7 @@
 
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
+#include "rdma_backend.h"
 #include "rdma_utils.h"
 #include <errno.h>
 #include <string.h>
@@ -725,12 +726,10 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 }
             }
             
-            /* Post recv completion on remote QP */
-            if (remote_qp->rcq) {
-                loopback_post_completion(remote_qp->rcq, recv_wr->wr_id,
-                                        IBV_WC_SUCCESS, transferred,
-                                        remote_qp->qpn, IBV_WC_RECV);
-            }
+            /* Post recv completion directly to PVRDMA layer */
+            rdma_backend_complete_work(IBV_WC_SUCCESS, 0, transferred,
+                                      remote_qp->qpn, IBV_WC_RECV,
+                                      (void *)recv_wr->wr_id);
             
             g_free(recv_wr);
             rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes transferred)",
@@ -741,11 +740,9 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                         lqp->qpn, total_len);
     }
     
-    /* Always post send completion */
-    if (lqp->scq) {
-        loopback_post_completion(lqp->scq, (uint64_t)(uintptr_t)ctx,
-                                IBV_WC_SUCCESS, total_len, lqp->qpn, IBV_WC_SEND);
-    }
+    /* Post send completion directly to PVRDMA layer */
+    rdma_backend_complete_work(IBV_WC_SUCCESS, 0, total_len,
+                              lqp->qpn, IBV_WC_SEND, ctx);
 }
 
 static void loopback_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,

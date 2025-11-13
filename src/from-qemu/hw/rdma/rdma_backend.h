@@ -81,6 +81,9 @@ void rdma_backend_stop(RdmaBackendDev *backend_dev);
 void rdma_backend_register_comp_handler(void (*handler)(void *ctx,
                                                         struct ibv_wc *wc));
 void rdma_backend_unregister_comp_handler(void);
+void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
+                                uint32_t byte_len, uint32_t qp_num,
+                                enum ibv_wc_opcode opcode, void *ctx);
 
 int rdma_backend_query_port(RdmaBackendDev *backend_dev,
                             struct ibv_port_attr *port_attr);

@@ -79,6 +79,22 @@ static inline void complete_work(enum ibv_wc_status status, uint32_t vendor_err,
     comp_handler(ctx, &wc);
 }
 
+/* Exposed version for backends to call directly (e.g., loopback) */
+void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
+                                uint32_t byte_len, uint32_t qp_num,
+                                enum ibv_wc_opcode opcode, void *ctx)
+{
+    struct ibv_wc wc = {};
+
+    wc.status = status;
+    wc.vendor_err = vendor_err;
+    wc.byte_len = byte_len;
+    wc.qp_num = qp_num;
+    wc.opcode = opcode;
+
+    comp_handler(ctx, &wc);
+}
+
 static void free_cqe_ctx(gpointer data, gpointer user_data)
 {
     BackendCtx *bctx;
@@ -513,6 +529,23 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
+    /* Check if backend handles post_send directly (e.g., loopback with sync completion) */
+    if (qp->backend_ops && qp->backend_ops->post_send) {
+        rc = build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
+                                  &backend_dev->rdma_dev_res->stats.tx_len);
+        if (rc) {
+            complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
+            return;
+        }
+        
+        qp->backend_ops->post_send(backend_dev, qp, qp_type, sge, num_sge,
+                                   sgid_idx, sgid, dgid, dqpn, dqkey, ctx);
+        /* Backend handles completion synchronously, we're done */
+        backend_dev->rdma_dev_res->stats.tx++;
+        return;
+    }
+
+    /* For async backends (verbs), allocate context for completion tracking */
     bctx = g_malloc0(sizeof(*bctx));
     bctx->up_ctx = ctx;
     bctx->backend_qp = qp;
@@ -530,15 +563,6 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     if (rc) {
         complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
         goto err_dealloc_cqe_ctx;
-    }
-
-    /* Dispatch through backend ops if available (e.g., loopback) */
-    if (qp->backend_ops && qp->backend_ops->post_send) {
-        qp->backend_ops->post_send(backend_dev, qp, qp_type, sge, num_sge,
-                                   sgid_idx, sgid, dgid, dqpn, dqkey, ctx);
-        /* Backend handles completion, so we're done */
-        backend_dev->rdma_dev_res->stats.tx++;
-        return;
     }
 
     /* Fallback to direct ibverbs for verbs backend */
@@ -639,6 +663,22 @@ void rdma_backend_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
+    /* Check if backend handles post_recv directly (e.g., loopback with sync completion) */
+    if (qp->backend_ops && qp->backend_ops->post_recv) {
+        rc = build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
+                                  &backend_dev->rdma_dev_res->stats.rx_bufs_len);
+        if (rc) {
+            complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
+            return;
+        }
+        
+        qp->backend_ops->post_recv(backend_dev, qp, qp_type, sge, num_sge, ctx);
+        /* Backend handles completion synchronously, we're done */
+        backend_dev->rdma_dev_res->stats.rx_bufs++;
+        return;
+    }
+
+    /* For async backends (verbs), allocate context for completion tracking */
     bctx = g_malloc0(sizeof(*bctx));
     bctx->up_ctx = ctx;
     bctx->backend_qp = qp;
@@ -656,14 +696,6 @@ void rdma_backend_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     if (rc) {
         complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
         goto err_dealloc_cqe_ctx;
-    }
-
-    /* Dispatch through backend ops if available (e.g., loopback) */
-    if (qp->backend_ops && qp->backend_ops->post_recv) {
-        qp->backend_ops->post_recv(backend_dev, qp, qp_type, sge, num_sge, ctx);
-        /* Backend handles completion, so we're done */
-        backend_dev->rdma_dev_res->stats.rx_bufs++;
-        return;
     }
 
     /* Fallback to direct ibverbs for verbs backend */
