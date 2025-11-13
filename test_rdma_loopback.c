@@ -142,6 +142,14 @@ int main(int argc, char **argv)
     printf("✓ QP transitioned to INIT\n");
 
     /* Transition QP to RTR (Ready to Receive) */
+    /* For RoCE, we need a GID. Use a dummy/default GID for loopback */
+    union ibv_gid my_gid;
+    memset(&my_gid, 0, sizeof(my_gid));
+    /* Set a dummy GID: fe80::1 (link-local IPv6) */
+    my_gid.raw[0] = 0xfe;
+    my_gid.raw[1] = 0x80;
+    my_gid.raw[15] = 0x01;
+    
     memset(&qp_attr, 0, sizeof(qp_attr));
     qp_attr.qp_state = IBV_QPS_RTR;
     qp_attr.path_mtu = IBV_MTU_1024;
@@ -153,6 +161,12 @@ int main(int argc, char **argv)
     qp_attr.ah_attr.sl = 0;
     qp_attr.ah_attr.src_path_bits = 0;
     qp_attr.ah_attr.port_num = 1;
+    /* For RoCE, GRH is required */
+    qp_attr.ah_attr.is_global = 1;
+    qp_attr.ah_attr.grh.dgid = my_gid;
+    qp_attr.ah_attr.grh.sgid_index = 0;
+    qp_attr.ah_attr.grh.hop_limit = 1;
+    qp_attr.ah_attr.grh.traffic_class = 0;
 
     ret = ibv_modify_qp(qp, &qp_attr,
                         IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |

@@ -26,6 +26,14 @@ test_dsr_trigger = executable(
     install: false
 )
 
+# Data transfer test (requires libibverbs)
+test_data_transfer = executable(
+    'test_data_transfer',
+    'test_data_transfer.c',
+    dependencies: [ibverbs_dep],
+    install: false
+)
+
 # Register tests for meson test
 test(
     'pci-config-test',
