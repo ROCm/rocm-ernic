@@ -662,6 +662,18 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "vfu_realize_ctx() failed");
     }
 
+    /* Set socket permissions to allow non-root QEMU to connect */
+    if (chmod(socket_path, 0666) < 0) {
+        fprintf(stderr, "vfu_pvrdma: WARNING: Failed to set socket permissions: %s\n",
+                strerror(errno));
+        fprintf(stderr, "vfu_pvrdma: You may need to manually run: sudo chmod 666 %s\n",
+                socket_path);
+    } else {
+        printf("vfu_pvrdma: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n", 
+               socket_path);
+        fflush(stdout);
+    }
+
     vfu_log(vfu_ctx, LOG_INFO,
             "Device realized, waiting for client connection...");
 
