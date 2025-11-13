@@ -32,7 +32,7 @@
 /* #include "hw/qdev-properties-system.h" - Not needed for standalone */
 /* #include "cpu.h" - Not needed for PVRDMA */
 /* #include "monitor/monitor.h" - Not needed for standalone */
-#include "hw/rdma/rdma.h"  /* Needed for rdma_pci_dma_map declaration */
+#include "hw/rdma/rdma.h" /* Needed for rdma_pci_dma_map declaration */
 
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"
@@ -108,7 +108,8 @@ static int init_dev_ring(PvrdmaRing *ring, PvrdmaRingState **ring_state,
     uint64_t *dir, *tbl;
     int max_pages, rc = 0;
 
-    rdma_info_report("init_dev_ring: ENTER ring=%s num_pages=%u", name, num_pages);
+    rdma_info_report("init_dev_ring: ENTER ring=%s num_pages=%u", name,
+                     num_pages);
 
     if (!num_pages) {
         rdma_error_report("Ring pages count must be strictly positive");
@@ -211,18 +212,23 @@ static int load_dsr(PVRDMADev *dev)
     free_dsr(dev);
 
     /* Map to DSR */
-    rdma_info_report("load_dsr: About to map DSR at guest addr %#lx", (uint64_t)dev->dsr_info.dma);
+    rdma_info_report("load_dsr: About to map DSR at guest addr %#lx",
+                     (uint64_t)dev->dsr_info.dma);
     void *dsr_ptr = rdma_pci_dma_map(
         pci_dev, dev->dsr_info.dma, sizeof(struct pvrdma_device_shared_region));
-    
+
     /* Check as uint64_t to see actual value */
     uint64_t dsr_as_int = (uint64_t)(uintptr_t)dsr_ptr;
-    rdma_info_report("load_dsr: rdma_pci_dma_map returned ptr=%p as_uint64=%#lx", dsr_ptr, dsr_as_int);
-    
+    rdma_info_report(
+        "load_dsr: rdma_pci_dma_map returned ptr=%p as_uint64=%#lx", dsr_ptr,
+        dsr_as_int);
+
     dev->dsr_info.dsr = dsr_ptr;
     uint64_t stored_as_int = (uint64_t)(uintptr_t)dev->dsr_info.dsr;
-    rdma_info_report("load_dsr: Stored in dev->dsr_info.dsr = %p as_uint64=%#lx", dev->dsr_info.dsr, stored_as_int);
-    
+    rdma_info_report(
+        "load_dsr: Stored in dev->dsr_info.dsr = %p as_uint64=%#lx",
+        dev->dsr_info.dsr, stored_as_int);
+
     if (!dev->dsr_info.dsr) {
         rdma_error_report("Failed to map to DSR");
         rc = -ENOMEM;
@@ -235,9 +241,10 @@ static int load_dsr(PVRDMADev *dev)
 
     rdma_info_report("load_dsr: After shortcuts, dsr = %p", dsr);
     rdma_info_report("load_dsr: Reading cmd_slot_dma from DSR...");
-    
+
     /* Map to command slot */
-    rdma_info_report("load_dsr: cmd_slot_dma = %#lx", (uint64_t)dsr->cmd_slot_dma);
+    rdma_info_report("load_dsr: cmd_slot_dma = %#lx",
+                     (uint64_t)dsr->cmd_slot_dma);
     dsr_info->req = rdma_pci_dma_map(pci_dev, dsr->cmd_slot_dma,
                                      sizeof(union pvrdma_cmd_req));
     if (!dsr_info->req) {
@@ -303,26 +310,33 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     }
 
     dsr = dev->dsr_info.dsr;
-    rdma_info_report("init_dsr_dev_caps: Setting caps.mode=ROCE, gid_types=ROCE_V1");
+    rdma_info_report(
+        "init_dsr_dev_caps: Setting caps.mode=ROCE, gid_types=ROCE_V1");
     rdma_info_report("init_dsr_dev_caps: DSR pointer = %p", dsr);
-    rdma_info_report("init_dsr_dev_caps: Guest DSR PA = %#lx", (unsigned long)dev->dsr_info.dma);
-    
+    rdma_info_report("init_dsr_dev_caps: Guest DSR PA = %#lx",
+                     (unsigned long)dev->dsr_info.dma);
+
     /* Log the actual macro values */
-    rdma_info_report("init_dsr_dev_caps: PVRDMA_FW_VERSION = %d", PVRDMA_FW_VERSION);
-    rdma_info_report("init_dsr_dev_caps: PVRDMA_DEVICE_MODE_ROCE = %d", PVRDMA_DEVICE_MODE_ROCE);
-    rdma_info_report("init_dsr_dev_caps: PVRDMA_GID_TYPE_FLAG_ROCE_V1 = 0x%x", PVRDMA_GID_TYPE_FLAG_ROCE_V1);
-    rdma_info_report("init_dsr_dev_caps: dsr->caps.gid_types BEFORE = 0x%x", dsr->caps.gid_types);
-    
+    rdma_info_report("init_dsr_dev_caps: PVRDMA_FW_VERSION = %d",
+                     PVRDMA_FW_VERSION);
+    rdma_info_report("init_dsr_dev_caps: PVRDMA_DEVICE_MODE_ROCE = %d",
+                     PVRDMA_DEVICE_MODE_ROCE);
+    rdma_info_report("init_dsr_dev_caps: PVRDMA_GID_TYPE_FLAG_ROCE_V1 = 0x%x",
+                     PVRDMA_GID_TYPE_FLAG_ROCE_V1);
+    rdma_info_report("init_dsr_dev_caps: dsr->caps.gid_types BEFORE = 0x%x",
+                     dsr->caps.gid_types);
+
     /* Write capabilities - these are the critical fields the driver checks */
     dsr->caps.fw_ver = PVRDMA_FW_VERSION;
     dsr->caps.mode = PVRDMA_DEVICE_MODE_ROCE;
     dsr->caps.gid_types |= PVRDMA_GID_TYPE_FLAG_ROCE_V1;
-    
-    rdma_info_report("init_dsr_dev_caps: dsr->caps.gid_types AFTER = 0x%x", dsr->caps.gid_types);
-    
+
+    rdma_info_report("init_dsr_dev_caps: dsr->caps.gid_types AFTER = 0x%x",
+                     dsr->caps.gid_types);
+
     /* Full memory barrier before continuing with other caps */
     __sync_synchronize();
-    
+
     dsr->caps.max_uar = RDMA_BAR2_UAR_SIZE;
     dsr->caps.max_mr_size = dev->dev_attr.max_mr_size;
     dsr->caps.max_qp = dev->dev_attr.max_qp;
@@ -341,42 +355,52 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     dsr->caps.node_guid = dev->node_guid;
     dsr->caps.phys_port_cnt = MAX_PORTS;
     dsr->caps.max_pkeys = MAX_PKEYS;
-    
+
     /* Per libvfio-user pattern from server.c:
      * Immediately call vfu_sgl_put() after writing to flush to guest.
      * This marks pages dirty and ensures guest sees the writes.
      */
     extern void pvrdma_dsr_flush(void *handle);
-    rdma_info_report("init_dsr_dev_caps: Flushing DSR writes immediately (matching server.c pattern)");
+    rdma_info_report("init_dsr_dev_caps: Flushing DSR writes immediately "
+                     "(matching server.c pattern)");
     pvrdma_dsr_flush(dev);
-    
+
     /* Read back to verify the writes took effect */
     rdma_info_report("init_dsr_dev_caps: READBACK CHECK:");
     rdma_info_report("  fw_ver=%u (expected 14)", dsr->caps.fw_ver);
     rdma_info_report("  mode=%d (expected 0=ROCE)", dsr->caps.mode);
-    rdma_info_report("  gid_types=0x%x (expected 0x1=ROCE_V1)", dsr->caps.gid_types);
-    
+    rdma_info_report("  gid_types=0x%x (expected 0x1=ROCE_V1)",
+                     dsr->caps.gid_types);
+
     /* Check actual offsets */
-    rdma_info_report("  offsetof(fw_ver) = %zu", offsetof(struct pvrdma_device_shared_region, caps.fw_ver));
-    rdma_info_report("  offsetof(mode) = %zu", offsetof(struct pvrdma_device_shared_region, caps.mode));
-    rdma_info_report("  offsetof(gid_types) = %zu", offsetof(struct pvrdma_device_shared_region, caps.gid_types));
-    
+    rdma_info_report("  offsetof(fw_ver) = %zu",
+                     offsetof(struct pvrdma_device_shared_region, caps.fw_ver));
+    rdma_info_report("  offsetof(mode) = %zu",
+                     offsetof(struct pvrdma_device_shared_region, caps.mode));
+    rdma_info_report(
+        "  offsetof(gid_types) = %zu",
+        offsetof(struct pvrdma_device_shared_region, caps.gid_types));
+
     /* Calculate offset of gid_types within caps */
-    size_t gid_offset_in_caps = offsetof(struct pvrdma_device_shared_region, caps.gid_types) - 
-                                offsetof(struct pvrdma_device_shared_region, caps);
-    rdma_info_report("  gid_types is at offset %zu within caps structure", gid_offset_in_caps);
-    
+    size_t gid_offset_in_caps =
+        offsetof(struct pvrdma_device_shared_region, caps.gid_types) -
+        offsetof(struct pvrdma_device_shared_region, caps);
+    rdma_info_report("  gid_types is at offset %zu within caps structure",
+                     gid_offset_in_caps);
+
     /* Dump raw bytes around where fw_ver/mode/gid_types should be IN CAPS */
     unsigned char *caps_start = (unsigned char *)&dsr->caps;
-    rdma_info_report("  caps raw [0-7]: %02x %02x %02x %02x %02x %02x %02x %02x",
-                     caps_start[0], caps_start[1], caps_start[2], caps_start[3],
-                     caps_start[4], caps_start[5], caps_start[6], caps_start[7]);
-    
+    rdma_info_report(
+        "  caps raw [0-7]: %02x %02x %02x %02x %02x %02x %02x %02x",
+        caps_start[0], caps_start[1], caps_start[2], caps_start[3],
+        caps_start[4], caps_start[5], caps_start[6], caps_start[7]);
+
     /* Check if there's struct packing/alignment issue */
     rdma_info_report("  sizeof(caps) = %zu", sizeof(dsr->caps));
     rdma_info_report("  Address of dsr->caps.fw_ver = %p", &dsr->caps.fw_ver);
     rdma_info_report("  Address of dsr->caps.mode = %p", &dsr->caps.mode);
-    rdma_info_report("  Address of dsr->caps.gid_types = %p", &dsr->caps.gid_types);
+    rdma_info_report("  Address of dsr->caps.gid_types = %p",
+                     &dsr->caps.gid_types);
 }
 
 static void uninit_msix(PCIDevice *pdev, int used_vectors)
@@ -491,9 +515,12 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
 
     /* Log error register reads specially */
     if (addr == PVRDMA_REG_ERR) {
-        rdma_info_report(">>> ERROR REGISTER READ: offset=0x%lx (PVRDMA_REG_ERR) value=%#x", addr, val);
+        rdma_info_report(
+            ">>> ERROR REGISTER READ: offset=0x%lx (PVRDMA_REG_ERR) value=%#x",
+            addr, val);
     } else {
-        rdma_info_report("BAR1 READ: offset=%#lx size=%u value=%#x", addr, size, val);
+        rdma_info_report("BAR1 READ: offset=%#lx size=%u value=%#x", addr, size,
+                         val);
     }
 
     return val;
@@ -505,7 +532,8 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
 {
     PVRDMADev *dev = opaque;
 
-    rdma_info_report("BAR1 WRITE: offset=%#lx size=%u value=%#lx", addr, size, val);
+    rdma_info_report("BAR1 WRITE: offset=%#lx size=%u value=%#lx", addr, size,
+                     val);
 
     dev->stats.regs_writes++;
 
@@ -522,25 +550,27 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
         break;
     case PVRDMA_REG_DSRHIGH:
         dev->dsr_info.dma |= val << 32;
-        
+
         rdma_info_report("DSRHIGH write: Starting DSR initialization");
         load_dsr(dev);
-        
+
         if (!dev->dsr_info.dsr) {
             rdma_error_report("DSRHIGH write: load_dsr() failed!");
             break;
         }
-        
-        /* init_dsr_dev_caps() now flushes immediately after writes (server.c pattern) */
+
+        /* init_dsr_dev_caps() now flushes immediately after writes (server.c
+         * pattern) */
         init_dsr_dev_caps(dev);
-        
+
         rdma_info_report("DSRHIGH write: Complete");
         break;
     case PVRDMA_REG_CTL:
         rdma_info_report(">>> CTL register write: val=%u", (unsigned)val);
         switch (val) {
         case PVRDMA_DEVICE_CTL_ACTIVATE:
-            rdma_info_report(">>> ACTIVATE command received, calling activate_device()");
+            rdma_info_report(
+                ">>> ACTIVATE command received, calling activate_device()");
             activate_device(dev);
             rdma_info_report(">>> activate_device() returned successfully");
             break;
@@ -687,7 +717,8 @@ static void init_dev_caps(PVRDMADev *dev)
         MAX(sizeof(struct pvrdma_sq_wqe_hdr), sizeof(struct pvrdma_rq_wqe_hdr));
 
     rdma_info_report("init_dev_caps: CALLED");
-    rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE, pg_tbl_bytes);
+    rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE,
+                     pg_tbl_bytes);
     rdma_info_report("  sizeof(pvrdma_cqe)=%zu", sizeof(struct pvrdma_cqe));
     rdma_info_report("  max_sge=%d", dev->dev_attr.max_sge);
 

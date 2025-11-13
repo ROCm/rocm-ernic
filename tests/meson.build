@@ -1,9 +1,5 @@
 # Tests build configuration
 
-# libvfio-user dependency (use local build)
-libvfiouser_inc = include_directories('/home/stebates/Projects/libvfio-user/include')
-libvfiouser_link = ['-L/home/stebates/Projects/libvfio-user/build/lib', '-lvfio-user']
-
 # Test client programs
 test_pci_client = executable(
     'test_pci_client',

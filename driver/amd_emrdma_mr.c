@@ -57,44 +57,43 @@
  */
 struct ib_mr *amd_emrdma_get_dma_mr(struct ib_pd *pd, int acc)
 {
-	struct amd_emrdma_dev *dev = to_vdev(pd->device);
-	struct amd_emrdma_user_mr *mr;
-	union amd_emrdma_cmd_req req;
-	union amd_emrdma_cmd_resp rsp;
-	struct amd_emrdma_cmd_create_mr *cmd = &req.create_mr;
-	struct amd_emrdma_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
-	int ret;
+    struct amd_emrdma_dev *dev = to_vdev(pd->device);
+    struct amd_emrdma_user_mr *mr;
+    union amd_emrdma_cmd_req req;
+    union amd_emrdma_cmd_resp rsp;
+    struct amd_emrdma_cmd_create_mr *cmd = &req.create_mr;
+    struct amd_emrdma_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
+    int ret;
 
-	/* Support only LOCAL_WRITE flag for DMA MRs */
-	if (acc & ~IB_ACCESS_LOCAL_WRITE) {
-		dev_warn(&dev->pdev->dev,
-			 "unsupported dma mr access flags %#x\n", acc);
-		return ERR_PTR(-EOPNOTSUPP);
-	}
+    /* Support only LOCAL_WRITE flag for DMA MRs */
+    if (acc & ~IB_ACCESS_LOCAL_WRITE) {
+        dev_warn(&dev->pdev->dev, "unsupported dma mr access flags %#x\n", acc);
+        return ERR_PTR(-EOPNOTSUPP);
+    }
 
-	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
-	if (!mr)
-		return ERR_PTR(-ENOMEM);
+    mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+    if (!mr)
+        return ERR_PTR(-ENOMEM);
 
-	memset(cmd, 0, sizeof(*cmd));
-	cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_MR;
-	cmd->pd_handle = to_vpd(pd)->pd_handle;
-	cmd->access_flags = acc;
-	cmd->flags = AMD_EMRDMA_MR_FLAG_DMA;
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_MR;
+    cmd->pd_handle = to_vpd(pd)->pd_handle;
+    cmd->access_flags = acc;
+    cmd->flags = AMD_EMRDMA_MR_FLAG_DMA;
 
-	ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_MR_RESP);
-	if (ret < 0) {
-		dev_warn(&dev->pdev->dev,
-			 "could not get DMA mem region, error: %d\n", ret);
-		kfree(mr);
-		return ERR_PTR(ret);
-	}
+    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_MR_RESP);
+    if (ret < 0) {
+        dev_warn(&dev->pdev->dev, "could not get DMA mem region, error: %d\n",
+                 ret);
+        kfree(mr);
+        return ERR_PTR(ret);
+    }
 
-	mr->mmr.mr_handle = resp->mr_handle;
-	mr->ibmr.lkey = resp->lkey;
-	mr->ibmr.rkey = resp->rkey;
+    mr->mmr.mr_handle = resp->mr_handle;
+    mr->ibmr.lkey = resp->lkey;
+    mr->ibmr.rkey = resp->rkey;
 
-	return &mr->ibmr;
+    return &mr->ibmr;
 }
 
 /**
@@ -109,88 +108,85 @@ struct ib_mr *amd_emrdma_get_dma_mr(struct ib_pd *pd, int acc)
  * @return: ib_mr pointer on success, otherwise returns an errno.
  */
 struct ib_mr *amd_emrdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
-				 u64 virt_addr, int access_flags,
-				 struct ib_udata *udata)
+                                     u64 virt_addr, int access_flags,
+                                     struct ib_udata *udata)
 {
-	struct amd_emrdma_dev *dev = to_vdev(pd->device);
-	struct amd_emrdma_user_mr *mr = NULL;
-	struct ib_umem *umem;
-	union amd_emrdma_cmd_req req;
-	union amd_emrdma_cmd_resp rsp;
-	struct amd_emrdma_cmd_create_mr *cmd = &req.create_mr;
-	struct amd_emrdma_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
-	int ret, npages;
+    struct amd_emrdma_dev *dev = to_vdev(pd->device);
+    struct amd_emrdma_user_mr *mr = NULL;
+    struct ib_umem *umem;
+    union amd_emrdma_cmd_req req;
+    union amd_emrdma_cmd_resp rsp;
+    struct amd_emrdma_cmd_create_mr *cmd = &req.create_mr;
+    struct amd_emrdma_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
+    int ret, npages;
 
-	if (length == 0 || length > dev->dsr->caps.max_mr_size) {
-		dev_warn(&dev->pdev->dev, "invalid mem region length\n");
-		return ERR_PTR(-EINVAL);
-	}
+    if (length == 0 || length > dev->dsr->caps.max_mr_size) {
+        dev_warn(&dev->pdev->dev, "invalid mem region length\n");
+        return ERR_PTR(-EINVAL);
+    }
 
-	umem = ib_umem_get(pd->device, start, length, access_flags);
-	if (IS_ERR(umem)) {
-		dev_warn(&dev->pdev->dev,
-			 "could not get umem for mem region\n");
-		return ERR_CAST(umem);
-	}
+    umem = ib_umem_get(pd->device, start, length, access_flags);
+    if (IS_ERR(umem)) {
+        dev_warn(&dev->pdev->dev, "could not get umem for mem region\n");
+        return ERR_CAST(umem);
+    }
 
-	npages = ib_umem_num_dma_blocks(umem, PAGE_SIZE);
-	if (npages < 0 || npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
-		dev_warn(&dev->pdev->dev, "overflow %d pages in mem region\n",
-			 npages);
-		ret = -EINVAL;
-		goto err_umem;
-	}
+    npages = ib_umem_num_dma_blocks(umem, PAGE_SIZE);
+    if (npages < 0 || npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
+        dev_warn(&dev->pdev->dev, "overflow %d pages in mem region\n", npages);
+        ret = -EINVAL;
+        goto err_umem;
+    }
 
-	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
-	if (!mr) {
-		ret = -ENOMEM;
-		goto err_umem;
-	}
+    mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+    if (!mr) {
+        ret = -ENOMEM;
+        goto err_umem;
+    }
 
-	mr->mmr.iova = virt_addr;
-	mr->mmr.size = length;
-	mr->umem = umem;
+    mr->mmr.iova = virt_addr;
+    mr->mmr.size = length;
+    mr->umem = umem;
 
-	ret = amd_emrdma_page_dir_init(dev, &mr->pdir, npages, false);
-	if (ret) {
-		dev_warn(&dev->pdev->dev,
-			 "could not allocate page directory\n");
-		goto err_umem;
-	}
+    ret = amd_emrdma_page_dir_init(dev, &mr->pdir, npages, false);
+    if (ret) {
+        dev_warn(&dev->pdev->dev, "could not allocate page directory\n");
+        goto err_umem;
+    }
 
-	ret = amd_emrdma_page_dir_insert_umem(&mr->pdir, mr->umem, 0);
-	if (ret)
-		goto err_pdir;
+    ret = amd_emrdma_page_dir_insert_umem(&mr->pdir, mr->umem, 0);
+    if (ret)
+        goto err_pdir;
 
-	memset(cmd, 0, sizeof(*cmd));
-	cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_MR;
-	cmd->start = start;
-	cmd->length = length;
-	cmd->pd_handle = to_vpd(pd)->pd_handle;
-	cmd->access_flags = access_flags;
-	cmd->nchunks = npages;
-	cmd->pdir_dma = mr->pdir.dir_dma;
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_MR;
+    cmd->start = start;
+    cmd->length = length;
+    cmd->pd_handle = to_vpd(pd)->pd_handle;
+    cmd->access_flags = access_flags;
+    cmd->nchunks = npages;
+    cmd->pdir_dma = mr->pdir.dir_dma;
 
-	ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_MR_RESP);
-	if (ret < 0) {
-		dev_warn(&dev->pdev->dev,
-			 "could not register mem region, error: %d\n", ret);
-		goto err_pdir;
-	}
+    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_MR_RESP);
+    if (ret < 0) {
+        dev_warn(&dev->pdev->dev, "could not register mem region, error: %d\n",
+                 ret);
+        goto err_pdir;
+    }
 
-	mr->mmr.mr_handle = resp->mr_handle;
-	mr->ibmr.lkey = resp->lkey;
-	mr->ibmr.rkey = resp->rkey;
+    mr->mmr.mr_handle = resp->mr_handle;
+    mr->ibmr.lkey = resp->lkey;
+    mr->ibmr.rkey = resp->rkey;
 
-	return &mr->ibmr;
+    return &mr->ibmr;
 
 err_pdir:
-	amd_emrdma_page_dir_cleanup(dev, &mr->pdir);
+    amd_emrdma_page_dir_cleanup(dev, &mr->pdir);
 err_umem:
-	ib_umem_release(umem);
-	kfree(mr);
+    ib_umem_release(umem);
+    kfree(mr);
 
-	return ERR_PTR(ret);
+    return ERR_PTR(ret);
 }
 
 /**
@@ -202,69 +198,68 @@ err_umem:
  * @return: ib_mr pointer on success, otherwise returns an errno.
  */
 struct ib_mr *amd_emrdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
-			      u32 max_num_sg)
+                                  u32 max_num_sg)
 {
-	struct amd_emrdma_dev *dev = to_vdev(pd->device);
-	struct amd_emrdma_user_mr *mr;
-	union amd_emrdma_cmd_req req;
-	union amd_emrdma_cmd_resp rsp;
-	struct amd_emrdma_cmd_create_mr *cmd = &req.create_mr;
-	struct amd_emrdma_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
-	int size = max_num_sg * sizeof(u64);
-	int ret;
+    struct amd_emrdma_dev *dev = to_vdev(pd->device);
+    struct amd_emrdma_user_mr *mr;
+    union amd_emrdma_cmd_req req;
+    union amd_emrdma_cmd_resp rsp;
+    struct amd_emrdma_cmd_create_mr *cmd = &req.create_mr;
+    struct amd_emrdma_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
+    int size = max_num_sg * sizeof(u64);
+    int ret;
 
-	if (mr_type != IB_MR_TYPE_MEM_REG ||
-	    max_num_sg > AMD_EMRDMA_MAX_FAST_REG_PAGES)
-		return ERR_PTR(-EINVAL);
+    if (mr_type != IB_MR_TYPE_MEM_REG ||
+        max_num_sg > AMD_EMRDMA_MAX_FAST_REG_PAGES)
+        return ERR_PTR(-EINVAL);
 
-	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
-	if (!mr)
-		return ERR_PTR(-ENOMEM);
+    mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+    if (!mr)
+        return ERR_PTR(-ENOMEM);
 
-	mr->pages = kzalloc(size, GFP_KERNEL);
-	if (!mr->pages) {
-		ret = -ENOMEM;
-		goto freemr;
-	}
+    mr->pages = kzalloc(size, GFP_KERNEL);
+    if (!mr->pages) {
+        ret = -ENOMEM;
+        goto freemr;
+    }
 
-	ret = amd_emrdma_page_dir_init(dev, &mr->pdir, max_num_sg, false);
-	if (ret) {
-		dev_warn(&dev->pdev->dev,
-			 "failed to allocate page dir for mr\n");
-		ret = -ENOMEM;
-		goto freepages;
-	}
+    ret = amd_emrdma_page_dir_init(dev, &mr->pdir, max_num_sg, false);
+    if (ret) {
+        dev_warn(&dev->pdev->dev, "failed to allocate page dir for mr\n");
+        ret = -ENOMEM;
+        goto freepages;
+    }
 
-	memset(cmd, 0, sizeof(*cmd));
-	cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_MR;
-	cmd->pd_handle = to_vpd(pd)->pd_handle;
-	cmd->access_flags = 0;
-	cmd->flags = AMD_EMRDMA_MR_FLAG_FRMR;
-	cmd->nchunks = max_num_sg;
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_MR;
+    cmd->pd_handle = to_vpd(pd)->pd_handle;
+    cmd->access_flags = 0;
+    cmd->flags = AMD_EMRDMA_MR_FLAG_FRMR;
+    cmd->nchunks = max_num_sg;
 
-	ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_MR_RESP);
-	if (ret < 0) {
-		dev_warn(&dev->pdev->dev,
-			 "could not create FR mem region, error: %d\n", ret);
-		goto freepdir;
-	}
+    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_MR_RESP);
+    if (ret < 0) {
+        dev_warn(&dev->pdev->dev, "could not create FR mem region, error: %d\n",
+                 ret);
+        goto freepdir;
+    }
 
-	mr->max_pages = max_num_sg;
-	mr->mmr.mr_handle = resp->mr_handle;
-	mr->ibmr.lkey = resp->lkey;
-	mr->ibmr.rkey = resp->rkey;
-	mr->page_shift = PAGE_SHIFT;
-	mr->umem = NULL;
+    mr->max_pages = max_num_sg;
+    mr->mmr.mr_handle = resp->mr_handle;
+    mr->ibmr.lkey = resp->lkey;
+    mr->ibmr.rkey = resp->rkey;
+    mr->page_shift = PAGE_SHIFT;
+    mr->umem = NULL;
 
-	return &mr->ibmr;
+    return &mr->ibmr;
 
 freepdir:
-	amd_emrdma_page_dir_cleanup(dev, &mr->pdir);
+    amd_emrdma_page_dir_cleanup(dev, &mr->pdir);
 freepages:
-	kfree(mr->pages);
+    kfree(mr->pages);
 freemr:
-	kfree(mr);
-	return ERR_PTR(ret);
+    kfree(mr);
+    return ERR_PTR(ret);
 }
 
 /**
@@ -276,52 +271,52 @@ freemr:
  */
 int amd_emrdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 {
-	struct amd_emrdma_user_mr *mr = to_vmr(ibmr);
-	struct amd_emrdma_dev *dev = to_vdev(ibmr->device);
-	union amd_emrdma_cmd_req req;
-	struct amd_emrdma_cmd_destroy_mr *cmd = &req.destroy_mr;
-	int ret;
+    struct amd_emrdma_user_mr *mr = to_vmr(ibmr);
+    struct amd_emrdma_dev *dev = to_vdev(ibmr->device);
+    union amd_emrdma_cmd_req req;
+    struct amd_emrdma_cmd_destroy_mr *cmd = &req.destroy_mr;
+    int ret;
 
-	memset(cmd, 0, sizeof(*cmd));
-	cmd->hdr.cmd = AMD_EMRDMA_CMD_DESTROY_MR;
-	cmd->mr_handle = mr->mmr.mr_handle;
-	ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
-	if (ret < 0)
-		dev_warn(&dev->pdev->dev,
-			 "could not deregister mem region, error: %d\n", ret);
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->hdr.cmd = AMD_EMRDMA_CMD_DESTROY_MR;
+    cmd->mr_handle = mr->mmr.mr_handle;
+    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    if (ret < 0)
+        dev_warn(&dev->pdev->dev,
+                 "could not deregister mem region, error: %d\n", ret);
 
-	amd_emrdma_page_dir_cleanup(dev, &mr->pdir);
-	ib_umem_release(mr->umem);
+    amd_emrdma_page_dir_cleanup(dev, &mr->pdir);
+    ib_umem_release(mr->umem);
 
-	kfree(mr->pages);
-	kfree(mr);
+    kfree(mr->pages);
+    kfree(mr);
 
-	return 0;
+    return 0;
 }
 
 static int amd_emrdma_set_page(struct ib_mr *ibmr, u64 addr)
 {
-	struct amd_emrdma_user_mr *mr = to_vmr(ibmr);
+    struct amd_emrdma_user_mr *mr = to_vmr(ibmr);
 
-	if (mr->npages == mr->max_pages)
-		return -ENOMEM;
+    if (mr->npages == mr->max_pages)
+        return -ENOMEM;
 
-	mr->pages[mr->npages++] = addr;
-	return 0;
+    mr->pages[mr->npages++] = addr;
+    return 0;
 }
 
-int amd_emrdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
-		     unsigned int *sg_offset)
+int amd_emrdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
+                         int sg_nents, unsigned int *sg_offset)
 {
-	struct amd_emrdma_user_mr *mr = to_vmr(ibmr);
-	struct amd_emrdma_dev *dev = to_vdev(ibmr->device);
-	int ret;
+    struct amd_emrdma_user_mr *mr = to_vmr(ibmr);
+    struct amd_emrdma_dev *dev = to_vdev(ibmr->device);
+    int ret;
 
-	mr->npages = 0;
+    mr->npages = 0;
 
-	ret = ib_sg_to_pages(ibmr, sg, sg_nents, sg_offset, amd_emrdma_set_page);
-	if (ret < 0)
-		dev_warn(&dev->pdev->dev, "could not map sg to pages\n");
+    ret = ib_sg_to_pages(ibmr, sg, sg_nents, sg_offset, amd_emrdma_set_page);
+    if (ret < 0)
+        dev_warn(&dev->pdev->dev, "could not map sg to pages\n");
 
-	return ret;
+    return ret;
 }

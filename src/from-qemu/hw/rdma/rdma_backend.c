@@ -45,7 +45,7 @@
 #include "rdma_utils.h"
 #include "rdma_rm.h"
 #include "rdma_backend.h"
-#include "rdma_backend_ops.h"      /* For RdmaBackendOps structure definition */
+#include "rdma_backend_ops.h" /* For RdmaBackendOps structure definition */
 
 #define THR_NAME_LEN 16
 #define THR_POLL_TO  5000
@@ -87,7 +87,8 @@ void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
     struct ibv_wc wc = {};
 
     if (!comp_handler) {
-        rdma_error_report("Completion handler not registered! Cannot post completion.");
+        rdma_error_report(
+            "Completion handler not registered! Cannot post completion.");
         return;
     }
 
@@ -354,16 +355,17 @@ void rdma_backend_poll_cq(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq)
     int polled;
 
     rdma_dev_res->stats.poll_cq_from_guest++;
-    
+
     /* Check if backend provides custom poll_cq (e.g., loopback) */
-    if (cq->backend_dev && cq->backend_dev->backend_ops && 
+    if (cq->backend_dev && cq->backend_dev->backend_ops &&
         cq->backend_dev->backend_ops->poll_cq) {
-        /* Backend handles polling directly (loopback posts completions synchronously) */
+        /* Backend handles polling directly (loopback posts completions
+         * synchronously) */
         cq->backend_dev->backend_ops->poll_cq(rdma_dev_res, cq);
         /* Loopback completions are already posted, nothing to poll */
         return;
     }
-    
+
     /* For verbs backend, use standard ibv_poll_cq */
     polled = rdma_poll_cq(rdma_dev_res, cq->ibcq);
     if (!polled) {
@@ -525,7 +527,8 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     int rc;
     struct ibv_send_wr wr = {}, *bad_wr;
 
-    rdma_info_report(">>> rdma_backend_post_send: ENTRY with qp=%p, ibqp=%p, &cqe_ctx_list=%p",
+    rdma_info_report(">>> rdma_backend_post_send: ENTRY with qp=%p, ibqp=%p, "
+                     "&cqe_ctx_list=%p",
                      qp, qp ? qp->ibqp : NULL, qp ? &qp->cqe_ctx_list : NULL);
 
     if (!qp->ibqp) { /* This field is not initialized for QP0 and QP1 */
@@ -545,7 +548,8 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
-    /* Check if backend handles post_send directly (e.g., loopback with sync completion) */
+    /* Check if backend handles post_send directly (e.g., loopback with sync
+     * completion) */
     if (qp->backend_ops && qp->backend_ops->post_send) {
         rc = build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
                                   &backend_dev->rdma_dev_res->stats.tx_len);
@@ -553,7 +557,7 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
             return;
         }
-        
+
         qp->backend_ops->post_send(backend_dev, qp, qp_type, sge, num_sge,
                                    sgid_idx, sgid, dgid, dqpn, dqkey, ctx);
         /* Backend handles completion synchronously, we're done */
@@ -679,15 +683,17 @@ void rdma_backend_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
-    /* Check if backend handles post_recv directly (e.g., loopback with sync completion) */
+    /* Check if backend handles post_recv directly (e.g., loopback with sync
+     * completion) */
     if (qp->backend_ops && qp->backend_ops->post_recv) {
-        rc = build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
-                                  &backend_dev->rdma_dev_res->stats.rx_bufs_len);
+        rc =
+            build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
+                                 &backend_dev->rdma_dev_res->stats.rx_bufs_len);
         if (rc) {
             complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
             return;
         }
-        
+
         qp->backend_ops->post_recv(backend_dev, qp, qp_type, sge, num_sge, ctx);
         /* Backend handles completion synchronously, we're done */
         backend_dev->rdma_dev_res->stats.rx_bufs++;
@@ -1266,7 +1272,8 @@ int rdma_backend_get_gid_index(RdmaBackendDev *backend_dev, union ibv_gid *gid)
     int ret;
     int i = 0;
 
-    /* For loopback backend (no context), return 0 as a valid backend GID index */
+    /* For loopback backend (no context), return 0 as a valid backend GID index
+     */
     if (!backend_dev->context) {
         return 0;
     }

@@ -10,4 +10,3 @@
 #include <glib.h>
 
 #endif /* GLIB_COMPAT_H */
-

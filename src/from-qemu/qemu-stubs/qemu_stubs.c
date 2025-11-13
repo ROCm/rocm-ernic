@@ -315,7 +315,8 @@ void rdma_backend_destroy(void *backend_dev)
 /* Forward declare PCIDevice from hw/pci/pci_device.h */
 typedef struct PCIDevice PCIDevice;
 
-extern void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *plen, int dir);
+extern void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *plen,
+                         int dir);
 extern void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
                           uint64_t access_len);
 
@@ -323,12 +324,13 @@ void *rdma_pci_dma_map(void *dev, uint64_t addr, uint64_t len)
 {
     uint64_t plen = len;
     void *result = pci_dma_map((PCIDevice *)dev, addr, &plen, 0);
-    
+
     /* Debug: Check if pointer is being truncated */
     uint64_t result_as_int = (uint64_t)(uintptr_t)result;
-    printf("rdma_pci_dma_map: pci_dma_map returned %p (as uint64=%#lx)\n", result, result_as_int);
+    printf("rdma_pci_dma_map: pci_dma_map returned %p (as uint64=%#lx)\n",
+           result, result_as_int);
     fflush(stdout);
-    
+
     return result;
 }
 

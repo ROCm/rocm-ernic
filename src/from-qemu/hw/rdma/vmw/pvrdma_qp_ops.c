@@ -174,7 +174,8 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
 
         sgid_idx = rdma_rm_get_backend_gid_index(
             &dev->rdma_dev_res, &dev->backend_dev, wqe->hdr.wr.ud.av.gid_index);
-        if ((int8_t)sgid_idx < 0) {  /* GID index 0 is valid, only negative is error */
+        if ((int8_t)sgid_idx <
+            0) { /* GID index 0 is valid, only negative is error */
             rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
                               wqe->hdr.wr.ud.av.gid_index);
             complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
@@ -188,8 +189,9 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             continue;
         }
 
-        rdma_info_report(">>> pvrdma_qp_ops: Before post_send: qp=%p, &qp->backend_qp=%p",
-                         qp, &qp->backend_qp);
+        rdma_info_report(
+            ">>> pvrdma_qp_ops: Before post_send: qp=%p, &qp->backend_qp=%p",
+            qp, &qp->backend_qp);
 
         rdma_backend_post_send(
             &dev->backend_dev, &qp->backend_qp, qp->qp_type,

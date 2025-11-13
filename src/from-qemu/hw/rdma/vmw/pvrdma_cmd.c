@@ -26,7 +26,7 @@
 /* #include "cpu.h" - Not needed for PVRDMA */
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
-#include "hw/rdma/rdma.h"  /* For rdma_pci_dma_map declaration */
+#include "hw/rdma/rdma.h" /* For rdma_pci_dma_map declaration */
 
 #include "../rdma_backend.h"
 #include "../rdma_rm.h"
@@ -54,27 +54,33 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
         return NULL;
     }
 
-    rdma_info_report("pvrdma_map_to_pdir: Mapping pdir_dma=0x%lx, nchunks=%u, length=%zu",
-                     pdir_dma, nchunks, length);
-    
+    rdma_info_report(
+        "pvrdma_map_to_pdir: Mapping pdir_dma=0x%lx, nchunks=%u, length=%zu",
+        pdir_dma, nchunks, length);
+
     dir = rdma_pci_dma_map(pdev, pdir_dma, PAGE_SIZE);
     if (!dir) {
-        rdma_error_report("Failed to map to page directory (pdir_dma=0x%lx)", pdir_dma);
+        rdma_error_report("Failed to map to page directory (pdir_dma=0x%lx)",
+                          pdir_dma);
         return NULL;
     }
-    rdma_info_report("pvrdma_map_to_pdir: Mapped dir=%p, dir[0]=0x%lx", dir, dir[0]);
+    rdma_info_report("pvrdma_map_to_pdir: Mapped dir=%p, dir[0]=0x%lx", dir,
+                     dir[0]);
 
     tbl = rdma_pci_dma_map(pdev, dir[0], PAGE_SIZE);
     if (!tbl) {
-        rdma_error_report("Failed to map to page table 0 (dir[0]=0x%lx)", dir[0]);
+        rdma_error_report("Failed to map to page table 0 (dir[0]=0x%lx)",
+                          dir[0]);
         goto out_unmap_dir;
     }
-    rdma_info_report("pvrdma_map_to_pdir: Mapped tbl=%p, tbl[0]=0x%lx", tbl, tbl[0]);
+    rdma_info_report("pvrdma_map_to_pdir: Mapped tbl=%p, tbl[0]=0x%lx", tbl,
+                     tbl[0]);
 
     curr_page = rdma_pci_dma_map(pdev, (dma_addr_t)tbl[0], PAGE_SIZE);
     if (!curr_page) {
         rdma_error_report("Failed to map the page 0 (tbl[0]=0x%lx)", tbl[0]);
-        rdma_info_report("pvrdma_map_to_pdir: This address likely not in vfio-user DMA regions");
+        rdma_info_report("pvrdma_map_to_pdir: This address likely not in "
+                         "vfio-user DMA regions");
         goto out_unmap_tbl;
     }
     rdma_info_report("pvrdma_map_to_pdir: Mapped curr_page=%p", curr_page);
@@ -153,13 +159,14 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
         }
     } else {
         /* No backend - return reasonable defaults for PCI-only mode */
-        rdma_info_report("query_port: No backend, returning default port attributes");
+        rdma_info_report(
+            "query_port: No backend, returning default port attributes");
         memset(&attrs, 0, sizeof(attrs));
-        attrs.state = 4;  /* IBV_PORT_ACTIVE */
-        attrs.max_mtu = 5;  /* IBV_MTU_4096 */
-        attrs.active_mtu = 3;  /* IBV_MTU_1024 */
+        attrs.state = 4;      /* IBV_PORT_ACTIVE */
+        attrs.max_mtu = 5;    /* IBV_MTU_4096 */
+        attrs.active_mtu = 3; /* IBV_MTU_1024 */
         attrs.gid_tbl_len = 1;
-        attrs.port_cap_flags = (1 << 16);  /* IBV_PORT_CM_SUP */
+        attrs.port_cap_flags = (1 << 16); /* IBV_PORT_CM_SUP */
         attrs.max_msg_sz = 0x80000000;
         attrs.pkey_tbl_len = 1;
         attrs.active_width = 1;
@@ -242,8 +249,9 @@ static int create_mr(PVRDMADev *dev, union pvrdma_cmd_req *req,
 
     memset(resp, 0, sizeof(*resp));
 
-    rdma_info_report("create_mr: pd_handle=%u, start=0x%lx, length=%lu, flags=0x%x",
-                     cmd->pd_handle, cmd->start, cmd->length, cmd->flags);
+    rdma_info_report(
+        "create_mr: pd_handle=%u, start=0x%lx, length=%lu, flags=0x%x",
+        cmd->pd_handle, cmd->start, cmd->length, cmd->flags);
 
     if (!(cmd->flags & PVRDMA_MR_FLAG_DMA)) {
         host_virt = pvrdma_map_to_pdir(pci_dev, cmd->pdir_dma, cmd->nchunks,
@@ -251,11 +259,14 @@ static int create_mr(PVRDMADev *dev, union pvrdma_cmd_req *req,
         if (!host_virt) {
             /* For loopback backend, we can continue without mapped memory */
             /* The backend just needs metadata (length, keys) */
-            rdma_info_report("Failed to map user MR pages - continuing with NULL (loopback compatible)");
-            /* Don't return error - loopback backend can work without host_virt */
+            rdma_info_report("Failed to map user MR pages - continuing with "
+                             "NULL (loopback compatible)");
+            /* Don't return error - loopback backend can work without host_virt
+             */
         } else {
-            rdma_info_report("create_mr: Successfully mapped %u chunks to host_virt=%p",
-                           cmd->nchunks, host_virt);
+            rdma_info_report(
+                "create_mr: Successfully mapped %u chunks to host_virt=%p",
+                cmd->nchunks, host_virt);
         }
     }
 
@@ -267,8 +278,9 @@ static int create_mr(PVRDMADev *dev, union pvrdma_cmd_req *req,
     }
 
     if (!rc) {
-        rdma_info_report("create_mr: SUCCESS - mr_handle=%u, lkey=0x%x, rkey=0x%x",
-                        resp->mr_handle, resp->lkey, resp->rkey);
+        rdma_info_report(
+            "create_mr: SUCCESS - mr_handle=%u, lkey=0x%x, rkey=0x%x",
+            resp->mr_handle, resp->lkey, resp->rkey);
     } else {
         rdma_error_report("create_mr: FAILED - rc=%d", rc);
     }
@@ -294,70 +306,83 @@ static int create_cq_ring(PCIDevice *pci_dev, PvrdmaRing **ring,
     int rc = -EINVAL;
     char ring_name[MAX_RING_NAME_SZ];
 
-    rdma_info_report(">>> create_cq_ring: ENTRY (pdir_dma=0x%lx, nchunks=%u, cqe=%u)",
-                     pdir_dma, nchunks, cqe);
+    rdma_info_report(
+        ">>> create_cq_ring: ENTRY (pdir_dma=0x%lx, nchunks=%u, cqe=%u)",
+        pdir_dma, nchunks, cqe);
 
     if (!nchunks || nchunks > PVRDMA_MAX_FAST_REG_PAGES) {
-        rdma_error_report(">>> create_cq_ring: Invalid nchunks: %d (max=%d)", 
-                         nchunks, PVRDMA_MAX_FAST_REG_PAGES);
+        rdma_error_report(">>> create_cq_ring: Invalid nchunks: %d (max=%d)",
+                          nchunks, PVRDMA_MAX_FAST_REG_PAGES);
         return rc;
     }
 
     rdma_info_report(">>> create_cq_ring: Mapping page directory...");
     void *dir_temp = rdma_pci_dma_map(pci_dev, pdir_dma, PAGE_SIZE);
-    rdma_info_report(">>> create_cq_ring: rdma_pci_dma_map returned: %p", dir_temp);
+    rdma_info_report(">>> create_cq_ring: rdma_pci_dma_map returned: %p",
+                     dir_temp);
     dir = (uint64_t *)dir_temp;
-    rdma_info_report(">>> create_cq_ring: After cast to uint64_t*: %p", (void *)dir);
+    rdma_info_report(">>> create_cq_ring: After cast to uint64_t*: %p",
+                     (void *)dir);
     if (!dir) {
         rdma_error_report(">>> create_cq_ring: Failed to map page directory");
         goto out;
     }
     /* Explicitly cast to uintptr_t to see the actual address */
     uintptr_t dir_addr = (uintptr_t)dir;
-    rdma_info_report(">>> create_cq_ring: Page directory stored at %p (as uintptr_t=0x%lx)", 
-                     dir, dir_addr);
+    rdma_info_report(
+        ">>> create_cq_ring: Page directory stored at %p (as uintptr_t=0x%lx)",
+        dir, dir_addr);
 
     /* Dereference dir to get first page table address */
     rdma_info_report(">>> create_cq_ring: About to dereference dir[0]...");
     uint64_t page_table_addr = dir[0];
     rdma_info_report(">>> create_cq_ring: dir[0] = 0x%lx", page_table_addr);
-    
+
     if (page_table_addr == 0) {
         rdma_error_report(">>> create_cq_ring: dir[0] is NULL!");
         goto out;
     }
-    
-    rdma_info_report(">>> create_cq_ring: Mapping page table (addr=0x%lx)...", page_table_addr);
+
+    rdma_info_report(">>> create_cq_ring: Mapping page table (addr=0x%lx)...",
+                     page_table_addr);
     void *tbl_temp = rdma_pci_dma_map(pci_dev, page_table_addr, PAGE_SIZE);
-    rdma_info_report(">>> create_cq_ring: rdma_pci_dma_map returned for tbl: %p", tbl_temp);
+    rdma_info_report(
+        ">>> create_cq_ring: rdma_pci_dma_map returned for tbl: %p", tbl_temp);
     tbl = (uint64_t *)tbl_temp;
-    rdma_info_report(">>> create_cq_ring: After cast to uint64_t*, tbl = %p", (void *)tbl);
+    rdma_info_report(">>> create_cq_ring: After cast to uint64_t*, tbl = %p",
+                     (void *)tbl);
     if (!tbl) {
         rdma_error_report(">>> create_cq_ring: Failed to map page table");
         goto out;
     }
-    rdma_info_report(">>> create_cq_ring: Page table stored and ready, tbl = %p", (void *)tbl);
+    rdma_info_report(
+        ">>> create_cq_ring: Page table stored and ready, tbl = %p",
+        (void *)tbl);
 
     r = g_malloc(sizeof(*r));
     *ring = r;
 
-    rdma_info_report(">>> create_cq_ring: Mapping ring state (tbl[0]=0x%lx)...", tbl[0]);
+    rdma_info_report(">>> create_cq_ring: Mapping ring state (tbl[0]=0x%lx)...",
+                     tbl[0]);
     r->ring_state = rdma_pci_dma_map(pci_dev, tbl[0], PAGE_SIZE);
 
     if (!r->ring_state) {
         rdma_error_report(">>> create_cq_ring: Failed to map ring state");
         goto out_free_ring;
     }
-    rdma_info_report(">>> create_cq_ring: Ring state mapped at %p", r->ring_state);
+    rdma_info_report(">>> create_cq_ring: Ring state mapped at %p",
+                     r->ring_state);
 
     sprintf(ring_name, "cq_ring_%" PRIx64, pdir_dma);
-    rdma_info_report(">>> create_cq_ring: Initializing ring '%s'...", ring_name);
+    rdma_info_report(">>> create_cq_ring: Initializing ring '%s'...",
+                     ring_name);
     rc = pvrdma_ring_init(r, ring_name, pci_dev, &r->ring_state[1], cqe,
                           sizeof(struct pvrdma_cqe),
                           /* first page is ring state */
                           (dma_addr_t *)&tbl[1], nchunks - 1);
     if (rc) {
-        rdma_error_report(">>> create_cq_ring: pvrdma_ring_init failed: %d", rc);
+        rdma_error_report(">>> create_cq_ring: pvrdma_ring_init failed: %d",
+                          rc);
         goto out_unmap_ring_state;
     }
     rdma_info_report(">>> create_cq_ring: Ring initialized successfully");
@@ -395,8 +420,9 @@ static int create_cq(PVRDMADev *dev, union pvrdma_cmd_req *req,
     PvrdmaRing *ring = NULL;
     int rc;
 
-    rdma_info_report(">>> create_cq: ENTRY (cqe=%u, nchunks=%u, pdir_dma=0x%lx)",
-                     cmd->cqe, cmd->nchunks, cmd->pdir_dma);
+    rdma_info_report(
+        ">>> create_cq: ENTRY (cqe=%u, nchunks=%u, pdir_dma=0x%lx)", cmd->cqe,
+        cmd->nchunks, cmd->pdir_dma);
 
     memset(resp, 0, sizeof(*resp));
 
@@ -418,8 +444,8 @@ static int create_cq(PVRDMADev *dev, union pvrdma_cmd_req *req,
         rdma_error_report(">>> create_cq: rdma_rm_alloc_cq failed: %d", rc);
         destroy_cq_ring(ring);
     } else {
-        rdma_info_report(">>> create_cq: CQ allocated successfully, handle=%u", 
-                        resp->cq_handle);
+        rdma_info_report(">>> create_cq: CQ allocated successfully, handle=%u",
+                         resp->cq_handle);
     }
 
     resp->cqe = cmd->cqe;
@@ -860,7 +886,7 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     DSRInfo *dsr_info;
 
     rdma_info_report(">>> pvrdma_exec_cmd: ENTRY");
-    
+
     dsr_info = &dev->dsr_info;
 
     if (!dsr_info->dsr) {
@@ -869,8 +895,8 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
         rdma_error_report("  dsr_info->dsr = %p", dsr_info->dsr);
         goto out;
     }
-    
-    rdma_info_report(">>> pvrdma_exec_cmd: DSR is valid, req command = %u", 
+
+    rdma_info_report(">>> pvrdma_exec_cmd: DSR is valid, req command = %u",
                      dsr_info->req->hdr.cmd);
 
     if (dsr_info->req->hdr.cmd >=
@@ -887,8 +913,10 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     rdma_info_report(">>> pvrdma_exec_cmd: Executing command handler...");
     err = cmd_handlers[dsr_info->req->hdr.cmd].exec(dev, dsr_info->req,
                                                     dsr_info->rsp);
-    rdma_info_report(">>> pvrdma_exec_cmd: Command handler returned err = %d (0x%x)", err, err);
-    
+    rdma_info_report(
+        ">>> pvrdma_exec_cmd: Command handler returned err = %d (0x%x)", err,
+        err);
+
     dsr_info->rsp->hdr.response = dsr_info->req->hdr.response;
     dsr_info->rsp->hdr.ack = cmd_handlers[dsr_info->req->hdr.cmd].ack;
     dsr_info->rsp->hdr.err = err < 0 ? -err : 0;
@@ -901,6 +929,7 @@ out:
     set_reg_val(dev, PVRDMA_REG_ERR, err);
     post_interrupt(dev, INTR_VEC_CMD_RING);
 
-    rdma_info_report(">>> pvrdma_exec_cmd: EXIT (returning %d)", (err == 0) ? 0 : -EINVAL);
+    rdma_info_report(">>> pvrdma_exec_cmd: EXIT (returning %d)",
+                     (err == 0) ? 0 : -EINVAL);
     return (err == 0) ? 0 : -EINVAL;
 }

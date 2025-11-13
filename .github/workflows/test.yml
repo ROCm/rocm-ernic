@@ -37,22 +37,15 @@ jobs:
             librdmacm-dev \
             libglib2.0-dev \
             libjson-c-dev \
-            libcmocka-dev \
-            cmake
+            libcmocka-dev
       
       - name: Clone and build libvfio-user
         run: |
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
-          mkdir build
-          cd build
-          cmake \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DBUILD_EXAMPLES=OFF \
-            -DCMAKE_INSTALL_PREFIX=/usr \
-            ..
-          make -j$(nproc)
-          sudo make install
+          meson setup build --prefix=/usr
+          ninja -C build
+          sudo ninja -C build install
           sudo ldconfig
       
       - name: Configure project with Meson

@@ -38,7 +38,7 @@
 
 /* PCI Device IDs for VMware PVRDMA */
 /* AMD Emulated RDMA device IDs (for vfio-user) */
-#define PCI_VENDOR_ID_AMD 0x1022
+#define PCI_VENDOR_ID_AMD        0x1022
 #define PCI_DEVICE_ID_AMD_EMRDMA 0x1484
 
 /* PCI Class Codes (from linux/pci_ids.h) */
@@ -276,18 +276,17 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
 static int pvrdma_device_init(vfu_pvrdma_dev_t *dev)
 {
     int ret;
-    
+
     /* Create PVRDMA device using wrapper API with selected backend */
-    dev->pvrdma_handle =
-        pvrdma_device_create(dev, dev->backend_type_str,
-                             dev->backend_device_name,
-                             dev->backend_eth_device, dev->backend_port_num);
+    dev->pvrdma_handle = pvrdma_device_create(
+        dev, dev->backend_type_str, dev->backend_device_name,
+        dev->backend_eth_device, dev->backend_port_num);
 
     if (!dev->pvrdma_handle) {
         fprintf(stderr, "Failed to create PVRDMA device\n");
         return -1;
     }
-    
+
     /* Realize the device - this initializes registers and backends */
     ret = pvrdma_device_realize(dev->pvrdma_handle);
     if (ret < 0) {
@@ -319,10 +318,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
     }
 
     /* Set vendor/device IDs */
-    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD,       /* Vendor ID */
-                   PCI_DEVICE_ID_AMD_EMRDMA,      /* Device ID */
-                   PCI_VENDOR_ID_AMD,             /* Subsystem Vendor ID */
-                   PCI_DEVICE_ID_AMD_EMRDMA);     /* Subsystem ID */
+    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD, /* Vendor ID */
+                   PCI_DEVICE_ID_AMD_EMRDMA,   /* Device ID */
+                   PCI_VENDOR_ID_AMD,          /* Subsystem Vendor ID */
+                   PCI_DEVICE_ID_AMD_EMRDMA);  /* Subsystem ID */
 
     /* Set PCI class code: Network Controller - Other */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class */
@@ -396,17 +395,18 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
 static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
 {
     ssize_t ret;
-    
-    /* MSI-X Table and PBA offsets within BAR0
-     * Table: starts at offset 0x0, size = vectors * 16 bytes
-     * PBA: starts at offset 0x2000 (8KB)
-     */
-    #define MSIX_TABLE_OFFSET 0x0000
-    #define MSIX_PBA_OFFSET   0x2000
-    #define MSIX_TABLE_BIR    0  /* Table in BAR 0 */
-    #define MSIX_PBA_BIR      0  /* PBA in BAR 0 */
 
-    /* Setup legacy INTx interrupt (required by some guests for PCI compliance) */
+/* MSI-X Table and PBA offsets within BAR0
+ * Table: starts at offset 0x0, size = vectors * 16 bytes
+ * PBA: starts at offset 0x2000 (8KB)
+ */
+#define MSIX_TABLE_OFFSET 0x0000
+#define MSIX_PBA_OFFSET   0x2000
+#define MSIX_TABLE_BIR    0 /* Table in BAR 0 */
+#define MSIX_PBA_BIR      0 /* PBA in BAR 0 */
+
+    /* Setup legacy INTx interrupt (required by some guests for PCI compliance)
+     */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_INTX_IRQ, 1);
     if (ret < 0) {
         vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %m");
@@ -415,26 +415,27 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
 
     /* MSI-X capability structure (12 bytes total) */
     struct {
-        uint8_t id;         /* Capability ID = 0x11 for MSI-X */
-        uint8_t next;       /* Next capability pointer (0 = none, filled by lib) */
-        uint16_t ctrl;      /* Message Control register */
-        uint32_t table;     /* Table Offset/BIR */
-        uint32_t pba;       /* PBA Offset/BIR */
+        uint8_t id;     /* Capability ID = 0x11 for MSI-X */
+        uint8_t next;   /* Next capability pointer (0 = none, filled by lib) */
+        uint16_t ctrl;  /* Message Control register */
+        uint32_t table; /* Table Offset/BIR */
+        uint32_t pba;   /* PBA Offset/BIR */
     } __attribute__((packed)) msix_cap;
-    
+
     /* Build MSI-X capability structure */
-    msix_cap.id = PCI_CAP_ID_MSIX;  /* 0x11 */
-    msix_cap.next = 0;  /* Will be filled by libvfio-user if there are more caps */
-    
-    /* Message Control: bits [10:0] = Table Size-1 (so 2 for 3 vectors) 
+    msix_cap.id = PCI_CAP_ID_MSIX; /* 0x11 */
+    msix_cap.next =
+        0; /* Will be filled by libvfio-user if there are more caps */
+
+    /* Message Control: bits [10:0] = Table Size-1 (so 2 for 3 vectors)
      * bit [14] = Function Mask (0 = not masked)
-     * bit [15] = MSI-X Enable (will be set by guest driver) 
+     * bit [15] = MSI-X Enable (will be set by guest driver)
      */
-    msix_cap.ctrl = (RDMA_MAX_INTRS - 1) & 0x7FF;  /* Table size = 3-1 = 2 */
-    
+    msix_cap.ctrl = (RDMA_MAX_INTRS - 1) & 0x7FF; /* Table size = 3-1 = 2 */
+
     /* Table Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
     msix_cap.table = (MSIX_TABLE_OFFSET & 0xFFFFFFF8) | (MSIX_TABLE_BIR & 0x7);
-    
+
     /* PBA Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
     msix_cap.pba = (MSIX_PBA_OFFSET & 0xFFFFFFF8) | (MSIX_PBA_BIR & 0x7);
 
@@ -444,7 +445,7 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
         vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %m");
         return ret;
     }
-    
+
     vfu_log(vfu_ctx, LOG_INFO, "Added MSI-X capability at offset 0x%zx", ret);
 
     /* Setup interrupt vector count - libvfio-user will manage table/PBA */
@@ -454,9 +455,11 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, vfu_pvrdma_dev_t *dev)
         return ret;
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, 
-            "Interrupts configured: INTx=1, MSI-X=%d vectors (table=BAR%d:0x%x, pba=BAR%d:0x%x)",
-            RDMA_MAX_INTRS, MSIX_TABLE_BIR, MSIX_TABLE_OFFSET, MSIX_PBA_BIR, MSIX_PBA_OFFSET);
+    vfu_log(vfu_ctx, LOG_INFO,
+            "Interrupts configured: INTx=1, MSI-X=%d vectors "
+            "(table=BAR%d:0x%x, pba=BAR%d:0x%x)",
+            RDMA_MAX_INTRS, MSIX_TABLE_BIR, MSIX_TABLE_OFFSET, MSIX_PBA_BIR,
+            MSIX_PBA_OFFSET);
 
     return 0;
 }
@@ -470,9 +473,13 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
-    fprintf(stderr, "  -b, --backend TYPE   RDMA backend: none|loopback|verbs[:device]\n");
+    fprintf(
+        stderr,
+        "  -b, --backend TYPE   RDMA backend: none|loopback|verbs[:device]\n");
     fprintf(stderr, "                       (default: none)\n");
-    fprintf(stderr, "  -d, --device NAME    InfiniBand device name (for verbs backend)\n");
+    fprintf(
+        stderr,
+        "  -d, --device NAME    InfiniBand device name (for verbs backend)\n");
     fprintf(stderr, "  -e, --ethdev NAME    Ethernet device name\n");
     fprintf(stderr, "  -p, --port NUM       IB port number (default: 1)\n");
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
@@ -480,21 +487,31 @@ static void usage(const char *progname)
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
     fprintf(stderr, "  none         - No RDMA backend (minimal stubs)\n");
-    fprintf(stderr, "  loopback[:opts] - Internal loopback emulation (for testing)\n");
+    fprintf(stderr,
+            "  loopback[:opts] - Internal loopback emulation (for testing)\n");
     fprintf(stderr, "               Options (comma-separated):\n");
-    fprintf(stderr, "                 preserve  - Use actual guest data (default)\n");
+    fprintf(stderr,
+            "                 preserve  - Use actual guest data (default)\n");
     fprintf(stderr, "                 zeros     - Fill with 0x00\n");
     fprintf(stderr, "                 ones      - Fill with 0xFF\n");
-    fprintf(stderr, "                 increment - Fill with 0x00,0x01,0x02,...\n");
-    fprintf(stderr, "                 decrement - Fill with 0xFF,0xFE,0xFD,...\n");
-    fprintf(stderr, "                 alternate - Fill with 0xAA,0x55,0xAA,...\n");
+    fprintf(stderr,
+            "                 increment - Fill with 0x00,0x01,0x02,...\n");
+    fprintf(stderr,
+            "                 decrement - Fill with 0xFF,0xFE,0xFD,...\n");
+    fprintf(stderr,
+            "                 alternate - Fill with 0xAA,0x55,0xAA,...\n");
     fprintf(stderr, "                 random    - Fill with random data\n");
     fprintf(stderr, "                 md5       - Compute MD5 hash of data\n");
     fprintf(stderr, "               Examples:\n");
-    fprintf(stderr, "                 loopback           - Use guest data, no MD5\n");
-    fprintf(stderr, "                 loopback:md5       - Use guest data, compute MD5\n");
-    fprintf(stderr, "                 loopback:random,md5 - Random data with MD5\n");
-    fprintf(stderr, "                 loopback:zeros     - All zeros, no MD5\n");
+    fprintf(stderr,
+            "                 loopback           - Use guest data, no MD5\n");
+    fprintf(
+        stderr,
+        "                 loopback:md5       - Use guest data, compute MD5\n");
+    fprintf(stderr,
+            "                 loopback:random,md5 - Random data with MD5\n");
+    fprintf(stderr,
+            "                 loopback:zeros     - All zeros, no MD5\n");
     fprintf(stderr, "  verbs[:dev]  - libibverbs hardware backend\n");
 }
 
@@ -526,15 +543,15 @@ int main(int argc, char *argv[])
     }
 
     /* Set defaults */
-    dev->backend_type_str = strdup("none");  /* Default to "none" backend */
+    dev->backend_type_str = strdup("none"); /* Default to "none" backend */
     dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
     dev->device_active = false;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:d:e:p:vh", long_options, NULL)) !=
-           -1) {
+    while ((opt = getopt_long(argc, argv, "s:b:d:e:p:vh", long_options,
+                              NULL)) != -1) {
         switch (opt) {
         case 's':
             socket_path = optarg;
@@ -574,7 +591,8 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
-    printf("vfu_pvrdma: Starting PVRDMA device server (Multi-Backend Support)\n");
+    printf(
+        "vfu_pvrdma: Starting PVRDMA device server (Multi-Backend Support)\n");
     printf("  Socket: %s\n", socket_path);
     printf("  Backend: %s\n", dev->backend_type_str);
     if (dev->backend_device_name) {
@@ -604,13 +622,14 @@ int main(int argc, char *argv[])
             }
         }
     }
-    
+
     /* Give the system a moment to release the socket */
     usleep(100000); /* 100ms */
 
     /* Create libvfio-user context with non-blocking attach */
-    vfu_ctx = vfu_create_ctx(VFU_TRANS_SOCK, socket_path, 
-                            LIBVFIO_USER_FLAG_ATTACH_NB, dev, VFU_DEV_TYPE_PCI);
+    vfu_ctx =
+        vfu_create_ctx(VFU_TRANS_SOCK, socket_path, LIBVFIO_USER_FLAG_ATTACH_NB,
+                       dev, VFU_DEV_TYPE_PCI);
     if (!vfu_ctx) {
         err(EXIT_FAILURE, "vfu_create_ctx() failed");
     }
@@ -664,13 +683,16 @@ int main(int argc, char *argv[])
 
     /* Set socket permissions to allow non-root QEMU to connect */
     if (chmod(socket_path, 0666) < 0) {
-        fprintf(stderr, "vfu_pvrdma: WARNING: Failed to set socket permissions: %s\n",
+        fprintf(stderr,
+                "vfu_pvrdma: WARNING: Failed to set socket permissions: %s\n",
                 strerror(errno));
-        fprintf(stderr, "vfu_pvrdma: You may need to manually run: sudo chmod 666 %s\n",
+        fprintf(stderr,
+                "vfu_pvrdma: You may need to manually run: sudo chmod 666 %s\n",
                 socket_path);
     } else {
-        printf("vfu_pvrdma: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n", 
-               socket_path);
+        printf(
+            "vfu_pvrdma: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n",
+            socket_path);
         fflush(stdout);
     }
 
@@ -690,8 +712,9 @@ int main(int argc, char *argv[])
                 /* Interrupted by signal, check shutdown flag */
                 continue;
             }
-            vfu_log(vfu_ctx, LOG_ERR, "vfu_attach_ctx() failed with errno=%d: %s", 
-                    errno, strerror(errno));
+            vfu_log(vfu_ctx, LOG_ERR,
+                    "vfu_attach_ctx() failed with errno=%d: %s", errno,
+                    strerror(errno));
             err(EXIT_FAILURE, "vfu_attach_ctx() failed");
         }
 
@@ -705,20 +728,24 @@ int main(int argc, char *argv[])
             loop_count++;
             if (ret < 0) {
                 if (errno == ENOTCONN) {
-                    vfu_log(vfu_ctx, LOG_INFO, "Client disconnected after %d loops", loop_count);
+                    vfu_log(vfu_ctx, LOG_INFO,
+                            "Client disconnected after %d loops", loop_count);
                     break;
                 } else if (errno == EINTR) {
                     /* Interrupted by signal */
-                    vfu_log(vfu_ctx, LOG_INFO, "Interrupted by signal after %d loops", loop_count);
+                    vfu_log(vfu_ctx, LOG_INFO,
+                            "Interrupted by signal after %d loops", loop_count);
                     break;
                 } else {
-                    vfu_log(vfu_ctx, LOG_ERR, "vfu_run_ctx() failed after %d loops: %s",
+                    vfu_log(vfu_ctx, LOG_ERR,
+                            "vfu_run_ctx() failed after %d loops: %s",
                             loop_count, strerror(errno));
                     break;
                 }
             }
         }
-        vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations", loop_count);
+        vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations",
+                loop_count);
     }
 
     vfu_log(vfu_ctx, LOG_INFO, "Shutting down");

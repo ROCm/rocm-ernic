@@ -48,67 +48,67 @@
 
 #include <linux/types.h>
 
-#define AMD_EMRDMA_INVALID_IDX	-1	/* Invalid index. */
+#define AMD_EMRDMA_INVALID_IDX -1 /* Invalid index. */
 
 struct amd_emrdma_ring {
-	atomic_t prod_tail;	/* Producer tail. */
-	atomic_t cons_head;	/* Consumer head. */
+    atomic_t prod_tail; /* Producer tail. */
+    atomic_t cons_head; /* Consumer head. */
 };
 
 struct amd_emrdma_ring_state {
-	struct amd_emrdma_ring tx;	/* Tx ring. */
-	struct amd_emrdma_ring rx;	/* Rx ring. */
+    struct amd_emrdma_ring tx; /* Tx ring. */
+    struct amd_emrdma_ring rx; /* Rx ring. */
 };
 
 static inline int amd_emrdma_idx_valid(__u32 idx, __u32 max_elems)
 {
-	/* Generates fewer instructions than a less-than. */
-	return (idx & ~((max_elems << 1) - 1)) == 0;
+    /* Generates fewer instructions than a less-than. */
+    return (idx & ~((max_elems << 1) - 1)) == 0;
 }
 
 static inline __s32 amd_emrdma_idx(atomic_t *var, __u32 max_elems)
 {
-	const unsigned int idx = atomic_read(var);
+    const unsigned int idx = atomic_read(var);
 
-	if (amd_emrdma_idx_valid(idx, max_elems))
-		return idx & (max_elems - 1);
-	return AMD_EMRDMA_INVALID_IDX;
+    if (amd_emrdma_idx_valid(idx, max_elems))
+        return idx & (max_elems - 1);
+    return AMD_EMRDMA_INVALID_IDX;
 }
 
 static inline void amd_emrdma_idx_ring_inc(atomic_t *var, __u32 max_elems)
 {
-	__u32 idx = atomic_read(var) + 1;	/* Increment. */
+    __u32 idx = atomic_read(var) + 1; /* Increment. */
 
-	idx &= (max_elems << 1) - 1;		/* Modulo size, flip gen. */
-	atomic_set(var, idx);
+    idx &= (max_elems << 1) - 1; /* Modulo size, flip gen. */
+    atomic_set(var, idx);
 }
 
-static inline __s32 amd_emrdma_idx_ring_has_space(const struct amd_emrdma_ring *r,
-					      __u32 max_elems, __u32 *out_tail)
+static inline __s32 amd_emrdma_idx_ring_has_space(
+    const struct amd_emrdma_ring *r, __u32 max_elems, __u32 *out_tail)
 {
-	const __u32 tail = atomic_read(&r->prod_tail);
-	const __u32 head = atomic_read(&r->cons_head);
+    const __u32 tail = atomic_read(&r->prod_tail);
+    const __u32 head = atomic_read(&r->cons_head);
 
-	if (amd_emrdma_idx_valid(tail, max_elems) &&
-	    amd_emrdma_idx_valid(head, max_elems)) {
-		*out_tail = tail & (max_elems - 1);
-		return tail != (head ^ max_elems);
-	}
-	return AMD_EMRDMA_INVALID_IDX;
+    if (amd_emrdma_idx_valid(tail, max_elems) &&
+        amd_emrdma_idx_valid(head, max_elems)) {
+        *out_tail = tail & (max_elems - 1);
+        return tail != (head ^ max_elems);
+    }
+    return AMD_EMRDMA_INVALID_IDX;
 }
 
-static inline __s32 amd_emrdma_idx_ring_has_data(const struct amd_emrdma_ring *r,
-					     __u32 max_elems, __u32 *out_head)
+static inline __s32 amd_emrdma_idx_ring_has_data(
+    const struct amd_emrdma_ring *r, __u32 max_elems, __u32 *out_head)
 {
-	const __u32 tail = atomic_read(&r->prod_tail);
-	const __u32 head = atomic_read(&r->cons_head);
+    const __u32 tail = atomic_read(&r->prod_tail);
+    const __u32 head = atomic_read(&r->cons_head);
 
-	if (amd_emrdma_idx_valid(tail, max_elems) &&
-	    amd_emrdma_idx_valid(head, max_elems)) {
-		*out_head = head & (max_elems - 1);
-		return tail != head;
-	}
-	return AMD_EMRDMA_INVALID_IDX;
+    if (amd_emrdma_idx_valid(tail, max_elems) &&
+        amd_emrdma_idx_valid(head, max_elems)) {
+        *out_head = head & (max_elems - 1);
+        return tail != head;
+    }
+    return AMD_EMRDMA_INVALID_IDX;
 }
 
 #endif /* __AMD_EMRDMA_RING_H__ */

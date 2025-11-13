@@ -79,19 +79,20 @@ pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
 
     /* Parse backend type and extract config */
     backend_type = rdma_backend_get_type_from_string(backend_type_str);
-    rdma_info_report("Selected RDMA backend: %s", 
-                    rdma_backend_type_to_string(backend_type));
+    rdma_info_report("Selected RDMA backend: %s",
+                     rdma_backend_type_to_string(backend_type));
 
     /* Store backend type and config in device for later use */
     pvrdma->backend_dev.backend_type = backend_type;
-    
+
     /* Extract backend config (part after ':') from backend string */
     const char *colon = strchr(backend_type_str, ':');
     const char *backend_config_from_string = colon ? (colon + 1) : NULL;
-    
+
     /* Set backend device configuration based on backend type */
     if (backend_type == RDMA_BACKEND_TYPE_VERBS) {
-        /* For verbs backend, prefer explicit ib_dev_name, fallback to config string */
+        /* For verbs backend, prefer explicit ib_dev_name, fallback to config
+         * string */
         if (ib_dev_name) {
             pvrdma->backend_device_name = strdup(ib_dev_name);
         } else if (backend_config_from_string) {
@@ -100,9 +101,10 @@ pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
     } else if (backend_config_from_string) {
         /* For other backends (loopback, etc), use config from backend string */
         pvrdma->backend_device_name = strdup(backend_config_from_string);
-        rdma_info_report("Backend config string: '%s'", pvrdma->backend_device_name);
+        rdma_info_report("Backend config string: '%s'",
+                         pvrdma->backend_device_name);
     }
-    
+
     if (eth_dev_name) {
         pvrdma->backend_eth_device_name = strdup(eth_dev_name);
     }
@@ -118,32 +120,34 @@ pvrdma_handle_t pvrdma_device_create(vfu_pvrdma_dev_t *vfu_dev,
     pvrdma->dev_attr.max_ah = MAX_AH;
     pvrdma->dev_attr.max_srq = MAX_SRQ;
     pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
-    pvrdma->dev_attr.max_sge = MAX_SGE;  /* Required for calculations below */
+    pvrdma->dev_attr.max_sge = MAX_SGE; /* Required for calculations below */
 
-    /* Calculate dynamic device capabilities (from init_dev_caps in pvrdma_main.c) */
+    /* Calculate dynamic device capabilities (from init_dev_caps in
+     * pvrdma_main.c) */
     {
         size_t pg_tbl_bytes = PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
-        size_t wr_sz = MAX(sizeof(struct pvrdma_sq_wqe_hdr), 
+        size_t wr_sz = MAX(sizeof(struct pvrdma_sq_wqe_hdr),
                            sizeof(struct pvrdma_rq_wqe_hdr));
 
         rdma_info_report("Calculating device capabilities:");
-        rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE, pg_tbl_bytes);
+        rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE,
+                         pg_tbl_bytes);
 
         /* Calculate max_qp_wr */
         pvrdma->dev_attr.max_qp_wr =
             pg_tbl_bytes /
                 (wr_sz + sizeof(struct pvrdma_sge) * pvrdma->dev_attr.max_sge) -
-            PAGE_SIZE;  /* First page is ring state */
+            PAGE_SIZE; /* First page is ring state */
 
         /* Calculate max_cqe */
         pvrdma->dev_attr.max_cqe = pg_tbl_bytes / sizeof(struct pvrdma_cqe) -
-                                   PAGE_SIZE;  /* First page is ring state */
+                                   PAGE_SIZE; /* First page is ring state */
 
         /* Calculate max_srq_wr */
         pvrdma->dev_attr.max_srq_wr =
-            pg_tbl_bytes /
-                ((sizeof(struct pvrdma_rq_wqe_hdr) + sizeof(struct pvrdma_sge)) *
-                 pvrdma->dev_attr.max_sge) -
+            pg_tbl_bytes / ((sizeof(struct pvrdma_rq_wqe_hdr) +
+                             sizeof(struct pvrdma_sge)) *
+                            pvrdma->dev_attr.max_sge) -
             PAGE_SIZE;
 
         rdma_info_report("  max_qp_wr=%d", pvrdma->dev_attr.max_qp_wr);
@@ -209,8 +213,9 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     /* Use set_reg_val() for proper address-to-index conversion */
     set_reg_val(pvrdma, PVRDMA_REG_VERSION, PVRDMA_HW_VERSION);
     set_reg_val(pvrdma, PVRDMA_REG_ERR, 0xFFFF);
-    
-    rdma_info_report("PVRDMA version register initialized to %d", PVRDMA_HW_VERSION);
+
+    rdma_info_report("PVRDMA version register initialized to %d",
+                     PVRDMA_HW_VERSION);
 
     /* Initialize resource manager */
     if (rdma_rm_init(&pvrdma->rdma_dev_res, &pvrdma->dev_attr) < 0) {
@@ -219,25 +224,29 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     }
 
     /* Initialize RDMA backend with selected backend type */
-    const char *backend_config = pvrdma->backend_device_name;  /* Config extracted from --backend string */
+    const char *backend_config =
+        pvrdma
+            ->backend_device_name; /* Config extracted from --backend string */
 
-    rc = rdma_backend_init_with_ops(&pvrdma->backend_dev,
-                                    pvrdma->backend_dev.backend_type,
-                                    backend_config);
+    rc = rdma_backend_init_with_ops(
+        &pvrdma->backend_dev, pvrdma->backend_dev.backend_type, backend_config);
 
     if (rc < 0) {
         rdma_error_report("RDMA backend initialization failed (rc=%d)", rc);
-        rdma_error_report("Backend type: %s", 
-                         rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
+        rdma_error_report(
+            "Backend type: %s",
+            rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
         return -EIO;
     }
 
     /* CRITICAL: Link backend_dev to the device resources */
     pvrdma->backend_dev.rdma_dev_res = &pvrdma->rdma_dev_res;
-    rdma_info_report("Linked backend_dev to rdma_dev_res at %p", pvrdma->backend_dev.rdma_dev_res);
+    rdma_info_report("Linked backend_dev to rdma_dev_res at %p",
+                     pvrdma->backend_dev.rdma_dev_res);
 
-    rdma_info_report("RDMA backend '%s' initialized successfully",
-                    rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
+    rdma_info_report(
+        "RDMA backend '%s' initialized successfully",
+        rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
 
     /* Initialize QP operations and register completion handler */
     rc = pvrdma_qp_ops_init();
@@ -245,7 +254,8 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         rdma_error_report("Failed to initialize QP operations (rc=%d)", rc);
         return -EIO;
     }
-    rdma_info_report("QP operations initialized, completion handler registered");
+    rdma_info_report(
+        "QP operations initialized, completion handler registered");
 
     rdma_info_report("PVRDMA device realized successfully");
 
@@ -361,31 +371,35 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     size_t sg_size;
 
     rdma_info_report("=== DMA MAP CALLED ===");
-    rdma_info_report("  guest_addr=%#lx requested_len=%zu dir=%d", 
-                     addr, plen ? (size_t)*plen : 0, dir);
-    
+    rdma_info_report("  guest_addr=%#lx requested_len=%zu dir=%d", addr,
+                     plen ? (size_t)*plen : 0, dir);
+
     /* Check for obviously invalid addresses */
     if (addr == 0) {
         rdma_error_report("DMA map: guest address is NULL!");
-        if (plen) *plen = 0;
+        if (plen)
+            *plen = 0;
         return NULL;
     }
 
     if (!dev) {
         rdma_error_report("DMA map: NULL device pointer");
-        if (plen) *plen = 0;
+        if (plen)
+            *plen = 0;
         return NULL;
     }
-    
+
     rdma_info_report("  dev=%p", dev);
-    
+
     if (!dev->vfu_ctx) {
         rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)", dev);
-        rdma_error_report("  This means vfu_ctx was not set in pvrdma_device_create");
-        if (plen) *plen = 0;
+        rdma_error_report(
+            "  This means vfu_ctx was not set in pvrdma_device_create");
+        if (plen)
+            *plen = 0;
         return NULL;
     }
-    
+
     if (!plen) {
         rdma_error_report("DMA map: NULL plen pointer");
         return NULL;
@@ -399,30 +413,34 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     /* Get SG size */
     sg_size = dma_sg_size();
     rdma_info_report("  Allocating SG of size %zu", sg_size);
-    
+
     /* Allocate scatter-gather entry */
     sg = malloc(sg_size);
     if (!sg) {
-        rdma_error_report("DMA map: Failed to allocate SG entry of size %zu", sg_size);
+        rdma_error_report("DMA map: Failed to allocate SG entry of size %zu",
+                          sg_size);
         *plen = 0;
         return NULL;
     }
 
-    rdma_info_report("  Calling vfu_addr_to_sgl(ctx=%p, addr=%#lx, len=%zu, sg=%p, cnt=1, prot=RW)",
+    rdma_info_report("  Calling vfu_addr_to_sgl(ctx=%p, addr=%#lx, len=%zu, "
+                     "sg=%p, cnt=1, prot=RW)",
                      vfu_ctx, addr, (size_t)*plen, sg);
 
     /* Convert guest physical address to scatter-gather list */
     ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)addr, *plen, sg,
                           1, PROT_READ | PROT_WRITE);
     if (ret < 0) {
-        rdma_error_report("DMA map: vfu_addr_to_sgl FAILED for addr=%#lx: %s (errno=%d)", 
-                          addr, strerror(errno), errno);
-        rdma_error_report("  This usually means the guest address is not in any registered DMA region");
+        rdma_error_report(
+            "DMA map: vfu_addr_to_sgl FAILED for addr=%#lx: %s (errno=%d)",
+            addr, strerror(errno), errno);
+        rdma_error_report("  This usually means the guest address is not in "
+                          "any registered DMA region");
         free(sg);
         *plen = 0;
         return NULL;
     }
-    
+
     rdma_info_report("  vfu_addr_to_sgl returned %d (success)", ret);
 
     rdma_info_report("  Calling vfu_sgl_get(ctx=%p, sg=%p, iov=%p, cnt=1)",
@@ -431,40 +449,46 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     /* Get host virtual address */
     ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
     if (ret < 0) {
-        rdma_error_report("DMA map: vfu_sgl_get FAILED for addr=%#lx: %s (errno=%d)", 
-                          addr, strerror(errno), errno);
-        rdma_error_report("  This usually means the memory is not mapped (vaddr=NULL in DMA region)");
+        rdma_error_report(
+            "DMA map: vfu_sgl_get FAILED for addr=%#lx: %s (errno=%d)", addr,
+            strerror(errno), errno);
+        rdma_error_report("  This usually means the memory is not mapped "
+                          "(vaddr=NULL in DMA region)");
         free(sg);
         *plen = 0;
         return NULL;
     }
-    
+
     rdma_info_report("  vfu_sgl_get returned %d (success)", ret);
 
     host_addr = iov.iov_base;
     *plen = iov.iov_len; /* Update with actual mapped length */
-    
-    rdma_info_report("  iov.iov_base=%p iov.iov_len=%zu", host_addr, iov.iov_len);
+
+    rdma_info_report("  iov.iov_base=%p iov.iov_len=%zu", host_addr,
+                     iov.iov_len);
 
     if (!host_addr) {
-        rdma_error_report("DMA map: vfu_sgl_get returned NULL iov_base for guest=%#lx", addr);
+        rdma_error_report(
+            "DMA map: vfu_sgl_get returned NULL iov_base for guest=%#lx", addr);
         rdma_error_report("  This means the region is not memory-mapped");
         free(sg);
         *plen = 0;
         return NULL;
     }
 
-    rdma_info_report("=== DMA MAP SUCCESS: guest=%#lx -> host=%p len=%zu ===", 
+    rdma_info_report("=== DMA MAP SUCCESS: guest=%#lx -> host=%p len=%zu ===",
                      addr, host_addr, (size_t)*plen);
 
-    /* 
+    /*
      * Store the SGL and iovec for later vfu_sgl_put().
-     * This is CRITICAL for memory coherency - writes won't be visible to the guest
-     * until we call vfu_sgl_put() on the same SGL/iovec pair.
+     * This is CRITICAL for memory coherency - writes won't be visible to the
+     * guest until we call vfu_sgl_put() on the same SGL/iovec pair.
      */
     if (num_dma_mappings >= MAX_DMA_MAPPINGS) {
-        rdma_error_report("DMA map: Mapping table full (%d entries)", MAX_DMA_MAPPINGS);
-        /* Still return the pointer, but we won't be able to properly release it */
+        rdma_error_report("DMA map: Mapping table full (%d entries)",
+                          MAX_DMA_MAPPINGS);
+        /* Still return the pointer, but we won't be able to properly release it
+         */
     } else {
         dma_mappings[num_dma_mappings].guest_addr = addr;
         dma_mappings[num_dma_mappings].len = *plen;
@@ -473,7 +497,8 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
         dma_mappings[num_dma_mappings].host_addr = host_addr;
         dma_mappings[num_dma_mappings].vfu_ctx = vfu_ctx;
         num_dma_mappings++;
-        rdma_info_report("DMA map: Stored mapping #%d (guest=%#lx)", num_dma_mappings, addr);
+        rdma_info_report("DMA map: Stored mapping #%d (guest=%#lx)",
+                         num_dma_mappings, addr);
     }
 
     return host_addr;
@@ -487,44 +512,51 @@ void pvrdma_dsr_flush(void *handle)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     dma_addr_t dsr_guest_addr = pvrdma->dsr_info.dma;
-    
-    rdma_info_report(">>> pvrdma_dsr_flush: START - Flushing DSR at guest=%#lx", dsr_guest_addr);
-    
+
+    rdma_info_report(">>> pvrdma_dsr_flush: START - Flushing DSR at guest=%#lx",
+                     dsr_guest_addr);
+
     /* Find the DSR mapping */
     for (int i = 0; i < num_dma_mappings; i++) {
         dma_mapping_t *mapping = &dma_mappings[i];
-        
+
         if (mapping->guest_addr == dsr_guest_addr) {
-            rdma_info_report("  Found DSR mapping #%d at host=%p", i, mapping->host_addr);
-            
+            rdma_info_report("  Found DSR mapping #%d at host=%p", i,
+                             mapping->host_addr);
+
             /* Verify current values BEFORE flush */
-            struct pvrdma_device_shared_region *dsr = (struct pvrdma_device_shared_region *)mapping->host_addr;
+            struct pvrdma_device_shared_region *dsr =
+                (struct pvrdma_device_shared_region *)mapping->host_addr;
             rdma_info_report("  BEFORE flush: mode=%d gid_types=0x%x",
-                           dsr->caps.mode, dsr->caps.gid_types);
-            
+                             dsr->caps.mode, dsr->caps.gid_types);
+
             /* Per libvfio-user samples/server.c pattern:
              * Call vfu_sgl_put() to release and mark dirty.
-             * DO NOT immediately re-acquire - only get when needed for next access.
-             * 
+             * DO NOT immediately re-acquire - only get when needed for next
+             * access.
+             *
              * From server.c:
              *   vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
              *   memcpy(iov.iov_base, &buf[i * size], size);
              *   vfu_sgl_put(vfu_ctx, sg, &iov, 1);  // <-- Release immediately!
              */
-            rdma_info_report("  Calling vfu_sgl_put() to flush and RELEASE mapping...");
+            rdma_info_report(
+                "  Calling vfu_sgl_put() to flush and RELEASE mapping...");
             vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-            
+
             /* Mark mapping as released */
             mapping->host_addr = NULL;
             mapping->iov.iov_base = NULL;
             mapping->iov.iov_len = 0;
-            
-            rdma_info_report("  vfu_sgl_put() complete - DSR released and marked dirty");
-            rdma_info_report("<<< pvrdma_dsr_flush: COMPLETE - DSR mapping RELEASED");
+
+            rdma_info_report(
+                "  vfu_sgl_put() complete - DSR released and marked dirty");
+            rdma_info_report(
+                "<<< pvrdma_dsr_flush: COMPLETE - DSR mapping RELEASED");
             return;
         }
     }
-    
+
     rdma_error_report("pvrdma_dsr_flush: ERROR - DSR mapping not found!");
 }
 
@@ -535,46 +567,56 @@ void pvrdma_dsr_flush(void *handle)
 int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
 {
     (void)dev;
-    
-    rdma_info_report("=== DMA SYNC: Searching for mapping at guest=%#lx len=%zu ===",
-                     guest_addr, (size_t)len);
+
+    rdma_info_report(
+        "=== DMA SYNC: Searching for mapping at guest=%#lx len=%zu ===",
+        guest_addr, (size_t)len);
 
     /* Find the mapping that contains this address */
     for (int i = 0; i < num_dma_mappings; i++) {
         dma_mapping_t *mapping = &dma_mappings[i];
-        
+
         /* Check if this address is within the mapped region */
         if (guest_addr >= mapping->guest_addr &&
             guest_addr + len <= mapping->guest_addr + mapping->len) {
-            
-            rdma_info_report("DMA sync: Found mapping #%d: guest=%#lx len=%zu sg=%p",
-                             i, mapping->guest_addr, mapping->len, mapping->sg);
-            
+            rdma_info_report(
+                "DMA sync: Found mapping #%d: guest=%#lx len=%zu sg=%p", i,
+                mapping->guest_addr, mapping->len, mapping->sg);
+
             /* Call vfu_sgl_put() to sync writes back to guest */
             vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-            
-            rdma_info_report("DMA sync: vfu_sgl_put() called - writes should now be visible");
-            
+
+            rdma_info_report("DMA sync: vfu_sgl_put() called - writes should "
+                             "now be visible");
+
             /* Now we need to re-acquire the mapping for future use */
-            int ret = vfu_sgl_get(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1, 0);
+            int ret =
+                vfu_sgl_get(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1, 0);
             if (ret < 0) {
-                rdma_error_report("DMA sync: Failed to re-acquire mapping: %s", strerror(errno));
+                rdma_error_report("DMA sync: Failed to re-acquire mapping: %s",
+                                  strerror(errno));
                 return -1;
             }
-            
+
             rdma_info_report("DMA sync: Mapping re-acquired successfully");
-            
+
             /* Verify the write by reading back from the iovec */
             if (len >= 4 && mapping->iov.iov_base) {
-                uint32_t *data = (uint32_t *)((char *)mapping->iov.iov_base + (guest_addr - mapping->guest_addr));
-                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at offset 0: 0x%08x", data[0]);
-                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at offset 4: 0x%08x", data[1]);
+                uint32_t *data =
+                    (uint32_t *)((char *)mapping->iov.iov_base +
+                                 (guest_addr - mapping->guest_addr));
+                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at "
+                                 "offset 0: 0x%08x",
+                                 data[0]);
+                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at "
+                                 "offset 4: 0x%08x",
+                                 data[1]);
             }
-            
+
             return 0;
         }
     }
-    
+
     rdma_error_report("DMA sync: No mapping found for guest=%#lx", guest_addr);
     return -1;
 }
@@ -593,29 +635,32 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
     /* Find and release the mapping */
     for (int i = 0; i < num_dma_mappings; i++) {
         if (dma_mappings[i].host_addr == buffer) {
-            rdma_info_report("DMA unmap: Found mapping #%d (guest=%#lx)", 
-                             i, dma_mappings[i].guest_addr);
-            
+            rdma_info_report("DMA unmap: Found mapping #%d (guest=%#lx)", i,
+                             dma_mappings[i].guest_addr);
+
             /* Release the SGL mapping */
-            vfu_sgl_put(dma_mappings[i].vfu_ctx, dma_mappings[i].sg, 
+            vfu_sgl_put(dma_mappings[i].vfu_ctx, dma_mappings[i].sg,
                         &dma_mappings[i].iov, 1);
-            
+
             /* Free the SG structure */
             free(dma_mappings[i].sg);
-            
+
             /* Remove from table by shifting remaining entries */
             for (int j = i; j < num_dma_mappings - 1; j++) {
                 dma_mappings[j] = dma_mappings[j + 1];
             }
             num_dma_mappings--;
-            
-            rdma_info_report("DMA unmap: Released and removed mapping (now %d mappings)", 
-                             num_dma_mappings);
+
+            rdma_info_report(
+                "DMA unmap: Released and removed mapping (now %d mappings)",
+                num_dma_mappings);
             return;
         }
     }
-    
-    rdma_debug_report("DMA unmap: Mapping not found for buffer=%p (already unmapped?)", buffer);
+
+    rdma_debug_report(
+        "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
+        buffer);
 }
 
 /*
@@ -648,9 +693,12 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
     }
 
     /* Trigger MSI-X interrupt via libvfio-user */
-    rdma_info_report(">>> post_interrupt: About to trigger IRQ vector %u", vector);
+    rdma_info_report(">>> post_interrupt: About to trigger IRQ vector %u",
+                     vector);
     ret = vfu_irq_trigger(vfu_ctx, vector);
-    rdma_info_report(">>> post_interrupt: vfu_irq_trigger returned %d (errno=%d)", ret, ret < 0 ? errno : 0);
+    rdma_info_report(
+        ">>> post_interrupt: vfu_irq_trigger returned %d (errno=%d)", ret,
+        ret < 0 ? errno : 0);
     if (ret < 0) {
         rdma_error_report("Failed to trigger interrupt vector %u: %s", vector,
                           strerror(errno));
@@ -659,5 +707,7 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
 
     pvrdma->stats.interrupts++;
 
-    rdma_info_report(">>> post_interrupt: Successfully triggered interrupt vector %u", vector);
+    rdma_info_report(
+        ">>> post_interrupt: Successfully triggered interrupt vector %u",
+        vector);
 }

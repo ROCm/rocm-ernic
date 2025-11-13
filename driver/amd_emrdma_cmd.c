@@ -47,73 +47,71 @@
 
 #include "amd_emrdma.h"
 
-#define AMD_EMRDMA_CMD_TIMEOUT	10000 /* ms */
+#define AMD_EMRDMA_CMD_TIMEOUT 10000 /* ms */
 
 static inline int amd_emrdma_cmd_recv(struct amd_emrdma_dev *dev,
-				  union amd_emrdma_cmd_resp *resp,
-				  unsigned resp_code)
+                                      union amd_emrdma_cmd_resp *resp,
+                                      unsigned resp_code)
 {
-	int err;
+    int err;
 
-	dev_dbg(&dev->pdev->dev, "receive response from device\n");
+    dev_dbg(&dev->pdev->dev, "receive response from device\n");
 
-	err = wait_for_completion_interruptible_timeout(&dev->cmd_done,
-			msecs_to_jiffies(AMD_EMRDMA_CMD_TIMEOUT));
-	if (err == 0 || err == -ERESTARTSYS) {
-		dev_warn(&dev->pdev->dev,
-			 "completion timeout or interrupted\n");
-		return -ETIMEDOUT;
-	}
+    err = wait_for_completion_interruptible_timeout(
+        &dev->cmd_done, msecs_to_jiffies(AMD_EMRDMA_CMD_TIMEOUT));
+    if (err == 0 || err == -ERESTARTSYS) {
+        dev_warn(&dev->pdev->dev, "completion timeout or interrupted\n");
+        return -ETIMEDOUT;
+    }
 
-	spin_lock(&dev->cmd_lock);
-	memcpy(resp, dev->resp_slot, sizeof(*resp));
-	spin_unlock(&dev->cmd_lock);
+    spin_lock(&dev->cmd_lock);
+    memcpy(resp, dev->resp_slot, sizeof(*resp));
+    spin_unlock(&dev->cmd_lock);
 
-	if (resp->hdr.ack != resp_code) {
-		dev_warn(&dev->pdev->dev,
-			 "unknown response %#x expected %#x\n",
-			 resp->hdr.ack, resp_code);
-		return -EFAULT;
-	}
+    if (resp->hdr.ack != resp_code) {
+        dev_warn(&dev->pdev->dev, "unknown response %#x expected %#x\n",
+                 resp->hdr.ack, resp_code);
+        return -EFAULT;
+    }
 
-	return 0;
+    return 0;
 }
 
-int
-amd_emrdma_cmd_post(struct amd_emrdma_dev *dev, union amd_emrdma_cmd_req *req,
-		union amd_emrdma_cmd_resp *resp, unsigned resp_code)
+int amd_emrdma_cmd_post(struct amd_emrdma_dev *dev,
+                        union amd_emrdma_cmd_req *req,
+                        union amd_emrdma_cmd_resp *resp, unsigned resp_code)
 {
-	int err;
+    int err;
 
-	dev_dbg(&dev->pdev->dev, "post request to device\n");
+    dev_dbg(&dev->pdev->dev, "post request to device\n");
 
-	/* Serializiation */
-	down(&dev->cmd_sema);
+    /* Serializiation */
+    down(&dev->cmd_sema);
 
-	BUILD_BUG_ON(sizeof(union amd_emrdma_cmd_req) !=
-		     sizeof(struct amd_emrdma_cmd_modify_qp));
+    BUILD_BUG_ON(sizeof(union amd_emrdma_cmd_req) !=
+                 sizeof(struct amd_emrdma_cmd_modify_qp));
 
-	spin_lock(&dev->cmd_lock);
-	memcpy(dev->cmd_slot, req, sizeof(*req));
-	spin_unlock(&dev->cmd_lock);
+    spin_lock(&dev->cmd_lock);
+    memcpy(dev->cmd_slot, req, sizeof(*req));
+    spin_unlock(&dev->cmd_lock);
 
-	init_completion(&dev->cmd_done);
-	amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_REQUEST, 0);
+    init_completion(&dev->cmd_done);
+    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_REQUEST, 0);
 
-	/* Make sure the request is written before reading status. */
-	mb();
+    /* Make sure the request is written before reading status. */
+    mb();
 
-	err = amd_emrdma_read_reg(dev, AMD_EMRDMA_REG_ERR);
-	if (err == 0) {
-		if (resp != NULL)
-			err = amd_emrdma_cmd_recv(dev, resp, resp_code);
-	} else {
-		dev_warn(&dev->pdev->dev,
-			 "failed to write request error reg: %d\n", err);
-		err = -EFAULT;
-	}
+    err = amd_emrdma_read_reg(dev, AMD_EMRDMA_REG_ERR);
+    if (err == 0) {
+        if (resp != NULL)
+            err = amd_emrdma_cmd_recv(dev, resp, resp_code);
+    } else {
+        dev_warn(&dev->pdev->dev, "failed to write request error reg: %d\n",
+                 err);
+        err = -EFAULT;
+    }
 
-	up(&dev->cmd_sema);
+    up(&dev->cmd_sema);
 
-	return err;
+    return err;
 }

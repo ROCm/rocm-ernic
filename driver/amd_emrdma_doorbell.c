@@ -51,77 +51,80 @@
 
 int amd_emrdma_uar_table_init(struct amd_emrdma_dev *dev)
 {
-	u32 num = dev->dsr->caps.max_uar;
-	u32 mask = num - 1;
-	struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
+    u32 num = dev->dsr->caps.max_uar;
+    u32 mask = num - 1;
+    struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
 
-	if (!is_power_of_2(num))
-		return -EINVAL;
+    if (!is_power_of_2(num))
+        return -EINVAL;
 
-	tbl->last = 0;
-	tbl->top = 0;
-	tbl->max = num;
-	tbl->mask = mask;
-	spin_lock_init(&tbl->lock);
-	tbl->table = bitmap_zalloc(num, GFP_KERNEL);
-	if (!tbl->table)
-		return -ENOMEM;
+    tbl->last = 0;
+    tbl->top = 0;
+    tbl->max = num;
+    tbl->mask = mask;
+    spin_lock_init(&tbl->lock);
+    tbl->table = bitmap_zalloc(num, GFP_KERNEL);
+    if (!tbl->table)
+        return -ENOMEM;
 
-	/* 0th UAR is taken by the device. */
-	__set_bit(0, tbl->table);
+    /* 0th UAR is taken by the device. */
+    __set_bit(0, tbl->table);
 
-	return 0;
+    return 0;
 }
 
 void amd_emrdma_uar_table_cleanup(struct amd_emrdma_dev *dev)
 {
-	struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
+    struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
 
-	bitmap_free(tbl->table);
+    bitmap_free(tbl->table);
 }
 
-int amd_emrdma_uar_alloc(struct amd_emrdma_dev *dev, struct amd_emrdma_uar_map *uar)
+int amd_emrdma_uar_alloc(struct amd_emrdma_dev *dev,
+                         struct amd_emrdma_uar_map *uar)
 {
-	struct amd_emrdma_id_table *tbl;
-	unsigned long flags;
-	u32 obj;
+    struct amd_emrdma_id_table *tbl;
+    unsigned long flags;
+    u32 obj;
 
-	tbl = &dev->uar_table.tbl;
+    tbl = &dev->uar_table.tbl;
 
-	spin_lock_irqsave(&tbl->lock, flags);
-	obj = find_next_zero_bit(tbl->table, tbl->max, tbl->last);
-	if (obj >= tbl->max) {
-		tbl->top = (tbl->top + tbl->max) & tbl->mask;
-		obj = find_first_zero_bit(tbl->table, tbl->max);
-	}
+    spin_lock_irqsave(&tbl->lock, flags);
+    obj = find_next_zero_bit(tbl->table, tbl->max, tbl->last);
+    if (obj >= tbl->max) {
+        tbl->top = (tbl->top + tbl->max) & tbl->mask;
+        obj = find_first_zero_bit(tbl->table, tbl->max);
+    }
 
-	if (obj >= tbl->max) {
-		spin_unlock_irqrestore(&tbl->lock, flags);
-		return -ENOMEM;
-	}
+    if (obj >= tbl->max) {
+        spin_unlock_irqrestore(&tbl->lock, flags);
+        return -ENOMEM;
+    }
 
-	__set_bit(obj, tbl->table);
-	obj |= tbl->top;
+    __set_bit(obj, tbl->table);
+    obj |= tbl->top;
 
-	spin_unlock_irqrestore(&tbl->lock, flags);
+    spin_unlock_irqrestore(&tbl->lock, flags);
 
-	uar->index = obj;
-	uar->pfn = (pci_resource_start(dev->pdev, AMD_EMRDMA_PCI_RESOURCE_UAR) >>
-		    PAGE_SHIFT) + uar->index;
+    uar->index = obj;
+    uar->pfn = (pci_resource_start(dev->pdev, AMD_EMRDMA_PCI_RESOURCE_UAR) >>
+                PAGE_SHIFT) +
+               uar->index;
 
-	return 0;
+    return 0;
 }
 
-void amd_emrdma_uar_free(struct amd_emrdma_dev *dev, struct amd_emrdma_uar_map *uar)
+void amd_emrdma_uar_free(struct amd_emrdma_dev *dev,
+                         struct amd_emrdma_uar_map *uar)
 {
-	struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
-	unsigned long flags;
-	u32 obj;
+    struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
+    unsigned long flags;
+    u32 obj;
 
-	obj = uar->index & (tbl->max - 1);
-	spin_lock_irqsave(&tbl->lock, flags);
-	__clear_bit(obj, tbl->table);
-	tbl->last = min(tbl->last, obj);
-	tbl->top = (tbl->top + tbl->max) & tbl->mask;
-	spin_unlock_irqrestore(&tbl->lock, flags);
+    obj = uar->index & (tbl->max - 1);
+    spin_lock_irqsave(&tbl->lock, flags);
+    __clear_bit(obj, tbl->table);
+    tbl->last = min(tbl->last, obj);
+    tbl->top = (tbl->top + tbl->max) & tbl->mask;
+    spin_unlock_irqrestore(&tbl->lock, flags);
 }

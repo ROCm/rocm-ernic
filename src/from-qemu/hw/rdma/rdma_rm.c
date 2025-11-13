@@ -33,7 +33,7 @@
 #include "qemu/thread.h"   /* For QEMU_LOCK_GUARD */
 #include "rdma_utils.h"
 #include "rdma_backend.h"
-#include "rdma_backend_ops.h"  /* For RdmaBackendOps definition */
+#include "rdma_backend_ops.h" /* For RdmaBackendOps definition */
 #include "rdma_rm.h"
 
 void rdma_format_device_counters(RdmaDeviceResources *dev_res, GString *buf)
@@ -170,19 +170,24 @@ int rdma_rm_alloc_pd(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     }
 
     /* Create backend PD using vtable dispatch */
-    if (backend_dev && backend_dev->backend_ops && backend_dev->backend_ops->create_pd) {
+    if (backend_dev && backend_dev->backend_ops &&
+        backend_dev->backend_ops->create_pd) {
         ret = backend_dev->backend_ops->create_pd(backend_dev, &pd->backend_pd);
         if (ret) {
             rdma_error_report("Backend create_pd failed: %d", ret);
             ret = -EIO;
             goto out_tbl_dealloc;
         }
-        pd->backend_pd.backend_ops = backend_dev->backend_ops;  /* Store for destroy */
-        rdma_info_report("rdma_rm_alloc_pd: Created PD handle %u via backend '%s'", 
-                        *pd_handle, backend_dev->backend_ops->name);
+        pd->backend_pd.backend_ops =
+            backend_dev->backend_ops; /* Store for destroy */
+        rdma_info_report(
+            "rdma_rm_alloc_pd: Created PD handle %u via backend '%s'",
+            *pd_handle, backend_dev->backend_ops->name);
     } else {
         /* No backend or no create_pd operation - just allocate the PD handle */
-        rdma_info_report("rdma_rm_alloc_pd: No backend create_pd, allocated PD handle %u", *pd_handle);
+        rdma_info_report(
+            "rdma_rm_alloc_pd: No backend create_pd, allocated PD handle %u",
+            *pd_handle);
         memset(&pd->backend_pd, 0, sizeof(pd->backend_pd));
     }
 
@@ -208,11 +213,13 @@ void rdma_rm_dealloc_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
 
     if (pd) {
         /* Dispatch destroy through vtable if backend exists */
-        if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->destroy_pd) {
+        if (pd->backend_pd.backend_ops &&
+            pd->backend_pd.backend_ops->destroy_pd) {
             pd->backend_pd.backend_ops->destroy_pd(&pd->backend_pd);
         }
         rdma_res_tbl_dealloc(&dev_res->pd_tbl, pd_handle);
-        rdma_info_report("rdma_rm_dealloc_pd: Deallocated PD handle %u", pd_handle);
+        rdma_info_report("rdma_rm_dealloc_pd: Deallocated PD handle %u",
+                         pd_handle);
     }
 }
 
@@ -242,16 +249,18 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         mr->virt += (mr->start & (PAGE_SIZE - 1));
 
         /* Create backend MR using vtable dispatch */
-        if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_mr) {
-            ret = pd->backend_pd.backend_ops->create_mr(&mr->backend_mr, &pd->backend_pd, 
-                                                        mr->virt, mr->length, 
-                                                        guest_start, access_flags);
+        if (pd->backend_pd.backend_ops &&
+            pd->backend_pd.backend_ops->create_mr) {
+            ret = pd->backend_pd.backend_ops->create_mr(
+                &mr->backend_mr, &pd->backend_pd, mr->virt, mr->length,
+                guest_start, access_flags);
             if (ret) {
                 rdma_error_report("Backend create_mr failed: %d", ret);
                 ret = -EIO;
                 goto out_dealloc_mr;
             }
-            mr->backend_mr.backend_ops = pd->backend_pd.backend_ops;  /* Store for destroy */
+            mr->backend_mr.backend_ops =
+                pd->backend_pd.backend_ops; /* Store for destroy */
 #ifdef LEGACY_RDMA_REG_MR
             /* We keep mr_handle in lkey so send and recv get get mr ptr */
             *lkey = *mr_handle;
@@ -260,16 +269,19 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
             if (pd->backend_pd.backend_ops->mr_lkey) {
                 *lkey = pd->backend_pd.backend_ops->mr_lkey(&mr->backend_mr);
             } else {
-                *lkey = *mr_handle;  /* Fallback to handle */
+                *lkey = *mr_handle; /* Fallback to handle */
             }
 #endif
-            rdma_info_report("rdma_rm_alloc_mr: Created MR handle %u via backend '%s'", 
-                            *mr_handle, pd->backend_pd.backend_ops->name);
+            rdma_info_report(
+                "rdma_rm_alloc_mr: Created MR handle %u via backend '%s'",
+                *mr_handle, pd->backend_pd.backend_ops->name);
         } else {
             /* No backend - generate a fake lkey from handle */
-            rdma_info_report("rdma_rm_alloc_mr: No backend, allocated MR handle %u", *mr_handle);
+            rdma_info_report(
+                "rdma_rm_alloc_mr: No backend, allocated MR handle %u",
+                *mr_handle);
             memset(&mr->backend_mr, 0, sizeof(mr->backend_mr));
-            *lkey = *mr_handle;  /* Use handle as lkey */
+            *lkey = *mr_handle; /* Use handle as lkey */
         }
     }
 
@@ -296,7 +308,8 @@ void rdma_rm_dealloc_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
 
     if (mr) {
         /* Dispatch destroy through vtable if backend exists */
-        if (mr->backend_mr.backend_ops && mr->backend_mr.backend_ops->destroy_mr) {
+        if (mr->backend_mr.backend_ops &&
+            mr->backend_mr.backend_ops->destroy_mr) {
             mr->backend_mr.backend_ops->destroy_mr(&mr->backend_mr);
         }
         if (mr->start) {
@@ -304,7 +317,8 @@ void rdma_rm_dealloc_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
             munmap(mr->virt, mr->length);
         }
         rdma_res_tbl_dealloc(&dev_res->mr_tbl, mr_handle);
-        rdma_info_report("rdma_rm_dealloc_mr: Deallocated MR handle %u", mr_handle);
+        rdma_info_report("rdma_rm_dealloc_mr: Deallocated MR handle %u",
+                         mr_handle);
     }
 }
 
@@ -364,20 +378,25 @@ int rdma_rm_alloc_cq(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     cq->notify = CNT_CLEAR;
 
     /* Create backend CQ using vtable dispatch */
-    if (backend_dev && backend_dev->backend_ops && backend_dev->backend_ops->create_cq) {
-        rc = backend_dev->backend_ops->create_cq(backend_dev, &cq->backend_cq, cqe);
+    if (backend_dev && backend_dev->backend_ops &&
+        backend_dev->backend_ops->create_cq) {
+        rc = backend_dev->backend_ops->create_cq(backend_dev, &cq->backend_cq,
+                                                 cqe);
         if (rc) {
             rdma_error_report("Backend create_cq failed: %d", rc);
             rc = -EIO;
             goto out_dealloc_cq;
         }
-        cq->backend_cq.backend_ops = backend_dev->backend_ops;  /* Store for destroy */
-        rdma_info_report("rdma_rm_alloc_cq: Created CQ handle %u with %u entries via backend '%s'", 
-                        *cq_handle, cqe, backend_dev->backend_ops->name);
+        cq->backend_cq.backend_ops =
+            backend_dev->backend_ops; /* Store for destroy */
+        rdma_info_report("rdma_rm_alloc_cq: Created CQ handle %u with %u "
+                         "entries via backend '%s'",
+                         *cq_handle, cqe, backend_dev->backend_ops->name);
     } else {
         /* No backend - just allocate the CQ handle for tracking */
-        rdma_info_report("rdma_rm_alloc_cq: No backend, allocated CQ handle %u with %u entries", 
-                        *cq_handle, cqe);
+        rdma_info_report("rdma_rm_alloc_cq: No backend, allocated CQ handle %u "
+                         "with %u entries",
+                         *cq_handle, cqe);
         memset(&cq->backend_cq, 0, sizeof(cq->backend_cq));
     }
 
@@ -490,26 +509,28 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     qp->qp_type = qp_type;
     qp->send_cq_handle = send_cq_handle;
     qp->recv_cq_handle = recv_cq_handle;
-    rdma_info_report(">>> rdma_rm_alloc_qp: sizeof(RdmaRmQP)=%zu, sizeof(RdmaBackendQP)=%zu",
-                     sizeof(RdmaRmQP), sizeof(RdmaBackendQP));
-    rdma_info_report(">>> rdma_rm_alloc_qp: Setting qp=%p, &qp->backend_qp=%p, &qp->opaque=%p",
+    rdma_info_report(
+        ">>> rdma_rm_alloc_qp: sizeof(RdmaRmQP)=%zu, sizeof(RdmaBackendQP)=%zu",
+        sizeof(RdmaRmQP), sizeof(RdmaBackendQP));
+    rdma_info_report(">>> rdma_rm_alloc_qp: Setting qp=%p, &qp->backend_qp=%p, "
+                     "&qp->opaque=%p",
                      qp, &qp->backend_qp, &qp->opaque);
-    rdma_info_report(">>> rdma_rm_alloc_qp: Offset of opaque: %zu", 
-                     (size_t)((char*)&qp->opaque - (char*)qp));
+    rdma_info_report(">>> rdma_rm_alloc_qp: Offset of opaque: %zu",
+                     (size_t)((char *)&qp->opaque - (char *)qp));
     rdma_info_report(">>> rdma_rm_alloc_qp: Passed opaque=%p", opaque);
-    rdma_info_report(">>> rdma_rm_alloc_qp: BEFORE: qp->opaque = %p", qp->opaque);
+    rdma_info_report(">>> rdma_rm_alloc_qp: BEFORE: qp->opaque = %p",
+                     qp->opaque);
     qp->opaque = opaque;
-    rdma_info_report(">>> rdma_rm_alloc_qp: AFTER:  qp->opaque = %p", qp->opaque);
+    rdma_info_report(">>> rdma_rm_alloc_qp: AFTER:  qp->opaque = %p",
+                     qp->opaque);
     qp->is_srq = is_srq;
 
     /* Create backend QP using vtable dispatch */
     if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_qp) {
-        rc = pd->backend_pd.backend_ops->create_qp(&qp->backend_qp, qp_type, 
-                                                   &pd->backend_pd,
-                                                   &scq->backend_cq, &rcq->backend_cq,
-                                                   is_srq ? &srq->backend_srq : NULL, 
-                                                   max_send_wr, max_recv_wr, 
-                                                   max_send_sge, max_recv_sge);
+        rc = pd->backend_pd.backend_ops->create_qp(
+            &qp->backend_qp, qp_type, &pd->backend_pd, &scq->backend_cq,
+            &rcq->backend_cq, is_srq ? &srq->backend_srq : NULL, max_send_wr,
+            max_recv_wr, max_send_sge, max_recv_sge);
 
         if (rc) {
             rdma_error_report("Backend create_qp failed: %d", rc);
@@ -517,23 +538,26 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
             goto out_dealloc_qp;
         }
 
-        qp->backend_qp.backend_ops = pd->backend_pd.backend_ops;  /* Store for destroy */
-        
+        qp->backend_qp.backend_ops =
+            pd->backend_pd.backend_ops; /* Store for destroy */
+
         /* Get QPN from backend if available */
         if (pd->backend_pd.backend_ops->qpn) {
             *qpn = pd->backend_pd.backend_ops->qpn(&qp->backend_qp);
         } else {
-            *qpn = rm_qpn;  /* Fallback to local QPN */
+            *qpn = rm_qpn; /* Fallback to local QPN */
         }
-        rdma_info_report("rdma_rm_alloc_qp: Created QP handle %u (QPN=%u) via backend '%s'", 
-                        rm_qpn, *qpn, pd->backend_pd.backend_ops->name);
+        rdma_info_report(
+            "rdma_rm_alloc_qp: Created QP handle %u (QPN=%u) via backend '%s'",
+            rm_qpn, *qpn, pd->backend_pd.backend_ops->name);
     } else {
         /* No backend - use local QPN and zero out backend structure */
-        rdma_info_report("rdma_rm_alloc_qp: No backend, allocated QP handle %u", rm_qpn);
+        rdma_info_report("rdma_rm_alloc_qp: No backend, allocated QP handle %u",
+                         rm_qpn);
         memset(&qp->backend_qp, 0, sizeof(qp->backend_qp));
-        *qpn = rm_qpn;  /* Use local QPN */
+        *qpn = rm_qpn; /* Use local QPN */
     }
-    
+
     g_hash_table_insert(dev_res->qp_hash, g_bytes_new(qpn, sizeof(*qpn)), qp);
 
     return 0;
@@ -570,52 +594,66 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
 
         /* Call backend state transitions using vtable dispatch */
         if (qp->backend_qp.backend_ops) {
-            if (qp->qp_state == IBV_QPS_INIT && qp->backend_qp.backend_ops->qp_state_init) {
-                ret = qp->backend_qp.backend_ops->qp_state_init(backend_dev, &qp->backend_qp,
-                                                                qp->qp_type, qkey);
+            if (qp->qp_state == IBV_QPS_INIT &&
+                qp->backend_qp.backend_ops->qp_state_init) {
+                ret = qp->backend_qp.backend_ops->qp_state_init(
+                    backend_dev, &qp->backend_qp, qp->qp_type, qkey);
                 if (ret) {
                     rdma_error_report("Backend qp_state_init failed: %d", ret);
                     return -EIO;
                 }
-                rdma_info_report("rdma_rm_modify_qp: QP %u -> INIT via backend '%s'", 
-                                qp_handle, qp->backend_qp.backend_ops->name);
+                rdma_info_report(
+                    "rdma_rm_modify_qp: QP %u -> INIT via backend '%s'",
+                    qp_handle, qp->backend_qp.backend_ops->name);
             }
 
-            if (qp->qp_state == IBV_QPS_RTR && qp->backend_qp.backend_ops->qp_state_rtr) {
+            if (qp->qp_state == IBV_QPS_RTR &&
+                qp->backend_qp.backend_ops->qp_state_rtr) {
                 /* Get backend gid index if backend supports it */
-                if (backend_dev && qp->backend_qp.backend_ops->get_backend_gid_index) {
-                    sgid_idx = qp->backend_qp.backend_ops->get_backend_gid_index(backend_dev, sgid_idx);
-                    if ((int8_t)sgid_idx < 0) {  /* GID index 0 is valid, only negative is error */
-                        rdma_error_report("Failed to get backend sgid_idx for sgid_idx %d", sgid_idx);
+                if (backend_dev &&
+                    qp->backend_qp.backend_ops->get_backend_gid_index) {
+                    sgid_idx =
+                        qp->backend_qp.backend_ops->get_backend_gid_index(
+                            backend_dev, sgid_idx);
+                    if ((int8_t)sgid_idx <
+                        0) { /* GID index 0 is valid, only negative is error */
+                        rdma_error_report(
+                            "Failed to get backend sgid_idx for sgid_idx %d",
+                            sgid_idx);
                         return -EIO;
                     }
                 }
 
                 ret = qp->backend_qp.backend_ops->qp_state_rtr(
-                    backend_dev, &qp->backend_qp, qp->qp_type, sgid_idx, dgid, dqpn,
-                    rq_psn, qkey, attr_mask & IBV_QP_QKEY);
+                    backend_dev, &qp->backend_qp, qp->qp_type, sgid_idx, dgid,
+                    dqpn, rq_psn, qkey, attr_mask & IBV_QP_QKEY);
                 if (ret) {
                     rdma_error_report("Backend qp_state_rtr failed: %d", ret);
                     return -EIO;
                 }
-                rdma_info_report("rdma_rm_modify_qp: QP %u -> RTR via backend '%s'", 
-                                qp_handle, qp->backend_qp.backend_ops->name);
+                rdma_info_report(
+                    "rdma_rm_modify_qp: QP %u -> RTR via backend '%s'",
+                    qp_handle, qp->backend_qp.backend_ops->name);
             }
 
-            if (qp->qp_state == IBV_QPS_RTS && qp->backend_qp.backend_ops->qp_state_rts) {
-                ret = qp->backend_qp.backend_ops->qp_state_rts(&qp->backend_qp, qp->qp_type, sq_psn,
-                                                               qkey, attr_mask & IBV_QP_QKEY);
+            if (qp->qp_state == IBV_QPS_RTS &&
+                qp->backend_qp.backend_ops->qp_state_rts) {
+                ret = qp->backend_qp.backend_ops->qp_state_rts(
+                    &qp->backend_qp, qp->qp_type, sq_psn, qkey,
+                    attr_mask & IBV_QP_QKEY);
                 if (ret) {
                     rdma_error_report("Backend qp_state_rts failed: %d", ret);
                     return -EIO;
                 }
-                rdma_info_report("rdma_rm_modify_qp: QP %u -> RTS via backend '%s'", 
-                                qp_handle, qp->backend_qp.backend_ops->name);
+                rdma_info_report(
+                    "rdma_rm_modify_qp: QP %u -> RTS via backend '%s'",
+                    qp_handle, qp->backend_qp.backend_ops->name);
             }
         } else {
             /* No backend - just track state locally */
-            rdma_info_report("rdma_rm_modify_qp: No backend, QP %u state transition to %d", 
-                            qp_handle, qp_state);
+            rdma_info_report(
+                "rdma_rm_modify_qp: No backend, QP %u state transition to %d",
+                qp_handle, qp_state);
         }
     }
 
@@ -635,16 +673,20 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
 
     /* Query backend using vtable dispatch if available */
     if (qp->backend_qp.backend_ops && qp->backend_qp.backend_ops->query_qp) {
-        return qp->backend_qp.backend_ops->query_qp(&qp->backend_qp, attr, attr_mask, init_attr);
+        return qp->backend_qp.backend_ops->query_qp(&qp->backend_qp, attr,
+                                                    attr_mask, init_attr);
     } else {
         /* No backend - return basic QP attributes */
-        rdma_info_report("rdma_rm_query_qp: No backend, returning local state for QP %u", qp_handle);
+        rdma_info_report(
+            "rdma_rm_query_qp: No backend, returning local state for QP %u",
+            qp_handle);
         memset(attr, 0, sizeof(*attr));
         attr->qp_state = qp->qp_state;
         attr->cur_qp_state = qp->qp_state;
         attr->path_mtu = IBV_MTU_1024;
-        attr->qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-        
+        attr->qp_access_flags =
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+
         if (init_attr) {
             memset(init_attr, 0, sizeof(*init_attr));
             init_attr->qp_type = qp->qp_type;

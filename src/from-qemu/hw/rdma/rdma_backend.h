@@ -60,8 +60,7 @@ const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);
 RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str);
 const char *rdma_backend_type_to_string(RdmaBackendType type);
 int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
-                                RdmaBackendType type,
-                                const char *config);
+                               RdmaBackendType type, const char *config);
 void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
 
 /* Legacy verbs backend init (for compatibility) */

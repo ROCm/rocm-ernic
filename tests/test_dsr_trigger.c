@@ -17,21 +17,21 @@
 #include <sys/mman.h>
 
 /* PVRDMA register offsets (BAR1) */
-#define PVRDMA_REG_VERSION    0x00  /* Device version */
-#define PVRDMA_REG_DSR_LO     0x04  /* DSR guest PA low 32 bits */
-#define PVRDMA_REG_DSR_HI     0x08  /* DSR guest PA high 32 bits */
-#define PVRDMA_REG_CTL        0x0c  /* Control register */
-#define PVRDMA_REG_REQUEST    0x10  /* Command request */
-#define PVRDMA_REG_RESPONSE   0x14  /* Command response */
-#define PVRDMA_REG_ERR        0x28  /* Error register */
+#define PVRDMA_REG_VERSION  0x00 /* Device version */
+#define PVRDMA_REG_DSR_LO   0x04 /* DSR guest PA low 32 bits */
+#define PVRDMA_REG_DSR_HI   0x08 /* DSR guest PA high 32 bits */
+#define PVRDMA_REG_CTL      0x0c /* Control register */
+#define PVRDMA_REG_REQUEST  0x10 /* Command request */
+#define PVRDMA_REG_RESPONSE 0x14 /* Command response */
+#define PVRDMA_REG_ERR      0x28 /* Error register */
 
-#define PVRDMA_HW_VERSION     17
+#define PVRDMA_HW_VERSION 17
 
 /* Size of DSR structure from QEMU */
-#define DSR_SIZE              4096
+#define DSR_SIZE 4096
 
 /* Simple vfio-user protocol structures */
-#define VFIO_USER_VERSION     1
+#define VFIO_USER_VERSION 1
 
 enum vfio_user_command {
     VFIO_USER_VERSION_CMD = 0,
@@ -98,7 +98,7 @@ static int read_bar1_reg(int fd, uint64_t offset, uint32_t *value)
     msg.hdr.cmd = VFIO_USER_REGION_READ;
     msg.hdr.msg_size = sizeof(msg);
     msg.hdr.flags = 0; /* Command */
-    msg.region = 1; /* BAR1 */
+    msg.region = 1;    /* BAR1 */
     msg.offset = offset;
     msg.count = 4; /* 32-bit */
 
@@ -139,7 +139,7 @@ static int write_bar1_reg(int fd, uint64_t offset, uint32_t value)
     msg->hdr.cmd = VFIO_USER_REGION_WRITE;
     msg->hdr.msg_size = sizeof(buf);
     msg->hdr.flags = 0; /* Command */
-    msg->region = 1; /* BAR1 */
+    msg->region = 1;    /* BAR1 */
     msg->offset = offset;
     msg->count = 4; /* 32-bit */
     memcpy(msg->data, &value, 4);
@@ -196,7 +196,7 @@ int main(int argc, char *argv[])
     printf("    ✓ Connected (fd=%d)\n", fd);
 
     /* Read version register */
-    printf("\n[2] Reading version register (BAR1 offset 0x%02x)...\n", 
+    printf("\n[2] Reading version register (BAR1 offset 0x%02x)...\n",
            PVRDMA_REG_VERSION);
     if (read_bar1_reg(fd, PVRDMA_REG_VERSION, &version) < 0) {
         fprintf(stderr, "✗ Failed to read version\n");
@@ -215,10 +215,10 @@ int main(int argc, char *argv[])
     /* Write DSR address - this triggers load_dsr() which does DMA mapping */
     printf("\n[3] Writing DSR address registers...\n");
     printf("    Writing fake DSR guest PA: 0x%lx\n", fake_dsr_addr);
-    
+
     dsr_lo = (uint32_t)(fake_dsr_addr & 0xFFFFFFFF);
     dsr_hi = (uint32_t)(fake_dsr_addr >> 32);
-    
+
     printf("    Writing DSR_LO (0x%02x) = 0x%08x\n", PVRDMA_REG_DSR_LO, dsr_lo);
     if (write_bar1_reg(fd, PVRDMA_REG_DSR_LO, dsr_lo) < 0) {
         fprintf(stderr, "✗ Failed to write DSR_LO\n");
@@ -279,4 +279,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

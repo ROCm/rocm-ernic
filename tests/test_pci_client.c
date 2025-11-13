@@ -44,7 +44,8 @@ typedef struct {
 } test_results_t;
 
 /* Connect to vfio-user socket */
-static int connect_to_server(const char *socket_path) {
+static int connect_to_server(const char *socket_path)
+{
     int fd;
     struct sockaddr_un addr;
 
@@ -68,7 +69,8 @@ static int connect_to_server(const char *socket_path) {
 }
 
 /* Simple vfio-user version negotiation */
-static int negotiate_version(int fd) {
+static int negotiate_version(int fd)
+{
     /* For this simple test, we'll just verify the socket is responsive
      * In a full implementation, this would do proper vfio-user protocol
      * negotiation */
@@ -76,7 +78,8 @@ static int negotiate_version(int fd) {
 }
 
 /* Read PCI configuration space (simulated) */
-static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count) {
+static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
+{
     /* In a real vfio-user client, this would use proper protocol messages
      * For this test, we'll simulate basic reads */
     (void)fd; /* unused in simulation */
@@ -118,7 +121,8 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count) {
 }
 
 /* Run PCI configuration tests */
-static int run_pci_tests(int fd, test_results_t *results) {
+static int run_pci_tests(int fd, test_results_t *results)
+{
     int ret;
 
     printf("Running PCI configuration tests...\n\n");
@@ -148,7 +152,8 @@ static int run_pci_tests(int fd, test_results_t *results) {
 
     /* Read revision and class code */
     uint32_t class_rev;
-    ret = read_pci_config(fd, PCI_CLASS_REVISION, &class_rev, sizeof(class_rev));
+    ret =
+        read_pci_config(fd, PCI_CLASS_REVISION, &class_rev, sizeof(class_rev));
     if (ret < 0) {
         return -1;
     }
@@ -217,7 +222,8 @@ static int run_pci_tests(int fd, test_results_t *results) {
 }
 
 /* Validate test results */
-static bool validate_results(const test_results_t *results) {
+static bool validate_results(const test_results_t *results)
+{
     bool passed = true;
 
     printf("Validation:\n");
@@ -244,7 +250,8 @@ static bool validate_results(const test_results_t *results) {
     return passed;
 }
 
-static void usage(const char *progname) {
+static void usage(const char *progname)
+{
     printf("Usage: %s [OPTIONS]\n", progname);
     printf("\n");
     printf("Test client for vfu_pvrdma vfio-user server\n");
@@ -255,7 +262,8 @@ static void usage(const char *progname) {
     printf("  -h, --help          Show this help\n");
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     const char *socket_path = "/tmp/vfio-user-pvrdma.sock";
     int fd = -1;
     test_results_t results = {0};
@@ -325,4 +333,3 @@ cleanup:
 
     return ret;
 }
-

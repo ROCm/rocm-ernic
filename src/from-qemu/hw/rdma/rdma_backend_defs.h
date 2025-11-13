@@ -31,9 +31,9 @@ typedef struct RdmaBackendOps RdmaBackendOps;
  * Defined here to avoid circular dependency
  */
 typedef enum {
-    RDMA_BACKEND_TYPE_NONE,      /* No backend - minimal stubs */
-    RDMA_BACKEND_TYPE_LOOPBACK,  /* Internal loopback emulation */
-    RDMA_BACKEND_TYPE_VERBS,     /* libibverbs hardware backend */
+    RDMA_BACKEND_TYPE_NONE,     /* No backend - minimal stubs */
+    RDMA_BACKEND_TYPE_LOOPBACK, /* Internal loopback emulation */
+    RDMA_BACKEND_TYPE_VERBS,    /* libibverbs hardware backend */
     RDMA_BACKEND_TYPE_MAX
 } RdmaBackendType;
 
@@ -115,14 +115,14 @@ typedef struct RdmaBackendDev {
     /* Backend abstraction */
     RdmaBackendType backend_type;
     const RdmaBackendOps *backend_ops;
-    void *backend_private;  /* Backend-specific data */
-    
+    void *backend_private; /* Backend-specific data */
+
     /* Common fields */
     RdmaBackendThread comp_thread;
     PCIDevice *dev;
     RdmaDeviceResources *rdma_dev_res;
     uint8_t port_num;
-    
+
     /* Verbs-specific fields (kept for verbs backend) */
     struct ibv_device *ib_dev;
     struct ibv_context *context;
@@ -133,19 +133,19 @@ typedef struct RdmaBackendDev {
 
 typedef struct RdmaBackendPD {
     struct ibv_pd *ibpd;
-    const struct RdmaBackendOps *backend_ops;  /* For destroy dispatch */
+    const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendPD;
 
 typedef struct RdmaBackendMR {
     struct ibv_pd *ibpd;
     struct ibv_mr *ibmr;
-    const struct RdmaBackendOps *backend_ops;  /* For destroy dispatch */
+    const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendMR;
 
 typedef struct RdmaBackendCQ {
     RdmaBackendDev *backend_dev;
     struct ibv_cq *ibcq;
-    const struct RdmaBackendOps *backend_ops;  /* For destroy dispatch */
+    const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendCQ;
 
 typedef struct RdmaBackendQP {
@@ -153,13 +153,13 @@ typedef struct RdmaBackendQP {
     struct ibv_qp *ibqp;
     uint8_t sgid_idx;
     RdmaProtectedGSList cqe_ctx_list;
-    const struct RdmaBackendOps *backend_ops;  /* For destroy dispatch */
+    const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendQP;
 
 typedef struct RdmaBackendSRQ {
     struct ibv_srq *ibsrq;
     RdmaProtectedGSList cqe_ctx_list;
-    const struct RdmaBackendOps *backend_ops;  /* For destroy dispatch */
+    const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendSRQ;
 
 #endif
