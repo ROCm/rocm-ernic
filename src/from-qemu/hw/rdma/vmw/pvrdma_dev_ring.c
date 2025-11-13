@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include "hw/pci/pci.h"
+#include "hw/rdma/rdma.h"  /* For rdma_pci_dma_map declaration */
 /* #include "cpu.h" - Not needed for PVRDMA */
 #include "qemu/cutils.h"
 #include "qemu/atomic.h"
@@ -51,13 +52,31 @@ int pvrdma_ring_init(PvrdmaRing *ring, const char *name, PCIDevice *dev,
     ring->npages = npages;
     ring->pages = g_new0(void *, npages);
 
+    rdma_info_report(">>> pvrdma_ring_init: sizeof(void*)=%zu, sizeof(unsigned long)=%zu, sizeof(uintptr_t)=%zu",
+                     sizeof(void*), sizeof(unsigned long), sizeof(uintptr_t));
+    rdma_info_report(">>> pvrdma_ring_init: ring=%p, allocating pages array at %p", ring, ring->pages);
+    
     for (i = 0; i < npages; i++) {
+        void *mapped_addr;
+        
         if (!tbl[i]) {
             rdma_error_report("npages=%d but tbl[%d] is NULL", npages, i);
             continue;
         }
 
-        ring->pages[i] = rdma_pci_dma_map(dev, tbl[i], PAGE_SIZE);
+        mapped_addr = rdma_pci_dma_map(dev, tbl[i], PAGE_SIZE);
+        printf("DIRECT_PRINTF: page[%d] mapped_addr=%p (uintptr=%#lx)\n", i, mapped_addr, (uintptr_t)mapped_addr);
+        fflush(stdout);
+        rdma_info_report(">>> pvrdma_ring_init: page[%d]: guest=0x%lx -> mapped_addr=%p (as lx=%#lx)", 
+                         i, tbl[i], mapped_addr, (unsigned long)mapped_addr);
+        
+        ring->pages[i] = mapped_addr;
+        printf("DIRECT_PRINTF: page[%d] STORED ring->pages[%d]=%p (uintptr=%#lx)\n", 
+               i, i, ring->pages[i], (uintptr_t)ring->pages[i]);
+        fflush(stdout);
+        rdma_info_report(">>> pvrdma_ring_init: page[%d]: STORED ring->pages[%d]=%p (as lx=%#lx)",
+                         i, i, ring->pages[i], (unsigned long)ring->pages[i]);
+        
         if (!ring->pages[i]) {
             rc = -ENOMEM;
             rdma_error_report("Failed to map to page %d in ring %s", i, name);
@@ -85,8 +104,12 @@ out:
 void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
 {
     unsigned int idx, offset;
+    unsigned int page_idx;
+    void *result;
     const uint32_t tail = qatomic_read(&ring->ring_state->prod_tail);
     const uint32_t head = qatomic_read(&ring->ring_state->cons_head);
+
+    rdma_info_report(">>> pvrdma_ring_next_elem_read: ring=%p, pages=%p", ring, ring ? ring->pages : NULL);
 
     if (tail & ~((ring->max_elems << 1) - 1) ||
         head & ~((ring->max_elems << 1) - 1) || tail == head) {
@@ -95,7 +118,17 @@ void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
 
     idx = head & (ring->max_elems - 1);
     offset = idx * ring->elem_sz;
-    return ring->pages[offset / PAGE_SIZE] + (offset % PAGE_SIZE);
+    page_idx = offset / PAGE_SIZE;
+    
+    rdma_info_report(">>> pvrdma_ring_next_elem_read: idx=%u, offset=%u, page_idx=%u", idx, offset, page_idx);
+    rdma_info_report(">>> pvrdma_ring_next_elem_read: ring->pages[%u]=%p (as lx=%#lx)", 
+                     page_idx, ring->pages[page_idx], (unsigned long)ring->pages[page_idx]);
+    
+    result = ring->pages[page_idx] + (offset % PAGE_SIZE);
+    rdma_info_report(">>> pvrdma_ring_next_elem_read: returning %p (as lx=%#lx)", 
+                     result, (unsigned long)result);
+    
+    return result;
 }
 
 void pvrdma_ring_read_inc(PvrdmaRing *ring)

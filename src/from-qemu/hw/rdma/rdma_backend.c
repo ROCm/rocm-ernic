@@ -45,6 +45,7 @@
 #include "rdma_utils.h"
 #include "rdma_rm.h"
 #include "rdma_backend.h"
+#include "rdma_backend_ops.h"      /* For RdmaBackendOps structure definition */
 
 #define THR_NAME_LEN 16
 #define THR_POLL_TO  5000
@@ -492,6 +493,9 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     int rc;
     struct ibv_send_wr wr = {}, *bad_wr;
 
+    rdma_info_report(">>> rdma_backend_post_send: ENTRY with qp=%p, ibqp=%p, &cqe_ctx_list=%p",
+                     qp, qp ? qp->ibqp : NULL, qp ? &qp->cqe_ctx_list : NULL);
+
     if (!qp->ibqp) { /* This field is not initialized for QP0 and QP1 */
         if (qp_type == IBV_QPT_SMI) {
             rdma_error_report("Got QP0 request");
@@ -528,6 +532,16 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         goto err_dealloc_cqe_ctx;
     }
 
+    /* Dispatch through backend ops if available (e.g., loopback) */
+    if (qp->backend_ops && qp->backend_ops->post_send) {
+        qp->backend_ops->post_send(backend_dev, qp, qp_type, sge, num_sge,
+                                   sgid_idx, sgid, dgid, dqpn, dqkey, ctx);
+        /* Backend handles completion, so we're done */
+        backend_dev->rdma_dev_res->stats.tx++;
+        return;
+    }
+
+    /* Fallback to direct ibverbs for verbs backend */
     if (qp_type == IBV_QPT_UD) {
         wr.wr.ud.ah = create_ah(backend_dev, qp->ibpd, sgid_idx, dgid);
         if (!wr.wr.ud.ah) {
@@ -644,6 +658,15 @@ void rdma_backend_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         goto err_dealloc_cqe_ctx;
     }
 
+    /* Dispatch through backend ops if available (e.g., loopback) */
+    if (qp->backend_ops && qp->backend_ops->post_recv) {
+        qp->backend_ops->post_recv(backend_dev, qp, qp_type, sge, num_sge, ctx);
+        /* Backend handles completion, so we're done */
+        backend_dev->rdma_dev_res->stats.rx_bufs++;
+        return;
+    }
+
+    /* Fallback to direct ibverbs for verbs backend */
     wr.num_sge = num_sge;
     wr.sg_list = sge;
     wr.wr_id = bctx_id;

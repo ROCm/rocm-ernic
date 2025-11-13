@@ -73,6 +73,15 @@ add_project_arguments(
   '-D_GNU_SOURCE',
   '-DTARGET_PAGE_SIZE=4096',
   '-Wno-unused-parameter',  # QEMU headers have many unused parameters
+  '-fsanitize=address',      # Address sanitizer for memory errors
+  '-fno-omit-frame-pointer', # Better stack traces
+  '-g',                      # Debug symbols
+  language: 'c'
+)
+
+# Linker arguments for address sanitizer
+add_project_link_arguments(
+  '-fsanitize=address',
   language: 'c'
 )
 

@@ -519,22 +519,26 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     g_hash_table_insert(priv->qps, GUINT_TO_POINTER(lqp->qpn), lqp);
     
     qp->ibpd = pd->ibpd;
-    qp->ibqp = (struct ibv_qp *)(uintptr_t)lqp->qpn;
+    /* Store the actual LoopbackQP pointer, not the QPN! */
+    qp->ibqp = (struct ibv_qp *)lqp;
     qp->sgid_idx = 0;
     
-    rdma_info_report("Loopback: Created QP %u type=%d", lqp->qpn, qp_type);
+    rdma_info_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)", 
+                     lqp->qpn, qp_type, lqp);
     return 0;
 }
 
 static void loopback_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    uint32_t qpn = lqp ? lqp->qpn : 0;
     rdma_info_report("Loopback: Destroyed QP %u", qpn);
 }
 
 static uint32_t loopback_qpn(const RdmaBackendQP *qp)
 {
-    return (uint32_t)(uintptr_t)qp->ibqp;
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    return lqp ? lqp->qpn : 0;
 }
 
 /*
@@ -545,14 +549,13 @@ static int loopback_qp_state_init(RdmaBackendDev *backend_dev,
                                   RdmaBackendQP *qp,
                                   uint8_t qp_type, uint32_t qkey)
 {
-    LoopbackBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    LoopbackQP *lqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
+    (void)backend_dev;
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
     
     if (lqp) {
         lqp->state = IBV_QPS_INIT;
         lqp->qkey = qkey;
-        rdma_info_report("Loopback: QP %u -> INIT", qpn);
+        rdma_info_report("Loopback: QP %u -> INIT", lqp->qpn);
     }
     return 0;
 }
@@ -564,9 +567,10 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev,
                                  uint32_t rq_psn, uint32_t qkey,
                                  bool qkey_set)
 {
-    LoopbackBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    LoopbackQP *lqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
+    (void)backend_dev;
+    (void)qp_type;
+    (void)sgid_idx;
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
     
     if (lqp) {
         lqp->state = IBV_QPS_RTR;
@@ -579,11 +583,7 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev,
             lqp->qkey = qkey;
         }
         
-        /* Setup loopback pairing */
-        g_hash_table_insert(priv->qp_pairs, GUINT_TO_POINTER(qpn),
-                           GUINT_TO_POINTER(dqpn));
-        
-        rdma_info_report("Loopback: QP %u -> RTR (remote QP %u)", qpn, dqpn);
+        rdma_info_report("Loopback: QP %u -> RTR (remote_qpn=%u, rq_psn=%u)", lqp->qpn, dqpn, rq_psn);
     }
     return 0;
 }
@@ -592,10 +592,15 @@ static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
                                  uint32_t sq_psn, uint32_t qkey,
                                  bool qkey_set)
 {
-    /* For loopback, we need backend_dev but it's not passed here */
-    /* Store state in qp structure for now */
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    rdma_info_report("Loopback: QP %u -> RTS", qpn);
+    (void)qp_type;
+    (void)sq_psn;
+    (void)qkey;
+    (void)qkey_set;
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    if (lqp) {
+        lqp->state = IBV_QPS_RTS;
+        rdma_info_report("Loopback: QP %u -> RTS", lqp->qpn);
+    }
     return 0;
 }
 
@@ -624,16 +629,20 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                union ibv_gid *sgid, union ibv_gid *dgid,
                                uint32_t dqpn, uint32_t dqkey, void *ctx)
 {
+    (void)qp_type;
+    (void)sgid_idx;
+    (void)sgid;
+    (void)dgid;
+    (void)dqkey;
     LoopbackBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    LoopbackQP *lqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
     LoopbackQP *remote_qp = NULL;
     LoopbackWR *recv_wr = NULL;
     uint32_t total_len = 0;
     uint32_t transferred = 0;
     
     if (!lqp) {
-        rdma_error_report("Loopback: post_send on unknown QP %u", qpn);
+        rdma_error_report("Loopback: post_send on unknown QP");
         return;
     }
     
@@ -654,22 +663,20 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         char md5_str[33];
         compute_sge_md5(sge, num_sge, md5_str, sizeof(md5_str));
         rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s, MD5=%s",
-                        qpn, total_len, 
+                        lqp->qpn, total_len, 
                         data_pattern_name(priv->data_pattern), md5_str);
     } else if (total_len > 0) {
         rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s",
-                        qpn, total_len, data_pattern_name(priv->data_pattern));
+                        lqp->qpn, total_len, data_pattern_name(priv->data_pattern));
     }
     
-    /* For UD QP, use dqpn; for connected QPs, use paired QP */
-    if (qp_type == IBV_QPT_UD) {
+    /* For UD QP, use dqpn; for connected QPs, use paired remote_qpn from lqp */
+    if (lqp->qp_type == IBV_QPT_UD) {
         remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(dqpn));
     } else {
-        /* For RC/UC, check if this QP has a remote pairing */
-        uint32_t remote_qpn = GPOINTER_TO_UINT(
-            g_hash_table_lookup(priv->qp_pairs, GUINT_TO_POINTER(qpn)));
-        if (remote_qpn) {
-            remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(remote_qpn));
+        /* For RC/UC, use the remote_qpn stored in lqp from RTR transition */
+        if (lqp->remote_qpn) {
+            remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(lqp->remote_qpn));
         } else {
             /* Self-loopback: use same QP */
             remote_qp = lqp;
@@ -701,17 +708,17 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             
             g_free(recv_wr);
             rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes)",
-                           qpn, remote_qp->qpn, transferred);
+                           lqp->qpn, remote_qp->qpn, transferred);
         }
     } else {
         rdma_info_report("Loopback: Send QP %u (no matching recv, %u bytes)",
-                        qpn, total_len);
+                        lqp->qpn, total_len);
     }
     
     /* Always post send completion */
     if (lqp->scq) {
         loopback_post_completion(lqp->scq, (uint64_t)(uintptr_t)ctx,
-                                IBV_WC_SUCCESS, total_len, qpn, IBV_WC_SEND);
+                                IBV_WC_SUCCESS, total_len, lqp->qpn, IBV_WC_SEND);
     }
 }
 
@@ -719,8 +726,15 @@ static void loopback_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                uint8_t qp_type, struct ibv_sge *sge,
                                uint32_t num_sge, void *ctx)
 {
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    rdma_info_report("Loopback: Posted recv on QP %u", qpn);
+    (void)backend_dev;
+    (void)qp_type;
+    (void)sge;
+    (void)num_sge;
+    (void)ctx;
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    if (lqp) {
+        rdma_info_report("Loopback: Posted recv on QP %u", lqp->qpn);
+    }
     /* Recv completion would be posted when matching send arrives */
 }
 

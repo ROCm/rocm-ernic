@@ -231,6 +231,10 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         return -EIO;
     }
 
+    /* CRITICAL: Link backend_dev to the device resources */
+    pvrdma->backend_dev.rdma_dev_res = &pvrdma->rdma_dev_res;
+    rdma_info_report("Linked backend_dev to rdma_dev_res at %p", pvrdma->backend_dev.rdma_dev_res);
+
     rdma_info_report("RDMA backend '%s' initialized successfully",
                     rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
     rdma_info_report("PVRDMA device realized successfully");
@@ -570,22 +574,38 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
                    dma_addr_t access_len)
 {
     (void)dev;
-    (void)buffer;
     (void)len;
     (void)dir;
     (void)access_len;
 
-    /* For unmapping, we just need to tell libvfio-user about the buffer.
-     * Since we don't track the original sg from the map call, we can't
-     * properly call vfu_sgl_put. This is a limitation of the current
-     * pci_dma_unmap API which doesn't give us the original mapping info.
-     *
-     * For now, we'll skip the unmap - libvfio-user will handle cleanup
-     * when regions are unmapped or the device is destroyed.
-     */
+    rdma_info_report("=== DMA UNMAP: buffer=%p ===", buffer);
 
-    rdma_debug_report("DMA unmap: host=%p len=%zu (no-op)", buffer,
-                      (size_t)len);
+    /* Find and release the mapping */
+    for (int i = 0; i < num_dma_mappings; i++) {
+        if (dma_mappings[i].host_addr == buffer) {
+            rdma_info_report("DMA unmap: Found mapping #%d (guest=%#lx)", 
+                             i, dma_mappings[i].guest_addr);
+            
+            /* Release the SGL mapping */
+            vfu_sgl_put(dma_mappings[i].vfu_ctx, dma_mappings[i].sg, 
+                        &dma_mappings[i].iov, 1);
+            
+            /* Free the SG structure */
+            free(dma_mappings[i].sg);
+            
+            /* Remove from table by shifting remaining entries */
+            for (int j = i; j < num_dma_mappings - 1; j++) {
+                dma_mappings[j] = dma_mappings[j + 1];
+            }
+            num_dma_mappings--;
+            
+            rdma_info_report("DMA unmap: Released and removed mapping (now %d mappings)", 
+                             num_dma_mappings);
+            return;
+        }
+    }
+    
+    rdma_debug_report("DMA unmap: Mapping not found for buffer=%p (already unmapped?)", buffer);
 }
 
 /*
@@ -618,7 +638,9 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
     }
 
     /* Trigger MSI-X interrupt via libvfio-user */
+    rdma_info_report(">>> post_interrupt: About to trigger IRQ vector %u", vector);
     ret = vfu_irq_trigger(vfu_ctx, vector);
+    rdma_info_report(">>> post_interrupt: vfu_irq_trigger returned %d (errno=%d)", ret, ret < 0 ? errno : 0);
     if (ret < 0) {
         rdma_error_report("Failed to trigger interrupt vector %u: %s", vector,
                           strerror(errno));
@@ -627,5 +649,5 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
 
     pvrdma->stats.interrupts++;
 
-    rdma_debug_report("Triggered interrupt vector %u", vector);
+    rdma_info_report(">>> post_interrupt: Successfully triggered interrupt vector %u", vector);
 }
