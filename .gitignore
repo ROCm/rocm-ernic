@@ -11,8 +11,14 @@
 /meson-private/
 compile_commands.json
 
-# Executable
+# Executables
 /vfu_pvrdma
+
+# Test binaries (in tests/ directory)
+tests/test_dt
+tests/test_bar1_read
+tests/test_dsr_trigger
+tests/test_pci_client
 
 # Editor and IDE files
 *~
