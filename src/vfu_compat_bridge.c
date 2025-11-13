@@ -25,6 +25,7 @@
 /* Now we can include QEMU headers */
 #define VFU_PVRDMA_INTERNAL_IMPL
 #include "from-qemu/hw/rdma/vmw/pvrdma.h"
+#include "from-qemu/hw/rdma/vmw/pvrdma_qp_ops.h"
 #include "from-qemu/hw/rdma/rdma_backend.h"
 #include "from-qemu/hw/rdma/rdma_rm.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
@@ -237,6 +238,15 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
 
     rdma_info_report("RDMA backend '%s' initialized successfully",
                     rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
+
+    /* Initialize QP operations and register completion handler */
+    rc = pvrdma_qp_ops_init();
+    if (rc < 0) {
+        rdma_error_report("Failed to initialize QP operations (rc=%d)", rc);
+        return -EIO;
+    }
+    rdma_info_report("QP operations initialized, completion handler registered");
+
     rdma_info_report("PVRDMA device realized successfully");
 
     return 0;

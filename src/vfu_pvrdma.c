@@ -700,14 +700,8 @@ int main(int argc, char *argv[])
         /* Run device - process requests from client */
         int loop_count = 0;
         while (!g_shutdown_requested) {
-            if (loop_count < 50 || loop_count % 10 == 0) {  /* Log first 50, then every 10th */
-                vfu_log(vfu_ctx, LOG_INFO, ">>> EVENT LOOP #%d: Calling vfu_run_ctx()...", loop_count);
-            }
+            /* Debug logging disabled - too verbose */
             ret = vfu_run_ctx(vfu_ctx);
-            if (loop_count < 50 || loop_count % 10 == 0) {
-                vfu_log(vfu_ctx, LOG_INFO, ">>> EVENT LOOP #%d: vfu_run_ctx() returned %d (errno=%d)", 
-                        loop_count, ret, errno);
-            }
             loop_count++;
             if (ret < 0) {
                 if (errno == ENOTCONN) {
