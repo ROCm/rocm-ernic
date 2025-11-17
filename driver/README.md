@@ -1,11 +1,14 @@
-# AMD Emulated RDMA Driver (amd_emrdma)
+# AMD ROCm ERNIC Driver (amd_emrdma)
 
 ## Overview
 
-This is a Linux kernel driver for AMD Emulated RDMA devices, designed for use
-with vfio-user based userspace device emulation. It is based on VMware's PVRDMA
-driver but includes critical modifications to handle asynchronous BAR writes in
-vfio-user environments.
+This is the Linux kernel driver for AMD ROCm ERNIC (Emulated RDMA NIC),
+designed for use with the libvfio-user based userspace device server
+(`rocm_ernic`). The driver enables RDMA functionality in virtual machines
+through a userspace bridge to host InfiniBand hardware.
+
+**Based on:** VMware's PVRDMA driver with critical modifications for
+libvfio-user compatibility and asynchronous BAR write handling.
 
 ## Key Differences from VMware PVRDMA
 
@@ -58,7 +61,7 @@ any network device.
 ### Out-of-Tree Build (Recommended for Testing)
 
 ```bash
-cd /home/stebates/Projects/vfu-rdma/driver
+cd /home/stebates/Projects/rocm-ernic/driver
 
 # Set kernel source directory
 export KDIR=/home/stebates/Projects/kernel-tools/src
@@ -70,30 +73,6 @@ make -C $KDIR M=$(pwd) modules
 sudo make -C $KDIR M=$(pwd) modules_install
 sudo depmod -a
 ```
-
-### In-Tree Build (For Upstreaming)
-
-1. Copy driver files to kernel source:
-   ```bash
-   cp -r driver/* $KDIR/drivers/infiniband/hw/amd_emrdma/
-   ```
-
-2. Add to `drivers/infiniband/hw/Kconfig`:
-   ```
-   source "drivers/infiniband/hw/amd_emrdma/Kconfig"
-   ```
-
-3. Add to `drivers/infiniband/hw/Makefile`:
-   ```
-   obj-$(CONFIG_INFINIBAND_AMD_EMRDMA)    += amd_emrdma/
-   ```
-
-4. Configure and build:
-   ```bash
-   cd $KDIR
-   make menuconfig  # Enable CONFIG_INFINIBAND_AMD_EMRDMA
-   make -j$(nproc)
-   ```
 
 ## Loading the Driver
 
@@ -115,7 +94,7 @@ dmesg | grep amd_emrdma
 
 1. Start the vfio-user server:
    ```bash
-   cd /home/stebates/Projects/vfu-rdma
+   cd /home/stebates/Projects/rocm-ernic
    sudo ./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock
    ```
 
@@ -178,10 +157,10 @@ This is expected in standalone mode:
 
 ## References
 
-- VMware PVRDMA: `drivers/infiniband/hw/vmw_pvrdma/`
-- vfio-user protocol: `qemu/docs/interop/vfio-user.rst`
+- VMware PVRDMA (upstream): `drivers/infiniband/hw/vmw_pvrdma/`
 - libvfio-user: https://github.com/nutanix/libvfio-user
-- rocm_ernic server: `../src/rocm_ernic.c`
+- vfio-user protocol: `qemu/docs/interop/vfio-user.rst`
+- ROCm ERNIC server: `../src/rocm_ernic_server.c`
 
 ## License
 

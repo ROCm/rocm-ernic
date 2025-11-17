@@ -1,8 +1,6 @@
 name: Integration Test (QEMU + Driver)
 
 on:
-  push:
-    branches: [ main, dev/*, test-* ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -113,8 +111,9 @@ jobs:
       run: |
         export PATH="$HOME/qemu-install/bin:$PATH"
         
-        wget -q https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img
-        qemu-img info ubuntu-22.04-minimal-cloudimg-amd64.img
+        # Use regular cloud image (not minimal) for RDMA kernel module support
+        wget -q https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
+        qemu-img info ubuntu-24.04-server-cloudimg-amd64.img
         echo "✓ VM image downloaded"
     
     - name: Create cloud-init configuration
@@ -148,7 +147,7 @@ jobs:
       run: |
         export PATH="$HOME/qemu-install/bin:$PATH"
         
-        cp ubuntu-22.04-minimal-cloudimg-amd64.img vm-disk.img
+        cp ubuntu-24.04-server-cloudimg-amd64.img vm-disk.img
         qemu-img resize vm-disk.img +2G
         echo "✓ VM disk prepared"
     
@@ -222,15 +221,60 @@ jobs:
         sshpass -p ubuntu ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@localhost << 'EOFVM'
         set -e
         
-        echo "=== Waiting for cloud-init ==="
-        sudo cloud-init status --wait
+        echo "=== Checking cloud-init status ==="
+        sudo cloud-init status || true
+        
+        echo "=== Waiting for cloud-init (max 10 minutes) ==="
+        if timeout 600 sudo cloud-init status --wait; then
+          echo "✓ Cloud-init completed successfully"
+        else
+          echo "⚠️  Cloud-init timed out or failed"
+          sudo cloud-init status --long
+          sudo journalctl -u cloud-init --no-pager | tail -100
+        fi
+        
+        echo "=== Waiting for all apt/dpkg processes to finish ==="
+        for i in {1..120}; do
+          if ! pgrep -f "apt-get|dpkg|unattended" > /dev/null; then
+            echo "✓ All package management processes finished"
+            break
+          fi
+          if [ $i -eq 120 ]; then
+            echo "⚠️  Timeout waiting for package processes, killing them..."
+            sudo pkill -9 -f apt-get || true
+            sudo pkill -9 -f dpkg || true
+            sudo pkill -9 -f unattended || true
+            sudo rm -f /var/lib/dpkg/lock* /var/lib/apt/lists/lock
+            sleep 2
+          else
+            echo "Waiting for package processes to finish (attempt $i/120)..."
+            sleep 2
+          fi
+        done
+        
+        echo "=== Installing kernel-specific IB modules ==="
+        KERNEL_VERSION=$(uname -r)
+        echo "Running kernel: $KERNEL_VERSION"
+        
+        # Install the linux-modules-extra for the EXACT kernel version
+        echo "Installing linux-modules-extra-$KERNEL_VERSION..."
+        if sudo apt-get install -y "linux-modules-extra-$KERNEL_VERSION"; then
+          echo "✓ Installed linux-modules-extra-$KERNEL_VERSION"
+        else
+          echo "✗ Failed to install linux-modules-extra-$KERNEL_VERSION"
+          echo "Available linux-modules packages:"
+          apt-cache search linux-modules-extra | grep "$KERNEL_VERSION" || echo "None found"
+          exit 1
+        fi
+        
+        echo "✓ Package installation complete"
         
         echo "=== Verifying packages ==="
         which make || echo "make not found"
         which gcc || echo "gcc not found"
         dpkg -l | grep linux-headers || echo "linux-headers not found"
         
-        echo "✓ Cloud-init completed"
+        echo "✓ Setup completed"
         EOFVM
     
     - name: Copy driver source to VM
@@ -256,28 +300,91 @@ jobs:
         echo "=== PCI Devices ==="
         sudo lspci | grep -i amd || echo "AMD device not found yet"
         
-        echo "=== Loading Driver ==="
-        sudo insmod ./amd_emrdma.ko || {
-          echo "Failed to load driver"
-          sudo dmesg | tail -50
+        echo "=== Loading InfiniBand Core ==="
+        # Load IB modules - driver requires these
+        echo "Loading ib_core..."
+        if sudo modprobe ib_core; then
+          echo "✓ ib_core loaded"
+        else
+          echo "✗ Failed to load ib_core"
+          sudo dmesg | tail -20
           exit 1
-        }
+        fi
+        
+        echo "Loading ib_uverbs..."
+        if sudo modprobe ib_uverbs; then
+          echo "✓ ib_uverbs loaded"
+        else
+          echo "✗ Failed to load ib_uverbs"
+          echo "Checking if module exists:"
+          find /lib/modules/$(uname -r) -name "ib_uverbs*"
+          echo ""
+          echo "Installed packages:"
+          dpkg -l | grep -E "linux-modules|rdma"
+          sudo dmesg | tail -20
+          exit 1
+        fi
+        
+        echo "Loaded IB modules:"
+        lsmod | grep ib_
+        
+        echo "=== Checking Kernel RDMA Support ==="
+        if [ -d /sys/class/infiniband ]; then
+          echo "✓ InfiniBand subsystem present"
+        else
+          echo "⚠️  InfiniBand subsystem not present in kernel"
+          echo "⚠️  This minimal cloud image may not have RDMA support compiled in"
+        fi
+        
+        echo "=== Loading Driver ==="
+        sudo insmod ./amd_emrdma.ko 2>&1 | tee /tmp/insmod.log
+        INSMOD_EXIT=${PIPESTATUS[0]}
+        
+        if [ $INSMOD_EXIT -eq 0 ]; then
+          echo "✓ Driver loaded successfully"
+        else
+          echo "✗ Failed to load driver (exit code: $INSMOD_EXIT)"
+          echo ""
+          echo "Error output:"
+          cat /tmp/insmod.log
+          echo ""
+          echo "Kernel messages:"
+          sudo dmesg | tail -50
+          echo ""
+          echo "⚠️  The driver requires InfiniBand kernel modules (ib_uverbs)"
+          echo "⚠️  Server cloud image should have these. Check module loading above."
+          exit 1
+        fi
         
         echo "=== Driver Loaded ==="
         lsmod | grep amd_emrdma
         
         echo "=== Kernel Messages ==="
-        dmesg | grep -i "amd_emrdma\|pvrdma" | tail -30
+        sudo dmesg | grep -i "amd_emrdma\|pvrdma" | tail -30
+        
+        echo "=== Checking /sys/class/infiniband ==="
+        ls -la /sys/class/infiniband/ || echo "Directory empty or doesn't exist"
+        
+        echo "=== Checking PCI device ==="
+        sudo lspci -vvv -s 00:05.0 | head -20
         
         echo "=== RDMA Devices ==="
         ibv_devices || echo "No RDMA devices found"
         
         echo "=== Device Info ==="
-        if ibv_devices | grep -q amd_emrdma; then
+        if ibv_devices | grep -E "rocep|amd_emrdma" || [ -d /sys/class/infiniband/rocep* ]; then
           ibv_devinfo || true
           echo "✓ Driver loaded and RDMA device detected"
         else
           echo "✗ RDMA device not detected"
+          echo ""
+          echo "Driver loaded but no RDMA device created. Possible causes:"
+          echo "  - PCI device vendor/device ID mismatch"
+          echo "  - Driver probe function not called"
+          echo "  - Device registration failed"
+          echo ""
+          echo "Full dmesg:"
+          sudo dmesg | tail -100
           exit 1
         fi
         EOFVM
@@ -332,7 +439,7 @@ jobs:
         # Clean up
         sudo rm -f /tmp/vfio-user-rocm-ernic.sock
         rm -f vm-disk.img seed.img user-data meta-data
-        rm -f ubuntu-22.04-minimal-cloudimg-amd64.img
+        rm -f ubuntu-24.04-server-cloudimg-amd64.img
         
         echo "✓ Cleanup complete"
   

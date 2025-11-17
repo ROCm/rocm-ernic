@@ -2,9 +2,9 @@ name: Lint
 
 on:
   push:
-    branches: [ main, dev/*, test-* ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   clang-format:

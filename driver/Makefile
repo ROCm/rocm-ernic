@@ -4,11 +4,11 @@
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-# Module name and object files (must match in-tree Makefile)
+# Module name and object files
 obj-m := amd_emrdma.o
-amd_emrdma-y := amd_emrdma_cmd.o amd_emrdma_cq.o amd_emrdma_doorbell.o \
-                amd_emrdma_main.o amd_emrdma_misc.o amd_emrdma_mr.o \
-                amd_emrdma_qp.o amd_emrdma_srq.o amd_emrdma_verbs.o
+amd_emrdma-y := rocm_ernic_cmd.o rocm_ernic_cq.o rocm_ernic_doorbell.o \
+                rocm_ernic_main.o rocm_ernic_misc.o rocm_ernic_mr.o \
+                rocm_ernic_qp.o rocm_ernic_srq.o rocm_ernic_verbs.o
 
 # Current directory (where the driver source is)
 PWD := $(shell pwd)
