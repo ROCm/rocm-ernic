@@ -15,6 +15,7 @@ DSR
 DSRHIGH
 DSRLOW
 Datagram
+dsr
 Datagrams
 Deallocated
 Dereferencing
@@ -47,6 +48,7 @@ MSI
 MSIX
 MTU
 Makefile
+Makefiles
 NVMe
 Netdev
 PBA
@@ -76,6 +78,7 @@ RdmaLoopbackPD
 RdmaLoopbackQP
 Recv
 RoCE
+ROCm
 Runtime
 SGEs
 SPDK
@@ -101,6 +104,7 @@ Yuval
 addr
 alloc
 amd
+abi
 api
 args
 async
@@ -118,6 +122,7 @@ cmake
 cmd
 compat
 config
+codebase
 const
 cq
 cqe
@@ -161,6 +166,7 @@ guid
 hardcode
 hardcoded
 hardcodes
+hca
 https
 hw
 ib
@@ -244,6 +250,7 @@ pingpong
 pkey
 poller
 priv
+pri
 pthread
 pvrdma
 pwd
@@ -256,10 +263,12 @@ qps
 rc
 rdma
 rdmacm
+rebase
 recv
 redhat
 repo
 ret
+resyncing
 rkey
 roadmap
 roce

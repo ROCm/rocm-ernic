@@ -589,8 +589,8 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
-    printf(
-        "vfu_pvrdma: Starting PVRDMA device server (Multi-Backend Support)\n");
+    printf("rocm_ernic: Starting rocm-ernic device server (Multi-Backend "
+           "Support)\n");
     printf("  Socket: %s\n", socket_path);
     printf("  Backend: %s\n", dev->backend_type_str);
     if (dev->backend_device_name) {
@@ -682,14 +682,14 @@ int main(int argc, char *argv[])
     /* Set socket permissions to allow non-root QEMU to connect */
     if (chmod(socket_path, 0666) < 0) {
         fprintf(stderr,
-                "vfu_pvrdma: WARNING: Failed to set socket permissions: %s\n",
+                "rocm_ernic: WARNING: Failed to set socket permissions: %s\n",
                 strerror(errno));
         fprintf(stderr,
-                "vfu_pvrdma: You may need to manually run: sudo chmod 666 %s\n",
+                "rocm_ernic: You may need to manually run: sudo chmod 666 %s\n",
                 socket_path);
     } else {
         printf(
-            "vfu_pvrdma: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n",
+            "rocm_ernic: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n",
             socket_path);
         fflush(stdout);
     }
@@ -765,7 +765,7 @@ int main(int argc, char *argv[])
 
     unlink(socket_path);
 
-    printf("vfu_pvrdma: Shutdown complete\n");
+    printf("rocm_ernic: Shutdown complete\n");
 
     return EXIT_SUCCESS;
 }

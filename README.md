@@ -150,7 +150,7 @@ between VMs and userspace device emulators.
 ### Source Code Organization
 
 ```
-vfu-rdma/
+rocm-ernic/
 ├── src/
 │   ├── rocm_ernic.c           # Main server implementation
 │   └── from-qemu/             # QEMU PVRDMA code (v9.0.4)
@@ -505,25 +505,64 @@ Expected output:
 name "vfio-user-pci", bus PCI, desc "VFIO over socket PCI device assignment"
 ```
 
-### Option 1: Automated Test Script
+### Option 1: Fully Automated Local Testing
 
-The easiest way to test with a VM:
+The easiest way to test the complete stack locally with a VM:
 
 ```bash
-cd /home/stebates/Projects/vfu-rdma
-./scripts/test-vfio-user-vm.sh
+cd ~/Projects/rocm-ernic
+./scripts/local-vm-test.sh
 ```
 
-This script will:
-1. Start the `rocm_ernic` server with appropriate settings
-2. Display instructions for launching a QEMU VM
-3. Handle cleanup on exit
+This script provides a **complete end-to-end test** that:
+1. ✅ Builds the `rocm_ernic` server
+2. ✅ Starts it with loopback backend
+3. ✅ Launches your VM with vfio-user device attached
+4. ✅ Waits for VM boot and SSH availability
+5. ✅ Copies driver source into VM
+6. ✅ Builds driver against guest kernel
+7. ✅ Loads InfiniBand core modules
+8. ✅ Loads the `amd_emrdma` driver
+9. ✅ Verifies RDMA device registration
+10. ✅ Shows device info via `ibv_devinfo`
+11. ✅ Keeps VM running for manual testing
+12. ✅ Cleans up everything on exit (Ctrl+C)
+
+**Expected output on success:**
+```bash
+=== RDMA Devices ===
+    device          	   node GUID
+    ------          	----------------
+    rocep0s4        	0000000000000000
+
+=== Device Info ===
+Found RDMA device: rocep0s4
+hca_id:	rocep0s4
+	transport:		InfiniBand (0)
+	state:			PORT_ACTIVE (4)
+	link_layer:		Ethernet
+
+✓✓✓ SUCCESS: Driver loaded and RDMA device detected! ✓✓✓
+```
+
+After tests pass, the script keeps running so you can SSH in for manual testing:
+```bash
+ssh -p 2222 stebates@localhost
+```
+
+To stop and cleanup: Press **Ctrl+C**
+
+**Configuration:**
+- Uses your existing VM (default: `stebates-test-vm`)
+- Requires QEMU 10.1.2+ at `/opt/qemu-v10.1.2/`
+- Requires [qemu-minimal](https://github.com/steb-dev/qemu-minimal) setup
+- Override VM: `VM_NAME=my-vm ./scripts/local-vm-test.sh`
 
 ### Option 2: Manual VM Setup
 
 **Terminal 1 - Start rocm_ernic Server:**
 ```bash
-cd /home/stebates/Projects/vfu-rdma
+cd /home/stebates/Projects/rocm-ernic
 sudo ./build/rocm_ernic \
   --socket /tmp/vfio-user-rocm-ernic.sock \
   --device mlx5_0 \
@@ -533,7 +572,7 @@ sudo ./build/rocm_ernic \
 
 **Terminal 2 - Launch QEMU VM:**
 ```bash
-cd /home/stebates/Projects/vfu-rdma
+cd /home/stebates/Projects/rocm-ernic
 VFIO_USER_SOCKET=/tmp/vfio-user-rocm-ernic.sock \
 VM_NAME=stebates-test-vm \
   ./scripts/run-vm-vfio-user.sh

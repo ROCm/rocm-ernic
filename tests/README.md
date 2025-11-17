@@ -1,4 +1,4 @@
-# vfu-rdma Tests
+# rocm-ernic Tests
 
 This directory contains test programs and infrastructure for testing
 the rocm_ernic server.
