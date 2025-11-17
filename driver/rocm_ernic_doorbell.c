@@ -49,11 +49,11 @@
 
 #include "rocm_ernic.h"
 
-int amd_emrdma_uar_table_init(struct amd_emrdma_dev *dev)
+int rocm_ernic_uar_table_init(struct rocm_ernic_dev *dev)
 {
     u32 num = dev->dsr->caps.max_uar;
     u32 mask = num - 1;
-    struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
+    struct rocm_ernic_id_table *tbl = &dev->uar_table.tbl;
 
     if (!is_power_of_2(num))
         return -EINVAL;
@@ -73,17 +73,17 @@ int amd_emrdma_uar_table_init(struct amd_emrdma_dev *dev)
     return 0;
 }
 
-void amd_emrdma_uar_table_cleanup(struct amd_emrdma_dev *dev)
+void rocm_ernic_uar_table_cleanup(struct rocm_ernic_dev *dev)
 {
-    struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
+    struct rocm_ernic_id_table *tbl = &dev->uar_table.tbl;
 
     bitmap_free(tbl->table);
 }
 
-int amd_emrdma_uar_alloc(struct amd_emrdma_dev *dev,
-                         struct amd_emrdma_uar_map *uar)
+int rocm_ernic_uar_alloc(struct rocm_ernic_dev *dev,
+                         struct rocm_ernic_uar_map *uar)
 {
-    struct amd_emrdma_id_table *tbl;
+    struct rocm_ernic_id_table *tbl;
     unsigned long flags;
     u32 obj;
 
@@ -107,17 +107,17 @@ int amd_emrdma_uar_alloc(struct amd_emrdma_dev *dev,
     spin_unlock_irqrestore(&tbl->lock, flags);
 
     uar->index = obj;
-    uar->pfn = (pci_resource_start(dev->pdev, AMD_EMRDMA_PCI_RESOURCE_UAR) >>
+    uar->pfn = (pci_resource_start(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_UAR) >>
                 PAGE_SHIFT) +
                uar->index;
 
     return 0;
 }
 
-void amd_emrdma_uar_free(struct amd_emrdma_dev *dev,
-                         struct amd_emrdma_uar_map *uar)
+void rocm_ernic_uar_free(struct rocm_ernic_dev *dev,
+                         struct rocm_ernic_uar_map *uar)
 {
-    struct amd_emrdma_id_table *tbl = &dev->uar_table.tbl;
+    struct rocm_ernic_id_table *tbl = &dev->uar_table.tbl;
     unsigned long flags;
     u32 obj;
 

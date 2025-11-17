@@ -55,35 +55,35 @@
 #include "rocm_ernic.h"
 
 /**
- * amd_emrdma_req_notify_cq - request notification for a completion queue
+ * rocm_ernic_req_notify_cq - request notification for a completion queue
  * @ibcq: the completion queue
  * @notify_flags: notification flags
  *
  * @return: 0 for success.
  */
-int amd_emrdma_req_notify_cq(struct ib_cq *ibcq,
+int rocm_ernic_req_notify_cq(struct ib_cq *ibcq,
                              enum ib_cq_notify_flags notify_flags)
 {
-    struct amd_emrdma_dev *dev = to_vdev(ibcq->device);
-    struct amd_emrdma_cq *cq = to_vcq(ibcq);
+    struct rocm_ernic_dev *dev = to_vdev(ibcq->device);
+    struct rocm_ernic_cq *cq = to_vcq(ibcq);
     u32 val = cq->cq_handle;
     unsigned long flags;
     int has_data = 0;
 
     val |= (notify_flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED
-               ? AMD_EMRDMA_UAR_CQ_ARM_SOL
-               : AMD_EMRDMA_UAR_CQ_ARM;
+               ? ROCM_ERNIC_UAR_CQ_ARM_SOL
+               : ROCM_ERNIC_UAR_CQ_ARM;
 
     spin_lock_irqsave(&cq->cq_lock, flags);
 
-    amd_emrdma_write_uar_cq(dev, val);
+    rocm_ernic_write_uar_cq(dev, val);
 
     if (notify_flags & IB_CQ_REPORT_MISSED_EVENTS) {
         unsigned int head;
 
-        has_data = amd_emrdma_idx_ring_has_data(&cq->ring_state->rx,
+        has_data = rocm_ernic_idx_ring_has_data(&cq->ring_state->rx,
                                                 cq->ibcq.cqe, &head);
-        if (unlikely(has_data == AMD_EMRDMA_INVALID_IDX))
+        if (unlikely(has_data == ROCM_ERNIC_INVALID_IDX))
             dev_err(&dev->pdev->dev, "CQ ring state invalid\n");
     }
 
@@ -93,14 +93,14 @@ int amd_emrdma_req_notify_cq(struct ib_cq *ibcq,
 }
 
 /**
- * amd_emrdma_create_cq - create completion queue
+ * rocm_ernic_create_cq - create completion queue
  * @ibcq: Allocated CQ
  * @attr: completion queue attributes
  * @attrs: bundle
  *
  * @return: 0 on success
  */
-int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
+int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
                          struct uverbs_attr_bundle *attrs)
 #else
@@ -112,21 +112,21 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 #endif
     struct ib_device *ibdev = ibcq->device;
     int entries = attr->cqe;
-    struct amd_emrdma_dev *dev = to_vdev(ibdev);
-    struct amd_emrdma_cq *cq = to_vcq(ibcq);
+    struct rocm_ernic_dev *dev = to_vdev(ibdev);
+    struct rocm_ernic_cq *cq = to_vcq(ibcq);
     int ret;
     int npages;
     unsigned long flags;
-    union amd_emrdma_cmd_req req;
-    union amd_emrdma_cmd_resp rsp;
-    struct amd_emrdma_cmd_create_cq *cmd = &req.create_cq;
-    struct amd_emrdma_cmd_create_cq_resp *resp = &rsp.create_cq_resp;
-    struct amd_emrdma_create_cq_resp cq_resp = {};
-    struct amd_emrdma_create_cq ucmd;
-    struct amd_emrdma_ucontext *context = rdma_udata_to_drv_context(
-        udata, struct amd_emrdma_ucontext, ibucontext);
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_create_cq *cmd = &req.create_cq;
+    struct rocm_ernic_cmd_create_cq_resp *resp = &rsp.create_cq_resp;
+    struct rocm_ernic_create_cq_resp cq_resp = {};
+    struct rocm_ernic_create_cq ucmd;
+    struct rocm_ernic_ucontext *context = rdma_udata_to_drv_context(
+        udata, struct rocm_ernic_ucontext, ibucontext);
 
-    BUILD_BUG_ON(sizeof(struct amd_emrdma_cqe) != 64);
+    BUILD_BUG_ON(sizeof(struct rocm_ernic_cqe) != 64);
 
     dev_info(&dev->pdev->dev,
              "CQ create: ENTRY (entries=%d, flags=0x%x, is_kernel=%d)\n",
@@ -173,14 +173,14 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
         npages = ib_umem_num_dma_blocks(cq->umem, PAGE_SIZE);
     } else {
         /* One extra page for shared ring state */
-        npages = 1 + (entries * sizeof(struct amd_emrdma_cqe) + PAGE_SIZE - 1) /
+        npages = 1 + (entries * sizeof(struct rocm_ernic_cqe) + PAGE_SIZE - 1) /
                          PAGE_SIZE;
 
         /* Skip header page. */
         cq->offset = PAGE_SIZE;
     }
 
-    if (npages < 0 || npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
+    if (npages < 0 || npages > ROCM_ERNIC_PAGE_DIR_MAX_PAGES) {
         dev_warn(&dev->pdev->dev, "overflow pages in completion queue\n");
         ret = -EINVAL;
         goto err_umem;
@@ -189,7 +189,7 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     dev_info(&dev->pdev->dev,
              "CQ create: about to init page dir (npages=%d, is_kernel=%d)\n",
              npages, cq->is_kernel);
-    ret = amd_emrdma_page_dir_init(dev, &cq->pdir, npages, cq->is_kernel);
+    ret = rocm_ernic_page_dir_init(dev, &cq->pdir, npages, cq->is_kernel);
     if (ret) {
         dev_warn(&dev->pdev->dev,
                  "could not allocate page directory (ret=%d, npages=%d)\n", ret,
@@ -202,19 +202,19 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     if (cq->is_kernel)
         cq->ring_state = cq->pdir.pages[0];
     else
-        amd_emrdma_page_dir_insert_umem(&cq->pdir, cq->umem, 0);
+        rocm_ernic_page_dir_insert_umem(&cq->pdir, cq->umem, 0);
 
     refcount_set(&cq->refcnt, 1);
     init_completion(&cq->free);
     spin_lock_init(&cq->cq_lock);
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_CQ;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_CQ;
     cmd->nchunks = npages;
     cmd->ctx_handle = context ? context->ctx_handle : 0;
     cmd->cqe = entries;
     cmd->pdir_dma = cq->pdir.dir_dma;
-    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_CQ_RESP);
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_CREATE_CQ_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev,
                  "could not create completion queue, error: %d\n", ret);
@@ -234,7 +234,7 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
         /* Copy udata back. */
         if (ib_copy_to_udata(udata, &cq_resp, sizeof(cq_resp))) {
             dev_warn(&dev->pdev->dev, "failed to copy back udata\n");
-            amd_emrdma_destroy_cq(&cq->ibcq, udata);
+            rocm_ernic_destroy_cq(&cq->ibcq, udata);
             return -EINVAL;
         }
     }
@@ -242,7 +242,7 @@ int amd_emrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     return 0;
 
 err_page_dir:
-    amd_emrdma_page_dir_cleanup(dev, &cq->pdir);
+    rocm_ernic_page_dir_cleanup(dev, &cq->pdir);
 err_umem:
     ib_umem_release(cq->umem);
 err_cq:
@@ -250,8 +250,8 @@ err_cq:
     return ret;
 }
 
-static void amd_emrdma_free_cq(struct amd_emrdma_dev *dev,
-                               struct amd_emrdma_cq *cq)
+static void rocm_ernic_free_cq(struct rocm_ernic_dev *dev,
+                               struct rocm_ernic_cq *cq)
 {
     if (refcount_dec_and_test(&cq->refcnt))
         complete(&cq->free);
@@ -259,28 +259,28 @@ static void amd_emrdma_free_cq(struct amd_emrdma_dev *dev,
 
     ib_umem_release(cq->umem);
 
-    amd_emrdma_page_dir_cleanup(dev, &cq->pdir);
+    rocm_ernic_page_dir_cleanup(dev, &cq->pdir);
 }
 
 /**
- * amd_emrdma_destroy_cq - destroy completion queue
+ * rocm_ernic_destroy_cq - destroy completion queue
  * @cq: the completion queue to destroy.
  * @udata: user data or null for kernel object
  */
-int amd_emrdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
+int rocm_ernic_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 {
-    struct amd_emrdma_cq *vcq = to_vcq(cq);
-    union amd_emrdma_cmd_req req;
-    struct amd_emrdma_cmd_destroy_cq *cmd = &req.destroy_cq;
-    struct amd_emrdma_dev *dev = to_vdev(cq->device);
+    struct rocm_ernic_cq *vcq = to_vcq(cq);
+    union rocm_ernic_cmd_req req;
+    struct rocm_ernic_cmd_destroy_cq *cmd = &req.destroy_cq;
+    struct rocm_ernic_dev *dev = to_vdev(cq->device);
     unsigned long flags;
     int ret;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_DESTROY_CQ;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_DESTROY_CQ;
     cmd->cq_handle = vcq->cq_handle;
 
-    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    ret = rocm_ernic_cmd_post(dev, &req, NULL, 0);
     if (ret < 0)
         dev_warn(&dev->pdev->dev,
                  "could not destroy completion queue, error: %d\n", ret);
@@ -290,18 +290,18 @@ int amd_emrdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
     dev->cq_tbl[vcq->cq_handle] = NULL;
     spin_unlock_irqrestore(&dev->cq_tbl_lock, flags);
 
-    amd_emrdma_free_cq(dev, vcq);
+    rocm_ernic_free_cq(dev, vcq);
     atomic_dec(&dev->num_cqs);
     return 0;
 }
 
-static inline struct amd_emrdma_cqe *get_cqe(struct amd_emrdma_cq *cq, int i)
+static inline struct rocm_ernic_cqe *get_cqe(struct rocm_ernic_cq *cq, int i)
 {
-    return (struct amd_emrdma_cqe *)amd_emrdma_page_dir_get_ptr(
-        &cq->pdir, cq->offset + sizeof(struct amd_emrdma_cqe) * i);
+    return (struct rocm_ernic_cqe *)rocm_ernic_page_dir_get_ptr(
+        &cq->pdir, cq->offset + sizeof(struct rocm_ernic_cqe) * i);
 }
 
-void _amd_emrdma_flush_cqe(struct amd_emrdma_qp *qp, struct amd_emrdma_cq *cq)
+void _rocm_ernic_flush_cqe(struct rocm_ernic_qp *qp, struct rocm_ernic_cq *cq)
 {
     unsigned int head;
     int has_data;
@@ -311,13 +311,13 @@ void _amd_emrdma_flush_cqe(struct amd_emrdma_qp *qp, struct amd_emrdma_cq *cq)
 
     /* Lock held */
     has_data =
-        amd_emrdma_idx_ring_has_data(&cq->ring_state->rx, cq->ibcq.cqe, &head);
+        rocm_ernic_idx_ring_has_data(&cq->ring_state->rx, cq->ibcq.cqe, &head);
     if (unlikely(has_data > 0)) {
         int items;
         int curr;
-        int tail = amd_emrdma_idx(&cq->ring_state->rx.prod_tail, cq->ibcq.cqe);
-        struct amd_emrdma_cqe *cqe;
-        struct amd_emrdma_cqe *curr_cqe;
+        int tail = rocm_ernic_idx(&cq->ring_state->rx.prod_tail, cq->ibcq.cqe);
+        struct rocm_ernic_cqe *cqe;
+        struct rocm_ernic_cqe *curr_cqe;
 
         items = (tail > head) ? (tail - head) : (cq->ibcq.cqe - head + tail);
         curr = --tail;
@@ -334,7 +334,7 @@ void _amd_emrdma_flush_cqe(struct amd_emrdma_qp *qp, struct amd_emrdma_cq *cq)
                 }
                 tail--;
             } else {
-                amd_emrdma_idx_ring_inc(&cq->ring_state->rx.cons_head,
+                rocm_ernic_idx_ring_inc(&cq->ring_state->rx.cons_head,
                                         cq->ibcq.cqe);
             }
             curr--;
@@ -342,27 +342,27 @@ void _amd_emrdma_flush_cqe(struct amd_emrdma_qp *qp, struct amd_emrdma_cq *cq)
     }
 }
 
-static int amd_emrdma_poll_one(struct amd_emrdma_cq *cq,
-                               struct amd_emrdma_qp **cur_qp, struct ib_wc *wc)
+static int rocm_ernic_poll_one(struct rocm_ernic_cq *cq,
+                               struct rocm_ernic_qp **cur_qp, struct ib_wc *wc)
 {
-    struct amd_emrdma_dev *dev = to_vdev(cq->ibcq.device);
+    struct rocm_ernic_dev *dev = to_vdev(cq->ibcq.device);
     int has_data;
     unsigned int head;
     bool tried = false;
-    struct amd_emrdma_cqe *cqe;
+    struct rocm_ernic_cqe *cqe;
 
 retry:
     has_data =
-        amd_emrdma_idx_ring_has_data(&cq->ring_state->rx, cq->ibcq.cqe, &head);
+        rocm_ernic_idx_ring_has_data(&cq->ring_state->rx, cq->ibcq.cqe, &head);
     if (has_data == 0) {
         if (tried)
             return -EAGAIN;
 
-        amd_emrdma_write_uar_cq(dev, cq->cq_handle | AMD_EMRDMA_UAR_CQ_POLL);
+        rocm_ernic_write_uar_cq(dev, cq->cq_handle | ROCM_ERNIC_UAR_CQ_POLL);
 
         tried = true;
         goto retry;
-    } else if (has_data == AMD_EMRDMA_INVALID_IDX) {
+    } else if (has_data == ROCM_ERNIC_INVALID_IDX) {
         dev_err(&dev->pdev->dev, "CQ ring state invalid\n");
         return -EAGAIN;
     }
@@ -372,44 +372,44 @@ retry:
     /* Ensure cqe is valid. */
     rmb();
     if (dev->qp_tbl[cqe->qp & 0xffff])
-        *cur_qp = (struct amd_emrdma_qp *)dev->qp_tbl[cqe->qp & 0xffff];
+        *cur_qp = (struct rocm_ernic_qp *)dev->qp_tbl[cqe->qp & 0xffff];
     else
         return -EAGAIN;
 
-    wc->opcode = amd_emrdma_wc_opcode_to_ib(cqe->opcode);
-    wc->status = amd_emrdma_wc_status_to_ib(cqe->status);
+    wc->opcode = rocm_ernic_wc_opcode_to_ib(cqe->opcode);
+    wc->status = rocm_ernic_wc_status_to_ib(cqe->status);
     wc->wr_id = cqe->wr_id;
     wc->qp = &(*cur_qp)->ibqp;
     wc->byte_len = cqe->byte_len;
     wc->ex.imm_data = cqe->imm_data;
     wc->src_qp = cqe->src_qp;
-    wc->wc_flags = amd_emrdma_wc_flags_to_ib(cqe->wc_flags);
+    wc->wc_flags = rocm_ernic_wc_flags_to_ib(cqe->wc_flags);
     wc->pkey_index = cqe->pkey_index;
     wc->slid = cqe->slid;
     wc->sl = cqe->sl;
     wc->dlid_path_bits = cqe->dlid_path_bits;
     wc->port_num = cqe->port_num;
     wc->vendor_err = cqe->vendor_err;
-    wc->network_hdr_type = amd_emrdma_network_type_to_ib(cqe->network_hdr_type);
+    wc->network_hdr_type = rocm_ernic_network_type_to_ib(cqe->network_hdr_type);
 
     /* Update shared ring state */
-    amd_emrdma_idx_ring_inc(&cq->ring_state->rx.cons_head, cq->ibcq.cqe);
+    rocm_ernic_idx_ring_inc(&cq->ring_state->rx.cons_head, cq->ibcq.cqe);
 
     return 0;
 }
 
 /**
- * amd_emrdma_poll_cq - poll for work completion queue entries
+ * rocm_ernic_poll_cq - poll for work completion queue entries
  * @ibcq: completion queue
  * @num_entries: the maximum number of entries
  * @wc: pointer to work completion array
  *
  * @return: number of polled completion entries
  */
-int amd_emrdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
+int rocm_ernic_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 {
-    struct amd_emrdma_cq *cq = to_vcq(ibcq);
-    struct amd_emrdma_qp *cur_qp = NULL;
+    struct rocm_ernic_cq *cq = to_vcq(ibcq);
+    struct rocm_ernic_qp *cur_qp = NULL;
     unsigned long flags;
     int npolled;
 
@@ -418,7 +418,7 @@ int amd_emrdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 
     spin_lock_irqsave(&cq->cq_lock, flags);
     for (npolled = 0; npolled < num_entries; ++npolled) {
-        if (amd_emrdma_poll_one(cq, &cur_qp, wc + npolled))
+        if (rocm_ernic_poll_one(cq, &cur_qp, wc + npolled))
             break;
     }
 

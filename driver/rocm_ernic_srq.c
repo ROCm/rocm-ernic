@@ -53,27 +53,27 @@
 #include "rocm_ernic.h"
 
 /**
- * amd_emrdma_query_srq - query shared receive queue
+ * rocm_ernic_query_srq - query shared receive queue
  * @ibsrq: the shared receive queue to query
  * @srq_attr: attributes to query and return to client
  *
  * @return: 0 for success, otherwise returns an errno.
  */
-int amd_emrdma_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
+int rocm_ernic_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
 {
-    struct amd_emrdma_dev *dev = to_vdev(ibsrq->device);
-    struct amd_emrdma_srq *srq = to_vsrq(ibsrq);
-    union amd_emrdma_cmd_req req;
-    union amd_emrdma_cmd_resp rsp;
-    struct amd_emrdma_cmd_query_srq *cmd = &req.query_srq;
-    struct amd_emrdma_cmd_query_srq_resp *resp = &rsp.query_srq_resp;
+    struct rocm_ernic_dev *dev = to_vdev(ibsrq->device);
+    struct rocm_ernic_srq *srq = to_vsrq(ibsrq);
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_query_srq *cmd = &req.query_srq;
+    struct rocm_ernic_cmd_query_srq_resp *resp = &rsp.query_srq_resp;
     int ret;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_QUERY_SRQ;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_QUERY_SRQ;
     cmd->srq_handle = srq->srq_handle;
 
-    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_QUERY_SRQ_RESP);
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_QUERY_SRQ_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev,
                  "could not query shared receive queue, error: %d\n", ret);
@@ -88,25 +88,25 @@ int amd_emrdma_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
 }
 
 /**
- * amd_emrdma_create_srq - create shared receive queue
+ * rocm_ernic_create_srq - create shared receive queue
  * @ibsrq: the IB shared receive queue
  * @init_attr: shared receive queue attributes
  * @udata: user data
  *
  * @return: 0 on success, otherwise returns an errno.
  */
-int amd_emrdma_create_srq(struct ib_srq *ibsrq,
+int rocm_ernic_create_srq(struct ib_srq *ibsrq,
                           struct ib_srq_init_attr *init_attr,
                           struct ib_udata *udata)
 {
-    struct amd_emrdma_srq *srq = to_vsrq(ibsrq);
-    struct amd_emrdma_dev *dev = to_vdev(ibsrq->device);
-    union amd_emrdma_cmd_req req;
-    union amd_emrdma_cmd_resp rsp;
-    struct amd_emrdma_cmd_create_srq *cmd = &req.create_srq;
-    struct amd_emrdma_cmd_create_srq_resp *resp = &rsp.create_srq_resp;
-    struct amd_emrdma_create_srq_resp srq_resp = {};
-    struct amd_emrdma_create_srq ucmd;
+    struct rocm_ernic_srq *srq = to_vsrq(ibsrq);
+    struct rocm_ernic_dev *dev = to_vdev(ibsrq->device);
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_create_srq *cmd = &req.create_srq;
+    struct rocm_ernic_cmd_create_srq_resp *resp = &rsp.create_srq_resp;
+    struct rocm_ernic_create_srq_resp srq_resp = {};
+    struct rocm_ernic_create_srq ucmd;
     unsigned long flags;
     int ret;
 
@@ -152,22 +152,22 @@ int amd_emrdma_create_srq(struct ib_srq *ibsrq,
 
     srq->npages = ib_umem_num_dma_blocks(srq->umem, PAGE_SIZE);
 
-    if (srq->npages < 0 || srq->npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
+    if (srq->npages < 0 || srq->npages > ROCM_ERNIC_PAGE_DIR_MAX_PAGES) {
         dev_warn(&dev->pdev->dev, "overflow pages in shared receive queue\n");
         ret = -EINVAL;
         goto err_umem;
     }
 
-    ret = amd_emrdma_page_dir_init(dev, &srq->pdir, srq->npages, false);
+    ret = rocm_ernic_page_dir_init(dev, &srq->pdir, srq->npages, false);
     if (ret) {
         dev_warn(&dev->pdev->dev, "could not allocate page directory\n");
         goto err_umem;
     }
 
-    amd_emrdma_page_dir_insert_umem(&srq->pdir, srq->umem, 0);
+    rocm_ernic_page_dir_insert_umem(&srq->pdir, srq->umem, 0);
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_SRQ;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_SRQ;
     cmd->srq_type = init_attr->srq_type;
     cmd->nchunks = srq->npages;
     cmd->pd_handle = to_vpd(ibsrq->pd)->pd_handle;
@@ -176,7 +176,7 @@ int amd_emrdma_create_srq(struct ib_srq *ibsrq,
     cmd->attrs.srq_limit = init_attr->attr.srq_limit;
     cmd->pdir_dma = srq->pdir.dir_dma;
 
-    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_SRQ_RESP);
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_CREATE_SRQ_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev,
                  "could not create shared receive queue, error: %d\n", ret);
@@ -192,14 +192,14 @@ int amd_emrdma_create_srq(struct ib_srq *ibsrq,
     /* Copy udata back. */
     if (ib_copy_to_udata(udata, &srq_resp, sizeof(srq_resp))) {
         dev_warn(&dev->pdev->dev, "failed to copy back udata\n");
-        amd_emrdma_destroy_srq(&srq->ibsrq, udata);
+        rocm_ernic_destroy_srq(&srq->ibsrq, udata);
         return -EINVAL;
     }
 
     return 0;
 
 err_page_dir:
-    amd_emrdma_page_dir_cleanup(dev, &srq->pdir);
+    rocm_ernic_page_dir_cleanup(dev, &srq->pdir);
 err_umem:
     ib_umem_release(srq->umem);
 err_srq:
@@ -208,8 +208,8 @@ err_srq:
     return ret;
 }
 
-static void amd_emrdma_free_srq(struct amd_emrdma_dev *dev,
-                                struct amd_emrdma_srq *srq)
+static void rocm_ernic_free_srq(struct rocm_ernic_dev *dev,
+                                struct rocm_ernic_srq *srq)
 {
     unsigned long flags;
 
@@ -224,41 +224,41 @@ static void amd_emrdma_free_srq(struct amd_emrdma_dev *dev,
     /* There is no support for kernel clients, so this is safe. */
     ib_umem_release(srq->umem);
 
-    amd_emrdma_page_dir_cleanup(dev, &srq->pdir);
+    rocm_ernic_page_dir_cleanup(dev, &srq->pdir);
 
     atomic_dec(&dev->num_srqs);
 }
 
 /**
- * amd_emrdma_destroy_srq - destroy shared receive queue
+ * rocm_ernic_destroy_srq - destroy shared receive queue
  * @srq: the shared receive queue to destroy
  * @udata: user data or null for kernel object
  *
  * @return: 0 for success.
  */
-int amd_emrdma_destroy_srq(struct ib_srq *srq, struct ib_udata *udata)
+int rocm_ernic_destroy_srq(struct ib_srq *srq, struct ib_udata *udata)
 {
-    struct amd_emrdma_srq *vsrq = to_vsrq(srq);
-    union amd_emrdma_cmd_req req;
-    struct amd_emrdma_cmd_destroy_srq *cmd = &req.destroy_srq;
-    struct amd_emrdma_dev *dev = to_vdev(srq->device);
+    struct rocm_ernic_srq *vsrq = to_vsrq(srq);
+    union rocm_ernic_cmd_req req;
+    struct rocm_ernic_cmd_destroy_srq *cmd = &req.destroy_srq;
+    struct rocm_ernic_dev *dev = to_vdev(srq->device);
     int ret;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_DESTROY_SRQ;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_DESTROY_SRQ;
     cmd->srq_handle = vsrq->srq_handle;
 
-    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    ret = rocm_ernic_cmd_post(dev, &req, NULL, 0);
     if (ret < 0)
         dev_warn(&dev->pdev->dev,
                  "destroy shared receive queue failed, error: %d\n", ret);
 
-    amd_emrdma_free_srq(dev, vsrq);
+    rocm_ernic_free_srq(dev, vsrq);
     return 0;
 }
 
 /**
- * amd_emrdma_modify_srq - modify shared receive queue attributes
+ * rocm_ernic_modify_srq - modify shared receive queue attributes
  * @ibsrq: the shared receive queue to modify
  * @attr: the shared receive queue's new attributes
  * @attr_mask: attributes mask
@@ -266,14 +266,14 @@ int amd_emrdma_destroy_srq(struct ib_srq *srq, struct ib_udata *udata)
  *
  * @returns 0 on success, otherwise returns an errno.
  */
-int amd_emrdma_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
+int rocm_ernic_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
                           enum ib_srq_attr_mask attr_mask,
                           struct ib_udata *udata)
 {
-    struct amd_emrdma_srq *vsrq = to_vsrq(ibsrq);
-    union amd_emrdma_cmd_req req;
-    struct amd_emrdma_cmd_modify_srq *cmd = &req.modify_srq;
-    struct amd_emrdma_dev *dev = to_vdev(ibsrq->device);
+    struct rocm_ernic_srq *vsrq = to_vsrq(ibsrq);
+    union rocm_ernic_cmd_req req;
+    struct rocm_ernic_cmd_modify_srq *cmd = &req.modify_srq;
+    struct rocm_ernic_dev *dev = to_vdev(ibsrq->device);
     int ret;
 
     /* Only support SRQ limit. */
@@ -281,12 +281,12 @@ int amd_emrdma_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
         return -EINVAL;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_MODIFY_SRQ;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_MODIFY_SRQ;
     cmd->srq_handle = vsrq->srq_handle;
     cmd->attrs.srq_limit = attr->srq_limit;
     cmd->attr_mask = attr_mask;
 
-    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    ret = rocm_ernic_cmd_post(dev, &req, NULL, 0);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev,
                  "could not modify shared receive queue, error: %d\n", ret);

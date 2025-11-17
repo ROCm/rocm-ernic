@@ -43,27 +43,27 @@
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __AMD_EMRDMA_DEV_API_H__
-#define __AMD_EMRDMA_DEV_API_H__
+#ifndef __ROCM_ERNIC_DEV_API_H__
+#define __ROCM_ERNIC_DEV_API_H__
 
 #include <linux/types.h>
 
 #include "rocm_ernic_verbs.h"
 
 /*
- * AMD_EMRDMA version macros. Some new features require updates to
- * AMD_EMRDMA_VERSION. These macros allow us to check for different features if
+ * ROCM_ERNIC version macros. Some new features require updates to
+ * ROCM_ERNIC_VERSION. These macros allow us to check for different features if
  * necessary.
  */
 
-#define AMD_EMRDMA_ROCEV1_VERSION   17
-#define AMD_EMRDMA_ROCEV2_VERSION   18
-#define AMD_EMRDMA_PPN64_VERSION    19
-#define AMD_EMRDMA_QPHANDLE_VERSION 20
-#define AMD_EMRDMA_VERSION          AMD_EMRDMA_QPHANDLE_VERSION
+#define ROCM_ERNIC_ROCEV1_VERSION   17
+#define ROCM_ERNIC_ROCEV2_VERSION   18
+#define ROCM_ERNIC_PPN64_VERSION    19
+#define ROCM_ERNIC_QPHANDLE_VERSION 20
+#define ROCM_ERNIC_VERSION          ROCM_ERNIC_QPHANDLE_VERSION
 
-#define AMD_EMRDMA_BOARD_ID 1
-#define AMD_EMRDMA_REV_ID   1
+#define ROCM_ERNIC_BOARD_ID 1
+#define ROCM_ERNIC_REV_ID   1
 
 /*
  * Masks and accessors for page directory, which is a two-level lookup:
@@ -72,48 +72,48 @@
  * gigabyte for memory regions and so forth.
  */
 
-#define AMD_EMRDMA_PDIR_SHIFT         18
-#define AMD_EMRDMA_PTABLE_SHIFT       9
-#define AMD_EMRDMA_PAGE_DIR_DIR(x)    (((x) >> AMD_EMRDMA_PDIR_SHIFT) & 0x1)
-#define AMD_EMRDMA_PAGE_DIR_TABLE(x)  (((x) >> AMD_EMRDMA_PTABLE_SHIFT) & 0x1ff)
-#define AMD_EMRDMA_PAGE_DIR_PAGE(x)   ((x) & 0x1ff)
-#define AMD_EMRDMA_PAGE_DIR_MAX_PAGES (1 * 512 * 512)
-#define AMD_EMRDMA_MAX_FAST_REG_PAGES 128
+#define ROCM_ERNIC_PDIR_SHIFT         18
+#define ROCM_ERNIC_PTABLE_SHIFT       9
+#define ROCM_ERNIC_PAGE_DIR_DIR(x)    (((x) >> ROCM_ERNIC_PDIR_SHIFT) & 0x1)
+#define ROCM_ERNIC_PAGE_DIR_TABLE(x)  (((x) >> ROCM_ERNIC_PTABLE_SHIFT) & 0x1ff)
+#define ROCM_ERNIC_PAGE_DIR_PAGE(x)   ((x) & 0x1ff)
+#define ROCM_ERNIC_PAGE_DIR_MAX_PAGES (1 * 512 * 512)
+#define ROCM_ERNIC_MAX_FAST_REG_PAGES 128
 
 /*
  * Max MSI-X vectors.
  */
 
-#define AMD_EMRDMA_MAX_INTERRUPTS 3
+#define ROCM_ERNIC_MAX_INTERRUPTS 3
 
 /* Register offsets within PCI resource on BAR1. */
-#define AMD_EMRDMA_REG_VERSION 0x00 /* R: Version of device. */
-#define AMD_EMRDMA_REG_DSRLOW  0x04 /* W: Device shared region low PA. */
-#define AMD_EMRDMA_REG_DSRHIGH 0x08 /* W: Device shared region high PA. */
-#define AMD_EMRDMA_REG_CTL     0x0c /* W: AMD_EMRDMA_DEVICE_CTL */
-#define AMD_EMRDMA_REG_REQUEST 0x10 /* W: Indicate device request. */
-#define AMD_EMRDMA_REG_ERR     0x14 /* R: Device error. */
-#define AMD_EMRDMA_REG_ICR     0x18 /* R: Interrupt cause. */
-#define AMD_EMRDMA_REG_IMR     0x1c /* R/W: Interrupt mask. */
-#define AMD_EMRDMA_REG_MACL    0x20 /* R/W: MAC address low. */
-#define AMD_EMRDMA_REG_MACH    0x24 /* R/W: MAC address high. */
+#define ROCM_ERNIC_REG_VERSION 0x00 /* R: Version of device. */
+#define ROCM_ERNIC_REG_DSRLOW  0x04 /* W: Device shared region low PA. */
+#define ROCM_ERNIC_REG_DSRHIGH 0x08 /* W: Device shared region high PA. */
+#define ROCM_ERNIC_REG_CTL     0x0c /* W: ROCM_ERNIC_DEVICE_CTL */
+#define ROCM_ERNIC_REG_REQUEST 0x10 /* W: Indicate device request. */
+#define ROCM_ERNIC_REG_ERR     0x14 /* R: Device error. */
+#define ROCM_ERNIC_REG_ICR     0x18 /* R: Interrupt cause. */
+#define ROCM_ERNIC_REG_IMR     0x1c /* R/W: Interrupt mask. */
+#define ROCM_ERNIC_REG_MACL    0x20 /* R/W: MAC address low. */
+#define ROCM_ERNIC_REG_MACH    0x24 /* R/W: MAC address high. */
 
 /* Object flags. */
-#define AMD_EMRDMA_CQ_FLAG_ARMED_SOL BIT(0) /* Armed for solicited-only. */
-#define AMD_EMRDMA_CQ_FLAG_ARMED     BIT(1) /* Armed. */
-#define AMD_EMRDMA_MR_FLAG_DMA       BIT(0) /* DMA region. */
-#define AMD_EMRDMA_MR_FLAG_FRMR      BIT(1) /* Fast reg memory region. */
+#define ROCM_ERNIC_CQ_FLAG_ARMED_SOL BIT(0) /* Armed for solicited-only. */
+#define ROCM_ERNIC_CQ_FLAG_ARMED     BIT(1) /* Armed. */
+#define ROCM_ERNIC_MR_FLAG_DMA       BIT(0) /* DMA region. */
+#define ROCM_ERNIC_MR_FLAG_FRMR      BIT(1) /* Fast reg memory region. */
 
 /*
  * Atomic operation capability (masked versions are extended atomic
  * operations.
  */
 
-#define AMD_EMRDMA_ATOMIC_OP_COMP_SWAP BIT(0) /* Compare and swap. */
-#define AMD_EMRDMA_ATOMIC_OP_FETCH_ADD BIT(1) /* Fetch and add. */
-#define AMD_EMRDMA_ATOMIC_OP_MASK_COMP_SWAP \
+#define ROCM_ERNIC_ATOMIC_OP_COMP_SWAP BIT(0) /* Compare and swap. */
+#define ROCM_ERNIC_ATOMIC_OP_FETCH_ADD BIT(1) /* Fetch and add. */
+#define ROCM_ERNIC_ATOMIC_OP_MASK_COMP_SWAP \
     BIT(2) /* Masked compare and swap. */
-#define AMD_EMRDMA_ATOMIC_OP_MASK_FETCH_ADD BIT(3) /* Masked fetch and add. */
+#define ROCM_ERNIC_ATOMIC_OP_MASK_FETCH_ADD BIT(3) /* Masked fetch and add. */
 
 /*
  * Base Memory Management Extension flags to support Fast Reg Memory Regions
@@ -121,9 +121,9 @@
  * must support all of them to qualify for the BMME device cap.
  */
 
-#define AMD_EMRDMA_BMME_FLAG_LOCAL_INV   BIT(0) /* Local Invalidate. */
-#define AMD_EMRDMA_BMME_FLAG_REMOTE_INV  BIT(1) /* Remote Invalidate. */
-#define AMD_EMRDMA_BMME_FLAG_FAST_REG_WR BIT(2) /* Fast Reg Work Request. */
+#define ROCM_ERNIC_BMME_FLAG_LOCAL_INV   BIT(0) /* Local Invalidate. */
+#define ROCM_ERNIC_BMME_FLAG_REMOTE_INV  BIT(1) /* Remote Invalidate. */
+#define ROCM_ERNIC_BMME_FLAG_FAST_REG_WR BIT(2) /* Fast Reg Work Request. */
 
 /*
  * GID types. The interpretation of the gid_types bit field in the device
@@ -132,86 +132,86 @@
  * defined.
  */
 
-#define AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V1 BIT(0)
-#define AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V2 BIT(1)
+#define ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V1 BIT(0)
+#define ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V2 BIT(1)
 
 /*
  * Version checks. This checks whether each version supports specific
  * capabilities from the device.
  */
 
-#define AMD_EMRDMA_IS_VERSION17(_dev)                  \
-    (_dev->dsr_version == AMD_EMRDMA_ROCEV1_VERSION && \
-     _dev->dsr->caps.gid_types == AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V1)
+#define ROCM_ERNIC_IS_VERSION17(_dev)                  \
+    (_dev->dsr_version == ROCM_ERNIC_ROCEV1_VERSION && \
+     _dev->dsr->caps.gid_types == ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V1)
 
-#define AMD_EMRDMA_IS_VERSION18(_dev)                                  \
-    (_dev->dsr_version >= AMD_EMRDMA_ROCEV2_VERSION &&                 \
-     (_dev->dsr->caps.gid_types == AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V1 || \
-      _dev->dsr->caps.gid_types == AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V2))
+#define ROCM_ERNIC_IS_VERSION18(_dev)                                  \
+    (_dev->dsr_version >= ROCM_ERNIC_ROCEV2_VERSION &&                 \
+     (_dev->dsr->caps.gid_types == ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V1 || \
+      _dev->dsr->caps.gid_types == ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V2))
 
-#define AMD_EMRDMA_SUPPORTED(_dev)                            \
-    ((_dev->dsr->caps.mode == AMD_EMRDMA_DEVICE_MODE_ROCE) && \
-     (AMD_EMRDMA_IS_VERSION17(_dev) || AMD_EMRDMA_IS_VERSION18(_dev)))
+#define ROCM_ERNIC_SUPPORTED(_dev)                            \
+    ((_dev->dsr->caps.mode == ROCM_ERNIC_DEVICE_MODE_ROCE) && \
+     (ROCM_ERNIC_IS_VERSION17(_dev) || ROCM_ERNIC_IS_VERSION18(_dev)))
 
 /*
  * Get capability values based on device version.
  */
 
-#define AMD_EMRDMA_GET_CAP(_dev, _old_val, _val) \
-    ((AMD_EMRDMA_IS_VERSION18(_dev)) ? _val : _old_val)
+#define ROCM_ERNIC_GET_CAP(_dev, _old_val, _val) \
+    ((ROCM_ERNIC_IS_VERSION18(_dev)) ? _val : _old_val)
 
-enum amd_emrdma_pci_resource {
-    AMD_EMRDMA_PCI_RESOURCE_MSIX, /* BAR0: MSI-X, MMIO. */
-    AMD_EMRDMA_PCI_RESOURCE_REG,  /* BAR1: Registers, MMIO. */
-    AMD_EMRDMA_PCI_RESOURCE_UAR,  /* BAR2: UAR pages, MMIO, 64-bit. */
-    AMD_EMRDMA_PCI_RESOURCE_LAST, /* Last. */
+enum rocm_ernic_pci_resource {
+    ROCM_ERNIC_PCI_RESOURCE_MSIX, /* BAR0: MSI-X, MMIO. */
+    ROCM_ERNIC_PCI_RESOURCE_REG,  /* BAR1: Registers, MMIO. */
+    ROCM_ERNIC_PCI_RESOURCE_UAR,  /* BAR2: UAR pages, MMIO, 64-bit. */
+    ROCM_ERNIC_PCI_RESOURCE_LAST, /* Last. */
 };
 
-enum amd_emrdma_device_ctl {
-    AMD_EMRDMA_DEVICE_CTL_ACTIVATE,  /* Activate device. */
-    AMD_EMRDMA_DEVICE_CTL_UNQUIESCE, /* Unquiesce device. */
-    AMD_EMRDMA_DEVICE_CTL_RESET,     /* Reset device. */
+enum rocm_ernic_device_ctl {
+    ROCM_ERNIC_DEVICE_CTL_ACTIVATE,  /* Activate device. */
+    ROCM_ERNIC_DEVICE_CTL_UNQUIESCE, /* Unquiesce device. */
+    ROCM_ERNIC_DEVICE_CTL_RESET,     /* Reset device. */
 };
 
-enum amd_emrdma_intr_vector {
-    AMD_EMRDMA_INTR_VECTOR_RESPONSE, /* Command response. */
-    AMD_EMRDMA_INTR_VECTOR_ASYNC,    /* Async events. */
-    AMD_EMRDMA_INTR_VECTOR_CQ,       /* CQ notification. */
+enum rocm_ernic_intr_vector {
+    ROCM_ERNIC_INTR_VECTOR_RESPONSE, /* Command response. */
+    ROCM_ERNIC_INTR_VECTOR_ASYNC,    /* Async events. */
+    ROCM_ERNIC_INTR_VECTOR_CQ,       /* CQ notification. */
                                      /* Additional CQ notification vectors. */
 };
 
-enum amd_emrdma_intr_cause {
-    AMD_EMRDMA_INTR_CAUSE_RESPONSE = (1 << AMD_EMRDMA_INTR_VECTOR_RESPONSE),
-    AMD_EMRDMA_INTR_CAUSE_ASYNC = (1 << AMD_EMRDMA_INTR_VECTOR_ASYNC),
-    AMD_EMRDMA_INTR_CAUSE_CQ = (1 << AMD_EMRDMA_INTR_VECTOR_CQ),
+enum rocm_ernic_intr_cause {
+    ROCM_ERNIC_INTR_CAUSE_RESPONSE = (1 << ROCM_ERNIC_INTR_VECTOR_RESPONSE),
+    ROCM_ERNIC_INTR_CAUSE_ASYNC = (1 << ROCM_ERNIC_INTR_VECTOR_ASYNC),
+    ROCM_ERNIC_INTR_CAUSE_CQ = (1 << ROCM_ERNIC_INTR_VECTOR_CQ),
 };
 
-enum amd_emrdma_gos_bits {
-    AMD_EMRDMA_GOS_BITS_UNK, /* Unknown. */
-    AMD_EMRDMA_GOS_BITS_32,  /* 32-bit. */
-    AMD_EMRDMA_GOS_BITS_64,  /* 64-bit. */
+enum rocm_ernic_gos_bits {
+    ROCM_ERNIC_GOS_BITS_UNK, /* Unknown. */
+    ROCM_ERNIC_GOS_BITS_32,  /* 32-bit. */
+    ROCM_ERNIC_GOS_BITS_64,  /* 64-bit. */
 };
 
-enum amd_emrdma_gos_type {
-    AMD_EMRDMA_GOS_TYPE_UNK,   /* Unknown. */
-    AMD_EMRDMA_GOS_TYPE_LINUX, /* Linux. */
+enum rocm_ernic_gos_type {
+    ROCM_ERNIC_GOS_TYPE_UNK,   /* Unknown. */
+    ROCM_ERNIC_GOS_TYPE_LINUX, /* Linux. */
 };
 
-enum amd_emrdma_device_mode {
-    AMD_EMRDMA_DEVICE_MODE_ROCE,  /* RoCE. */
-    AMD_EMRDMA_DEVICE_MODE_IWARP, /* iWarp. */
-    AMD_EMRDMA_DEVICE_MODE_IB,    /* InfiniBand. */
+enum rocm_ernic_device_mode {
+    ROCM_ERNIC_DEVICE_MODE_ROCE,  /* RoCE. */
+    ROCM_ERNIC_DEVICE_MODE_IWARP, /* iWarp. */
+    ROCM_ERNIC_DEVICE_MODE_IB,    /* InfiniBand. */
 };
 
-struct amd_emrdma_gos_info {
-    u32 gos_bits : 2;  /* W: AMD_EMRDMA_GOS_BITS_ */
-    u32 gos_type : 4;  /* W: AMD_EMRDMA_GOS_TYPE_ */
+struct rocm_ernic_gos_info {
+    u32 gos_bits : 2;  /* W: ROCM_ERNIC_GOS_BITS_ */
+    u32 gos_type : 4;  /* W: ROCM_ERNIC_GOS_TYPE_ */
     u32 gos_ver : 16;  /* W: Guest OS version. */
     u32 gos_misc : 10; /* W: Other. */
     u32 pad;           /* Pad to 8-byte alignment. */
 };
 
-struct amd_emrdma_device_caps {
+struct rocm_ernic_device_caps {
     u64 fw_ver; /* R: Query device. */
     __be64 node_guid;
     __be64 sys_image_guid;
@@ -258,14 +258,14 @@ struct amd_emrdma_device_caps {
     u16 max_pkeys;
     u8 local_ca_ack_delay;
     u8 phys_port_cnt;
-    u8 mode;       /* AMD_EMRDMA_DEVICE_MODE_ */
-    u8 atomic_ops; /* AMD_EMRDMA_ATOMIC_OP_* bits */
+    u8 mode;       /* ROCM_ERNIC_DEVICE_MODE_ */
+    u8 atomic_ops; /* ROCM_ERNIC_ATOMIC_OP_* bits */
     u8 bmme_flags; /* FRWR Mem Mgmt Extensions */
-    u8 gid_types;  /* AMD_EMRDMA_GID_TYPE_FLAG_ */
+    u8 gid_types;  /* ROCM_ERNIC_GID_TYPE_FLAG_ */
     u32 max_fast_reg_page_list_len;
 };
 
-struct amd_emrdma_ring_page_info {
+struct rocm_ernic_ring_page_info {
     u32 num_pages; /* Num pages incl. header. */
     u32 reserved;  /* Reserved. */
     u64 pdir_dma;  /* Page directory PA. */
@@ -273,188 +273,188 @@ struct amd_emrdma_ring_page_info {
 
 #pragma pack(push, 1)
 
-struct amd_emrdma_device_shared_region {
+struct rocm_ernic_device_shared_region {
     u32 driver_version;                  /* W: Driver version. */
     u32 pad;                             /* Pad to 8-byte align. */
-    struct amd_emrdma_gos_info gos_info; /* W: Guest OS information. */
+    struct rocm_ernic_gos_info gos_info; /* W: Guest OS information. */
     u64 cmd_slot_dma;                    /* W: Command slot address. */
     u64 resp_slot_dma;                   /* W: Response slot address. */
-    struct amd_emrdma_ring_page_info async_ring_pages;
+    struct rocm_ernic_ring_page_info async_ring_pages;
     /* W: Async ring page info. */
-    struct amd_emrdma_ring_page_info cq_ring_pages;
+    struct rocm_ernic_ring_page_info cq_ring_pages;
     /* W: CQ ring page info. */
     union {
         u32 uar_pfn;   /* W: UAR pageframe. */
         u64 uar_pfn64; /* W: 64-bit UAR page frame. */
     };
-    struct amd_emrdma_device_caps caps; /* R: Device capabilities. */
+    struct rocm_ernic_device_caps caps; /* R: Device capabilities. */
 };
 
 #pragma pack(pop)
 
 /* Event types. Currently a 1:1 mapping with enum ib_event. */
-enum amd_emrdma_eqe_type {
-    AMD_EMRDMA_EVENT_CQ_ERR,
-    AMD_EMRDMA_EVENT_QP_FATAL,
-    AMD_EMRDMA_EVENT_QP_REQ_ERR,
-    AMD_EMRDMA_EVENT_QP_ACCESS_ERR,
-    AMD_EMRDMA_EVENT_COMM_EST,
-    AMD_EMRDMA_EVENT_SQ_DRAINED,
-    AMD_EMRDMA_EVENT_PATH_MIG,
-    AMD_EMRDMA_EVENT_PATH_MIG_ERR,
-    AMD_EMRDMA_EVENT_DEVICE_FATAL,
-    AMD_EMRDMA_EVENT_PORT_ACTIVE,
-    AMD_EMRDMA_EVENT_PORT_ERR,
-    AMD_EMRDMA_EVENT_LID_CHANGE,
-    AMD_EMRDMA_EVENT_PKEY_CHANGE,
-    AMD_EMRDMA_EVENT_SM_CHANGE,
-    AMD_EMRDMA_EVENT_SRQ_ERR,
-    AMD_EMRDMA_EVENT_SRQ_LIMIT_REACHED,
-    AMD_EMRDMA_EVENT_QP_LAST_WQE_REACHED,
-    AMD_EMRDMA_EVENT_CLIENT_REREGISTER,
-    AMD_EMRDMA_EVENT_GID_CHANGE,
+enum rocm_ernic_eqe_type {
+    ROCM_ERNIC_EVENT_CQ_ERR,
+    ROCM_ERNIC_EVENT_QP_FATAL,
+    ROCM_ERNIC_EVENT_QP_REQ_ERR,
+    ROCM_ERNIC_EVENT_QP_ACCESS_ERR,
+    ROCM_ERNIC_EVENT_COMM_EST,
+    ROCM_ERNIC_EVENT_SQ_DRAINED,
+    ROCM_ERNIC_EVENT_PATH_MIG,
+    ROCM_ERNIC_EVENT_PATH_MIG_ERR,
+    ROCM_ERNIC_EVENT_DEVICE_FATAL,
+    ROCM_ERNIC_EVENT_PORT_ACTIVE,
+    ROCM_ERNIC_EVENT_PORT_ERR,
+    ROCM_ERNIC_EVENT_LID_CHANGE,
+    ROCM_ERNIC_EVENT_PKEY_CHANGE,
+    ROCM_ERNIC_EVENT_SM_CHANGE,
+    ROCM_ERNIC_EVENT_SRQ_ERR,
+    ROCM_ERNIC_EVENT_SRQ_LIMIT_REACHED,
+    ROCM_ERNIC_EVENT_QP_LAST_WQE_REACHED,
+    ROCM_ERNIC_EVENT_CLIENT_REREGISTER,
+    ROCM_ERNIC_EVENT_GID_CHANGE,
 };
 
 /* Event queue element. */
-struct amd_emrdma_eqe {
+struct rocm_ernic_eqe {
     u32 type; /* Event type. */
     u32 info; /* Handle, other. */
 };
 
 /* CQ notification queue element. */
-struct amd_emrdma_cqne {
+struct rocm_ernic_cqne {
     u32 info; /* Handle */
 };
 
 enum {
-    AMD_EMRDMA_CMD_FIRST,
-    AMD_EMRDMA_CMD_QUERY_PORT = AMD_EMRDMA_CMD_FIRST,
-    AMD_EMRDMA_CMD_QUERY_PKEY,
-    AMD_EMRDMA_CMD_CREATE_PD,
-    AMD_EMRDMA_CMD_DESTROY_PD,
-    AMD_EMRDMA_CMD_CREATE_MR,
-    AMD_EMRDMA_CMD_DESTROY_MR,
-    AMD_EMRDMA_CMD_CREATE_CQ,
-    AMD_EMRDMA_CMD_RESIZE_CQ,
-    AMD_EMRDMA_CMD_DESTROY_CQ,
-    AMD_EMRDMA_CMD_CREATE_QP,
-    AMD_EMRDMA_CMD_MODIFY_QP,
-    AMD_EMRDMA_CMD_QUERY_QP,
-    AMD_EMRDMA_CMD_DESTROY_QP,
-    AMD_EMRDMA_CMD_CREATE_UC,
-    AMD_EMRDMA_CMD_DESTROY_UC,
-    AMD_EMRDMA_CMD_CREATE_BIND,
-    AMD_EMRDMA_CMD_DESTROY_BIND,
-    AMD_EMRDMA_CMD_CREATE_SRQ,
-    AMD_EMRDMA_CMD_MODIFY_SRQ,
-    AMD_EMRDMA_CMD_QUERY_SRQ,
-    AMD_EMRDMA_CMD_DESTROY_SRQ,
-    AMD_EMRDMA_CMD_MAX,
+    ROCM_ERNIC_CMD_FIRST,
+    ROCM_ERNIC_CMD_QUERY_PORT = ROCM_ERNIC_CMD_FIRST,
+    ROCM_ERNIC_CMD_QUERY_PKEY,
+    ROCM_ERNIC_CMD_CREATE_PD,
+    ROCM_ERNIC_CMD_DESTROY_PD,
+    ROCM_ERNIC_CMD_CREATE_MR,
+    ROCM_ERNIC_CMD_DESTROY_MR,
+    ROCM_ERNIC_CMD_CREATE_CQ,
+    ROCM_ERNIC_CMD_RESIZE_CQ,
+    ROCM_ERNIC_CMD_DESTROY_CQ,
+    ROCM_ERNIC_CMD_CREATE_QP,
+    ROCM_ERNIC_CMD_MODIFY_QP,
+    ROCM_ERNIC_CMD_QUERY_QP,
+    ROCM_ERNIC_CMD_DESTROY_QP,
+    ROCM_ERNIC_CMD_CREATE_UC,
+    ROCM_ERNIC_CMD_DESTROY_UC,
+    ROCM_ERNIC_CMD_CREATE_BIND,
+    ROCM_ERNIC_CMD_DESTROY_BIND,
+    ROCM_ERNIC_CMD_CREATE_SRQ,
+    ROCM_ERNIC_CMD_MODIFY_SRQ,
+    ROCM_ERNIC_CMD_QUERY_SRQ,
+    ROCM_ERNIC_CMD_DESTROY_SRQ,
+    ROCM_ERNIC_CMD_MAX,
 };
 
 enum {
-    AMD_EMRDMA_CMD_FIRST_RESP = (1 << 31),
-    AMD_EMRDMA_CMD_QUERY_PORT_RESP = AMD_EMRDMA_CMD_FIRST_RESP,
-    AMD_EMRDMA_CMD_QUERY_PKEY_RESP,
-    AMD_EMRDMA_CMD_CREATE_PD_RESP,
-    AMD_EMRDMA_CMD_DESTROY_PD_RESP_NOOP,
-    AMD_EMRDMA_CMD_CREATE_MR_RESP,
-    AMD_EMRDMA_CMD_DESTROY_MR_RESP_NOOP,
-    AMD_EMRDMA_CMD_CREATE_CQ_RESP,
-    AMD_EMRDMA_CMD_RESIZE_CQ_RESP,
-    AMD_EMRDMA_CMD_DESTROY_CQ_RESP_NOOP,
-    AMD_EMRDMA_CMD_CREATE_QP_RESP,
-    AMD_EMRDMA_CMD_MODIFY_QP_RESP,
-    AMD_EMRDMA_CMD_QUERY_QP_RESP,
-    AMD_EMRDMA_CMD_DESTROY_QP_RESP,
-    AMD_EMRDMA_CMD_CREATE_UC_RESP,
-    AMD_EMRDMA_CMD_DESTROY_UC_RESP_NOOP,
-    AMD_EMRDMA_CMD_CREATE_BIND_RESP_NOOP,
-    AMD_EMRDMA_CMD_DESTROY_BIND_RESP_NOOP,
-    AMD_EMRDMA_CMD_CREATE_SRQ_RESP,
-    AMD_EMRDMA_CMD_MODIFY_SRQ_RESP,
-    AMD_EMRDMA_CMD_QUERY_SRQ_RESP,
-    AMD_EMRDMA_CMD_DESTROY_SRQ_RESP,
-    AMD_EMRDMA_CMD_MAX_RESP,
+    ROCM_ERNIC_CMD_FIRST_RESP = (1 << 31),
+    ROCM_ERNIC_CMD_QUERY_PORT_RESP = ROCM_ERNIC_CMD_FIRST_RESP,
+    ROCM_ERNIC_CMD_QUERY_PKEY_RESP,
+    ROCM_ERNIC_CMD_CREATE_PD_RESP,
+    ROCM_ERNIC_CMD_DESTROY_PD_RESP_NOOP,
+    ROCM_ERNIC_CMD_CREATE_MR_RESP,
+    ROCM_ERNIC_CMD_DESTROY_MR_RESP_NOOP,
+    ROCM_ERNIC_CMD_CREATE_CQ_RESP,
+    ROCM_ERNIC_CMD_RESIZE_CQ_RESP,
+    ROCM_ERNIC_CMD_DESTROY_CQ_RESP_NOOP,
+    ROCM_ERNIC_CMD_CREATE_QP_RESP,
+    ROCM_ERNIC_CMD_MODIFY_QP_RESP,
+    ROCM_ERNIC_CMD_QUERY_QP_RESP,
+    ROCM_ERNIC_CMD_DESTROY_QP_RESP,
+    ROCM_ERNIC_CMD_CREATE_UC_RESP,
+    ROCM_ERNIC_CMD_DESTROY_UC_RESP_NOOP,
+    ROCM_ERNIC_CMD_CREATE_BIND_RESP_NOOP,
+    ROCM_ERNIC_CMD_DESTROY_BIND_RESP_NOOP,
+    ROCM_ERNIC_CMD_CREATE_SRQ_RESP,
+    ROCM_ERNIC_CMD_MODIFY_SRQ_RESP,
+    ROCM_ERNIC_CMD_QUERY_SRQ_RESP,
+    ROCM_ERNIC_CMD_DESTROY_SRQ_RESP,
+    ROCM_ERNIC_CMD_MAX_RESP,
 };
 
-struct amd_emrdma_cmd_hdr {
+struct rocm_ernic_cmd_hdr {
     u64 response; /* Key for response lookup. */
-    u32 cmd;      /* AMD_EMRDMA_CMD_ */
+    u32 cmd;      /* ROCM_ERNIC_CMD_ */
     u32 reserved; /* Reserved. */
 };
 
-struct amd_emrdma_cmd_resp_hdr {
+struct rocm_ernic_cmd_resp_hdr {
     u64 response;   /* From cmd hdr. */
-    u32 ack;        /* AMD_EMRDMA_CMD_XXX_RESP */
+    u32 ack;        /* ROCM_ERNIC_CMD_XXX_RESP */
     u8 err;         /* Error. */
     u8 reserved[3]; /* Reserved. */
 };
 
-struct amd_emrdma_cmd_query_port {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_query_port {
+    struct rocm_ernic_cmd_hdr hdr;
     u8 port_num;
     u8 reserved[7];
 };
 
-struct amd_emrdma_cmd_query_port_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
-    struct amd_emrdma_port_attr attrs;
+struct rocm_ernic_cmd_query_port_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
+    struct rocm_ernic_port_attr attrs;
 };
 
-struct amd_emrdma_cmd_query_pkey {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_query_pkey {
+    struct rocm_ernic_cmd_hdr hdr;
     u8 port_num;
     u8 index;
     u8 reserved[6];
 };
 
-struct amd_emrdma_cmd_query_pkey_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_query_pkey_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u16 pkey;
     u8 reserved[6];
 };
 
-struct amd_emrdma_cmd_create_uc {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_uc {
+    struct rocm_ernic_cmd_hdr hdr;
     union {
         u32 pfn;   /* UAR page frame number */
         u64 pfn64; /* 64-bit UAR page frame number */
     };
 };
 
-struct amd_emrdma_cmd_create_uc_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_uc_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 ctx_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_destroy_uc {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_uc {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 ctx_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_pd {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_pd {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 ctx_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_pd_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_pd_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 pd_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_destroy_pd {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_pd {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 pd_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_mr {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_mr {
+    struct rocm_ernic_cmd_hdr hdr;
     u64 start;
     u64 length;
     u64 pdir_dma;
@@ -464,22 +464,22 @@ struct amd_emrdma_cmd_create_mr {
     u32 nchunks;
 };
 
-struct amd_emrdma_cmd_create_mr_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_mr_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 mr_handle;
     u32 lkey;
     u32 rkey;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_destroy_mr {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_mr {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 mr_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_cq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_cq {
+    struct rocm_ernic_cmd_hdr hdr;
     u64 pdir_dma;
     u32 ctx_handle;
     u32 cqe;
@@ -487,72 +487,72 @@ struct amd_emrdma_cmd_create_cq {
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_cq_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_cq_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 cq_handle;
     u32 cqe;
 };
 
-struct amd_emrdma_cmd_resize_cq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_resize_cq {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 cq_handle;
     u32 cqe;
 };
 
-struct amd_emrdma_cmd_resize_cq_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_resize_cq_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 cqe;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_destroy_cq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_cq {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 cq_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_srq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_srq {
+    struct rocm_ernic_cmd_hdr hdr;
     u64 pdir_dma;
     u32 pd_handle;
     u32 nchunks;
-    struct amd_emrdma_srq_attr attrs;
+    struct rocm_ernic_srq_attr attrs;
     u8 srq_type;
     u8 reserved[7];
 };
 
-struct amd_emrdma_cmd_create_srq_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_srq_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 srqn;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_modify_srq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_modify_srq {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 srq_handle;
     u32 attr_mask;
-    struct amd_emrdma_srq_attr attrs;
+    struct rocm_ernic_srq_attr attrs;
 };
 
-struct amd_emrdma_cmd_query_srq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_query_srq {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 srq_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_query_srq_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
-    struct amd_emrdma_srq_attr attrs;
+struct rocm_ernic_cmd_query_srq_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
+    struct rocm_ernic_srq_attr attrs;
 };
 
-struct amd_emrdma_cmd_destroy_srq {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_srq {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 srq_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_qp {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_qp {
+    struct rocm_ernic_cmd_hdr hdr;
     u64 pdir_dma;
     u32 pd_handle;
     u32 send_cq_handle;
@@ -574,8 +574,8 @@ struct amd_emrdma_cmd_create_qp {
     u8 reserved[3];
 };
 
-struct amd_emrdma_cmd_create_qp_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_qp_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 qpn;
     u32 max_send_wr;
     u32 max_recv_wr;
@@ -584,8 +584,8 @@ struct amd_emrdma_cmd_create_qp_resp {
     u32 max_inline_data;
 };
 
-struct amd_emrdma_cmd_create_qp_resp_v2 {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_create_qp_resp_v2 {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 qpn;
     u32 qp_handle;
     u32 max_send_wr;
@@ -595,38 +595,38 @@ struct amd_emrdma_cmd_create_qp_resp_v2 {
     u32 max_inline_data;
 };
 
-struct amd_emrdma_cmd_modify_qp {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_modify_qp {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 qp_handle;
     u32 attr_mask;
-    struct amd_emrdma_qp_attr attrs;
+    struct rocm_ernic_qp_attr attrs;
 };
 
-struct amd_emrdma_cmd_query_qp {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_query_qp {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 qp_handle;
     u32 attr_mask;
 };
 
-struct amd_emrdma_cmd_query_qp_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
-    struct amd_emrdma_qp_attr attrs;
+struct rocm_ernic_cmd_query_qp_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
+    struct rocm_ernic_qp_attr attrs;
 };
 
-struct amd_emrdma_cmd_destroy_qp {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_qp {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 qp_handle;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_destroy_qp_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
+struct rocm_ernic_cmd_destroy_qp_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
     u32 events_reported;
     u8 reserved[4];
 };
 
-struct amd_emrdma_cmd_create_bind {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_create_bind {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 mtu;
     u32 vlan;
     u32 index;
@@ -635,53 +635,53 @@ struct amd_emrdma_cmd_create_bind {
     u8 reserved[3];
 };
 
-struct amd_emrdma_cmd_destroy_bind {
-    struct amd_emrdma_cmd_hdr hdr;
+struct rocm_ernic_cmd_destroy_bind {
+    struct rocm_ernic_cmd_hdr hdr;
     u32 index;
     u8 dest_gid[16];
     u8 reserved[4];
 };
 
-union amd_emrdma_cmd_req {
-    struct amd_emrdma_cmd_hdr hdr;
-    struct amd_emrdma_cmd_query_port query_port;
-    struct amd_emrdma_cmd_query_pkey query_pkey;
-    struct amd_emrdma_cmd_create_uc create_uc;
-    struct amd_emrdma_cmd_destroy_uc destroy_uc;
-    struct amd_emrdma_cmd_create_pd create_pd;
-    struct amd_emrdma_cmd_destroy_pd destroy_pd;
-    struct amd_emrdma_cmd_create_mr create_mr;
-    struct amd_emrdma_cmd_destroy_mr destroy_mr;
-    struct amd_emrdma_cmd_create_cq create_cq;
-    struct amd_emrdma_cmd_resize_cq resize_cq;
-    struct amd_emrdma_cmd_destroy_cq destroy_cq;
-    struct amd_emrdma_cmd_create_qp create_qp;
-    struct amd_emrdma_cmd_modify_qp modify_qp;
-    struct amd_emrdma_cmd_query_qp query_qp;
-    struct amd_emrdma_cmd_destroy_qp destroy_qp;
-    struct amd_emrdma_cmd_create_bind create_bind;
-    struct amd_emrdma_cmd_destroy_bind destroy_bind;
-    struct amd_emrdma_cmd_create_srq create_srq;
-    struct amd_emrdma_cmd_modify_srq modify_srq;
-    struct amd_emrdma_cmd_query_srq query_srq;
-    struct amd_emrdma_cmd_destroy_srq destroy_srq;
+union rocm_ernic_cmd_req {
+    struct rocm_ernic_cmd_hdr hdr;
+    struct rocm_ernic_cmd_query_port query_port;
+    struct rocm_ernic_cmd_query_pkey query_pkey;
+    struct rocm_ernic_cmd_create_uc create_uc;
+    struct rocm_ernic_cmd_destroy_uc destroy_uc;
+    struct rocm_ernic_cmd_create_pd create_pd;
+    struct rocm_ernic_cmd_destroy_pd destroy_pd;
+    struct rocm_ernic_cmd_create_mr create_mr;
+    struct rocm_ernic_cmd_destroy_mr destroy_mr;
+    struct rocm_ernic_cmd_create_cq create_cq;
+    struct rocm_ernic_cmd_resize_cq resize_cq;
+    struct rocm_ernic_cmd_destroy_cq destroy_cq;
+    struct rocm_ernic_cmd_create_qp create_qp;
+    struct rocm_ernic_cmd_modify_qp modify_qp;
+    struct rocm_ernic_cmd_query_qp query_qp;
+    struct rocm_ernic_cmd_destroy_qp destroy_qp;
+    struct rocm_ernic_cmd_create_bind create_bind;
+    struct rocm_ernic_cmd_destroy_bind destroy_bind;
+    struct rocm_ernic_cmd_create_srq create_srq;
+    struct rocm_ernic_cmd_modify_srq modify_srq;
+    struct rocm_ernic_cmd_query_srq query_srq;
+    struct rocm_ernic_cmd_destroy_srq destroy_srq;
 };
 
-union amd_emrdma_cmd_resp {
-    struct amd_emrdma_cmd_resp_hdr hdr;
-    struct amd_emrdma_cmd_query_port_resp query_port_resp;
-    struct amd_emrdma_cmd_query_pkey_resp query_pkey_resp;
-    struct amd_emrdma_cmd_create_uc_resp create_uc_resp;
-    struct amd_emrdma_cmd_create_pd_resp create_pd_resp;
-    struct amd_emrdma_cmd_create_mr_resp create_mr_resp;
-    struct amd_emrdma_cmd_create_cq_resp create_cq_resp;
-    struct amd_emrdma_cmd_resize_cq_resp resize_cq_resp;
-    struct amd_emrdma_cmd_create_qp_resp create_qp_resp;
-    struct amd_emrdma_cmd_create_qp_resp_v2 create_qp_resp_v2;
-    struct amd_emrdma_cmd_query_qp_resp query_qp_resp;
-    struct amd_emrdma_cmd_destroy_qp_resp destroy_qp_resp;
-    struct amd_emrdma_cmd_create_srq_resp create_srq_resp;
-    struct amd_emrdma_cmd_query_srq_resp query_srq_resp;
+union rocm_ernic_cmd_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
+    struct rocm_ernic_cmd_query_port_resp query_port_resp;
+    struct rocm_ernic_cmd_query_pkey_resp query_pkey_resp;
+    struct rocm_ernic_cmd_create_uc_resp create_uc_resp;
+    struct rocm_ernic_cmd_create_pd_resp create_pd_resp;
+    struct rocm_ernic_cmd_create_mr_resp create_mr_resp;
+    struct rocm_ernic_cmd_create_cq_resp create_cq_resp;
+    struct rocm_ernic_cmd_resize_cq_resp resize_cq_resp;
+    struct rocm_ernic_cmd_create_qp_resp create_qp_resp;
+    struct rocm_ernic_cmd_create_qp_resp_v2 create_qp_resp_v2;
+    struct rocm_ernic_cmd_query_qp_resp query_qp_resp;
+    struct rocm_ernic_cmd_destroy_qp_resp destroy_qp_resp;
+    struct rocm_ernic_cmd_create_srq_resp create_srq_resp;
+    struct rocm_ernic_cmd_query_srq_resp query_srq_resp;
 };
 
-#endif /* __AMD_EMRDMA_DEV_API_H__ */
+#endif /* __ROCM_ERNIC_DEV_API_H__ */

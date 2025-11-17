@@ -52,19 +52,19 @@
 
 #include "rocm_ernic.h"
 
-static void __amd_emrdma_destroy_qp(struct amd_emrdma_dev *dev,
-                                    struct amd_emrdma_qp *qp);
+static void __rocm_ernic_destroy_qp(struct rocm_ernic_dev *dev,
+                                    struct rocm_ernic_qp *qp);
 
-static inline void get_cqs(struct amd_emrdma_qp *qp,
-                           struct amd_emrdma_cq **send_cq,
-                           struct amd_emrdma_cq **recv_cq)
+static inline void get_cqs(struct rocm_ernic_qp *qp,
+                           struct rocm_ernic_cq **send_cq,
+                           struct rocm_ernic_cq **recv_cq)
 {
     *send_cq = to_vcq(qp->ibqp.send_cq);
     *recv_cq = to_vcq(qp->ibqp.recv_cq);
 }
 
-static void amd_emrdma_lock_cqs(struct amd_emrdma_cq *scq,
-                                struct amd_emrdma_cq *rcq,
+static void rocm_ernic_lock_cqs(struct rocm_ernic_cq *scq,
+                                struct rocm_ernic_cq *rcq,
                                 unsigned long *scq_flags,
                                 unsigned long *rcq_flags)
     __acquires(scq->cq_lock) __acquires(rcq->cq_lock)
@@ -83,8 +83,8 @@ static void amd_emrdma_lock_cqs(struct amd_emrdma_cq *scq,
     }
 }
 
-static void amd_emrdma_unlock_cqs(struct amd_emrdma_cq *scq,
-                                  struct amd_emrdma_cq *rcq,
+static void rocm_ernic_unlock_cqs(struct rocm_ernic_cq *scq,
+                                  struct rocm_ernic_cq *rcq,
                                   unsigned long *scq_flags,
                                   unsigned long *rcq_flags)
     __releases(scq->cq_lock) __releases(rcq->cq_lock)
@@ -101,20 +101,20 @@ static void amd_emrdma_unlock_cqs(struct amd_emrdma_cq *scq,
     }
 }
 
-static void amd_emrdma_reset_qp(struct amd_emrdma_qp *qp)
+static void rocm_ernic_reset_qp(struct rocm_ernic_qp *qp)
 {
-    struct amd_emrdma_cq *scq, *rcq;
+    struct rocm_ernic_cq *scq, *rcq;
     unsigned long scq_flags, rcq_flags;
 
     /* Clean up cqes */
     get_cqs(qp, &scq, &rcq);
-    amd_emrdma_lock_cqs(scq, rcq, &scq_flags, &rcq_flags);
+    rocm_ernic_lock_cqs(scq, rcq, &scq_flags, &rcq_flags);
 
-    _amd_emrdma_flush_cqe(qp, scq);
+    _rocm_ernic_flush_cqe(qp, scq);
     if (scq != rcq)
-        _amd_emrdma_flush_cqe(qp, rcq);
+        _rocm_ernic_flush_cqe(qp, rcq);
 
-    amd_emrdma_unlock_cqs(scq, rcq, &scq_flags, &rcq_flags);
+    rocm_ernic_unlock_cqs(scq, rcq, &scq_flags, &rcq_flags);
 
     /*
      * Reset queuepair. The checks are because usermode queuepairs won't
@@ -130,9 +130,9 @@ static void amd_emrdma_reset_qp(struct amd_emrdma_qp *qp)
     }
 }
 
-static int amd_emrdma_set_rq_size(struct amd_emrdma_dev *dev,
+static int rocm_ernic_set_rq_size(struct rocm_ernic_dev *dev,
                                   struct ib_qp_cap *req_cap,
-                                  struct amd_emrdma_qp *qp)
+                                  struct rocm_ernic_qp *qp)
 {
     if (req_cap->max_recv_wr > dev->dsr->caps.max_qp_wr ||
         req_cap->max_recv_sge > dev->dsr->caps.max_sge) {
@@ -148,17 +148,17 @@ static int amd_emrdma_set_rq_size(struct amd_emrdma_dev *dev,
     req_cap->max_recv_sge = qp->rq.max_sg;
 
     qp->rq.wqe_size =
-        roundup_pow_of_two(sizeof(struct amd_emrdma_rq_wqe_hdr) +
-                           sizeof(struct amd_emrdma_sge) * qp->rq.max_sg);
+        roundup_pow_of_two(sizeof(struct rocm_ernic_rq_wqe_hdr) +
+                           sizeof(struct rocm_ernic_sge) * qp->rq.max_sg);
     qp->npages_recv =
         (qp->rq.wqe_cnt * qp->rq.wqe_size + PAGE_SIZE - 1) / PAGE_SIZE;
 
     return 0;
 }
 
-static int amd_emrdma_set_sq_size(struct amd_emrdma_dev *dev,
+static int rocm_ernic_set_sq_size(struct rocm_ernic_dev *dev,
                                   struct ib_qp_cap *req_cap,
-                                  struct amd_emrdma_qp *qp)
+                                  struct rocm_ernic_qp *qp)
 {
     if (req_cap->max_send_wr > dev->dsr->caps.max_qp_wr ||
         req_cap->max_send_sge > dev->dsr->caps.max_sge) {
@@ -174,36 +174,36 @@ static int amd_emrdma_set_sq_size(struct amd_emrdma_dev *dev,
     req_cap->max_send_sge = qp->sq.max_sg;
 
     qp->sq.wqe_size =
-        roundup_pow_of_two(sizeof(struct amd_emrdma_sq_wqe_hdr) +
-                           sizeof(struct amd_emrdma_sge) * qp->sq.max_sg);
+        roundup_pow_of_two(sizeof(struct rocm_ernic_sq_wqe_hdr) +
+                           sizeof(struct rocm_ernic_sge) * qp->sq.max_sg);
     /* Note: one extra page for the header. */
     qp->npages_send =
-        AMD_EMRDMA_QP_NUM_HEADER_PAGES +
+        ROCM_ERNIC_QP_NUM_HEADER_PAGES +
         (qp->sq.wqe_cnt * qp->sq.wqe_size + PAGE_SIZE - 1) / PAGE_SIZE;
 
     return 0;
 }
 
 /**
- * amd_emrdma_create_qp - create queue pair
+ * rocm_ernic_create_qp - create queue pair
  * @ibqp: queue pair
  * @init_attr: queue pair attributes
  * @udata: user data
  *
  * @return: the 0 on success, otherwise returns an errno.
  */
-int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
+int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
                          struct ib_udata *udata)
 {
-    struct amd_emrdma_qp *qp = to_vqp(ibqp);
-    struct amd_emrdma_dev *dev = to_vdev(ibqp->device);
-    union amd_emrdma_cmd_req req;
-    union amd_emrdma_cmd_resp rsp;
-    struct amd_emrdma_cmd_create_qp *cmd = &req.create_qp;
-    struct amd_emrdma_cmd_create_qp_resp *resp = &rsp.create_qp_resp;
-    struct amd_emrdma_cmd_create_qp_resp_v2 *resp_v2 = &rsp.create_qp_resp_v2;
-    struct amd_emrdma_create_qp ucmd;
-    struct amd_emrdma_create_qp_resp qp_resp = {};
+    struct rocm_ernic_qp *qp = to_vqp(ibqp);
+    struct rocm_ernic_dev *dev = to_vdev(ibqp->device);
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_create_qp *cmd = &req.create_qp;
+    struct rocm_ernic_cmd_create_qp_resp *resp = &rsp.create_qp_resp;
+    struct rocm_ernic_cmd_create_qp_resp_v2 *resp_v2 = &rsp.create_qp_resp_v2;
+    struct rocm_ernic_create_qp ucmd;
+    struct rocm_ernic_create_qp_resp qp_resp = {};
     unsigned long flags;
     int ret;
     bool is_srq = !!init_attr->srq;
@@ -258,7 +258,7 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
             }
 
             /* Userspace supports qpn and qp handles? */
-            if (dev->dsr_version >= AMD_EMRDMA_QPHANDLE_VERSION &&
+            if (dev->dsr_version >= ROCM_ERNIC_QPHANDLE_VERSION &&
                 udata->outlen < sizeof(qp_resp)) {
                 dev_warn(&dev->pdev->dev, "create queuepair not supported\n");
                 ret = -EOPNOTSUPP;
@@ -295,12 +295,12 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
                 qp->npages_recv = 0;
             qp->npages = qp->npages_send + qp->npages_recv;
         } else {
-            ret = amd_emrdma_set_sq_size(to_vdev(ibqp->device), &init_attr->cap,
+            ret = rocm_ernic_set_sq_size(to_vdev(ibqp->device), &init_attr->cap,
                                          qp);
             if (ret)
                 goto err_qp;
 
-            ret = amd_emrdma_set_rq_size(to_vdev(ibqp->device), &init_attr->cap,
+            ret = rocm_ernic_set_rq_size(to_vdev(ibqp->device), &init_attr->cap,
                                          qp);
             if (ret)
                 goto err_qp;
@@ -308,29 +308,29 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
             qp->npages = qp->npages_send + qp->npages_recv;
 
             /* Skip header page. */
-            qp->sq.offset = AMD_EMRDMA_QP_NUM_HEADER_PAGES * PAGE_SIZE;
+            qp->sq.offset = ROCM_ERNIC_QP_NUM_HEADER_PAGES * PAGE_SIZE;
 
             /* Recv queue pages are after send pages. */
             qp->rq.offset = qp->npages_send * PAGE_SIZE;
         }
 
-        if (qp->npages < 0 || qp->npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
+        if (qp->npages < 0 || qp->npages > ROCM_ERNIC_PAGE_DIR_MAX_PAGES) {
             dev_warn(&dev->pdev->dev, "overflow pages in queuepair\n");
             ret = -EINVAL;
             goto err_umem;
         }
 
         ret =
-            amd_emrdma_page_dir_init(dev, &qp->pdir, qp->npages, qp->is_kernel);
+            rocm_ernic_page_dir_init(dev, &qp->pdir, qp->npages, qp->is_kernel);
         if (ret) {
             dev_warn(&dev->pdev->dev, "could not allocate page directory\n");
             goto err_umem;
         }
 
         if (!qp->is_kernel) {
-            amd_emrdma_page_dir_insert_umem(&qp->pdir, qp->sumem, 0);
+            rocm_ernic_page_dir_insert_umem(&qp->pdir, qp->sumem, 0);
             if (!is_srq)
-                amd_emrdma_page_dir_insert_umem(&qp->pdir, qp->rumem,
+                rocm_ernic_page_dir_insert_umem(&qp->pdir, qp->rumem,
                                                 qp->npages_send);
         } else {
             /* Ring state is always the first page. */
@@ -347,7 +347,7 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     init_attr->cap.max_inline_data = 0;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_CREATE_QP;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_QP;
     cmd->pd_handle = to_vpd(ibqp->pd)->pd_handle;
     cmd->send_cq_handle = to_vcq(init_attr->send_cq)->cq_handle;
     cmd->recv_cq_handle = to_vcq(init_attr->recv_cq)->cq_handle;
@@ -361,19 +361,19 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     cmd->max_recv_sge = init_attr->cap.max_recv_sge;
     cmd->max_inline_data = init_attr->cap.max_inline_data;
     cmd->sq_sig_all = (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR) ? 1 : 0;
-    cmd->qp_type = ib_qp_type_to_amd_emrdma(init_attr->qp_type);
+    cmd->qp_type = ib_qp_type_to_rocm_ernic(init_attr->qp_type);
     cmd->is_srq = is_srq;
     cmd->lkey = 0;
     cmd->access_flags = IB_ACCESS_LOCAL_WRITE;
     cmd->total_chunks = qp->npages;
-    cmd->send_chunks = qp->npages_send - AMD_EMRDMA_QP_NUM_HEADER_PAGES;
+    cmd->send_chunks = qp->npages_send - ROCM_ERNIC_QP_NUM_HEADER_PAGES;
     cmd->pdir_dma = qp->pdir.dir_dma;
 
     dev_dbg(&dev->pdev->dev, "create queuepair with %d, %d, %d, %d\n",
             cmd->max_send_wr, cmd->max_recv_wr, cmd->max_send_sge,
             cmd->max_recv_sge);
 
-    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_CREATE_QP_RESP);
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_CREATE_QP_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev, "could not create queuepair, error: %d\n",
                  ret);
@@ -383,7 +383,7 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     /* max_send_wr/_recv_wr/_send_sge/_recv_sge/_inline_data */
     qp->port = init_attr->port_num;
 
-    if (dev->dsr_version >= AMD_EMRDMA_QPHANDLE_VERSION) {
+    if (dev->dsr_version >= ROCM_ERNIC_QPHANDLE_VERSION) {
         qp->ibqp.qp_num = resp_v2->qpn;
         qp->qp_handle = resp_v2->qp_handle;
     } else {
@@ -402,7 +402,7 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         if (ib_copy_to_udata(udata, &qp_resp,
                              min(udata->outlen, sizeof(qp_resp)))) {
             dev_warn(&dev->pdev->dev, "failed to copy back udata\n");
-            __amd_emrdma_destroy_qp(dev, qp);
+            __rocm_ernic_destroy_qp(dev, qp);
             return -EINVAL;
         }
     }
@@ -410,7 +410,7 @@ int amd_emrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     return 0;
 
 err_pdir:
-    amd_emrdma_page_dir_cleanup(dev, &qp->pdir);
+    rocm_ernic_page_dir_cleanup(dev, &qp->pdir);
 err_umem:
     ib_umem_release(qp->rumem);
     ib_umem_release(qp->sumem);
@@ -419,10 +419,10 @@ err_qp:
     return ret;
 }
 
-static void _amd_emrdma_free_qp(struct amd_emrdma_qp *qp)
+static void _rocm_ernic_free_qp(struct rocm_ernic_qp *qp)
 {
     unsigned long flags;
-    struct amd_emrdma_dev *dev = to_vdev(qp->ibqp.device);
+    struct rocm_ernic_dev *dev = to_vdev(qp->ibqp.device);
 
     spin_lock_irqsave(&dev->qp_tbl_lock, flags);
     dev->qp_tbl[qp->qp_handle] = NULL;
@@ -435,77 +435,77 @@ static void _amd_emrdma_free_qp(struct amd_emrdma_qp *qp)
     ib_umem_release(qp->rumem);
     ib_umem_release(qp->sumem);
 
-    amd_emrdma_page_dir_cleanup(dev, &qp->pdir);
+    rocm_ernic_page_dir_cleanup(dev, &qp->pdir);
 
     atomic_dec(&dev->num_qps);
 }
 
-static void amd_emrdma_free_qp(struct amd_emrdma_qp *qp)
+static void rocm_ernic_free_qp(struct rocm_ernic_qp *qp)
 {
-    struct amd_emrdma_cq *scq;
-    struct amd_emrdma_cq *rcq;
+    struct rocm_ernic_cq *scq;
+    struct rocm_ernic_cq *rcq;
     unsigned long scq_flags, rcq_flags;
 
     /* In case cq is polling */
     get_cqs(qp, &scq, &rcq);
-    amd_emrdma_lock_cqs(scq, rcq, &scq_flags, &rcq_flags);
+    rocm_ernic_lock_cqs(scq, rcq, &scq_flags, &rcq_flags);
 
-    _amd_emrdma_flush_cqe(qp, scq);
+    _rocm_ernic_flush_cqe(qp, scq);
     if (scq != rcq)
-        _amd_emrdma_flush_cqe(qp, rcq);
+        _rocm_ernic_flush_cqe(qp, rcq);
 
     /*
      * We're now unlocking the CQs before clearing out the qp handle this
      * should still be safe. We have destroyed the backend QP and flushed
      * the CQEs so there should be no other completions for this QP.
      */
-    amd_emrdma_unlock_cqs(scq, rcq, &scq_flags, &rcq_flags);
+    rocm_ernic_unlock_cqs(scq, rcq, &scq_flags, &rcq_flags);
 
-    _amd_emrdma_free_qp(qp);
+    _rocm_ernic_free_qp(qp);
 }
 
-static inline void _amd_emrdma_destroy_qp_work(struct amd_emrdma_dev *dev,
+static inline void _rocm_ernic_destroy_qp_work(struct rocm_ernic_dev *dev,
                                                u32 qp_handle)
 {
-    union amd_emrdma_cmd_req req;
-    struct amd_emrdma_cmd_destroy_qp *cmd = &req.destroy_qp;
+    union rocm_ernic_cmd_req req;
+    struct rocm_ernic_cmd_destroy_qp *cmd = &req.destroy_qp;
     int ret;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_DESTROY_QP;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_DESTROY_QP;
     cmd->qp_handle = qp_handle;
 
-    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    ret = rocm_ernic_cmd_post(dev, &req, NULL, 0);
     if (ret < 0)
         dev_warn(&dev->pdev->dev, "destroy queuepair failed, error: %d\n", ret);
 }
 
 /**
- * amd_emrdma_destroy_qp - destroy a queue pair
+ * rocm_ernic_destroy_qp - destroy a queue pair
  * @qp: the queue pair to destroy
  * @udata: user data or null for kernel object
  *
  * @return: always 0.
  */
-int amd_emrdma_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
+int rocm_ernic_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
 {
-    struct amd_emrdma_qp *vqp = to_vqp(qp);
+    struct rocm_ernic_qp *vqp = to_vqp(qp);
 
-    _amd_emrdma_destroy_qp_work(to_vdev(qp->device), vqp->qp_handle);
-    amd_emrdma_free_qp(vqp);
+    _rocm_ernic_destroy_qp_work(to_vdev(qp->device), vqp->qp_handle);
+    rocm_ernic_free_qp(vqp);
 
     return 0;
 }
 
-static void __amd_emrdma_destroy_qp(struct amd_emrdma_dev *dev,
-                                    struct amd_emrdma_qp *qp)
+static void __rocm_ernic_destroy_qp(struct rocm_ernic_dev *dev,
+                                    struct rocm_ernic_qp *qp)
 {
-    _amd_emrdma_destroy_qp_work(dev, qp->qp_handle);
-    _amd_emrdma_free_qp(qp);
+    _rocm_ernic_destroy_qp_work(dev, qp->qp_handle);
+    _rocm_ernic_free_qp(qp);
 }
 
 /**
- * amd_emrdma_modify_qp - modify queue pair attributes
+ * rocm_ernic_modify_qp - modify queue pair attributes
  * @ibqp: the queue pair
  * @attr: the new queue pair's attributes
  * @attr_mask: attributes mask
@@ -513,14 +513,14 @@ static void __amd_emrdma_destroy_qp(struct amd_emrdma_dev *dev,
  *
  * @returns 0 on success, otherwise returns an errno.
  */
-int amd_emrdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
+int rocm_ernic_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
                          int attr_mask, struct ib_udata *udata)
 {
-    struct amd_emrdma_dev *dev = to_vdev(ibqp->device);
-    struct amd_emrdma_qp *qp = to_vqp(ibqp);
-    union amd_emrdma_cmd_req req;
-    union amd_emrdma_cmd_resp rsp;
-    struct amd_emrdma_cmd_modify_qp *cmd = &req.modify_qp;
+    struct rocm_ernic_dev *dev = to_vdev(ibqp->device);
+    struct rocm_ernic_qp *qp = to_vqp(ibqp);
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_modify_qp *cmd = &req.modify_qp;
     enum ib_qp_state cur_state, next_state;
     int ret;
 
@@ -569,20 +569,20 @@ int amd_emrdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 
     qp->state = next_state;
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_MODIFY_QP;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_MODIFY_QP;
     cmd->qp_handle = qp->qp_handle;
-    cmd->attr_mask = ib_qp_attr_mask_to_amd_emrdma(attr_mask);
-    cmd->attrs.qp_state = ib_qp_state_to_amd_emrdma(attr->qp_state);
-    cmd->attrs.cur_qp_state = ib_qp_state_to_amd_emrdma(attr->cur_qp_state);
-    cmd->attrs.path_mtu = ib_mtu_to_amd_emrdma(attr->path_mtu);
+    cmd->attr_mask = ib_qp_attr_mask_to_rocm_ernic(attr_mask);
+    cmd->attrs.qp_state = ib_qp_state_to_rocm_ernic(attr->qp_state);
+    cmd->attrs.cur_qp_state = ib_qp_state_to_rocm_ernic(attr->cur_qp_state);
+    cmd->attrs.path_mtu = ib_mtu_to_rocm_ernic(attr->path_mtu);
     cmd->attrs.path_mig_state =
-        ib_mig_state_to_amd_emrdma(attr->path_mig_state);
+        ib_mig_state_to_rocm_ernic(attr->path_mig_state);
     cmd->attrs.qkey = attr->qkey;
     cmd->attrs.rq_psn = attr->rq_psn;
     cmd->attrs.sq_psn = attr->sq_psn;
     cmd->attrs.dest_qp_num = attr->dest_qp_num;
     cmd->attrs.qp_access_flags =
-        ib_access_flags_to_amd_emrdma(attr->qp_access_flags);
+        ib_access_flags_to_rocm_ernic(attr->qp_access_flags);
     cmd->attrs.pkey_index = attr->pkey_index;
     cmd->attrs.alt_pkey_index = attr->alt_pkey_index;
     cmd->attrs.en_sqd_async_notify = attr->en_sqd_async_notify;
@@ -596,11 +596,11 @@ int amd_emrdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
     cmd->attrs.rnr_retry = attr->rnr_retry;
     cmd->attrs.alt_port_num = attr->alt_port_num;
     cmd->attrs.alt_timeout = attr->alt_timeout;
-    ib_qp_cap_to_amd_emrdma(&cmd->attrs.cap, &attr->cap);
-    rdma_ah_attr_to_amd_emrdma(&cmd->attrs.ah_attr, &attr->ah_attr);
-    rdma_ah_attr_to_amd_emrdma(&cmd->attrs.alt_ah_attr, &attr->alt_ah_attr);
+    ib_qp_cap_to_rocm_ernic(&cmd->attrs.cap, &attr->cap);
+    rdma_ah_attr_to_rocm_ernic(&cmd->attrs.ah_attr, &attr->ah_attr);
+    rdma_ah_attr_to_rocm_ernic(&cmd->attrs.alt_ah_attr, &attr->alt_ah_attr);
 
-    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_MODIFY_QP_RESP);
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_MODIFY_QP_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev, "could not modify queuepair, error: %d\n",
                  ret);
@@ -611,7 +611,7 @@ int amd_emrdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
     }
 
     if (ret == 0 && next_state == IB_QPS_RESET)
-        amd_emrdma_reset_qp(qp);
+        rocm_ernic_reset_qp(qp);
 
 out:
     mutex_unlock(&qp->mutex);
@@ -619,22 +619,22 @@ out:
     return ret;
 }
 
-static inline void *get_sq_wqe(struct amd_emrdma_qp *qp, unsigned int n)
+static inline void *get_sq_wqe(struct rocm_ernic_qp *qp, unsigned int n)
 {
-    return amd_emrdma_page_dir_get_ptr(&qp->pdir,
+    return rocm_ernic_page_dir_get_ptr(&qp->pdir,
                                        qp->sq.offset + n * qp->sq.wqe_size);
 }
 
-static inline void *get_rq_wqe(struct amd_emrdma_qp *qp, unsigned int n)
+static inline void *get_rq_wqe(struct rocm_ernic_qp *qp, unsigned int n)
 {
-    return amd_emrdma_page_dir_get_ptr(&qp->pdir,
+    return rocm_ernic_page_dir_get_ptr(&qp->pdir,
                                        qp->rq.offset + n * qp->rq.wqe_size);
 }
 
-static int set_reg_seg(struct amd_emrdma_sq_wqe_hdr *wqe_hdr,
+static int set_reg_seg(struct rocm_ernic_sq_wqe_hdr *wqe_hdr,
                        const struct ib_reg_wr *wr)
 {
-    struct amd_emrdma_user_mr *mr = to_vmr(wr->mr);
+    struct rocm_ernic_user_mr *mr = to_vmr(wr->mr);
 
     wqe_hdr->wr.fast_reg.iova_start = mr->ibmr.iova;
     wqe_hdr->wr.fast_reg.pl_pdir_dma = mr->pdir.dir_dma;
@@ -644,26 +644,26 @@ static int set_reg_seg(struct amd_emrdma_sq_wqe_hdr *wqe_hdr,
     wqe_hdr->wr.fast_reg.access_flags = wr->access;
     wqe_hdr->wr.fast_reg.rkey = wr->key;
 
-    return amd_emrdma_page_dir_insert_page_list(&mr->pdir, mr->pages,
+    return rocm_ernic_page_dir_insert_page_list(&mr->pdir, mr->pages,
                                                 mr->npages);
 }
 
 /**
- * amd_emrdma_post_send - post send work request entries on a QP
+ * rocm_ernic_post_send - post send work request entries on a QP
  * @ibqp: the QP
  * @wr: work request list to post
  * @bad_wr: the first bad WR returned
  *
  * @return: 0 on success, otherwise errno returned.
  */
-int amd_emrdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
+int rocm_ernic_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
                          const struct ib_send_wr **bad_wr)
 {
-    struct amd_emrdma_qp *qp = to_vqp(ibqp);
-    struct amd_emrdma_dev *dev = to_vdev(ibqp->device);
+    struct rocm_ernic_qp *qp = to_vqp(ibqp);
+    struct rocm_ernic_dev *dev = to_vdev(ibqp->device);
     unsigned long flags;
-    struct amd_emrdma_sq_wqe_hdr *wqe_hdr;
-    struct amd_emrdma_sge *sge;
+    struct rocm_ernic_sq_wqe_hdr *wqe_hdr;
+    struct rocm_ernic_sge *sge;
     int i, ret;
 
     /*
@@ -680,7 +680,7 @@ int amd_emrdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
     while (wr) {
         unsigned int tail = 0;
 
-        if (unlikely(!amd_emrdma_idx_ring_has_space(qp->sq.ring, qp->sq.wqe_cnt,
+        if (unlikely(!rocm_ernic_idx_ring_has_space(qp->sq.ring, qp->sq.wqe_cnt,
                                                     &tail))) {
             dev_warn_ratelimited(&dev->pdev->dev, "send queue is full\n");
             *bad_wr = wr;
@@ -730,17 +730,17 @@ int amd_emrdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
             }
         }
 
-        wqe_hdr = (struct amd_emrdma_sq_wqe_hdr *)get_sq_wqe(qp, tail);
+        wqe_hdr = (struct rocm_ernic_sq_wqe_hdr *)get_sq_wqe(qp, tail);
         memset(wqe_hdr, 0, sizeof(*wqe_hdr));
         wqe_hdr->wr_id = wr->wr_id;
         wqe_hdr->num_sge = wr->num_sge;
-        wqe_hdr->opcode = ib_wr_opcode_to_amd_emrdma(wr->opcode);
-        wqe_hdr->send_flags = ib_send_flags_to_amd_emrdma(wr->send_flags);
+        wqe_hdr->opcode = ib_wr_opcode_to_rocm_ernic(wr->opcode);
+        wqe_hdr->send_flags = ib_send_flags_to_rocm_ernic(wr->send_flags);
         if (wr->opcode == IB_WR_SEND_WITH_IMM ||
             wr->opcode == IB_WR_RDMA_WRITE_WITH_IMM)
             wqe_hdr->ex.imm_data = wr->ex.imm_data;
 
-        if (unlikely(wqe_hdr->opcode == AMD_EMRDMA_WR_ERROR)) {
+        if (unlikely(wqe_hdr->opcode == ROCM_ERNIC_WR_ERROR)) {
             *bad_wr = wr;
             ret = -EINVAL;
             goto out;
@@ -810,7 +810,7 @@ int amd_emrdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
             goto out;
         }
 
-        sge = (struct amd_emrdma_sge *)(wqe_hdr + 1);
+        sge = (struct rocm_ernic_sge *)(wqe_hdr + 1);
         for (i = 0; i < wr->num_sge; i++) {
             /* Need to check wqe_size 0 or max size */
             sge->addr = wr->sg_list[i].addr;
@@ -823,7 +823,7 @@ int amd_emrdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
         smp_wmb();
 
         /* Update shared sq ring */
-        amd_emrdma_idx_ring_inc(&qp->sq.ring->prod_tail, qp->sq.wqe_cnt);
+        rocm_ernic_idx_ring_inc(&qp->sq.ring->prod_tail, qp->sq.wqe_cnt);
 
         wr = wr->next;
     }
@@ -834,27 +834,27 @@ out:
     spin_unlock_irqrestore(&qp->sq.lock, flags);
 
     if (!ret)
-        amd_emrdma_write_uar_qp(dev, AMD_EMRDMA_UAR_QP_SEND | qp->qp_handle);
+        rocm_ernic_write_uar_qp(dev, ROCM_ERNIC_UAR_QP_SEND | qp->qp_handle);
 
     return ret;
 }
 
 /**
- * amd_emrdma_post_recv - post receive work request entries on a QP
+ * rocm_ernic_post_recv - post receive work request entries on a QP
  * @ibqp: the QP
  * @wr: the work request list to post
  * @bad_wr: the first bad WR returned
  *
  * @return: 0 on success, otherwise errno returned.
  */
-int amd_emrdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
+int rocm_ernic_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
                          const struct ib_recv_wr **bad_wr)
 {
-    struct amd_emrdma_dev *dev = to_vdev(ibqp->device);
+    struct rocm_ernic_dev *dev = to_vdev(ibqp->device);
     unsigned long flags;
-    struct amd_emrdma_qp *qp = to_vqp(ibqp);
-    struct amd_emrdma_rq_wqe_hdr *wqe_hdr;
-    struct amd_emrdma_sge *sge;
+    struct rocm_ernic_qp *qp = to_vqp(ibqp);
+    struct rocm_ernic_rq_wqe_hdr *wqe_hdr;
+    struct rocm_ernic_sge *sge;
     int ret = 0;
     int i;
 
@@ -885,7 +885,7 @@ int amd_emrdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
             goto out;
         }
 
-        if (unlikely(!amd_emrdma_idx_ring_has_space(qp->rq.ring, qp->rq.wqe_cnt,
+        if (unlikely(!rocm_ernic_idx_ring_has_space(qp->rq.ring, qp->rq.wqe_cnt,
                                                     &tail))) {
             ret = -ENOMEM;
             *bad_wr = wr;
@@ -893,12 +893,12 @@ int amd_emrdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
             goto out;
         }
 
-        wqe_hdr = (struct amd_emrdma_rq_wqe_hdr *)get_rq_wqe(qp, tail);
+        wqe_hdr = (struct rocm_ernic_rq_wqe_hdr *)get_rq_wqe(qp, tail);
         wqe_hdr->wr_id = wr->wr_id;
         wqe_hdr->num_sge = wr->num_sge;
         wqe_hdr->total_len = 0;
 
-        sge = (struct amd_emrdma_sge *)(wqe_hdr + 1);
+        sge = (struct rocm_ernic_sge *)(wqe_hdr + 1);
         for (i = 0; i < wr->num_sge; i++) {
             sge->addr = wr->sg_list[i].addr;
             sge->length = wr->sg_list[i].length;
@@ -910,14 +910,14 @@ int amd_emrdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
         smp_wmb();
 
         /* Update shared rq ring */
-        amd_emrdma_idx_ring_inc(&qp->rq.ring->prod_tail, qp->rq.wqe_cnt);
+        rocm_ernic_idx_ring_inc(&qp->rq.ring->prod_tail, qp->rq.wqe_cnt);
 
         wr = wr->next;
     }
 
     spin_unlock_irqrestore(&qp->rq.lock, flags);
 
-    amd_emrdma_write_uar_qp(dev, AMD_EMRDMA_UAR_QP_RECV | qp->qp_handle);
+    rocm_ernic_write_uar_qp(dev, ROCM_ERNIC_UAR_QP_RECV | qp->qp_handle);
 
     return ret;
 
@@ -928,7 +928,7 @@ out:
 }
 
 /**
- * amd_emrdma_query_qp - query a queue pair's attributes
+ * rocm_ernic_query_qp - query a queue pair's attributes
  * @ibqp: the queue pair to query
  * @attr: the queue pair's attributes
  * @attr_mask: attributes mask
@@ -936,15 +936,15 @@ out:
  *
  * @returns 0 on success, otherwise returns an errno.
  */
-int amd_emrdma_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
+int rocm_ernic_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
                         int attr_mask, struct ib_qp_init_attr *init_attr)
 {
-    struct amd_emrdma_dev *dev = to_vdev(ibqp->device);
-    struct amd_emrdma_qp *qp = to_vqp(ibqp);
-    union amd_emrdma_cmd_req req;
-    union amd_emrdma_cmd_resp rsp;
-    struct amd_emrdma_cmd_query_qp *cmd = &req.query_qp;
-    struct amd_emrdma_cmd_query_qp_resp *resp = &rsp.query_qp_resp;
+    struct rocm_ernic_dev *dev = to_vdev(ibqp->device);
+    struct rocm_ernic_qp *qp = to_vqp(ibqp);
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_query_qp *cmd = &req.query_qp;
+    struct rocm_ernic_cmd_query_qp_resp *resp = &rsp.query_qp_resp;
     int ret = 0;
 
     mutex_lock(&qp->mutex);
@@ -955,28 +955,28 @@ int amd_emrdma_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
     }
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->hdr.cmd = AMD_EMRDMA_CMD_QUERY_QP;
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_QUERY_QP;
     cmd->qp_handle = qp->qp_handle;
-    cmd->attr_mask = ib_qp_attr_mask_to_amd_emrdma(attr_mask);
+    cmd->attr_mask = ib_qp_attr_mask_to_rocm_ernic(attr_mask);
 
-    ret = amd_emrdma_cmd_post(dev, &req, &rsp, AMD_EMRDMA_CMD_QUERY_QP_RESP);
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_QUERY_QP_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev, "could not query queuepair, error: %d\n",
                  ret);
         goto out;
     }
 
-    attr->qp_state = amd_emrdma_qp_state_to_ib(resp->attrs.qp_state);
-    attr->cur_qp_state = amd_emrdma_qp_state_to_ib(resp->attrs.cur_qp_state);
-    attr->path_mtu = amd_emrdma_mtu_to_ib(resp->attrs.path_mtu);
+    attr->qp_state = rocm_ernic_qp_state_to_ib(resp->attrs.qp_state);
+    attr->cur_qp_state = rocm_ernic_qp_state_to_ib(resp->attrs.cur_qp_state);
+    attr->path_mtu = rocm_ernic_mtu_to_ib(resp->attrs.path_mtu);
     attr->path_mig_state =
-        amd_emrdma_mig_state_to_ib(resp->attrs.path_mig_state);
+        rocm_ernic_mig_state_to_ib(resp->attrs.path_mig_state);
     attr->qkey = resp->attrs.qkey;
     attr->rq_psn = resp->attrs.rq_psn;
     attr->sq_psn = resp->attrs.sq_psn;
     attr->dest_qp_num = resp->attrs.dest_qp_num;
     attr->qp_access_flags =
-        amd_emrdma_access_flags_to_ib(resp->attrs.qp_access_flags);
+        rocm_ernic_access_flags_to_ib(resp->attrs.qp_access_flags);
     attr->pkey_index = resp->attrs.pkey_index;
     attr->alt_pkey_index = resp->attrs.alt_pkey_index;
     attr->en_sqd_async_notify = resp->attrs.en_sqd_async_notify;
@@ -990,9 +990,9 @@ int amd_emrdma_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
     attr->rnr_retry = resp->attrs.rnr_retry;
     attr->alt_port_num = resp->attrs.alt_port_num;
     attr->alt_timeout = resp->attrs.alt_timeout;
-    amd_emrdma_qp_cap_to_ib(&attr->cap, &resp->attrs.cap);
-    amd_emrdma_ah_attr_to_rdma(&attr->ah_attr, &resp->attrs.ah_attr);
-    amd_emrdma_ah_attr_to_rdma(&attr->alt_ah_attr, &resp->attrs.alt_ah_attr);
+    rocm_ernic_qp_cap_to_ib(&attr->cap, &resp->attrs.cap);
+    rocm_ernic_ah_attr_to_rdma(&attr->ah_attr, &resp->attrs.ah_attr);
+    rocm_ernic_ah_attr_to_rdma(&attr->alt_ah_attr, &resp->attrs.alt_ah_attr);
 
     qp->state = attr->qp_state;
 

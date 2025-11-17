@@ -1,12 +1,12 @@
-# Out-of-tree kernel module Makefile for amd_emrdma
+# Out-of-tree kernel module Makefile for rocm_ernic
 # Usage: make -f Makefile.out-of-tree
 
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 # Module name and object files
-obj-m := amd_emrdma.o
-amd_emrdma-y := rocm_ernic_cmd.o rocm_ernic_cq.o rocm_ernic_doorbell.o \
+obj-m := rocm_ernic.o
+rocm_ernic-y := rocm_ernic_cmd.o rocm_ernic_cq.o rocm_ernic_doorbell.o \
                 rocm_ernic_main.o rocm_ernic_misc.o rocm_ernic_mr.o \
                 rocm_ernic_qp.o rocm_ernic_srq.o rocm_ernic_verbs.o
 
@@ -28,18 +28,18 @@ install:
 
 # Load the module (requires root)
 load:
-	modprobe amd_emrdma
+	modprobe rocm_ernic
 
 # Unload the module (requires root)
 unload:
-	modprobe -r amd_emrdma || true
+	modprobe -r rocm_ernic || true
 
 # Reload the module (requires root)
 reload: unload load
 
 # Show module info
 info:
-	modinfo amd_emrdma.ko
+	modinfo rocm_ernic.ko
 
 # Show build configuration
 config:

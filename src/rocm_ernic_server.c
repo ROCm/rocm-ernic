@@ -35,9 +35,9 @@
 #include "rocm_ernic_internal.h"
 #include "rocm_ernic_compat.h"
 
-/* AMD Emulated RDMA device IDs (for vfio-user) */
+/* AMD ROCm ERNIC device IDs (for vfio-user) */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_AMD_EMRDMA 0x1484
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -317,9 +317,9 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
     /* Set vendor/device IDs */
     vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD, /* Vendor ID */
-                   PCI_DEVICE_ID_AMD_EMRDMA,   /* Device ID */
+                   PCI_DEVICE_ID_ROCM_ERNIC,   /* Device ID */
                    PCI_VENDOR_ID_AMD,          /* Subsystem Vendor ID */
-                   PCI_DEVICE_ID_AMD_EMRDMA);  /* Subsystem ID */
+                   PCI_DEVICE_ID_ROCM_ERNIC);  /* Subsystem ID */
 
     /* Set PCI class code: Network Controller - Other */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class */
@@ -327,7 +327,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                       0x00); /* Programming interface */
 
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
-            PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_EMRDMA);
+            PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_ROCM_ERNIC);
 
     return 0;
 }

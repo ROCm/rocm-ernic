@@ -55,7 +55,7 @@
 
 #include "rocm_ernic.h"
 
-#define DRV_NAME    "amd_emrdma"
+#define DRV_NAME    "rocm_ernic"
 #define DRV_VERSION "1.0.1.0-k"
 
 /* Kernel compatibility: PCI_IRQ_LEGACY was renamed to PCI_IRQ_INTX in 5.17 */
@@ -63,59 +63,59 @@
 #define PCI_IRQ_INTX PCI_IRQ_LEGACY
 #endif
 
-static DEFINE_MUTEX(amd_emrdma_device_list_lock);
-static LIST_HEAD(amd_emrdma_device_list);
+static DEFINE_MUTEX(rocm_ernic_device_list_lock);
+static LIST_HEAD(rocm_ernic_device_list);
 static struct workqueue_struct *event_wq;
 
-static int amd_emrdma_add_gid(const struct ib_gid_attr *attr, void **context);
-static int amd_emrdma_del_gid(const struct ib_gid_attr *attr, void **context);
-static int amd_emrdma_add_gid_at_index(struct amd_emrdma_dev *dev,
+static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context);
+static int rocm_ernic_del_gid(const struct ib_gid_attr *attr, void **context);
+static int rocm_ernic_add_gid_at_index(struct rocm_ernic_dev *dev,
                                        const union ib_gid *gid, u8 gid_type,
                                        int index);
 
 static ssize_t hca_type_show(struct device *device,
                              struct device_attribute *attr, char *buf)
 {
-    return sysfs_emit(buf, "AMD_EMRDMA-%s\n", DRV_VERSION);
+    return sysfs_emit(buf, "ROCM_ERNIC-%s\n", DRV_VERSION);
 }
 static DEVICE_ATTR_RO(hca_type);
 
 static ssize_t hw_rev_show(struct device *device, struct device_attribute *attr,
                            char *buf)
 {
-    return sysfs_emit(buf, "%d\n", AMD_EMRDMA_REV_ID);
+    return sysfs_emit(buf, "%d\n", ROCM_ERNIC_REV_ID);
 }
 static DEVICE_ATTR_RO(hw_rev);
 
 static ssize_t board_id_show(struct device *device,
                              struct device_attribute *attr, char *buf)
 {
-    return sysfs_emit(buf, "%d\n", AMD_EMRDMA_BOARD_ID);
+    return sysfs_emit(buf, "%d\n", ROCM_ERNIC_BOARD_ID);
 }
 static DEVICE_ATTR_RO(board_id);
 
-static struct attribute *amd_emrdma_class_attributes[] = {
+static struct attribute *rocm_ernic_class_attributes[] = {
     &dev_attr_hw_rev.attr,
     &dev_attr_hca_type.attr,
     &dev_attr_board_id.attr,
     NULL,
 };
 
-static const struct attribute_group amd_emrdma_attr_group = {
-    .attrs = amd_emrdma_class_attributes,
+static const struct attribute_group rocm_ernic_attr_group = {
+    .attrs = rocm_ernic_class_attributes,
 };
 
-static void amd_emrdma_get_fw_ver_str(struct ib_device *device, char *str)
+static void rocm_ernic_get_fw_ver_str(struct ib_device *device, char *str)
 {
-    struct amd_emrdma_dev *dev =
-        container_of(device, struct amd_emrdma_dev, ib_dev);
+    struct rocm_ernic_dev *dev =
+        container_of(device, struct rocm_ernic_dev, ib_dev);
     snprintf(str, IB_FW_VERSION_NAME_MAX, "%d.%d.%d\n",
              (int)(dev->dsr->caps.fw_ver >> 32),
              (int)(dev->dsr->caps.fw_ver >> 16) & 0xffff,
              (int)dev->dsr->caps.fw_ver & 0xffff);
 }
 
-static int amd_emrdma_init_device(struct amd_emrdma_dev *dev)
+static int rocm_ernic_init_device(struct rocm_ernic_dev *dev)
 {
     /*  Initialize some device related stuff */
     spin_lock_init(&dev->cmd_lock);
@@ -129,16 +129,16 @@ static int amd_emrdma_init_device(struct amd_emrdma_dev *dev)
     return 0;
 }
 
-static int amd_emrdma_port_immutable(struct ib_device *ibdev, u32 port_num,
+static int rocm_ernic_port_immutable(struct ib_device *ibdev, u32 port_num,
                                      struct ib_port_immutable *immutable)
 {
-    struct amd_emrdma_dev *dev = to_vdev(ibdev);
+    struct rocm_ernic_dev *dev = to_vdev(ibdev);
     struct ib_port_attr attr;
     int err;
 
-    if (dev->dsr->caps.gid_types == AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V1)
+    if (dev->dsr->caps.gid_types == ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V1)
         immutable->core_cap_flags |= RDMA_CORE_PORT_IBA_ROCE;
-    else if (dev->dsr->caps.gid_types == AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V2)
+    else if (dev->dsr->caps.gid_types == ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V2)
         immutable->core_cap_flags |= RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP;
 
     err = ib_query_port(ibdev, port_num, &attr);
@@ -151,7 +151,7 @@ static int amd_emrdma_port_immutable(struct ib_device *ibdev, u32 port_num,
     return 0;
 }
 
-static void amd_emrdma_dispatch_event(struct amd_emrdma_dev *dev, int port,
+static void rocm_ernic_dispatch_event(struct rocm_ernic_dev *dev, int port,
                                       enum ib_event_type event)
 {
     struct ib_event ib_event;
@@ -163,63 +163,63 @@ static void amd_emrdma_dispatch_event(struct amd_emrdma_dev *dev, int port,
     ib_dispatch_event(&ib_event);
 }
 
-static const struct ib_device_ops amd_emrdma_dev_ops = {
+static const struct ib_device_ops rocm_ernic_dev_ops = {
     .owner = THIS_MODULE,
     .driver_id = RDMA_DRIVER_VMW_PVRDMA, /* Use VMware ID for compatibility */
-    .uverbs_abi_ver = AMD_EMRDMA_UVERBS_ABI_VERSION,
+    .uverbs_abi_ver = ROCM_ERNIC_UVERBS_ABI_VERSION,
 
-    .add_gid = amd_emrdma_add_gid,
-    .alloc_mr = amd_emrdma_alloc_mr,
-    .alloc_pd = amd_emrdma_alloc_pd,
-    .alloc_ucontext = amd_emrdma_alloc_ucontext,
-    .create_ah = amd_emrdma_create_ah,
-    .create_cq = amd_emrdma_create_cq,
-    .create_qp = amd_emrdma_create_qp,
-    .dealloc_pd = amd_emrdma_dealloc_pd,
-    .dealloc_ucontext = amd_emrdma_dealloc_ucontext,
-    .del_gid = amd_emrdma_del_gid,
-    .dereg_mr = amd_emrdma_dereg_mr,
-    .destroy_ah = amd_emrdma_destroy_ah,
-    .destroy_cq = amd_emrdma_destroy_cq,
-    .destroy_qp = amd_emrdma_destroy_qp,
-    .device_group = &amd_emrdma_attr_group,
-    .get_dev_fw_str = amd_emrdma_get_fw_ver_str,
-    .get_dma_mr = amd_emrdma_get_dma_mr,
-    .get_link_layer = amd_emrdma_port_link_layer,
-    .get_port_immutable = amd_emrdma_port_immutable,
-    .map_mr_sg = amd_emrdma_map_mr_sg,
-    .mmap = amd_emrdma_mmap,
-    .modify_port = amd_emrdma_modify_port,
-    .modify_qp = amd_emrdma_modify_qp,
-    .poll_cq = amd_emrdma_poll_cq,
-    .post_recv = amd_emrdma_post_recv,
-    .post_send = amd_emrdma_post_send,
-    .query_device = amd_emrdma_query_device,
-    .query_gid = amd_emrdma_query_gid,
-    .query_pkey = amd_emrdma_query_pkey,
-    .query_port = amd_emrdma_query_port,
-    .query_qp = amd_emrdma_query_qp,
-    .reg_user_mr = amd_emrdma_reg_user_mr,
-    .req_notify_cq = amd_emrdma_req_notify_cq,
+    .add_gid = rocm_ernic_add_gid,
+    .alloc_mr = rocm_ernic_alloc_mr,
+    .alloc_pd = rocm_ernic_alloc_pd,
+    .alloc_ucontext = rocm_ernic_alloc_ucontext,
+    .create_ah = rocm_ernic_create_ah,
+    .create_cq = rocm_ernic_create_cq,
+    .create_qp = rocm_ernic_create_qp,
+    .dealloc_pd = rocm_ernic_dealloc_pd,
+    .dealloc_ucontext = rocm_ernic_dealloc_ucontext,
+    .del_gid = rocm_ernic_del_gid,
+    .dereg_mr = rocm_ernic_dereg_mr,
+    .destroy_ah = rocm_ernic_destroy_ah,
+    .destroy_cq = rocm_ernic_destroy_cq,
+    .destroy_qp = rocm_ernic_destroy_qp,
+    .device_group = &rocm_ernic_attr_group,
+    .get_dev_fw_str = rocm_ernic_get_fw_ver_str,
+    .get_dma_mr = rocm_ernic_get_dma_mr,
+    .get_link_layer = rocm_ernic_port_link_layer,
+    .get_port_immutable = rocm_ernic_port_immutable,
+    .map_mr_sg = rocm_ernic_map_mr_sg,
+    .mmap = rocm_ernic_mmap,
+    .modify_port = rocm_ernic_modify_port,
+    .modify_qp = rocm_ernic_modify_qp,
+    .poll_cq = rocm_ernic_poll_cq,
+    .post_recv = rocm_ernic_post_recv,
+    .post_send = rocm_ernic_post_send,
+    .query_device = rocm_ernic_query_device,
+    .query_gid = rocm_ernic_query_gid,
+    .query_pkey = rocm_ernic_query_pkey,
+    .query_port = rocm_ernic_query_port,
+    .query_qp = rocm_ernic_query_qp,
+    .reg_user_mr = rocm_ernic_reg_user_mr,
+    .req_notify_cq = rocm_ernic_req_notify_cq,
     /* .report_port_event removed in kernel 6.8+ */
 
-    INIT_RDMA_OBJ_SIZE(ib_ah, amd_emrdma_ah, ibah),
-    INIT_RDMA_OBJ_SIZE(ib_cq, amd_emrdma_cq, ibcq),
-    INIT_RDMA_OBJ_SIZE(ib_pd, amd_emrdma_pd, ibpd),
-    INIT_RDMA_OBJ_SIZE(ib_qp, amd_emrdma_qp, ibqp),
-    INIT_RDMA_OBJ_SIZE(ib_ucontext, amd_emrdma_ucontext, ibucontext),
+    INIT_RDMA_OBJ_SIZE(ib_ah, rocm_ernic_ah, ibah),
+    INIT_RDMA_OBJ_SIZE(ib_cq, rocm_ernic_cq, ibcq),
+    INIT_RDMA_OBJ_SIZE(ib_pd, rocm_ernic_pd, ibpd),
+    INIT_RDMA_OBJ_SIZE(ib_qp, rocm_ernic_qp, ibqp),
+    INIT_RDMA_OBJ_SIZE(ib_ucontext, rocm_ernic_ucontext, ibucontext),
 };
 
-static const struct ib_device_ops amd_emrdma_dev_srq_ops = {
-    .create_srq = amd_emrdma_create_srq,
-    .destroy_srq = amd_emrdma_destroy_srq,
-    .modify_srq = amd_emrdma_modify_srq,
-    .query_srq = amd_emrdma_query_srq,
+static const struct ib_device_ops rocm_ernic_dev_srq_ops = {
+    .create_srq = rocm_ernic_create_srq,
+    .destroy_srq = rocm_ernic_destroy_srq,
+    .modify_srq = rocm_ernic_modify_srq,
+    .query_srq = rocm_ernic_query_srq,
 
-    INIT_RDMA_OBJ_SIZE(ib_srq, amd_emrdma_srq, ibsrq),
+    INIT_RDMA_OBJ_SIZE(ib_srq, rocm_ernic_srq, ibsrq),
 };
 
-static int amd_emrdma_register_device(struct amd_emrdma_dev *dev)
+static int rocm_ernic_register_device(struct rocm_ernic_dev *dev)
 {
     int ret = -1;
 
@@ -244,18 +244,18 @@ static int amd_emrdma_register_device(struct amd_emrdma_dev *dev)
     dev->ib_dev.node_type = RDMA_NODE_IB_CA;
     dev->ib_dev.phys_port_cnt = dev->dsr->caps.phys_port_cnt;
 
-    ib_set_device_ops(&dev->ib_dev, &amd_emrdma_dev_ops);
+    ib_set_device_ops(&dev->ib_dev, &rocm_ernic_dev_ops);
 
     mutex_init(&dev->port_mutex);
     spin_lock_init(&dev->desc_lock);
 
-    dev->cq_tbl = kcalloc(dev->dsr->caps.max_cq, sizeof(struct amd_emrdma_cq *),
+    dev->cq_tbl = kcalloc(dev->dsr->caps.max_cq, sizeof(struct rocm_ernic_cq *),
                           GFP_KERNEL);
     if (!dev->cq_tbl)
         return ret;
     spin_lock_init(&dev->cq_tbl_lock);
 
-    dev->qp_tbl = kcalloc(dev->dsr->caps.max_qp, sizeof(struct amd_emrdma_qp *),
+    dev->qp_tbl = kcalloc(dev->dsr->caps.max_qp, sizeof(struct rocm_ernic_qp *),
                           GFP_KERNEL);
     if (!dev->qp_tbl)
         goto err_cq_free;
@@ -263,10 +263,10 @@ static int amd_emrdma_register_device(struct amd_emrdma_dev *dev)
 
     /* Check if SRQ is supported by backend */
     if (dev->dsr->caps.max_srq) {
-        ib_set_device_ops(&dev->ib_dev, &amd_emrdma_dev_srq_ops);
+        ib_set_device_ops(&dev->ib_dev, &rocm_ernic_dev_srq_ops);
 
         dev->srq_tbl = kcalloc(dev->dsr->caps.max_srq,
-                               sizeof(struct amd_emrdma_srq *), GFP_KERNEL);
+                               sizeof(struct rocm_ernic_srq *), GFP_KERNEL);
         if (!dev->srq_tbl)
             goto err_qp_free;
     }
@@ -275,7 +275,7 @@ static int amd_emrdma_register_device(struct amd_emrdma_dev *dev)
         goto err_srq_free;
     spin_lock_init(&dev->srq_tbl_lock);
 
-    ret = ib_register_device(&dev->ib_dev, "amd_emrdma%d", &dev->pdev->dev);
+    ret = ib_register_device(&dev->ib_dev, "rocm_ernic%d", &dev->pdev->dev);
     if (ret)
         goto err_srq_free;
 
@@ -302,29 +302,29 @@ err_cq_free:
     return ret;
 }
 
-static irqreturn_t amd_emrdma_intr0_handler(int irq, void *dev_id)
+static irqreturn_t rocm_ernic_intr0_handler(int irq, void *dev_id)
 {
-    u32 icr = AMD_EMRDMA_INTR_CAUSE_RESPONSE;
-    struct amd_emrdma_dev *dev = dev_id;
+    u32 icr = ROCM_ERNIC_INTR_CAUSE_RESPONSE;
+    struct rocm_ernic_dev *dev = dev_id;
 
     dev_dbg(&dev->pdev->dev, "interrupt 0 (response) handler\n");
 
     if (!dev->pdev->msix_enabled) {
         /* Legacy intr */
-        icr = amd_emrdma_read_reg(dev, AMD_EMRDMA_REG_ICR);
+        icr = rocm_ernic_read_reg(dev, ROCM_ERNIC_REG_ICR);
         if (icr == 0)
             return IRQ_NONE;
     }
 
-    if (icr == AMD_EMRDMA_INTR_CAUSE_RESPONSE)
+    if (icr == ROCM_ERNIC_INTR_CAUSE_RESPONSE)
         complete(&dev->cmd_done);
 
     return IRQ_HANDLED;
 }
 
-static void amd_emrdma_qp_event(struct amd_emrdma_dev *dev, u32 qpn, int type)
+static void rocm_ernic_qp_event(struct rocm_ernic_dev *dev, u32 qpn, int type)
 {
-    struct amd_emrdma_qp *qp;
+    struct rocm_ernic_qp *qp;
     unsigned long flags;
 
     spin_lock_irqsave(&dev->qp_tbl_lock, flags);
@@ -348,9 +348,9 @@ static void amd_emrdma_qp_event(struct amd_emrdma_dev *dev, u32 qpn, int type)
     }
 }
 
-static void amd_emrdma_cq_event(struct amd_emrdma_dev *dev, u32 cqn, int type)
+static void rocm_ernic_cq_event(struct rocm_ernic_dev *dev, u32 cqn, int type)
 {
-    struct amd_emrdma_cq *cq;
+    struct rocm_ernic_cq *cq;
     unsigned long flags;
 
     spin_lock_irqsave(&dev->cq_tbl_lock, flags);
@@ -374,9 +374,9 @@ static void amd_emrdma_cq_event(struct amd_emrdma_dev *dev, u32 cqn, int type)
     }
 }
 
-static void amd_emrdma_srq_event(struct amd_emrdma_dev *dev, u32 srqn, int type)
+static void rocm_ernic_srq_event(struct rocm_ernic_dev *dev, u32 srqn, int type)
 {
-    struct amd_emrdma_srq *srq;
+    struct rocm_ernic_srq *srq;
     unsigned long flags;
 
     spin_lock_irqsave(&dev->srq_tbl_lock, flags);
@@ -403,29 +403,29 @@ static void amd_emrdma_srq_event(struct amd_emrdma_dev *dev, u32 srqn, int type)
     }
 }
 
-static void amd_emrdma_dev_event(struct amd_emrdma_dev *dev, u8 port, int type)
+static void rocm_ernic_dev_event(struct rocm_ernic_dev *dev, u8 port, int type)
 {
     if (port < 1 || port > dev->dsr->caps.phys_port_cnt) {
         dev_warn(&dev->pdev->dev, "event on port %d\n", port);
         return;
     }
 
-    amd_emrdma_dispatch_event(dev, port, type);
+    rocm_ernic_dispatch_event(dev, port, type);
 }
 
-static inline struct amd_emrdma_eqe *get_eqe(struct amd_emrdma_dev *dev,
+static inline struct rocm_ernic_eqe *get_eqe(struct rocm_ernic_dev *dev,
                                              unsigned int i)
 {
-    return (struct amd_emrdma_eqe *)amd_emrdma_page_dir_get_ptr(
-        &dev->async_pdir, PAGE_SIZE + sizeof(struct amd_emrdma_eqe) * i);
+    return (struct rocm_ernic_eqe *)rocm_ernic_page_dir_get_ptr(
+        &dev->async_pdir, PAGE_SIZE + sizeof(struct rocm_ernic_eqe) * i);
 }
 
-static irqreturn_t amd_emrdma_intr1_handler(int irq, void *dev_id)
+static irqreturn_t rocm_ernic_intr1_handler(int irq, void *dev_id)
 {
-    struct amd_emrdma_dev *dev = dev_id;
-    struct amd_emrdma_ring *ring = &dev->async_ring_state->rx;
+    struct rocm_ernic_dev *dev = dev_id;
+    struct rocm_ernic_ring *ring = &dev->async_ring_state->rx;
     int ring_slots = (dev->dsr->async_ring_pages.num_pages - 1) * PAGE_SIZE /
-                     sizeof(struct amd_emrdma_eqe);
+                     sizeof(struct rocm_ernic_eqe);
     unsigned int head;
 
     dev_dbg(&dev->pdev->dev, "interrupt 1 (async event) handler\n");
@@ -437,76 +437,76 @@ static irqreturn_t amd_emrdma_intr1_handler(int irq, void *dev_id)
     if (!dev->ib_active)
         return IRQ_HANDLED;
 
-    while (amd_emrdma_idx_ring_has_data(ring, ring_slots, &head) > 0) {
-        struct amd_emrdma_eqe *eqe;
+    while (rocm_ernic_idx_ring_has_data(ring, ring_slots, &head) > 0) {
+        struct rocm_ernic_eqe *eqe;
 
         eqe = get_eqe(dev, head);
 
         switch (eqe->type) {
-        case AMD_EMRDMA_EVENT_QP_FATAL:
-        case AMD_EMRDMA_EVENT_QP_REQ_ERR:
-        case AMD_EMRDMA_EVENT_QP_ACCESS_ERR:
-        case AMD_EMRDMA_EVENT_COMM_EST:
-        case AMD_EMRDMA_EVENT_SQ_DRAINED:
-        case AMD_EMRDMA_EVENT_PATH_MIG:
-        case AMD_EMRDMA_EVENT_PATH_MIG_ERR:
-        case AMD_EMRDMA_EVENT_QP_LAST_WQE_REACHED:
-            amd_emrdma_qp_event(dev, eqe->info, eqe->type);
+        case ROCM_ERNIC_EVENT_QP_FATAL:
+        case ROCM_ERNIC_EVENT_QP_REQ_ERR:
+        case ROCM_ERNIC_EVENT_QP_ACCESS_ERR:
+        case ROCM_ERNIC_EVENT_COMM_EST:
+        case ROCM_ERNIC_EVENT_SQ_DRAINED:
+        case ROCM_ERNIC_EVENT_PATH_MIG:
+        case ROCM_ERNIC_EVENT_PATH_MIG_ERR:
+        case ROCM_ERNIC_EVENT_QP_LAST_WQE_REACHED:
+            rocm_ernic_qp_event(dev, eqe->info, eqe->type);
             break;
 
-        case AMD_EMRDMA_EVENT_CQ_ERR:
-            amd_emrdma_cq_event(dev, eqe->info, eqe->type);
+        case ROCM_ERNIC_EVENT_CQ_ERR:
+            rocm_ernic_cq_event(dev, eqe->info, eqe->type);
             break;
 
-        case AMD_EMRDMA_EVENT_SRQ_ERR:
-        case AMD_EMRDMA_EVENT_SRQ_LIMIT_REACHED:
-            amd_emrdma_srq_event(dev, eqe->info, eqe->type);
+        case ROCM_ERNIC_EVENT_SRQ_ERR:
+        case ROCM_ERNIC_EVENT_SRQ_LIMIT_REACHED:
+            rocm_ernic_srq_event(dev, eqe->info, eqe->type);
             break;
 
-        case AMD_EMRDMA_EVENT_PORT_ACTIVE:
-        case AMD_EMRDMA_EVENT_PORT_ERR:
-        case AMD_EMRDMA_EVENT_LID_CHANGE:
-        case AMD_EMRDMA_EVENT_PKEY_CHANGE:
-        case AMD_EMRDMA_EVENT_SM_CHANGE:
-        case AMD_EMRDMA_EVENT_CLIENT_REREGISTER:
-        case AMD_EMRDMA_EVENT_GID_CHANGE:
-            amd_emrdma_dev_event(dev, eqe->info, eqe->type);
+        case ROCM_ERNIC_EVENT_PORT_ACTIVE:
+        case ROCM_ERNIC_EVENT_PORT_ERR:
+        case ROCM_ERNIC_EVENT_LID_CHANGE:
+        case ROCM_ERNIC_EVENT_PKEY_CHANGE:
+        case ROCM_ERNIC_EVENT_SM_CHANGE:
+        case ROCM_ERNIC_EVENT_CLIENT_REREGISTER:
+        case ROCM_ERNIC_EVENT_GID_CHANGE:
+            rocm_ernic_dev_event(dev, eqe->info, eqe->type);
             break;
 
-        case AMD_EMRDMA_EVENT_DEVICE_FATAL:
-            amd_emrdma_dev_event(dev, 1, eqe->type);
+        case ROCM_ERNIC_EVENT_DEVICE_FATAL:
+            rocm_ernic_dev_event(dev, 1, eqe->type);
             break;
 
         default:
             break;
         }
 
-        amd_emrdma_idx_ring_inc(&ring->cons_head, ring_slots);
+        rocm_ernic_idx_ring_inc(&ring->cons_head, ring_slots);
     }
 
     return IRQ_HANDLED;
 }
 
-static inline struct amd_emrdma_cqne *get_cqne(struct amd_emrdma_dev *dev,
+static inline struct rocm_ernic_cqne *get_cqne(struct rocm_ernic_dev *dev,
                                                unsigned int i)
 {
-    return (struct amd_emrdma_cqne *)amd_emrdma_page_dir_get_ptr(
-        &dev->cq_pdir, PAGE_SIZE + sizeof(struct amd_emrdma_cqne) * i);
+    return (struct rocm_ernic_cqne *)rocm_ernic_page_dir_get_ptr(
+        &dev->cq_pdir, PAGE_SIZE + sizeof(struct rocm_ernic_cqne) * i);
 }
 
-static irqreturn_t amd_emrdma_intrx_handler(int irq, void *dev_id)
+static irqreturn_t rocm_ernic_intrx_handler(int irq, void *dev_id)
 {
-    struct amd_emrdma_dev *dev = dev_id;
-    struct amd_emrdma_ring *ring = &dev->cq_ring_state->rx;
+    struct rocm_ernic_dev *dev = dev_id;
+    struct rocm_ernic_ring *ring = &dev->cq_ring_state->rx;
     int ring_slots = (dev->dsr->cq_ring_pages.num_pages - 1) * PAGE_SIZE /
-                     sizeof(struct amd_emrdma_cqne);
+                     sizeof(struct rocm_ernic_cqne);
     unsigned int head;
 
     dev_dbg(&dev->pdev->dev, "interrupt x (completion) handler\n");
 
-    while (amd_emrdma_idx_ring_has_data(ring, ring_slots, &head) > 0) {
-        struct amd_emrdma_cqne *cqne;
-        struct amd_emrdma_cq *cq;
+    while (rocm_ernic_idx_ring_has_data(ring, ring_slots, &head) > 0) {
+        struct rocm_ernic_cqne *cqne;
+        struct rocm_ernic_cq *cq;
 
         cqne = get_cqne(dev, head);
         spin_lock(&dev->cq_tbl_lock);
@@ -521,13 +521,13 @@ static irqreturn_t amd_emrdma_intrx_handler(int irq, void *dev_id)
             if (refcount_dec_and_test(&cq->refcnt))
                 complete(&cq->free);
         }
-        amd_emrdma_idx_ring_inc(&ring->cons_head, ring_slots);
+        rocm_ernic_idx_ring_inc(&ring->cons_head, ring_slots);
     }
 
     return IRQ_HANDLED;
 }
 
-static void amd_emrdma_free_irq(struct amd_emrdma_dev *dev)
+static void rocm_ernic_free_irq(struct rocm_ernic_dev *dev)
 {
     int i;
 
@@ -536,25 +536,25 @@ static void amd_emrdma_free_irq(struct amd_emrdma_dev *dev)
         free_irq(pci_irq_vector(dev->pdev, i), dev);
 }
 
-static void amd_emrdma_enable_intrs(struct amd_emrdma_dev *dev)
+static void rocm_ernic_enable_intrs(struct rocm_ernic_dev *dev)
 {
     dev_dbg(&dev->pdev->dev, "enable interrupts\n");
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_IMR, 0);
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_IMR, 0);
 }
 
-static void amd_emrdma_disable_intrs(struct amd_emrdma_dev *dev)
+static void rocm_ernic_disable_intrs(struct rocm_ernic_dev *dev)
 {
     dev_dbg(&dev->pdev->dev, "disable interrupts\n");
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_IMR, ~0);
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_IMR, ~0);
 }
 
-static int amd_emrdma_alloc_intrs(struct amd_emrdma_dev *dev)
+static int rocm_ernic_alloc_intrs(struct rocm_ernic_dev *dev)
 {
     struct pci_dev *pdev = dev->pdev;
     int ret = 0, i;
 
     ret =
-        pci_alloc_irq_vectors(pdev, 1, AMD_EMRDMA_MAX_INTERRUPTS, PCI_IRQ_MSIX);
+        pci_alloc_irq_vectors(pdev, 1, ROCM_ERNIC_MAX_INTERRUPTS, PCI_IRQ_MSIX);
     if (ret < 0) {
         ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI | PCI_IRQ_INTX);
         if (ret < 0)
@@ -562,7 +562,7 @@ static int amd_emrdma_alloc_intrs(struct amd_emrdma_dev *dev)
     }
     dev->nr_vectors = ret;
 
-    ret = request_irq(pci_irq_vector(dev->pdev, 0), amd_emrdma_intr0_handler,
+    ret = request_irq(pci_irq_vector(dev->pdev, 0), rocm_ernic_intr0_handler,
                       pdev->msix_enabled ? 0 : IRQF_SHARED, DRV_NAME, dev);
     if (ret) {
         dev_err(&dev->pdev->dev, "failed to request interrupt 0\n");
@@ -571,8 +571,8 @@ static int amd_emrdma_alloc_intrs(struct amd_emrdma_dev *dev)
 
     for (i = 1; i < dev->nr_vectors; i++) {
         ret = request_irq(pci_irq_vector(dev->pdev, i),
-                          i == 1 ? amd_emrdma_intr1_handler
-                                 : amd_emrdma_intrx_handler,
+                          i == 1 ? rocm_ernic_intr1_handler
+                                 : rocm_ernic_intrx_handler,
                           0, DRV_NAME, dev);
         if (ret) {
             dev_err(&dev->pdev->dev, "failed to request interrupt %d\n", i);
@@ -590,7 +590,7 @@ out_free_vectors:
     return ret;
 }
 
-static void amd_emrdma_free_slots(struct amd_emrdma_dev *dev)
+static void rocm_ernic_free_slots(struct rocm_ernic_dev *dev)
 {
     struct pci_dev *pdev = dev->pdev;
 
@@ -602,13 +602,13 @@ static void amd_emrdma_free_slots(struct amd_emrdma_dev *dev)
                           dev->dsr->cmd_slot_dma);
 }
 
-static int amd_emrdma_add_gid_at_index(struct amd_emrdma_dev *dev,
+static int rocm_ernic_add_gid_at_index(struct rocm_ernic_dev *dev,
                                        const union ib_gid *gid, u8 gid_type,
                                        int index)
 {
     int ret;
-    union amd_emrdma_cmd_req req;
-    struct amd_emrdma_cmd_create_bind *cmd_bind = &req.create_bind;
+    union rocm_ernic_cmd_req req;
+    struct rocm_ernic_cmd_create_bind *cmd_bind = &req.create_bind;
 
     if (!dev->sgid_tbl) {
         dev_warn(&dev->pdev->dev, "sgid table not initialized\n");
@@ -616,14 +616,14 @@ static int amd_emrdma_add_gid_at_index(struct amd_emrdma_dev *dev,
     }
 
     memset(cmd_bind, 0, sizeof(*cmd_bind));
-    cmd_bind->hdr.cmd = AMD_EMRDMA_CMD_CREATE_BIND;
+    cmd_bind->hdr.cmd = ROCM_ERNIC_CMD_CREATE_BIND;
     memcpy(cmd_bind->new_gid, gid->raw, 16);
     cmd_bind->mtu = ib_mtu_enum_to_int(IB_MTU_1024);
     cmd_bind->vlan = 0xfff;
     cmd_bind->index = index;
     cmd_bind->gid_type = gid_type;
 
-    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    ret = rocm_ernic_cmd_post(dev, &req, NULL, 0);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev, "could not create binding, error: %d\n", ret);
         return -EFAULT;
@@ -632,9 +632,9 @@ static int amd_emrdma_add_gid_at_index(struct amd_emrdma_dev *dev,
     return 0;
 }
 
-static int amd_emrdma_add_gid(const struct ib_gid_attr *attr, void **context)
+static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
 {
-    struct amd_emrdma_dev *dev = to_vdev(attr->device);
+    struct rocm_ernic_dev *dev = to_vdev(attr->device);
     bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
 
     dev_info(&dev->pdev->dev,
@@ -666,16 +666,16 @@ static int amd_emrdma_add_gid(const struct ib_gid_attr *attr, void **context)
     }
 
     /* For real netdev (vmxnet3), use full binding flow */
-    return amd_emrdma_add_gid_at_index(
-        dev, &attr->gid, ib_gid_type_to_amd_emrdma(attr->gid_type),
+    return rocm_ernic_add_gid_at_index(
+        dev, &attr->gid, ib_gid_type_to_rocm_ernic(attr->gid_type),
         attr->index);
 }
 
-static int amd_emrdma_del_gid_at_index(struct amd_emrdma_dev *dev, int index)
+static int rocm_ernic_del_gid_at_index(struct rocm_ernic_dev *dev, int index)
 {
     int ret;
-    union amd_emrdma_cmd_req req;
-    struct amd_emrdma_cmd_destroy_bind *cmd_dest = &req.destroy_bind;
+    union rocm_ernic_cmd_req req;
+    struct rocm_ernic_cmd_destroy_bind *cmd_dest = &req.destroy_bind;
 
     /* Update sgid table. */
     if (!dev->sgid_tbl) {
@@ -684,11 +684,11 @@ static int amd_emrdma_del_gid_at_index(struct amd_emrdma_dev *dev, int index)
     }
 
     memset(cmd_dest, 0, sizeof(*cmd_dest));
-    cmd_dest->hdr.cmd = AMD_EMRDMA_CMD_DESTROY_BIND;
+    cmd_dest->hdr.cmd = ROCM_ERNIC_CMD_DESTROY_BIND;
     memcpy(cmd_dest->dest_gid, &dev->sgid_tbl[index], 16);
     cmd_dest->index = index;
 
-    ret = amd_emrdma_cmd_post(dev, &req, NULL, 0);
+    ret = rocm_ernic_cmd_post(dev, &req, NULL, 0);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev, "could not destroy binding, error: %d\n",
                  ret);
@@ -698,9 +698,9 @@ static int amd_emrdma_del_gid_at_index(struct amd_emrdma_dev *dev, int index)
     return 0;
 }
 
-static int amd_emrdma_del_gid(const struct ib_gid_attr *attr, void **context)
+static int rocm_ernic_del_gid(const struct ib_gid_attr *attr, void **context)
 {
-    struct amd_emrdma_dev *dev = to_vdev(attr->device);
+    struct rocm_ernic_dev *dev = to_vdev(attr->device);
     bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
 
     dev_info(&dev->pdev->dev, "del_gid called: index=%d netdev=%s%s\n",
@@ -725,10 +725,10 @@ static int amd_emrdma_del_gid(const struct ib_gid_attr *attr, void **context)
     /* For real netdev (vmxnet3), use full unbinding flow */
     dev_dbg(&dev->pdev->dev, "removing gid at index %u from %s", attr->index,
             dev->netdev->name);
-    return amd_emrdma_del_gid_at_index(dev, attr->index);
+    return rocm_ernic_del_gid_at_index(dev, attr->index);
 }
 
-static void amd_emrdma_netdevice_event_handle(struct amd_emrdma_dev *dev,
+static void rocm_ernic_netdevice_event_handle(struct rocm_ernic_dev *dev,
                                               struct net_device *ndev,
                                               unsigned long event)
 {
@@ -737,7 +737,7 @@ static void amd_emrdma_netdevice_event_handle(struct amd_emrdma_dev *dev,
 
     switch (event) {
     case NETDEV_REBOOT:
-        amd_emrdma_dispatch_event(dev, 1, IB_EVENT_PORT_ERR);
+        rocm_ernic_dispatch_event(dev, 1, IB_EVENT_PORT_ERR);
         break;
     case NETDEV_UNREGISTER:
         ib_device_set_netdev(&dev->ib_dev, NULL, 1);
@@ -764,39 +764,39 @@ static void amd_emrdma_netdevice_event_handle(struct amd_emrdma_dev *dev,
     }
 }
 
-static void amd_emrdma_netdevice_event_work(struct work_struct *work)
+static void rocm_ernic_netdevice_event_work(struct work_struct *work)
 {
-    struct amd_emrdma_netdevice_work *netdev_work;
-    struct amd_emrdma_dev *dev;
+    struct rocm_ernic_netdevice_work *netdev_work;
+    struct rocm_ernic_dev *dev;
 
-    netdev_work = container_of(work, struct amd_emrdma_netdevice_work, work);
+    netdev_work = container_of(work, struct rocm_ernic_netdevice_work, work);
 
-    mutex_lock(&amd_emrdma_device_list_lock);
-    list_for_each_entry(dev, &amd_emrdma_device_list, device_link)
+    mutex_lock(&rocm_ernic_device_list_lock);
+    list_for_each_entry(dev, &rocm_ernic_device_list, device_link)
     {
         if ((netdev_work->event == NETDEV_REGISTER) ||
             (dev->netdev == netdev_work->event_netdev)) {
-            amd_emrdma_netdevice_event_handle(dev, netdev_work->event_netdev,
+            rocm_ernic_netdevice_event_handle(dev, netdev_work->event_netdev,
                                               netdev_work->event);
             break;
         }
     }
-    mutex_unlock(&amd_emrdma_device_list_lock);
+    mutex_unlock(&rocm_ernic_device_list_lock);
 
     kfree(netdev_work);
 }
 
-static int amd_emrdma_netdevice_event(struct notifier_block *this,
+static int rocm_ernic_netdevice_event(struct notifier_block *this,
                                       unsigned long event, void *ptr)
 {
     struct net_device *event_netdev = netdev_notifier_info_to_dev(ptr);
-    struct amd_emrdma_netdevice_work *netdev_work;
+    struct rocm_ernic_netdevice_work *netdev_work;
 
     netdev_work = kmalloc(sizeof(*netdev_work), GFP_ATOMIC);
     if (!netdev_work)
         return NOTIFY_BAD;
 
-    INIT_WORK(&netdev_work->work, amd_emrdma_netdevice_event_work);
+    INIT_WORK(&netdev_work->work, rocm_ernic_netdevice_event_work);
     netdev_work->event_netdev = event_netdev;
     netdev_work->event = event;
     queue_work(event_wq, &netdev_work->work);
@@ -804,11 +804,11 @@ static int amd_emrdma_netdevice_event(struct notifier_block *this,
     return NOTIFY_DONE;
 }
 
-static int amd_emrdma_pci_probe(struct pci_dev *pdev,
+static int rocm_ernic_pci_probe(struct pci_dev *pdev,
                                 const struct pci_device_id *id)
 {
     struct pci_dev *pdev_net;
-    struct amd_emrdma_dev *dev;
+    struct rocm_ernic_dev *dev;
     int ret;
     unsigned long start;
     unsigned long len;
@@ -817,17 +817,17 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     dev_dbg(&pdev->dev, "initializing driver %s\n", pci_name(pdev));
 
     /* Allocate zero-out device */
-    dev = ib_alloc_device(amd_emrdma_dev, ib_dev);
+    dev = ib_alloc_device(rocm_ernic_dev, ib_dev);
     if (!dev) {
         dev_err(&pdev->dev, "failed to allocate IB device\n");
         return -ENOMEM;
     }
 
-    mutex_lock(&amd_emrdma_device_list_lock);
-    list_add(&dev->device_link, &amd_emrdma_device_list);
-    mutex_unlock(&amd_emrdma_device_list_lock);
+    mutex_lock(&rocm_ernic_device_list_lock);
+    list_add(&dev->device_link, &rocm_ernic_device_list);
+    mutex_unlock(&rocm_ernic_device_list_lock);
 
-    ret = amd_emrdma_init_device(dev);
+    ret = rocm_ernic_init_device(dev);
     if (ret)
         goto err_free_device;
 
@@ -876,8 +876,8 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     pci_set_master(pdev);
 
     /* Map register space */
-    start = pci_resource_start(dev->pdev, AMD_EMRDMA_PCI_RESOURCE_REG);
-    len = pci_resource_len(dev->pdev, AMD_EMRDMA_PCI_RESOURCE_REG);
+    start = pci_resource_start(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_REG);
+    len = pci_resource_len(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_REG);
     dev->regs = ioremap(start, len);
     if (!dev->regs) {
         dev_err(&pdev->dev, "register mapping failed\n");
@@ -888,7 +888,7 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     /* Setup per-device UAR. */
     dev->driver_uar.index = 0;
     dev->driver_uar.pfn =
-        pci_resource_start(dev->pdev, AMD_EMRDMA_PCI_RESOURCE_UAR) >>
+        pci_resource_start(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_UAR) >>
         PAGE_SHIFT;
     dev->driver_uar.map = ioremap(dev->driver_uar.pfn << PAGE_SHIFT, PAGE_SIZE);
     if (!dev->driver_uar.map) {
@@ -897,9 +897,9 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
         goto err_unmap_regs;
     }
 
-    dev->dsr_version = amd_emrdma_read_reg(dev, AMD_EMRDMA_REG_VERSION);
+    dev->dsr_version = rocm_ernic_read_reg(dev, ROCM_ERNIC_REG_VERSION);
     dev_info(&pdev->dev, "device version %d, driver version %d\n",
-             dev->dsr_version, AMD_EMRDMA_VERSION);
+             dev->dsr_version, ROCM_ERNIC_VERSION);
 
     dev->dsr = dma_alloc_coherent(&pdev->dev, sizeof(*dev->dsr), &dev->dsrbase,
                                   GFP_KERNEL);
@@ -910,13 +910,13 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     }
 
     /* Setup the shared region */
-    dev->dsr->driver_version = AMD_EMRDMA_VERSION;
+    dev->dsr->driver_version = ROCM_ERNIC_VERSION;
     dev->dsr->gos_info.gos_bits =
-        sizeof(void *) == 4 ? AMD_EMRDMA_GOS_BITS_32 : AMD_EMRDMA_GOS_BITS_64;
-    dev->dsr->gos_info.gos_type = AMD_EMRDMA_GOS_TYPE_LINUX;
+        sizeof(void *) == 4 ? ROCM_ERNIC_GOS_BITS_32 : ROCM_ERNIC_GOS_BITS_64;
+    dev->dsr->gos_info.gos_type = ROCM_ERNIC_GOS_TYPE_LINUX;
     dev->dsr->gos_info.gos_ver = 1;
 
-    if (dev->dsr_version < AMD_EMRDMA_PPN64_VERSION)
+    if (dev->dsr_version < ROCM_ERNIC_PPN64_VERSION)
         dev->dsr->uar_pfn = dev->driver_uar.pfn;
     else
         dev->dsr->uar_pfn64 = dev->driver_uar.pfn;
@@ -942,8 +942,8 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     dev->dsr->resp_slot_dma = (u64)slot_dma;
 
     /* Async event ring */
-    dev->dsr->async_ring_pages.num_pages = AMD_EMRDMA_NUM_RING_PAGES;
-    ret = amd_emrdma_page_dir_init(dev, &dev->async_pdir,
+    dev->dsr->async_ring_pages.num_pages = ROCM_ERNIC_NUM_RING_PAGES;
+    ret = rocm_ernic_page_dir_init(dev, &dev->async_pdir,
                                    dev->dsr->async_ring_pages.num_pages, true);
     if (ret)
         goto err_free_slots;
@@ -951,8 +951,8 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     dev->dsr->async_ring_pages.pdir_dma = dev->async_pdir.dir_dma;
 
     /* CQ notification ring */
-    dev->dsr->cq_ring_pages.num_pages = AMD_EMRDMA_NUM_RING_PAGES;
-    ret = amd_emrdma_page_dir_init(dev, &dev->cq_pdir,
+    dev->dsr->cq_ring_pages.num_pages = ROCM_ERNIC_NUM_RING_PAGES;
+    ret = rocm_ernic_page_dir_init(dev, &dev->cq_pdir,
                                    dev->dsr->cq_ring_pages.num_pages, true);
     if (ret)
         goto err_free_async_ring;
@@ -965,8 +965,8 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
      * complete, the device will have filled out the capabilities.
      */
 
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_DSRLOW, (u32)dev->dsrbase);
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_DSRHIGH,
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_DSRLOW, (u32)dev->dsrbase);
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_DSRHIGH,
                          (u32)((u64)(dev->dsrbase) >> 32));
 
     /*
@@ -981,7 +981,7 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
 
         for (poll_count = 0; poll_count < 100; poll_count++) {
             mb();
-            if (AMD_EMRDMA_SUPPORTED(dev)) {
+            if (ROCM_ERNIC_SUPPORTED(dev)) {
                 dsr_ready = true;
                 dev_info(&pdev->dev, "DSR initialized after %d polls\n",
                          poll_count);
@@ -999,7 +999,7 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     }
 
     /* The driver supports RoCE V1 and V2. */
-    if (!AMD_EMRDMA_SUPPORTED(dev)) {
+    if (!ROCM_ERNIC_SUPPORTED(dev)) {
         dev_err(&pdev->dev, "driver needs RoCE v1 or v2 support\n");
         ret = -EFAULT;
         goto err_free_cq_ring;
@@ -1053,7 +1053,7 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     }
 
     /* Interrupt setup */
-    ret = amd_emrdma_alloc_intrs(dev);
+    ret = rocm_ernic_alloc_intrs(dev);
     if (ret) {
         dev_err(&pdev->dev, "failed to allocate interrupts\n");
         ret = -ENOMEM;
@@ -1061,7 +1061,7 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     }
 
     /* Allocate UAR table. */
-    ret = amd_emrdma_uar_table_init(dev);
+    ret = rocm_ernic_uar_table_init(dev);
     if (ret) {
         dev_err(&pdev->dev, "failed to allocate UAR table\n");
         ret = -ENOMEM;
@@ -1077,17 +1077,17 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     }
     dev_dbg(&pdev->dev, "gid table len %d\n", dev->dsr->caps.gid_tbl_len);
 
-    amd_emrdma_enable_intrs(dev);
+    rocm_ernic_enable_intrs(dev);
 
-    /* Activate amd_emrdma device */
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_CTL,
-                         AMD_EMRDMA_DEVICE_CTL_ACTIVATE);
+    /* Activate rocm_ernic device */
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_CTL,
+                         ROCM_ERNIC_DEVICE_CTL_ACTIVATE);
 
     /* Make sure the write is complete before reading status. */
     mb();
 
     /* Check if device was successfully activated */
-    ret = amd_emrdma_read_reg(dev, AMD_EMRDMA_REG_ERR);
+    ret = rocm_ernic_read_reg(dev, ROCM_ERNIC_REG_ERR);
     if (ret != 0) {
         dev_err(&pdev->dev, "failed to activate device\n");
         ret = -EFAULT;
@@ -1095,13 +1095,13 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
     }
 
     /* Register IB device */
-    ret = amd_emrdma_register_device(dev);
+    ret = rocm_ernic_register_device(dev);
     if (ret) {
         dev_err(&pdev->dev, "failed to register IB device\n");
         goto err_disable_intr;
     }
 
-    dev->nb_netdev.notifier_call = amd_emrdma_netdevice_event;
+    dev->nb_netdev.notifier_call = rocm_ernic_netdevice_event;
     ret = register_netdevice_notifier(&dev->nb_netdev);
     if (ret) {
         dev_err(&pdev->dev, "failed to register netdevice events\n");
@@ -1114,21 +1114,21 @@ static int amd_emrdma_pci_probe(struct pci_dev *pdev,
 err_unreg_ibdev:
     ib_unregister_device(&dev->ib_dev);
 err_disable_intr:
-    amd_emrdma_disable_intrs(dev);
+    rocm_ernic_disable_intrs(dev);
     kfree(dev->sgid_tbl);
 err_free_uar_table:
-    amd_emrdma_uar_table_cleanup(dev);
+    rocm_ernic_uar_table_cleanup(dev);
 err_free_intrs:
-    amd_emrdma_free_irq(dev);
+    rocm_ernic_free_irq(dev);
     pci_free_irq_vectors(pdev);
 err_free_cq_ring:
     dev_put(dev->netdev);
     dev->netdev = NULL;
-    amd_emrdma_page_dir_cleanup(dev, &dev->cq_pdir);
+    rocm_ernic_page_dir_cleanup(dev, &dev->cq_pdir);
 err_free_async_ring:
-    amd_emrdma_page_dir_cleanup(dev, &dev->async_pdir);
+    rocm_ernic_page_dir_cleanup(dev, &dev->async_pdir);
 err_free_slots:
-    amd_emrdma_free_slots(dev);
+    rocm_ernic_free_slots(dev);
 err_free_dsr:
     dma_free_coherent(&pdev->dev, sizeof(*dev->dsr), dev->dsr, dev->dsrbase);
 err_uar_unmap:
@@ -1141,16 +1141,16 @@ err_disable_pdev:
     pci_disable_device(pdev);
     pci_set_drvdata(pdev, NULL);
 err_free_device:
-    mutex_lock(&amd_emrdma_device_list_lock);
+    mutex_lock(&rocm_ernic_device_list_lock);
     list_del(&dev->device_link);
-    mutex_unlock(&amd_emrdma_device_list_lock);
+    mutex_unlock(&rocm_ernic_device_list_lock);
     ib_dealloc_device(&dev->ib_dev);
     return ret;
 }
 
-static void amd_emrdma_pci_remove(struct pci_dev *pdev)
+static void rocm_ernic_pci_remove(struct pci_dev *pdev)
 {
-    struct amd_emrdma_dev *dev = pci_get_drvdata(pdev);
+    struct rocm_ernic_dev *dev = pci_get_drvdata(pdev);
 
     if (!dev)
         return;
@@ -1168,19 +1168,19 @@ static void amd_emrdma_pci_remove(struct pci_dev *pdev)
     /* Unregister ib device */
     ib_unregister_device(&dev->ib_dev);
 
-    mutex_lock(&amd_emrdma_device_list_lock);
+    mutex_lock(&rocm_ernic_device_list_lock);
     list_del(&dev->device_link);
-    mutex_unlock(&amd_emrdma_device_list_lock);
+    mutex_unlock(&rocm_ernic_device_list_lock);
 
-    amd_emrdma_disable_intrs(dev);
-    amd_emrdma_free_irq(dev);
+    rocm_ernic_disable_intrs(dev);
+    rocm_ernic_free_irq(dev);
     pci_free_irq_vectors(pdev);
 
-    /* Deactivate amd_emrdma device */
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_CTL, AMD_EMRDMA_DEVICE_CTL_RESET);
-    amd_emrdma_page_dir_cleanup(dev, &dev->cq_pdir);
-    amd_emrdma_page_dir_cleanup(dev, &dev->async_pdir);
-    amd_emrdma_free_slots(dev);
+    /* Deactivate rocm_ernic device */
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_CTL, ROCM_ERNIC_DEVICE_CTL_RESET);
+    rocm_ernic_page_dir_cleanup(dev, &dev->cq_pdir);
+    rocm_ernic_page_dir_cleanup(dev, &dev->async_pdir);
+    rocm_ernic_free_slots(dev);
     dma_free_coherent(&pdev->dev, sizeof(*dev->dsr), dev->dsr, dev->dsrbase);
 
     iounmap(dev->regs);
@@ -1188,7 +1188,7 @@ static void amd_emrdma_pci_remove(struct pci_dev *pdev)
     kfree(dev->cq_tbl);
     kfree(dev->srq_tbl);
     kfree(dev->qp_tbl);
-    amd_emrdma_uar_table_cleanup(dev);
+    rocm_ernic_uar_table_cleanup(dev);
     iounmap(dev->driver_uar.map);
 
     ib_dealloc_device(&dev->ib_dev);
@@ -1200,49 +1200,49 @@ static void amd_emrdma_pci_remove(struct pci_dev *pdev)
 }
 
 /* AMD Emulated RDMA device (for vfio-user) */
-#define PCI_VENDOR_ID_AMD_EMRDMA 0x1022 /* AMD */
-#define PCI_DEVICE_ID_AMD_EMRDMA 0x1484 /* Emulated RDMA */
+#define PCI_VENDOR_ID_ROCM_ERNIC 0x1022 /* AMD */
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484 /* Emulated RDMA */
 
-static const struct pci_device_id amd_emrdma_pci_table[] = {
+static const struct pci_device_id rocm_ernic_pci_table[] = {
     {
-        PCI_DEVICE(PCI_VENDOR_ID_AMD_EMRDMA, PCI_DEVICE_ID_AMD_EMRDMA),
+        PCI_DEVICE(PCI_VENDOR_ID_ROCM_ERNIC, PCI_DEVICE_ID_ROCM_ERNIC),
     },
     {0},
 };
 
-MODULE_DEVICE_TABLE(pci, amd_emrdma_pci_table);
+MODULE_DEVICE_TABLE(pci, rocm_ernic_pci_table);
 
-static struct pci_driver amd_emrdma_driver = {
+static struct pci_driver rocm_ernic_driver = {
     .name = DRV_NAME,
-    .id_table = amd_emrdma_pci_table,
-    .probe = amd_emrdma_pci_probe,
-    .remove = amd_emrdma_pci_remove,
+    .id_table = rocm_ernic_pci_table,
+    .probe = rocm_ernic_pci_probe,
+    .remove = rocm_ernic_pci_remove,
 };
 
-static int __init amd_emrdma_init(void)
+static int __init rocm_ernic_init(void)
 {
     int err;
 
-    event_wq = alloc_ordered_workqueue("amd_emrdma_event_wq", WQ_MEM_RECLAIM);
+    event_wq = alloc_ordered_workqueue("rocm_ernic_event_wq", WQ_MEM_RECLAIM);
     if (!event_wq)
         return -ENOMEM;
 
-    err = pci_register_driver(&amd_emrdma_driver);
+    err = pci_register_driver(&rocm_ernic_driver);
     if (err)
         destroy_workqueue(event_wq);
 
     return err;
 }
 
-static void __exit amd_emrdma_cleanup(void)
+static void __exit rocm_ernic_cleanup(void)
 {
-    pci_unregister_driver(&amd_emrdma_driver);
+    pci_unregister_driver(&rocm_ernic_driver);
 
     destroy_workqueue(event_wq);
 }
 
-module_init(amd_emrdma_init);
-module_exit(amd_emrdma_cleanup);
+module_init(rocm_ernic_init);
+module_exit(rocm_ernic_cleanup);
 
 MODULE_AUTHOR("Advanced Micro Devices, Inc");
 MODULE_DESCRIPTION("AMD ROCm ERNIC - Emulated RDMA NIC driver");

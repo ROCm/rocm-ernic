@@ -292,7 +292,7 @@ jobs:
         echo "=== Building Driver ==="
         cd /tmp/driver
         make KDIR=/lib/modules/$(uname -r)/build
-        ls -lh amd_emrdma.ko
+        ls -lh rocm_ernic.ko
         echo "✓ Driver built for kernel $(uname -r)"
         
         echo "=== PCI Devices ==="
@@ -335,7 +335,7 @@ jobs:
         fi
         
         echo "=== Loading Driver ==="
-        sudo insmod ./amd_emrdma.ko 2>&1 | tee /tmp/insmod.log
+        sudo insmod ./rocm_ernic.ko 2>&1 | tee /tmp/insmod.log
         INSMOD_EXIT=${PIPESTATUS[0]}
         
         if [ $INSMOD_EXIT -eq 0 ]; then
@@ -355,10 +355,10 @@ jobs:
         fi
         
         echo "=== Driver Loaded ==="
-        lsmod | grep amd_emrdma
+        lsmod | grep rocm_ernic
         
         echo "=== Kernel Messages ==="
-        sudo dmesg | grep -i "amd_emrdma\|pvrdma" | tail -30
+        sudo dmesg | grep -i "rocm_ernic" | tail -30
         
         echo "=== Checking /sys/class/infiniband ==="
         ls -la /sys/class/infiniband/ || echo "Directory empty or doesn't exist"
@@ -370,7 +370,7 @@ jobs:
         ibv_devices || echo "No RDMA devices found"
         
         echo "=== Device Info ==="
-        if ibv_devices | grep -E "rocep|amd_emrdma" || [ -d /sys/class/infiniband/rocep* ]; then
+        if ibv_devices | grep -E "rocep|rocm_ernic" || [ -d /sys/class/infiniband/rocep* ]; then
           ibv_devinfo || true
           echo "✓ Driver loaded and RDMA device detected"
         else
@@ -395,7 +395,7 @@ jobs:
         echo "=== Testing RDMA Stack ==="
         
         # Get device name
-        DEVICE=$(ibv_devices | grep amd_emrdma | awk '{print $1}' | head -1)
+          DEVICE=$(ibv_devices | grep rocm_ernic | awk '{print $1}' | head -1)
         echo "Testing device: $DEVICE"
         
         # Query port state

@@ -146,6 +146,7 @@ emrdmaX
 enum
 env
 ernic
+ernicX
 eth
 ethdev
 eventfd
