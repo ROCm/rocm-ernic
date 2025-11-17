@@ -1,0 +1,64 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install clang-format
+      run: sudo apt-get install -y clang-format
+    
+    - name: Check C code formatting
+      run: |
+        find src tests driver -name '*.c' -o -name '*.h' | \
+          xargs clang-format --dry-run --Werror
+  
+  cppcheck:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install cppcheck
+      run: sudo apt-get install -y cppcheck
+    
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=warning,style,performance,portability \
+          --error-exitcode=1 \
+          --suppress=missingIncludeSystem \
+          --suppress=unusedFunction \
+          --suppress=unmatchedSuppression \
+          --suppress=unknownMacro \
+          --suppress=knownConditionTrueFalse \
+          --suppress=constVariablePointer \
+          --suppress=constParameter \
+          --suppress=variableScope \
+          --suppress=unreadVariable \
+          --suppress=arithOperationsOnVoidPointer \
+          --suppress=invalidPrintfArgType_sint \
+          --suppress=invalidPrintfArgType_uint \
+          -I src/from-qemu/include \
+          -I src \
+          src/vfu_*.c \
+          tests/*.c
+  
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install shellcheck
+      run: sudo apt-get install -y shellcheck
+    
+    - name: Check shell scripts
+      run: |
+        find . -name '*.sh' -type f | xargs shellcheck \
+          -e SC2086,SC2154,SC2024,SC2034,SC2164,SC2181,SC2317
+
