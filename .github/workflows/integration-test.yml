@@ -1,7 +1,16 @@
 name: Integration Test (QEMU + Driver)
 
 on:
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
+
+# Container image with QEMU and libvfio-user pre-built
+# Update this to point to your container registry
+# Example: ghcr.io/yourusername/rocm-ernic-ci:latest
+#          docker.io/yourusername/rocm-ernic-ci:latest
+env:
+  CI_IMAGE: docker.io/${{ github.repository_owner }}/rocm-ernic-ci:latest
 
 jobs:
   integration-test:
@@ -9,71 +18,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     
+    # Use the pre-built Docker image with QEMU and libvfio-user
+    # No privileged mode needed - using TCG (software emulation), not KVM
+    container:
+      image: ${{ env.CI_IMAGE }}
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          meson \
-          ninja-build \
-          gcc \
-          pkg-config \
-          libglib2.0-dev \
-          libjson-c-dev \
-          libcmocka-dev \
-          libibverbs-dev \
-          librdmacm-dev \
-          rdma-core \
-          ibverbs-utils \
-          cloud-image-utils \
-          openssh-client \
-          sshpass \
-          build-essential \
-          linux-headers-generic \
-          python3-pip \
-          libpixman-1-dev \
-          libslirp-dev \
-          libcap-ng-dev \
-          libattr1-dev \
-          git
-    
-    - name: Cache QEMU build
-      id: cache-qemu
-      uses: actions/cache@v4
-      with:
-        path: ~/qemu-install
-        key: qemu-10.1.2-vfio-user-${{ runner.os }}
-    
-    - name: Build QEMU with vfio-user support
-      if: steps.cache-qemu.outputs.cache-hit != 'true'
-      run: |
-        echo "Building QEMU 10.1.2 with vfio-user support..."
-        cd ~
-        wget -q https://download.qemu.org/qemu-10.1.2.tar.xz
-        tar xf qemu-10.1.2.tar.xz
-        cd qemu-10.1.2
-        
-        ./configure \
-          --prefix=$HOME/qemu-install \
-          --target-list=x86_64-softmmu \
-          --enable-slirp \
-          --disable-docs \
-          --disable-gtk \
-          --disable-sdl \
-          --disable-vnc \
-          --extra-cflags="-w"
-        
-        make -j$(nproc)
-        make install
-        
-        echo "✓ QEMU built and installed"
-    
     - name: Verify QEMU installation
       run: |
-        export PATH="$HOME/qemu-install/bin:$PATH"
         qemu-system-x86_64 --version
         
         # Check for vfio-user support
@@ -84,14 +39,14 @@ jobs:
           exit 1
         fi
     
-    - name: Install libvfio-user
+    - name: Verify libvfio-user installation
       run: |
-        git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
-        cd /tmp/libvfio-user
-        meson setup build --prefix=/usr -Dwarning_level=0
-        ninja -C build
-        sudo ninja -C build install
-        sudo ldconfig
+        if pkg-config --exists vfio-user; then
+          echo "✓ libvfio-user found (version: $(pkg-config --modversion vfio-user))"
+        else
+          echo "✗ libvfio-user not found"
+          exit 1
+        fi
     
     - name: Build rocm_ernic server
       run: |
@@ -107,8 +62,6 @@ jobs:
     
     - name: Download Ubuntu cloud image
       run: |
-        export PATH="$HOME/qemu-install/bin:$PATH"
-        
         # Use regular cloud image (not minimal) for RDMA kernel module support
         wget -q https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
         qemu-img info ubuntu-24.04-server-cloudimg-amd64.img
@@ -143,15 +96,13 @@ jobs:
     
     - name: Resize VM image
       run: |
-        export PATH="$HOME/qemu-install/bin:$PATH"
-        
         cp ubuntu-24.04-server-cloudimg-amd64.img vm-disk.img
         qemu-img resize vm-disk.img +2G
         echo "✓ VM disk prepared"
     
     - name: Start rocm_ernic server
       run: |
-        sudo ./build/rocm_ernic \
+        ./build/rocm_ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback \
           --verbose > /tmp/vfu_server.log 2>&1 &
@@ -162,7 +113,7 @@ jobs:
         # Wait for socket
         for i in {1..30}; do
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
-            sudo chmod 666 /tmp/vfio-user-rocm-ernic.sock
+            chmod 666 /tmp/vfio-user-rocm-ernic.sock
             echo "✓ Server started (PID: $SERVER_PID)"
             exit 0
           fi
@@ -175,10 +126,8 @@ jobs:
     
     - name: Start QEMU VM
       run: |
-        export PATH="$HOME/qemu-install/bin:$PATH"
-        
-        # Use software emulation (no KVM in CI)
-        sudo $HOME/qemu-install/bin/qemu-system-x86_64 \
+        # Use software emulation (no KVM in container, no sudo needed)
+        qemu-system-x86_64 \
           -machine q35,accel=tcg \
           -cpu max \
           -m 2G \
@@ -426,16 +375,16 @@ jobs:
       run: |
         # Stop QEMU
         if [ -n "$QEMU_PID" ]; then
-          sudo kill $QEMU_PID 2>/dev/null || true
+          kill $QEMU_PID 2>/dev/null || true
         fi
         
         # Stop server
         if [ -n "$SERVER_PID" ]; then
-          sudo kill $SERVER_PID 2>/dev/null || true
+          kill $SERVER_PID 2>/dev/null || true
         fi
         
         # Clean up
-        sudo rm -f /tmp/vfio-user-rocm-ernic.sock
+        rm -f /tmp/vfio-user-rocm-ernic.sock
         rm -f vm-disk.img seed.img user-data meta-data
         rm -f ubuntu-24.04-server-cloudimg-amd64.img
         
