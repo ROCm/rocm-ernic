@@ -1,0 +1,355 @@
+name: Integration Test (QEMU + Driver)
+
+on:
+  push:
+    branches: [ main, dev/*, test-* ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    name: QEMU Integration Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          meson \
+          ninja-build \
+          gcc \
+          pkg-config \
+          libglib2.0-dev \
+          libjson-c-dev \
+          libcmocka-dev \
+          libibverbs-dev \
+          librdmacm-dev \
+          rdma-core \
+          ibverbs-utils \
+          cloud-image-utils \
+          openssh-client \
+          sshpass \
+          build-essential \
+          linux-headers-generic \
+          python3-pip \
+          libpixman-1-dev \
+          libslirp-dev \
+          libcap-ng-dev \
+          libattr1-dev \
+          git
+    
+    - name: Cache QEMU build
+      id: cache-qemu
+      uses: actions/cache@v4
+      with:
+        path: ~/qemu-install
+        key: qemu-10.1.2-vfio-user-${{ runner.os }}
+    
+    - name: Build QEMU with vfio-user support
+      if: steps.cache-qemu.outputs.cache-hit != 'true'
+      run: |
+        echo "Building QEMU 10.1.2 with vfio-user support..."
+        cd ~
+        wget -q https://download.qemu.org/qemu-10.1.2.tar.xz
+        tar xf qemu-10.1.2.tar.xz
+        cd qemu-10.1.2
+        
+        ./configure \
+          --prefix=$HOME/qemu-install \
+          --target-list=x86_64-softmmu \
+          --enable-slirp \
+          --disable-docs \
+          --disable-gtk \
+          --disable-sdl \
+          --disable-vnc \
+          --extra-cflags="-w"
+        
+        make -j$(nproc)
+        make install
+        
+        echo "✓ QEMU built and installed"
+    
+    - name: Verify QEMU installation
+      run: |
+        export PATH="$HOME/qemu-install/bin:$PATH"
+        qemu-system-x86_64 --version
+        
+        # Check for vfio-user support
+        if qemu-system-x86_64 -device help 2>&1 | grep -q vfio-user-pci; then
+          echo "✓ QEMU has vfio-user-pci support"
+        else
+          echo "✗ QEMU missing vfio-user-pci support"
+          exit 1
+        fi
+    
+    - name: Install libvfio-user
+      run: |
+        git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+        cd /tmp/libvfio-user
+        meson setup build --prefix=/usr -Dwarning_level=0
+        ninja -C build
+        sudo ninja -C build install
+        sudo ldconfig
+    
+    - name: Build rocm_ernic server
+      run: |
+        meson setup build -Dbuildtype=debug
+        meson compile -C build
+        ls -lh build/rocm_ernic
+        echo "✓ Server built successfully"
+    
+    - name: Prepare driver source for VM
+      run: |
+        # Don't build driver here - will build inside VM with matching kernel
+        echo "✓ Driver source ready (will build in VM)"
+    
+    - name: Download Ubuntu cloud image
+      run: |
+        export PATH="$HOME/qemu-install/bin:$PATH"
+        
+        wget -q https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img
+        qemu-img info ubuntu-22.04-minimal-cloudimg-amd64.img
+        echo "✓ VM image downloaded"
+    
+    - name: Create cloud-init configuration
+      run: |
+        cat > user-data <<EOF
+        #cloud-config
+        password: ubuntu
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        packages:
+          - build-essential
+          - linux-headers-generic
+          - libibverbs-dev
+          - ibverbs-utils
+          - rdma-core
+          - pciutils
+          - kmod
+        runcmd:
+          - echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+        EOF
+        
+        cat > meta-data <<EOF
+        instance-id: iid-local01
+        local-hostname: ubuntu-test
+        EOF
+        
+        cloud-localds seed.img user-data meta-data
+        echo "✓ Cloud-init configuration created"
+    
+    - name: Resize VM image
+      run: |
+        export PATH="$HOME/qemu-install/bin:$PATH"
+        
+        cp ubuntu-22.04-minimal-cloudimg-amd64.img vm-disk.img
+        qemu-img resize vm-disk.img +2G
+        echo "✓ VM disk prepared"
+    
+    - name: Start rocm_ernic server
+      run: |
+        sudo ./build/rocm_ernic \
+          --socket /tmp/vfio-user-rocm-ernic.sock \
+          --backend loopback \
+          --verbose > /tmp/vfu_server.log 2>&1 &
+        
+        SERVER_PID=$!
+        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        
+        # Wait for socket
+        for i in {1..30}; do
+          if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
+            sudo chmod 666 /tmp/vfio-user-rocm-ernic.sock
+            echo "✓ Server started (PID: $SERVER_PID)"
+            exit 0
+          fi
+          sleep 1
+        done
+        
+        echo "✗ Server failed to create socket"
+        cat /tmp/vfu_server.log
+        exit 1
+    
+    - name: Start QEMU VM
+      run: |
+        export PATH="$HOME/qemu-install/bin:$PATH"
+        
+        # Use software emulation (no KVM in CI)
+        sudo $HOME/qemu-install/bin/qemu-system-x86_64 \
+          -machine q35,accel=tcg \
+          -cpu max \
+          -m 2G \
+          -nographic \
+          -drive file=vm-disk.img,format=qcow2,if=virtio \
+          -drive file=seed.img,format=raw,if=virtio \
+          -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-rocm-ernic.sock"}}' \
+          -serial mon:stdio > /tmp/qemu.log 2>&1 &
+        
+        QEMU_PID=$!
+        echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
+        echo "✓ QEMU started (PID: $QEMU_PID)"
+    
+    - name: Wait for VM boot
+      run: |
+        echo "Waiting for SSH to become available..."
+        for i in {1..60}; do
+          if sshpass -p ubuntu ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2222 ubuntu@localhost 'echo VM Ready' 2>/dev/null; then
+            echo "✓ VM is accessible via SSH"
+            exit 0
+          fi
+          echo "Attempt $i/60: Waiting for SSH..."
+          sleep 10
+        done
+        
+        echo "✗ VM boot timeout"
+        echo "=== QEMU Log ==="
+        tail -100 /tmp/qemu.log
+        echo "=== Server Log ==="
+        tail -100 /tmp/vfu_server.log
+        exit 1
+    
+    - name: Wait for cloud-init to complete
+      run: |
+        echo "Waiting for cloud-init to finish package installation..."
+        sshpass -p ubuntu ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@localhost << 'EOFVM'
+        set -e
+        
+        echo "=== Waiting for cloud-init ==="
+        sudo cloud-init status --wait
+        
+        echo "=== Verifying packages ==="
+        which make || echo "make not found"
+        which gcc || echo "gcc not found"
+        dpkg -l | grep linux-headers || echo "linux-headers not found"
+        
+        echo "✓ Cloud-init completed"
+        EOFVM
+    
+    - name: Copy driver source to VM
+      run: |
+        sshpass -p ubuntu scp -o StrictHostKeyChecking=no -P 2222 -r \
+          driver/ ubuntu@localhost:/tmp/
+        echo "✓ Driver source copied to VM"
+    
+    - name: Build and load driver in VM
+      run: |
+        sshpass -p ubuntu ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@localhost << 'EOFVM'
+        set -e
+        
+        echo "=== Kernel Version ==="
+        uname -r
+        
+        echo "=== Building Driver ==="
+        cd /tmp/driver
+        make KDIR=/lib/modules/$(uname -r)/build
+        ls -lh amd_emrdma.ko
+        echo "✓ Driver built for kernel $(uname -r)"
+        
+        echo "=== PCI Devices ==="
+        sudo lspci | grep -i amd || echo "AMD device not found yet"
+        
+        echo "=== Loading Driver ==="
+        sudo insmod ./amd_emrdma.ko || {
+          echo "Failed to load driver"
+          sudo dmesg | tail -50
+          exit 1
+        }
+        
+        echo "=== Driver Loaded ==="
+        lsmod | grep amd_emrdma
+        
+        echo "=== Kernel Messages ==="
+        dmesg | grep -i "amd_emrdma\|pvrdma" | tail -30
+        
+        echo "=== RDMA Devices ==="
+        ibv_devices || echo "No RDMA devices found"
+        
+        echo "=== Device Info ==="
+        if ibv_devices | grep -q amd_emrdma; then
+          ibv_devinfo || true
+          echo "✓ Driver loaded and RDMA device detected"
+        else
+          echo "✗ RDMA device not detected"
+          exit 1
+        fi
+        EOFVM
+    
+    - name: Run basic RDMA tests in VM
+      run: |
+        sshpass -p ubuntu ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@localhost << 'EOFVM'
+        set -e
+        
+        echo "=== Testing RDMA Stack ==="
+        
+        # Get device name
+        DEVICE=$(ibv_devices | grep amd_emrdma | awk '{print $1}' | head -1)
+        echo "Testing device: $DEVICE"
+        
+        # Query port state
+        echo "=== Port State ==="
+        ibv_devinfo -d $DEVICE | grep -A 10 "port:"
+        
+        # Check GID table
+        echo "=== GID Table ==="
+        ibv_devinfo -d $DEVICE | grep -A 5 "GID"
+        
+        echo "✓ Basic RDMA tests passed"
+        EOFVM
+    
+    - name: Show server logs
+      if: always()
+      run: |
+        echo "=== VFU Server Log (last 100 lines) ==="
+        tail -100 /tmp/vfu_server.log || echo "No server log"
+    
+    - name: Show QEMU logs
+      if: always()
+      run: |
+        echo "=== QEMU Log (last 100 lines) ==="
+        tail -100 /tmp/qemu.log || echo "No QEMU log"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        # Stop QEMU
+        if [ -n "$QEMU_PID" ]; then
+          sudo kill $QEMU_PID 2>/dev/null || true
+        fi
+        
+        # Stop server
+        if [ -n "$SERVER_PID" ]; then
+          sudo kill $SERVER_PID 2>/dev/null || true
+        fi
+        
+        # Clean up
+        sudo rm -f /tmp/vfio-user-rocm-ernic.sock
+        rm -f vm-disk.img seed.img user-data meta-data
+        rm -f ubuntu-22.04-minimal-cloudimg-amd64.img
+        
+        echo "✓ Cleanup complete"
+  
+  integration-status:
+    name: Integration Test Status
+    needs: integration-test
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Check test result
+      run: |
+        if [ "${{ needs.integration-test.result }}" = "success" ]; then
+          echo "✅ Integration test passed!"
+          exit 0
+        else
+          echo "❌ Integration test failed!"
+          exit 1
+        fi
+
