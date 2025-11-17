@@ -19,6 +19,7 @@ dsr
 Datagrams
 Deallocated
 Dereferencing
+Dockerfile
 EAGAIN
 EFAULT
 EINTR
@@ -33,6 +34,7 @@ GPG
 GPL
 GPLv
 GQueue
+GHCR
 GUID
 IB
 IBV
@@ -117,6 +119,7 @@ bringup
 cd
 checksumming
 chmod
+ci
 cli
 cmake
 cmd
@@ -124,6 +127,7 @@ compat
 config
 codebase
 const
+cppcheck
 cq
 cqe
 cqs
@@ -159,6 +163,7 @@ fe
 fini
 fs
 func
+gcc
 gid
 gids
 github
@@ -240,6 +245,7 @@ numa
 nutanix
 nvme
 oneline
+openssh
 param
 paravirtualized
 passthrough
@@ -281,8 +287,10 @@ sept
 sg
 sge
 shaia
+shellcheck
 sizeof
 src
+sshpass
 stebates
 stephen
 str
@@ -298,6 +306,7 @@ sysfs
 sz
 tbl
 tmp
+toolchains
 typedef
 ubuntu
 uint
