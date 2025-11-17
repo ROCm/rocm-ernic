@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config INFINIBAND_AMD_EMRDMA
+	tristate "AMD Emulated RDMA Driver (vfio-user)"
+	depends on PCI && INET
+	help
+	  This driver provides support for AMD Emulated RDMA devices,
+	  designed for use with vfio-user based userspace device emulation.
+	  
+	  This driver is based on VMware's PVRDMA but includes polling
+	  logic to handle asynchronous BAR writes in vfio-user environments.
+	  
+	  The driver can optionally pair with VMXNET3 for VMware
+	  compatibility, but also supports standalone operation without
+	  requiring any specific network device.
+	  
+	  If unsure, say N.

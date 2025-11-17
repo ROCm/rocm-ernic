@@ -1,0 +1,112 @@
+name: vfu-rdma-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  test:
+    name: Build and Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            meson \
+            ninja-build \
+            pkg-config \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev \
+            libjson-c-dev \
+            libcmocka-dev
+      
+      - name: Clone and build libvfio-user
+        run: |
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+      
+      - name: Configure project with Meson
+        run: |
+          meson setup build \
+            --buildtype=debug \
+            --prefix=/usr
+      
+      - name: Build project with Ninja
+        run: ninja -C build
+      
+      - name: Verify binaries exist
+        run: |
+          ls -lh build/rocm_ernic
+          ls -lh build/tests/test_pci_client
+          file build/rocm_ernic
+          file build/tests/test_pci_client
+      
+      - name: Check binary dependencies
+        run: |
+          echo "=== rocm_ernic dependencies ==="
+          ldd build/rocm_ernic
+          echo ""
+          echo "=== test_pci_client dependencies ==="
+          ldd build/tests/test_pci_client
+      
+      - name: Run tests
+        run: meson test -C build --verbose --print-errorlogs
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: build/meson-logs/testlog.txt
+          retention-days: 7
+      
+      - name: Upload binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}
+          path: |
+            build/rocm_ernic
+            build/tests/test_pci_client
+          retention-days: 7
+
+  test-status:
+    name: Test Status
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Check test result
+        run: |
+          if [ "${{ needs.test.result }}" = "success" ]; then
+            echo "✅ All tests passed!"
+            exit 0
+          else
+            echo "❌ Tests failed!"
+            exit 1
+          fi
+

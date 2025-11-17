@@ -1,0 +1,107 @@
+name: Driver Build
+
+on:
+  push:
+    branches: [ main, dev/*, test-* ]
+    paths:
+      - 'driver/**'
+      - '.github/workflows/driver-build.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'driver/**'
+  workflow_dispatch:
+
+jobs:
+  build-driver:
+    name: Build Kernel Driver on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+      fail-fast: false
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install kernel headers and build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          linux-headers-$(uname -r) \
+          build-essential \
+          kmod
+    
+    - name: Display build environment
+      run: |
+        echo "=== Kernel Version ==="
+        uname -r
+        echo ""
+        echo "=== Kernel Headers ==="
+        ls -la /lib/modules/$(uname -r)/build || echo "Headers not found"
+        echo ""
+        echo "=== GCC Version ==="
+        gcc --version
+        echo ""
+        echo "=== Make Version ==="
+        make --version
+    
+    - name: Build driver module
+      run: |
+        cd driver
+        make KDIR=/lib/modules/$(uname -r)/build
+    
+    - name: Verify driver build
+      run: |
+        cd driver
+        if [ ! -f amd_emrdma.ko ]; then
+          echo "❌ Driver module amd_emrdma.ko not found!"
+          exit 1
+        fi
+        echo "✅ Driver module built successfully"
+        ls -lh amd_emrdma.ko
+        file amd_emrdma.ko
+        modinfo amd_emrdma.ko
+    
+    - name: Check for build warnings
+      run: |
+        cd driver
+        make KDIR=/lib/modules/$(uname -r)/build 2>&1 | tee build.log
+        if grep -i "warning:" build.log; then
+          echo "⚠️  Build warnings detected (non-fatal)"
+        else
+          echo "✅ No build warnings"
+        fi
+    
+    - name: Upload driver artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: amd_emrdma-${{ matrix.os }}-$(uname -r)
+        path: driver/amd_emrdma.ko
+        retention-days: 7
+    
+    - name: Clean build artifacts
+      run: |
+        cd driver
+        rm -f *.o *.ko *.mod *.mod.c *.mod.o .*.cmd Module.symvers \
+          modules.order build.log
+
+  build-status:
+    name: Driver Build Status
+    needs: build-driver
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Check build result
+      run: |
+        if [ "${{ needs.build-driver.result }}" = "success" ]; then
+          echo "✅ All driver builds succeeded!"
+          exit 0
+        else
+          echo "❌ Driver build failed!"
+          exit 1
+        fi
+
