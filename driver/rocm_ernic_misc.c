@@ -49,8 +49,8 @@
 
 #include "rocm_ernic.h"
 
-int amd_emrdma_page_dir_init(struct amd_emrdma_dev *dev,
-                             struct amd_emrdma_page_dir *pdir, u64 npages,
+int rocm_ernic_page_dir_init(struct rocm_ernic_dev *dev,
+                             struct rocm_ernic_page_dir *pdir, u64 npages,
                              bool alloc_pages)
 {
     u64 i;
@@ -58,9 +58,9 @@ int amd_emrdma_page_dir_init(struct amd_emrdma_dev *dev,
     dev_info(&dev->pdev->dev, "page_dir_init: npages=%llu, alloc_pages=%d\n",
              npages, alloc_pages);
 
-    if (npages > AMD_EMRDMA_PAGE_DIR_MAX_PAGES) {
+    if (npages > ROCM_ERNIC_PAGE_DIR_MAX_PAGES) {
         dev_err(&dev->pdev->dev, "page_dir_init: npages > max (%llu > %d)\n",
-                npages, AMD_EMRDMA_PAGE_DIR_MAX_PAGES);
+                npages, ROCM_ERNIC_PAGE_DIR_MAX_PAGES);
         return -EINVAL;
     }
 
@@ -79,7 +79,7 @@ int amd_emrdma_page_dir_init(struct amd_emrdma_dev *dev,
              "page_dir_init: dir allocated at %p (dma=0x%llx)\n", pdir->dir,
              (unsigned long long)pdir->dir_dma);
 
-    pdir->ntables = AMD_EMRDMA_PAGE_DIR_TABLE(npages - 1) + 1;
+    pdir->ntables = ROCM_ERNIC_PAGE_DIR_TABLE(npages - 1) + 1;
     dev_info(&dev->pdev->dev, "page_dir_init: allocating %u tables\n",
              pdir->ntables);
     pdir->tables = kcalloc(pdir->ntables, sizeof(*pdir->tables), GFP_KERNEL);
@@ -118,37 +118,37 @@ int amd_emrdma_page_dir_init(struct amd_emrdma_dev *dev,
             if (!pdir->pages[i])
                 goto err;
 
-            amd_emrdma_page_dir_insert_dma(pdir, i, page_dma);
+            rocm_ernic_page_dir_insert_dma(pdir, i, page_dma);
         }
     }
 
     return 0;
 
 err:
-    amd_emrdma_page_dir_cleanup(dev, pdir);
+    rocm_ernic_page_dir_cleanup(dev, pdir);
 
     return -ENOMEM;
 }
 
-static u64 *amd_emrdma_page_dir_table(struct amd_emrdma_page_dir *pdir, u64 idx)
+static u64 *rocm_ernic_page_dir_table(struct rocm_ernic_page_dir *pdir, u64 idx)
 {
-    return pdir->tables[AMD_EMRDMA_PAGE_DIR_TABLE(idx)];
+    return pdir->tables[ROCM_ERNIC_PAGE_DIR_TABLE(idx)];
 }
 
-dma_addr_t amd_emrdma_page_dir_get_dma(struct amd_emrdma_page_dir *pdir,
+dma_addr_t rocm_ernic_page_dir_get_dma(struct rocm_ernic_page_dir *pdir,
                                        u64 idx)
 {
-    return amd_emrdma_page_dir_table(pdir, idx)[AMD_EMRDMA_PAGE_DIR_PAGE(idx)];
+    return rocm_ernic_page_dir_table(pdir, idx)[ROCM_ERNIC_PAGE_DIR_PAGE(idx)];
 }
 
-static void amd_emrdma_page_dir_cleanup_pages(struct amd_emrdma_dev *dev,
-                                              struct amd_emrdma_page_dir *pdir)
+static void rocm_ernic_page_dir_cleanup_pages(struct rocm_ernic_dev *dev,
+                                              struct rocm_ernic_page_dir *pdir)
 {
     if (pdir->pages) {
         u64 i;
 
         for (i = 0; i < pdir->npages && pdir->pages[i]; i++) {
-            dma_addr_t page_dma = amd_emrdma_page_dir_get_dma(pdir, i);
+            dma_addr_t page_dma = rocm_ernic_page_dir_get_dma(pdir, i);
 
             dma_free_coherent(&dev->pdev->dev, PAGE_SIZE, pdir->pages[i],
                               page_dma);
@@ -158,13 +158,13 @@ static void amd_emrdma_page_dir_cleanup_pages(struct amd_emrdma_dev *dev,
     }
 }
 
-static void amd_emrdma_page_dir_cleanup_tables(struct amd_emrdma_dev *dev,
-                                               struct amd_emrdma_page_dir *pdir)
+static void rocm_ernic_page_dir_cleanup_tables(struct rocm_ernic_dev *dev,
+                                               struct rocm_ernic_page_dir *pdir)
 {
     if (pdir->tables) {
         int i;
 
-        amd_emrdma_page_dir_cleanup_pages(dev, pdir);
+        rocm_ernic_page_dir_cleanup_pages(dev, pdir);
 
         for (i = 0; i < pdir->ntables; i++) {
             u64 *table = pdir->tables[i];
@@ -178,16 +178,16 @@ static void amd_emrdma_page_dir_cleanup_tables(struct amd_emrdma_dev *dev,
     }
 }
 
-void amd_emrdma_page_dir_cleanup(struct amd_emrdma_dev *dev,
-                                 struct amd_emrdma_page_dir *pdir)
+void rocm_ernic_page_dir_cleanup(struct rocm_ernic_dev *dev,
+                                 struct rocm_ernic_page_dir *pdir)
 {
     if (pdir->dir) {
-        amd_emrdma_page_dir_cleanup_tables(dev, pdir);
+        rocm_ernic_page_dir_cleanup_tables(dev, pdir);
         dma_free_coherent(&dev->pdev->dev, PAGE_SIZE, pdir->dir, pdir->dir_dma);
     }
 }
 
-int amd_emrdma_page_dir_insert_dma(struct amd_emrdma_page_dir *pdir, u64 idx,
+int rocm_ernic_page_dir_insert_dma(struct rocm_ernic_page_dir *pdir, u64 idx,
                                    dma_addr_t daddr)
 {
     u64 *table;
@@ -195,13 +195,13 @@ int amd_emrdma_page_dir_insert_dma(struct amd_emrdma_page_dir *pdir, u64 idx,
     if (idx >= pdir->npages)
         return -EINVAL;
 
-    table = amd_emrdma_page_dir_table(pdir, idx);
-    table[AMD_EMRDMA_PAGE_DIR_PAGE(idx)] = daddr;
+    table = rocm_ernic_page_dir_table(pdir, idx);
+    table[ROCM_ERNIC_PAGE_DIR_PAGE(idx)] = daddr;
 
     return 0;
 }
 
-int amd_emrdma_page_dir_insert_umem(struct amd_emrdma_page_dir *pdir,
+int rocm_ernic_page_dir_insert_umem(struct rocm_ernic_page_dir *pdir,
                                     struct ib_umem *umem, u64 offset)
 {
     struct ib_block_iter biter;
@@ -213,7 +213,7 @@ int amd_emrdma_page_dir_insert_umem(struct amd_emrdma_page_dir *pdir,
 
     rdma_umem_for_each_dma_block(umem, &biter, PAGE_SIZE)
     {
-        ret = amd_emrdma_page_dir_insert_dma(
+        ret = rocm_ernic_page_dir_insert_dma(
             pdir, i, rdma_block_iter_dma_address(&biter));
         if (ret)
             goto exit;
@@ -225,7 +225,7 @@ exit:
     return ret;
 }
 
-int amd_emrdma_page_dir_insert_page_list(struct amd_emrdma_page_dir *pdir,
+int rocm_ernic_page_dir_insert_page_list(struct rocm_ernic_page_dir *pdir,
                                          u64 *page_list, int num_pages)
 {
     int i;
@@ -235,7 +235,7 @@ int amd_emrdma_page_dir_insert_page_list(struct amd_emrdma_page_dir *pdir,
         return -EINVAL;
 
     for (i = 0; i < num_pages; i++) {
-        ret = amd_emrdma_page_dir_insert_dma(pdir, i, page_list[i]);
+        ret = rocm_ernic_page_dir_insert_dma(pdir, i, page_list[i]);
         if (ret)
             return ret;
     }
@@ -243,8 +243,8 @@ int amd_emrdma_page_dir_insert_page_list(struct amd_emrdma_page_dir *pdir,
     return 0;
 }
 
-void amd_emrdma_qp_cap_to_ib(struct ib_qp_cap *dst,
-                             const struct amd_emrdma_qp_cap *src)
+void rocm_ernic_qp_cap_to_ib(struct ib_qp_cap *dst,
+                             const struct rocm_ernic_qp_cap *src)
 {
     dst->max_send_wr = src->max_send_wr;
     dst->max_recv_wr = src->max_recv_wr;
@@ -253,7 +253,7 @@ void amd_emrdma_qp_cap_to_ib(struct ib_qp_cap *dst,
     dst->max_inline_data = src->max_inline_data;
 }
 
-void ib_qp_cap_to_amd_emrdma(struct amd_emrdma_qp_cap *dst,
+void ib_qp_cap_to_rocm_ernic(struct rocm_ernic_qp_cap *dst,
                              const struct ib_qp_cap *src)
 {
     dst->max_send_wr = src->max_send_wr;
@@ -263,43 +263,43 @@ void ib_qp_cap_to_amd_emrdma(struct amd_emrdma_qp_cap *dst,
     dst->max_inline_data = src->max_inline_data;
 }
 
-void amd_emrdma_gid_to_ib(union ib_gid *dst, const union amd_emrdma_gid *src)
+void rocm_ernic_gid_to_ib(union ib_gid *dst, const union rocm_ernic_gid *src)
 {
-    BUILD_BUG_ON(sizeof(union amd_emrdma_gid) != sizeof(union ib_gid));
+    BUILD_BUG_ON(sizeof(union rocm_ernic_gid) != sizeof(union ib_gid));
     memcpy(dst, src, sizeof(*src));
 }
 
-void ib_gid_to_amd_emrdma(union amd_emrdma_gid *dst, const union ib_gid *src)
+void ib_gid_to_rocm_ernic(union rocm_ernic_gid *dst, const union ib_gid *src)
 {
-    BUILD_BUG_ON(sizeof(union amd_emrdma_gid) != sizeof(union ib_gid));
+    BUILD_BUG_ON(sizeof(union rocm_ernic_gid) != sizeof(union ib_gid));
     memcpy(dst, src, sizeof(*src));
 }
 
-void amd_emrdma_global_route_to_ib(struct ib_global_route *dst,
-                                   const struct amd_emrdma_global_route *src)
+void rocm_ernic_global_route_to_ib(struct ib_global_route *dst,
+                                   const struct rocm_ernic_global_route *src)
 {
-    amd_emrdma_gid_to_ib(&dst->dgid, &src->dgid);
+    rocm_ernic_gid_to_ib(&dst->dgid, &src->dgid);
     dst->flow_label = src->flow_label;
     dst->sgid_index = src->sgid_index;
     dst->hop_limit = src->hop_limit;
     dst->traffic_class = src->traffic_class;
 }
 
-void ib_global_route_to_amd_emrdma(struct amd_emrdma_global_route *dst,
+void ib_global_route_to_rocm_ernic(struct rocm_ernic_global_route *dst,
                                    const struct ib_global_route *src)
 {
-    ib_gid_to_amd_emrdma(&dst->dgid, &src->dgid);
+    ib_gid_to_rocm_ernic(&dst->dgid, &src->dgid);
     dst->flow_label = src->flow_label;
     dst->sgid_index = src->sgid_index;
     dst->hop_limit = src->hop_limit;
     dst->traffic_class = src->traffic_class;
 }
 
-void amd_emrdma_ah_attr_to_rdma(struct rdma_ah_attr *dst,
-                                const struct amd_emrdma_ah_attr *src)
+void rocm_ernic_ah_attr_to_rdma(struct rdma_ah_attr *dst,
+                                const struct rocm_ernic_ah_attr *src)
 {
     dst->type = RDMA_AH_ATTR_TYPE_ROCE;
-    amd_emrdma_global_route_to_ib(rdma_ah_retrieve_grh(dst), &src->grh);
+    rocm_ernic_global_route_to_ib(rdma_ah_retrieve_grh(dst), &src->grh);
     rdma_ah_set_dlid(dst, src->dlid);
     rdma_ah_set_sl(dst, src->sl);
     rdma_ah_set_path_bits(dst, src->src_path_bits);
@@ -309,10 +309,10 @@ void amd_emrdma_ah_attr_to_rdma(struct rdma_ah_attr *dst,
     memcpy(dst->roce.dmac, &src->dmac, ETH_ALEN);
 }
 
-void rdma_ah_attr_to_amd_emrdma(struct amd_emrdma_ah_attr *dst,
+void rdma_ah_attr_to_rocm_ernic(struct rocm_ernic_ah_attr *dst,
                                 const struct rdma_ah_attr *src)
 {
-    ib_global_route_to_amd_emrdma(&dst->grh, rdma_ah_read_grh(src));
+    ib_global_route_to_rocm_ernic(&dst->grh, rdma_ah_read_grh(src));
     dst->dlid = rdma_ah_get_dlid(src);
     dst->sl = rdma_ah_get_sl(src);
     dst->src_path_bits = rdma_ah_get_path_bits(src);
@@ -322,9 +322,9 @@ void rdma_ah_attr_to_amd_emrdma(struct amd_emrdma_ah_attr *dst,
     memcpy(&dst->dmac, src->roce.dmac, sizeof(dst->dmac));
 }
 
-u8 ib_gid_type_to_amd_emrdma(enum ib_gid_type gid_type)
+u8 ib_gid_type_to_rocm_ernic(enum ib_gid_type gid_type)
 {
     return (gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP)
-               ? AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V2
-               : AMD_EMRDMA_GID_TYPE_FLAG_ROCE_V1;
+               ? ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V2
+               : ROCM_ERNIC_GID_TYPE_FLAG_ROCE_V1;
 }

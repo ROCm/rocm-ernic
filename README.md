@@ -18,7 +18,7 @@ networking with direct hardware access semantics.
 - RDMA verbs support via InfiniBand hardware backend
 - Three memory-mapped BARs (MSI-X, Registers, UAR)
 - MSI-X interrupt support (command ring, async events, completion queue)
-- Compatible with the Linux kernel `amd_emrdma` driver
+- Compatible with the Linux kernel `rocm_ernic` driver
 
 ## 🎉 **Current Status: WORKING!** 🎉
 
@@ -37,10 +37,10 @@ operational** with end-to-end vfio-user communication!
 
 ### 📊 Test Results
 ```bash
-$ lsmod | grep amd_emrdma
-amd_emrdma             69632  0
-ib_uverbs             184320  1 amd_emrdma
-ib_core               507904  2 amd_emrdma,ib_uverbs
+$ lsmod | grep rocm_ernic
+rocm_ernic             69632  0
+ib_uverbs             184320  1 rocm_ernic
+ib_core               507904  2 rocm_ernic,ib_uverbs
 
 $ ls -la /sys/class/infiniband/
 rocep0s4f0 -> ../../devices/pci0000:00/0000:00:04.0/infiniband/rocep0s4f0
@@ -58,7 +58,7 @@ for the key fixes that made this work.
 ┌─────────────────────────────────────────┐
 │          Virtual Machine (Guest)        │
 │  ┌────────────────────────────────────┐ │
-│  │   Linux Kernel amd_emrdma Driver  │ │
+│  │   Linux Kernel rocm_ernic Driver  │ │
 │  └─────────────┬──────────────────────┘ │
 │                │ PCI Interface          │
 └────────────────┼────────────────────────┘
@@ -118,7 +118,7 @@ standalone userspace operation.
 ### Linux Kernel Driver
 
 The Linux kernel includes a native PVRDMA driver
-(`drivers/infiniband/hw/amd_emrdma/`) that was merged in **Linux 4.5** (March
+(`drivers/infiniband/hw/rocm_ernic/`) that was merged in **Linux 4.5** (March
 2016). This driver:
 - Implements the standard RDMA verbs interface (`ib_*` APIs)
 - Communicates with the PVRDMA device via PCI memory-mapped I/O
@@ -291,8 +291,8 @@ ibv_devices
 
 ### PCI Configuration
 
-- **Vendor ID**: 0x15ad (VMware)
-- **Device ID**: 0x0820 (PVRDMA)
+- **Vendor ID**: 0x1022 (AMD)
+- **Device ID**: 0x1484 (ROCm ERNIC)
 - **Class Code**: 0x028000 (Network Controller - Other)
 - **PCI Type**: PCIe (PCI Express)
 - **Header Type**: 0x00 (Normal device)
@@ -389,7 +389,7 @@ libibverbs (Physical RDMA Hardware)
 
 1. **Prerequisites:**
    - Physical RDMA device (InfiniBand or RoCE NIC)
-   - Guest VM with `amd_emrdma` kernel driver
+   - Guest VM with `rocm_ernic` kernel driver
    - Linux kernel 4.18+
 
 2. **Running the Server:**
@@ -400,7 +400,7 @@ libibverbs (Physical RDMA Hardware)
 3. **Testing Workflow:**
    - Start server and verify socket creation
    - Connect guest VM via vfio-user
-   - Load `amd_emrdma` driver in guest
+   - Load `rocm_ernic` driver in guest
    - Verify DSR initialization in server logs
    - Run RDMA tests (`ibv_rc_pingpong`, etc.)
 
@@ -433,7 +433,7 @@ configured
 
 **Problem:** `Client disconnected` immediately  
 **Cause:** Guest driver incompatibility or protocol mismatch  
-**Solution:** Use kernel 4.18+ with upstream `amd_emrdma` driver
+**Solution:** Use kernel 4.18+ with upstream `rocm_ernic` driver
 
 **Problem:** Build error: `fatal error: rdma/rdma_cma.h: No such
 file or directory`  
@@ -484,7 +484,7 @@ Triggered interrupt vector 2            # Completion notification
   Ethernet
 
 [qemu-pvrdma-docs]: https://www.qemu.org/docs/master/system/devices/pvrdma.html
-[linux-pvrdma-driver]: https://github.com/torvalds/linux/tree/master/drivers/infiniband/hw/amd_emrdma
+[linux-pvrdma-driver]: https://github.com/torvalds/linux/tree/master/drivers/infiniband/hw/vfu_pvrdma
 [ibverbs-api]: https://man7.org/linux/man-pages/man3/ibv_get_device_list.3.html
 [spdk-link]: https://spdk.io/
 
@@ -522,7 +522,7 @@ This script provides a **complete end-to-end test** that:
 5. ✅ Copies driver source into VM
 6. ✅ Builds driver against guest kernel
 7. ✅ Loads InfiniBand core modules
-8. ✅ Loads the `amd_emrdma` driver
+8. ✅ Loads the `rocm_ernic` driver
 9. ✅ Verifies RDMA device registration
 10. ✅ Shows device info via `ibv_devinfo`
 11. ✅ Keeps VM running for manual testing
@@ -585,23 +585,23 @@ Once the VM boots (SSH on port 2222):
 ssh -p 2222 ubuntu@localhost
 ```
 
-**1. Check for PVRDMA Device:**
+**1. Check for ROCm ERNIC Device:**
 ```bash
-lspci -nn | grep 15ad
-# Expected: 00:XX.0 Network controller [0280]: VMware PVRDMA Device [15ad:0820]
+lspci -nn | grep 1022:1484
+# Expected: 00:XX.0 Network controller [0280]: AMD ROCm ERNIC Device [1022:1484]
 ```
 
-**2. Load PVRDMA Driver:**
+**2. Load ROCm ERNIC Driver:**
 ```bash
-sudo modprobe amd_emrdma
-dmesg | grep amd_emrdma
+sudo modprobe rocm_ernic
+dmesg | grep rocm_ernic
 ```
 
 Expected output:
 ```
-[  X.XXXXXX] amd_emrdma 0000:00:XX.0: device version 1, dma mask 64
-[  X.XXXXXX] amd_emrdma 0000:00:XX.0: using DSR at 0xXXXXXXXXXXXX
-[  X.XXXXXX] amd_emrdma 0000:00:XX.0: initializing driver
+[  X.XXXXXX] rocm_ernic 0000:00:XX.0: device version 1, dma mask 64
+[  X.XXXXXX] rocm_ernic 0000:00:XX.0: using DSR at 0xXXXXXXXXXXXX
+[  X.XXXXXX] rocm_ernic 0000:00:XX.0: initializing driver
 ```
 
 **3. Verify RDMA Device:**
@@ -614,16 +614,16 @@ Expected output:
 ```
     device          node GUID
     ------          ---------
-    amd_emrdma0     xxxx:xxxx:xxxx:xxxx
+    rocm_ernic0     xxxx:xxxx:xxxx:xxxx
 ```
 
 **4. Run RDMA Tests:**
 ```bash
 # Ping-pong test (needs another endpoint)
-ibv_rc_pingpong -d amd_emrdma0
+ibv_rc_pingpong -d rocm_ernic0
 
 # Device info
-ibv_devinfo -d amd_emrdma0
+ibv_devinfo -d rocm_ernic0
 ```
 
 ### Creating New VM Images

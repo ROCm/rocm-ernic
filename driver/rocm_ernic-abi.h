@@ -45,141 +45,141 @@
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __AMD_EMRDMA_ABI_H__
-#define __AMD_EMRDMA_ABI_H__
+#ifndef __ROCM_ERNIC_ABI_H__
+#define __ROCM_ERNIC_ABI_H__
 
 #include <linux/types.h>
 
-#define AMD_EMRDMA_UVERBS_ABI_VERSION 3          /* ABI Version. */
-#define AMD_EMRDMA_UAR_HANDLE_MASK    0x00FFFFFF /* Bottom 24 bits. */
-#define AMD_EMRDMA_UAR_QP_OFFSET      0          /* QP doorbell. */
-#define AMD_EMRDMA_UAR_QP_SEND        (1 << 30)  /* Send bit. */
-#define AMD_EMRDMA_UAR_QP_RECV        (1 << 31)  /* Recv bit. */
-#define AMD_EMRDMA_UAR_CQ_OFFSET      4          /* CQ doorbell. */
-#define AMD_EMRDMA_UAR_CQ_ARM_SOL     (1 << 29)  /* Arm solicited bit. */
-#define AMD_EMRDMA_UAR_CQ_ARM         (1 << 30)  /* Arm bit. */
-#define AMD_EMRDMA_UAR_CQ_POLL        (1 << 31)  /* Poll bit. */
-#define AMD_EMRDMA_UAR_SRQ_OFFSET     8          /* SRQ doorbell. */
-#define AMD_EMRDMA_UAR_SRQ_RECV       (1 << 30)  /* Recv bit. */
+#define ROCM_ERNIC_UVERBS_ABI_VERSION 3          /* ABI Version. */
+#define ROCM_ERNIC_UAR_HANDLE_MASK    0x00FFFFFF /* Bottom 24 bits. */
+#define ROCM_ERNIC_UAR_QP_OFFSET      0          /* QP doorbell. */
+#define ROCM_ERNIC_UAR_QP_SEND        (1 << 30)  /* Send bit. */
+#define ROCM_ERNIC_UAR_QP_RECV        (1 << 31)  /* Recv bit. */
+#define ROCM_ERNIC_UAR_CQ_OFFSET      4          /* CQ doorbell. */
+#define ROCM_ERNIC_UAR_CQ_ARM_SOL     (1 << 29)  /* Arm solicited bit. */
+#define ROCM_ERNIC_UAR_CQ_ARM         (1 << 30)  /* Arm bit. */
+#define ROCM_ERNIC_UAR_CQ_POLL        (1 << 31)  /* Poll bit. */
+#define ROCM_ERNIC_UAR_SRQ_OFFSET     8          /* SRQ doorbell. */
+#define ROCM_ERNIC_UAR_SRQ_RECV       (1 << 30)  /* Recv bit. */
 
-enum amd_emrdma_wr_opcode {
-    AMD_EMRDMA_WR_RDMA_WRITE,
-    AMD_EMRDMA_WR_RDMA_WRITE_WITH_IMM,
-    AMD_EMRDMA_WR_SEND,
-    AMD_EMRDMA_WR_SEND_WITH_IMM,
-    AMD_EMRDMA_WR_RDMA_READ,
-    AMD_EMRDMA_WR_ATOMIC_CMP_AND_SWP,
-    AMD_EMRDMA_WR_ATOMIC_FETCH_AND_ADD,
-    AMD_EMRDMA_WR_LSO,
-    AMD_EMRDMA_WR_SEND_WITH_INV,
-    AMD_EMRDMA_WR_RDMA_READ_WITH_INV,
-    AMD_EMRDMA_WR_LOCAL_INV,
-    AMD_EMRDMA_WR_FAST_REG_MR,
-    AMD_EMRDMA_WR_MASKED_ATOMIC_CMP_AND_SWP,
-    AMD_EMRDMA_WR_MASKED_ATOMIC_FETCH_AND_ADD,
-    AMD_EMRDMA_WR_BIND_MW,
-    AMD_EMRDMA_WR_REG_SIG_MR,
-    AMD_EMRDMA_WR_ERROR,
+enum rocm_ernic_wr_opcode {
+    ROCM_ERNIC_WR_RDMA_WRITE,
+    ROCM_ERNIC_WR_RDMA_WRITE_WITH_IMM,
+    ROCM_ERNIC_WR_SEND,
+    ROCM_ERNIC_WR_SEND_WITH_IMM,
+    ROCM_ERNIC_WR_RDMA_READ,
+    ROCM_ERNIC_WR_ATOMIC_CMP_AND_SWP,
+    ROCM_ERNIC_WR_ATOMIC_FETCH_AND_ADD,
+    ROCM_ERNIC_WR_LSO,
+    ROCM_ERNIC_WR_SEND_WITH_INV,
+    ROCM_ERNIC_WR_RDMA_READ_WITH_INV,
+    ROCM_ERNIC_WR_LOCAL_INV,
+    ROCM_ERNIC_WR_FAST_REG_MR,
+    ROCM_ERNIC_WR_MASKED_ATOMIC_CMP_AND_SWP,
+    ROCM_ERNIC_WR_MASKED_ATOMIC_FETCH_AND_ADD,
+    ROCM_ERNIC_WR_BIND_MW,
+    ROCM_ERNIC_WR_REG_SIG_MR,
+    ROCM_ERNIC_WR_ERROR,
 };
 
-enum amd_emrdma_wc_status {
-    AMD_EMRDMA_WC_SUCCESS,
-    AMD_EMRDMA_WC_LOC_LEN_ERR,
-    AMD_EMRDMA_WC_LOC_QP_OP_ERR,
-    AMD_EMRDMA_WC_LOC_EEC_OP_ERR,
-    AMD_EMRDMA_WC_LOC_PROT_ERR,
-    AMD_EMRDMA_WC_WR_FLUSH_ERR,
-    AMD_EMRDMA_WC_MW_BIND_ERR,
-    AMD_EMRDMA_WC_BAD_RESP_ERR,
-    AMD_EMRDMA_WC_LOC_ACCESS_ERR,
-    AMD_EMRDMA_WC_REM_INV_REQ_ERR,
-    AMD_EMRDMA_WC_REM_ACCESS_ERR,
-    AMD_EMRDMA_WC_REM_OP_ERR,
-    AMD_EMRDMA_WC_RETRY_EXC_ERR,
-    AMD_EMRDMA_WC_RNR_RETRY_EXC_ERR,
-    AMD_EMRDMA_WC_LOC_RDD_VIOL_ERR,
-    AMD_EMRDMA_WC_REM_INV_RD_REQ_ERR,
-    AMD_EMRDMA_WC_REM_ABORT_ERR,
-    AMD_EMRDMA_WC_INV_EECN_ERR,
-    AMD_EMRDMA_WC_INV_EEC_STATE_ERR,
-    AMD_EMRDMA_WC_FATAL_ERR,
-    AMD_EMRDMA_WC_RESP_TIMEOUT_ERR,
-    AMD_EMRDMA_WC_GENERAL_ERR,
+enum rocm_ernic_wc_status {
+    ROCM_ERNIC_WC_SUCCESS,
+    ROCM_ERNIC_WC_LOC_LEN_ERR,
+    ROCM_ERNIC_WC_LOC_QP_OP_ERR,
+    ROCM_ERNIC_WC_LOC_EEC_OP_ERR,
+    ROCM_ERNIC_WC_LOC_PROT_ERR,
+    ROCM_ERNIC_WC_WR_FLUSH_ERR,
+    ROCM_ERNIC_WC_MW_BIND_ERR,
+    ROCM_ERNIC_WC_BAD_RESP_ERR,
+    ROCM_ERNIC_WC_LOC_ACCESS_ERR,
+    ROCM_ERNIC_WC_REM_INV_REQ_ERR,
+    ROCM_ERNIC_WC_REM_ACCESS_ERR,
+    ROCM_ERNIC_WC_REM_OP_ERR,
+    ROCM_ERNIC_WC_RETRY_EXC_ERR,
+    ROCM_ERNIC_WC_RNR_RETRY_EXC_ERR,
+    ROCM_ERNIC_WC_LOC_RDD_VIOL_ERR,
+    ROCM_ERNIC_WC_REM_INV_RD_REQ_ERR,
+    ROCM_ERNIC_WC_REM_ABORT_ERR,
+    ROCM_ERNIC_WC_INV_EECN_ERR,
+    ROCM_ERNIC_WC_INV_EEC_STATE_ERR,
+    ROCM_ERNIC_WC_FATAL_ERR,
+    ROCM_ERNIC_WC_RESP_TIMEOUT_ERR,
+    ROCM_ERNIC_WC_GENERAL_ERR,
 };
 
-enum amd_emrdma_wc_opcode {
-    AMD_EMRDMA_WC_SEND,
-    AMD_EMRDMA_WC_RDMA_WRITE,
-    AMD_EMRDMA_WC_RDMA_READ,
-    AMD_EMRDMA_WC_COMP_SWAP,
-    AMD_EMRDMA_WC_FETCH_ADD,
-    AMD_EMRDMA_WC_BIND_MW,
-    AMD_EMRDMA_WC_LSO,
-    AMD_EMRDMA_WC_LOCAL_INV,
-    AMD_EMRDMA_WC_FAST_REG_MR,
-    AMD_EMRDMA_WC_MASKED_COMP_SWAP,
-    AMD_EMRDMA_WC_MASKED_FETCH_ADD,
-    AMD_EMRDMA_WC_RECV = 1 << 7,
-    AMD_EMRDMA_WC_RECV_RDMA_WITH_IMM,
+enum rocm_ernic_wc_opcode {
+    ROCM_ERNIC_WC_SEND,
+    ROCM_ERNIC_WC_RDMA_WRITE,
+    ROCM_ERNIC_WC_RDMA_READ,
+    ROCM_ERNIC_WC_COMP_SWAP,
+    ROCM_ERNIC_WC_FETCH_ADD,
+    ROCM_ERNIC_WC_BIND_MW,
+    ROCM_ERNIC_WC_LSO,
+    ROCM_ERNIC_WC_LOCAL_INV,
+    ROCM_ERNIC_WC_FAST_REG_MR,
+    ROCM_ERNIC_WC_MASKED_COMP_SWAP,
+    ROCM_ERNIC_WC_MASKED_FETCH_ADD,
+    ROCM_ERNIC_WC_RECV = 1 << 7,
+    ROCM_ERNIC_WC_RECV_RDMA_WITH_IMM,
 };
 
-enum amd_emrdma_wc_flags {
-    AMD_EMRDMA_WC_GRH = 1 << 0,
-    AMD_EMRDMA_WC_WITH_IMM = 1 << 1,
-    AMD_EMRDMA_WC_WITH_INVALIDATE = 1 << 2,
-    AMD_EMRDMA_WC_IP_CSUM_OK = 1 << 3,
-    AMD_EMRDMA_WC_WITH_SMAC = 1 << 4,
-    AMD_EMRDMA_WC_WITH_VLAN = 1 << 5,
-    AMD_EMRDMA_WC_WITH_NETWORK_HDR_TYPE = 1 << 6,
-    AMD_EMRDMA_WC_FLAGS_MAX = AMD_EMRDMA_WC_WITH_NETWORK_HDR_TYPE,
+enum rocm_ernic_wc_flags {
+    ROCM_ERNIC_WC_GRH = 1 << 0,
+    ROCM_ERNIC_WC_WITH_IMM = 1 << 1,
+    ROCM_ERNIC_WC_WITH_INVALIDATE = 1 << 2,
+    ROCM_ERNIC_WC_IP_CSUM_OK = 1 << 3,
+    ROCM_ERNIC_WC_WITH_SMAC = 1 << 4,
+    ROCM_ERNIC_WC_WITH_VLAN = 1 << 5,
+    ROCM_ERNIC_WC_WITH_NETWORK_HDR_TYPE = 1 << 6,
+    ROCM_ERNIC_WC_FLAGS_MAX = ROCM_ERNIC_WC_WITH_NETWORK_HDR_TYPE,
 };
 
-enum amd_emrdma_network_type {
-    AMD_EMRDMA_NETWORK_IB,
-    AMD_EMRDMA_NETWORK_ROCE_V1 = AMD_EMRDMA_NETWORK_IB,
-    AMD_EMRDMA_NETWORK_IPV4,
-    AMD_EMRDMA_NETWORK_IPV6
+enum rocm_ernic_network_type {
+    ROCM_ERNIC_NETWORK_IB,
+    ROCM_ERNIC_NETWORK_ROCE_V1 = ROCM_ERNIC_NETWORK_IB,
+    ROCM_ERNIC_NETWORK_IPV4,
+    ROCM_ERNIC_NETWORK_IPV6
 };
 
-struct amd_emrdma_alloc_ucontext_resp {
+struct rocm_ernic_alloc_ucontext_resp {
     __u32 qp_tab_size;
     __u32 reserved;
 };
 
-struct amd_emrdma_alloc_pd_resp {
+struct rocm_ernic_alloc_pd_resp {
     __u32 pdn;
     __u32 reserved;
 };
 
-struct amd_emrdma_create_cq {
+struct rocm_ernic_create_cq {
     __aligned_u64 buf_addr;
     __u32 buf_size;
     __u32 reserved;
 };
 
-struct amd_emrdma_create_cq_resp {
+struct rocm_ernic_create_cq_resp {
     __u32 cqn;
     __u32 reserved;
 };
 
-struct amd_emrdma_resize_cq {
+struct rocm_ernic_resize_cq {
     __aligned_u64 buf_addr;
     __u32 buf_size;
     __u32 reserved;
 };
 
-struct amd_emrdma_create_srq {
+struct rocm_ernic_create_srq {
     __aligned_u64 buf_addr;
     __u32 buf_size;
     __u32 reserved;
 };
 
-struct amd_emrdma_create_srq_resp {
+struct rocm_ernic_create_srq_resp {
     __u32 srqn;
     __u32 reserved;
 };
 
-struct amd_emrdma_create_qp {
+struct rocm_ernic_create_qp {
     __aligned_u64 rbuf_addr;
     __aligned_u64 sbuf_addr;
     __u32 rbuf_size;
@@ -187,27 +187,27 @@ struct amd_emrdma_create_qp {
     __aligned_u64 qp_addr;
 };
 
-struct amd_emrdma_create_qp_resp {
+struct rocm_ernic_create_qp_resp {
     __u32 qpn;
     __u32 qp_handle;
 };
 
-/* AMD_EMRDMA masked atomic compare and swap */
-struct amd_emrdma_ex_cmp_swap {
+/* ROCM_ERNIC masked atomic compare and swap */
+struct rocm_ernic_ex_cmp_swap {
     __aligned_u64 swap_val;
     __aligned_u64 compare_val;
     __aligned_u64 swap_mask;
     __aligned_u64 compare_mask;
 };
 
-/* AMD_EMRDMA masked atomic fetch and add */
-struct amd_emrdma_ex_fetch_add {
+/* ROCM_ERNIC masked atomic fetch and add */
+struct rocm_ernic_ex_fetch_add {
     __aligned_u64 add_val;
     __aligned_u64 field_boundary;
 };
 
-/* AMD_EMRDMA address vector. */
-struct amd_emrdma_av {
+/* ROCM_ERNIC address vector. */
+struct rocm_ernic_av {
     __u32 port_pd;
     __u32 sl_tclass_flowlabel;
     __u8 dgid[16];
@@ -219,23 +219,23 @@ struct amd_emrdma_av {
     __u8 reserved[6];
 };
 
-/* AMD_EMRDMA scatter/gather entry */
-struct amd_emrdma_sge {
+/* ROCM_ERNIC scatter/gather entry */
+struct rocm_ernic_sge {
     __aligned_u64 addr;
     __u32 length;
     __u32 lkey;
 };
 
-/* AMD_EMRDMA receive queue work request */
-struct amd_emrdma_rq_wqe_hdr {
+/* ROCM_ERNIC receive queue work request */
+struct rocm_ernic_rq_wqe_hdr {
     __aligned_u64 wr_id; /* wr id */
     __u32 num_sge;       /* size of s/g array */
     __u32 total_len;     /* reserved */
 };
-/* Use amd_emrdma_sge (ib_sge) for receive queue s/g array elements. */
+/* Use rocm_ernic_sge (ib_sge) for receive queue s/g array elements. */
 
-/* AMD_EMRDMA send queue work request */
-struct amd_emrdma_sq_wqe_hdr {
+/* ROCM_ERNIC send queue work request */
+struct rocm_ernic_sq_wqe_hdr {
     __aligned_u64 wr_id; /* wr id */
     __u32 num_sge;       /* size of s/g array */
     __u32 total_len;     /* reserved */
@@ -264,8 +264,8 @@ struct amd_emrdma_sq_wqe_hdr {
             __u32 log_arg_sz;
             __u32 rkey;
             union {
-                struct amd_emrdma_ex_cmp_swap cmp_swap;
-                struct amd_emrdma_ex_fetch_add fetch_add;
+                struct rocm_ernic_ex_cmp_swap cmp_swap;
+                struct rocm_ernic_ex_fetch_add fetch_add;
             } wr_data;
         } masked_atomics;
         struct {
@@ -281,14 +281,14 @@ struct amd_emrdma_sq_wqe_hdr {
         struct {
             __u32 remote_qpn;
             __u32 remote_qkey;
-            struct amd_emrdma_av av;
+            struct rocm_ernic_av av;
         } ud;
     } wr;
 };
-/* Use amd_emrdma_sge (ib_sge) for send queue s/g array elements. */
+/* Use rocm_ernic_sge (ib_sge) for send queue s/g array elements. */
 
 /* Completion queue element. */
-struct amd_emrdma_cqe {
+struct rocm_ernic_cqe {
     __aligned_u64 wr_id;
     __aligned_u64 qp;
     __u32 opcode;
@@ -308,4 +308,4 @@ struct amd_emrdma_cqe {
     __u8 reserved2[6]; /* Pad to next power of 2 (64). */
 };
 
-#endif /* __AMD_EMRDMA_ABI_H__ */
+#endif /* __ROCM_ERNIC_ABI_H__ */

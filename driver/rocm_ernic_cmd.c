@@ -47,10 +47,10 @@
 
 #include "rocm_ernic.h"
 
-#define AMD_EMRDMA_CMD_TIMEOUT 10000 /* ms */
+#define ROCM_ERNIC_CMD_TIMEOUT 10000 /* ms */
 
-static inline int amd_emrdma_cmd_recv(struct amd_emrdma_dev *dev,
-                                      union amd_emrdma_cmd_resp *resp,
+static inline int rocm_ernic_cmd_recv(struct rocm_ernic_dev *dev,
+                                      union rocm_ernic_cmd_resp *resp,
                                       unsigned resp_code)
 {
     int err;
@@ -58,7 +58,7 @@ static inline int amd_emrdma_cmd_recv(struct amd_emrdma_dev *dev,
     dev_dbg(&dev->pdev->dev, "receive response from device\n");
 
     err = wait_for_completion_interruptible_timeout(
-        &dev->cmd_done, msecs_to_jiffies(AMD_EMRDMA_CMD_TIMEOUT));
+        &dev->cmd_done, msecs_to_jiffies(ROCM_ERNIC_CMD_TIMEOUT));
     if (err == 0 || err == -ERESTARTSYS) {
         dev_warn(&dev->pdev->dev, "completion timeout or interrupted\n");
         return -ETIMEDOUT;
@@ -77,9 +77,9 @@ static inline int amd_emrdma_cmd_recv(struct amd_emrdma_dev *dev,
     return 0;
 }
 
-int amd_emrdma_cmd_post(struct amd_emrdma_dev *dev,
-                        union amd_emrdma_cmd_req *req,
-                        union amd_emrdma_cmd_resp *resp, unsigned resp_code)
+int rocm_ernic_cmd_post(struct rocm_ernic_dev *dev,
+                        union rocm_ernic_cmd_req *req,
+                        union rocm_ernic_cmd_resp *resp, unsigned resp_code)
 {
     int err;
 
@@ -88,23 +88,23 @@ int amd_emrdma_cmd_post(struct amd_emrdma_dev *dev,
     /* Serializiation */
     down(&dev->cmd_sema);
 
-    BUILD_BUG_ON(sizeof(union amd_emrdma_cmd_req) !=
-                 sizeof(struct amd_emrdma_cmd_modify_qp));
+    BUILD_BUG_ON(sizeof(union rocm_ernic_cmd_req) !=
+                 sizeof(struct rocm_ernic_cmd_modify_qp));
 
     spin_lock(&dev->cmd_lock);
     memcpy(dev->cmd_slot, req, sizeof(*req));
     spin_unlock(&dev->cmd_lock);
 
     init_completion(&dev->cmd_done);
-    amd_emrdma_write_reg(dev, AMD_EMRDMA_REG_REQUEST, 0);
+    rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_REQUEST, 0);
 
     /* Make sure the request is written before reading status. */
     mb();
 
-    err = amd_emrdma_read_reg(dev, AMD_EMRDMA_REG_ERR);
+    err = rocm_ernic_read_reg(dev, ROCM_ERNIC_REG_ERR);
     if (err == 0) {
         if (resp != NULL)
-            err = amd_emrdma_cmd_recv(dev, resp, resp_code);
+            err = rocm_ernic_cmd_recv(dev, resp, resp_code);
     } else {
         dev_warn(&dev->pdev->dev, "failed to write request error reg: %d\n",
                  err);

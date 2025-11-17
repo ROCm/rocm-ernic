@@ -1,4 +1,4 @@
-# AMD ROCm ERNIC Driver (amd_emrdma)
+# AMD ROCm ERNIC Driver (rocm_ernic)
 
 ## Overview
 
@@ -33,7 +33,7 @@ has initialized the capabilities.
 ```c
 for (poll_count = 0; poll_count < 100; poll_count++) {
     mb();
-    if (AMD_EMRDMA_SUPPORTED(dev)) {
+    if (ROCM_ERNIC_SUPPORTED(dev)) {
         dsr_ready = true;
         break;
     }
@@ -78,16 +78,16 @@ sudo depmod -a
 
 ```bash
 # Load the module
-sudo modprobe amd_emrdma
+sudo modprobe rocm_ernic
 
 # Check dmesg for driver messages
-dmesg | grep amd_emrdma
+dmesg | grep rocm_ernic
 
 # Expected output when device is found:
-# [  xxx] amd_emrdma 0000:00:04.0: device version 17, driver version 20
-# [  xxx] amd_emrdma 0000:00:04.0: DSR initialized after N polls
-# [  xxx] amd_emrdma 0000:00:04.0: running in standalone mode (no netdev)
-# [  xxx] amd_emrdma 0000:00:04.0: registered ibdev amd_emrdmaX
+# [  xxx] rocm_ernic 0000:00:04.0: device version 17, driver version 20
+# [  xxx] rocm_ernic 0000:00:04.0: DSR initialized after N polls
+# [  xxx] rocm_ernic 0000:00:04.0: running in standalone mode (no netdev)
+# [  xxx] rocm_ernic 0000:00:04.0: registered ibdev rocm_ernicX
 ```
 
 ## Testing with rocm_ernic Server
@@ -116,7 +116,7 @@ dmesg | grep amd_emrdma
 
 3. Inside the guest, load the driver:
    ```bash
-   sudo modprobe amd_emrdma
+   sudo modprobe rocm_ernic
    ```
 
 4. Verify the device is recognized:
@@ -146,8 +146,8 @@ This is expected in standalone mode:
 
 ## Comparison with VMware PVRDMA
 
-| Feature | VMware PVRDMA | AMD EMRDMA |
-|---------|---------------|------------|
+| Feature | VMware PVRDMA | AMD ROCm ERNIC |
+|---------|---------------|----------------|
 | Vendor ID | 0x15ad (VMware) | 0x1022 (AMD) |
 | Device ID | 0x0820 | 0x1484 |
 | DSR Init | Synchronous (assumes immediate) | Polls for completion |
@@ -169,5 +169,5 @@ Dual licensed under GPLv2 and BSD 2-Clause (inherited from VMware PVRDMA).
 ## Authors
 
 - Original PVRDMA: VMware, Inc. (Copyright 2012-2016)
-- AMD EMRDMA modifications: Stephen Bates <stephen@elmail.org> (2025)
+- AMD ROCm ERNIC modifications: Stephen Bates <stephen@elmail.org> (2025)
 

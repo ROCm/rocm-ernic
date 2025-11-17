@@ -55,14 +55,14 @@ jobs:
     - name: Verify driver build
       run: |
         cd driver
-        if [ ! -f amd_emrdma.ko ]; then
-          echo "❌ Driver module amd_emrdma.ko not found!"
+        if [ ! -f rocm_ernic.ko ]; then
+          echo "❌ Driver module rocm_ernic.ko not found!"
           exit 1
         fi
         echo "✅ Driver module built successfully"
-        ls -lh amd_emrdma.ko
-        file amd_emrdma.ko
-        modinfo amd_emrdma.ko
+        ls -lh rocm_ernic.ko
+        file rocm_ernic.ko
+        modinfo rocm_ernic.ko
     
     - name: Check for build warnings
       run: |
@@ -77,8 +77,8 @@ jobs:
     - name: Upload driver artifact
       uses: actions/upload-artifact@v4
       with:
-        name: amd_emrdma-${{ matrix.os }}-$(uname -r)
-        path: driver/amd_emrdma.ko
+        name: rocm_ernic-${{ matrix.os }}-$(uname -r)
+        path: driver/rocm_ernic.ko
         retention-days: 7
     
     - name: Clean build artifacts

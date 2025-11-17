@@ -244,11 +244,11 @@ echo ""
 echo "=== Building Driver ==="
 cd /tmp/driver
 make
-ls -lh amd_emrdma.ko
+ls -lh rocm_ernic.ko
 
 echo ""
 echo "=== Loading Driver ==="
-sudo insmod ./amd_emrdma.ko || {
+sudo insmod ./rocm_ernic.ko || {
     echo "Failed to load driver"
     sudo dmesg | tail -30
     exit 1
@@ -256,11 +256,11 @@ sudo insmod ./amd_emrdma.ko || {
 
 echo ""
 echo "=== Verifying Driver Loaded ==="
-lsmod | grep amd_emrdma
+lsmod | grep rocm_ernic
 
 echo ""
 echo "=== Kernel Messages ==="
-sudo dmesg | grep -i "amd_emrdma" | tail -20 || echo "No amd_emrdma messages"
+sudo dmesg | grep -i "rocm_ernic" | tail -20 || echo "No rocm_ernic messages"
 
 echo ""
 echo "=== RDMA Devices ==="
@@ -268,7 +268,7 @@ ibv_devices || echo "No RDMA devices found"
 
 echo ""
 echo "=== Device Info ==="
-# Check for device (driver name is amd_emrdma, device name is rocep*)
+# Check for device (driver name is rocm_ernic, device name is rocep*)
 if ibv_devices | tail -n +3 | grep -q -E "rocep|mlx|qedr|rxe"; then
     DEVICE_NAME=$(ibv_devices | tail -n +3 | grep -v "^$" | head -1 | awk '{print $1}')
     echo "Found RDMA device: $DEVICE_NAME"

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-config INFINIBAND_AMD_EMRDMA
+config INFINIBAND_ROCM_ERNIC
 	tristate "AMD ROCm ERNIC - Emulated RDMA NIC Driver"
 	depends on PCI && INET
 	help
