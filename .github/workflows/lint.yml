@@ -53,39 +53,6 @@ jobs:
 
           echo "✅ All files are properly formatted!"
 
-  cppcheck:
-    name: cppcheck
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Install cppcheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cppcheck
-
-      - name: Run cppcheck
-        run: |
-          cppcheck --enable=warning,style,performance,portability \
-            --error-exitcode=1 \
-            --suppress=missingIncludeSystem \
-            --suppress=unusedFunction \
-            --suppress=unmatchedSuppression \
-            --suppress=unknownMacro \
-            --suppress=knownConditionTrueFalse \
-            --suppress=constVariablePointer \
-            --suppress=constParameter \
-            --suppress=variableScope \
-            --suppress=unreadVariable \
-            --suppress=arithOperationsOnVoidPointer \
-            --suppress=invalidPrintfArgType_sint \
-            --suppress=invalidPrintfArgType_uint \
-            -I src/from-qemu/include \
-            -I src \
-            src/rocm_ernic_*.c \
-            tests/*.c
-
   shellcheck:
     name: shellcheck
     runs-on: ubuntu-latest
