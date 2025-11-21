@@ -193,6 +193,9 @@ struct rocm_ernic_qp {
     struct mutex mutex; /* QP state mutex. */
     refcount_t refcnt;
     struct completion free;
+    /* Vendor-specific: remote connection info for rdma_cm support */
+    u64 remote_addr; /* Remote virtual address for RDMA ops */
+    u32 remote_rkey; /* Remote rkey for RDMA ops */
 };
 
 struct rocm_ernic_dev {

@@ -264,7 +264,9 @@ enum pvrdma_qp_attr_mask {
     PVRDMA_QP_PATH_MIG_STATE = 1 << 18,
     PVRDMA_QP_CAP = 1 << 19,
     PVRDMA_QP_DEST_QPN = 1 << 20,
-    PVRDMA_QP_ATTR_MASK_MAX = PVRDMA_QP_DEST_QPN,
+    PVRDMA_QP_REMOTE_ADDR = 1 << 21, /* Vendor-specific: remote_addr */
+    PVRDMA_QP_REMOTE_RKEY = 1 << 22, /* Vendor-specific: remote_rkey */
+    PVRDMA_QP_ATTR_MASK_MAX = PVRDMA_QP_REMOTE_RKEY,
 };
 
 enum pvrdma_qp_state {
@@ -318,7 +320,10 @@ struct pvrdma_qp_attr {
     uint8_t rnr_retry;
     uint8_t alt_port_num;
     uint8_t alt_timeout;
-    uint8_t reserved[5];
+    uint8_t reserved[1];
+    /* Vendor-specific extensions for rdma_cm support */
+    uint64_t remote_addr; /* Remote virtual address for RDMA ops */
+    uint32_t remote_rkey; /* Remote rkey for RDMA ops */
     struct pvrdma_qp_cap cap;
     struct pvrdma_ah_attr ah_attr;
     struct pvrdma_ah_attr alt_ah_attr;

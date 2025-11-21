@@ -994,6 +994,10 @@ int rocm_ernic_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
     rocm_ernic_ah_attr_to_rdma(&attr->ah_attr, &resp->attrs.ah_attr);
     rocm_ernic_ah_attr_to_rdma(&attr->alt_ah_attr, &resp->attrs.alt_ah_attr);
 
+    /* Store remote connection info for rdma_cm support */
+    qp->remote_addr = resp->attrs.remote_addr;
+    qp->remote_rkey = resp->attrs.remote_rkey;
+
     qp->state = attr->qp_state;
 
     ret = 0;

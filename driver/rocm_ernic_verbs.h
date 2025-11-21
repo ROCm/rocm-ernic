@@ -266,7 +266,9 @@ enum rocm_ernic_qp_attr_mask {
     ROCM_ERNIC_QP_PATH_MIG_STATE = 1 << 18,
     ROCM_ERNIC_QP_CAP = 1 << 19,
     ROCM_ERNIC_QP_DEST_QPN = 1 << 20,
-    ROCM_ERNIC_QP_ATTR_MASK_MAX = ROCM_ERNIC_QP_DEST_QPN,
+    ROCM_ERNIC_QP_REMOTE_ADDR = 1 << 21, /* Vendor-specific: remote_addr */
+    ROCM_ERNIC_QP_REMOTE_RKEY = 1 << 22, /* Vendor-specific: remote_rkey */
+    ROCM_ERNIC_QP_ATTR_MASK_MAX = ROCM_ERNIC_QP_REMOTE_RKEY,
 };
 
 enum rocm_ernic_qp_state {
@@ -320,7 +322,10 @@ struct rocm_ernic_qp_attr {
     u8 rnr_retry;
     u8 alt_port_num;
     u8 alt_timeout;
-    u8 reserved[5];
+    u8 reserved[1];
+    /* Vendor-specific extensions for rdma_cm support */
+    u64 remote_addr; /* Remote virtual address for RDMA ops */
+    u32 remote_rkey; /* Remote rkey for RDMA ops */
     struct rocm_ernic_qp_cap cap;
     struct rocm_ernic_ah_attr ah_attr;
     struct rocm_ernic_ah_attr alt_ah_attr;
