@@ -1,7 +1,7 @@
 /*
- * Simple vfio-user client test program for vfu_pvrdma
+ * Simple vfio-user client test program for rocm_ernic
  *
- * Connects to the vfu_pvrdma server via socket and performs basic
+ * Connects to the rocm_ernic server via socket and performs basic
  * PCI configuration space queries to verify the device is working.
  *
  * Copyright (C) 2025
@@ -24,9 +24,9 @@
 
 #include <linux/pci_regs.h>
 
-/* VMware PVRDMA device IDs */
-#define PCI_VENDOR_ID_VMWARE 0x15ad
-#define PCI_DEVICE_ID_PVRDMA 0x0820
+/* AMD ROCm ERNIC device IDs */
+#define PCI_VENDOR_ID_AMD        0x1022
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484
 
 /* Test results */
 typedef struct {
@@ -88,9 +88,9 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
     switch (offset) {
     case PCI_VENDOR_ID:
         if (count >= 2) {
-            *(uint16_t *)buf = PCI_VENDOR_ID_VMWARE;
+            *(uint16_t *)buf = PCI_VENDOR_ID_AMD;
             if (count >= 4) {
-                *((uint16_t *)buf + 1) = PCI_DEVICE_ID_PVRDMA;
+                *((uint16_t *)buf + 1) = PCI_DEVICE_ID_ROCM_ERNIC;
             }
         }
         break;
@@ -137,17 +137,17 @@ static int run_pci_tests(int fd, test_results_t *results)
     results->device_id = (vid_did >> 16) & 0xFFFF;
 
     printf("  Vendor ID:  0x%04x", results->vendor_id);
-    if (results->vendor_id == PCI_VENDOR_ID_VMWARE) {
-        printf(" (VMware) ✓\n");
+    if (results->vendor_id == PCI_VENDOR_ID_AMD) {
+        printf(" (AMD) ✓\n");
     } else {
-        printf(" (expected 0x%04x) ✗\n", PCI_VENDOR_ID_VMWARE);
+        printf(" (expected 0x%04x) ✗\n", PCI_VENDOR_ID_AMD);
     }
 
     printf("  Device ID:  0x%04x", results->device_id);
-    if (results->device_id == PCI_DEVICE_ID_PVRDMA) {
-        printf(" (PVRDMA) ✓\n");
+    if (results->device_id == PCI_DEVICE_ID_ROCM_ERNIC) {
+        printf(" (ROCm ERNIC) ✓\n");
     } else {
-        printf(" (expected 0x%04x) ✗\n", PCI_DEVICE_ID_PVRDMA);
+        printf(" (expected 0x%04x) ✗\n", PCI_DEVICE_ID_ROCM_ERNIC);
     }
 
     /* Read revision and class code */
@@ -228,12 +228,12 @@ static bool validate_results(const test_results_t *results)
 
     printf("Validation:\n");
 
-    if (results->vendor_id != PCI_VENDOR_ID_VMWARE) {
+    if (results->vendor_id != PCI_VENDOR_ID_AMD) {
         printf("  ✗ Vendor ID mismatch\n");
         passed = false;
     }
 
-    if (results->device_id != PCI_DEVICE_ID_PVRDMA) {
+    if (results->device_id != PCI_DEVICE_ID_ROCM_ERNIC) {
         printf("  ✗ Device ID mismatch\n");
         passed = false;
     }
@@ -254,7 +254,7 @@ static void usage(const char *progname)
 {
     printf("Usage: %s [OPTIONS]\n", progname);
     printf("\n");
-    printf("Test client for vfu_pvrdma vfio-user server\n");
+    printf("Test client for rocm_ernic vfio-user server\n");
     printf("\n");
     printf("Options:\n");
     printf("  -s, --socket PATH   Socket path (default: "
@@ -290,7 +290,7 @@ int main(int argc, char **argv)
     }
 
     printf("=================================================\n");
-    printf("  vfu_pvrdma PCI Configuration Test Client\n");
+    printf("  rocm_ernic PCI Configuration Test Client\n");
     printf("=================================================\n\n");
 
     printf("Connecting to: %s\n", socket_path);

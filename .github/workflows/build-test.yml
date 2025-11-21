@@ -61,8 +61,10 @@ jobs:
         run: |
           ls -lh build/rocm_ernic
           ls -lh build/tests/test_pci_client
+          ls -lh build/tests/test_data_transfer
           file build/rocm_ernic
           file build/tests/test_pci_client
+          file build/tests/test_data_transfer
       
       - name: Check binary dependencies
         run: |
@@ -71,6 +73,9 @@ jobs:
           echo ""
           echo "=== test_pci_client dependencies ==="
           ldd build/tests/test_pci_client
+          echo ""
+          echo "=== test_data_transfer dependencies ==="
+          ldd build/tests/test_data_transfer
       
       - name: Run tests
         run: meson test -C build --verbose --print-errorlogs
@@ -91,5 +96,6 @@ jobs:
           path: |
             build/rocm_ernic
             build/tests/test_pci_client
+            build/tests/test_data_transfer
           retention-days: 7
 
