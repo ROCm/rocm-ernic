@@ -712,9 +712,7 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
             free(dev->backend_eth_device);
             dev->backend_eth_device = NULL;
         }
-        if (dev->backend_port_num != 1) {
-            dev->backend_port_num = 1;
-        }
+        dev->backend_port_num = 1;
     }
 
     return 0;

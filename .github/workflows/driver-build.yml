@@ -1,14 +1,11 @@
 name: Driver Build
 
 on:
-  push:
-    paths:
-      - 'driver/**'
-      - '.github/workflows/driver-build.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'driver/**'
+      - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
 jobs:
