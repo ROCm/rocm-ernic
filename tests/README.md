@@ -5,15 +5,15 @@ the rocm_ernic server.
 
 ## Test Programs
 
-### test_pci_client
+### test_pci_client (Active - Runs in CI)
 
 A simple vfio-user client that connects to the rocm_ernic server and
 performs basic PCI configuration space queries.
 
 **Tests Performed:**
 - Socket connection to server
-- PCI Vendor ID verification (VMware: 0x15ad)
-- PCI Device ID verification (PVRDMA: 0x0820)
+- PCI Vendor ID verification (AMD: 0x1022)
+- PCI Device ID verification (ROCm ERNIC: 0x1484)
 - PCI Class Code verification (Network Controller: 0x02xxxx)
 - PCI Header Type verification (Type 0)
 - BAR register reads
@@ -22,6 +22,37 @@ performs basic PCI configuration space queries.
 **Exit Codes:**
 - 0: All tests passed
 - 1: Test failure or connection error
+
+**Status:** ✅ Active - Registered in meson.build and runs in CI
+
+### test_data_transfer (Active - Runs in CI)
+
+Comprehensive RDMA data transfer test using libibverbs. Tests send/recv
+operations and verifies data integrity and pattern generation.
+
+**Tests Performed:**
+- RDMA device discovery and opening
+- Protection Domain (PD) allocation
+- Completion Queue (CQ) creation
+- Queue Pair (QP) creation and state transitions
+- Memory Region (MR) registration
+- Basic send/recv operations
+- Multiple transfers
+- Varying buffer sizes (64 to 4096 bytes)
+
+**Requirements:**
+- libibverbs library
+- RDMA device available (via rocm_ernic driver or hardware)
+
+**Exit Codes:**
+- 0: All tests passed
+- 1: Test failure or no RDMA device available
+
+**Status:** ✅ Active - Registered in meson.build and runs in CI
+
+**Note:** This test requires an RDMA device to be available. In CI, this
+may require the rocm_ernic server running with loopback backend and a VM
+with the driver loaded, or it will be skipped if no device is found.
 
 ## Running Tests
 
@@ -127,9 +158,19 @@ test(
 
 ## CI Integration
 
-Tests run automatically in GitHub Actions CI pipeline on:
-- Every push to main/master
-- Every pull request
+**Tests run in CI:**
+- `test_pci_client` - Runs via `meson test` in `.github/workflows/build-test.yml`
+  - Tests PCI configuration space via vfio-user protocol
+  - Requires rocm_ernic server running
+- `test_data_transfer` - Runs via `meson test` in `.github/workflows/build-test.yml`
+  - Tests RDMA data transfer operations via libibverbs
+  - Requires RDMA device available (may be skipped if none found)
 
-See `.github/workflows/test.yml` for details.
+**CI Workflow:**
+- Triggered on: Pull requests to `main` branch
+- Runs on: Ubuntu 22.04 and 24.04
+- Test command: `meson test -C build --verbose --print-errorlogs`
+- Only registered tests in `tests/meson.build` are executed
+
+See `.github/workflows/build-test.yml` for CI configuration details.
 

@@ -62,8 +62,9 @@ static int setup_resources(struct test_context *ctx)
     /* Get device list */
     dev_list = ibv_get_device_list(&num_devices);
     if (!dev_list || num_devices == 0) {
-        fprintf(stderr, "No RDMA devices found\n");
-        return -1;
+        fprintf(stderr, "No RDMA devices found - skipping test\n");
+        ibv_free_device_list(dev_list); /* Free even if NULL is safe */
+        return -2;                      /* Special code to indicate skip */
     }
 
     /* Open first device */
@@ -496,7 +497,13 @@ int main(void)
     printf("╚════════════════════════════════════════════════════════════╝\n");
 
     /* Setup */
-    if (setup_resources(&ctx) < 0) {
+    int setup_ret = setup_resources(&ctx);
+    if (setup_ret < 0) {
+        if (setup_ret == -2) {
+            /* No devices available - exit with skip code (77) */
+            fprintf(stderr, "\n⚠ Test skipped: No RDMA devices available\n");
+            return 77; /* Meson skip code */
+        }
         fprintf(stderr, "\n✗ Setup failed\n");
         ret = 1;
         goto cleanup;

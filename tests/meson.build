@@ -8,20 +8,6 @@ test_pci_client = executable(
     install: false
 )
 
-test_bar1_read = executable(
-    'test_bar1_read',
-    'test_bar1_read.c',
-    dependencies: [],
-    install: false
-)
-
-test_dsr_trigger = executable(
-    'test_dsr_trigger',
-    'test_dsr_trigger.c',
-    dependencies: [],
-    install: false
-)
-
 # Data transfer test (requires libibverbs)
 test_data_transfer = executable(
     'test_data_transfer',
@@ -39,6 +25,14 @@ test(
         meson.project_build_root() / 'rocm_ernic'
     ],
     timeout: 30,
+    is_parallel: false
+)
+
+# Data transfer test (requires RDMA device - may be skipped if none available)
+test(
+    'data-transfer-test',
+    test_data_transfer,
+    timeout: 60,
     is_parallel: false
 )
 

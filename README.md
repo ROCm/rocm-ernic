@@ -125,9 +125,13 @@ The Linux kernel includes a native PVRDMA driver
 - Supports the full RDMA feature set (QPs, CQs, SRQs, MRs, etc.)
 - Is production-ready and widely used in VMware environments
 
-**Device IDs:**
+**Device IDs (Historical - PVRDMA):**
 - Vendor ID: `0x15ad` (VMware)
 - Device ID: `0x0820` (PVRDMA)
+
+**Device IDs (Current - ROCm ERNIC):**
+- Vendor ID: `0x1022` (AMD)
+- Device ID: `0x1484` (ROCm ERNIC)
 
 ### libvfio-user Framework
 
