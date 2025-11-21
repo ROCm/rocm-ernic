@@ -682,9 +682,19 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
         return;
     }
 
-    /* Only auto-pair RC/UC QPs without a remote_qpn */
-    if (lqp->remote_qpn != 0 ||
-        (lqp->qp_type != IBV_QPT_RC && lqp->qp_type != IBV_QPT_UC)) {
+    /* Only auto-pair RC/UC QPs */
+    if (lqp->qp_type != IBV_QPT_RC && lqp->qp_type != IBV_QPT_UC) {
+        return;
+    }
+
+    /* If remote_qpn is set to self (self-loopback), clear it for auto-pairing
+     */
+    if (lqp->remote_qpn == lqp->qpn) {
+        lqp->remote_qpn = 0;
+    }
+
+    /* Skip if already paired with another QP */
+    if (lqp->remote_qpn != 0) {
         return;
     }
 
@@ -739,9 +749,11 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
 
             rdma_info_report(
                 "Loopback: Auto-paired QP %u <-> QP %u (simulating rdma_cm) "
-                "[remote_addr=0x%lx, remote_rkey=0x%x]",
-                lqp->qpn, other_qpn, (unsigned long)lqp->remote_addr,
-                lqp->remote_rkey);
+                "[QP%u: remote_addr=0x%lx, remote_rkey=0x%x] "
+                "[QP%u: remote_addr=0x%lx, remote_rkey=0x%x]",
+                lqp->qpn, other_qpn, lqp->qpn, (unsigned long)lqp->remote_addr,
+                lqp->remote_rkey, other_qpn,
+                (unsigned long)other_qp->remote_addr, other_qp->remote_rkey);
             qemu_mutex_unlock(&priv->lock);
             return;
         }
@@ -791,18 +803,30 @@ static void loopback_query_remote_conn_info(RdmaBackendQP *qp,
 {
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
     if (lqp && lqp->remote_qpn != 0) {
+        /* QP is paired - return connection info */
         if (remote_addr) {
             *remote_addr = lqp->remote_addr;
         }
         if (rkey) {
             *rkey = lqp->remote_rkey;
         }
+        rdma_info_report("Loopback: Query remote conn info QP %u -> "
+                         "remote_qpn=%u, remote_addr=0x%lx, remote_rkey=0x%x",
+                         lqp->qpn, lqp->remote_qpn,
+                         remote_addr ? (unsigned long)*remote_addr : 0,
+                         rkey ? *rkey : 0);
     } else {
+        /* QP not paired yet - return zeros */
         if (remote_addr) {
             *remote_addr = 0;
         }
         if (rkey) {
             *rkey = 0;
+        }
+        if (lqp) {
+            rdma_info_report("Loopback: Query remote conn info QP %u -> "
+                             "not paired (remote_qpn=0)",
+                             lqp->qpn);
         }
     }
 }
@@ -823,6 +847,8 @@ static int loopback_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
         if (lqp->remote_qpn != 0) {
             attr->dest_qp_num = lqp->remote_qpn;
         }
+        /* Connection info is exposed via query_remote_conn_info */
+        /* This is called separately by the PVRDMA layer */
     } else {
         attr->qp_state = IBV_QPS_RTS;
         attr->cur_qp_state = IBV_QPS_RTS;

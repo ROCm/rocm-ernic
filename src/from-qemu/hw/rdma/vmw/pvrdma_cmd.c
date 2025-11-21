@@ -650,6 +650,7 @@ static int query_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
     }
 
     /* Query remote connection info for rdma_cm support */
+    /* Always query and populate connection info if backend supports it */
     qp = rdma_rm_get_qp(&dev->rdma_dev_res, cmd->qp_handle);
     if (qp && qp->backend_qp.backend_ops &&
         qp->backend_qp.backend_ops->query_remote_conn_info) {
@@ -659,10 +660,18 @@ static int query_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
         qp->backend_qp.backend_ops->query_remote_conn_info(
             &qp->backend_qp, &remote_addr, &remote_rkey);
 
-        /* Populate remote connection info for rdma_cm */
+        /* Always populate remote connection info for rdma_cm support */
+        /* This allows applications to detect connection state */
+        resp->attrs.remote_addr = remote_addr;
+        resp->attrs.remote_rkey = remote_rkey;
+
+        /* Ensure attribute mask includes remote info bits */
         if (remote_addr != 0 || remote_rkey != 0) {
-            resp->attrs.remote_addr = remote_addr;
-            resp->attrs.remote_rkey = remote_rkey;
+            /* Connection is established - info is valid */
+            rdma_info_report("PVRDMA: Query QP %u - connection info: "
+                             "remote_addr=0x%lx, remote_rkey=0x%x",
+                             cmd->qp_handle, (unsigned long)remote_addr,
+                             remote_rkey);
         }
     }
 

@@ -53,17 +53,10 @@ static inline int rocm_ernic_cmd_recv(struct rocm_ernic_dev *dev,
                                       union rocm_ernic_cmd_resp *resp,
                                       unsigned resp_code)
 {
-    int err;
-
     dev_dbg(&dev->pdev->dev, "receive response from device\n");
 
-    err = wait_for_completion_interruptible_timeout(
-        &dev->cmd_done, msecs_to_jiffies(ROCM_ERNIC_CMD_TIMEOUT));
-    if (err == 0 || err == -ERESTARTSYS) {
-        dev_warn(&dev->pdev->dev, "completion timeout or interrupted\n");
-        return -ETIMEDOUT;
-    }
-
+    /* Response is already available in DSR after interrupt */
+    /* No need to wait again - interrupt already completed cmd_done */
     spin_lock(&dev->cmd_lock);
     memcpy(resp, dev->resp_slot, sizeof(*resp));
     spin_unlock(&dev->cmd_lock);
@@ -98,18 +91,33 @@ int rocm_ernic_cmd_post(struct rocm_ernic_dev *dev,
     init_completion(&dev->cmd_done);
     rocm_ernic_write_reg(dev, ROCM_ERNIC_REG_REQUEST, 0);
 
-    /* Make sure the request is written before reading status. */
+    /* Make sure the request is written before waiting for interrupt. */
     mb();
 
+    /* Wait for interrupt indicating command completion */
+    err = wait_for_completion_interruptible_timeout(
+        &dev->cmd_done, msecs_to_jiffies(ROCM_ERNIC_CMD_TIMEOUT));
+    if (err == 0) {
+        dev_warn(&dev->pdev->dev, "command timeout\n");
+        err = -ETIMEDOUT;
+        goto out;
+    }
+    if (err < 0) {
+        dev_warn(&dev->pdev->dev, "command interrupted\n");
+        goto out;
+    }
+
+    /* Read error register after interrupt */
     err = rocm_ernic_read_reg(dev, ROCM_ERNIC_REG_ERR);
     if (err == 0) {
         if (resp != NULL)
             err = rocm_ernic_cmd_recv(dev, resp, resp_code);
     } else {
-        dev_warn(&dev->pdev->dev, "failed to write request error reg: %d\n",
-                 err);
+        dev_warn(&dev->pdev->dev, "command failed, error reg: %d\n", err);
         err = -EFAULT;
     }
+
+out:
 
     up(&dev->cmd_sema);
 

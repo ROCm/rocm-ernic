@@ -104,7 +104,7 @@ jobs:
       run: |
         ./build/rocm_ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
-          --backend loopback \
+          --backend loopback:mode=preserve \
           --verbose > /tmp/vfu_server.log 2>&1 &
         
         SERVER_PID=$!

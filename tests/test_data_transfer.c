@@ -5,11 +5,14 @@
  * Verifies data integrity and pattern generation
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
 #include <infiniband/verbs.h>
 
 #define BUFFER_SIZE    4096

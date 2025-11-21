@@ -50,7 +50,11 @@ void rdma_protected_gqueue_append_int64(RdmaProtectedGQueue *list,
                                         int64_t value)
 {
     qemu_mutex_lock(&list->lock);
+#if GLIB_CHECK_VERSION(2, 68, 0)
+    g_queue_push_tail(list->list, g_memdup2(&value, sizeof(value)));
+#else
     g_queue_push_tail(list->list, g_memdup(&value, sizeof(value)));
+#endif
     qemu_mutex_unlock(&list->lock);
 }
 
