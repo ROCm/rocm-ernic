@@ -975,6 +975,7 @@ int main(int argc, char *argv[])
     free(dev->bar2_mem);
     free(dev->backend_device_name);
     free(dev->backend_eth_device);
+    free(dev->backend_type_str);
     free(dev);
 
     unlink(socket_path);

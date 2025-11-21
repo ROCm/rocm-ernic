@@ -669,7 +669,6 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
 
 void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
 {
-    rocm_ernic_dev_t *dev;
     vfu_ctx_t *vfu_ctx;
     int ret;
 
@@ -678,7 +677,6 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
         return;
     }
 
-    dev = pvrdma->parent_obj.vfu_dev;
     vfu_ctx = pvrdma->parent_obj.vfu_ctx;
 
     if (vector >= RDMA_MAX_INTRS) {

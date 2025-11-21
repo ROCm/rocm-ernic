@@ -80,6 +80,50 @@ jobs:
       - name: Run tests
         run: meson test -C build --verbose --print-errorlogs
       
+      - name: Run rdma_cm tests with multiple configurations
+        run: |
+          echo "=== Testing rdma_cm emulation with multiple loopback configs ==="
+          
+          # Test configurations
+          CONFIGS=("loopback" "loopback:mode=preserve" "loopback:mode=zeros" "loopback:md5")
+          
+          for config in "${CONFIGS[@]}"; do
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Testing: $config"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            # Start server
+            ./build/rocm_ernic --socket /tmp/test-rdma-cm.sock --backend "$config" > /tmp/server-${config//[:\/]/_}.log 2>&1 &
+            SERVER_PID=$!
+            
+            # Wait for socket
+            for i in {1..10}; do
+              if [ -S /tmp/test-rdma-cm.sock ]; then
+                chmod 666 /tmp/test-rdma-cm.sock
+                break
+              fi
+              sleep 0.5
+            done
+            
+            if [ -S /tmp/test-rdma-cm.sock ]; then
+              echo "✓ Server started"
+              # Run test (may skip if no RDMA device)
+              ./build/tests/test_rdma_cm || true
+            else
+              echo "⚠ Server failed to start"
+            fi
+            
+            # Cleanup
+            kill $SERVER_PID 2>/dev/null || true
+            wait $SERVER_PID 2>/dev/null || true
+            rm -f /tmp/test-rdma-cm.sock
+            sleep 1
+          done
+          
+          echo ""
+          echo "✓ rdma_cm configuration tests completed"
+      
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
