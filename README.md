@@ -240,10 +240,7 @@ sudo ninja -C build install
 ```bash
 # Start the ROCm ERNIC device server with verbs backend
 ./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
-                   --backend verbs \
-                   --device mlx5_0 \
-                   --ethdev eth0 \
-                   --port 1 \
+                   --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
                    --verbose
 
 # Start with loopback backend (for testing)
@@ -261,30 +258,22 @@ sudo ninja -C build install
 **Common Options:**
 - `-s, --socket PATH` - VFIO-user socket path (default:
   `/tmp/vfio-user-rocm-ernic.sock`)
-- `-b, --backend TYPE` - RDMA backend type: `none|loopback[:opts]|verbs[:device]`
-  (default: `none`)
+- `-b, --backend TYPE` - RDMA backend type: `none|loopback[:opts]|verbs[:opts]`
+  (default: `loopback`)
 - `-v, --verbose` - Enable verbose debug logging
 - `-h, --help` - Show help message
 
 **Backend-Specific Options:**
 
-The following options are only used with specific backends:
-
-- `-d, --device NAME` - InfiniBand device name (for `verbs` backend only)
-  - Examples: `mlx5_0`, `rxe0`
-  - Alternative: Can be specified in backend string as `verbs:mlx5_0`
-- `-e, --ethdev NAME` - Ethernet device name for GID resolution (for `verbs`
-  backend only)
-  - Used to resolve GIDs (Global Identifiers) for RoCE (RDMA over Converged
-    Ethernet)
-- `-p, --port NUM` - IB port number (for `verbs` backend only, default: 1)
+All backend-specific options are specified in the backend string using
+comma-separated `key=value` syntax. See the backend sections below for details.
 
 ### RDMA Backends
 
 The server supports three backend types, each with different capabilities and
 use cases:
 
-#### 1. `none` Backend (Default)
+#### 1. `none` Backend
 
 **Purpose:** Minimal stubs for testing PCI device enumeration and basic
 functionality without RDMA operations.
@@ -301,41 +290,42 @@ functionality without RDMA operations.
 - Verifying driver loading
 - Development/debugging without RDMA hardware
 
-#### 2. `loopback` Backend
+#### 2. `loopback` Backend (Default)
 
 **Purpose:** Internal loopback emulation for testing RDMA operations without
 physical hardware.
 
 **Usage:**
 ```bash
-# Basic loopback (uses guest data)
+# Basic loopback (uses guest data, default)
 ./build/rocm_ernic --backend loopback
 
-# With MD5 hash computation
-./build/rocm_ernic --backend loopback:md5
+# With mode specified
+./build/rocm_ernic --backend loopback:mode=preserve
 
 # Random data with MD5
-./build/rocm_ernic --backend loopback:random,md5
+./build/rocm_ernic --backend loopback:mode=random,md5
 
 # All zeros
-./build/rocm_ernic --backend loopback:zeros
+./build/rocm_ernic --backend loopback:mode=zeros
 ```
 
 **Options:** Specified in the backend string after `:` (comma-separated):
-- `preserve` - Use actual guest data (default)
-- `zeros` - Fill with 0x00
-- `ones` - Fill with 0xFF
-- `increment` - Fill with 0x00, 0x01, 0x02, ...
-- `decrement` - Fill with 0xFF, 0xFE, 0xFD, ...
-- `alternate` - Fill with 0xAA, 0x55, 0xAA, ...
-- `random` - Fill with random data
+- `mode=PATTERN` - Data pattern (default: `preserve`)
+  - `preserve` - Use actual guest data (default)
+  - `zeros` - Fill with 0x00
+  - `ones` - Fill with 0xFF
+  - `increment` - Fill with 0x00, 0x01, 0x02, ...
+  - `decrement` - Fill with 0xFF, 0xFE, 0xFD, ...
+  - `alternate` - Fill with 0xAA, 0x55, 0xAA, ...
+  - `random` - Fill with random data
 - `md5` - Compute MD5 hash of data
 
 **Examples:**
-- `loopback` - Use guest data, no MD5
-- `loopback:md5` - Use guest data, compute MD5
-- `loopback:random,md5` - Random data with MD5
-- `loopback:zeros` - All zeros, no MD5
+- `loopback` - Use guest data, no MD5 (default)
+- `loopback:mode=preserve` - Use guest data, no MD5
+- `loopback:mode=random,md5` - Random data with MD5
+- `loopback:mode=zeros` - All zeros, no MD5
 
 **Use Cases:**
 - Testing RDMA operations without hardware
@@ -343,35 +333,29 @@ physical hardware.
 - CI/CD automated testing
 - Functional validation
 
-**Options:** None of the `-d`, `-e`, or `-p` options are used.
-
 #### 3. `verbs` Backend
 
 **Purpose:** Use physical InfiniBand or RoCE hardware via `libibverbs`.
 
 **Usage:**
 ```bash
-# Using --device option
-./build/rocm_ernic --backend verbs \
-                   --device mlx5_0 \
-                   --ethdev eth0 \
-                   --port 1
+# Device only
+./build/rocm_ernic --backend verbs:device=mlx5_0
 
-# Device specified in backend string
-./build/rocm_ernic --backend verbs:mlx5_0 \
-                   --ethdev eth0 \
-                   --port 1
+# Device and ethdev
+./build/rocm_ernic --backend verbs:device=mlx5_0,ethdev=eth0
+
+# All options
+./build/rocm_ernic --backend verbs:device=mlx5_0,ethdev=eth0,port=1
 ```
 
-**Options:**
-- `-d, --device NAME` - InfiniBand device name (required, unless specified in
-  backend string)
-  - Can be specified as `verbs:device` instead of using `-d`
+**Options:** Specified in the backend string after `:` (comma-separated):
+- `device=NAME` - InfiniBand device name (required)
   - Examples: `mlx5_0` (Mellanox), `rxe0` (Soft-RoCE)
-- `-e, --ethdev NAME` - Ethernet device name (recommended for RoCE)
+- `ethdev=NAME` - Ethernet device name (recommended for RoCE)
   - Used for GID resolution on RoCE networks
   - Example: `eth0`, `ens3`
-- `-p, --port NUM` - IB port number (default: 1)
+- `port=NUM` - IB port number (default: 1)
 
 **Use Cases:**
 - Production deployments
@@ -523,9 +507,9 @@ libibverbs (Physical RDMA Hardware)
 2. **Running the Server:**
    ```bash
    # With hardware backend
-   ./build/rocm_ernic --backend verbs --device mlx5_0 --ethdev eth0 --port 1 -v
+   ./build/rocm_ernic --backend verbs:device=mlx5_0,ethdev=eth0,port=1 -v
    
-   # Or with loopback backend for testing
+   # Or with loopback backend for testing (default)
    ./build/rocm_ernic --backend loopback -v
    ```
 
@@ -703,10 +687,7 @@ To stop and cleanup: Press **Ctrl+C**
 cd /home/stebates/Projects/rocm-ernic
 sudo ./build/rocm_ernic \
   --socket /tmp/vfio-user-rocm-ernic.sock \
-  --backend verbs \
-  --device mlx5_0 \
-  --ethdev eth0 \
-  --port 1 \
+  --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
   --verbose
 ```
 

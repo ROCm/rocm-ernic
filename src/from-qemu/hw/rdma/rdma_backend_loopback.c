@@ -133,7 +133,49 @@ static LoopbackBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 
 static LoopbackDataPattern parse_data_pattern(const char *config)
 {
-    if (!config || strstr(config, "preserve")) {
+    if (!config) {
+        return LOOPBACK_DATA_PATTERN_PRESERVE; /* Default */
+    }
+
+    /* Parse mode=pattern format */
+    const char *mode_str = strstr(config, "mode=");
+    if (mode_str) {
+        mode_str += 5; /* Skip "mode=" */
+        /* Extract pattern value (up to comma or end of string) */
+        char pattern[32] = {0};
+        const char *comma = strchr(mode_str, ',');
+        size_t len = comma ? (size_t)(comma - mode_str) : strlen(mode_str);
+        if (len >= sizeof(pattern)) {
+            len = sizeof(pattern) - 1;
+        }
+        strncpy(pattern, mode_str, len);
+        pattern[len] = '\0';
+
+        if (!strcmp(pattern, "preserve")) {
+            return LOOPBACK_DATA_PATTERN_PRESERVE;
+        }
+        if (!strcmp(pattern, "zeros")) {
+            return LOOPBACK_DATA_PATTERN_ZEROS;
+        }
+        if (!strcmp(pattern, "ones")) {
+            return LOOPBACK_DATA_PATTERN_ONES;
+        }
+        if (!strcmp(pattern, "increment")) {
+            return LOOPBACK_DATA_PATTERN_INCREMENTING;
+        }
+        if (!strcmp(pattern, "decrement")) {
+            return LOOPBACK_DATA_PATTERN_DECREMENTING;
+        }
+        if (!strcmp(pattern, "alternate")) {
+            return LOOPBACK_DATA_PATTERN_ALTERNATING;
+        }
+        if (!strcmp(pattern, "random")) {
+            return LOOPBACK_DATA_PATTERN_RANDOM;
+        }
+    }
+
+    /* Legacy format: check for patterns directly in config string */
+    if (strstr(config, "preserve")) {
         return LOOPBACK_DATA_PATTERN_PRESERVE;
     }
     if (strstr(config, "zeros")) {
@@ -154,6 +196,7 @@ static LoopbackDataPattern parse_data_pattern(const char *config)
     if (strstr(config, "random")) {
         return LOOPBACK_DATA_PATTERN_RANDOM;
     }
+
     return LOOPBACK_DATA_PATTERN_PRESERVE; /* Default */
 }
 

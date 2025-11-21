@@ -40,6 +40,7 @@ IB
 IBV
 Incrementing
 InfiniBand
+Mellanox
 KDIR
 KVM
 Kconfig
@@ -337,6 +338,10 @@ vmxnet
 vtable
 vvv
 wsl
+xAA
+xFD
+xFE
+xFF
 xdeadbeef
 xxxx
 yml
