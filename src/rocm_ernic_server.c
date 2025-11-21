@@ -471,46 +471,251 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
-    fprintf(
-        stderr,
-        "  -b, --backend TYPE   RDMA backend: none|loopback|verbs[:device]\n");
-    fprintf(stderr, "                       (default: none)\n");
-    fprintf(
-        stderr,
-        "  -d, --device NAME    InfiniBand device name (for verbs backend)\n");
-    fprintf(stderr, "  -e, --ethdev NAME    Ethernet device name\n");
-    fprintf(stderr, "  -p, --port NUM       IB port number (default: 1)\n");
+    fprintf(stderr,
+            "  -b, --backend TYPE   RDMA backend: none|loopback|verbs\n");
+    fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
-    fprintf(stderr, "  none         - No RDMA backend (minimal stubs)\n");
+    fprintf(stderr, "  none: No backend (minimal stubs)\n");
+    fprintf(stderr, "  loopback: Internal loopback emulation\n");
+    fprintf(stderr, "                    Options (comma-separated):\n");
     fprintf(stderr,
-            "  loopback[:opts] - Internal loopback emulation (for testing)\n");
-    fprintf(stderr, "               Options (comma-separated):\n");
+            "                      mode=PATTERN  - Data pattern (default: "
+            "preserve)\n");
     fprintf(stderr,
-            "                 preserve  - Use actual guest data (default)\n");
-    fprintf(stderr, "                 zeros     - Fill with 0x00\n");
-    fprintf(stderr, "                 ones      - Fill with 0xFF\n");
+            "                        preserve     - Use actual guest data\n");
+    fprintf(stderr, "                        zeros        - Fill with 0x00\n");
+    fprintf(stderr, "                        ones         - Fill with 0xFF\n");
+    fprintf(stderr, "                        increment    - Fill with "
+                    "0x00,0x01,0x02,...\n");
+    fprintf(stderr, "                        decrement    - Fill with "
+                    "0xFF,0xFE,0xFD,...\n");
+    fprintf(stderr, "                        alternate    - Fill with "
+                    "0xAA,0x55,0xAA,...\n");
     fprintf(stderr,
-            "                 increment - Fill with 0x00,0x01,0x02,...\n");
+            "                        random       - Fill with random data\n");
     fprintf(stderr,
-            "                 decrement - Fill with 0xFF,0xFE,0xFD,...\n");
-    fprintf(stderr,
-            "                 alternate - Fill with 0xAA,0x55,0xAA,...\n");
-    fprintf(stderr, "                 random    - Fill with random data\n");
-    fprintf(stderr, "                 md5       - Compute MD5 hash of data\n");
-    fprintf(stderr, "               Examples:\n");
-    fprintf(stderr,
-            "                 loopback           - Use guest data, no MD5\n");
+            "                      md5           - Compute MD5 hash of data\n");
+    fprintf(stderr, "                    Examples:\n");
     fprintf(
         stderr,
-        "                 loopback:md5       - Use guest data, compute MD5\n");
+        "                      loopback                    - Use guest data, "
+        "no MD5\n");
+    fprintf(
+        stderr,
+        "                      loopback:mode=preserve      - Use guest data, "
+        "no MD5\n");
     fprintf(stderr,
-            "                 loopback:random,md5 - Random data with MD5\n");
+            "                      loopback:mode=random,md5    - Random data "
+            "with MD5\n");
     fprintf(stderr,
-            "                 loopback:zeros     - All zeros, no MD5\n");
-    fprintf(stderr, "  verbs[:dev]  - libibverbs hardware backend\n");
+            "                      loopback:mode=zeros         - All zeros, no "
+            "MD5\n");
+    fprintf(stderr, "  verbs: libibverbs hardware backend\n");
+    fprintf(stderr, "                    Options (comma-separated):\n");
+    fprintf(stderr,
+            "                      device=NAME   - InfiniBand device name "
+            "(required)\n");
+    fprintf(stderr,
+            "                      ethdev=NAME  - Ethernet device name for GID "
+            "resolution\n");
+    fprintf(
+        stderr,
+        "                      port=NUM     - IB port number (default: 1)\n");
+    fprintf(stderr, "                    Examples:\n");
+    fprintf(stderr,
+            "                      verbs:device=mlx5_0                    - "
+            "Device only\n");
+    fprintf(stderr,
+            "                      verbs:device=mlx5_0,ethdev=eth0         - "
+            "Device and ethdev\n");
+    fprintf(stderr,
+            "                      verbs:device=mlx5_0,ethdev=eth0,port=1 - "
+            "All options\n");
+}
+
+/**
+ * Determine backend type from backend string
+ * @backend_str: Backend string (e.g., "none", "loopback", "verbs:mlx5_0")
+ * @return: Backend type string for comparison
+ */
+static const char *get_backend_type_base(const char *backend_str)
+{
+    if (!backend_str) {
+        return "none";
+    }
+    if (!strncmp(backend_str, "loopback", 8)) {
+        return "loopback";
+    }
+    if (!strncmp(backend_str, "verbs", 5)) {
+        return "verbs";
+    }
+    return "none";
+}
+
+/**
+ * Parse comma-separated verbs backend options with key=value syntax
+ * Format: verbs:device=NAME[,ethdev=NAME][,port=NUM]
+ * @backend_str: Backend string (e.g., "verbs:device=mlx5_0" or
+ *              "verbs:device=mlx5_0,ethdev=eth0,port=1")
+ * @device: Output parameter for device name (caller must free)
+ * @ethdev: Output parameter for ethdev name (caller must free)
+ * @port: Output parameter for port number
+ * @return: 0 on success, -1 on error
+ */
+static int parse_verbs_options(const char *backend_str, char **device,
+                               char **ethdev, uint8_t *port)
+{
+    const char *colon = strchr(backend_str, ':');
+    if (!colon) {
+        return -1;
+    }
+
+    const char *options = colon + 1;
+    if (!*options) {
+        return -1;
+    }
+
+    /* Parse comma-separated key=value pairs */
+    char *options_copy = strdup(options);
+    if (!options_copy) {
+        return -1;
+    }
+
+    char *saveptr = NULL;
+    char *token = strtok_r(options_copy, ",", &saveptr);
+
+    while (token) {
+        char *equals = strchr(token, '=');
+        if (!equals) {
+            /* Legacy format: just device name without key=value */
+            if (!*device) {
+                *device = strdup(token);
+                if (!*device) {
+                    free(options_copy);
+                    return -1;
+                }
+            }
+        } else {
+            *equals = '\0';
+            char *key = token;
+            char *value = equals + 1;
+
+            if (!strcmp(key, "device")) {
+                if (*device) {
+                    free(*device);
+                }
+                *device = strdup(value);
+                if (!*device) {
+                    free(options_copy);
+                    return -1;
+                }
+            } else if (!strcmp(key, "ethdev")) {
+                if (*ethdev) {
+                    free(*ethdev);
+                }
+                *ethdev = strdup(value);
+                if (!*ethdev) {
+                    free(options_copy);
+                    free(*device);
+                    *device = NULL;
+                    return -1;
+                }
+            } else if (!strcmp(key, "port")) {
+                int port_val = atoi(value);
+                if (port_val < 1 || port_val > 255) {
+                    fprintf(stderr,
+                            "Error: Invalid port number '%s' (must be "
+                            "1-255)\n",
+                            value);
+                    free(options_copy);
+                    free(*device);
+                    free(*ethdev);
+                    *device = NULL;
+                    *ethdev = NULL;
+                    return -1;
+                }
+                *port = (uint8_t)port_val;
+            } else {
+                fprintf(stderr,
+                        "Warning: Unknown verbs option '%s', ignoring\n", key);
+            }
+        }
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+
+    free(options_copy);
+    return 0;
+}
+
+/**
+ * Validate backend-specific options
+ * @dev: Device structure with parsed options
+ * @return: 0 on success, -1 on error
+ */
+static int validate_backend_options(rocm_ernic_dev_t *dev)
+{
+    const char *backend_type = get_backend_type_base(dev->backend_type_str);
+    bool is_verbs = !strcmp(backend_type, "verbs");
+
+    /* For verbs backend, parse options from backend string */
+    if (is_verbs) {
+        char *device = NULL;
+        char *ethdev = NULL;
+        uint8_t port = 1;
+
+        /* Parse comma-separated options from backend string */
+        if (parse_verbs_options(dev->backend_type_str, &device, &ethdev,
+                                &port) == 0) {
+            /* Override with parsed values if not set via command-line */
+            if (device && !dev->backend_device_name) {
+                dev->backend_device_name = device;
+            } else if (device) {
+                free(device); /* Command-line takes precedence */
+            }
+
+            if (ethdev && !dev->backend_eth_device) {
+                dev->backend_eth_device = ethdev;
+            } else if (ethdev) {
+                free(ethdev); /* Command-line takes precedence */
+            }
+
+            if (port != 1 && dev->backend_port_num == 1) {
+                dev->backend_port_num = port;
+            }
+        }
+
+        /* Device name is required for verbs backend */
+        if (!dev->backend_device_name) {
+            fprintf(stderr,
+                    "Error: Device name required for 'verbs' backend\n");
+            fprintf(stderr,
+                    "  Use: --backend verbs:device=NAME[,ethdev=NAME][,port="
+                    "NUM]\n");
+            fprintf(stderr, "  Example: --backend verbs:device=mlx5_0\n");
+            fprintf(stderr,
+                    "  Example: --backend verbs:device=mlx5_0,ethdev=eth0\n");
+            fprintf(stderr,
+                    "  Example: --backend verbs:device=mlx5_0,ethdev=eth0,port="
+                    "1\n");
+            return -1;
+        }
+    } else {
+        /* For non-verbs backends, clear any backend-specific options */
+        if (dev->backend_device_name) {
+            free(dev->backend_device_name);
+            dev->backend_device_name = NULL;
+        }
+        if (dev->backend_eth_device) {
+            free(dev->backend_eth_device);
+            dev->backend_eth_device = NULL;
+        }
+        dev->backend_port_num = 1;
+    }
+
+    return 0;
 }
 
 /**
@@ -524,14 +729,17 @@ int main(int argc, char *argv[])
     struct sigaction sa;
     int ret, opt;
 
+    /* Command-line option definitions */
     static struct option long_options[] = {
+        /* Common options */
         {"socket", required_argument, 0, 's'},
         {"backend", required_argument, 0, 'b'},
+        {"verbose", no_argument, 0, 'v'},
+        {"help", no_argument, 0, 'h'},
+        /* Backend-specific options (verbs only) */
         {"device", required_argument, 0, 'd'},
         {"ethdev", required_argument, 0, 'e'},
         {"port", required_argument, 0, 'p'},
-        {"verbose", no_argument, 0, 'v'},
-        {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
 
     /* Allocate device structure */
@@ -541,31 +749,24 @@ int main(int argc, char *argv[])
     }
 
     /* Set defaults */
-    dev->backend_type_str = strdup("none"); /* Default to "none" backend */
+    dev->backend_type_str =
+        strdup("loopback"); /* Default to "loopback" backend */
     dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
     dev->device_active = false;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:d:e:p:vh", long_options,
-                              NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "s:b:vh", long_options, NULL)) !=
+           -1) {
         switch (opt) {
+        /* Common options */
         case 's':
             socket_path = optarg;
             break;
         case 'b':
             free(dev->backend_type_str);
             dev->backend_type_str = strdup(optarg);
-            break;
-        case 'd':
-            dev->backend_device_name = strdup(optarg);
-            break;
-        case 'e':
-            dev->backend_eth_device = strdup(optarg);
-            break;
-        case 'p':
-            dev->backend_port_num = atoi(optarg);
             break;
         case 'v':
             dev->verbose = true;
@@ -577,6 +778,15 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             exit(EXIT_FAILURE);
         }
+    }
+
+    /* Validate backend-specific options */
+    if (validate_backend_options(dev) < 0) {
+        free(dev->backend_type_str);
+        free(dev->backend_device_name);
+        free(dev->backend_eth_device);
+        free(dev);
+        exit(EXIT_FAILURE);
     }
 
     /* Setup signal handlers */
@@ -593,13 +803,17 @@ int main(int argc, char *argv[])
            "Support)\n");
     printf("  Socket: %s\n", socket_path);
     printf("  Backend: %s\n", dev->backend_type_str);
-    if (dev->backend_device_name) {
-        printf("  IB Device: %s\n", dev->backend_device_name);
+
+    /* Show backend-specific options only for verbs backend */
+    if (!strcmp(get_backend_type_base(dev->backend_type_str), "verbs")) {
+        if (dev->backend_device_name) {
+            printf("  IB Device: %s\n", dev->backend_device_name);
+        }
+        if (dev->backend_eth_device) {
+            printf("  Eth Device: %s\n", dev->backend_eth_device);
+        }
+        printf("  IB Port: %u\n", dev->backend_port_num);
     }
-    if (dev->backend_eth_device) {
-        printf("  Eth Device: %s\n", dev->backend_eth_device);
-    }
-    printf("  IB Port: %u\n", dev->backend_port_num);
     printf("\n");
     printf("Features in this build:\n");
     printf("  ✓ PCI device enumeration\n");

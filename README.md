@@ -238,23 +238,135 @@ sudo ninja -C build install
 ### Basic Usage
 
 ```bash
-# Start the PVRDMA device server
-./build/rocm_ernic --socket /tmp/vfio-pvrdma.sock \
-                   --device mlx5_0 \
-                   --ethdev eth0 \
-                   --port 1 \
+# Start the ROCm ERNIC device server with verbs backend
+./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+                   --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
                    --verbose
+
+# Start with loopback backend (for testing)
+./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+                   --backend loopback \
+                   --verbose
+
+# Start with no backend (minimal stubs)
+./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+                   --backend none
 ```
 
 ### Command-Line Options
 
+**Common Options:**
 - `-s, --socket PATH` - VFIO-user socket path (default:
-`/tmp/vfio-user-rocm-ernic.sock`)
-- `-d, --device NAME`    - InfiniBand device name (e.g., `mlx5_0`, `rxe0`)
-- `-e, --ethdev NAME`    - Ethernet device name for GID resolution
-- `-p, --port NUM`       - IB port number (default: 1)
-- `-v, --verbose`        - Enable verbose debug logging
-- `-h, --help`           - Show help message
+  `/tmp/vfio-user-rocm-ernic.sock`)
+- `-b, --backend TYPE` - RDMA backend type: `none|loopback[:opts]|verbs[:opts]`
+  (default: `loopback`)
+- `-v, --verbose` - Enable verbose debug logging
+- `-h, --help` - Show help message
+
+**Backend-Specific Options:**
+
+All backend-specific options are specified in the backend string using
+comma-separated `key=value` syntax. See the backend sections below for details.
+
+### RDMA Backends
+
+The server supports three backend types, each with different capabilities and
+use cases:
+
+#### 1. `none` Backend
+
+**Purpose:** Minimal stubs for testing PCI device enumeration and basic
+functionality without RDMA operations.
+
+**Usage:**
+```bash
+./build/rocm_ernic --backend none
+```
+
+**Options:** None required.
+
+**Use Cases:**
+- Testing PCI device detection
+- Verifying driver loading
+- Development/debugging without RDMA hardware
+
+#### 2. `loopback` Backend (Default)
+
+**Purpose:** Internal loopback emulation for testing RDMA operations without
+physical hardware.
+
+**Usage:**
+```bash
+# Basic loopback (uses guest data, default)
+./build/rocm_ernic --backend loopback
+
+# With mode specified
+./build/rocm_ernic --backend loopback:mode=preserve
+
+# Random data with MD5
+./build/rocm_ernic --backend loopback:mode=random,md5
+
+# All zeros
+./build/rocm_ernic --backend loopback:mode=zeros
+```
+
+**Options:** Specified in the backend string after `:` (comma-separated):
+- `mode=PATTERN` - Data pattern (default: `preserve`)
+  - `preserve` - Use actual guest data (default)
+  - `zeros` - Fill with 0x00
+  - `ones` - Fill with 0xFF
+  - `increment` - Fill with 0x00, 0x01, 0x02, ...
+  - `decrement` - Fill with 0xFF, 0xFE, 0xFD, ...
+  - `alternate` - Fill with 0xAA, 0x55, 0xAA, ...
+  - `random` - Fill with random data
+- `md5` - Compute MD5 hash of data
+
+**Examples:**
+- `loopback` - Use guest data, no MD5 (default)
+- `loopback:mode=preserve` - Use guest data, no MD5
+- `loopback:mode=random,md5` - Random data with MD5
+- `loopback:mode=zeros` - All zeros, no MD5
+
+**Use Cases:**
+- Testing RDMA operations without hardware
+- Development and debugging
+- CI/CD automated testing
+- Functional validation
+
+#### 3. `verbs` Backend
+
+**Purpose:** Use physical InfiniBand or RoCE hardware via `libibverbs`.
+
+**Usage:**
+```bash
+# Device only
+./build/rocm_ernic --backend verbs:device=mlx5_0
+
+# Device and ethdev
+./build/rocm_ernic --backend verbs:device=mlx5_0,ethdev=eth0
+
+# All options
+./build/rocm_ernic --backend verbs:device=mlx5_0,ethdev=eth0,port=1
+```
+
+**Options:** Specified in the backend string after `:` (comma-separated):
+- `device=NAME` - InfiniBand device name (required)
+  - Examples: `mlx5_0` (Mellanox), `rxe0` (Soft-RoCE)
+- `ethdev=NAME` - Ethernet device name (recommended for RoCE)
+  - Used for GID resolution on RoCE networks
+  - Example: `eth0`, `ens3`
+- `port=NUM` - IB port number (default: 1)
+
+**Use Cases:**
+- Production deployments
+- Performance testing
+- Integration with real RDMA hardware
+- Multi-host RDMA communication
+
+**Requirements:**
+- Physical InfiniBand or RoCE-capable NIC
+- `libibverbs` and `librdmacm` installed
+- RDMA device visible via `ibv_devices`
 
 ### Attaching to QEMU
 
@@ -264,7 +376,7 @@ To attach the device to a QEMU VM:
 qemu-system-x86_64 \
   -machine q35,accel=kvm \
   -m 4G \
-  -device vfio-user-pci,socket=/tmp/vfio-pvrdma.sock \
+  -device vfio-user-pci,socket=/tmp/vfio-user-rocm-ernic.sock \
   -device e1000,netdev=net0 \
   -netdev user,id=net0 \
   ...
@@ -276,15 +388,15 @@ Once the VM is running with the device attached:
 
 ```bash
 # Inside the guest VM
-lspci | grep VMware
-# Should show: 00:XX.0 Network controller: VMware PVRDMA Device
+lspci | grep "1022:1484"
+# Should show: 00:XX.0 Network controller: AMD ROCm ERNIC Device [1022:1484]
 
 # Check if driver is loaded
-lsmod | grep pvrdma
+lsmod | grep rocm_ernic
 
 # Verify RDMA device
 ibv_devices
-# Should list the PVRDMA device
+# Should list the ROCm ERNIC device (e.g., rocep0s4f0)
 ```
 
 ## Device Specifications
@@ -394,7 +506,11 @@ libibverbs (Physical RDMA Hardware)
 
 2. **Running the Server:**
    ```bash
-   ./build/rocm_ernic -d mlx5_0 -e eth0 -p 1 -v
+   # With hardware backend
+   ./build/rocm_ernic --backend verbs:device=mlx5_0,ethdev=eth0,port=1 -v
+   
+   # Or with loopback backend for testing (default)
+   ./build/rocm_ernic --backend loopback -v
    ```
 
 3. **Testing Workflow:**
@@ -406,7 +522,8 @@ libibverbs (Physical RDMA Hardware)
 
 ### Known Limitations
 
-- **RDMA Hardware Required:** Needs physical InfiniBand or RoCE device
+- **RDMA Hardware Required (for `verbs` backend):** Needs physical InfiniBand
+  or RoCE device. Use `loopback` backend for testing without hardware.
 - **VM Connection:** Requires QEMU with vfio-user support or compatible VMM
 - **Build Warnings:** ~60 non-critical warnings (implicit declarations, type 
   mismatches)
@@ -416,7 +533,8 @@ libibverbs (Physical RDMA Hardware)
 ### Common Issues
 
 **Problem:** `Failed to initialize RDMA backend`  
-**Cause:** No RDMA device found or libibverbs not installed  
+**Cause:** No RDMA device found or libibverbs not installed (for `verbs`
+backend)  
 **Solution:** 
 ```bash
 # Install RDMA packages
@@ -424,6 +542,9 @@ sudo apt install libibverbs1 ibverbs-providers rdma-core
 
 # Verify RDMA device
 ibv_devices
+
+# If no hardware available, use loopback backend for testing
+./build/rocm_ernic --backend loopback
 ```
 
 **Problem:** `Failed to map to DSR`  
@@ -451,8 +572,9 @@ sudo apt install librdmacm-dev
 
 **With verbose logging (`-v` flag):**
 ```
-rocm_ernic: Starting PVRDMA device server
+rocm_ernic: Starting rocm-ernic device server (Multi-Backend Support)
   Socket: /tmp/vfio-user-rocm-ernic.sock
+  Backend: verbs
   IB Device: mlx5_0
   Eth Device: eth0
   IB Port: 1
@@ -565,8 +687,7 @@ To stop and cleanup: Press **Ctrl+C**
 cd /home/stebates/Projects/rocm-ernic
 sudo ./build/rocm_ernic \
   --socket /tmp/vfio-user-rocm-ernic.sock \
-  --device mlx5_0 \
-  --port 1 \
+  --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
   --verbose
 ```
 

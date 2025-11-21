@@ -1,9 +1,14 @@
 name: rocm-ernic-test
 
 on:
-  push:
   pull_request:
     branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'meson.build'
+      - 'meson_options.txt'
+      - '.github/workflows/build-test.yml'
   workflow_dispatch:
 
 jobs:
@@ -87,21 +92,4 @@ jobs:
             build/rocm_ernic
             build/tests/test_pci_client
           retention-days: 7
-
-  test-status:
-    name: Test Status
-    needs: test
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: Check test result
-        run: |
-          if [ "${{ needs.test.result }}" = "success" ]; then
-            echo "✅ All tests passed!"
-            exit 0
-          else
-            echo "❌ Tests failed!"
-            exit 1
-          fi
 
