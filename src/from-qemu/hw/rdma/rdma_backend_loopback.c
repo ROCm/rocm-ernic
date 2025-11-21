@@ -14,6 +14,7 @@
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
 #include "rdma_utils.h"
+#include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
@@ -88,9 +89,18 @@ typedef struct {
     uint32_t rq_psn;
     uint32_t sq_psn;
 
+    /* Ethernet key exchange info (for RoCE simulation) */
+    uint64_t remote_addr; /* Remote virtual address */
+    uint32_t remote_rkey; /* Remote rkey for RDMA operations */
+    uint64_t local_addr;  /* Local virtual address (for remote to use) */
+    uint32_t local_rkey;  /* Local rkey (for remote to use) */
+
     /* Associated CQs */
     LoopbackCQ *scq;
     LoopbackCQ *rcq;
+
+    /* Backend device reference for auto-pairing */
+    RdmaBackendDev *backend_dev;
 
     /* Work queues */
     GQueue *send_queue;
@@ -128,6 +138,9 @@ typedef struct {
 
 static LoopbackBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 {
+    if (!backend_dev) {
+        return NULL;
+    }
     return (LoopbackBackendPrivate *)backend_dev->backend_private;
 }
 
@@ -222,8 +235,8 @@ static const char *data_pattern_name(LoopbackDataPattern pattern)
     }
 }
 
-static void generate_data_pattern(void *buffer, size_t length,
-                                  LoopbackDataPattern pattern)
+__attribute__((unused)) static void generate_data_pattern(
+    void *buffer, size_t length, LoopbackDataPattern pattern)
 {
     uint8_t *buf = (uint8_t *)buffer;
 
@@ -290,10 +303,9 @@ static void compute_sge_md5(struct ibv_sge *sge, uint32_t num_sge,
     rdma_info_report("Loopback: Data MD5: %s (%u bytes)", md5_str, total_len);
 }
 
-static void loopback_post_completion(LoopbackCQ *cq, uint64_t wr_id,
-                                     enum ibv_wc_status status,
-                                     uint32_t byte_len, uint32_t qp_num,
-                                     enum ibv_wc_opcode opcode)
+__attribute__((unused)) static void loopback_post_completion(
+    LoopbackCQ *cq, uint64_t wr_id, enum ibv_wc_status status,
+    uint32_t byte_len, uint32_t qp_num, enum ibv_wc_opcode opcode)
 {
     LoopbackCompletion *comp = g_new0(LoopbackCompletion, 1);
 
@@ -445,9 +457,6 @@ static void loopback_destroy_pd(RdmaBackendPD *pd)
 static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                               size_t length, uint64_t guest_start, int access)
 {
-    LoopbackBackendPrivate *priv =
-        get_private(pd->ibpd ? (RdmaBackendDev *)NULL
-                             : NULL); /* TODO: Get backend_dev properly */
     LoopbackMR *lmr = g_new0(LoopbackMR, 1);
     uint32_t pd_handle = (uint32_t)(uintptr_t)pd->ibpd;
 
@@ -568,6 +577,7 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
 
     lqp->scq = lscq;
     lqp->rcq = lrcq;
+    lqp->backend_dev = scq->backend_dev; /* Store for auto-pairing */
 
     lqp->send_queue = g_queue_new();
     lqp->recv_queue = g_queue_new();
@@ -638,35 +648,188 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             lqp->qkey = qkey;
         }
 
-        rdma_info_report("Loopback: QP %u -> RTR (remote_qpn=%u, rq_psn=%u)",
-                         lqp->qpn, dqpn, rq_psn);
+        /* Initialize local connection info if not set */
+        /* These will be exchanged during auto-pairing */
+        /* Use QPN-based addressing for unique addresses per QP */
+        if (lqp->local_addr == 0) {
+            lqp->local_addr = 0x1000000 + (lqp->qpn * 0x1000);
+        }
+        if (lqp->local_rkey == 0) {
+            lqp->local_rkey = 0xFFFFFFFF; /* Default rkey */
+        }
+
+        rdma_info_report("Loopback: QP %u -> RTR (remote_qpn=%u, rq_psn=%u, "
+                         "local_addr=0x%lx, local_rkey=0x%x)",
+                         lqp->qpn, dqpn, rq_psn, (unsigned long)lqp->local_addr,
+                         lqp->local_rkey);
     }
     return 0;
+}
+
+/*
+ * Auto-pair QPs for rdma_cm simulation
+ * When a QP reaches RTS without a remote_qpn, try to pair it with another
+ * unpaired QP in RTS state. This simulates rdma_cm connection establishment.
+ */
+static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
+{
+    GHashTableIter iter;
+    gpointer key, value;
+    LoopbackQP *other_qp;
+    uint32_t other_qpn;
+
+    if (!priv || !lqp) {
+        return;
+    }
+
+    /* Only auto-pair RC/UC QPs without a remote_qpn */
+    if (lqp->remote_qpn != 0 ||
+        (lqp->qp_type != IBV_QPT_RC && lqp->qp_type != IBV_QPT_UC)) {
+        return;
+    }
+
+    /* Find another QP in RTS state without a remote_qpn */
+    qemu_mutex_lock(&priv->lock);
+    g_hash_table_iter_init(&iter, priv->qps);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        other_qpn = GPOINTER_TO_UINT(key);
+        other_qp = (LoopbackQP *)value;
+
+        /* Skip self */
+        if (other_qp == lqp || other_qpn == lqp->qpn) {
+            continue;
+        }
+
+        /* Match: same type, in RTS, no remote_qpn set */
+        if (other_qp->qp_type == lqp->qp_type &&
+            other_qp->state == IBV_QPS_RTS && other_qp->remote_qpn == 0) {
+            /* Pair them bidirectionally */
+            lqp->remote_qpn = other_qpn;
+            other_qp->remote_qpn = lqp->qpn;
+
+            /* Exchange PSNs for proper sequencing */
+            if (lqp->sq_psn == 0) {
+                lqp->sq_psn = other_qp->rq_psn;
+            }
+            if (other_qp->sq_psn == 0) {
+                other_qp->sq_psn = lqp->rq_psn;
+            }
+
+            /* Exchange connection info for Ethernet key exchange simulation */
+            /* Ensure both QPs have local info set first */
+            /* Use QPN-based addressing for unique addresses */
+            if (lqp->local_addr == 0) {
+                lqp->local_addr = 0x1000000 + (lqp->qpn * 0x1000);
+            }
+            if (lqp->local_rkey == 0) {
+                lqp->local_rkey = 0xFFFFFFFF;
+            }
+            if (other_qp->local_addr == 0) {
+                other_qp->local_addr = 0x1000000 + (other_qp->qpn * 0x1000);
+            }
+            if (other_qp->local_rkey == 0) {
+                other_qp->local_rkey = 0xFFFFFFFF;
+            }
+
+            /* Exchange: each QP gets the other's local info as remote */
+            lqp->remote_addr = other_qp->local_addr;
+            lqp->remote_rkey = other_qp->local_rkey;
+            other_qp->remote_addr = lqp->local_addr;
+            other_qp->remote_rkey = lqp->local_rkey;
+
+            rdma_info_report(
+                "Loopback: Auto-paired QP %u <-> QP %u (simulating rdma_cm) "
+                "[remote_addr=0x%lx, remote_rkey=0x%x]",
+                lqp->qpn, other_qpn, (unsigned long)lqp->remote_addr,
+                lqp->remote_rkey);
+            qemu_mutex_unlock(&priv->lock);
+            return;
+        }
+    }
+    qemu_mutex_unlock(&priv->lock);
+
+    rdma_info_report("Loopback: QP %u in RTS, waiting for pairing partner",
+                     lqp->qpn);
 }
 
 static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
                                  uint32_t sq_psn, uint32_t qkey, bool qkey_set)
 {
     (void)qp_type;
-    (void)sq_psn;
     (void)qkey;
     (void)qkey_set;
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
-    if (lqp) {
-        lqp->state = IBV_QPS_RTS;
-        rdma_info_report("Loopback: QP %u -> RTS", lqp->qpn);
+    LoopbackBackendPrivate *priv = NULL;
+
+    if (!lqp) {
+        return 0;
     }
+
+    lqp->state = IBV_QPS_RTS;
+    lqp->sq_psn = sq_psn;
+
+    rdma_info_report("Loopback: QP %u -> RTS (sq_psn=%u)", lqp->qpn, sq_psn);
+
+    /* Try to auto-pair this QP with another unpaired QP */
+    if (lqp->backend_dev) {
+        priv = get_private(lqp->backend_dev);
+        if (priv) {
+            loopback_auto_pair_qp(priv, lqp);
+        }
+    }
+
     return 0;
+}
+
+/*
+ * Query remote connection info for Ethernet key exchange simulation
+ * Returns remote_addr and rkey if QP is paired
+ */
+static void loopback_query_remote_conn_info(RdmaBackendQP *qp,
+                                            uint64_t *remote_addr,
+                                            uint32_t *rkey)
+{
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    if (lqp && lqp->remote_qpn != 0) {
+        if (remote_addr) {
+            *remote_addr = lqp->remote_addr;
+        }
+        if (rkey) {
+            *rkey = lqp->remote_rkey;
+        }
+    } else {
+        if (remote_addr) {
+            *remote_addr = 0;
+        }
+        if (rkey) {
+            *rkey = 0;
+        }
+    }
 }
 
 static int loopback_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
                              int attr_mask, struct ibv_qp_init_attr *init_attr)
 {
+    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+
     memset(attr, 0, sizeof(*attr));
-    attr->qp_state = IBV_QPS_RTS;
-    attr->cur_qp_state = IBV_QPS_RTS;
-    attr->path_mtu = IBV_MTU_1024;
-    attr->qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+    if (lqp) {
+        attr->qp_state = lqp->state;
+        attr->cur_qp_state = lqp->state;
+        attr->path_mtu = IBV_MTU_1024;
+        attr->qp_access_flags = IBV_ACCESS_LOCAL_WRITE |
+                                IBV_ACCESS_REMOTE_WRITE |
+                                IBV_ACCESS_REMOTE_READ;
+        if (lqp->remote_qpn != 0) {
+            attr->dest_qp_num = lqp->remote_qpn;
+        }
+    } else {
+        attr->qp_state = IBV_QPS_RTS;
+        attr->cur_qp_state = IBV_QPS_RTS;
+        attr->path_mtu = IBV_MTU_1024;
+        attr->qp_access_flags =
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+    }
 
     if (init_attr) {
         memset(init_attr, 0, sizeof(*init_attr));
@@ -695,115 +858,169 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     LoopbackWR *recv_wr = NULL;
     uint32_t total_len = 0;
     uint32_t transferred = 0;
+    enum ibv_wc_opcode wc_opcode = IBV_WC_SEND;
+    uint32_t pvrdma_opcode = 0;
+    uint64_t remote_addr = 0;
+    uint32_t rkey = 0;
 
     if (!lqp) {
         rdma_error_report("Loopback: post_send on unknown QP");
         return;
     }
 
-    /* Calculate total send length and apply data pattern */
+    /* Extract opcode and RDMA parameters from context if available */
+    /* CompHandlerCtx is defined in pvrdma_qp_ops.c */
+    typedef struct {
+        void *dev;
+        uint32_t cq_handle;
+        struct pvrdma_cqe cqe;
+        uint32_t opcode;
+        uint64_t remote_addr;
+        uint32_t rkey;
+    } CompHandlerCtx;
+    CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
+    if (comp_ctx) {
+        pvrdma_opcode = comp_ctx->opcode;
+        remote_addr = comp_ctx->remote_addr;
+        rkey = comp_ctx->rkey;
+        wc_opcode = comp_ctx->cqe.opcode;
+    }
+
+    /* Calculate total send length */
     for (uint32_t i = 0; i < num_sge && i < 32; i++) {
         total_len += sge[i].length;
-
-        /* Generate data pattern if not PRESERVE */
-        if (priv->data_pattern != LOOPBACK_DATA_PATTERN_PRESERVE &&
-            sge[i].addr && sge[i].length > 0) {
-            generate_data_pattern((void *)sge[i].addr, sge[i].length,
-                                  priv->data_pattern);
-        }
     }
 
-    /* Compute MD5 of send data if enabled */
-    if (priv->compute_md5 && total_len > 0 && num_sge > 0) {
-        char md5_str[33];
-        compute_sge_md5(sge, num_sge, md5_str, sizeof(md5_str));
-        rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s, MD5=%s",
-                         lqp->qpn, total_len,
-                         data_pattern_name(priv->data_pattern), md5_str);
-    } else if (total_len > 0) {
-        rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s", lqp->qpn,
-                         total_len, data_pattern_name(priv->data_pattern));
-    }
+    /* Note: We don't modify guest send buffers directly as SGE addresses
+     * are guest physical addresses that can't be safely accessed from the
+     * server. Pattern generation would happen during actual data copy,
+     * but we're simulating transfers without copying data.
+     */
 
-    /* For UD QP, use dqpn; for connected QPs, use paired remote_qpn from lqp */
-    if (lqp->qp_type == IBV_QPT_UD) {
-        remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(dqpn));
-    } else {
-        /* For RC/UC, use the remote_qpn stored in lqp from RTR transition */
-        if (lqp->remote_qpn) {
-            remote_qp = g_hash_table_lookup(priv->qps,
-                                            GUINT_TO_POINTER(lqp->remote_qpn));
-        } else {
-            /* Self-loopback: use same QP */
-            remote_qp = lqp;
-        }
-    }
-
-    /* Try to match with a recv on remote/local QP */
-    if (remote_qp && !g_queue_is_empty(remote_qp->recv_queue)) {
-        qemu_mutex_lock(&remote_qp->lock);
-        recv_wr = g_queue_pop_head(remote_qp->recv_queue);
-        qemu_mutex_unlock(&remote_qp->lock);
-
-        if (recv_wr) {
-            /*
-             * Simulate data transfer without actual memory copy.
-             * In a vfio-user environment, SGE addresses are guest physical
-             * addresses that can't be safely accessed from the server.
-             * The loopback backend is for functional testing, not data
-             * integrity verification, so we just calculate the transfer
-             * size and post successful completions.
-             */
-            uint32_t send_offset = 0;
-            uint32_t recv_offset = 0;
-            uint32_t send_sge_idx = 0;
-            uint32_t recv_sge_idx = 0;
-
-            transferred = 0;
-
-            /* Calculate how much data would be transferred */
-            while (send_sge_idx < num_sge && recv_sge_idx < recv_wr->num_sge) {
-                uint32_t send_remaining =
-                    sge[send_sge_idx].length - send_offset;
-                uint32_t recv_remaining =
-                    recv_wr->sge[recv_sge_idx].length - recv_offset;
-                uint32_t copy_len = (send_remaining < recv_remaining)
-                                        ? send_remaining
-                                        : recv_remaining;
-
-                transferred += copy_len;
-                send_offset += copy_len;
-                recv_offset += copy_len;
-
-                /* Move to next SGE if current one exhausted */
-                if (send_offset >= sge[send_sge_idx].length) {
-                    send_sge_idx++;
-                    send_offset = 0;
-                }
-                if (recv_offset >= recv_wr->sge[recv_sge_idx].length) {
-                    recv_sge_idx++;
-                    recv_offset = 0;
-                }
-            }
-
-            /* Post recv completion directly to PVRDMA layer */
-            rdma_backend_complete_work(IBV_WC_SUCCESS, 0, transferred,
-                                       remote_qp->qpn, IBV_WC_RECV,
-                                       (void *)recv_wr->wr_id);
-
-            g_free(recv_wr);
+    /* Handle RDMA Read operations */
+    if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
+        pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV) {
+        /* RDMA Read: read from remote memory, no matching recv needed */
+        /* If remote_addr/rkey not provided, use values from paired QP */
+        if (remote_addr == 0 && lqp->remote_addr != 0) {
+            remote_addr = lqp->remote_addr;
             rdma_info_report(
-                "Loopback: Send QP %u -> Recv QP %u (%u bytes transferred)",
-                lqp->qpn, remote_qp->qpn, transferred);
+                "Loopback: RDMA READ using paired QP remote_addr=0x%lx",
+                (unsigned long)remote_addr);
         }
+        if (rkey == 0 && lqp->remote_rkey != 0) {
+            rkey = lqp->remote_rkey;
+            rdma_info_report("Loopback: RDMA READ using paired QP rkey=0x%x",
+                             rkey);
+        }
+
+        rdma_info_report(
+            "Loopback: RDMA READ QP %u: %u bytes, remote_addr=0x%lx, "
+            "rkey=0x%x",
+            lqp->qpn, total_len, (unsigned long)remote_addr, rkey);
+
+        /* For RDMA Read, completion byte_len is the amount read */
+        transferred = total_len;
+        wc_opcode = IBV_WC_RDMA_READ;
     } else {
-        rdma_info_report("Loopback: Send QP %u (no matching recv, %u bytes)",
-                         lqp->qpn, total_len);
+        /* SEND operations: need matching recv */
+        /* Compute MD5 of send data if enabled */
+        if (priv->compute_md5 && total_len > 0 && num_sge > 0) {
+            char md5_str[33];
+            compute_sge_md5(sge, num_sge, md5_str, sizeof(md5_str));
+            rdma_info_report(
+                "Loopback: SEND QP %u: %u bytes, pattern=%s, MD5=%s", lqp->qpn,
+                total_len, data_pattern_name(priv->data_pattern), md5_str);
+        } else if (total_len > 0) {
+            rdma_info_report("Loopback: SEND QP %u: %u bytes, pattern=%s",
+                             lqp->qpn, total_len,
+                             data_pattern_name(priv->data_pattern));
+        }
+
+        /* For UD QP, use dqpn; for connected QPs, use paired remote_qpn */
+        if (lqp->qp_type == IBV_QPT_UD) {
+            remote_qp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(dqpn));
+        } else {
+            /* For RC/UC, use the remote_qpn stored in lqp from RTR */
+            if (lqp->remote_qpn) {
+                remote_qp = g_hash_table_lookup(
+                    priv->qps, GUINT_TO_POINTER(lqp->remote_qpn));
+            } else {
+                /* Self-loopback: use same QP */
+                remote_qp = lqp;
+            }
+        }
+
+        /* Try to match with a recv on remote/local QP */
+        if (remote_qp && !g_queue_is_empty(remote_qp->recv_queue)) {
+            qemu_mutex_lock(&remote_qp->lock);
+            recv_wr = g_queue_pop_head(remote_qp->recv_queue);
+            qemu_mutex_unlock(&remote_qp->lock);
+
+            if (recv_wr) {
+                /*
+                 * Simulate data transfer without actual memory copy.
+                 * In a vfio-user environment, SGE addresses are guest
+                 * physical addresses that can't be safely accessed from
+                 * the server. The loopback backend is for functional
+                 * testing, not data integrity verification, so we just
+                 * calculate the transfer size and post successful
+                 * completions.
+                 */
+                uint32_t send_offset = 0;
+                uint32_t recv_offset = 0;
+                uint32_t send_sge_idx = 0;
+                uint32_t recv_sge_idx = 0;
+
+                transferred = 0;
+
+                /* Calculate how much data would be transferred */
+                while (send_sge_idx < num_sge &&
+                       recv_sge_idx < recv_wr->num_sge) {
+                    uint32_t send_remaining =
+                        sge[send_sge_idx].length - send_offset;
+                    uint32_t recv_remaining =
+                        recv_wr->sge[recv_sge_idx].length - recv_offset;
+                    uint32_t copy_len = (send_remaining < recv_remaining)
+                                            ? send_remaining
+                                            : recv_remaining;
+
+                    transferred += copy_len;
+                    send_offset += copy_len;
+                    recv_offset += copy_len;
+
+                    /* Move to next SGE if current one exhausted */
+                    if (send_offset >= sge[send_sge_idx].length) {
+                        send_sge_idx++;
+                        send_offset = 0;
+                    }
+                    if (recv_offset >= recv_wr->sge[recv_sge_idx].length) {
+                        recv_sge_idx++;
+                        recv_offset = 0;
+                    }
+                }
+
+                /* Post recv completion directly to PVRDMA layer */
+                rdma_backend_complete_work(IBV_WC_SUCCESS, 0, transferred,
+                                           remote_qp->qpn, IBV_WC_RECV,
+                                           (void *)recv_wr->wr_id);
+
+                g_free(recv_wr);
+                rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes "
+                                 "transferred)",
+                                 lqp->qpn, remote_qp->qpn, transferred);
+            }
+        } else {
+            rdma_info_report(
+                "Loopback: Send QP %u (no matching recv, %u bytes)", lqp->qpn,
+                total_len);
+        }
     }
 
     /* Post send completion directly to PVRDMA layer */
-    rdma_backend_complete_work(IBV_WC_SUCCESS, 0, total_len, lqp->qpn,
-                               IBV_WC_SEND, ctx);
+    rdma_backend_complete_work(IBV_WC_SUCCESS, 0,
+                               transferred > 0 ? transferred : total_len,
+                               lqp->qpn, wc_opcode, ctx);
 }
 
 static void loopback_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
@@ -897,6 +1114,7 @@ const RdmaBackendOps rdma_backend_ops_loopback = {
     .qp_state_rtr = loopback_qp_state_rtr,
     .qp_state_rts = loopback_qp_state_rts,
     .query_qp = loopback_query_qp,
+    .query_remote_conn_info = loopback_query_remote_conn_info,
 
     .post_send = loopback_post_send,
     .post_recv = loopback_post_recv,

@@ -29,6 +29,7 @@
 #include "hw/rdma/rdma.h" /* For rdma_pci_dma_map declaration */
 
 #include "../rdma_backend.h"
+#include "../rdma_backend_ops.h"
 #include "../rdma_rm.h"
 #include "../rdma_utils.h"
 
@@ -636,12 +637,36 @@ static int query_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
     struct pvrdma_cmd_query_qp *cmd = &req->query_qp;
     struct pvrdma_cmd_query_qp_resp *resp = &rsp->query_qp_resp;
     struct ibv_qp_init_attr init_attr;
+    RdmaRmQP *qp;
+    int ret;
 
     memset(resp, 0, sizeof(*resp));
 
-    return rdma_rm_query_qp(&dev->rdma_dev_res, &dev->backend_dev,
-                            cmd->qp_handle, (struct ibv_qp_attr *)&resp->attrs,
-                            cmd->attr_mask, &init_attr);
+    ret = rdma_rm_query_qp(&dev->rdma_dev_res, &dev->backend_dev,
+                           cmd->qp_handle, (struct ibv_qp_attr *)&resp->attrs,
+                           cmd->attr_mask, &init_attr);
+    if (ret < 0) {
+        return ret;
+    }
+
+    /* Query remote connection info for rdma_cm support */
+    qp = rdma_rm_get_qp(&dev->rdma_dev_res, cmd->qp_handle);
+    if (qp && qp->backend_qp.backend_ops &&
+        qp->backend_qp.backend_ops->query_remote_conn_info) {
+        uint64_t remote_addr = 0;
+        uint32_t remote_rkey = 0;
+
+        qp->backend_qp.backend_ops->query_remote_conn_info(
+            &qp->backend_qp, &remote_addr, &remote_rkey);
+
+        /* Populate remote connection info for rdma_cm */
+        if (remote_addr != 0 || remote_rkey != 0) {
+            resp->attrs.remote_addr = remote_addr;
+            resp->attrs.remote_rkey = remote_rkey;
+        }
+    }
+
+    return ret;
 }
 
 static int destroy_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,

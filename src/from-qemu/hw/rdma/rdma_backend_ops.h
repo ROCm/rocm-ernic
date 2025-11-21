@@ -78,6 +78,8 @@ struct RdmaBackendOps {
                         uint32_t qkey, bool qkey_set);
     int (*query_qp)(RdmaBackendQP *qp, struct ibv_qp_attr *attr, int attr_mask,
                     struct ibv_qp_init_attr *init_attr);
+    void (*query_remote_conn_info)(RdmaBackendQP *qp, uint64_t *remote_addr,
+                                   uint32_t *rkey);
 
     /* Data path operations */
     void (*post_send)(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,

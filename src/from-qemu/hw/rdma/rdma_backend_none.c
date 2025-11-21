@@ -173,6 +173,18 @@ static int none_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
     return 0;
 }
 
+static void none_query_remote_conn_info(RdmaBackendQP *qp,
+                                        uint64_t *remote_addr, uint32_t *rkey)
+{
+    /* None backend has no remote connections */
+    if (remote_addr) {
+        *remote_addr = 0;
+    }
+    if (rkey) {
+        *rkey = 0;
+    }
+}
+
 /* Data path - stub implementations */
 static void none_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                            uint8_t qp_type, struct ibv_sge *sge,
@@ -244,6 +256,7 @@ const RdmaBackendOps rdma_backend_ops_none = {
     .qp_state_rtr = none_qp_state_rtr,
     .qp_state_rts = none_qp_state_rts,
     .query_qp = none_query_qp,
+    .query_remote_conn_info = none_query_remote_conn_info,
 
     .post_send = none_post_send,
     .post_recv = none_post_recv,
