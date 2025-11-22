@@ -93,18 +93,31 @@ jobs:
 
 ## Publishing to Registry
 
-### Docker Hub
+The Docker image is automatically built and published via GitHub Actions when:
+- Changes are pushed to `main` branch
+- Tags matching `v*` are pushed
+- Manual workflow dispatch
+
+### Manual Publishing
+
+#### GitHub Container Registry (GHCR) - Recommended
 
 ```bash
-docker tag rocm-ernic-ci:latest yourusername/rocm-ernic-ci:latest
-docker push yourusername/rocm-ernic-ci:latest
+# Login to GHCR
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+
+# Build and tag
+docker build -t ghcr.io/rocm/rocm-ernic-ci:latest ./docker
+
+# Push
+docker push ghcr.io/rocm/rocm-ernic-ci:latest
 ```
 
-### GitHub Container Registry (GHCR)
+#### Docker Hub
 
 ```bash
-docker tag rocm-ernic-ci:latest ghcr.io/yourusername/rocm-ernic-ci:latest
-docker push ghcr.io/yourusername/rocm-ernic-ci:latest
+docker tag rocm-ernic-ci:latest docker.io/yourusername/rocm-ernic-ci:latest
+docker push docker.io/yourusername/rocm-ernic-ci:latest
 ```
 
 ### Version Tags
@@ -112,11 +125,19 @@ docker push ghcr.io/yourusername/rocm-ernic-ci:latest
 It's recommended to tag images with version numbers:
 
 ```bash
-docker tag rocm-ernic-ci:latest ghcr.io/yourusername/rocm-ernic-ci:v1.0.0
-docker tag rocm-ernic-ci:latest ghcr.io/yourusername/rocm-ernic-ci:latest
-docker push ghcr.io/yourusername/rocm-ernic-ci:v1.0.0
-docker push ghcr.io/yourusername/rocm-ernic-ci:latest
+docker tag rocm-ernic-ci:latest ghcr.io/rocm/rocm-ernic-ci:v1.0.0
+docker tag rocm-ernic-ci:latest ghcr.io/rocm/rocm-ernic-ci:latest
+docker push ghcr.io/rocm/rocm-ernic-ci:v1.0.0
+docker push ghcr.io/rocm/rocm-ernic-ci:latest
 ```
+
+### Public Registry Usage
+
+The image is available at:
+- `ghcr.io/rocm/rocm-ernic-ci:latest` (default)
+- `ghcr.io/rocm/rocm-ernic-ci:v1.0.0` (versioned tags)
+
+CI workflows automatically use the public registry image. No authentication needed for public images.
 
 ## Image Size
 

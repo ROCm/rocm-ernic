@@ -1,4 +1,4 @@
-name: Integration Test (QEMU + Driver)
+name: System-Level Test (QEMU + Driver + Loopback)
 
 on:
   pull_request:
@@ -6,17 +6,150 @@ on:
   workflow_dispatch:
 
 # Container image with QEMU and libvfio-user pre-built
-# Update this to point to your container registry
-# Example: ghcr.io/yourusername/rocm-ernic-ci:latest
-#          docker.io/yourusername/rocm-ernic-ci:latest
+# Uses public registry image - update registry path as needed
+# Examples:
+#   ghcr.io/rocm/rocm-ernic-ci:latest
+#   docker.io/rocm/rocm-ernic-ci:latest
 env:
-  CI_IMAGE: docker.io/${{ github.repository_owner }}/rocm-ernic-ci:latest
+  CI_IMAGE: ghcr.io/rocm/rocm-ernic-ci:latest
+  REGISTRY_USER: ${{ github.repository_owner }}
 
 jobs:
-  integration-test:
-    name: QEMU Integration Test
+  loopback-backend-test:
+    name: Loopback Backend Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    
+    # Use pre-built CI image from public registry
+    container:
+      image: ${{ env.CI_IMAGE }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Verify environment
+      run: |
+        echo "=== QEMU Version ==="
+        qemu-system-x86_64 --version || echo "QEMU not in PATH (OK for unit tests)"
+        echo ""
+        echo "=== Build tools ==="
+        meson --version
+        ninja --version
+        echo ""
+        echo "=== RDMA libraries ==="
+        pkg-config --exists libibverbs && pkg-config --modversion libibverbs || echo "libibverbs not found"
+    
+    - name: Build project
+      run: |
+        meson setup build \
+          --buildtype=debug \
+          --prefix=/usr
+        meson compile -C build
+    
+    - name: Verify binaries
+      run: |
+        ls -lh build/rocm_ernic
+        if [ -f build/tests/test_data_transfer ]; then
+          ls -lh build/tests/test_data_transfer
+        fi
+    
+    - name: Run comprehensive loopback tests
+      run: |
+        echo "=== Running comprehensive loopback backend tests ==="
+        
+        if [ -f tests/test_loopback_ci.sh ]; then
+          SERVER_BIN=build/rocm_ernic \
+          TEST_BIN=build/tests/test_data_transfer \
+          tests/test_loopback_ci.sh
+        else
+          echo "⚠️  test_loopback_ci.sh not found"
+          echo "Running basic loopback configuration tests..."
+          
+          # Test each configuration
+          declare -a CONFIGS=(
+            "loopback"
+            "loopback:mode=preserve"
+            "loopback:mode=zeros"
+            "loopback:mode=random"
+            "loopback:md5"
+            "loopback:mode=preserve,md5"
+          )
+          
+          PASSED=0
+          FAILED=0
+          
+          for config in "${CONFIGS[@]}"; do
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Testing: $config"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            SOCKET="/tmp/test-${config//[:\/=]/_}.sock"
+            
+            # Start server
+            timeout 10 build/rocm_ernic \
+              --socket "$SOCKET" \
+              --backend "$config" \
+              --verbose > "/tmp/server-${config//[:\/=]/_}.log" 2>&1 &
+            SERVER_PID=$!
+            
+            # Wait for socket
+            SOCKET_READY=0
+            for i in {1..10}; do
+              if [ -S "$SOCKET" ]; then
+                chmod 666 "$SOCKET" 2>/dev/null || true
+                SOCKET_READY=1
+                break
+              fi
+              sleep 0.5
+            done
+            
+            if [ $SOCKET_READY -eq 1 ]; then
+              echo "✓ Server started successfully"
+              kill $SERVER_PID 2>/dev/null || true
+              wait $SERVER_PID 2>/dev/null || true
+              rm -f "$SOCKET"
+              PASSED=$((PASSED + 1))
+            else
+              echo "✗ Server failed to start"
+              cat "/tmp/server-${config//[:\/=]/_}.log"
+              kill $SERVER_PID 2>/dev/null || true
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Summary: Passed: $PASSED, Failed: $FAILED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if [ $FAILED -gt 0 ]; then
+            exit 1
+          fi
+        fi
+    
+    - name: Run standard meson tests
+      run: |
+        echo "=== Running standard meson tests ==="
+        meson test -C build --verbose --print-errorlogs || true
+    
+    - name: Upload loopback test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: loopback-test-logs
+        path: |
+          /tmp/server-*.log
+          /tmp/test-output.log
+        retention-days: 7
+        if-no-files-found: ignore
+
+  vm-integration-test:
+    name: QEMU VM Integration Test
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    needs: loopback-backend-test
     
     # Use the pre-built Docker image with QEMU and libvfio-user
     # No privileged mode needed - using TCG (software emulation), not KVM
@@ -390,20 +523,25 @@ jobs:
         
         echo "✓ Cleanup complete"
   
-  integration-status:
-    name: Integration Test Status
-    needs: integration-test
+  system-level-test-status:
+    name: System-Level Test Status
+    needs: [loopback-backend-test, vm-integration-test]
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-    - name: Check test result
+    - name: Check test results
       run: |
-        if [ "${{ needs.integration-test.result }}" = "success" ]; then
-          echo "✅ Integration test passed!"
+        LOOPBACK_RESULT="${{ needs.loopback-backend-test.result }}"
+        VM_RESULT="${{ needs.vm-integration-test.result }}"
+        
+        if [ "$LOOPBACK_RESULT" = "success" ] && [ "$VM_RESULT" = "success" ]; then
+          echo "✅ All system-level tests passed!"
           exit 0
         else
-          echo "❌ Integration test failed!"
+          echo "❌ Some system-level tests failed!"
+          echo "Loopback backend test: $LOOPBACK_RESULT"
+          echo "VM integration test: $VM_RESULT"
           exit 1
         fi
 

@@ -1,7 +1,16 @@
 # Dockerfile for ROCm ERNIC CI Testing
 # Builds QEMU (latest) and libvfio-user, plus all dependencies needed for testing
+#
+# Build and publish:
+#   docker build -t ghcr.io/rocm/rocm-ernic-ci:latest .
+#   docker push ghcr.io/rocm/rocm-ernic-ci:latest
 
 FROM ubuntu:24.04
+
+LABEL org.opencontainers.image.title="ROCm ERNIC CI Image"
+LABEL org.opencontainers.image.description="CI image with QEMU, libvfio-user, and RDMA testing tools"
+LABEL org.opencontainers.image.vendor="ROCm"
+LABEL org.opencontainers.image.version="latest"
 
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
