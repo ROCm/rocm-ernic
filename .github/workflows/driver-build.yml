@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-driver:
+  driver-build:
     name: Build Kernel Driver on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     
@@ -84,16 +84,16 @@ jobs:
         rm -f *.o *.ko *.mod *.mod.c *.mod.o .*.cmd Module.symvers \
           modules.order build.log
 
-  build-status:
+  driver-build-status:
     name: Driver Build Status
-    needs: build-driver
+    needs: driver-build
     runs-on: ubuntu-latest
     if: always()
     
     steps:
     - name: Check build result
       run: |
-        if [ "${{ needs.build-driver.result }}" = "success" ]; then
+        if [ "${{ needs.driver-build.result }}" = "success" ]; then
           echo "✅ All driver builds succeeded!"
           exit 0
         else

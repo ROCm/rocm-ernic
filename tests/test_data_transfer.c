@@ -510,6 +510,7 @@ int main(void)
             fprintf(stderr, "\n⚠ Test skipped: No RDMA devices available or QP "
                             "creation failed\n");
             fprintf(stderr, "This test requires a VM with loopback backend\n");
+            cleanup_resources(&ctx);
             return 77; /* Meson skip code */
         }
         fprintf(stderr, "\n✗ Setup failed\n");

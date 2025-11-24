@@ -239,54 +239,74 @@ sudo ninja -C build install
 
 ### Docker-Based Development
 
-For easier local testing and CI compatibility, you can use the provided Docker
-image that includes QEMU, libvfio-user, VM disk image, and all dependencies.
-
-#### Building the Docker Image
-
-The Dockerfile extends a base VM image with project-specific dependencies:
-
-```bash
-cd docker
-docker build -t rocm-ernic-ci:latest .
-```
-
-The base image (`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`)
-will be automatically pulled from Docker Hub.
+For easier local testing and CI compatibility, you can use the pre-built CI Docker
+image from GitHub Container Registry (GHCR). The image includes QEMU, libvfio-user,
+VM disk image, and all dependencies. The image is built and published from another
+workspace.
 
 #### Using Docker for Local Testing
 
 ```bash
+# Pull the latest CI image
+docker pull ghcr.io/rocm/rocm-ernic-ci:latest
+
 # Run interactive shell with project mounted
 docker run -it --rm \
     -v $(pwd):/workspace \
     --privileged \
-    rocm-ernic-ci:latest
+    ghcr.io/rocm/rocm-ernic-ci:latest
 
 # Inside container:
 cd /workspace
 meson setup build
 ninja -C build
+
+# The VM disk image is available in the container at:
+# `/vm-disk.img` (or `/vm/vm-disk.img`, `/root/vm-disk.img`, `/opt/vm/vm-disk.img`)
 ```
 
 #### Running Loopback Tests with Docker
 
-The Docker image includes a preconfigured VM disk for testing:
+The CI image includes a preconfigured VM disk for testing:
 
 ```bash
-# Build the image
-docker build -t rocm-ernic-ci:latest ./docker
+# Pull the latest CI image (if not already pulled)
+docker pull ghcr.io/rocm/rocm-ernic-ci:latest
 
 # Run loopback backend tests
 docker run -it --rm \
     --privileged \
     -v $(pwd):/workspace \
-    rocm-ernic-ci:latest \
+    ghcr.io/rocm/rocm-ernic-ci:latest \
     bash -c "cd /workspace && ./tests/test_loopback_with_vm.sh"
 ```
 
-See [`docker/README.md`](docker/README.md) for more details on the Docker
-image and [`tests/README-VM-TESTING.md`](tests/README-VM-TESTING.md) for VM-based
+#### Docker Image Contents
+
+The CI image (`ghcr.io/rocm/rocm-ernic-ci:latest`) extends the base VM image
+(`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`) and
+includes:
+
+**From Base Image:**
+- QEMU with vfio-user-pci support
+- libvfio-user library
+- VM disk image (qcow2 format) for testing
+- All build dependencies (meson, ninja, gcc, etc.)
+- RDMA/InfiniBand libraries (libibverbs, librdmacm)
+- Testing tools (sshpass, cloud-image-utils, etc.)
+
+**Project-Specific Additions:**
+- Project build dependencies (`libjson-c-dev`, `libcmocka-dev`)
+- Linting tools (clang-format, cppcheck, shellcheck)
+- VM disk manipulation tools (`libguestfs-tools`)
+
+**Image Registry:**
+- `ghcr.io/rocm/rocm-ernic-ci:latest` (default)
+- `ghcr.io/rocm/rocm-ernic-ci:v1.0.0` (versioned tags)
+
+No authentication needed for public images - you can pull and use them directly.
+
+See [`tests/README-VM-TESTING.md`](tests/README-VM-TESTING.md) for VM-based
 testing documentation.
 
 ## Usage

@@ -1,8 +1,0 @@
-# Ignore everything except Dockerfile and README
-*
-
-# But keep these files
-!Dockerfile
-!README.md
-!.dockerignore
-
