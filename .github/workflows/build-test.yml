@@ -80,49 +80,33 @@ jobs:
       - name: Run tests
         run: meson test -C build --verbose --print-errorlogs
       
-      - name: Run rdma_cm tests with multiple configurations
+      - name: Test loopback backend configurations
         run: |
-          echo "=== Testing rdma_cm emulation with multiple loopback configs ==="
-          
-          # Test configurations
-          CONFIGS=("loopback" "loopback:mode=preserve" "loopback:mode=zeros" "loopback:md5")
-          
-          for config in "${CONFIGS[@]}"; do
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "Testing: $config"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            
-            # Start server
-            ./build/rocm_ernic --socket /tmp/test-rdma-cm.sock --backend "$config" > /tmp/server-${config//[:\/]/_}.log 2>&1 &
+          echo "=== Testing loopback backend configurations ==="
+          if [ -f tests/test_loopback_ci.sh ]; then
+            SERVER_BIN=build/rocm_ernic \
+            TEST_BIN=build/tests/test_data_transfer \
+            tests/test_loopback_ci.sh
+          else
+            echo "⚠️  test_loopback_ci.sh not found, skipping loopback config tests"
+            # Fallback: test basic loopback startup
+            echo "Testing basic loopback backend..."
+            timeout 10 build/rocm_ernic \
+              --socket /tmp/test-loopback.sock \
+              --backend loopback:mode=preserve \
+              --verbose > /tmp/loopback-test.log 2>&1 &
             SERVER_PID=$!
-            
-            # Wait for socket
-            for i in {1..10}; do
-              if [ -S /tmp/test-rdma-cm.sock ]; then
-                chmod 666 /tmp/test-rdma-cm.sock
-                break
-              fi
-              sleep 0.5
-            done
-            
-            if [ -S /tmp/test-rdma-cm.sock ]; then
-              echo "✓ Server started"
-              # Run test (may skip if no RDMA device)
-              ./build/tests/test_rdma_cm || true
+            sleep 2
+            if [ -S /tmp/test-loopback.sock ]; then
+              echo "✓ Loopback backend started successfully"
+              kill $SERVER_PID 2>/dev/null || true
+              rm -f /tmp/test-loopback.sock
             else
-              echo "⚠ Server failed to start"
+              echo "✗ Loopback backend failed to start"
+              cat /tmp/loopback-test.log
+              exit 1
             fi
-            
-            # Cleanup
-            kill $SERVER_PID 2>/dev/null || true
-            wait $SERVER_PID 2>/dev/null || true
-            rm -f /tmp/test-rdma-cm.sock
-            sleep 1
-          done
-          
-          echo ""
-          echo "✓ rdma_cm configuration tests completed"
+          fi
       
       - name: Upload test results
         if: always()

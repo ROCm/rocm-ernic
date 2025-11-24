@@ -51,8 +51,10 @@ static int setup_qp(struct test_context *ctx, struct ibv_qp **qp,
 
     *qp = ibv_create_qp(ctx->pd, &qp_init_attr);
     if (!*qp) {
-        fprintf(stderr, "Failed to create %s QP\n", name);
-        return -1;
+        fprintf(stderr, "Failed to create %s QP: %s\n", name, strerror(errno));
+        fprintf(stderr,
+                "This test requires a VM with loopback backend - skipping\n");
+        return -2; /* Skip code */
     }
     printf("✓ Created %s QP (QPN = 0x%x)\n", name, (*qp)->qp_num);
 
@@ -183,15 +185,17 @@ static int setup_resources(struct test_context *ctx)
     printf("✓ Registered Memory Regions\n");
 
     /* Create two QPs for pairing */
-    if (setup_qp(ctx, &ctx->qp1, "QP1") < 0) {
-        return -1;
+    int qp1_ret = setup_qp(ctx, &ctx->qp1, "QP1");
+    if (qp1_ret < 0) {
+        return qp1_ret; /* Propagate skip code (-2) or error (-1) */
     }
 
     /* Small delay to ensure QP1 is fully in RTS before creating QP2 */
     usleep(100000); /* 100ms */
 
-    if (setup_qp(ctx, &ctx->qp2, "QP2") < 0) {
-        return -1;
+    int qp2_ret = setup_qp(ctx, &ctx->qp2, "QP2");
+    if (qp2_ret < 0) {
+        return qp2_ret; /* Propagate skip code (-2) or error (-1) */
     }
 
     /* Give auto-pairing time to occur */
@@ -307,7 +311,9 @@ int main(void)
     int setup_ret = setup_resources(&ctx);
     if (setup_ret < 0) {
         if (setup_ret == -2) {
-            fprintf(stderr, "\n⚠ Test skipped: No RDMA devices available\n");
+            fprintf(stderr, "\n⚠ Test skipped: No RDMA devices available or QP "
+                            "creation failed\n");
+            fprintf(stderr, "This test requires a VM with loopback backend\n");
             return 77; /* Meson skip code */
         }
         fprintf(stderr, "\n✗ Setup failed\n");

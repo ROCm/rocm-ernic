@@ -5,6 +5,7 @@ Apfelbaum
 Async
 BARs
 Backend
+Backends
 CONFIG
 CPUs
 CQ
@@ -29,6 +30,7 @@ ESXi
 Eth
 Filesystem
 GHashTable
+GID
 GIDs
 GPG
 GPL
@@ -110,6 +112,7 @@ amd
 abi
 api
 args
+aspell
 async
 attr
 attrs
@@ -132,6 +135,7 @@ cppcheck
 cq
 cqe
 cqs
+Ctrl
 ctrl
 ctx
 deadbeef
@@ -165,6 +169,7 @@ fini
 fs
 func
 gcc
+ghcr
 gid
 gids
 github
@@ -177,6 +182,7 @@ hca
 https
 hw
 ib
+io
 ibcq
 ibdev
 ibmr
@@ -250,6 +256,7 @@ openssh
 param
 paravirtualized
 passthrough
+preconfigured
 pci
 pdir
 pds
@@ -292,6 +299,7 @@ shellcheck
 sizeof
 src
 sshpass
+stdin
 stebates
 stephen
 str

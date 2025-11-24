@@ -1,0 +1,477 @@
+name: Loopback Backend Tests with Docker VM
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      vm_image_registry:
+        description: 'Docker registry URL for VM image'
+        required: false
+        default: ''
+
+# Docker image with pre-configured VM disk and QEMU
+# This image should contain:
+# - VM disk image (qcow2 format)
+# - QEMU binary
+# - Build tools (meson, ninja, gcc, etc.)
+# - RDMA libraries (libibverbs, etc.)
+# - SSH client tools (sshpass, etc.)
+env:
+  VM_IMAGE_REGISTRY: ${{ github.event.inputs.vm_image_registry || 'docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest' }}
+  CI_IMAGE: ghcr.io/rocm/rocm-ernic-ci:latest
+
+jobs:
+  loopback-backend-test-with-vm:
+    name: Loopback Backend Tests with VM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    
+    # Use the VM Docker image as the container - it has everything we need
+    container:
+      image: ${{ env.VM_IMAGE_REGISTRY }}
+      options: --privileged
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Display environment
+      run: |
+        echo "=== Environment ==="
+        echo "VM Image Registry: ${{ env.VM_IMAGE_REGISTRY }}"
+        echo "Container: Running inside Docker image"
+        echo ""
+        echo "=== Available Tools ==="
+        qemu-system-x86_64 --version || echo "QEMU not found"
+        meson --version || echo "Meson not found"
+        ninja --version || echo "Ninja not found"
+        pkg-config --exists libibverbs && pkg-config --modversion libibverbs || echo "libibverbs not found"
+        echo ""
+        echo "=== VM Disk Image Location ==="
+        # Check for VM disk in common locations
+        for path in /vm-disk.img /vm/vm-disk.img /root/vm-disk.img /opt/vm/vm-disk.img; do
+          if [ -f "$path" ]; then
+            echo "Found VM disk: $path"
+            qemu-img info "$path" || true
+          fi
+        done
+    
+    - name: Find VM disk image
+      id: find_vm_disk
+      run: |
+        VM_DISK_PATHS=(
+          "/vm-disk.img"
+          "/vm/vm-disk.img"
+          "/root/vm-disk.img"
+          "/opt/vm/vm-disk.img"
+          "/workspace/vm-disk.img"
+        )
+        
+        VM_DISK_FOUND=""
+        for path in "${VM_DISK_PATHS[@]}"; do
+          if [ -f "$path" ]; then
+            echo "Found VM disk at: $path"
+            echo "vm_disk_path=$path" >> $GITHUB_OUTPUT
+            VM_DISK_FOUND="yes"
+            break
+          fi
+        done
+        
+        if [ -z "$VM_DISK_FOUND" ]; then
+          echo "⚠️  VM disk image not found in standard locations"
+          echo "Listing root directory:"
+          ls -la / | head -20
+          echo ""
+          echo "Please ensure VM disk image is in the Docker image"
+          exit 1
+        fi
+    
+    - name: Build rocm_ernic server
+      run: |
+        echo "=== Building rocm_ernic server ==="
+        meson setup build \
+          --buildtype=debug \
+          --prefix=/usr
+        meson compile -C build
+        ls -lh build/rocm_ernic
+        echo "✓ Server built successfully"
+    
+    - name: Build test binaries
+      run: |
+        echo "=== Building test binaries ==="
+        if [ -f build/tests/test_data_transfer ]; then
+          ls -lh build/tests/test_data_transfer
+          echo "✓ test_data_transfer built"
+        else
+          echo "⚠️  test_data_transfer not found (may not be built)"
+        fi
+    
+    - name: Prepare VM disk with binaries
+      run: |
+        echo "=== Preparing VM disk ==="
+        VM_DISK="${{ steps.find_vm_disk.outputs.vm_disk_path }}"
+        
+        # Try to mount VM disk to copy files
+        if command -v guestmount &> /dev/null; then
+          echo "Using guestmount to copy files..."
+          mkdir -p /mnt/vm-disk
+          
+          if guestmount -a "$VM_DISK" -m /dev/sda1 /mnt/vm-disk 2>/dev/null; then
+            echo "✓ VM disk mounted"
+            
+            # Copy server binary
+            mkdir -p /mnt/vm-disk/opt/rocm-ernic
+            cp build/rocm_ernic /mnt/vm-disk/opt/rocm-ernic/
+            chmod +x /mnt/vm-disk/opt/rocm-ernic/rocm_ernic
+            
+            # Copy test binaries
+            if [ -f build/tests/test_data_transfer ]; then
+              mkdir -p /mnt/vm-disk/opt/rocm-ernic/tests
+              cp build/tests/test_data_transfer /mnt/vm-disk/opt/rocm-ernic/tests/
+              chmod +x /mnt/vm-disk/opt/rocm-ernic/tests/test_data_transfer
+            fi
+            
+            # Copy driver source
+            mkdir -p /mnt/vm-disk/tmp/driver
+            cp -r driver/* /mnt/vm-disk/tmp/driver/
+            
+            guestunmount /mnt/vm-disk
+            echo "✓ Files copied to VM disk via guestmount"
+          else
+            echo "⚠️  guestmount failed, will copy via SSH after VM boot"
+            echo "skip_mount=true" >> $GITHUB_ENV
+          fi
+        else
+          echo "⚠️  guestmount not available, will copy via SSH after VM boot"
+          echo "skip_mount=true" >> $GITHUB_ENV
+        fi
+    
+    - name: Start rocm_ernic server
+      run: |
+        echo "=== Starting rocm_ernic server ==="
+        ./build/rocm_ernic \
+          --socket /tmp/vfio-user-rocm-ernic.sock \
+          --backend loopback:mode=preserve \
+          --verbose > /tmp/vfu_server.log 2>&1 &
+        
+        SERVER_PID=$!
+        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        
+        # Wait for socket
+        for i in {1..30}; do
+          if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
+            chmod 666 /tmp/vfio-user-rocm-ernic.sock
+            echo "✓ Server started (PID: $SERVER_PID)"
+            exit 0
+          fi
+          sleep 1
+        done
+        
+        echo "✗ Server failed to create socket"
+        cat /tmp/vfu_server.log
+        exit 1
+    
+    - name: Start QEMU VM
+      run: |
+        echo "=== Starting QEMU VM ==="
+        VM_DISK="${{ steps.find_vm_disk.outputs.vm_disk_path }}"
+        SSH_PORT=2222
+        
+        # Start VM with vfio-user device
+        qemu-system-x86_64 \
+          -machine q35,accel=tcg \
+          -cpu max \
+          -m 2G \
+          -nographic \
+          -drive file="$VM_DISK",format=qcow2,if=virtio \
+          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-rocm-ernic.sock"}}' \
+          -serial mon:stdio > /tmp/qemu.log 2>&1 &
+        
+        QEMU_PID=$!
+        echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
+        echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
+        echo "✓ QEMU started (PID: $QEMU_PID)"
+    
+    - name: Wait for VM SSH
+      run: |
+        echo "=== Waiting for VM SSH ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${VM_USER:-ubuntu}"
+        VM_PASSWORD="${VM_PASSWORD:-ubuntu}"
+        
+        for i in {1..60}; do
+          if sshpass -p "$VM_PASSWORD" \
+             ssh -o StrictHostKeyChecking=no \
+                 -o ConnectTimeout=5 \
+                 -p "$SSH_PORT" \
+                 "${VM_USER}@localhost" 'echo VM Ready' 2>/dev/null; then
+            echo "✓ VM SSH is ready (attempt $i/60)"
+            echo "VM_USER=$VM_USER" >> $GITHUB_ENV
+            echo "VM_PASSWORD=$VM_PASSWORD" >> $GITHUB_ENV
+            exit 0
+          fi
+          echo "Attempt $i/60: Waiting for SSH..."
+          sleep 5
+        done
+        
+        echo "✗ VM SSH timeout"
+        echo "=== QEMU Log ==="
+        tail -100 /tmp/qemu.log
+        exit 1
+    
+    - name: Copy files to VM (if not mounted)
+      if: env.skip_mount == 'true'
+      run: |
+        echo "=== Copying files to VM via SSH ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        # Copy server binary
+        sshpass -p "${{ env.VM_PASSWORD }}" \
+          scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+          build/rocm_ernic "${VM_USER}@localhost:/opt/rocm-ernic/" || true
+        
+        # Copy test binaries
+        if [ -f build/tests/test_data_transfer ]; then
+          sshpass -p "${{ env.VM_PASSWORD }}" \
+            scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+            build/tests/test_data_transfer "${VM_USER}@localhost:/opt/rocm-ernic/tests/" || true
+        fi
+        
+        # Copy driver source
+        sshpass -p "${{ env.VM_PASSWORD }}" \
+          scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
+          driver/ "${VM_USER}@localhost:/tmp/" || true
+        
+        echo "✓ Files copied to VM"
+    
+    - name: Verify RDMA NIC in VM
+      run: |
+        echo "=== Verifying RDMA NIC in VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        sshpass -p "${{ env.VM_PASSWORD }}" \
+          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        
+        echo "=== PCI Devices ==="
+        sudo lspci | grep -i amd || echo "AMD device not found yet"
+        sudo lspci -nn | grep -E "1022:1484|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
+        
+        echo ""
+        echo "=== Checking for RDMA device ==="
+        if command -v ibv_devices &> /dev/null; then
+          ibv_devices || echo "No RDMA devices found"
+        else
+          echo "ibv_devices not available"
+        fi
+        
+        echo ""
+        echo "=== Kernel modules ==="
+        lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
+        EOFVM
+    
+    - name: Build and load driver in VM
+      run: |
+        echo "=== Building and loading driver in VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        sshpass -p "${{ env.VM_PASSWORD }}" \
+          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        
+        echo "=== Kernel Version ==="
+        uname -r
+        
+        echo ""
+        echo "=== Building Driver ==="
+        cd /tmp/driver
+        make KDIR=/lib/modules/$(uname -r)/build
+        ls -lh rocm_ernic.ko
+        echo "✓ Driver built for kernel $(uname -r)"
+        
+        echo ""
+        echo "=== Loading InfiniBand Core ==="
+        sudo modprobe ib_core || {
+          echo "⚠️  ib_core module not found - may need to install linux-modules-extra"
+          echo "Attempting to continue..."
+        }
+        
+        sudo modprobe ib_uverbs || {
+          echo "⚠️  ib_uverbs module not found - may need to install linux-modules-extra"
+          echo "Attempting to continue..."
+        }
+        
+        echo "Loaded IB modules:"
+        lsmod | grep ib_ || echo "No IB modules loaded"
+        
+        echo ""
+        echo "=== Loading Driver ==="
+        sudo insmod ./rocm_ernic.ko 2>&1 || {
+          echo "⚠️  Driver load failed"
+          echo "Kernel messages:"
+          sudo dmesg | tail -30
+          exit 1
+        }
+        
+        echo "✓ Driver loaded successfully"
+        lsmod | grep rocm_ernic
+        
+        echo ""
+        echo "=== Checking RDMA Device ==="
+        sleep 2  # Give device time to register
+        if ibv_devices | grep -E "rocm_ernic|rocep"; then
+          DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
+          echo "✓ RDMA device found: $DEVICE"
+          ibv_devinfo -d "$DEVICE" | head -20 || true
+        else
+          echo "⚠️  RDMA device not found after driver load"
+          echo "PCI devices:"
+          sudo lspci | grep -i amd || true
+          echo "Kernel messages:"
+          sudo dmesg | tail -30
+          exit 1
+        fi
+        EOFVM
+    
+    - name: Run loopback backend tests
+      run: |
+        echo "=== Running loopback backend tests ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        # Test configurations
+        declare -a CONFIGS=(
+          "loopback"
+          "loopback:mode=preserve"
+          "loopback:mode=zeros"
+          "loopback:mode=random"
+          "loopback:md5"
+          "loopback:mode=preserve,md5"
+        )
+        
+        PASSED=0
+        FAILED=0
+        
+        for config in "${CONFIGS[@]}"; do
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Testing: $config"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Stop previous server if running
+          kill "${{ env.SERVER_PID }}" 2>/dev/null || true
+          wait "${{ env.SERVER_PID }}" 2>/dev/null || true
+          rm -f /tmp/vfio-user-rocm-ernic*.sock
+          
+          # Start server with this configuration
+          ./build/rocm_ernic \
+            --socket /tmp/vfio-user-rocm-ernic-test.sock \
+            --backend "$config" \
+            --verbose > /tmp/vfu_server_${config//[:\/=]/_}.log 2>&1 &
+          
+          SERVER_PID=$!
+          
+          # Wait for socket
+          SOCKET_READY=0
+          for i in {1..10}; do
+            if [ -S /tmp/vfio-user-rocm-ernic-test.sock ]; then
+              chmod 666 /tmp/vfio-user-rocm-ernic-test.sock
+              SOCKET_READY=1
+              break
+            fi
+            sleep 0.5
+          done
+          
+          if [ $SOCKET_READY -eq 0 ]; then
+            echo "✗ Server failed to start"
+            tail -20 /tmp/vfu_server_${config//[:\/=]/_}.log
+            FAILED=$((FAILED + 1))
+            continue
+          fi
+          
+          echo "✓ Server started"
+          
+          # Run test_data_transfer in VM
+          if sshpass -p "${{ env.VM_PASSWORD }}" \
+             ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << EOFVM
+          set -e
+          
+          # Verify RDMA device is still available
+          if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
+            echo "⚠️  RDMA device not found - driver may have been unloaded"
+            exit 77
+          fi
+          
+          DEVICE=\$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print \$1}' | head -1)
+          echo "Testing with device: \$DEVICE"
+          
+          # Run test_data_transfer if available
+          if [ -f /opt/rocm-ernic/tests/test_data_transfer ]; then
+            /opt/rocm-ernic/tests/test_data_transfer
+          elif command -v test_data_transfer &> /dev/null; then
+            test_data_transfer
+          else
+            echo "⚠️  test_data_transfer not found"
+            exit 77
+          fi
+EOFVM
+          then
+            echo "✓ Test passed for $config"
+            PASSED=$((PASSED + 1))
+          else
+            TEST_EXIT=$?
+            if [ $TEST_EXIT -eq 77 ]; then
+              echo "⚠️  Test skipped for $config (exit code 77)"
+            else
+              echo "✗ Test failed for $config (exit code: $TEST_EXIT)"
+              FAILED=$((FAILED + 1))
+            fi
+          fi
+          
+          # Stop server
+          kill "$SERVER_PID" 2>/dev/null || true
+          wait "$SERVER_PID" 2>/dev/null || true
+          rm -f /tmp/vfio-user-rocm-ernic-test.sock
+        done
+        
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Test Summary: Passed: $PASSED/${#CONFIGS[@]}, Failed: $FAILED"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        if [ $FAILED -gt 0 ]; then
+          exit 1
+        fi
+    
+    - name: Show logs
+      if: always()
+      run: |
+        echo "=== Server Logs ==="
+        ls -lh /tmp/vfu_server*.log || echo "No server logs"
+        tail -50 /tmp/vfu_server*.log || true
+        echo ""
+        echo "=== QEMU Log (last 100 lines) ==="
+        tail -100 /tmp/qemu.log || echo "No QEMU log"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        # Stop QEMU
+        if [ -n "${{ env.QEMU_PID }}" ]; then
+          kill "${{ env.QEMU_PID }}" 2>/dev/null || true
+        fi
+        
+        # Stop server
+        if [ -n "${{ env.SERVER_PID }}" ]; then
+          kill "${{ env.SERVER_PID }}" 2>/dev/null || true
+        fi
+        
+        # Clean up
+        rm -f /tmp/vfio-user-rocm-ernic*.sock
+        echo "✓ Cleanup complete"
