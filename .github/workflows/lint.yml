@@ -1,4 +1,4 @@
-name: Code Quality Checks
+name: Lint
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  clang-format:
+  lint-clang-format:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
@@ -53,7 +53,7 @@ jobs:
 
           echo "✅ All files are properly formatted!"
 
-  shellcheck:
+  lint-shellcheck:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:

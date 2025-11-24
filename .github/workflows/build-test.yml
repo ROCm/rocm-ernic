@@ -1,4 +1,4 @@
-name: rocm-ernic-test
+name: Build Test
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  build-test:
     name: Build and Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     
