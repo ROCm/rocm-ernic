@@ -1,15 +1,28 @@
 # ROCm ERNIC CI Docker Image
 
-This directory contains the Dockerfile for building a CI testing image that includes:
+This directory contains the Dockerfile for building a CI testing image that extends
+the base VM image (`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`).
 
-- **QEMU** (latest from git) with vfio-user-pci support
-- **libvfio-user** (latest from git)
+## Base Image Contains
+
+The base image (`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`)
+provides:
+- **QEMU** with vfio-user-pci support
+- **libvfio-user** library
+- **VM disk image** (qcow2 format) for testing
 - All build dependencies (meson, ninja, gcc, etc.)
 - RDMA/InfiniBand libraries (libibverbs, librdmacm)
 - Testing tools (sshpass, cloud-image-utils, etc.)
+
+## This Image Adds
+
+- Project-specific build dependencies (`libjson-c-dev`, `libcmocka-dev`)
 - Linting tools (clang-format, cppcheck, shellcheck)
+- VM disk manipulation tools (`libguestfs-tools`)
 
 ## Building the Image
+
+The Dockerfile extends the base VM image, so building is fast:
 
 ```bash
 cd docker
@@ -21,6 +34,9 @@ Or with a specific tag:
 ```bash
 docker build -t rocm-ernic-ci:v1.0.0 .
 ```
+
+**Note**: The base image (`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`)
+will be automatically pulled from Docker Hub during the build.
 
 ## Using the Image
 
@@ -37,11 +53,30 @@ docker run -it --rm \
 cd /workspace
 meson setup build
 ninja -C build
+
+# The VM disk image is available in the container at:
+# `/vm-disk.img` (or `/vm/vm-disk.img`, `/root/vm-disk.img`, `/opt/vm/vm-disk.img`)
+```
+
+### Testing with VM
+
+You can use the image to run loopback backend tests locally:
+
+```bash
+# Build the image
+docker build -t rocm-ernic-ci:latest ./docker
+
+# Run tests (mount project directory)
+docker run -it --rm \
+    --privileged \
+    -v $(pwd):/workspace \
+    rocm-ernic-ci:latest \
+    bash -c "cd /workspace && ./tests/test_loopback_with_vm.sh"
 ```
 
 ### CI Usage
 
-The image should be published to a container registry (e.g., Docker Hub, GHCR) and
+The image should be published to a container registry (e.g., Docker Hub, GitHub Container Registry) and
 referenced in GitHub Actions workflows:
 
 ```yaml
@@ -58,38 +93,44 @@ jobs:
 
 ## Image Contents
 
+All base image contents are inherited from `docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`:
+
 ### QEMU Installation
-- **Location**: `/opt/qemu`
-- **Binary**: `/opt/qemu/bin/qemu-system-x86_64`
-- **Version**: Latest from git (with vfio-user-pci support)
-- **PATH**: Automatically added to PATH
+- **Binary**: `qemu-system-x86_64` (in PATH)
+- **Version**: From base image (with vfio-user-pci support)
 
 ### libvfio-user Installation
 - **Location**: `/usr` (system-wide)
-- **pkg-config**: Available via `pkg-config vfio-user`
-- **Libraries**: `/usr/lib/libvfio-user.so`
+- **Libraries**: `/usr/lib/libvfio-user.so` or `/usr/lib/x86_64-linux-gnu/libvfio-user.so`
 
-### Build Tools
+### VM Disk Image
+- **Location**: One of:
+  - `/vm-disk.img` (filename: `vm-disk.img`)
+  - `/vm/vm-disk.img`
+  - `/root/vm-disk.img`
+  - `/opt/vm/vm-disk.img`
+
+### Build Tools (from base image)
 - meson, ninja-build
 - gcc, g++, make, cmake
 - pkg-config
 
-### RDMA Libraries
+### RDMA Libraries (from base image)
 - libibverbs-dev
 - librdmacm-dev
 - rdma-core
 - ibverbs-utils
 
-### Testing Tools
+### Testing Tools (from base image)
 - cloud-image-utils
 - openssh-client
 - sshpass
 - qemu-utils
 
-### Linting Tools
-- clang-format
-- cppcheck
-- shellcheck
+### Project-Specific Additions
+- **Build dependencies**: `libjson-c-dev`, `libcmocka-dev`
+- **Linting tools**: clang-format, cppcheck, shellcheck
+- **VM tools**: `libguestfs-tools` (for mounting VM disks)
 
 ## Publishing to Registry
 
@@ -103,7 +144,8 @@ The Docker image is automatically built and published via GitHub Actions when:
 #### GitHub Container Registry (GHCR) - Recommended
 
 ```bash
-# Login to GHCR
+# Login to GitHub Container Registry
+# aspell: ignore next
 echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
 
 # Build and tag
@@ -150,12 +192,26 @@ Consider using multi-stage builds or image optimization if size is a concern.
 
 ## Updating the Image
 
-To update QEMU or libvfio-user to newer versions:
+### Updating Project Dependencies
 
-1. Modify the Dockerfile (git clone commands will get latest)
+To add or update project-specific dependencies:
+
+1. Modify the Dockerfile (add packages to the `apt-get install` command)
 2. Rebuild the image
 3. Push new version to registry
 4. Update CI workflows to use new tag
+
+### Updating Base Image
+
+To use a newer version of the base VM image:
+
+1. Update the `FROM` line in Dockerfile with new tag/version
+2. Rebuild the image
+3. Push new version to registry
+
+**Note**: QEMU, libvfio-user, and VM disk image updates come from the base image.
+To update those, you'll need to rebuild the base image at:
+`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user`
 
 ## Troubleshooting
 

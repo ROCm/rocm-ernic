@@ -10,6 +10,10 @@ on:
 # Examples:
 #   ghcr.io/rocm/rocm-ernic-ci:latest
 #   docker.io/rocm/rocm-ernic-ci:latest
+#
+# Note: For VM-based loopback testing with pre-configured VM,
+#       see .github/workflows/loopback-vm-test.yml
+#       Set VM_IMAGE_REGISTRY to point to Docker image with VM disk
 env:
   CI_IMAGE: ghcr.io/rocm/rocm-ernic-ci:latest
   REGISTRY_USER: ${{ github.repository_owner }}

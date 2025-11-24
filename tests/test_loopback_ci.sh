@@ -1,6 +1,8 @@
 #!/bin/bash
 # Comprehensive loopback backend testing for CI
-# Tests multiple loopback configurations and rdma_cm emulation
+# Tests multiple loopback configurations by verifying server startup
+# Note: Loopback backend doesn't expose RDMA devices directly to host.
+#       Actual RDMA data transfer testing happens in VM integration tests.
 
 set -e
 
@@ -52,21 +54,19 @@ if [ ! -f "$SERVER_BIN" ]; then
     exit 1
 fi
 
-if [ ! -f "$TEST_BIN" ]; then
-    echo -e "${YELLOW}Warning: Test binary not found: $TEST_BIN${NC}"
-    echo -e "${YELLOW}Will only test server startup for each configuration${NC}"
-    TEST_BIN=""
-fi
+# Note: TEST_BIN is not used for loopback backend tests since they don't
+# expose RDMA devices directly to the host. We only verify server startup.
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║  Loopback Backend CI Testing                             ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Server binary: $SERVER_BIN"
-if [ -n "$TEST_BIN" ]; then
-    echo "Test binary: $TEST_BIN"
-fi
+echo "Testing: Server startup verification for each configuration"
 echo "Configurations to test: ${#CONFIGS[@]}"
+echo ""
+echo -e "${YELLOW}Note: This test verifies server startup only.${NC}"
+echo -e "${YELLOW}      RDMA device testing requires VM setup (see vm-integration-test job).${NC}"
 echo ""
 
 # Function to test a single configuration
@@ -110,23 +110,14 @@ test_config() {
     
     echo -e "${GREEN}✓ Server started (PID: $SERVER_PID)${NC}"
     
-    # Run test if available
-    if [ -n "$TEST_BIN" ]; then
-        echo "Running test..."
-        if timeout 30 "$TEST_BIN" > /tmp/test-output.log 2>&1; then
-            echo -e "${GREEN}✓ Test passed${NC}"
-        else
-            local test_exit=$?
-            echo -e "${RED}✗ Test failed (exit code: $test_exit)${NC}"
-            echo "Test output:"
-            tail -30 /tmp/test-output.log
-            test_result=1
-        fi
-    else
-        echo -e "${YELLOW}⚠ No test binary - only verifying server startup${NC}"
-        # Give server a moment to initialize
-        sleep 2
-    fi
+    # Note: For loopback backend, we only verify server startup.
+    # The loopback backend doesn't expose RDMA devices directly to the host
+    # - they're only available inside VMs via vfio-user.
+    # Actual data transfer testing happens in the VM integration test job.
+    echo -e "${YELLOW}ℹ Loopback backend test - verifying server startup only${NC}"
+    echo -e "${YELLOW}  (RDMA device testing requires VM setup - see vm-integration-test job)${NC}"
+    # Give server a moment to initialize
+    sleep 2
     
     # Stop server
     kill "$SERVER_PID" 2>/dev/null || true

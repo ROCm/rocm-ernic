@@ -237,6 +237,58 @@ sudo ninja -C build install
 # Installs to /usr/local/bin/rocm_ernic by default
 ```
 
+### Docker-Based Development
+
+For easier local testing and CI compatibility, you can use the provided Docker
+image that includes QEMU, libvfio-user, VM disk image, and all dependencies.
+
+#### Building the Docker Image
+
+The Dockerfile extends a base VM image with project-specific dependencies:
+
+```bash
+cd docker
+docker build -t rocm-ernic-ci:latest .
+```
+
+The base image (`docker.io/sbates130272/batesste-ci-images-qemu-libvfio-user:latest`)
+will be automatically pulled from Docker Hub.
+
+#### Using Docker for Local Testing
+
+```bash
+# Run interactive shell with project mounted
+docker run -it --rm \
+    -v $(pwd):/workspace \
+    --privileged \
+    rocm-ernic-ci:latest
+
+# Inside container:
+cd /workspace
+meson setup build
+ninja -C build
+```
+
+#### Running Loopback Tests with Docker
+
+The Docker image includes a preconfigured VM disk for testing:
+
+```bash
+# Build the image
+docker build -t rocm-ernic-ci:latest ./docker
+
+# Run loopback backend tests
+docker run -it --rm \
+    --privileged \
+    -v $(pwd):/workspace \
+    rocm-ernic-ci:latest \
+    bash -c "cd /workspace && ./tests/test_loopback_with_vm.sh"
+```
+
+See [`docker/README.md`](docker/README.md) for more details on the Docker
+image and [`tests/README-VM-TESTING.md`](tests/README-VM-TESTING.md) for VM-based
+testing documentation.
+
 ## Usage
 
 ### Basic Usage

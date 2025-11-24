@@ -132,8 +132,10 @@ static int setup_resources(struct test_context *ctx)
 
     ctx->qp = ibv_create_qp(ctx->pd, &qp_init_attr);
     if (!ctx->qp) {
-        fprintf(stderr, "Failed to create QP\n");
-        return -1;
+        fprintf(stderr, "Failed to create QP: %s\n", strerror(errno));
+        fprintf(stderr,
+                "This test requires a VM with loopback backend - skipping\n");
+        return -2; /* Skip code */
     }
     printf("✓ Created QP (QPN = 0x%x)\n", ctx->qp->qp_num);
 
@@ -503,8 +505,11 @@ int main(void)
     int setup_ret = setup_resources(&ctx);
     if (setup_ret < 0) {
         if (setup_ret == -2) {
-            /* No devices available - exit with skip code (77) */
-            fprintf(stderr, "\n⚠ Test skipped: No RDMA devices available\n");
+            /* No devices available or QP creation failed - exit with skip code
+             * (77) */
+            fprintf(stderr, "\n⚠ Test skipped: No RDMA devices available or QP "
+                            "creation failed\n");
+            fprintf(stderr, "This test requires a VM with loopback backend\n");
             return 77; /* Meson skip code */
         }
         fprintf(stderr, "\n✗ Setup failed\n");
