@@ -69,6 +69,13 @@ bool object_property_get_bool(Object *obj, const char *name, void *errp)
     return false;
 }
 
+const char *object_get_typename(Object *obj)
+{
+    /* Stub: return a generic type name */
+    (void)obj;
+    return "object";
+}
+
 /*
  * PCI Functions
  */

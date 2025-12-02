@@ -27,6 +27,7 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
 #include "hw/rdma/rdma.h" /* For rdma_pci_dma_map declaration */
+#include "qemu/cutils.h" /* For ROUND_UP, BIT, pow2ceil */
 
 #include "../rdma_backend.h"
 #include "../rdma_backend_ops.h"
