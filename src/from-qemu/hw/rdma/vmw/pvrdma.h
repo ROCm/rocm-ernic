@@ -33,12 +33,18 @@
 #define PAGE_SIZE 4096
 
 /* BARs */
-#define RDMA_MSIX_BAR_IDX   0
-#define RDMA_REG_BAR_IDX    1
-#define RDMA_UAR_BAR_IDX    2
+#define RDMA_MSIX_BAR_IDX 0
+#define RDMA_REG_BAR_IDX  1
+#define RDMA_UAR_BAR_IDX  2
+#ifndef RDMA_BAR0_MSIX_SIZE
 #define RDMA_BAR0_MSIX_SIZE (16 * KiB)
+#endif
+#ifndef RDMA_BAR1_REGS_SIZE
 #define RDMA_BAR1_REGS_SIZE 64
-#define RDMA_BAR2_UAR_SIZE  (0x1000 * MAX_UCS) /* each uc gets page */
+#endif
+#ifndef RDMA_BAR2_UAR_SIZE
+#define RDMA_BAR2_UAR_SIZE (0x1000 * MAX_UCS) /* each uc gets page */
+#endif
 
 /* MSIX */
 #define RDMA_MAX_INTRS  3
