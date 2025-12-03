@@ -354,8 +354,21 @@ jobs:
         
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
-        sudo apt-get update
-        sudo apt-get install -y \
+        
+        # Retry apt-get update to handle transient mirror issues
+        echo "Updating package lists (with retry)..."
+        for i in {1..3}; do
+          if sudo apt-get update -qq 2>&1; then
+            echo "✓ Package lists updated"
+            break
+          else
+            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
+            sleep 5
+          fi
+        done
+        
+        echo "Installing RDMA packages..."
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
           ibverbs-utils \
           linux-headers-$(uname -r) \
           linux-modules-extra-$(uname -r) \
@@ -1126,6 +1139,60 @@ jobs:
         }
 
         echo "✓ Driver source copied"
+
+    - name: Install necessary packages in VMs
+      shell: bash
+      run: |
+        echo "=== Installing necessary packages in both VMs ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        
+        # Install in VM 1
+        echo "[VM 1] Installing packages..."
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        # Retry apt-get update to handle transient mirror issues
+        for i in {1..3}; do
+          if sudo apt-get update -qq 2>&1; then
+            break
+          else
+            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
+            sleep 5
+          fi
+        done
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          ibverbs-utils \
+          linux-headers-$(uname -r) \
+          linux-modules-extra-$(uname -r) \
+          libibverbs-dev \
+          rdma-core \
+          build-essential
+        echo "[VM 1] ✓ Packages installed"
+        EOFVM
+        
+        # Install in VM 2
+        echo "[VM 2] Installing packages..."
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        # Retry apt-get update to handle transient mirror issues
+        for i in {1..3}; do
+          if sudo apt-get update -qq 2>&1; then
+            break
+          else
+            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
+            sleep 5
+          fi
+        done
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          ibverbs-utils \
+          linux-headers-$(uname -r) \
+          linux-modules-extra-$(uname -r) \
+          libibverbs-dev \
+          rdma-core \
+          build-essential
+        echo "[VM 2] ✓ Packages installed"
+        EOFVM
+        
+        echo "✓ Both VMs have packages installed"
 
     - name: Build and load driver in VM 1
       shell: bash
