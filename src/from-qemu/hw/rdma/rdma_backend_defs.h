@@ -34,6 +34,7 @@ typedef enum {
     RDMA_BACKEND_TYPE_NONE,     /* No backend - minimal stubs */
     RDMA_BACKEND_TYPE_LOOPBACK, /* Internal loopback emulation */
     RDMA_BACKEND_TYPE_VERBS,    /* libibverbs hardware backend */
+    RDMA_BACKEND_TYPE_TCP,      /* TCP/IP network backend */
     RDMA_BACKEND_TYPE_MAX
 } RdmaBackendType;
 

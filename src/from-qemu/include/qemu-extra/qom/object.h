@@ -26,4 +26,7 @@ static inline int object_child_foreach(Object *obj, ObjectIterator it,
     return 0;
 }
 
+/* Get object type name - stub for standalone */
+const char *object_get_typename(Object *obj);
+
 #endif /* QOM_OBJECT_H */

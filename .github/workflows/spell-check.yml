@@ -1,4 +1,4 @@
-name: Spellcheck
+name: Spell Check
 
 on:
   pull_request:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  spellcheck:
+  spell-check:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -16,3 +16,4 @@ jobs:
       with:
         config_path: .spellcheck.yml
         task_name: Markdown
+

@@ -472,7 +472,7 @@ static void usage(const char *progname)
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
     fprintf(stderr,
-            "  -b, --backend TYPE   RDMA backend: none|loopback|verbs\n");
+            "  -b, --backend TYPE   RDMA backend: none|loopback|verbs|tcp\n");
     fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
@@ -534,6 +534,21 @@ static void usage(const char *progname)
     fprintf(stderr,
             "                      verbs:device=mlx5_0,ethdev=eth0,port=1 - "
             "All options\n");
+    fprintf(stderr, "  tcp: TCP/IP network backend (connects two servers)\n");
+    fprintf(stderr, "                    Options:\n");
+    fprintf(
+        stderr,
+        "                      tcp:host:port    - Connect to remote server\n");
+    fprintf(
+        stderr,
+        "                      tcp:listen:port  - Listen for connections\n");
+    fprintf(stderr, "                    Examples:\n");
+    fprintf(
+        stderr,
+        "                      tcp:192.168.1.100:5000  - Connect to server\n");
+    fprintf(
+        stderr,
+        "                      tcp:listen:5000          - Listen on port\n");
 }
 
 /**
@@ -551,6 +566,9 @@ static const char *get_backend_type_base(const char *backend_str)
     }
     if (!strncmp(backend_str, "verbs", 5)) {
         return "verbs";
+    }
+    if (!strncmp(backend_str, "tcp", 3)) {
+        return "tcp";
     }
     return "none";
 }

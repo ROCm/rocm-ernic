@@ -82,6 +82,11 @@ void qemu_thread_exit(void *retval)
     pthread_exit(retval);
 }
 
+void qemu_thread_join(QemuThread *thread)
+{
+    pthread_join(thread->thread, NULL);
+}
+
 /*
  * Bit Manipulation
  */
