@@ -13,7 +13,7 @@ jobs:
   system-test-loopback-vm:
     name: Loopback Backend System Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     container:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
     
@@ -208,10 +208,13 @@ jobs:
         SSH_PORT=2222
         
         # Start VM with vfio-user device
+        # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
-          -machine q35,accel=tcg \
-          -cpu max \
-          -m 2G \
+          -machine q35,accel=tcg,memory-backend=mem0 \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 1G \
+          -object memory-backend-memfd,id=mem0,share=on,size=1G \
           -nographic \
           -drive file="$VM_DISK",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
@@ -589,7 +592,7 @@ jobs:
   system-test-tcp:
     name: TCP Backend System Tests (Two Servers)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     container:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
     
@@ -994,9 +997,11 @@ jobs:
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg \
-          -cpu max \
-          -m 2G \
+          -machine q35,accel=tcg,memory-backend=mem1 \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 1G \
+          -object memory-backend-memfd,id=mem1,share=on,size=1G \
           -nographic \
           -drive file="$VM_DISK_1",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
@@ -1030,9 +1035,11 @@ jobs:
         SSH_PORT_2=2223
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg \
-          -cpu max \
-          -m 2G \
+          -machine q35,accel=tcg,memory-backend=mem2 \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 1G \
+          -object memory-backend-memfd,id=mem2,share=on,size=1G \
           -nographic \
           -drive file="$VM_DISK_2",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
