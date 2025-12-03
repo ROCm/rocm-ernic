@@ -2,7 +2,7 @@ name: System Tests
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev/stephen/tcp-ip-backend ]
   workflow_dispatch:
 
 # Container image with QEMU and libvfio-user pre-built
