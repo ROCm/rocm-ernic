@@ -95,6 +95,7 @@ echo "Container ID: $CONTAINER_ID"
 
 # Try common VM disk locations
 VM_DISK_PATHS=(
+    "/output/vm-disk.img"
     "/vm-disk.img"
     "/vm/vm-disk.img"
     "/root/vm-disk.img"

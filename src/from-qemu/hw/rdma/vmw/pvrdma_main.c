@@ -26,6 +26,7 @@
 /* #include "qemu/module.h" - Not needed for standalone */
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
+#include "hw/pci/pci_regs.h" /* For PVRDMA_DEV, OBJECT, PCI_SLOT, PCI_FUNC, etc. */
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 /* #include "hw/qdev-properties.h" - Not needed for standalone */
@@ -33,6 +34,7 @@
 /* #include "cpu.h" - Not needed for PVRDMA */
 /* #include "monitor/monitor.h" - Not needed for standalone */
 #include "hw/rdma/rdma.h" /* Needed for rdma_pci_dma_map declaration */
+#include "qom/object.h"   /* For object_get_typename */
 
 #include "../rdma_rm.h"
 #include "../rdma_backend.h"
@@ -74,13 +76,14 @@ static Property pvrdma_dev_properties[] = {
 /* Forward declaration */
 typedef struct RdmaProvider RdmaProvider;
 
-static void pvrdma_format_statistics(RdmaProvider *obj, GString *buf)
+static void __attribute__((unused)) pvrdma_format_statistics(RdmaProvider *obj,
+                                                             GString *buf)
 {
     PVRDMADev *dev = PVRDMA_DEV(obj);
     PCIDevice *pdev = PCI_DEVICE(dev);
 
-    g_string_append_printf(buf, "%s, %x.%x\n", pdev->name,
-                           PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+    g_string_append_printf(buf, "%s, %x.%x\n", pdev->name, PCI_SLOT(pdev),
+                           PCI_FUNC(pdev));
     g_string_append_printf(buf, "\tcommands         : %" PRId64 "\n",
                            dev->stats.commands);
     g_string_append_printf(buf, "\tregs_reads       : %" PRId64 "\n",
@@ -415,7 +418,7 @@ static void uninit_msix(PCIDevice *pdev, int used_vectors)
     msix_uninit(pdev, &dev->msix, &dev->msix);
 }
 
-static int init_msix(PCIDevice *pdev)
+static int __attribute__((unused)) init_msix(PCIDevice *pdev)
 {
     PVRDMADev *dev = PVRDMA_DEV(pdev);
     int i;
@@ -437,7 +440,7 @@ static int init_msix(PCIDevice *pdev)
     return 0;
 }
 
-static void pvrdma_fini(PCIDevice *pdev)
+static void __attribute__((unused)) pvrdma_fini(PCIDevice *pdev)
 {
     PVRDMADev *dev = PVRDMA_DEV(pdev);
 
@@ -458,8 +461,8 @@ static void pvrdma_fini(PCIDevice *pdev)
         uninit_msix(pdev, RDMA_MAX_INTRS);
     }
 
-    rdma_info_report("Device %s %x.%x is down", pdev->name,
-                     PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+    rdma_info_report("Device %s %x.%x is down", pdev->name, PCI_SLOT(pdev),
+                     PCI_FUNC(pdev));
 }
 
 static void pvrdma_stop(PVRDMADev *dev)
@@ -672,12 +675,12 @@ static const MemoryRegionOps uar_ops = {
         },
 };
 
-static void init_pci_config(PCIDevice *pdev)
+static void __attribute__((unused)) init_pci_config(PCIDevice *pdev)
 {
     pdev->config[PCI_INTERRUPT_PIN] = 1;
 }
 
-static void init_bars(PCIDevice *pdev)
+static void __attribute__((unused)) init_bars(PCIDevice *pdev)
 {
     PVRDMADev *dev = PVRDMA_DEV(pdev);
 
@@ -702,7 +705,7 @@ static void init_bars(PCIDevice *pdev)
                      &dev->uar);
 }
 
-static void init_regs(PCIDevice *pdev)
+static void __attribute__((unused)) init_regs(PCIDevice *pdev)
 {
     PVRDMADev *dev = PVRDMA_DEV(pdev);
 
@@ -710,7 +713,7 @@ static void init_regs(PCIDevice *pdev)
     set_reg_val(dev, PVRDMA_REG_ERR, 0xFFFF);
 }
 
-static void init_dev_caps(PVRDMADev *dev)
+static void __attribute__((unused)) init_dev_caps(PVRDMADev *dev)
 {
     size_t pg_tbl_bytes = PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
     size_t wr_sz =
@@ -743,7 +746,8 @@ static void init_dev_caps(PVRDMADev *dev)
     rdma_info_report("  max_srq_wr=%d", dev->dev_attr.max_srq_wr);
 }
 
-static int pvrdma_check_ram_shared(Object *obj, void *opaque)
+static int __attribute__((unused)) pvrdma_check_ram_shared(Object *obj,
+                                                           void *opaque)
 {
     bool *shared = opaque;
 
@@ -789,7 +793,7 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     PCIDevice *func0;
 
     rdma_info_report("Initializing device %s %x.%x", pdev->name,
-                     PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+                     PCI_SLOT(pdev), PCI_FUNC(pdev));
 
     if (PAGE_SIZE != qemu_real_host_page_size()) {
         error_setg(errp, "Target page size must be the same as host page size");
@@ -799,7 +803,7 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     func0 = pci_get_function_0(pdev);
     /* Break if not vmxnet3 device in slot 0 */
     if (strcmp(object_get_typename(OBJECT(func0)), TYPE_VMXNET3)) {
-        error_setg(errp, "Device on %x.0 must be %s", PCI_SLOT(pdev->devfn),
+        error_setg(errp, "Device on %x.0 must be %s", PCI_SLOT(pdev),
                    TYPE_VMXNET3);
         return;
     }

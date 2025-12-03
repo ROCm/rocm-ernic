@@ -262,7 +262,7 @@ meson setup build
 ninja -C build
 
 # The VM disk image is available in the container at:
-# `/vm-disk.img` (or `/vm/vm-disk.img`, `/root/vm-disk.img`, `/opt/vm/vm-disk.img`)
+# `/output/vm-disk.img`
 ```
 
 #### Running Loopback Tests with Docker
@@ -443,6 +443,56 @@ physical hardware.
 - Physical InfiniBand or RoCE-capable NIC
 - `libibverbs` and `librdmacm` installed
 - RDMA device visible via `ibv_devices`
+
+#### 4. `tcp` Backend
+
+**Purpose:** Connect two `rocm_ernic` server instances over TCP/IP network.
+Enables RDMA operations between servers without physical hardware.
+
+**Usage:**
+```bash
+# Server 1: Listen for connections
+./build/rocm_ernic --backend tcp:listen:5000 --socket /tmp/vfio-user-server1.sock
+
+# Server 2: Connect to server 1
+./build/rocm_ernic --backend tcp:192.168.1.100:5000 --socket /tmp/vfio-user-server2.sock
+```
+
+**Options:** Specified in the backend string:
+- `tcp:host:port` - Connect to remote server
+  - `host` - IP address or hostname of remote server
+  - `port` - TCP port number
+- `tcp:listen:port` - Listen for incoming connections
+  - `port` - TCP port number to listen on
+
+**Examples:**
+- `tcp:192.168.1.100:5000` - Connect to server at 192.168.1.100:5000
+- `tcp:localhost:5000` - Connect to local server
+- `tcp:listen:5000` - Listen on port 5000
+
+**Protocol:**
+The TCP backend implements a custom protocol over TCP/IP to transport RDMA
+commands and data:
+- Fixed-length message headers with magic number (0x52444D41 = "RDMA")
+- Message types for POST_SEND, POST_RECV, COMPLETION, DATA, etc.
+- Sequence numbers for message ordering
+- Payload data sent separately after command messages
+
+**Use Cases:**
+- Testing RDMA operations between two VMs
+- Network-based RDMA emulation
+- CI/CD testing with multiple server instances
+- Development and debugging of multi-host scenarios
+
+**Requirements:**
+- Network connectivity between servers
+- TCP port availability
+- Two `rocm_ernic` server instances
+
+**Limitations:**
+- Not suitable for production (use `verbs` backend instead)
+- Performance limited by TCP/IP stack
+- No SRQ support
 
 ### Attaching to QEMU
 

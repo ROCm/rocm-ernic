@@ -26,6 +26,7 @@ rdma_backend_sources = files(
   'src/from-qemu/hw/rdma/rdma_backend_core.c',      # Backend abstraction
   'src/from-qemu/hw/rdma/rdma_backend_none.c',      # "None" backend
   'src/from-qemu/hw/rdma/rdma_backend_loopback.c',  # "Loopback" backend
+  'src/from-qemu/hw/rdma/rdma_backend_tcp.c',       # "TCP/IP" backend
   'src/from-qemu/hw/rdma/rdma_utils.c',
   'src/from-qemu/hw/rdma/rdma_rm.c',
 )

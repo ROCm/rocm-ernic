@@ -47,6 +47,7 @@
 #define __PVRDMA_DEV_API_H__
 
 #include "standard-headers/linux/types.h"
+#include "qemu/cutils.h" /* For BIT macro */
 
 #include "pvrdma_verbs.h"
 

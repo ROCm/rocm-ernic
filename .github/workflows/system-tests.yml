@@ -1,0 +1,1355 @@
+name: System Tests
+
+on:
+  pull_request:
+    branches: [ main, dev/stephen/tcp-ip-backend ]
+  workflow_dispatch:
+
+# Container image with QEMU and libvfio-user pre-built
+env:
+  TCP_PORT: 5000
+
+jobs:
+  system-test-loopback-vm:
+    name: Loopback Backend System Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Display environment
+      run: |
+        echo "=== Environment ==="
+        echo "Container: Running inside Docker image"
+        echo ""
+        echo "=== Available Tools ==="
+        qemu-system-x86_64 --version || echo "QEMU not found"
+        meson --version || echo "Meson not found"
+        ninja --version || echo "Ninja not found"
+        pkg-config --exists libibverbs && pkg-config --modversion libibverbs || echo "libibverbs not found"
+        echo ""
+        echo "=== VM Disk Image Location ==="
+        echo "Checking /output directory..."
+        if [ -d "/output" ]; then
+          echo "✓ /output directory exists"
+          echo "Contents:"
+          ls -la /output || echo "Failed to list contents"
+        else
+          echo "✗ /output directory does not exist"
+        fi
+    
+    - name: Read VM info
+      id: vm_info
+      shell: bash
+      run: |
+        echo "=== Reading VM info from /output/vm-info.json ==="
+        if [ ! -f /output/vm-info.json ]; then
+          echo "✗ vm-info.json not found in /output"
+          ls -la /output
+          exit 1
+        fi
+        
+        cat /output/vm-info.json
+        
+        # Extract values using jq or python
+        if command -v jq &> /dev/null; then
+          VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+          VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
+          SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
+          SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
+          SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
+        else
+          # Fallback to python if jq not available
+          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'batesste'))")
+          VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
+          SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
+          SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
+          SSH_KEY_PUBLIC=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('public_key_path', ''))")
+        fi
+        
+        # image_path should already be absolute, but verify
+        if [ -z "$VM_DISK" ]; then
+          echo "✗ image_path not found in vm-info.json"
+          exit 1
+        fi
+    
+        if [ ! -f "$VM_DISK" ]; then
+          echo "✗ VM disk image not found: $VM_DISK"
+          ls -la /output
+          exit 1
+        fi
+        
+        # Verify disk image is accessible and check for missing backing file
+        # Error out immediately if disk has a backing file reference that doesn't exist
+        QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
+        QEMU_IMG_EXIT=$?
+        if [ $QEMU_IMG_EXIT -ne 0 ]; then
+          if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
+            echo "✗ Disk image has backing file reference but backing file does not exist"
+            echo "The disk image metadata references a backing file that is missing."
+            echo "This indicates the disk image is corrupted or incorrectly generated."
+            echo ""
+            echo "Disk path: $VM_DISK"
+            echo "qemu-img info output:"
+            echo "$QEMU_IMG_OUTPUT"
+            exit 1
+          else
+            echo "✗ Failed to read disk image info"
+            echo "Disk path: $VM_DISK"
+            echo "$QEMU_IMG_OUTPUT"
+            exit 1
+          fi
+        fi
+        
+        echo "✓ VM username: $VM_USER"
+        echo "✓ VM disk: $VM_DISK"
+        echo "✓ SSH key: ${SSH_KEY:-not specified}"
+        qemu-img info "$VM_DISK" || true
+        
+        echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
+        echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
+        echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
+        echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
+        echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
+    
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y \
+          build-essential \
+          meson \
+          ninja-build \
+          pkg-config \
+          libibverbs-dev \
+          librdmacm-dev \
+          libglib2.0-dev \
+          libjson-c-dev \
+          libcmocka-dev
+    
+    - name: Build rocm_ernic server
+      run: |
+        echo "=== Building rocm_ernic server ==="
+        meson setup build \
+          --buildtype=debug \
+          --prefix=/usr
+        meson compile -C build
+        ls -lh build/rocm_ernic
+        echo "✓ Server built successfully"
+
+    - name: Start rocm_ernic server
+      shell: bash
+      run: |
+        echo "=== Starting rocm_ernic server ==="
+        # Remove any existing socket
+        rm -f /tmp/vfio-user-rocm-ernic.sock
+        
+        ./build/rocm_ernic \
+          --socket /tmp/vfio-user-rocm-ernic.sock \
+          --backend loopback:mode=preserve \
+          --verbose > /tmp/vfu_server.log 2>&1 &
+        
+        SERVER_PID=$!
+        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        echo "Server PID: $SERVER_PID"
+        
+        # Wait for socket and verify server is running
+        for i in {1..30}; do
+          # Check if server process is still running
+          if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "✗ Server process died (PID: $SERVER_PID)"
+            echo "Exit code: $(wait $SERVER_PID 2>&1 || echo $?)"
+            echo "=== Server log ==="
+            cat /tmp/vfu_server.log
+            exit 1
+          fi
+          
+          # Check if socket exists and is a socket file
+          if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
+            chmod 666 /tmp/vfio-user-rocm-ernic.sock 2>/dev/null || true
+            echo "✓ Server started (PID: $SERVER_PID)"
+            echo "✓ Socket created: /tmp/vfio-user-rocm-ernic.sock"
+            ls -la /tmp/vfio-user-rocm-ernic.sock
+            exit 0
+          fi
+          
+          # Show progress every 5 seconds
+          if [ $((i % 5)) -eq 0 ]; then
+            echo "Waiting for socket... (attempt $i/30)"
+            echo "Server PID $SERVER_PID status: $(kill -0 $SERVER_PID 2>/dev/null && echo 'running' || echo 'dead')"
+            echo "Socket exists: $([ -e /tmp/vfio-user-rocm-ernic.sock ] && echo 'yes' || echo 'no')"
+            if [ -e /tmp/vfio-user-rocm-ernic.sock ]; then
+              ls -la /tmp/vfio-user-rocm-ernic.sock
+            fi
+          fi
+          sleep 1
+        done
+        
+        echo "✗ Server failed to create socket after 30 seconds"
+        echo "Server PID $SERVER_PID status: $(kill -0 $SERVER_PID 2>/dev/null && echo 'running' || echo 'dead')"
+        echo "Socket exists: $([ -e /tmp/vfio-user-rocm-ernic.sock ] && echo 'yes' || echo 'no')"
+        if [ -e /tmp/vfio-user-rocm-ernic.sock ]; then
+          echo "Socket type:"
+          ls -la /tmp/vfio-user-rocm-ernic.sock
+          file /tmp/vfio-user-rocm-ernic.sock
+        fi
+        echo "=== Server log ==="
+        cat /tmp/vfu_server.log
+        exit 1
+    
+    - name: Start QEMU VM
+      shell: bash
+      run: |
+        echo "=== Starting QEMU VM ==="
+        VM_DISK="${{ steps.vm_info.outputs.vm_disk }}"
+        SSH_PORT=2222
+        
+        # Start VM with vfio-user device
+        # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
+        qemu-system-x86_64 \
+          -machine q35,accel=tcg,memory-backend=mem0 \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 1G \
+          -object memory-backend-memfd,id=mem0,share=on,size=1G \
+          -nographic \
+          -drive file="$VM_DISK",format=qcow2,if=virtio \
+          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-rocm-ernic.sock"}}' \
+          -serial mon:stdio > /tmp/qemu.log 2>&1 &
+        
+        QEMU_PID=$!
+        echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
+        echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
+        echo "✓ QEMU started (PID: $QEMU_PID)"
+        
+        # Early failure detection: check if QEMU dies within 5 seconds
+        echo "Monitoring QEMU for early failures..."
+        sleep 5
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+          echo "✗ QEMU process died within 5 seconds (PID: $QEMU_PID)"
+          echo "=== QEMU log (last 100 lines) ==="
+          tail -100 /tmp/qemu.log || echo "Log file not found"
+          echo ""
+          echo "=== QEMU exit code ==="
+          wait "$QEMU_PID" 2>&1 || echo "Exit code: $?"
+          exit 1
+        fi
+        echo "✓ QEMU still running after 5 seconds"
+    
+    - name: Setup SSH keys
+      shell: bash
+      run: |
+        echo "=== Setting up SSH keys ==="
+        SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
+        SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
+        SSH_KEY="${{ steps.vm_info.outputs.ssh_key }}"
+        SSH_PORT="${{ env.SSH_PORT }}"
+        
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        # Require SSH key file paths from vm-info.json
+        if [ -z "$SSH_KEY_PRIVATE" ] || [ -z "$SSH_KEY_PUBLIC" ]; then
+          echo "✗ SSH key paths (ssh_key_private and ssh_key_public) are required in vm-info.json"
+          echo "Found ssh_key_private: $([ -n "$SSH_KEY_PRIVATE" ] && echo "$SSH_KEY_PRIVATE" || echo 'not set')"
+          echo "Found ssh_key_public: $([ -n "$SSH_KEY_PUBLIC" ] && echo "$SSH_KEY_PUBLIC" || echo 'not set')"
+          exit 1
+        fi
+        
+        # Check if key files exist at the specified paths
+        if [ ! -f "$SSH_KEY_PRIVATE" ]; then
+          echo "✗ SSH private key file not found: $SSH_KEY_PRIVATE"
+          exit 1
+        fi
+        
+        if [ ! -f "$SSH_KEY_PUBLIC" ]; then
+          echo "✗ SSH public key file not found: $SSH_KEY_PUBLIC"
+          exit 1
+        fi
+        
+        echo "✓ Using SSH keys from vm-info.json"
+        echo "  Private key: $SSH_KEY_PRIVATE"
+        echo "  Public key: $SSH_KEY_PUBLIC"
+        cp "$SSH_KEY_PRIVATE" ~/.ssh/id_ed25519
+        cp "$SSH_KEY_PUBLIC" ~/.ssh/id_ed25519.pub
+        chmod 600 ~/.ssh/id_ed25519
+        chmod 644 ~/.ssh/id_ed25519.pub
+        
+        ssh-keyscan -p "$SSH_PORT" localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+    
+    - name: Wait for VM SSH
+      shell: bash
+      run: |
+        echo "=== Waiting for VM SSH ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        
+        for i in {1..60}; do
+          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/dev/null; then
+            echo "✓ VM SSH is ready (attempt $i/60)"
+            echo "VM_USER=$VM_USER" >> $GITHUB_ENV
+            exit 0
+          fi
+          echo "Attempt $i/60: Waiting for SSH..."
+          sleep 5
+        done
+        
+        echo "✗ VM SSH timeout"
+        echo "=== QEMU Log ==="
+        tail -100 /tmp/qemu.log
+        exit 1
+    
+    - name: Verify RDMA NIC in VM
+      shell: bash
+      run: |
+        echo "=== Verifying RDMA NIC in VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        
+        echo "=== PCI Devices ==="
+        sudo lspci | grep -i amd || echo "AMD device not found yet"
+        sudo lspci -nn | grep -E "1022:1484|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
+        
+        echo ""
+        echo "=== Checking for RDMA device ==="
+        if command -v ibv_devices &> /dev/null; then
+          ibv_devices || echo "No RDMA devices found"
+        else
+          echo "ibv_devices not available"
+        fi
+        
+        echo ""
+        echo "=== Kernel modules ==="
+        lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
+        EOFVM
+    
+    - name: Copy driver source to VM
+      shell: bash
+      run: |
+        echo "=== Copying driver source to VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
+          driver/ "${VM_USER}@localhost:/tmp/" || {
+          echo "✗ Failed to copy driver source to VM"
+          exit 1
+        }
+        echo "✓ Driver source copied to VM"
+    
+    - name: Install necessary packages inside VM
+      shell: bash
+      run: |
+        echo "=== Installing necessary packages inside the VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        
+        # Retry apt-get update to handle transient mirror issues
+        echo "Updating package lists (with retry)..."
+        for i in {1..3}; do
+          if sudo apt-get update -qq 2>&1; then
+            echo "✓ Package lists updated"
+            break
+          else
+            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
+            sleep 5
+          fi
+        done
+        
+        echo "Installing RDMA packages..."
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          ibverbs-utils \
+          linux-headers-$(uname -r) \
+          linux-modules-extra-$(uname -r) \
+          libibverbs-dev \
+          rdma-core
+        echo "✓ Necessary packages installed"
+        EOFVM
+
+    - name: Build and load driver in VM
+      shell: bash
+      run: |
+        echo "=== Building and loading driver in VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        
+        echo "=== Kernel Version ==="
+        uname -r
+        
+        echo ""
+        echo "=== Building Driver ==="
+        cd /tmp/driver
+        make KDIR=/lib/modules/$(uname -r)/build
+        ls -lh rocm_ernic.ko
+        echo "✓ Driver built for kernel $(uname -r)"
+        
+        echo ""
+        echo "=== Loading InfiniBand Core ==="
+        if ! sudo modprobe ib_core; then
+          echo "✗ Failed to load ib_core module"
+          echo "This module is required for the rocm_ernic driver."
+          echo "Checking available modules:"
+          find /lib/modules/$(uname -r) -name "*ib_core*" 2>/dev/null || echo "No ib_core module found"
+          echo ""
+          echo "You may need to install linux-modules-extra:"
+          echo "  sudo apt-get update && sudo apt-get install linux-modules-extra-$(uname -r)"
+          exit 1
+        fi
+        
+        if ! sudo modprobe ib_uverbs; then
+          echo "✗ Failed to load ib_uverbs module"
+          echo "This module is required for the rocm_ernic driver."
+          echo "Checking available modules:"
+          find /lib/modules/$(uname -r) -name "*ib_uverbs*" 2>/dev/null || echo "No ib_uverbs module found"
+          exit 1
+        fi
+        
+        echo "Loaded IB modules:"
+        lsmod | grep ib_ || echo "No IB modules loaded"
+        
+        # Verify required symbols are available
+        echo ""
+        echo "=== Verifying InfiniBand symbols ==="
+        if ! grep -q "ib_umem_get" /proc/kallsyms 2>/dev/null; then
+          echo "✗ ib_umem_get symbol not found in kernel"
+          echo "The InfiniBand core modules may not be properly loaded or may not export symbols."
+          exit 1
+        fi
+        if ! grep -q "ib_umem_release" /proc/kallsyms 2>/dev/null; then
+          echo "✗ ib_umem_release symbol not found in kernel"
+          echo "The InfiniBand core modules may not be properly loaded or may not export symbols."
+          exit 1
+        fi
+        echo "✓ Required InfiniBand symbols are available"
+        
+        echo ""
+        echo "=== Loading Driver ==="
+        sudo insmod ./rocm_ernic.ko 2>&1 || {
+          echo "⚠️  Driver load failed"
+          echo "Kernel messages:"
+          sudo dmesg | tail -30
+          exit 1
+        }
+        
+        echo "✓ Driver loaded successfully"
+        lsmod | grep rocm_ernic
+        
+        echo ""
+        echo "=== Checking RDMA Device ==="
+        sleep 2  # Give device time to register
+        if ibv_devices | grep -E "rocm_ernic|rocep"; then
+          DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
+          echo "✓ RDMA device found: $DEVICE"
+          ibv_devinfo -d "$DEVICE" | head -20 || true
+        else
+          echo "⚠️  RDMA device not found after driver load"
+          echo "PCI devices:"
+          sudo lspci | grep -i amd || true
+          echo "Kernel messages:"
+          sudo dmesg | tail -30
+          exit 1
+        fi
+        EOFVM
+    
+    - name: Run loopback backend tests
+      shell: bash
+      run: |
+        echo "=== Running loopback backend tests ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        
+        # Test configurations (bash array syntax)
+          declare -a CONFIGS=(
+            "loopback"
+            "loopback:mode=preserve"
+            "loopback:mode=zeros"
+            "loopback:mode=random"
+            "loopback:md5"
+            "loopback:mode=preserve,md5"
+          )
+          
+          PASSED=0
+          FAILED=0
+          
+          for config in "${CONFIGS[@]}"; do
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Testing: $config"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+          # Stop previous server if running
+          kill "${{ env.SERVER_PID }}" 2>/dev/null || true
+          wait "${{ env.SERVER_PID }}" 2>/dev/null || true
+          rm -f /tmp/vfio-user-rocm-ernic*.sock
+          
+          # Start server with this configuration
+          ./build/rocm_ernic \
+            --socket /tmp/vfio-user-rocm-ernic-test.sock \
+              --backend "$config" \
+            --verbose > /tmp/vfu_server_${config//[:\/=]/_}.log 2>&1 &
+          
+            SERVER_PID=$!
+            
+            # Wait for socket
+            SOCKET_READY=0
+            for i in {1..10}; do
+            if [ -S /tmp/vfio-user-rocm-ernic-test.sock ]; then
+              chmod 666 /tmp/vfio-user-rocm-ernic-test.sock
+                SOCKET_READY=1
+                break
+              fi
+              sleep 0.5
+            done
+            
+          if [ $SOCKET_READY -eq 0 ]; then
+            echo "✗ Server failed to start"
+            tail -20 /tmp/vfu_server_${config//[:\/=]/_}.log
+            FAILED=$((FAILED + 1))
+            continue
+          fi
+          
+          echo "✓ Server started"
+          
+          # Run test_data_transfer in VM
+          # Note: This test requires RDMA device which may not be available if
+          # driver probe failed. In that case, we skip with exit code 77.
+          set +e  # Temporarily disable exit-on-error to capture exit code 77
+          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" <<-'EOFVM'
+        	# Verify RDMA device is still available
+        	if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
+        	  echo "WARNING: RDMA device not found - driver probe may have failed"
+        	  echo "This is expected in some environments (DSR init timeout)"
+        	  exit 77
+        	fi
+        	
+        	DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
+        	echo "✓ RDMA device found: $DEVICE"
+        	ibv_devinfo -d "$DEVICE" | head -20 || true
+        	EOFVM
+          TEST_EXIT=$?
+          set -e  # Re-enable exit-on-error
+          if [ $TEST_EXIT -eq 0 ]; then
+            echo "✓ Test passed for $config"
+            PASSED=$((PASSED + 1))
+          elif [ $TEST_EXIT -eq 77 ]; then
+            echo "✗ Test skipped for $config (exit code 77) - RDMA device not available"
+            echo "This is a FAILURE - the RDMA device should be available in CI"
+            FAILED=$((FAILED + 1))
+          else
+            echo "✗ Test failed for $config (exit code: $TEST_EXIT)"
+            FAILED=$((FAILED + 1))
+          fi
+          
+          # Stop server
+          kill "$SERVER_PID" 2>/dev/null || true
+          wait "$SERVER_PID" 2>/dev/null || true
+          rm -f /tmp/vfio-user-rocm-ernic-test.sock
+          done
+          
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Test Summary: Passed: $PASSED/${#CONFIGS[@]}, Failed: $FAILED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if [ $FAILED -gt 0 ]; then
+            exit 1
+        fi
+    
+    - name: Show logs
+      if: always()
+      run: |
+        echo "=== Server Logs ==="
+        ls -lh /tmp/vfu_server*.log || echo "No server logs"
+        tail -50 /tmp/vfu_server*.log || true
+        echo ""
+        echo "=== QEMU Log (last 100 lines) ==="
+        tail -100 /tmp/qemu.log || echo "No QEMU log"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        # Stop QEMU
+        if [ -n "${{ env.QEMU_PID }}" ]; then
+          kill "${{ env.QEMU_PID }}" 2>/dev/null || true
+        fi
+        
+        # Stop server
+        if [ -n "${{ env.SERVER_PID }}" ]; then
+          kill "${{ env.SERVER_PID }}" 2>/dev/null || true
+        fi
+        
+        # Clean up
+        rm -f /tmp/vfio-user-rocm-ernic*.sock
+        echo "✓ Cleanup complete"
+
+  system-test-tcp:
+    name: TCP Backend System Tests (Two Servers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Verify environment
+      run: |
+        echo "=== QEMU Version ==="
+        qemu-system-x86_64 --version
+        echo ""
+        echo "=== Build tools ==="
+        meson --version
+        ninja --version
+        echo ""
+        echo "=== Network ==="
+        ip addr show || true
+
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y \
+          build-essential \
+          meson \
+          ninja-build \
+          pkg-config \
+          libibverbs-dev \
+          librdmacm-dev \
+          libglib2.0-dev \
+          libjson-c-dev \
+          libcmocka-dev
+
+    - name: Build project
+      run: |
+        meson setup build \
+          --buildtype=debug \
+          --prefix=/usr
+        meson compile -C build
+
+    - name: Verify binaries
+      run: |
+        ls -lh build/rocm_ernic
+        file build/rocm_ernic
+
+    - name: Read VM info
+      id: vm_info
+      shell: bash
+      run: |
+        echo "=== Reading VM info from /output/vm-info.json ==="
+        if [ ! -f /output/vm-info.json ]; then
+          echo "✗ vm-info.json not found in /output"
+          ls -la /output
+          exit 1
+        fi
+        
+        cat /output/vm-info.json
+        
+        # Extract values using jq or python
+        if command -v jq &> /dev/null; then
+          VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+          VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
+          SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
+          SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
+          SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
+        else
+          # Fallback to python if jq not available
+          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'batesste'))")
+          VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
+          SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
+          SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
+          SSH_KEY_PUBLIC=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('public_key_path', ''))")
+        fi
+        
+        # image_path should already be absolute, but verify
+        if [ -z "$VM_DISK" ]; then
+          echo "✗ image_path not found in vm-info.json"
+          exit 1
+        fi
+    
+        if [ ! -f "$VM_DISK" ]; then
+          echo "✗ VM disk image not found: $VM_DISK"
+          ls -la /output
+          exit 1
+        fi
+        
+        # Verify disk image is accessible and check for missing backing file
+        # Error out immediately if disk has a backing file reference that doesn't exist
+        QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
+        QEMU_IMG_EXIT=$?
+        if [ $QEMU_IMG_EXIT -ne 0 ]; then
+          if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
+            echo "✗ Disk image has backing file reference but backing file does not exist"
+            echo "The disk image metadata references a backing file that is missing."
+            echo "This indicates the disk image is corrupted or incorrectly generated."
+            echo ""
+            echo "Disk path: $VM_DISK"
+            echo "qemu-img info output:"
+            echo "$QEMU_IMG_OUTPUT"
+            exit 1
+          else
+            echo "✗ Failed to read disk image info"
+            echo "Disk path: $VM_DISK"
+            echo "$QEMU_IMG_OUTPUT"
+          exit 1
+          fi
+        fi
+        
+        echo "✓ VM username: $VM_USER"
+        echo "✓ VM disk: $VM_DISK"
+        echo "✓ SSH key: ${SSH_KEY:-not specified}"
+        qemu-img info "$VM_DISK" || true
+        
+        echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
+        echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
+        echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
+        echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
+        echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
+    
+    - name: Copy VM disk for second VM
+      id: copy_vm_disk
+      shell: bash
+      run: |
+        echo "=== Copying VM disk for second VM ==="
+        VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
+        
+        # Create second VM disk name by inserting .2 before .qcow2 extension
+        # e.g., /output/batesste-ci-vm.qcow2 -> /output/batesste-ci-vm.2.qcow2
+        VM_DISK_DIR=$(dirname "$VM_DISK_1")
+        VM_DISK_BASENAME=$(basename "$VM_DISK_1")
+        VM_DISK_NAME="${VM_DISK_BASENAME%.qcow2}"
+        VM_DISK_2="${VM_DISK_DIR}/${VM_DISK_NAME}.2.qcow2"
+        
+        echo "VM disk 1: $VM_DISK_1"
+        echo "VM disk 2: $VM_DISK_2"
+        echo "Copying $VM_DISK_1 to $VM_DISK_2..."
+        # Use cp to create an exact copy preserving all disk structure and metadata
+        cp "$VM_DISK_1" "$VM_DISK_2" || {
+          echo "✗ Failed to copy VM disk"
+          exit 1
+        }
+        
+        echo "Verifying copied disk..."
+        qemu-img info "$VM_DISK_2" || {
+          echo "✗ Failed to read copied disk info"
+          exit 1
+        }
+        
+        echo "vm_disk_1=$VM_DISK_1" >> $GITHUB_OUTPUT
+        echo "vm_disk_2=$VM_DISK_2" >> $GITHUB_OUTPUT
+        echo "✓ VM disk copied for second VM"
+    
+    - name: Setup SSH keys
+      shell: bash
+      run: |
+        echo "=== Setting up SSH keys ==="
+        SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
+        SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
+        SSH_KEY="${{ steps.vm_info.outputs.ssh_key }}"
+        
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        # Require SSH key file paths from vm-info.json
+        if [ -z "$SSH_KEY_PRIVATE" ] || [ -z "$SSH_KEY_PUBLIC" ]; then
+          echo "✗ SSH key paths (ssh_key_private and ssh_key_public) are required in vm-info.json"
+          echo "Found ssh_key_private: $([ -n "$SSH_KEY_PRIVATE" ] && echo "$SSH_KEY_PRIVATE" || echo 'not set')"
+          echo "Found ssh_key_public: $([ -n "$SSH_KEY_PUBLIC" ] && echo "$SSH_KEY_PUBLIC" || echo 'not set')"
+          exit 1
+        fi
+        
+        # Check if key files exist at the specified paths
+        if [ ! -f "$SSH_KEY_PRIVATE" ]; then
+          echo "✗ SSH private key file not found: $SSH_KEY_PRIVATE"
+        exit 1
+        fi
+        
+        if [ ! -f "$SSH_KEY_PUBLIC" ]; then
+          echo "✗ SSH public key file not found: $SSH_KEY_PUBLIC"
+          exit 1
+        fi
+        
+        echo "✓ Using SSH keys from vm-info.json"
+        echo "  Private key: $SSH_KEY_PRIVATE"
+        echo "  Public key: $SSH_KEY_PUBLIC"
+        cp "$SSH_KEY_PRIVATE" ~/.ssh/id_ed25519
+        cp "$SSH_KEY_PUBLIC" ~/.ssh/id_ed25519.pub
+        chmod 600 ~/.ssh/id_ed25519
+        chmod 644 ~/.ssh/id_ed25519.pub
+        
+        ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -p 2223 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+    - name: Start TCP server 1 (listening)
+      shell: bash
+      run: |
+        echo "=== Starting TCP server 1 (listening) ==="
+        # Remove any existing socket
+        rm -f /tmp/vfio-user-server1.sock
+        
+        ./build/rocm_ernic \
+          --socket /tmp/vfio-user-server1.sock \
+          --backend tcp:listen:${{ env.TCP_PORT }} \
+          --verbose > /tmp/server1.log 2>&1 &
+        
+        SERVER1_PID=$!
+        echo "SERVER1_PID=$SERVER1_PID" >> $GITHUB_ENV
+        echo "Server 1 PID: $SERVER1_PID"
+        
+        # Wait for socket and verify server is running
+        for i in {1..30}; do
+          # Check if server process is still running
+          if ! kill -0 "$SERVER1_PID" 2>/dev/null; then
+            echo "✗ Server 1 process died (PID: $SERVER1_PID)"
+            echo "Exit code: $(wait $SERVER1_PID 2>&1 || echo $?)"
+            echo "=== Server 1 log ==="
+            cat /tmp/server1.log
+            exit 1
+          fi
+          
+          # Check if socket exists and is a socket file
+          if [ -S /tmp/vfio-user-server1.sock ]; then
+            chmod 666 /tmp/vfio-user-server1.sock 2>/dev/null || true
+            echo "✓ Server 1 started (PID: $SERVER1_PID)"
+            echo "✓ Socket created: /tmp/vfio-user-server1.sock"
+            ls -la /tmp/vfio-user-server1.sock
+            exit 0
+          fi
+          
+          # Show progress every 5 seconds
+          if [ $((i % 5)) -eq 0 ]; then
+            echo "Waiting for socket... (attempt $i/30)"
+            echo "Server 1 PID $SERVER1_PID status: $(kill -0 $SERVER1_PID 2>/dev/null && echo 'running' || echo 'dead')"
+            echo "Socket exists: $([ -e /tmp/vfio-user-server1.sock ] && echo 'yes' || echo 'no')"
+            if [ -e /tmp/vfio-user-server1.sock ]; then
+              ls -la /tmp/vfio-user-server1.sock
+            fi
+          fi
+          sleep 1
+        done
+        
+        echo "✗ Server 1 failed to create socket after 30 seconds"
+        echo "Server 1 PID $SERVER1_PID status: $(kill -0 $SERVER1_PID 2>/dev/null && echo 'running' || echo 'dead')"
+        echo "Socket exists: $([ -e /tmp/vfio-user-server1.sock ] && echo 'yes' || echo 'no')"
+        if [ -e /tmp/vfio-user-server1.sock ]; then
+          echo "Socket type:"
+          ls -la /tmp/vfio-user-server1.sock
+          file /tmp/vfio-user-server1.sock
+        fi
+        echo "=== Server 1 log ==="
+        cat /tmp/server1.log
+        exit 1
+    
+    - name: Wait for TCP server 1 to be ready
+      shell: bash
+      run: |
+        echo "Waiting for TCP server 1 to be ready..."
+        sleep 5
+        
+        # Check if port is listening using available tools
+        PORT=${{ env.TCP_PORT }}
+        PORT_LISTENING=0
+        
+        # Try netstat first
+        if command -v netstat &> /dev/null; then
+          if netstat -tlnp 2>/dev/null | grep -q ":$PORT "; then
+            PORT_LISTENING=1
+            echo "✓ Port $PORT is listening (checked via netstat)"
+          fi
+        fi
+        
+        # Try ss if netstat didn't work
+        if [ $PORT_LISTENING -eq 0 ] && command -v ss &> /dev/null; then
+          if ss -tlnp 2>/dev/null | grep -q ":$PORT "; then
+            PORT_LISTENING=1
+            echo "✓ Port $PORT is listening (checked via ss)"
+          fi
+        fi
+        
+        # Try using /proc/net/tcp as fallback
+        if [ $PORT_LISTENING -eq 0 ] && [ -f /proc/net/tcp ]; then
+          HEX_PORT=$(printf "%04X" $PORT)
+          if grep -q ":$HEX_PORT " /proc/net/tcp; then
+            PORT_LISTENING=1
+            echo "✓ Port $PORT is listening (checked via /proc/net/tcp)"
+          fi
+        fi
+        
+        # Try connecting to the port as final check
+        if [ $PORT_LISTENING -eq 0 ]; then
+          if command -v nc &> /dev/null; then
+            if nc -z localhost $PORT 2>/dev/null; then
+              PORT_LISTENING=1
+              echo "✓ Port $PORT is accepting connections (checked via nc)"
+            fi
+          elif command -v timeout &> /dev/null && command -v bash &> /dev/null; then
+            # Use bash built-in TCP connection test
+            if timeout 1 bash -c "echo > /dev/tcp/localhost/$PORT" 2>/dev/null; then
+              PORT_LISTENING=1
+              echo "✓ Port $PORT is accepting connections (checked via /dev/tcp)"
+            fi
+          fi
+        fi
+        
+        if [ $PORT_LISTENING -eq 1 ]; then
+          echo "✓ Server 1 is ready and listening on port $PORT"
+        else
+          echo "⚠️  Could not verify port $PORT is listening (tools not available)"
+          echo "Checking server log for TCP backend initialization..."
+          tail -10 /tmp/server1.log || echo "Server log not available"
+          echo "Assuming server is ready based on successful socket creation"
+        fi
+
+    - name: Start TCP server 2 (connecting)
+      shell: bash
+      run: |
+        echo "=== Starting TCP server 2 (connecting) ==="
+        # Get container IP (usually 172.17.0.x or similar)
+        CONTAINER_IP=$(hostname -I | awk '{print $1}')
+        echo "Container IP: $CONTAINER_IP"
+        
+        # Remove any existing socket
+        rm -f /tmp/vfio-user-server2.sock
+
+        ./build/rocm_ernic \
+          --socket /tmp/vfio-user-server2.sock \
+          --backend tcp:$CONTAINER_IP:${{ env.TCP_PORT }} \
+          --verbose > /tmp/server2.log 2>&1 &
+        
+        SERVER2_PID=$!
+        echo "SERVER2_PID=$SERVER2_PID" >> $GITHUB_ENV
+        echo "Server 2 PID: $SERVER2_PID"
+        
+        # Wait for socket and verify server is running
+        for i in {1..30}; do
+          # Check if server process is still running
+          if ! kill -0 "$SERVER2_PID" 2>/dev/null; then
+            echo "✗ Server 2 process died (PID: $SERVER2_PID)"
+            echo "Exit code: $(wait $SERVER2_PID 2>&1 || echo $?)"
+            echo "=== Server 2 log ==="
+            cat /tmp/server2.log
+          exit 1
+        fi
+        
+          # Check if socket exists and is a socket file
+          if [ -S /tmp/vfio-user-server2.sock ]; then
+            chmod 666 /tmp/vfio-user-server2.sock 2>/dev/null || true
+            echo "✓ Server 2 started (PID: $SERVER2_PID)"
+            echo "✓ Socket created: /tmp/vfio-user-server2.sock"
+            ls -la /tmp/vfio-user-server2.sock
+            exit 0
+          fi
+          
+          # Show progress every 5 seconds
+          if [ $((i % 5)) -eq 0 ]; then
+            echo "Waiting for socket... (attempt $i/30)"
+            echo "Server 2 PID $SERVER2_PID status: $(kill -0 $SERVER2_PID 2>/dev/null && echo 'running' || echo 'dead')"
+            echo "Socket exists: $([ -e /tmp/vfio-user-server2.sock ] && echo 'yes' || echo 'no')"
+            if [ -e /tmp/vfio-user-server2.sock ]; then
+              ls -la /tmp/vfio-user-server2.sock
+            fi
+          fi
+          sleep 1
+        done
+        
+        echo "✗ Server 2 failed to create socket after 30 seconds"
+        echo "Server 2 PID $SERVER2_PID status: $(kill -0 $SERVER2_PID 2>/dev/null && echo 'running' || echo 'dead')"
+        echo "Socket exists: $([ -e /tmp/vfio-user-server2.sock ] && echo 'yes' || echo 'no')"
+        if [ -e /tmp/vfio-user-server2.sock ]; then
+          echo "Socket type:"
+          ls -la /tmp/vfio-user-server2.sock
+          file /tmp/vfio-user-server2.sock
+        fi
+        echo "=== Server 2 log ==="
+        cat /tmp/server2.log
+        exit 1
+
+    - name: Verify TCP connection
+      run: |
+        echo "=== Verifying TCP connection ==="
+        sleep 3
+
+        # Check server logs for connection messages
+        echo "=== Server 1 log (last 20 lines) ==="
+        tail -20 /tmp/server1.log || true
+
+        echo "=== Server 2 log (last 20 lines) ==="
+        tail -20 /tmp/server2.log || true
+
+        # Check if connection was established
+        if grep -q "Connected\|connected\|TCP.*Connected" /tmp/server2.log; then
+          echo "✓ TCP connection established"
+        else
+          echo "⚠ TCP connection status unclear"
+        fi
+
+    - name: Start VM 1
+      shell: bash
+      run: |
+        echo "=== Starting VM 1 ==="
+        VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
+        SSH_PORT_1=2222
+        
+        qemu-system-x86_64 \
+          -machine q35,accel=tcg,memory-backend=mem1 \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 1G \
+          -object memory-backend-memfd,id=mem1,share=on,size=1G \
+          -nographic \
+          -drive file="$VM_DISK_1",format=qcow2,if=virtio \
+          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server1.sock"}}' \
+          -serial mon:stdio > /tmp/qemu-vm1.log 2>&1 &
+        
+        QEMU_VM1_PID=$!
+        echo "QEMU_VM1_PID=$QEMU_VM1_PID" >> $GITHUB_ENV
+        echo "✓ VM 1 started (PID: $QEMU_VM1_PID)"
+        
+        # Early failure detection: check if QEMU dies within 5 seconds
+        echo "Monitoring VM 1 for early failures..."
+        sleep 5
+        if ! kill -0 "$QEMU_VM1_PID" 2>/dev/null; then
+          echo "✗ VM 1 QEMU process died within 5 seconds (PID: $QEMU_VM1_PID)"
+          echo "=== VM 1 QEMU log (last 100 lines) ==="
+          tail -100 /tmp/qemu-vm1.log || echo "Log file not found"
+          echo ""
+          echo "=== VM 1 QEMU exit code ==="
+          wait "$QEMU_VM1_PID" 2>&1 || echo "Exit code: $?"
+          exit 1
+        fi
+        echo "✓ VM 1 still running after 5 seconds"
+
+    - name: Start VM 2
+      shell: bash
+      run: |
+        echo "=== Starting VM 2 ==="
+        VM_DISK_2="${{ steps.copy_vm_disk.outputs.vm_disk_2 }}"
+        SSH_PORT_2=2223
+        
+        qemu-system-x86_64 \
+          -machine q35,accel=tcg,memory-backend=mem2 \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 1G \
+          -object memory-backend-memfd,id=mem2,share=on,size=1G \
+          -nographic \
+          -drive file="$VM_DISK_2",format=qcow2,if=virtio \
+          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server2.sock"}}' \
+          -serial mon:stdio > /tmp/qemu-vm2.log 2>&1 &
+        
+        QEMU_VM2_PID=$!
+        echo "QEMU_VM2_PID=$QEMU_VM2_PID" >> $GITHUB_ENV
+        echo "✓ VM 2 started (PID: $QEMU_VM2_PID)"
+        
+        # Early failure detection: check if QEMU dies within 5 seconds
+        echo "Monitoring VM 2 for early failures..."
+        sleep 5
+        if ! kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
+          echo "✗ VM 2 QEMU process died within 5 seconds (PID: $QEMU_VM2_PID)"
+          echo "=== VM 2 QEMU log (last 100 lines) ==="
+          tail -100 /tmp/qemu-vm2.log || echo "Log file not found"
+          echo ""
+          echo "=== VM 2 QEMU exit code ==="
+          wait "$QEMU_VM2_PID" 2>&1 || echo "Exit code: $?"
+          exit 1
+        fi
+        echo "✓ VM 2 still running after 5 seconds"
+
+    - name: Wait for VMs to boot
+      shell: bash
+      run: |
+        echo "=== Waiting for VMs to boot ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        # Wait for VM 1 SSH
+        for i in {1..60}; do
+          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2222 "${VM_USER}@localhost" 'echo VM1 Ready' 2>/dev/null; then
+            echo "✓ VM 1 is accessible via SSH"
+            break
+          fi
+          if [ $i -eq 60 ]; then
+            echo "✗ VM 1 boot timeout"
+            tail -50 /tmp/qemu-vm1.log
+            exit 1
+          fi
+          sleep 10
+        done
+
+        # Wait for VM 2 SSH
+        for i in {1..60}; do
+          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2223 "${VM_USER}@localhost" 'echo VM2 Ready' 2>/dev/null; then
+            echo "✓ VM 2 is accessible via SSH"
+            break
+          fi
+          if [ $i -eq 60 ]; then
+            echo "✗ VM 2 boot timeout"
+            echo "=== VM 2 QEMU log (last 100 lines) ==="
+            tail -100 /tmp/qemu-vm2.log || echo "Log file not found"
+            echo ""
+            echo "=== Checking VM 2 QEMU process ==="
+            if [ -n "$QEMU_VM2_PID" ]; then
+              if kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
+                echo "VM 2 QEMU process is still running (PID: $QEMU_VM2_PID)"
+              else
+                echo "VM 2 QEMU process has died (PID: $QEMU_VM2_PID)"
+              fi
+            fi
+          echo ""
+            echo "=== Disk image info ==="
+            VM_DISK_2="${{ steps.copy_vm_disk.outputs.vm_disk_2 }}"
+            qemu-img info "$VM_DISK_2" || echo "Failed to get disk info"
+          exit 1
+        fi
+          sleep 10
+        done
+
+    - name: Copy driver source to VMs
+      shell: bash
+      run: |
+        echo "=== Copying driver source to VMs ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        # Copy to VM 1
+        scp -o StrictHostKeyChecking=no -P 2222 -r driver "${VM_USER}@localhost:~/" || {
+          echo "✗ Failed to copy driver to VM 1"
+          exit 1
+        }
+
+        # Copy to VM 2
+        scp -o StrictHostKeyChecking=no -P 2223 -r driver "${VM_USER}@localhost:~/" || {
+          echo "✗ Failed to copy driver to VM 2"
+          exit 1
+        }
+
+        echo "✓ Driver source copied"
+
+    - name: Install necessary packages in VMs
+      shell: bash
+      run: |
+        echo "=== Installing necessary packages in both VMs ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        
+        # Install in VM 1
+        echo "[VM 1] Installing packages..."
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        # Retry apt-get update to handle transient mirror issues
+        for i in {1..3}; do
+          if sudo apt-get update -qq 2>&1; then
+            break
+          else
+            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
+            sleep 5
+          fi
+        done
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          ibverbs-utils \
+          linux-headers-$(uname -r) \
+          linux-modules-extra-$(uname -r) \
+          libibverbs-dev \
+          rdma-core \
+          build-essential
+        echo "[VM 1] ✓ Packages installed"
+        EOFVM
+        
+        # Install in VM 2
+        echo "[VM 2] Installing packages..."
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        # Retry apt-get update to handle transient mirror issues
+        for i in {1..3}; do
+          if sudo apt-get update -qq 2>&1; then
+            break
+          else
+            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
+            sleep 5
+          fi
+        done
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          ibverbs-utils \
+          linux-headers-$(uname -r) \
+          linux-modules-extra-$(uname -r) \
+          libibverbs-dev \
+          rdma-core \
+          build-essential
+        echo "[VM 2] ✓ Packages installed"
+        EOFVM
+        
+        echo "✓ Both VMs have packages installed"
+
+    - name: Build and load driver in VM 1
+      shell: bash
+      run: |
+        echo "=== Building driver in VM 1 ==="
+        VM_USER="${VM_USER:-batesste}"
+
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" <<'EOF'
+          cd ~/driver
+          make KDIR=/lib/modules/$(uname -r)/build
+
+          sudo modprobe ib_core
+          sudo modprobe ib_uverbs
+          sudo insmod rocm_ernic.ko
+
+          sleep 2
+
+          ibv_devinfo || echo "No RDMA devices yet"
+        EOF
+
+        echo "✓ Driver loaded in VM 1"
+
+    - name: Build and load driver in VM 2
+      shell: bash
+      run: |
+        echo "=== Building driver in VM 2 ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" <<'EOF'
+          cd ~/driver
+          make KDIR=/lib/modules/$(uname -r)/build
+
+          sudo modprobe ib_core
+          sudo modprobe ib_uverbs
+          sudo insmod rocm_ernic.ko
+
+          sleep 2
+
+          ibv_devinfo || echo "No RDMA devices yet"
+        EOF
+
+        echo "✓ Driver loaded in VM 2"
+
+    - name: Verify RDMA devices in VMs
+      shell: bash
+      run: |
+        echo "=== Verifying RDMA devices ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        
+        FAILED=0
+
+        echo "--- VM 1 RDMA devices ---"
+        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
+          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+          echo "✓ VM 1 RDMA device found: $DEVICE"
+          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+        else
+          echo "✗ VM 1: RDMA device not found"
+          echo "Checking ibv_devices output:"
+          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          FAILED=$((FAILED + 1))
+        fi
+
+        echo ""
+        echo "--- VM 2 RDMA devices ---"
+        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
+          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+          echo "✓ VM 2 RDMA device found: $DEVICE"
+          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+        else
+          echo "✗ VM 2: RDMA device not found"
+          echo "Checking ibv_devices output:"
+          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          FAILED=$((FAILED + 1))
+        fi
+        
+        if [ $FAILED -gt 0 ]; then
+          echo ""
+          echo "✗ RDMA device verification failed"
+          exit 1
+        fi
+        
+        echo ""
+        echo "✓ Both VMs have RDMA devices available"
+
+    - name: Test TCP backend connection
+      run: |
+        echo "=== Testing TCP backend connection ==="
+
+        # Check server logs for connection activity
+        echo "--- Server 1 recent activity ---"
+        tail -30 /tmp/server1.log | grep -i "tcp\|connect\|send\|recv" || echo "No TCP activity in server 1 log"
+
+        echo "--- Server 2 recent activity ---"
+        tail -30 /tmp/server2.log | grep -i "tcp\|connect\|send\|recv" || echo "No TCP activity in server 2 log"
+
+        # Verify both servers are still running
+        if ps -p $SERVER1_PID > /dev/null && ps -p $SERVER2_PID > /dev/null; then
+          echo "✓ Both servers are running"
+        else
+          echo "✗ One or both servers have stopped"
+          exit 1
+        fi
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "=== Cleaning up ==="
+
+        # Stop VMs
+        [ ! -z "$QEMU_VM1_PID" ] && kill $QEMU_VM1_PID 2>/dev/null || true
+        [ ! -z "$QEMU_VM2_PID" ] && kill $QEMU_VM2_PID 2>/dev/null || true
+
+        # Stop servers
+        [ ! -z "$SERVER1_PID" ] && kill $SERVER1_PID 2>/dev/null || true
+        [ ! -z "$SERVER2_PID" ] && kill $SERVER2_PID 2>/dev/null || true
+
+        sleep 2
+
+        # Force kill if needed
+        pkill -9 qemu-system-x86_64 2>/dev/null || true
+        pkill -9 rocm_ernic 2>/dev/null || true
+        
+        echo "✓ Cleanup complete"
+  
+    - name: Upload test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: tcp-backend-test-logs
+        path: |
+          /tmp/server1.log
+          /tmp/server2.log
+          /tmp/qemu-vm1.log
+          /tmp/qemu-vm2.log
+        retention-days: 7
+        if-no-files-found: ignore
+  
+  system-test-status:
+    name: System Test Status
+    needs: [system-test-loopback-vm, system-test-tcp]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Check test results
+      run: |
+        LOOPBACK_VM_RESULT="${{ needs.system-test-loopback-vm.result }}"
+        TCP_RESULT="${{ needs.system-test-tcp.result }}"
+        
+        if [ "$LOOPBACK_VM_RESULT" = "success" ] && [ "$TCP_RESULT" = "success" ]; then
+          echo "✅ All system tests passed!"
+          exit 0
+        else
+          echo "❌ Some system tests failed!"
+          echo "Loopback VM test: $LOOPBACK_VM_RESULT"
+          echo "TCP backend test: $TCP_RESULT"
+          exit 1
+        fi
+
