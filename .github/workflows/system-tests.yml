@@ -1241,12 +1241,42 @@ jobs:
       run: |
         echo "=== Verifying RDMA devices ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        
+        FAILED=0
 
         echo "--- VM 1 RDMA devices ---"
-        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devinfo -v' || true
+        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
+          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+          echo "✓ VM 1 RDMA device found: $DEVICE"
+          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+        else
+          echo "✗ VM 1: RDMA device not found"
+          echo "Checking ibv_devices output:"
+          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          FAILED=$((FAILED + 1))
+        fi
 
+        echo ""
         echo "--- VM 2 RDMA devices ---"
-        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devinfo -v' || true
+        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
+          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+          echo "✓ VM 2 RDMA device found: $DEVICE"
+          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+        else
+          echo "✗ VM 2: RDMA device not found"
+          echo "Checking ibv_devices output:"
+          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          FAILED=$((FAILED + 1))
+        fi
+        
+        if [ $FAILED -gt 0 ]; then
+          echo ""
+          echo "✗ RDMA device verification failed"
+          exit 1
+        fi
+        
+        echo ""
+        echo "✓ Both VMs have RDMA devices available"
 
     - name: Test TCP backend connection
       run: |
