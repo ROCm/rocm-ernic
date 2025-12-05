@@ -1,11 +1,11 @@
 # rocm-ernic Tests
 
 This directory contains test programs and infrastructure for testing
-the rocm_ernic server.
+the rocm_ernic libvfio-user-based server.
 
 ## Test Programs
 
-### test_pci_client (Active - Runs in CI)
+### test_pci_client
 
 A simple vfio-user client that connects to the rocm_ernic server and
 performs basic PCI configuration space queries.
@@ -23,9 +23,7 @@ performs basic PCI configuration space queries.
 - 0: All tests passed
 - 1: Test failure or connection error
 
-**Status:** ✅ Active - Registered in meson.build and runs in CI
-
-### test_data_transfer (Active - Runs in CI)
+### test_data_transfer
 
 Comprehensive RDMA data transfer test using libibverbs. Tests send/recv
 operations and verifies data integrity and pattern generation.
@@ -48,8 +46,6 @@ operations and verifies data integrity and pattern generation.
 - 0: All tests passed
 - 1: Test failure or no RDMA device available
 
-**Status:** ✅ Active - Registered in meson.build and runs in CI
-
 **Note:** This test requires an RDMA device to be available. In CI, this
 may require the rocm_ernic server running with loopback backend and a VM
 with the driver loaded, or it will be skipped if no device is found.
@@ -66,9 +62,9 @@ From project root:
 
 This will:
 1. Check that binaries are built
-2. Start the rocm_ernic server
-3. Run the test client
-4. Clean up automatically
+1. Start the rocm_ernic server
+1. Run the test client
+1. Clean up automatically
 
 ### Manual Testing
 
@@ -156,21 +152,4 @@ test(
 )
 ```
 
-## CI Integration
-
-**Tests run in CI:**
-- `test_pci_client` - Runs via `meson test` in `.github/workflows/build-test.yml`
-  - Tests PCI configuration space via vfio-user protocol
-  - Requires rocm_ernic server running
-- `test_data_transfer` - Runs via `meson test` in `.github/workflows/build-test.yml`
-  - Tests RDMA data transfer operations via libibverbs
-  - Requires RDMA device available (may be skipped if none found)
-
-**CI Workflow:**
-- Triggered on: Pull requests to `main` branch
-- Runs on: Ubuntu 22.04 and 24.04
-- Test command: `meson test -C build --verbose --print-errorlogs`
-- Only registered tests in `tests/meson.build` are executed
-
-See `.github/workflows/build-test.yml` for CI configuration details.
 
