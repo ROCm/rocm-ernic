@@ -134,6 +134,19 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
                       uint64_t *regs_reads, uint64_t *regs_writes,
                       uint64_t *uar_writes, uint64_t *interrupts);
 
+/**
+ * pvrdma_set_stats_file - Set statistics output file path
+ * @handle: Device handle
+ * @stats_file: Path to stats output file (will be copied)
+ */
+void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file);
+
+/**
+ * pvrdma_write_stats - Write statistics to file
+ * @handle: Device handle
+ */
+void pvrdma_write_stats(pvrdma_handle_t handle);
+
 /*
  * Bridge Functions: DMA and Interrupts
  *

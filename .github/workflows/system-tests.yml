@@ -394,7 +394,13 @@ jobs:
         echo "=== Building Driver ==="
         cd /tmp/driver
         make KDIR=/lib/modules/$(uname -r)/build
-        ls -lh rocm_ernic.ko
+        if [ ! -f rocm_ernic_eth.ko ] || [ ! -f rocm_ernic_rdma.ko ]; then
+          echo "✗ Driver modules not found!"
+          echo "Expected: rocm_ernic_eth.ko and rocm_ernic_rdma.ko"
+          ls -lh *.ko 2>/dev/null || echo "No .ko files found"
+          exit 1
+        fi
+        ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
         echo "✓ Driver built for kernel $(uname -r)"
         
         echo ""
@@ -438,8 +444,17 @@ jobs:
         
         echo ""
         echo "=== Loading Driver ==="
-        sudo insmod ./rocm_ernic.ko 2>&1 || {
-          echo "⚠️  Driver load failed"
+        # Load eth module first (required dependency)
+        sudo insmod ./rocm_ernic_eth.ko 2>&1 || {
+          echo "⚠️  Driver eth module load failed"
+          echo "Kernel messages:"
+          sudo dmesg | tail -30
+          exit 1
+        }
+        
+        # Load rdma module (depends on eth module)
+        sudo insmod ./rocm_ernic_rdma.ko 2>&1 || {
+          echo "⚠️  Driver rdma module load failed"
           echo "Kernel messages:"
           sudo dmesg | tail -30
           exit 1
@@ -793,16 +808,16 @@ jobs:
         ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
         ssh-keyscan -p 2223 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
 
-    - name: Start TCP server 1 (listening)
+    - name: Start TCP server 1 (manager)
       shell: bash
       run: |
-        echo "=== Starting TCP server 1 (listening) ==="
+        echo "=== Starting TCP server 1 (manager) ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
         
         ./build/rocm_ernic \
           --socket /tmp/vfio-user-server1.sock \
-          --backend tcp:listen:${{ env.TCP_PORT }} \
+          --backend tcp:manager:listen:${{ env.TCP_PORT }} \
           --verbose > /tmp/server1.log 2>&1 &
         
         SERVER1_PID=$!
@@ -913,20 +928,21 @@ jobs:
           echo "Assuming server is ready based on successful socket creation"
         fi
 
-    - name: Start TCP server 2 (connecting)
+    - name: Start TCP server 2 (worker)
       shell: bash
       run: |
-        echo "=== Starting TCP server 2 (connecting) ==="
-        # Get container IP (usually 172.17.0.x or similar)
-        CONTAINER_IP=$(hostname -I | awk '{print $1}')
-        echo "Container IP: $CONTAINER_IP"
+        echo "=== Starting TCP server 2 (worker) ==="
+        # Since both servers run in the same container, use localhost
+        # Manager is listening on 0.0.0.0, so localhost will work
+        MANAGER_HOST="localhost"
+        echo "Connecting to manager at: $MANAGER_HOST:${{ env.TCP_PORT }}"
         
         # Remove any existing socket
         rm -f /tmp/vfio-user-server2.sock
 
         ./build/rocm_ernic \
           --socket /tmp/vfio-user-server2.sock \
-          --backend tcp:$CONTAINER_IP:${{ env.TCP_PORT }} \
+          --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \
           --verbose > /tmp/server2.log 2>&1 &
         
         SERVER2_PID=$!
@@ -983,18 +999,149 @@ jobs:
         sleep 3
 
         # Check server logs for connection messages
-        echo "=== Server 1 log (last 20 lines) ==="
-        tail -20 /tmp/server1.log || true
+        echo "=== Server 1 log (last 30 lines) ==="
+        tail -30 /tmp/server1.log || true
 
-        echo "=== Server 2 log (last 20 lines) ==="
-        tail -20 /tmp/server2.log || true
+        echo "=== Server 2 log (last 30 lines) ==="
+        tail -30 /tmp/server2.log || true
 
-        # Check if connection was established
-        if grep -q "Connected\|connected\|TCP.*Connected" /tmp/server2.log; then
-          echo "✓ TCP connection established"
-        else
-          echo "⚠ TCP connection status unclear"
+        # Verify both servers are still running
+        if ! ps -p $SERVER1_PID > /dev/null; then
+          echo "✗ Server 1 (manager) has stopped"
+          exit 1
         fi
+        if ! ps -p $SERVER2_PID > /dev/null; then
+          echo "✗ Server 2 (worker) has stopped"
+          exit 1
+        fi
+        echo "✓ Both servers are running"
+
+        # Check for worker connection to manager
+        WORKER_CONNECTED=0
+        PORT=${{ env.TCP_PORT }}
+        if grep -q "TCP: Connected to.*:$PORT" /tmp/server2.log; then
+          WORKER_CONNECTED=1
+          echo "✓ Worker connected to manager on port $PORT"
+        else
+          echo "✗ Worker did not connect to manager on port $PORT"
+        fi
+
+        # Check for worker registration with manager
+        WORKER_REGISTERED=0
+        if grep -q "TCP: Registered with manager" /tmp/server2.log; then
+          WORKER_REGISTERED=1
+          echo "✓ Worker registered with manager"
+        else
+          echo "✗ Worker did not register with manager"
+        fi
+
+        # Check for mesh topology received by worker
+        MESH_RECEIVED=0
+        if grep -q "TCP: Received mesh topology" /tmp/server2.log; then
+          MESH_RECEIVED=1
+          echo "✓ Worker received mesh topology"
+        else
+          echo "✗ Worker did not receive mesh topology"
+        fi
+
+        # Check for manager accepting worker registration
+        MANAGER_REGISTERED=0
+        if grep -q "TCP: Registered node.*at" /tmp/server1.log; then
+          MANAGER_REGISTERED=1
+          echo "✓ Manager registered worker node"
+        else
+          echo "✗ Manager did not register worker node"
+        fi
+
+        # Check for manager broadcasting topology
+        MANAGER_BROADCAST=0
+        if grep -q "TCP: Broadcast mesh topology" /tmp/server1.log; then
+          MANAGER_BROADCAST=1
+          echo "✓ Manager broadcast mesh topology"
+        else
+          echo "✗ Manager did not broadcast mesh topology"
+        fi
+
+        # Fail if any critical step failed
+        if [ $WORKER_CONNECTED -eq 0 ] || [ $WORKER_REGISTERED -eq 0 ] || \
+           [ $MESH_RECEIVED -eq 0 ] || [ $MANAGER_REGISTERED -eq 0 ] || \
+           [ $MANAGER_BROADCAST -eq 0 ]; then
+          echo ""
+          echo "✗ TCP connection verification FAILED"
+          echo "Connection establishment incomplete. Check logs above for details."
+          exit 1
+        fi
+
+        echo ""
+        echo "✓ TCP connection fully established and verified"
+
+    - name: Verify server sockets are ready for VMs
+      shell: bash
+      run: |
+        echo "=== Verifying server sockets are ready ==="
+        
+        # Verify both servers are still running
+        if ! ps -p $SERVER1_PID > /dev/null; then
+          echo "✗ Server 1 (manager) has stopped"
+          echo "Server 1 log:"
+          tail -50 /tmp/server1.log || true
+          exit 1
+        fi
+        if ! ps -p $SERVER2_PID > /dev/null; then
+          echo "✗ Server 2 (worker) has stopped"
+          echo "Server 2 log:"
+          tail -50 /tmp/server2.log || true
+          exit 1
+        fi
+        echo "✓ Both servers are running"
+        
+        # Wait for server 1 to be ready (device realized)
+        echo "Waiting for server 1 to be ready..."
+        SERVER1_READY=0
+        for i in $(seq 1 30); do
+          if grep -q "Device realized, waiting for client connection" /tmp/server1.log; then
+            echo "✓ Server 1 ready"
+            SERVER1_READY=1
+            break
+          fi
+          sleep 1
+        done
+        if [ $SERVER1_READY -eq 0 ]; then
+          echo "✗ Server 1 not ready after 30 seconds"
+          echo "Server 1 log (last 30 lines):"
+          tail -30 /tmp/server1.log
+          exit 1
+        fi
+        
+        # Wait for server 2 to be ready (device realized)
+        echo "Waiting for server 2 to be ready..."
+        SERVER2_READY=0
+        for i in $(seq 1 30); do
+          if grep -q "Device realized, waiting for client connection" /tmp/server2.log; then
+            echo "✓ Server 2 ready"
+            SERVER2_READY=1
+            break
+          fi
+          sleep 1
+        done
+        if [ $SERVER2_READY -eq 0 ]; then
+          echo "✗ Server 2 not ready after 30 seconds"
+          echo "Server 2 log (last 30 lines):"
+          tail -30 /tmp/server2.log
+          exit 1
+        fi
+        
+        # Verify sockets exist
+        if [ ! -S /tmp/vfio-user-server1.sock ]; then
+          echo "✗ Server 1 socket not found"
+          exit 1
+        fi
+        if [ ! -S /tmp/vfio-user-server2.sock ]; then
+          echo "✗ Server 2 socket not found"
+          exit 1
+        fi
+        
+        echo "✓ All server sockets verified and ready for VM connections"
 
     - name: Start VM 1
       shell: bash
@@ -1198,7 +1345,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Building driver in VM 1 ==="
-        VM_USER="${VM_USER:-batesste}"
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
         ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" <<'EOF'
           cd ~/driver
@@ -1206,7 +1353,8 @@ jobs:
 
           sudo modprobe ib_core
           sudo modprobe ib_uverbs
-          sudo insmod rocm_ernic.ko
+          sudo insmod rocm_ernic_eth.ko
+          sudo insmod rocm_ernic_rdma.ko
 
           sleep 2
 
@@ -1227,7 +1375,8 @@ jobs:
 
           sudo modprobe ib_core
           sudo modprobe ib_uverbs
-          sudo insmod rocm_ernic.ko
+          sudo insmod rocm_ernic_eth.ko
+          sudo insmod rocm_ernic_rdma.ko
 
           sleep 2
 

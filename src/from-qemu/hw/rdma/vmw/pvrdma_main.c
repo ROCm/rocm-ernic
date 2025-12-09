@@ -76,6 +76,132 @@ static Property pvrdma_dev_properties[] = {
 /* Forward declaration */
 typedef struct RdmaProvider RdmaProvider;
 
+/* Get or create QP stats entry */
+PVRDMAQPStats *pvrdma_get_qp_stats(PVRDMADev *dev, uint32_t qp_handle)
+{
+    PVRDMAQPStats *stats;
+
+    if (!dev->stats.qp_stats) {
+        return NULL;
+    }
+
+    stats = (PVRDMAQPStats *)g_hash_table_lookup(dev->stats.qp_stats,
+                                                 GUINT_TO_POINTER(qp_handle));
+    if (!stats) {
+        stats = g_new0(PVRDMAQPStats, 1);
+        g_hash_table_insert(dev->stats.qp_stats, GUINT_TO_POINTER(qp_handle),
+                            stats);
+    }
+
+    return stats;
+}
+
+/* Write stats to file */
+void pvrdma_write_stats_impl(PVRDMADev *dev)
+{
+    GHashTableIter iter;
+    gpointer key, value;
+    FILE *fp;
+    const char *opcode_names[] = {"RDMA_WRITE",
+                                  "RDMA_WRITE_WITH_IMM",
+                                  "SEND",
+                                  "SEND_WITH_IMM",
+                                  "RDMA_READ",
+                                  "ATOMIC_CMP_AND_SWP",
+                                  "ATOMIC_FETCH_AND_ADD",
+                                  "LSO",
+                                  "SEND_WITH_INV",
+                                  "RDMA_READ_WITH_INV",
+                                  "LOCAL_INV",
+                                  "FAST_REG_MR",
+                                  "MASKED_ATOMIC_CMP_SWP",
+                                  "MASKED_ATOMIC_FETCH",
+                                  "BIND_MW",
+                                  "REG_SIG_MR",
+                                  "ERROR"};
+
+    if (!dev->stats.stats_file) {
+        return;
+    }
+
+    fp = fopen(dev->stats.stats_file, "w");
+    if (!fp) {
+        rdma_error_report("Failed to open stats file %s: %s",
+                          dev->stats.stats_file, strerror(errno));
+        return;
+    }
+
+    fprintf(fp, "=== ROCm ERNIC Statistics ===\n");
+    fprintf(fp, "Write count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
+    fprintf(fp, "Device Statistics:\n");
+    fprintf(fp, "  commands         : %" PRIu64 "\n", dev->stats.commands);
+    fprintf(fp, "  regs_reads       : %" PRIu64 "\n", dev->stats.regs_reads);
+    fprintf(fp, "  regs_writes      : %" PRIu64 "\n", dev->stats.regs_writes);
+    fprintf(fp, "  uar_writes       : %" PRIu64 "\n", dev->stats.uar_writes);
+    fprintf(fp, "  interrupts       : %" PRIu64 "\n", dev->stats.interrupts);
+    fprintf(fp, "  total_bytes_sent : %" PRIu64 "\n",
+            dev->stats.total_bytes_sent);
+    fprintf(fp, "  total_bytes_received : %" PRIu64 "\n",
+            dev->stats.total_bytes_received);
+    fprintf(fp, "  total_bytes_rdma_read : %" PRIu64 "\n",
+            dev->stats.total_bytes_rdma_read);
+    fprintf(fp, "  total_bytes_rdma_write : %" PRIu64 "\n",
+            dev->stats.total_bytes_rdma_write);
+    fprintf(fp, "\n");
+
+    fprintf(fp, "Per-QP Statistics:\n");
+    if (dev->stats.qp_stats) {
+        g_hash_table_iter_init(&iter, dev->stats.qp_stats);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            uint32_t qp_handle = GPOINTER_TO_UINT(key);
+            PVRDMAQPStats *qp_stats = (PVRDMAQPStats *)value;
+            uint64_t total_wqes = 0;
+            int i;
+
+            fprintf(fp, "  QP %u:\n", qp_handle);
+            fprintf(fp, "    doorbell_send  : %" PRIu64 "\n",
+                    qp_stats->doorbell_send);
+            fprintf(fp, "    doorbell_recv  : %" PRIu64 "\n",
+                    qp_stats->doorbell_recv);
+            fprintf(fp, "    doorbell_srq   : %" PRIu64 "\n",
+                    qp_stats->doorbell_srq);
+            fprintf(fp, "    wqes_processed : %" PRIu64 "\n",
+                    qp_stats->wqes_processed);
+            fprintf(fp, "    cqes_posted    : %" PRIu64 "\n",
+                    qp_stats->cqes_posted);
+            fprintf(fp, "    continuations  : %" PRIu64 "\n",
+                    qp_stats->continuations);
+            fprintf(fp, "    bytes_sent     : %" PRIu64 "\n",
+                    qp_stats->bytes_sent);
+            fprintf(fp, "    bytes_received : %" PRIu64 "\n",
+                    qp_stats->bytes_received);
+            fprintf(fp, "    bytes_rdma_read : %" PRIu64 "\n",
+                    qp_stats->bytes_rdma_read);
+            fprintf(fp, "    bytes_rdma_write : %" PRIu64 "\n",
+                    qp_stats->bytes_rdma_write);
+
+            fprintf(fp, "    WQEs by opcode:\n");
+            for (i = 0; i < 16 && i < (int)G_N_ELEMENTS(opcode_names); i++) {
+                if (qp_stats->wqes_by_opcode[i] > 0) {
+                    fprintf(fp, "      %-20s: %" PRIu64 "\n", opcode_names[i],
+                            qp_stats->wqes_by_opcode[i]);
+                    total_wqes += qp_stats->wqes_by_opcode[i];
+                }
+            }
+            if (total_wqes != qp_stats->wqes_processed) {
+                fprintf(fp, "      (other opcodes)    : %" PRIu64 "\n",
+                        qp_stats->wqes_processed - total_wqes);
+            }
+            fprintf(fp, "\n");
+        }
+    } else {
+        fprintf(fp, "  (no QPs created yet)\n\n");
+    }
+
+    fclose(fp);
+    dev->stats.stats_write_count++;
+}
+
 static void __attribute__((unused)) pvrdma_format_statistics(RdmaProvider *obj,
                                                              GString *buf)
 {
@@ -180,7 +306,7 @@ out:
     return rc;
 }
 
-static void free_dsr(PVRDMADev *dev)
+void free_dsr(PVRDMADev *dev)
 {
     PCIDevice *pci_dev = PCI_DEVICE(dev);
 
@@ -250,6 +376,8 @@ static int load_dsr(PVRDMADev *dev)
                      (uint64_t)dsr->cmd_slot_dma);
     dsr_info->req = rdma_pci_dma_map(pci_dev, dsr->cmd_slot_dma,
                                      sizeof(union pvrdma_cmd_req));
+    rdma_info_report("load_dsr: mapped cmd_slot to host ptr=%p (dma=%#lx)",
+                     dsr_info->req, (uint64_t)dsr->cmd_slot_dma);
     if (!dsr_info->req) {
         rdma_error_report("Failed to map to command slot address");
         rc = -ENOMEM;
@@ -257,8 +385,12 @@ static int load_dsr(PVRDMADev *dev)
     }
 
     /* Map to response slot */
+    rdma_info_report("load_dsr: resp_slot_dma = %#lx",
+                     (uint64_t)dsr->resp_slot_dma);
     dsr_info->rsp = rdma_pci_dma_map(pci_dev, dsr->resp_slot_dma,
                                      sizeof(union pvrdma_cmd_resp));
+    rdma_info_report("load_dsr: mapped resp_slot to host ptr=%p (dma=%#lx)",
+                     dsr_info->rsp, (uint64_t)dsr->resp_slot_dma);
     if (!dsr_info->rsp) {
         rdma_error_report("Failed to map to response slot address");
         rc = -ENOMEM;
@@ -300,9 +432,46 @@ out:
     return rc;
 }
 
+/**
+ * Convert git SHA hex string to uint64_t (first 8 bytes)
+ * @sha: Git SHA hex string (at least 16 hex characters)
+ * @return: uint64_t value from first 16 hex chars, or 0 on error
+ */
+static uint64_t git_sha_to_uint64(const char *sha)
+{
+    uint64_t result = 0;
+    int i;
+
+    if (!sha) {
+        return 0;
+    }
+
+    /* Convert first 16 hex characters (8 bytes) to uint64_t */
+    for (i = 0; i < 16 && sha[i] != '\0'; i++) {
+        char c = sha[i];
+        uint8_t nibble;
+
+        if (c >= '0' && c <= '9') {
+            nibble = c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            nibble = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'F') {
+            nibble = c - 'A' + 10;
+        } else {
+            /* Invalid hex character */
+            return 0;
+        }
+
+        result = (result << 4) | nibble;
+    }
+
+    return result;
+}
+
 static void init_dsr_dev_caps(PVRDMADev *dev)
 {
     struct pvrdma_device_shared_region *dsr;
+    uint64_t fw_ver_from_git;
 
     rdma_info_report("init_dsr_dev_caps: CALLED");
 
@@ -329,8 +498,28 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     rdma_info_report("init_dsr_dev_caps: dsr->caps.gid_types BEFORE = 0x%x",
                      dsr->caps.gid_types);
 
+    /* Convert git SHA to firmware version */
+#ifdef GIT_SHA_FULL
+    fw_ver_from_git = git_sha_to_uint64(GIT_SHA_FULL);
+    if (fw_ver_from_git == 0) {
+        /* Fallback to default if git SHA conversion failed */
+        fw_ver_from_git = 1;
+    }
+#else
+    fw_ver_from_git = 1; /* Default if git SHA not available */
+#endif
+
     /* Write capabilities - these are the critical fields the driver checks */
-    dsr->caps.fw_ver = PVRDMA_FW_VERSION;
+    dsr->caps.fw_ver = fw_ver_from_git;
+#ifdef GIT_SHA_SHORT
+    rdma_info_report("init_dsr_dev_caps: fw_ver=0x%016" PRIx64
+                     " (from git SHA: %s)",
+                     fw_ver_from_git, GIT_SHA_SHORT);
+#else
+    rdma_info_report("init_dsr_dev_caps: fw_ver=0x%016" PRIx64
+                     " (default, git SHA not available)",
+                     fw_ver_from_git);
+#endif
     dsr->caps.mode = PVRDMA_DEVICE_MODE_ROCE;
     dsr->caps.gid_types |= PVRDMA_GID_TYPE_FLAG_ROCE_V1;
 
@@ -358,6 +547,16 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     dsr->caps.node_guid = dev->node_guid;
     dsr->caps.phys_port_cnt = MAX_PORTS;
     dsr->caps.max_pkeys = MAX_PKEYS;
+    /* Vendor and hardware version information */
+    dsr->caps.vendor_id = 0x1022;      /* AMD vendor ID */
+    dsr->caps.vendor_part_id = 0x1484; /* ROCm ERNIC device ID */
+    dsr->caps.hw_ver = 1;              /* Hardware version 1 */
+    /* Mesh metadata for TCP backend */
+    dsr->caps.mesh_node_id =
+        dev->backend_dev.mesh_enabled ? dev->backend_dev.mesh_node_id : 0xff;
+    dsr->caps.mesh_num_nodes =
+        dev->backend_dev.mesh_enabled ? dev->backend_dev.mesh_num_nodes : 0;
+    dsr->caps.mesh_flags = dev->backend_dev.mesh_enabled ? 1 : 0;
 
     /* Per libvfio-user pattern from server.c:
      * Immediately call vfu_sgl_put() after writing to flush to guest.
@@ -370,7 +569,7 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
 
     /* Read back to verify the writes took effect */
     rdma_info_report("init_dsr_dev_caps: READBACK CHECK:");
-    rdma_info_report("  fw_ver=%u (expected 14)", dsr->caps.fw_ver);
+    rdma_info_report("  fw_ver=%u (expected 1)", dsr->caps.fw_ver);
     rdma_info_report("  mode=%d (expected 0=ROCE)", dsr->caps.mode);
     rdma_info_report("  gid_types=0x%x (expected 0x1=ROCE_V1)",
                      dsr->caps.gid_types);
@@ -485,11 +684,33 @@ static void pvrdma_start(PVRDMADev *dev)
 
 static void activate_device(PVRDMADev *dev)
 {
+    union ibv_gid default_gid;
+    int ret;
+
     rdma_info_report("activate_device: Activating device (backend=%s)",
                      dev->backend_dev.context ? "available" : "not available");
     pvrdma_start(dev);
     set_reg_val(dev, PVRDMA_REG_ERR, 0);
     rdma_info_report("activate_device: Device activated successfully");
+
+    /* Initialize default GID (index 0) for TCP mesh backend */
+    /* The backend will set node-specific GID if in mesh mode */
+    memset(&default_gid, 0, sizeof(default_gid));
+    default_gid.raw[0] = 0xfe;
+    default_gid.raw[1] = 0x80;
+    default_gid.raw[8] = 0x02;
+    default_gid.raw[11] = 0xff;
+    default_gid.raw[12] = 0xfe;
+    /* Last bytes will be set by tcp_add_gid if in mesh mode */
+
+    ret = rdma_rm_add_gid(&dev->rdma_dev_res, &dev->backend_dev,
+                          dev->backend_eth_device_name, &default_gid, 0);
+    if (ret == 0) {
+        rdma_info_report("activate_device: Initialized default GID at index 0");
+    } else {
+        rdma_info_report("activate_device: Failed to add default GID (ret=%d)",
+                         ret);
+    }
 }
 
 static int unquiesce_device(PVRDMADev *dev)
@@ -509,6 +730,11 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
     uint32_t val;
 
     dev->stats.regs_reads++;
+
+    /* Check if this is an Ethernet register (0x28-0x5c) */
+    if (addr >= 0x28 && addr <= 0x5c) {
+        return pvrdma_eth_regs_read(dev, addr);
+    }
 
     if (get_reg_val(dev, addr, &val)) {
         rdma_error_report("Failed to read REG value from address 0x%x",
@@ -600,6 +826,11 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
     default:
+        /* Check if this is an Ethernet register (0x28-0x5c) */
+        if (addr >= 0x28 && addr <= 0x5c) {
+            /* Handle Ethernet registers */
+            pvrdma_eth_regs_write(dev, addr, val);
+        }
         break;
     }
 }
@@ -626,19 +857,49 @@ void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
                            unsigned size)
 {
     PVRDMADev *dev = opaque;
+    hwaddr page_offset;
+
+    rdma_info_report(">>> UAR WRITE: addr=0x%lx, val=0x%lx, size=%u",
+                     (unsigned long)addr, (unsigned long)val, size);
 
     dev->stats.uar_writes++;
 
-    switch (addr & 0xFFF) { /* Mask with 0xFFF as each UC gets page */
-    case PVRDMA_UAR_QP_OFFSET:
+    /* Extract offset within the UAR page (each UC gets a 4KB page) */
+    /* UAR is organized as: page_N = N * 0x1000, offsets within page: 0, 4, 8 */
+    page_offset = addr & 0xFFF;
+
+    /* Route by offset first - bit 31 means different things at different
+     * offsets */
+    switch (page_offset) {
+    case PVRDMA_UAR_QP_OFFSET: {
+        /* QP doorbell at offset 0 */
+        uint32_t qp_handle = val & PVRDMA_UAR_HANDLE_MASK;
+        PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
+
+        rdma_info_report(
+            ">>> UAR: QP doorbell! val=0x%lx, flags: send=%d recv=%d",
+            (unsigned long)val, !!(val & PVRDMA_UAR_QP_SEND),
+            !!(val & PVRDMA_UAR_QP_RECV));
         if (val & PVRDMA_UAR_QP_SEND) {
-            pvrdma_qp_send(dev, val & PVRDMA_UAR_HANDLE_MASK);
+            if (qp_stats) {
+                qp_stats->doorbell_send++;
+            }
+            rdma_info_report(">>> UAR: Calling pvrdma_qp_send(handle=%u)",
+                             qp_handle);
+            pvrdma_qp_send(dev, qp_handle);
         }
         if (val & PVRDMA_UAR_QP_RECV) {
-            pvrdma_qp_recv(dev, val & PVRDMA_UAR_HANDLE_MASK);
+            if (qp_stats) {
+                qp_stats->doorbell_recv++;
+            }
+            rdma_info_report(">>> UAR: Calling pvrdma_qp_recv(handle=%u)",
+                             qp_handle);
+            pvrdma_qp_recv(dev, qp_handle);
         }
         break;
+    }
     case PVRDMA_UAR_CQ_OFFSET:
+        /* CQ doorbell at offset 4 - bit 31 means CQ_POLL, not QP_RECV */
         if (val & PVRDMA_UAR_CQ_ARM) {
             rdma_rm_req_notify_cq(&dev->rdma_dev_res,
                                   val & PVRDMA_UAR_HANDLE_MASK,
@@ -648,18 +909,58 @@ void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
             rdma_warn_report("CQ ARM SOL not supported");
         }
         if (val & PVRDMA_UAR_CQ_POLL) {
-            pvrdma_cq_poll(&dev->rdma_dev_res, val & PVRDMA_UAR_HANDLE_MASK);
+            uint32_t cq_handle = val & PVRDMA_UAR_HANDLE_MASK;
+            rdma_info_report(">>> UAR: CQ poll doorbell! cq_handle=%u",
+                             cq_handle);
+            pvrdma_cq_poll(&dev->rdma_dev_res, cq_handle);
         }
         break;
-    case PVRDMA_UAR_SRQ_OFFSET:
+    case PVRDMA_UAR_SRQ_OFFSET: {
+        uint32_t srq_handle = val & PVRDMA_UAR_HANDLE_MASK;
+        PVRDMAQPStats *srq_stats = pvrdma_get_qp_stats(dev, srq_handle);
+
         if (val & PVRDMA_UAR_SRQ_RECV) {
-            pvrdma_srq_recv(dev, val & PVRDMA_UAR_HANDLE_MASK);
+            if (srq_stats) {
+                srq_stats->doorbell_srq++;
+            }
+            pvrdma_srq_recv(dev, srq_handle);
         }
         break;
+    }
     default:
-        rdma_error_report("Unsupported command, addr=0x%" PRIx64
-                          ", val=0x%" PRIx64,
-                          addr, val);
+        /* Check if this might be a QP doorbell at wrong offset */
+        if ((val & (PVRDMA_UAR_QP_SEND | PVRDMA_UAR_QP_RECV)) &&
+            page_offset != PVRDMA_UAR_CQ_OFFSET) {
+            /* QP doorbell at wrong offset - handle it anyway */
+            uint32_t qp_handle = val & PVRDMA_UAR_HANDLE_MASK;
+            PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
+
+            rdma_warn_report(
+                ">>> UAR: QP doorbell at wrong offset! addr=0x%lx "
+                "(offset=0x%lx, expected 0x%x), val=0x%lx - handling anyway",
+                (unsigned long)addr, (unsigned long)page_offset,
+                PVRDMA_UAR_QP_OFFSET, (unsigned long)val);
+            if (val & PVRDMA_UAR_QP_SEND) {
+                if (qp_stats) {
+                    qp_stats->doorbell_send++;
+                }
+                rdma_info_report(">>> UAR: Calling pvrdma_qp_send(handle=%u)",
+                                 qp_handle);
+                pvrdma_qp_send(dev, qp_handle);
+            }
+            if (val & PVRDMA_UAR_QP_RECV) {
+                if (qp_stats) {
+                    qp_stats->doorbell_recv++;
+                }
+                rdma_info_report(">>> UAR: Calling pvrdma_qp_recv(handle=%u)",
+                                 qp_handle);
+                pvrdma_qp_recv(dev, qp_handle);
+            }
+        } else {
+            rdma_error_report("Unsupported command, addr=0x%" PRIx64
+                              ", val=0x%" PRIx64,
+                              addr, val);
+        }
         break;
     }
 }
@@ -840,6 +1141,10 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     if (rc) {
         goto out;
     }
+    /* Ensure backend holds the live rdma_dev_res pointer after any init reorders */
+    dev->backend_dev.rdma_dev_res = &dev->rdma_dev_res;
+    rdma_info_report("pvrdma_realize: backend_dev.rdma_dev_res=%p (expected %p)",
+                     dev->backend_dev.rdma_dev_res, &dev->rdma_dev_res);
 
     init_dev_caps(dev);
 
@@ -854,6 +1159,11 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     }
 
     memset(&dev->stats, 0, sizeof(dev->stats));
+    dev->stats.qp_stats = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+                                                 NULL, g_free);
+    dev->stats.stats_file = NULL;
+    dev->stats.stats_fp = NULL;
+    dev->stats.stats_write_count = 0;
 
     dev->shutdown_notifier.notify = pvrdma_shutdown_notifier;
     qemu_register_shutdown_notifier(&dev->shutdown_notifier);

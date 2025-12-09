@@ -27,9 +27,12 @@
 #include <syslog.h>
 #include <getopt.h>
 #include <assert.h>
+#include <time.h>
 
 #include <vfio-user/libvfio-user.h>
+#include <vfio-user/pci_defs.h>
 #include <linux/pci_regs.h>
+#include <glib.h> /* For g_main_context_iteration() */
 
 /* Internal headers */
 #include "rocm_ernic_internal.h"
@@ -48,6 +51,7 @@
 /* Global context for signal handling */
 static vfu_ctx_t *g_vfu_ctx = NULL;
 static volatile sig_atomic_t g_shutdown_requested = 0;
+static volatile sig_atomic_t g_cleanup_in_progress = 0;
 
 /**
  * Signal handler for graceful shutdown
@@ -55,7 +59,13 @@ static volatile sig_atomic_t g_shutdown_requested = 0;
 static void signal_handler(int signo)
 {
     if (signo == SIGINT || signo == SIGTERM) {
-        g_shutdown_requested = 1;
+        if (!g_cleanup_in_progress) {
+            g_shutdown_requested = 1;
+            /* If we have a vfu_ctx, try to interrupt it */
+            if (g_vfu_ctx) {
+                /* Signal will cause vfu_run_ctx() to return with EINTR */
+            }
+        }
     }
 }
 
@@ -199,11 +209,16 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         /* UAR writes are typically doorbells */
         memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
 
+        vfu_log(vfu_ctx, LOG_INFO,
+                ">>> BAR2 (UAR) WRITE: offset=%#lx val=%#x count=%zu - "
+                "FORWARDING TO PVRDMA",
+                offset, val, count);
+
         /* Forward to QEMU UAR handler via wrapper */
         pvrdma_uar_write(dev->pvrdma_handle, offset, val, sizeof(val));
 
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) write: offset=%#lx val=%#x",
-                offset, val);
+        vfu_log(vfu_ctx, LOG_INFO,
+                ">>> BAR2 (UAR) write forwarded successfully");
     } else {
         /* UAR reads */
         val = pvrdma_uar_read(dev->pvrdma_handle, offset, sizeof(val));
@@ -215,6 +230,7 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
     return count;
 }
+
 
 /**
  * Device reset callback
@@ -268,6 +284,7 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
             info->iova.iov_base, info->iova.iov_len);
 }
 
+
 /**
  * Initialize PVRDMA device structure via wrapper API
  */
@@ -308,14 +325,14 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
     int ret;
 
-    /* Initialize PCI device */
+    /* Initialize PCI device as multi-function (Function 0 = RDMA) */
     ret =
         vfu_pci_init(vfu_ctx, VFU_PCI_TYPE_EXPRESS, PCI_HEADER_TYPE_NORMAL, 0);
     if (ret < 0) {
         err(EXIT_FAILURE, "vfu_pci_init() failed");
     }
 
-    /* Set vendor/device IDs */
+    /* Set vendor/device IDs for Function 0 (RDMA) */
     vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD, /* Vendor ID */
                    PCI_DEVICE_ID_ROCM_ERNIC,   /* Device ID */
                    PCI_VENDOR_ID_AMD,          /* Subsystem Vendor ID */
@@ -325,6 +342,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class */
                       0x80,                            /* Sub class (other) */
                       0x00); /* Programming interface */
+
 
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
             PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_ROCM_ERNIC);
@@ -342,8 +360,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Allocate BAR memory */
     dev->bar0_mem = calloc(1, RDMA_BAR0_MSIX_SIZE);
     dev->bar1_mem = calloc(1, RDMA_BAR1_REGS_SIZE * sizeof(uint32_t));
-    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE * sizeof(uint32_t));
-
+    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE);
     if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem) {
         err(EXIT_FAILURE, "Failed to allocate BAR memory");
     }
@@ -475,6 +492,11 @@ static void usage(const char *progname)
             "  -b, --backend TYPE   RDMA backend: none|loopback|verbs|tcp\n");
     fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
+    fprintf(stderr, "  -S, --stats-file PATH Statistics output file path\n");
+    fprintf(stderr, "                       (stats written every ~1 second)\n");
+    fprintf(stderr,
+            "  -m, --mac ADDRESS    MAC address (format: XX:XX:XX:XX:XX:XX)\n");
+    fprintf(stderr, "                       (default: 02:00:00:00:00:00)\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -534,21 +556,22 @@ static void usage(const char *progname)
     fprintf(stderr,
             "                      verbs:device=mlx5_0,ethdev=eth0,port=1 - "
             "All options\n");
-    fprintf(stderr, "  tcp: TCP/IP network backend (connects two servers)\n");
-    fprintf(stderr, "                    Options:\n");
-    fprintf(
-        stderr,
-        "                      tcp:host:port    - Connect to remote server\n");
-    fprintf(
-        stderr,
-        "                      tcp:listen:port  - Listen for connections\n");
+    fprintf(stderr, "  tcp: TCP/IP network backend\n");
+    fprintf(stderr,
+            "                    Manager Mode (centralized discovery):\n");
+    fprintf(stderr, "                      tcp:manager:<ip>:<port>     - "
+                    "Manager at IP:port\n");
+    fprintf(stderr, "                      tcp:manager:listen:<port>    - "
+                    "Manager listening on port\n");
+    fprintf(stderr, "                    Worker Mode (connects to manager):\n");
+    fprintf(stderr,
+            "                      tcp:worker:<manager_ip>:<manager_port>\n");
     fprintf(stderr, "                    Examples:\n");
-    fprintf(
-        stderr,
-        "                      tcp:192.168.1.100:5000  - Connect to server\n");
-    fprintf(
-        stderr,
-        "                      tcp:listen:5000          - Listen on port\n");
+    fprintf(stderr, "                      Manager/Worker:\n");
+    fprintf(stderr, "                        tcp:manager:listen:5000           "
+                    "- Start manager on port 5000\n");
+    fprintf(stderr, "                        tcp:worker:192.168.1.100:5000    "
+                    "- Worker connects to manager\n");
 }
 
 /**
@@ -753,6 +776,8 @@ int main(int argc, char *argv[])
         {"socket", required_argument, 0, 's'},
         {"backend", required_argument, 0, 'b'},
         {"verbose", no_argument, 0, 'v'},
+        {"stats-file", required_argument, 0, 'S'},
+        {"mac", required_argument, 0, 'm'},
         {"help", no_argument, 0, 'h'},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, 0, 'd'},
@@ -773,9 +798,13 @@ int main(int argc, char *argv[])
     dev->verbose = false;
     dev->device_initialized = false;
     dev->device_active = false;
+    dev->mac_addr_set = false;
+    /* Default MAC: 02:00:00:00:00:00 */
+    memset(dev->mac_addr, 0, 6);
+    dev->mac_addr[0] = 0x02;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vh", long_options, NULL)) !=
+    while ((opt = getopt_long(argc, argv, "s:b:vS:m:h", long_options, NULL)) !=
            -1) {
         switch (opt) {
         /* Common options */
@@ -788,6 +817,42 @@ int main(int argc, char *argv[])
             break;
         case 'v':
             dev->verbose = true;
+            break;
+        case 'S':
+            /* Store stats file path - will be set after device init */
+            if (dev->stats_file_path) {
+                free(dev->stats_file_path);
+            }
+            dev->stats_file_path = strdup(optarg);
+            break;
+        case 'm':
+            /* Parse MAC address: format XX:XX:XX:XX:XX:XX */
+            {
+                int mac[6];
+                int count =
+                    sscanf(optarg, "%02x:%02x:%02x:%02x:%02x:%02x", &mac[0],
+                           &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                if (count != 6) {
+                    fprintf(stderr, "Error: Invalid MAC address format: %s\n",
+                            optarg);
+                    fprintf(stderr, "  Expected format: XX:XX:XX:XX:XX:XX\n");
+                    fprintf(stderr, "  Example: --mac 02:00:00:00:00:01\n");
+                    free(dev->backend_type_str);
+                    free(dev);
+                    exit(EXIT_FAILURE);
+                }
+                for (int i = 0; i < 6; i++) {
+                    if (mac[i] < 0 || mac[i] > 255) {
+                        fprintf(stderr, "Error: Invalid MAC address byte: %d\n",
+                                mac[i]);
+                        free(dev->backend_type_str);
+                        free(dev);
+                        exit(EXIT_FAILURE);
+                    }
+                    dev->mac_addr[i] = (uint8_t)mac[i];
+                }
+                dev->mac_addr_set = true;
+            }
             break;
         case 'h':
             usage(argv[0]);
@@ -878,6 +943,15 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "pvrdma_device_init() failed");
     }
 
+
+    /* Set stats file path if provided */
+    if (dev->stats_file_path && dev->pvrdma_handle) {
+        pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
+        printf("rocm_ernic: Statistics will be written to: %s (every ~1 "
+               "second)\n",
+               dev->stats_file_path);
+    }
+
     /* Setup PCI configuration */
     if (setup_pci_config(vfu_ctx, dev) < 0) {
         err(EXIT_FAILURE, "setup_pci_config() failed");
@@ -926,6 +1000,14 @@ int main(int argc, char *argv[])
         fflush(stdout);
     }
 
+    /* Log MAC address if set */
+    if (dev->mac_addr_set) {
+        vfu_log(vfu_ctx, LOG_INFO,
+                "Device MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
+                dev->mac_addr[0], dev->mac_addr[1], dev->mac_addr[2],
+                dev->mac_addr[3], dev->mac_addr[4], dev->mac_addr[5]);
+    }
+
     vfu_log(vfu_ctx, LOG_INFO,
             "Device realized, waiting for client connection...");
 
@@ -952,10 +1034,29 @@ int main(int argc, char *argv[])
 
         /* Run device - process requests from client */
         int loop_count = 0;
+        time_t last_stats_write = 0;
+        GMainContext *main_context = g_main_context_default();
+        /* Acquire the main context so we can iterate it */
+        g_main_context_push_thread_default(main_context);
         while (!g_shutdown_requested) {
+            /* Write stats periodically (every ~1 second) */
+            if (dev->stats_file_path && dev->pvrdma_handle) {
+                time_t now = time(NULL);
+                if (now != last_stats_write && now - last_stats_write >= 1) {
+                    pvrdma_write_stats(dev->pvrdma_handle);
+                    last_stats_write = now;
+                }
+            }
+
             /* Debug logging disabled - too verbose */
             ret = vfu_run_ctx(vfu_ctx);
             loop_count++;
+
+            /* Process GLib idle callbacks (for WQE continuation) */
+            /* Always iterate once (non-blocking) to process idle callbacks */
+            /* Idle sources may not show up in g_main_context_pending() */
+            gboolean had_events = g_main_context_iteration(main_context, FALSE);
+
             if (ret < 0) {
                 if (errno == ENOTCONN) {
                     vfu_log(vfu_ctx, LOG_INFO,
@@ -973,20 +1074,48 @@ int main(int argc, char *argv[])
                     break;
                 }
             }
+
+            /* If no work was done by either vfu_run_ctx or GLib, sleep briefly
+             * to avoid busy-waiting and consuming 100% CPU */
+            if (ret == 0 && !had_events) {
+                usleep(1000); /* 1ms sleep to yield CPU */
+            }
         }
         vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations",
                 loop_count);
+        /* Release the main context */
+        g_main_context_pop_thread_default(main_context);
     }
 
     vfu_log(vfu_ctx, LOG_INFO, "Shutting down");
 
+    /* Mark cleanup in progress to prevent signal handler re-entry */
+    g_cleanup_in_progress = 1;
+
+    /* Write stats before cleanup */
+    if (dev->pvrdma_handle) {
+        pvrdma_write_stats(dev->pvrdma_handle);
+    }
+
+    /* Disable signal handlers during cleanup */
+    struct sigaction sa_ignore;
+    memset(&sa_ignore, 0, sizeof(sa_ignore));
+    sa_ignore.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &sa_ignore, NULL);
+    sigaction(SIGTERM, &sa_ignore, NULL);
+
     /* Cleanup */
     vfu_destroy_ctx(vfu_ctx);
+    g_vfu_ctx = NULL;
 
     /* Destroy PVRDMA device */
     if (dev->pvrdma_handle) {
         pvrdma_device_destroy(dev->pvrdma_handle);
+        dev->pvrdma_handle = NULL;
     }
+
+
+    free(dev->stats_file_path);
 
     free(dev->bar0_mem);
     free(dev->bar1_mem);

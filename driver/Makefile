@@ -4,11 +4,14 @@
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-# Module name and object files
-obj-m := rocm_ernic.o
-rocm_ernic-y := rocm_ernic_cmd.o rocm_ernic_cq.o rocm_ernic_doorbell.o \
-                rocm_ernic_main.o rocm_ernic_misc.o rocm_ernic_mr.o \
-                rocm_ernic_qp.o rocm_ernic_srq.o rocm_ernic_verbs.o
+# Ethernet driver module (rocm_ernic_eth.ko) - single file module
+obj-m += rocm_ernic_eth.o
+
+# RDMA driver module (rocm_ernic_rdma.ko) - depends on rocm_ernic_eth
+obj-m += rocm_ernic_rdma.o
+rocm_ernic_rdma-y := rocm_ernic_cmd.o rocm_ernic_cq.o rocm_ernic_doorbell.o \
+                     rocm_ernic_main.o rocm_ernic_misc.o rocm_ernic_mr.o \
+                     rocm_ernic_qp.o rocm_ernic_srq.o rocm_ernic_verbs.o
 
 # Current directory (where the driver source is)
 PWD := $(shell pwd)
@@ -26,20 +29,26 @@ install:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
 	depmod -a
 
-# Load the module (requires root)
+# Load the modules (requires root)
+# Note: modprobe will auto-load dependencies via MODULE_SOFTDEP
 load:
-	modprobe rocm_ernic
+	modprobe ib_core || true
+	modprobe ib_uverbs || true
+	insmod rocm_ernic_eth.ko
+	insmod rocm_ernic_rdma.ko
 
-# Unload the module (requires root)
+# Unload the modules (requires root)
 unload:
-	modprobe -r rocm_ernic || true
+	rmmod rocm_ernic_rdma || true
+	rmmod rocm_ernic_eth || true
 
-# Reload the module (requires root)
+# Reload the modules (requires root)
 reload: unload load
 
 # Show module info
 info:
-	modinfo rocm_ernic.ko
+	modinfo rocm_ernic_eth.ko
+	modinfo rocm_ernic_rdma.ko
 
 # Show build configuration
 config:

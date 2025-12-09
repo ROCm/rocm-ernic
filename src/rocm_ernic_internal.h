@@ -29,10 +29,12 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 #ifndef RDMA_BAR1_REGS_SIZE
 #define RDMA_BAR1_REGS_SIZE 64 /* 64 DWORDs = 256 bytes */
 #endif
+#ifndef MAX_UCS
+#define MAX_UCS 512 /* Maximum number of user contexts */
+#endif
 #ifndef RDMA_BAR2_UAR_SIZE
-/* Must be power of 2 when multiplied by sizeof(uint32_t) for PCI BAR */
-#define RDMA_BAR2_UAR_SIZE \
-    (4096 * 256) /* 256 pages = 1MB DWORDs = 4MB BAR (2^22) */
+/* Size in bytes (0x1000 * MAX_UCS) */
+#define RDMA_BAR2_UAR_SIZE (0x1000 * MAX_UCS) /* Each UC gets 4KB page */
 #endif
 
 /* MSI-X interrupt vectors */
@@ -71,6 +73,13 @@ struct rocm_ernic_dev {
     bool device_realized;    /* Backend initialized */
     bool device_active;      /* Client connected and device running */
     bool verbose;            /* Verbose logging enabled */
+
+    /* Statistics */
+    char *stats_file_path; /* Path to stats output file */
+
+    /* MAC address */
+    uint8_t mac_addr[6]; /* Device MAC address */
+    bool mac_addr_set;   /* Whether MAC address was explicitly set */
 };
 
 #endif /* ROCM_ERNIC_INTERNAL_H */

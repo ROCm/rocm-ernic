@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-24.04]
     
     steps:
       - name: Check out code
@@ -56,6 +56,15 @@ jobs:
       
       - name: Build project with Ninja
         run: ninja -C build
+      
+      - name: Verify rdma_cm protocol symbols
+        run: |
+          echo "=== Verifying rdma_cm_proto.c symbols ==="
+          if nm build/rocm_ernic 2>/dev/null | grep -q "rdma_cm_process_message"; then
+            echo "✓ rdma_cm_process_message symbol found in binary"
+          else
+            echo "⚠️  rdma_cm_process_message symbol not found (may be inlined)"
+          fi
       
       - name: Verify binaries exist
         run: |

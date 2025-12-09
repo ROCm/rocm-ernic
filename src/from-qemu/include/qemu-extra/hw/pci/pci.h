@@ -49,5 +49,6 @@ static inline int pci_bus_num(PCIBus *bus)
 void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir);
 void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
                    uint64_t access_len);
+int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len);
 
 #endif /* QEMU_PCI_H */

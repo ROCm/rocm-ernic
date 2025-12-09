@@ -4,6 +4,23 @@ project('rocm-ernic', 'c',
   license: 'GPL-2.0-or-later'
 )
 
+# Get git SHA for firmware version
+git = find_program('git', required: false)
+git_sha_full = '0000000000000000000000000000000000000000'
+git_sha_short = 'unknown'
+if git.found()
+  git_sha_cmd = run_command(git, 'rev-parse', 'HEAD',
+                            check: false)
+  if git_sha_cmd.returncode() == 0
+    git_sha_full = git_sha_cmd.stdout().strip()
+    git_sha_short_cmd = run_command(git, 'rev-parse', '--short=8', 'HEAD',
+                                    check: false)
+    if git_sha_short_cmd.returncode() == 0
+      git_sha_short = git_sha_short_cmd.stdout().strip()
+    endif
+  endif
+endif
+
 # Dependencies
 vfiouser_dep = dependency('vfio-user', required: false)
 
@@ -37,11 +54,17 @@ pvrdma_device_sources = files(
   'src/from-qemu/hw/rdma/vmw/pvrdma_dev_ring.c',
   'src/from-qemu/hw/rdma/vmw/pvrdma_main.c',
   'src/from-qemu/hw/rdma/vmw/pvrdma_qp_ops.c',
+  'src/from-qemu/hw/rdma/vmw/pvrdma_eth.c',
 )
 
 # Utility sources
 utility_sources = files(
-  'src/from-qemu/utils/error-report.c'
+  'src/from-qemu/utils/error-report.c',
+  'src/from-qemu/utils/dhcp_server.c',
+  'src/from-qemu/utils/dhcp_proxy.c',
+  'src/from-qemu/utils/eth_rx_inject.c',
+  'src/from-qemu/utils/tcp_conn.c',
+  'src/from-qemu/utils/rdma_cm_proto.c'
 )
 
 # QEMU stub implementations
@@ -69,6 +92,8 @@ inc_dirs = include_directories(
 )
 
 # Compiler arguments
+git_sha_full_def = '-DGIT_SHA_FULL="' + git_sha_full + '"'
+git_sha_short_def = '-DGIT_SHA_SHORT="' + git_sha_short + '"'
 add_project_arguments(
   '-Wimplicit-function-declaration',
   '-D_GNU_SOURCE',
@@ -77,6 +102,8 @@ add_project_arguments(
   '-fsanitize=address',      # Address sanitizer for memory errors
   '-fno-omit-frame-pointer', # Better stack traces
   '-g',                      # Debug symbols
+  git_sha_full_def,
+  git_sha_short_def,
   language: 'c'
 )
 
@@ -99,6 +126,7 @@ executable('rocm_ernic',
 # Print summary
 summary({
   'Version': meson.project_version(),
+  'Git SHA': git_sha_short,
   'Build type': get_option('buildtype'),
   'C compiler': meson.get_compiler('c').get_id(),
   'Install prefix': get_option('prefix'),

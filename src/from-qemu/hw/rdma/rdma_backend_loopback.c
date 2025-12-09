@@ -15,10 +15,16 @@
 #include "rdma_backend.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
+#include "hw/rdma/rdma.h"    /* For rdma_pci_dma_map/unmap */
+#include "hw/pci/pci.h"      /* For PCIDevice and pci_dma_sync */
+#include "hw/pci/pci_regs.h" /* For PVRDMA_DEV */
+#include "vmw/pvrdma.h"      /* For PVRDMADev and stats */
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
 #include <stdio.h>
+#include <limits.h>
+#include <stdlib.h>
 
 /*
  * Loopback Backend Data Structures
@@ -144,6 +150,62 @@ static LoopbackBackendPrivate *get_private(RdmaBackendDev *backend_dev)
     return (LoopbackBackendPrivate *)backend_dev->backend_private;
 }
 
+/*
+ * Helper: Update byte transfer statistics
+ */
+static void loopback_update_byte_stats(RdmaBackendDev *backend_dev,
+                                       uint32_t qp_handle, uint32_t bytes,
+                                       enum ibv_wc_opcode opcode)
+{
+    PCIDevice *pci_dev = backend_dev->dev;
+    if (!pci_dev) {
+        rdma_warn_report(">>> loopback_update_byte_stats: No pci_dev");
+        return;
+    }
+
+    /* Get PVRDMADev from PCIDevice */
+    PVRDMADev *dev = PVRDMA_DEV(pci_dev);
+    if (!dev) {
+        rdma_warn_report(">>> loopback_update_byte_stats: No PVRDMADev");
+        return;
+    }
+
+    /* Get per-QP stats */
+    PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
+    if (!qp_stats) {
+        rdma_warn_report(
+            ">>> loopback_update_byte_stats: No stats for QP handle %u",
+            qp_handle);
+        return;
+    }
+
+    rdma_info_report(
+        ">>> loopback_update_byte_stats: QP handle=%u, bytes=%u, opcode=%d",
+        qp_handle, bytes, opcode);
+
+    /* Update per-QP stats */
+    switch (opcode) {
+    case IBV_WC_SEND:
+        qp_stats->bytes_sent += bytes;
+        dev->stats.total_bytes_sent += bytes;
+        break;
+    case IBV_WC_RECV:
+        qp_stats->bytes_received += bytes;
+        dev->stats.total_bytes_received += bytes;
+        break;
+    case IBV_WC_RDMA_READ:
+        qp_stats->bytes_rdma_read += bytes;
+        dev->stats.total_bytes_rdma_read += bytes;
+        break;
+    case IBV_WC_RDMA_WRITE:
+        qp_stats->bytes_rdma_write += bytes;
+        dev->stats.total_bytes_rdma_write += bytes;
+        break;
+    default:
+        break;
+    }
+}
+
 static LoopbackDataPattern parse_data_pattern(const char *config)
 {
     if (!config) {
@@ -235,8 +297,8 @@ static const char *data_pattern_name(LoopbackDataPattern pattern)
     }
 }
 
-__attribute__((unused)) static void generate_data_pattern(
-    void *buffer, size_t length, LoopbackDataPattern pattern)
+static void generate_data_pattern(void *buffer, size_t length,
+                                  LoopbackDataPattern pattern)
 {
     uint8_t *buf = (uint8_t *)buffer;
 
@@ -279,18 +341,365 @@ __attribute__((unused)) static void generate_data_pattern(
     }
 }
 
-static void compute_sge_md5(struct ibv_sge *sge, uint32_t num_sge,
-                            char *md5_str, size_t md5_str_len)
+/*
+ * Helper: Copy data from source SGEs to destination SGEs with pattern support
+ * Returns number of bytes copied, or -1 on error
+ */
+static int loopback_copy_sge_data(PCIDevice *pci_dev, struct ibv_sge *src_sge,
+                                  uint32_t num_src_sge, struct ibv_sge *dst_sge,
+                                  uint32_t num_dst_sge,
+                                  LoopbackDataPattern pattern)
+{
+    uint32_t src_idx = 0, dst_idx = 0;
+    uint32_t src_offset = 0, dst_offset = 0;
+    uint32_t total_copied = 0;
+    void *src_host = NULL, *dst_host = NULL;
+    uint64_t src_mapped_len = 0, dst_mapped_len = 0;
+    int ret = 0;
+
+    while (src_idx < num_src_sge && dst_idx < num_dst_sge) {
+        /* Map source buffer if needed */
+        if (!src_host || src_offset >= src_mapped_len) {
+            if (src_host) {
+                rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+                src_host = NULL;
+            }
+            if (src_idx >= num_src_sge) {
+                break;
+            }
+            src_mapped_len = src_sge[src_idx].length;
+            src_host = rdma_pci_dma_map(pci_dev, src_sge[src_idx].addr,
+                                        src_mapped_len);
+            if (!src_host) {
+                rdma_error_report(
+                    "Loopback: Failed to map source SGE[%u] addr=%#lx len=%u",
+                    src_idx, (unsigned long)src_sge[src_idx].addr,
+                    src_sge[src_idx].length);
+                ret = -1;
+                goto out;
+            }
+            src_offset = 0;
+        }
+
+        /* Map destination buffer if needed */
+        if (!dst_host || dst_offset >= dst_mapped_len) {
+            if (dst_host) {
+                /* Sync writes before unmapping */
+                pci_dma_sync(pci_dev,
+                             (dma_addr_t)(uintptr_t)dst_sge[dst_idx - 1].addr,
+                             dst_mapped_len);
+                rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+                dst_host = NULL;
+            }
+            if (dst_idx >= num_dst_sge) {
+                break;
+            }
+            dst_mapped_len = dst_sge[dst_idx].length;
+            dst_host = rdma_pci_dma_map(pci_dev, dst_sge[dst_idx].addr,
+                                        dst_mapped_len);
+            if (!dst_host) {
+                rdma_error_report(
+                    "Loopback: Failed to map dest SGE[%u] addr=%#lx len=%u",
+                    dst_idx, (unsigned long)dst_sge[dst_idx].addr,
+                    dst_sge[dst_idx].length);
+                ret = -1;
+                goto out;
+            }
+            dst_offset = 0;
+        }
+
+        /* Calculate copy length */
+        uint32_t src_remaining = src_mapped_len - src_offset;
+        uint32_t dst_remaining = dst_mapped_len - dst_offset;
+        uint32_t copy_len =
+            (src_remaining < dst_remaining) ? src_remaining : dst_remaining;
+
+        /* Copy data */
+        if (pattern == LOOPBACK_DATA_PATTERN_PRESERVE) {
+            /* Copy actual data from source */
+            memcpy((uint8_t *)dst_host + dst_offset,
+                   (uint8_t *)src_host + src_offset, copy_len);
+        } else {
+            /* Generate pattern data */
+            generate_data_pattern((uint8_t *)dst_host + dst_offset, copy_len,
+                                  pattern);
+        }
+
+        total_copied += copy_len;
+        src_offset += copy_len;
+        dst_offset += copy_len;
+
+        /* Move to next SGE if current one exhausted */
+        if (src_offset >= src_mapped_len) {
+            rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+            src_host = NULL;
+            src_idx++;
+            src_offset = 0;
+        }
+        if (dst_offset >= dst_mapped_len) {
+            /* Sync writes before unmapping */
+            pci_dma_sync(pci_dev, (dma_addr_t)(uintptr_t)dst_sge[dst_idx].addr,
+                         dst_mapped_len);
+            rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+            dst_host = NULL;
+            dst_idx++;
+            dst_offset = 0;
+        }
+    }
+
+    /* Sync and unmap remaining buffers */
+    if (src_host) {
+        rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+    }
+    if (dst_host) {
+        pci_dma_sync(pci_dev, (dma_addr_t)(uintptr_t)dst_sge[dst_idx].addr,
+                     dst_mapped_len);
+        rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+    }
+
+    return total_copied;
+
+out:
+    /* Cleanup on error */
+    if (src_host) {
+        rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+    }
+    if (dst_host) {
+        rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+    }
+    return ret;
+}
+
+/*
+ * Helper: Copy data from source SGEs to a single remote address (RDMA
+ * Write/Read) Returns number of bytes copied, or -1 on error
+ */
+static int loopback_copy_to_remote_addr(
+    PCIDevice *pci_dev, struct ibv_sge *src_sge, uint32_t num_src_sge,
+    uint64_t remote_addr, uint32_t total_len, LoopbackDataPattern pattern)
+{
+    uint32_t src_idx = 0;
+    uint32_t src_offset = 0;
+    uint32_t remote_offset = 0;
+    uint32_t total_copied = 0;
+    void *src_host = NULL, *dst_host = NULL;
+    uint64_t src_mapped_len = 0, dst_mapped_len = 0;
+    int ret = 0;
+
+    /* Map remote address */
+    dst_mapped_len = total_len;
+    dst_host = rdma_pci_dma_map(pci_dev, remote_addr, dst_mapped_len);
+    if (!dst_host) {
+        rdma_error_report("Loopback: Failed to map remote addr=%#lx len=%u",
+                          (unsigned long)remote_addr, total_len);
+        return -1;
+    }
+
+    while (src_idx < num_src_sge && remote_offset < total_len) {
+        /* Map source buffer if needed */
+        if (!src_host || src_offset >= src_mapped_len) {
+            if (src_host) {
+                rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+                src_host = NULL;
+            }
+            if (src_idx >= num_src_sge) {
+                break;
+            }
+            src_mapped_len = src_sge[src_idx].length;
+            src_host = rdma_pci_dma_map(pci_dev, src_sge[src_idx].addr,
+                                        src_mapped_len);
+            if (!src_host) {
+                rdma_error_report(
+                    "Loopback: Failed to map source SGE[%u] addr=%#lx len=%u",
+                    src_idx, (unsigned long)src_sge[src_idx].addr,
+                    src_sge[src_idx].length);
+                ret = -1;
+                goto out;
+            }
+            src_offset = 0;
+        }
+
+        /* Calculate copy length */
+        uint32_t src_remaining = src_mapped_len - src_offset;
+        uint32_t dst_remaining = total_len - remote_offset;
+        uint32_t copy_len =
+            (src_remaining < dst_remaining) ? src_remaining : dst_remaining;
+
+        /* Copy data */
+        if (pattern == LOOPBACK_DATA_PATTERN_PRESERVE) {
+            /* Copy actual data from source */
+            memcpy((uint8_t *)dst_host + remote_offset,
+                   (uint8_t *)src_host + src_offset, copy_len);
+        } else {
+            /* Generate pattern data */
+            generate_data_pattern((uint8_t *)dst_host + remote_offset, copy_len,
+                                  pattern);
+        }
+
+        total_copied += copy_len;
+        src_offset += copy_len;
+        remote_offset += copy_len;
+
+        /* Move to next SGE if current one exhausted */
+        if (src_offset >= src_mapped_len) {
+            rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+            src_host = NULL;
+            src_idx++;
+            src_offset = 0;
+        }
+    }
+
+    /* Sync writes to remote address */
+    pci_dma_sync(pci_dev, remote_addr, dst_mapped_len);
+    rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+
+    if (src_host) {
+        rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+    }
+
+    return total_copied;
+
+out:
+    /* Cleanup on error */
+    if (src_host) {
+        rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+    }
+    if (dst_host) {
+        rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+    }
+    return ret;
+}
+
+/*
+ * Helper: Copy data from remote address to destination SGEs (RDMA Read)
+ * Returns number of bytes copied, or -1 on error
+ */
+static int loopback_copy_from_remote_addr(
+    PCIDevice *pci_dev, uint64_t remote_addr, uint32_t total_len,
+    struct ibv_sge *dst_sge, uint32_t num_dst_sge, LoopbackDataPattern pattern)
+{
+    uint32_t dst_idx = 0;
+    uint32_t dst_offset = 0;
+    uint32_t remote_offset = 0;
+    uint32_t total_copied = 0;
+    void *src_host = NULL, *dst_host = NULL;
+    uint64_t src_mapped_len = 0, dst_mapped_len = 0;
+    int ret = 0;
+
+    /* Map remote address */
+    src_mapped_len = total_len;
+    src_host = rdma_pci_dma_map(pci_dev, remote_addr, src_mapped_len);
+    if (!src_host) {
+        rdma_error_report("Loopback: Failed to map remote addr=%#lx len=%u",
+                          (unsigned long)remote_addr, total_len);
+        return -1;
+    }
+
+    while (dst_idx < num_dst_sge && remote_offset < total_len) {
+        /* Map destination buffer if needed */
+        if (!dst_host || dst_offset >= dst_mapped_len) {
+            if (dst_host) {
+                /* Sync writes before unmapping */
+                pci_dma_sync(pci_dev,
+                             (dma_addr_t)(uintptr_t)dst_sge[dst_idx - 1].addr,
+                             dst_mapped_len);
+                rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+                dst_host = NULL;
+            }
+            if (dst_idx >= num_dst_sge) {
+                break;
+            }
+            dst_mapped_len = dst_sge[dst_idx].length;
+            dst_host = rdma_pci_dma_map(pci_dev, dst_sge[dst_idx].addr,
+                                        dst_mapped_len);
+            if (!dst_host) {
+                rdma_error_report(
+                    "Loopback: Failed to map dest SGE[%u] addr=%#lx len=%u",
+                    dst_idx, (unsigned long)dst_sge[dst_idx].addr,
+                    dst_sge[dst_idx].length);
+                ret = -1;
+                goto out;
+            }
+            dst_offset = 0;
+        }
+
+        /* Calculate copy length */
+        uint32_t src_remaining = total_len - remote_offset;
+        uint32_t dst_remaining = dst_mapped_len - dst_offset;
+        uint32_t copy_len =
+            (src_remaining < dst_remaining) ? src_remaining : dst_remaining;
+
+        /* Copy data */
+        if (pattern == LOOPBACK_DATA_PATTERN_PRESERVE) {
+            /* Copy actual data from remote */
+            memcpy((uint8_t *)dst_host + dst_offset,
+                   (uint8_t *)src_host + remote_offset, copy_len);
+        } else {
+            /* Generate pattern data */
+            generate_data_pattern((uint8_t *)dst_host + dst_offset, copy_len,
+                                  pattern);
+        }
+
+        total_copied += copy_len;
+        remote_offset += copy_len;
+        dst_offset += copy_len;
+
+        /* Move to next SGE if current one exhausted */
+        if (dst_offset >= dst_mapped_len) {
+            /* Sync writes before unmapping */
+            pci_dma_sync(pci_dev, (dma_addr_t)(uintptr_t)dst_sge[dst_idx].addr,
+                         dst_mapped_len);
+            rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+            dst_host = NULL;
+            dst_idx++;
+            dst_offset = 0;
+        }
+    }
+
+    /* Sync and unmap remaining buffers */
+    rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+    if (dst_host) {
+        pci_dma_sync(pci_dev, (dma_addr_t)(uintptr_t)dst_sge[dst_idx].addr,
+                     dst_mapped_len);
+        rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+    }
+
+    return total_copied;
+
+out:
+    /* Cleanup on error */
+    if (src_host) {
+        rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
+    }
+    if (dst_host) {
+        rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
+    }
+    return ret;
+}
+
+static void compute_sge_md5(PCIDevice *pci_dev, struct ibv_sge *sge,
+                            uint32_t num_sge, char *md5_str, size_t md5_str_len)
 {
     GChecksum *checksum = g_checksum_new(G_CHECKSUM_MD5);
     uint32_t total_len = 0;
+    void *host_addr = NULL;
+    uint64_t mapped_len = 0;
 
-    /* Compute MD5 over all SGE data */
+    /* Compute MD5 over all SGE data by mapping each SGE */
     for (uint32_t i = 0; i < num_sge && i < 32; i++) {
         if (sge[i].addr && sge[i].length > 0) {
-            g_checksum_update(checksum, (const guchar *)sge[i].addr,
-                              sge[i].length);
-            total_len += sge[i].length;
+            mapped_len = sge[i].length;
+            host_addr = rdma_pci_dma_map(pci_dev, sge[i].addr, mapped_len);
+            if (host_addr) {
+                g_checksum_update(checksum, (const guchar *)host_addr,
+                                  sge[i].length);
+                total_len += sge[i].length;
+                rdma_pci_dma_unmap(pci_dev, host_addr, mapped_len);
+            } else {
+                rdma_warn_report(
+                    "Loopback: Failed to map SGE[%u] for MD5, addr=%#lx", i,
+                    (unsigned long)sge[i].addr);
+            }
         }
     }
 
@@ -497,6 +906,8 @@ static void loopback_destroy_mr(RdmaBackendMR *mr)
 static uint32_t loopback_mr_lkey(const RdmaBackendMR *mr)
 {
     uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
+    rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u", mr,
+                     mr->ibmr, handle);
     return handle; /* lkey = handle */
 }
 
@@ -699,7 +1110,15 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
     }
 
     /* Find another QP in RTS state without a remote_qpn */
+    /* Prefer pairing with QPs that have similar QPNs (likely created together)
+     */
     qemu_mutex_lock(&priv->lock);
+
+    /* First pass: look for QPs with similar QPNs (within 10) */
+    LoopbackQP *best_match = NULL;
+    uint32_t best_qpn = 0;
+    int32_t best_distance = INT32_MAX;
+
     g_hash_table_iter_init(&iter, priv->qps);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         other_qpn = GPOINTER_TO_UINT(key);
@@ -713,51 +1132,68 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
         /* Match: same type, in RTS, no remote_qpn set */
         if (other_qp->qp_type == lqp->qp_type &&
             other_qp->state == IBV_QPS_RTS && other_qp->remote_qpn == 0) {
-            /* Pair them bidirectionally */
-            lqp->remote_qpn = other_qpn;
-            other_qp->remote_qpn = lqp->qpn;
-
-            /* Exchange PSNs for proper sequencing */
-            if (lqp->sq_psn == 0) {
-                lqp->sq_psn = other_qp->rq_psn;
+            /* Prefer QPs with similar QPNs (created close together) */
+            int32_t distance = abs((int32_t)other_qpn - (int32_t)lqp->qpn);
+            if (distance < best_distance) {
+                best_match = other_qp;
+                best_qpn = other_qpn;
+                best_distance = distance;
             }
-            if (other_qp->sq_psn == 0) {
-                other_qp->sq_psn = lqp->rq_psn;
-            }
-
-            /* Exchange connection info for Ethernet key exchange simulation */
-            /* Ensure both QPs have local info set first */
-            /* Use QPN-based addressing for unique addresses */
-            if (lqp->local_addr == 0) {
-                lqp->local_addr = 0x1000000 + (lqp->qpn * 0x1000);
-            }
-            if (lqp->local_rkey == 0) {
-                lqp->local_rkey = 0xFFFFFFFF;
-            }
-            if (other_qp->local_addr == 0) {
-                other_qp->local_addr = 0x1000000 + (other_qp->qpn * 0x1000);
-            }
-            if (other_qp->local_rkey == 0) {
-                other_qp->local_rkey = 0xFFFFFFFF;
-            }
-
-            /* Exchange: each QP gets the other's local info as remote */
-            lqp->remote_addr = other_qp->local_addr;
-            lqp->remote_rkey = other_qp->local_rkey;
-            other_qp->remote_addr = lqp->local_addr;
-            other_qp->remote_rkey = lqp->local_rkey;
-
-            rdma_info_report(
-                "Loopback: Auto-paired QP %u <-> QP %u (simulating rdma_cm) "
-                "[QP%u: remote_addr=0x%lx, remote_rkey=0x%x] "
-                "[QP%u: remote_addr=0x%lx, remote_rkey=0x%x]",
-                lqp->qpn, other_qpn, lqp->qpn, (unsigned long)lqp->remote_addr,
-                lqp->remote_rkey, other_qpn,
-                (unsigned long)other_qp->remote_addr, other_qp->remote_rkey);
-            qemu_mutex_unlock(&priv->lock);
-            return;
         }
     }
+
+    /* If we found a match, use it */
+    if (best_match) {
+        other_qp = best_match;
+        other_qpn = best_qpn;
+
+        /* Pair them bidirectionally */
+        lqp->remote_qpn = other_qpn;
+        other_qp->remote_qpn = lqp->qpn;
+
+        /* Exchange PSNs for proper sequencing */
+        if (lqp->sq_psn == 0) {
+            lqp->sq_psn = other_qp->rq_psn;
+        }
+        if (other_qp->sq_psn == 0) {
+            other_qp->sq_psn = lqp->rq_psn;
+        }
+
+        /* Exchange connection info for Ethernet key exchange simulation */
+        /* Ensure both QPs have local info set first */
+        /* Use QPN-based addressing for unique addresses */
+        if (lqp->local_addr == 0) {
+            lqp->local_addr = 0x1000000 + (lqp->qpn * 0x1000);
+        }
+        if (lqp->local_rkey == 0) {
+            lqp->local_rkey = 0xFFFFFFFF;
+        }
+        if (other_qp->local_addr == 0) {
+            other_qp->local_addr = 0x1000000 + (other_qp->qpn * 0x1000);
+        }
+        if (other_qp->local_rkey == 0) {
+            other_qp->local_rkey = 0xFFFFFFFF;
+        }
+
+        /* Exchange: each QP gets the other's local info as remote */
+        lqp->remote_addr = other_qp->local_addr;
+        lqp->remote_rkey = other_qp->local_rkey;
+        other_qp->remote_addr = lqp->local_addr;
+        other_qp->remote_rkey = lqp->local_rkey;
+
+        rdma_info_report(
+            "Loopback: Auto-paired QP %u <-> QP %u (simulating rdma_cm, "
+            "distance=%d) "
+            "[QP%u: remote_addr=0x%lx, remote_rkey=0x%x] "
+            "[QP%u: remote_addr=0x%lx, remote_rkey=0x%x]",
+            lqp->qpn, other_qpn, best_distance, lqp->qpn,
+            (unsigned long)lqp->remote_addr, lqp->remote_rkey, other_qpn,
+            (unsigned long)other_qp->remote_addr, other_qp->remote_rkey);
+        qemu_mutex_unlock(&priv->lock);
+        return;
+    }
+
+    /* No match found - QP will wait for a partner */
     qemu_mutex_unlock(&priv->lock);
 
     rdma_info_report("Loopback: QP %u in RTS, waiting for pairing partner",
@@ -880,6 +1316,10 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     (void)dqkey;
     LoopbackBackendPrivate *priv = get_private(backend_dev);
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+
+    rdma_info_report(
+        ">>> Loopback: post_send ENTRY: qp=%p, lqp=%p, num_sge=%u, ctx=%p", qp,
+        lqp, num_sge, ctx);
     LoopbackQP *remote_qp = NULL;
     LoopbackWR *recv_wr = NULL;
     uint32_t total_len = 0;
@@ -893,6 +1333,8 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         rdma_error_report("Loopback: post_send on unknown QP");
         return;
     }
+    rdma_info_report(">>> Loopback: post_send: lqp->qpn=%u, lqp->state=%d",
+                     lqp->qpn, lqp->state);
 
     /* Extract opcode and RDMA parameters from context if available */
     /* CompHandlerCtx is defined in pvrdma_qp_ops.c */
@@ -905,11 +1347,20 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         uint32_t rkey;
     } CompHandlerCtx;
     CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
+    uint32_t pvrdma_qp_handle = 0; /* PVRDMA QP handle for stats */
     if (comp_ctx) {
         pvrdma_opcode = comp_ctx->opcode;
         remote_addr = comp_ctx->remote_addr;
         rkey = comp_ctx->rkey;
         wc_opcode = comp_ctx->cqe.opcode;
+        pvrdma_qp_handle =
+            comp_ctx->cqe.qp; /* QP handle from completion context */
+        rdma_info_report(">>> Loopback: post_send: Extracted "
+                         "pvrdma_qp_handle=%u from comp_ctx",
+                         pvrdma_qp_handle);
+    } else {
+        rdma_warn_report(
+            ">>> Loopback: post_send: comp_ctx is NULL, cannot get QP handle");
     }
 
     /* Calculate total send length */
@@ -917,16 +1368,21 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         total_len += sge[i].length;
     }
 
-    /* Note: We don't modify guest send buffers directly as SGE addresses
-     * are guest physical addresses that can't be safely accessed from the
-     * server. Pattern generation would happen during actual data copy,
-     * but we're simulating transfers without copying data.
-     */
+    /* Get PCIDevice for DMA operations */
+    PCIDevice *pci_dev = backend_dev->dev;
+    if (!pci_dev) {
+        rdma_error_report(
+            "Loopback: No PCIDevice available for DMA operations");
+        return;
+    }
+    rdma_info_report(
+        ">>> Loopback: post_send: pci_dev=%p, total_len=%u, pvrdma_opcode=%u",
+        pci_dev, total_len, pvrdma_opcode);
 
     /* Handle RDMA Read operations */
     if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
         pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV) {
-        /* RDMA Read: read from remote memory, no matching recv needed */
+        /* RDMA Read: read from remote memory, write to local SGEs */
         /* If remote_addr/rkey not provided, use values from paired QP */
         if (remote_addr == 0 && lqp->remote_addr != 0) {
             remote_addr = lqp->remote_addr;
@@ -945,15 +1401,108 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             "rkey=0x%x",
             lqp->qpn, total_len, (unsigned long)remote_addr, rkey);
 
-        /* For RDMA Read, completion byte_len is the amount read */
-        transferred = total_len;
+        /* Copy data from remote address to destination SGEs */
+        if (remote_addr != 0) {
+            /* Convert destination SGEs from ibv_sge to struct ibv_sge */
+            struct ibv_sge dst_sge[32];
+            for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+                dst_sge[i].addr = sge[i].addr;
+                dst_sge[i].length = sge[i].length;
+                dst_sge[i].lkey = sge[i].lkey;
+            }
+            int copy_result = loopback_copy_from_remote_addr(
+                pci_dev, remote_addr, total_len, dst_sge, num_sge,
+                priv->data_pattern);
+            if (copy_result < 0) {
+                rdma_error_report("Loopback: RDMA READ copy failed, QP %u",
+                                  lqp->qpn);
+                transferred = 0;
+            } else {
+                transferred = (uint32_t)copy_result;
+            }
+        } else {
+            rdma_warn_report("Loopback: RDMA READ with zero remote_addr, QP %u",
+                             lqp->qpn);
+            transferred = 0;
+        }
+
         wc_opcode = IBV_WC_RDMA_READ;
+
+        /* Update byte statistics */
+        /* Use transferred if > 0, otherwise use total_len */
+        if (pvrdma_qp_handle > 0) {
+            uint32_t stats_bytes = (transferred > 0) ? transferred : total_len;
+            rdma_info_report(">>> Loopback: Calling loopback_update_byte_stats "
+                             "for RDMA_READ: "
+                             "qp_handle=%u, stats_bytes=%u",
+                             pvrdma_qp_handle, stats_bytes);
+            loopback_update_byte_stats(backend_dev, pvrdma_qp_handle,
+                                       stats_bytes, IBV_WC_RDMA_READ);
+        } else {
+            rdma_warn_report(">>> Loopback: Skipping stats update for "
+                             "RDMA_READ: pvrdma_qp_handle=0");
+        }
+    } else if (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
+               pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM) {
+        /* RDMA Write: write from local SGEs to remote memory */
+        /* If remote_addr/rkey not provided, use values from paired QP */
+        if (remote_addr == 0 && lqp->remote_addr != 0) {
+            remote_addr = lqp->remote_addr;
+            rdma_info_report(
+                "Loopback: RDMA WRITE using paired QP remote_addr=0x%lx",
+                (unsigned long)remote_addr);
+        }
+        if (rkey == 0 && lqp->remote_rkey != 0) {
+            rkey = lqp->remote_rkey;
+            rdma_info_report("Loopback: RDMA WRITE using paired QP rkey=0x%x",
+                             rkey);
+        }
+
+        rdma_info_report(
+            "Loopback: RDMA WRITE QP %u: %u bytes, remote_addr=0x%lx, "
+            "rkey=0x%x",
+            lqp->qpn, total_len, (unsigned long)remote_addr, rkey);
+
+        /* Copy data from source SGEs to remote address */
+        if (remote_addr != 0) {
+            int copy_result =
+                loopback_copy_to_remote_addr(pci_dev, sge, num_sge, remote_addr,
+                                             total_len, priv->data_pattern);
+            if (copy_result < 0) {
+                rdma_error_report("Loopback: RDMA WRITE copy failed, QP %u",
+                                  lqp->qpn);
+                transferred = 0;
+            } else {
+                transferred = (uint32_t)copy_result;
+            }
+        } else {
+            rdma_warn_report(
+                "Loopback: RDMA WRITE with zero remote_addr, QP %u", lqp->qpn);
+            transferred = 0;
+        }
+
+        wc_opcode = IBV_WC_RDMA_WRITE;
+
+        /* Update byte statistics */
+        /* Use transferred if > 0, otherwise use total_len */
+        if (pvrdma_qp_handle > 0) {
+            uint32_t stats_bytes = (transferred > 0) ? transferred : total_len;
+            rdma_info_report(">>> Loopback: Calling loopback_update_byte_stats "
+                             "for RDMA_WRITE: "
+                             "qp_handle=%u, stats_bytes=%u",
+                             pvrdma_qp_handle, stats_bytes);
+            loopback_update_byte_stats(backend_dev, pvrdma_qp_handle,
+                                       stats_bytes, IBV_WC_RDMA_WRITE);
+        } else {
+            rdma_warn_report(">>> Loopback: Skipping stats update for "
+                             "RDMA_WRITE: pvrdma_qp_handle=0");
+        }
     } else {
         /* SEND operations: need matching recv */
         /* Compute MD5 of send data if enabled */
         if (priv->compute_md5 && total_len > 0 && num_sge > 0) {
             char md5_str[33];
-            compute_sge_md5(sge, num_sge, md5_str, sizeof(md5_str));
+            compute_sge_md5(pci_dev, sge, num_sge, md5_str, sizeof(md5_str));
             rdma_info_report(
                 "Loopback: SEND QP %u: %u bytes, pattern=%s, MD5=%s", lqp->qpn,
                 total_len, data_pattern_name(priv->data_pattern), md5_str);
@@ -982,71 +1531,130 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             qemu_mutex_lock(&remote_qp->lock);
             recv_wr = g_queue_pop_head(remote_qp->recv_queue);
             qemu_mutex_unlock(&remote_qp->lock);
+        }
 
-            if (recv_wr) {
-                /*
-                 * Simulate data transfer without actual memory copy.
-                 * In a vfio-user environment, SGE addresses are guest
-                 * physical addresses that can't be safely accessed from
-                 * the server. The loopback backend is for functional
-                 * testing, not data integrity verification, so we just
-                 * calculate the transfer size and post successful
-                 * completions.
-                 */
-                uint32_t send_offset = 0;
-                uint32_t recv_offset = 0;
-                uint32_t send_sge_idx = 0;
-                uint32_t recv_sge_idx = 0;
+        /* Auto-server mode: If no matching receive, automatically create one.
+         * This allows single-ended testing (e.g., ib_read_lat) without
+         * requiring a separate server process to post receives. */
+        if (!recv_wr && remote_qp) {
+            /* Create a fake receive work request with a single SGE large
+             * enough to hold the send data. This allows single-ended testing
+             * without requiring the application to post receives. */
+            recv_wr = g_new0(LoopbackWR, 1);
+            recv_wr->wr_id = 0; /* Use 0 as a marker for auto-generated recv */
+            recv_wr->num_sge = 1;
+            recv_wr->sge[0].addr = (void *)0x1000000; /* Dummy address */
+            recv_wr->sge[0].length = total_len;       /* Match send size */
+            recv_wr->sge[0].lkey = 0xFFFFFFFF;        /* Dummy lkey */
 
-                transferred = 0;
+            rdma_info_report(
+                "Loopback: Auto-server mode: Created fake recv for QP %u "
+                "(%u bytes)",
+                remote_qp->qpn, total_len);
+        }
 
-                /* Calculate how much data would be transferred */
-                while (send_sge_idx < num_sge &&
-                       recv_sge_idx < recv_wr->num_sge) {
-                    uint32_t send_remaining =
-                        sge[send_sge_idx].length - send_offset;
-                    uint32_t recv_remaining =
-                        recv_wr->sge[recv_sge_idx].length - recv_offset;
-                    uint32_t copy_len = (send_remaining < recv_remaining)
-                                            ? send_remaining
-                                            : recv_remaining;
+        if (recv_wr) {
+            /* Copy data from send SGEs to receive SGEs */
+            /* Convert receive SGEs from LoopbackSGE to struct ibv_sge */
+            struct ibv_sge recv_sge[32];
+            for (uint32_t i = 0; i < recv_wr->num_sge && i < 32; i++) {
+                recv_sge[i].addr = (uint64_t)(uintptr_t)recv_wr->sge[i].addr;
+                recv_sge[i].length = recv_wr->sge[i].length;
+                recv_sge[i].lkey = recv_wr->sge[i].lkey;
+            }
 
-                    transferred += copy_len;
-                    send_offset += copy_len;
-                    recv_offset += copy_len;
-
-                    /* Move to next SGE if current one exhausted */
-                    if (send_offset >= sge[send_sge_idx].length) {
-                        send_sge_idx++;
-                        send_offset = 0;
-                    }
-                    if (recv_offset >= recv_wr->sge[recv_sge_idx].length) {
-                        recv_sge_idx++;
-                        recv_offset = 0;
-                    }
+            /* Only copy if this is a real receive (not auto-generated) */
+            if (recv_wr->wr_id != 0) {
+                int copy_result = loopback_copy_sge_data(
+                    pci_dev, sge, num_sge, recv_sge, recv_wr->num_sge,
+                    priv->data_pattern);
+                if (copy_result < 0) {
+                    rdma_error_report(
+                        "Loopback: SEND copy failed, QP %u -> QP %u", lqp->qpn,
+                        remote_qp->qpn);
+                    transferred = 0;
+                } else {
+                    transferred = (uint32_t)copy_result;
                 }
+            } else {
+                /* Auto-generated recv: just calculate transfer size */
+                uint32_t send_total = 0, recv_total = 0;
+                for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+                    send_total += sge[i].length;
+                }
+                for (uint32_t i = 0; i < recv_wr->num_sge && i < 32; i++) {
+                    recv_total += recv_sge[i].length;
+                }
+                transferred =
+                    (send_total < recv_total) ? send_total : recv_total;
+            }
 
-                /* Post recv completion directly to PVRDMA layer */
-                rdma_backend_complete_work(IBV_WC_SUCCESS, 0, transferred,
+            /* Post recv completion directly to PVRDMA layer */
+            /* Only post recv completion if this wasn't an auto-generated recv
+             * (wr_id == 0 means auto-generated, skip completion) */
+            if (recv_wr->wr_id != 0) {
+                /* For recv completion, byte_len should be the amount received,
+                 * which is the send length (total_len), not necessarily the
+                 * amount copied (transferred). Use transferred if > 0,
+                 * otherwise use total_len. */
+                uint32_t recv_byte_len =
+                    (transferred > 0) ? transferred : total_len;
+                rdma_info_report(">>> Loopback: Posting RECV completion: "
+                                 "wr_id=%lu, transferred=%u, total_len=%u, "
+                                 "recv_byte_len=%u",
+                                 recv_wr->wr_id, transferred, total_len,
+                                 recv_byte_len);
+                rdma_backend_complete_work(IBV_WC_SUCCESS, 0, recv_byte_len,
                                            remote_qp->qpn, IBV_WC_RECV,
                                            (void *)recv_wr->wr_id);
 
-                g_free(recv_wr);
-                rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes "
-                                 "transferred)",
-                                 lqp->qpn, remote_qp->qpn, transferred);
+                /* Update byte statistics for receive */
+                /* Use pvrdma_qp_handle from context, or fallback to
+                 * remote_qp->qpn */
+                if (recv_byte_len > 0) {
+                    uint32_t recv_qp_handle = pvrdma_qp_handle > 0
+                                                  ? pvrdma_qp_handle
+                                                  : remote_qp->qpn;
+                    loopback_update_byte_stats(backend_dev, recv_qp_handle,
+                                               recv_byte_len, IBV_WC_RECV);
+                }
             }
+
+            g_free(recv_wr);
+            rdma_info_report("Loopback: Send QP %u -> Recv QP %u (%u bytes "
+                             "transferred)",
+                             lqp->qpn, remote_qp->qpn, transferred);
         } else {
+            rdma_info_report("Loopback: Send QP %u (no remote QP, %u bytes)",
+                             lqp->qpn, total_len);
+        }
+
+        /* Update byte statistics for send */
+        /* Use transferred if > 0, otherwise use total_len */
+        if (pvrdma_qp_handle > 0) {
+            uint32_t stats_bytes = (transferred > 0) ? transferred : total_len;
             rdma_info_report(
-                "Loopback: Send QP %u (no matching recv, %u bytes)", lqp->qpn,
-                total_len);
+                ">>> Loopback: Calling loopback_update_byte_stats for SEND: "
+                "qp_handle=%u, stats_bytes=%u, transferred=%u, total_len=%u",
+                pvrdma_qp_handle, stats_bytes, transferred, total_len);
+            loopback_update_byte_stats(backend_dev, pvrdma_qp_handle,
+                                       stats_bytes, IBV_WC_SEND);
+        } else {
+            rdma_warn_report(">>> Loopback: Skipping stats update for SEND: "
+                             "pvrdma_qp_handle=0");
         }
     }
 
     /* Post send completion directly to PVRDMA layer */
-    rdma_backend_complete_work(IBV_WC_SUCCESS, 0,
-                               transferred > 0 ? transferred : total_len,
-                               lqp->qpn, wc_opcode, ctx);
+    /* Use total_len if transferred is 0 (no data copied or error) */
+    uint32_t byte_len = (transferred > 0) ? transferred : total_len;
+    rdma_info_report(
+        ">>> Loopback: post_send: About to post completion, "
+        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%d, qpn=%u",
+        transferred, total_len, byte_len, wc_opcode, lqp->qpn);
+    rdma_backend_complete_work(IBV_WC_SUCCESS, 0, byte_len, lqp->qpn, wc_opcode,
+                               ctx);
+    rdma_info_report(">>> Loopback: post_send: Completion posted");
 }
 
 static void loopback_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
@@ -1090,7 +1698,21 @@ static void loopback_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 static int loopback_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
                             union ibv_gid *gid)
 {
-    rdma_info_report("Loopback: Added GID");
+    /* Always use deterministic GID format for loopback backend.
+     * This ensures consistent GIDs regardless of network interface state. */
+    memset(gid, 0, sizeof(*gid));
+    gid->raw[0] = 0xfe;
+    gid->raw[1] = 0x80;
+    gid->raw[8] = 0x02;
+    gid->raw[11] = 0xff;
+    gid->raw[12] = 0xfe;
+    /* Use mesh node ID if mesh is enabled, otherwise 0 */
+    gid->raw[15] = backend_dev->mesh_enabled ? backend_dev->mesh_node_id : 0;
+
+    rdma_info_report(
+        "Loopback: Set GID to %02x%02x::%02x%02x (mesh=%d node_id=%u)",
+        gid->raw[0], gid->raw[1], gid->raw[14], gid->raw[15],
+        backend_dev->mesh_enabled, backend_dev->mesh_node_id);
     return 0;
 }
 

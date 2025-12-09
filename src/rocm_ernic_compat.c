@@ -13,8 +13,9 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
-#include <inttypes.h> /* For PRId64, PRIx64 */
-#include <sys/mman.h> /* For PROT_READ, PROT_WRITE */
+#include <inttypes.h>  /* For PRId64, PRIx64 */
+#include <sys/mman.h>  /* For PROT_READ, PROT_WRITE */
+#include <arpa/inet.h> /* For inet_addr */
 
 /* Define libvfio-user types we need - full structs to avoid incomplete type */
 #include <vfio-user/libvfio-user.h>
@@ -27,8 +28,11 @@
 #include "from-qemu/hw/rdma/vmw/pvrdma.h"
 #include "from-qemu/hw/rdma/vmw/pvrdma_qp_ops.h"
 #include "from-qemu/hw/rdma/rdma_backend.h"
+#include "from-qemu/hw/rdma/rdma_backend_ops.h"
 #include "from-qemu/hw/rdma/rdma_rm.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
+#include "from-qemu/utils/dhcp_server.h"
+#include "from-qemu/utils/dhcp_proxy.h"
 #include "from-qemu/include/qemu-extra/standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "from-qemu/include/qemu-extra/standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 
@@ -110,6 +114,10 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     }
     pvrdma->backend_port_num = port_num;
 
+    /* Copy MAC address from rocm_ernic_dev */
+    memcpy(pvrdma->mac_addr, dev->mac_addr, 6);
+    pvrdma->mac_addr_set = dev->mac_addr_set;
+
     /* Initialize device attributes with defaults */
     pvrdma->dev_attr.max_qp = MAX_QP;
     pvrdma->dev_attr.max_cq = MAX_CQ;
@@ -162,6 +170,11 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
 
     /* Initialize stats */
     memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
+    pvrdma->stats.qp_stats =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    pvrdma->stats.stats_file = NULL;
+    pvrdma->stats.stats_fp = NULL;
+    pvrdma->stats.stats_write_count = 0;
 
     /* Set interrupt mask to 0 (interrupts enabled) */
     pvrdma->interrupt_mask = 0;
@@ -170,6 +183,9 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
 
     return (pvrdma_handle_t)pvrdma;
 }
+
+/* Forward declaration */
+void free_dsr(PVRDMADev *dev);
 
 void pvrdma_device_destroy(pvrdma_handle_t handle)
 {
@@ -186,13 +202,31 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     /* Clean up backend using the new abstraction */
     rdma_backend_fini_with_ops(&pvrdma->backend_dev);
 
+    /* Free stats hash table */
+    if (pvrdma->stats.qp_stats) {
+        g_hash_table_destroy(pvrdma->stats.qp_stats);
+        pvrdma->stats.qp_stats = NULL;
+    }
+    if (pvrdma->stats.stats_file) {
+        free(pvrdma->stats.stats_file);
+        pvrdma->stats.stats_file = NULL;
+    }
+    if (pvrdma->stats.stats_fp) {
+        fclose(pvrdma->stats.stats_fp);
+        pvrdma->stats.stats_fp = NULL;
+    }
+
+    /* Free DSR and all DMA mappings properly */
+    free_dsr(pvrdma);
+
     /* Free device names */
     free(pvrdma->backend_device_name);
     free(pvrdma->backend_eth_device_name);
 
-    /* Free DSR if allocated */
-    if (pvrdma->dsr_info.dsr) {
-        free(pvrdma->dsr_info.dsr);
+    /* Free TCP connections */
+    if (pvrdma->tcp_connections) {
+        g_hash_table_destroy(pvrdma->tcp_connections);
+        pvrdma->tcp_connections = NULL;
     }
 
     free(pvrdma);
@@ -217,12 +251,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     rdma_info_report("PVRDMA version register initialized to %d",
                      PVRDMA_HW_VERSION);
 
-    /* Initialize resource manager */
-    if (rdma_rm_init(&pvrdma->rdma_dev_res, &pvrdma->dev_attr) < 0) {
-        rdma_error_report("Failed to initialize resource manager");
-        return -EIO;
-    }
-
     /* Initialize RDMA backend with selected backend type */
     const char *backend_config =
         pvrdma
@@ -244,9 +272,88 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     rdma_info_report("Linked backend_dev to rdma_dev_res at %p",
                      pvrdma->backend_dev.rdma_dev_res);
 
+    /* CRITICAL: Set PCIDevice pointer for DMA operations */
+    /* PVRDMADev has PCIDevice parent_obj as first field, so we can cast */
+    pvrdma->backend_dev.dev = (PCIDevice *)pvrdma;
+    rdma_info_report("Set backend_dev->dev to PCIDevice at %p",
+                     pvrdma->backend_dev.dev);
+
+    /* Initialize DHCP server for loopback mode and TCP manager mode */
+    if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_LOOPBACK) {
+        /* Default DHCP configuration: 192.168.100.0/24 */
+        uint32_t server_ip = inet_addr("192.168.100.1");
+        uint32_t subnet_mask = inet_addr("255.255.255.0");
+        uint32_t router_ip = inet_addr("192.168.100.1");
+        uint32_t dns_server = inet_addr("192.168.100.1");
+        uint32_t ip_pool_start = inet_addr("192.168.100.10");
+        uint32_t ip_pool_end = inet_addr("192.168.100.254");
+        uint32_t lease_time = 3600; /* 1 hour */
+
+        pvrdma->dhcp_server =
+            dhcp_server_create(server_ip, subnet_mask, router_ip, dns_server,
+                               ip_pool_start, ip_pool_end, lease_time);
+        if (!pvrdma->dhcp_server) {
+            rdma_error_report("Failed to create DHCP server");
+            return -ENOMEM;
+        }
+        rdma_info_report("DHCP server initialized for loopback mode");
+    } else if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
+               backend_config && strstr(backend_config, "manager:")) {
+        /* TCP manager mode: Initialize DHCP server for allocating addresses
+         * to netdev devices in VMs on connecting worker servers */
+        /* Default DHCP configuration: 192.168.100.0/24 */
+        uint32_t server_ip = inet_addr("192.168.100.1");
+        uint32_t subnet_mask = inet_addr("255.255.255.0");
+        uint32_t router_ip = inet_addr("192.168.100.1");
+        uint32_t dns_server = inet_addr("192.168.100.1");
+        uint32_t ip_pool_start = inet_addr("192.168.100.10");
+        uint32_t ip_pool_end = inet_addr("192.168.100.254");
+        uint32_t lease_time = 3600; /* 1 hour */
+
+        pvrdma->dhcp_server =
+            dhcp_server_create(server_ip, subnet_mask, router_ip, dns_server,
+                               ip_pool_start, ip_pool_end, lease_time);
+        if (!pvrdma->dhcp_server) {
+            rdma_error_report("Failed to create DHCP server");
+            return -ENOMEM;
+        }
+        rdma_info_report("DHCP server initialized for TCP manager mode");
+    }
+    /* Note: DHCP proxy for TCP worker mode is initialized lazily in
+     * pvrdma_eth.c when the first DHCP request is received, since the manager
+     * connection may not be ready at device realize time */
+
+    /* Query device capabilities from backend to populate dev_attr */
+    if (pvrdma->backend_dev.backend_ops &&
+        pvrdma->backend_dev.backend_ops->query_device) {
+        rc = pvrdma->backend_dev.backend_ops->query_device(&pvrdma->backend_dev,
+                                                           &pvrdma->dev_attr);
+        if (rc < 0) {
+            rdma_error_report("Backend query_device failed (rc=%d)", rc);
+            return -EIO;
+        }
+        rdma_info_report("Backend device attributes queried: max_qp=%d, "
+                         "max_cq=%d, max_pd=%d",
+                         pvrdma->dev_attr.max_qp, pvrdma->dev_attr.max_cq,
+                         pvrdma->dev_attr.max_pd);
+    } else {
+        rdma_error_report("Backend does not support query_device");
+        return -ENOTSUP;
+    }
+
     rdma_info_report(
         "RDMA backend '%s' initialized successfully",
         rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
+
+    /* Initialize resource manager AFTER querying device capabilities */
+    rdma_info_report("pvrdma_device_realize: About to call rdma_rm_init, "
+                     "pvrdma=%p, &pvrdma->rdma_dev_res=%p",
+                     pvrdma, &pvrdma->rdma_dev_res);
+    if (rdma_rm_init(&pvrdma->rdma_dev_res, &pvrdma->dev_attr) < 0) {
+        rdma_error_report("Failed to initialize resource manager");
+        return -EIO;
+    }
+    rdma_info_report("Resource manager initialized with dev_attr tables");
 
     /* Initialize QP operations and register completion handler */
     rc = pvrdma_qp_ops_init();
@@ -303,12 +410,19 @@ void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
+    rdma_info_report(">>> WRAPPER: pvrdma_uar_write called: handle=%p "
+                     "offset=0x%lx val=0x%x size=%u",
+                     handle, (unsigned long)offset, value, size);
+
     if (!pvrdma) {
+        rdma_error_report(">>> WRAPPER: pvrdma handle is NULL!");
         return;
     }
 
+    rdma_info_report(">>> WRAPPER: Forwarding to pvrdma_uar_write_impl");
     /* Forward to QEMU UAR write implementation */
     pvrdma_uar_write_impl(pvrdma, offset, value, size);
+    rdma_info_report(">>> WRAPPER: pvrdma_uar_write_impl returned");
 }
 
 uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
@@ -354,6 +468,35 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
         *uar_writes = pvrdma->stats.uar_writes;
     if (interrupts)
         *interrupts = pvrdma->stats.interrupts;
+}
+
+void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+
+    free(pvrdma->stats.stats_file);
+    if (stats_file) {
+        pvrdma->stats.stats_file = strdup(stats_file);
+    } else {
+        pvrdma->stats.stats_file = NULL;
+    }
+}
+
+void pvrdma_write_stats(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+
+    /* Forward declaration - implementation in pvrdma_main.c */
+    void pvrdma_write_stats_impl(PVRDMADev * dev);
+    pvrdma_write_stats_impl(pvrdma);
 }
 
 /*
@@ -644,12 +787,16 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
 
             /* Free the SG structure */
             free(dma_mappings[i].sg);
+            dma_mappings[i].sg = NULL; /* Prevent double-free */
 
             /* Remove from table by shifting remaining entries */
             for (int j = i; j < num_dma_mappings - 1; j++) {
                 dma_mappings[j] = dma_mappings[j + 1];
             }
             num_dma_mappings--;
+
+            /* Clear the last entry (now unused) */
+            memset(&dma_mappings[num_dma_mappings], 0, sizeof(dma_mappings[0]));
 
             rdma_info_report(
                 "DMA unmap: Released and removed mapping (now %d mappings)",
