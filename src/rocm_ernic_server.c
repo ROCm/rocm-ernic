@@ -199,11 +199,16 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         /* UAR writes are typically doorbells */
         memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
 
+        vfu_log(vfu_ctx, LOG_INFO,
+                ">>> BAR2 (UAR) WRITE: offset=%#lx val=%#x count=%zu - "
+                "FORWARDING TO PVRDMA",
+                offset, val, count);
+
         /* Forward to QEMU UAR handler via wrapper */
         pvrdma_uar_write(dev->pvrdma_handle, offset, val, sizeof(val));
 
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) write: offset=%#lx val=%#x",
-                offset, val);
+        vfu_log(vfu_ctx, LOG_INFO,
+                ">>> BAR2 (UAR) write forwarded successfully");
     } else {
         /* UAR reads */
         val = pvrdma_uar_read(dev->pvrdma_handle, offset, sizeof(val));
@@ -342,7 +347,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Allocate BAR memory */
     dev->bar0_mem = calloc(1, RDMA_BAR0_MSIX_SIZE);
     dev->bar1_mem = calloc(1, RDMA_BAR1_REGS_SIZE * sizeof(uint32_t));
-    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE * sizeof(uint32_t));
+    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE);
 
     if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem) {
         err(EXIT_FAILURE, "Failed to allocate BAR memory");
@@ -534,21 +539,22 @@ static void usage(const char *progname)
     fprintf(stderr,
             "                      verbs:device=mlx5_0,ethdev=eth0,port=1 - "
             "All options\n");
-    fprintf(stderr, "  tcp: TCP/IP network backend (connects two servers)\n");
-    fprintf(stderr, "                    Options:\n");
-    fprintf(
-        stderr,
-        "                      tcp:host:port    - Connect to remote server\n");
-    fprintf(
-        stderr,
-        "                      tcp:listen:port  - Listen for connections\n");
+    fprintf(stderr, "  tcp: TCP/IP network backend\n");
+    fprintf(stderr,
+            "                    Manager Mode (centralized discovery):\n");
+    fprintf(stderr, "                      tcp:manager:<ip>:<port>     - "
+                    "Manager at IP:port\n");
+    fprintf(stderr, "                      tcp:manager:listen:<port>    - "
+                    "Manager listening on port\n");
+    fprintf(stderr, "                    Worker Mode (connects to manager):\n");
+    fprintf(stderr,
+            "                      tcp:worker:<manager_ip>:<manager_port>\n");
     fprintf(stderr, "                    Examples:\n");
-    fprintf(
-        stderr,
-        "                      tcp:192.168.1.100:5000  - Connect to server\n");
-    fprintf(
-        stderr,
-        "                      tcp:listen:5000          - Listen on port\n");
+    fprintf(stderr, "                      Manager/Worker:\n");
+    fprintf(stderr, "                        tcp:manager:listen:5000           "
+                    "- Start manager on port 5000\n");
+    fprintf(stderr, "                        tcp:worker:192.168.1.100:5000    "
+                    "- Worker connects to manager\n");
 }
 
 /**

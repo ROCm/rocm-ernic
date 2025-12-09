@@ -793,16 +793,16 @@ jobs:
         ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
         ssh-keyscan -p 2223 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
 
-    - name: Start TCP server 1 (listening)
+    - name: Start TCP server 1 (manager)
       shell: bash
       run: |
-        echo "=== Starting TCP server 1 (listening) ==="
+        echo "=== Starting TCP server 1 (manager) ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
         
         ./build/rocm_ernic \
           --socket /tmp/vfio-user-server1.sock \
-          --backend tcp:listen:${{ env.TCP_PORT }} \
+          --backend tcp:manager:listen:${{ env.TCP_PORT }} \
           --verbose > /tmp/server1.log 2>&1 &
         
         SERVER1_PID=$!
@@ -913,10 +913,10 @@ jobs:
           echo "Assuming server is ready based on successful socket creation"
         fi
 
-    - name: Start TCP server 2 (connecting)
+    - name: Start TCP server 2 (worker)
       shell: bash
       run: |
-        echo "=== Starting TCP server 2 (connecting) ==="
+        echo "=== Starting TCP server 2 (worker) ==="
         # Get container IP (usually 172.17.0.x or similar)
         CONTAINER_IP=$(hostname -I | awk '{print $1}')
         echo "Container IP: $CONTAINER_IP"
@@ -926,7 +926,7 @@ jobs:
 
         ./build/rocm_ernic \
           --socket /tmp/vfio-user-server2.sock \
-          --backend tcp:$CONTAINER_IP:${{ env.TCP_PORT }} \
+          --backend tcp:worker:$CONTAINER_IP:${{ env.TCP_PORT }} \
           --verbose > /tmp/server2.log 2>&1 &
         
         SERVER2_PID=$!

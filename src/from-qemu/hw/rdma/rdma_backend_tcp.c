@@ -1,8 +1,9 @@
 /*
- * RDMA Backend: TCP/IP Network
+ * RDMA Backend: TCP/IP Network - Multi-Node Support
  *
- * TCP/IP backend for connecting two rocm_ernic server instances over network.
- * Implements RDMA operations over TCP socket with custom protocol.
+ * TCP/IP backend for connecting multiple rocm_ernic server instances
+ * over network in a mesh topology. Enables RDMA operations between
+ * multiple servers without physical hardware.
  *
  * Copyright (C) 2025
  *
@@ -13,6 +14,7 @@
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
+#include "rdma_rm.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include <errno.h>
@@ -26,19 +28,25 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <time.h>
 
 /*
- * TCP Backend Protocol
+ * TCP Backend Protocol (Multi-Node Extension)
  *
  * Messages are sent over TCP with a fixed header:
- *   uint32_t magic;      // Protocol magic (0x52444D41 = "RDMA")
- *   uint32_t msg_type;  // Message type
- *   uint32_t msg_len;   // Payload length
- *   uint32_t seq;       // Sequence number
- *   uint8_t  payload[]; // Variable length payload
+ *   uint32_t magic;        // Protocol magic (0x52444D41 = "RDMA")
+ *   uint32_t msg_type;     // Message type
+ *   uint32_t msg_len;      // Payload length
+ *   uint32_t seq;          // Sequence number
+ *   uint32_t src_node_id;  // Source node ID (NEW)
+ *   uint32_t dst_node_id;  // Destination node ID (NEW)
+ *   uint32_t src_qpn;      // Source QP number (NEW)
+ *   uint32_t dst_qpn;      // Destination QP number (NEW)
+ *   uint8_t  payload[];    // Variable length payload
  */
 
-#define TCP_PROTOCOL_MAGIC 0x52444D41 /* "RDMA" */
+#define TCP_PROTOCOL_MAGIC   0x52444D41 /* "RDMA" */
+#define TCP_PROTOCOL_VERSION 2          /* Multi-node version */
 
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,
@@ -52,6 +60,13 @@ typedef enum {
     TCP_MSG_QP_STATE_RTS,
     TCP_MSG_QUERY_REMOTE_CONN_INFO,
     TCP_MSG_REMOTE_CONN_INFO_RESP,
+    /* Manager/Worker mesh discovery messages */
+    TCP_MSG_REGISTER_NODE,
+    TCP_MSG_REGISTER_RESP,
+    TCP_MSG_MESH_TOPOLOGY,
+    TCP_MSG_HEARTBEAT,
+    TCP_MSG_HEARTBEAT_RESP,
+    TCP_MSG_NODE_STATUS,
 } TcpMsgType;
 
 typedef struct {
@@ -59,7 +74,42 @@ typedef struct {
     uint32_t msg_type;
     uint32_t msg_len;
     uint32_t seq;
+    uint32_t src_node_id;
+    uint32_t dst_node_id;
+    uint32_t src_qpn;
+    uint32_t dst_qpn;
 } __attribute__((packed)) TcpMsgHeader;
+
+typedef struct {
+    uint32_t node_id;
+    uint32_t version;
+} __attribute__((packed)) TcpHandshakePayload;
+
+/* Manager/Worker mesh discovery payloads */
+typedef struct {
+    char hostname[256];
+    uint16_t port;
+    uint32_t requested_node_id; /* 0xFFFFFFFF for auto-assign */
+} __attribute__((packed)) TcpRegisterNodePayload;
+
+typedef struct {
+    uint32_t assigned_node_id;
+    uint32_t num_nodes;
+    int32_t result; /* 0 = success, negative = error */
+} __attribute__((packed)) TcpRegisterRespPayload;
+
+typedef struct {
+    uint32_t node_id;
+    char hostname[256];
+    uint16_t port;
+    uint8_t is_alive;
+    uint8_t reserved[3];
+} __attribute__((packed)) TcpMeshNodeInfo;
+
+typedef struct {
+    uint32_t num_nodes;
+    TcpMeshNodeInfo nodes[64]; /* Max 64 nodes */
+} __attribute__((packed)) TcpMeshTopologyPayload;
 
 /*
  * TCP Backend Data Structures
@@ -97,6 +147,7 @@ typedef struct {
 
 typedef struct {
     void *addr;
+    void *host_addr; /* translated host pointer from MR */
     uint32_t length;
     uint32_t lkey;
 } TcpSGE;
@@ -107,6 +158,30 @@ typedef struct {
     TcpSGE sge[32]; /* Max SGEs */
 } TcpWR;
 
+/* Buffered data waiting for receive WR */
+typedef struct {
+    uint32_t src_node_id;
+    uint32_t src_qpn;
+    uint32_t length;
+    void *data;
+} TcpPendingData;
+
+/* Forward declaration */
+typedef struct TcpBackendPrivate TcpBackendPrivate;
+
+/* Per-connection state */
+typedef struct {
+    uint32_t node_id;
+    int sockfd;
+    char *remote_host;
+    uint16_t remote_port;
+    QemuThread recv_thread;
+    bool is_connected;
+    bool recv_thread_running;
+    QemuMutex lock;
+    TcpBackendPrivate *priv;
+} TcpConnection;
+
 typedef struct {
     uint32_t qpn;
     uint8_t qp_type;
@@ -115,6 +190,7 @@ typedef struct {
     uint32_t pd_handle;
 
     /* Connection info */
+    uint32_t remote_node_id;
     uint32_t remote_qpn;
     union ibv_gid remote_gid;
     uint32_t rq_psn;
@@ -137,18 +213,58 @@ typedef struct {
     GQueue *send_queue;
     GQueue *recv_queue;
 
+    /* Pending data buffer for when no recv WR is available */
+    GQueue *pending_data; /* Queue of buffered data payloads */
+
     QemuMutex lock;
 } TcpQP;
 
+/* Multi-node configuration modes */
+typedef enum {
+    TCP_MODE_MANAGER,
+    TCP_MODE_WORKER,
+} TcpMode;
+
+/* Mesh node information (for manager) */
 typedef struct {
-    /* TCP connection */
-    int sockfd;
-    char *remote_host;
-    uint16_t remote_port;
-    bool is_connected;
-    bool is_listening;
+    uint32_t node_id;
+    char *hostname;
+    uint16_t port;
+    bool is_alive;
+    time_t last_heartbeat;
+    int sockfd;          /* Connection to this node (for manager) */
+    TcpConnection *conn; /* Connection object */
+} MeshNodeInfo;
+
+struct TcpBackendPrivate {
+    /* Node identity */
+    uint32_t local_node_id; /* This node's ID */
+    TcpMode mode;           /* Operation mode */
+
+    /* Multi-connection support */
+    GHashTable *connections; /* node_id -> TcpConnection* */
+    QemuMutex conn_table_lock;
+
+    /* Listen socket (for accepting connections) */
     int listen_fd;
-    QemuMutex conn_lock;
+    uint16_t listen_port;
+    bool is_listening;
+    QemuThread accept_thread;
+    bool accept_thread_running;
+
+    /* Manager-specific fields */
+    bool is_manager;
+    GHashTable *mesh_nodes; /* node_id -> MeshNodeInfo* */
+    QemuMutex mesh_table_lock;
+    QemuThread health_check_thread;
+    bool health_check_running;
+    uint32_t health_check_interval_sec; /* Default: 5 seconds */
+    uint32_t next_available_node_id;    /* For auto-assigning node IDs */
+
+    /* Worker-specific fields */
+    char *manager_host;
+    uint16_t manager_port;
+    TcpConnection *manager_conn; /* Connection to manager */
 
     /* Resource tracking */
     GHashTable *pds; /* handle -> TcpPD */
@@ -168,16 +284,19 @@ typedef struct {
     /* Sequence number for protocol */
     uint32_t next_seq;
 
-    /* Thread for handling incoming messages */
-    QemuThread recv_thread;
-    bool recv_thread_running;
-
     QemuMutex lock;
-} TcpBackendPrivate;
+};
 
 /*
  * Helper Functions
  */
+
+/* Forward declarations */
+static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv);
+static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
+                              TcpMsgType msg_type);
+static int tcp_worker_register_with_manager(TcpBackendPrivate *priv);
+static void *tcp_manager_health_check_thread(void *opaque);
 
 static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 {
@@ -187,32 +306,154 @@ static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
     return (TcpBackendPrivate *)backend_dev->backend_private;
 }
 
-static int parse_tcp_config(const char *config, char **host, uint16_t *port,
-                            bool *listen_mode)
+static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
+                           uint32_t num_sge)
+{
+    RdmaDeviceResources *res;
+    if (!tqp || !wr || !tqp->backend_dev) {
+        return;
+    }
+
+    res = tqp->backend_dev->rdma_dev_res;
+    wr->num_sge = num_sge;
+    for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+        wr->sge[i].addr = (void *)(uintptr_t)sge[i].addr;
+        wr->sge[i].length = sge[i].length;
+        wr->sge[i].lkey = sge[i].lkey;
+        wr->sge[i].host_addr = NULL;
+
+        if (sge[i].length == 0) {
+            continue;
+        }
+
+        RdmaRmMR *mr = rdma_rm_get_mr(res, sge[i].lkey);
+        if (!mr) {
+            rdma_error_report("TCP: Invalid lkey 0x%x for SGE %u", sge[i].lkey,
+                              i);
+            wr->sge[i].length = 0;
+            continue;
+        }
+
+        uint64_t guest_addr = sge[i].addr;
+        if (guest_addr < mr->start ||
+            guest_addr + sge[i].length > mr->start + mr->length) {
+            rdma_error_report("TCP: SGE %u out of MR bounds addr=0x%lx len=%u "
+                              "mr=[0x%lx..0x%lx]",
+                              i, (unsigned long)guest_addr, sge[i].length,
+                              (unsigned long)mr->start,
+                              (unsigned long)(mr->start + mr->length));
+            wr->sge[i].length = 0;
+            continue;
+        }
+
+        wr->sge[i].host_addr = (char *)mr->virt + (guest_addr - mr->start);
+    }
+}
+
+static void tcp_wr_unmap_sge(TcpQP *tqp, TcpWR *wr)
+{
+    /* Nothing to do: SGEs use MR host pointers, no explicit unmap needed. */
+    (void)tqp;
+    (void)wr;
+}
+
+static void tcp_connection_free(TcpConnection *conn)
+{
+    if (!conn) {
+        return;
+    }
+
+    if (conn->recv_thread_running) {
+        conn->recv_thread_running = false;
+        qemu_thread_join(&conn->recv_thread);
+    }
+
+    if (conn->sockfd >= 0) {
+        close(conn->sockfd);
+    }
+
+    g_free(conn->remote_host);
+    qemu_mutex_destroy(&conn->lock);
+    g_free(conn);
+}
+
+static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
+                                         uint16_t port)
+{
+    TcpConnection *conn = g_new0(TcpConnection, 1);
+    conn->node_id = node_id;
+    conn->sockfd = -1;
+    conn->remote_host = g_strdup(host);
+    conn->remote_port = port;
+    conn->is_connected = false;
+    conn->recv_thread_running = false;
+    qemu_mutex_init(&conn->lock);
+    return conn;
+}
+
+/* Get connection for a given node ID */
+static TcpConnection *tcp_get_connection(TcpBackendPrivate *priv,
+                                         uint32_t node_id)
+{
+    TcpConnection *conn;
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    return conn;
+}
+
+/* Mesh node management helpers */
+static void mesh_node_info_free(MeshNodeInfo *node)
+{
+    if (!node) {
+        return;
+    }
+    g_free(node->hostname);
+    g_free(node);
+}
+
+static MeshNodeInfo *mesh_node_info_new(uint32_t node_id, const char *hostname,
+                                        uint16_t port)
+{
+    MeshNodeInfo *node = g_new0(MeshNodeInfo, 1);
+    node->node_id = node_id;
+    node->hostname = g_strdup(hostname);
+    node->port = port;
+    node->is_alive = true;
+    node->last_heartbeat = time(NULL);
+    node->sockfd = -1;
+    node->conn = NULL;
+    return node;
+}
+
+/* Parse manager config: "manager:<ip>:<port>" or "manager:listen:<port>" */
+static int parse_tcp_config_manager(const char *config, char **manager_host,
+                                    uint16_t *manager_port, bool *listen_mode)
 {
     char *config_copy, *saveptr, *token;
+    const char *parse_start = config;
     char *host_str = NULL;
     uint16_t port_val = 0;
     bool listen = false;
-    const char *parse_start = config;
 
-    if (!config) {
-        rdma_error_report("TCP backend requires config: tcp:host:port or "
-                          "tcp:listen:port");
+    if (!strncmp(config, "tcp:", 4)) {
+        parse_start = config + 4;
+    }
+
+    if (strncmp(parse_start, "manager:", 8) != 0) {
+        rdma_error_report("TCP manager config must start with 'manager:'");
         return -EINVAL;
     }
 
-    /* Handle both "tcp:listen:5000" and "listen:5000" formats */
-    if (!strncmp(config, "tcp:", 4)) {
-        parse_start = config + 4; /* Skip "tcp:" */
-    }
-
+    parse_start += 8; /* Skip "manager:" */
     config_copy = g_strdup(parse_start);
     token = strtok_r(config_copy, ":", &saveptr);
 
     if (!token) {
         g_free(config_copy);
-        rdma_error_report("TCP backend: missing host or 'listen'");
+        rdma_error_report("TCP manager: missing host or 'listen'");
         return -EINVAL;
     }
 
@@ -221,17 +462,18 @@ static int parse_tcp_config(const char *config, char **host, uint16_t *port,
         token = strtok_r(NULL, ":", &saveptr);
         if (!token) {
             g_free(config_copy);
-            rdma_error_report("TCP backend: missing port for listen mode");
+            rdma_error_report("TCP manager: missing port for listen mode");
             return -EINVAL;
         }
         port_val = (uint16_t)atoi(token);
+        host_str = g_strdup("0.0.0.0");
     } else {
         host_str = g_strdup(token);
         token = strtok_r(NULL, ":", &saveptr);
         if (!token) {
             g_free(config_copy);
             g_free(host_str);
-            rdma_error_report("TCP backend: missing port");
+            rdma_error_report("TCP manager: missing port");
             return -EINVAL;
         }
         port_val = (uint16_t)atoi(token);
@@ -240,13 +482,64 @@ static int parse_tcp_config(const char *config, char **host, uint16_t *port,
     if (port_val == 0) {
         g_free(config_copy);
         g_free(host_str);
-        rdma_error_report("TCP backend: invalid port");
+        rdma_error_report("TCP manager: invalid port");
         return -EINVAL;
     }
 
-    *host = host_str;
-    *port = port_val;
+    *manager_host = host_str;
+    *manager_port = port_val;
     *listen_mode = listen;
+    g_free(config_copy);
+    return 0;
+}
+
+/* Parse worker config: "worker:<manager_ip>:<manager_port>" */
+static int parse_tcp_config_worker(const char *config, char **manager_host,
+                                   uint16_t *manager_port)
+{
+    char *config_copy, *saveptr, *token;
+    const char *parse_start = config;
+    char *host_str = NULL;
+    uint16_t port_val = 0;
+
+    if (!strncmp(config, "tcp:", 4)) {
+        parse_start = config + 4;
+    }
+
+    if (strncmp(parse_start, "worker:", 7) != 0) {
+        rdma_error_report("TCP worker config must start with 'worker:'");
+        return -EINVAL;
+    }
+
+    parse_start += 7; /* Skip "worker:" */
+    config_copy = g_strdup(parse_start);
+    token = strtok_r(config_copy, ":", &saveptr);
+
+    if (!token) {
+        g_free(config_copy);
+        rdma_error_report("TCP worker: missing manager host");
+        return -EINVAL;
+    }
+    host_str = g_strdup(token);
+
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token) {
+        g_free(config_copy);
+        g_free(host_str);
+        rdma_error_report("TCP worker: missing manager port");
+        return -EINVAL;
+    }
+    port_val = (uint16_t)atoi(token);
+
+    if (port_val == 0) {
+        g_free(config_copy);
+        g_free(host_str);
+        rdma_error_report("TCP worker: invalid manager port");
+        return -EINVAL;
+    }
+
+    *manager_host = host_str;
+    *manager_port = port_val;
     g_free(config_copy);
     return 0;
 }
@@ -328,7 +621,7 @@ static int tcp_listen_on_port(uint16_t port)
         return -1;
     }
 
-    ret = listen(sockfd, 1);
+    ret = listen(sockfd, 8); /* Allow up to 8 pending connections */
     if (ret < 0) {
         rdma_error_report("TCP: Failed to listen on port %u: %s", port,
                           strerror(errno));
@@ -340,35 +633,10 @@ static int tcp_listen_on_port(uint16_t port)
     return sockfd;
 }
 
-__attribute__((unused)) static int tcp_accept_connection(int listen_fd)
-{
-    struct sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    int sockfd;
-    int flags;
-
-    sockfd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
-    if (sockfd < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            rdma_error_report("TCP: Failed to accept connection: %s",
-                              strerror(errno));
-        }
-        return -1;
-    }
-
-    /* Set socket to non-blocking */
-    flags = fcntl(sockfd, F_GETFL, 0);
-    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
-
-    rdma_info_report("TCP: Accepted connection from %s:%u",
-                     inet_ntoa(client_addr.sin_addr),
-                     ntohs(client_addr.sin_port));
-    return sockfd;
-}
-
 static int tcp_send_message(int sockfd, TcpMsgType msg_type,
                             const void *payload, size_t payload_len,
-                            uint32_t seq)
+                            uint32_t seq, uint32_t src_node, uint32_t dst_node,
+                            uint32_t src_qpn, uint32_t dst_qpn)
 {
     TcpMsgHeader hdr;
     ssize_t ret;
@@ -378,6 +646,10 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
     hdr.msg_type = htonl(msg_type);
     hdr.msg_len = htonl(payload_len);
     hdr.seq = htonl(seq);
+    hdr.src_node_id = htonl(src_node);
+    hdr.dst_node_id = htonl(dst_node);
+    hdr.src_qpn = htonl(src_qpn);
+    hdr.dst_qpn = htonl(dst_qpn);
 
     /* Send header */
     ret = send(sockfd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
@@ -441,6 +713,10 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload)
     hdr->msg_type = ntohl(hdr->msg_type);
     hdr->msg_len = ntohl(hdr->msg_len);
     hdr->seq = ntohl(hdr->seq);
+    hdr->src_node_id = ntohl(hdr->src_node_id);
+    hdr->dst_node_id = ntohl(hdr->dst_node_id);
+    hdr->src_qpn = ntohl(hdr->src_qpn);
+    hdr->dst_qpn = ntohl(hdr->dst_qpn);
 
     /* Validate magic */
     if (hdr->magic != TCP_PROTOCOL_MAGIC) {
@@ -481,26 +757,28 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload)
     return 0;
 }
 
-static void *tcp_recv_thread(void *opaque)
+/* Per-connection receive thread */
+static void *tcp_recv_thread_per_conn(void *opaque)
 {
-    TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
+    TcpConnection *conn = (TcpConnection *)opaque;
     TcpMsgHeader hdr;
     void *payload = NULL;
     int ret;
     struct pollfd pfd;
 
-    rdma_info_report("TCP: Receive thread started");
+    rdma_info_report("TCP: Receive thread started for node %u", conn->node_id);
 
-    pfd.fd = priv->sockfd;
+    pfd.fd = conn->sockfd;
     pfd.events = POLLIN;
 
-    while (priv->recv_thread_running) {
+    while (conn->recv_thread_running) {
         ret = poll(&pfd, 1, 100); /* 100ms timeout */
         if (ret < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            rdma_error_report("TCP: Poll error: %s", strerror(errno));
+            rdma_error_report("TCP: Poll error on node %u: %s", conn->node_id,
+                              strerror(errno));
             break;
         }
         if (ret == 0) {
@@ -508,29 +786,418 @@ static void *tcp_recv_thread(void *opaque)
         }
 
         if (pfd.revents & POLLIN) {
-            ret = tcp_recv_message(priv->sockfd, &hdr, &payload);
+            ret = tcp_recv_message(conn->sockfd, &hdr, &payload);
             if (ret == -EAGAIN) {
                 continue;
             }
             if (ret < 0) {
-                rdma_info_report("TCP: Receive error, closing connection");
+                rdma_info_report("TCP: Receive error on node %u, closing",
+                                 conn->node_id);
                 break;
             }
 
             /* Handle message based on type */
             switch (hdr.msg_type) {
-            case TCP_MSG_POST_SEND:
-            case TCP_MSG_POST_RECV:
-            case TCP_MSG_COMPLETION:
-            case TCP_MSG_DATA:
-            case TCP_MSG_REMOTE_CONN_INFO_RESP:
-                /* These will be handled by specific operations */
-                /* For now, just log */
-                rdma_info_report("TCP: Received message type %u, len %u",
-                                 hdr.msg_type, hdr.msg_len);
+            case TCP_MSG_HANDSHAKE:
+                rdma_info_report("TCP: Received handshake from node %u",
+                                 hdr.src_node_id);
                 break;
+
+            case TCP_MSG_POST_SEND: {
+                /* Handle incoming send - match with posted receive and complete
+                 */
+                rdma_info_report("TCP: Received POST_SEND from node %u, "
+                                 "qpn %u->%u",
+                                 hdr.src_node_id, hdr.src_qpn, hdr.dst_qpn);
+
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv)
+                    break;
+
+                qemu_mutex_lock(&priv->lock);
+                TcpQP *tqp = g_hash_table_lookup(priv->qps,
+                                                 GUINT_TO_POINTER(hdr.dst_qpn));
+                if (tqp && tqp->rcq) {
+                    /* Get the work request data */
+                    TcpWR *send_wr = (TcpWR *)payload;
+                    if (send_wr && hdr.msg_len >= sizeof(TcpWR)) {
+                        /* Pop a receive WR if available */
+                        TcpWR *recv_wr = g_queue_pop_head(tqp->recv_queue);
+                        if (recv_wr) {
+                            /* We'll get the actual data in the next DATA
+                             * message For now, just mark that we're expecting
+                             * data */
+                            rdma_info_report("TCP: Matched send with recv, "
+                                             "expecting data");
+                            /* Store the receive WR for when data arrives */
+                            g_queue_push_tail(tqp->recv_queue, recv_wr);
+                        } else {
+                            rdma_info_report(
+                                "TCP: No receive posted for incoming send");
+                        }
+                    }
+                }
+                qemu_mutex_unlock(&priv->lock);
+                break;
+            }
+
+            case TCP_MSG_DATA: {
+                /* Handle incoming data - complete the receive */
+                rdma_info_report("TCP: Received DATA from node %u, len %u, "
+                                 "qpn %u->%u",
+                                 hdr.src_node_id, hdr.msg_len, hdr.src_qpn,
+                                 hdr.dst_qpn);
+
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv)
+                    break;
+
+                qemu_mutex_lock(&priv->lock);
+                TcpQP *tqp = g_hash_table_lookup(priv->qps,
+                                                 GUINT_TO_POINTER(hdr.dst_qpn));
+                if (tqp && tqp->rcq) {
+                    /* Pop the receive WR */
+                    TcpWR *recv_wr = g_queue_pop_head(tqp->recv_queue);
+                    if (recv_wr && payload && hdr.msg_len > 0) {
+                        /* Copy data to receive buffer */
+                        uint32_t bytes_copied = 0;
+                        for (uint32_t i = 0;
+                             i < recv_wr->num_sge && bytes_copied < hdr.msg_len;
+                             i++) {
+                            uint32_t to_copy = recv_wr->sge[i].length;
+                            if (bytes_copied + to_copy > hdr.msg_len) {
+                                to_copy = hdr.msg_len - bytes_copied;
+                            }
+                            void *host_buf = recv_wr->sge[i].host_addr;
+                            if (host_buf && to_copy > 0) {
+                                memcpy(host_buf, (char *)payload + bytes_copied,
+                                       to_copy);
+                                bytes_copied += to_copy;
+                            }
+                        }
+
+                        rdma_info_report(
+                            "TCP: Copied %u bytes to receive buffer",
+                            bytes_copied);
+
+                        /* Post completion directly to guest */
+                        qemu_mutex_unlock(&priv->lock);
+                        rdma_backend_complete_work(
+                            IBV_WC_SUCCESS, 0, bytes_copied, hdr.dst_qpn,
+                            IBV_WC_RECV, (void *)recv_wr->wr_id);
+                        qemu_mutex_lock(&priv->lock);
+
+                        rdma_info_report("TCP: Delivered receive completion, "
+                                         "wr_id=%lu, bytes=%u",
+                                         recv_wr->wr_id, bytes_copied);
+
+                        tcp_wr_unmap_sge(tqp, recv_wr);
+                        g_free(recv_wr);
+
+                        /* Send completion ACK back to sender */
+                        TcpConnection *src_conn =
+                            tcp_get_connection(priv, hdr.src_node_id);
+                        if (src_conn && src_conn->is_connected) {
+                            qemu_mutex_lock(&src_conn->lock);
+                            if (src_conn->sockfd >= 0) {
+                                tcp_send_message(
+                                    src_conn->sockfd, TCP_MSG_COMPLETION, NULL,
+                                    0, hdr.seq, priv->local_node_id,
+                                    hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
+                                rdma_info_report(
+                                    "TCP: Sent completion ACK to node %u",
+                                    hdr.src_node_id);
+                            }
+                            qemu_mutex_unlock(&src_conn->lock);
+                        }
+                    } else if (payload && hdr.msg_len > 0) {
+                        /* No recv WR available - buffer the data */
+                        rdma_info_report(
+                            "TCP: No recv WR available, buffering %u bytes",
+                            hdr.msg_len);
+                        TcpPendingData *pending = g_new0(TcpPendingData, 1);
+                        pending->src_node_id = hdr.src_node_id;
+                        pending->src_qpn = hdr.src_qpn;
+                        pending->length = hdr.msg_len;
+                        pending->data = g_malloc(hdr.msg_len);
+                        memcpy(pending->data, payload, hdr.msg_len);
+                        g_queue_push_tail(tqp->pending_data, pending);
+                    } else {
+                        rdma_info_report(
+                            "TCP: No receive WR and no valid data");
+                    }
+                }
+                qemu_mutex_unlock(&priv->lock);
+                break;
+            }
+
+            case TCP_MSG_COMPLETION: {
+                /* Handle completion ACK from receiver */
+                rdma_info_report(
+                    "TCP: Received COMPLETION from node %u for qpn %u",
+                    hdr.src_node_id, hdr.dst_qpn);
+
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv)
+                    break;
+
+                qemu_mutex_lock(&priv->lock);
+                TcpQP *tqp = g_hash_table_lookup(priv->qps,
+                                                 GUINT_TO_POINTER(hdr.dst_qpn));
+                if (tqp && tqp->scq) {
+                    /* Pop the send WR and post completion directly to guest */
+                    TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
+                    if (send_wr) {
+                        uint64_t wr_id = send_wr->wr_id;
+                        g_free(send_wr);
+
+                        qemu_mutex_unlock(&priv->lock);
+                        rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0,
+                                                   hdr.dst_qpn, IBV_WC_SEND,
+                                                   (void *)wr_id);
+                        qemu_mutex_lock(&priv->lock);
+
+                        rdma_info_report(
+                            "TCP: Delivered send completion, wr_id=%lu", wr_id);
+                    }
+                }
+                qemu_mutex_unlock(&priv->lock);
+                break;
+            }
+
+            case TCP_MSG_POST_RECV:
+            case TCP_MSG_REMOTE_CONN_INFO_RESP:
+                rdma_info_report("TCP: Received msg type %u from node %u",
+                                 hdr.msg_type, hdr.src_node_id);
+                break;
+
+            case TCP_MSG_REGISTER_NODE: {
+                /* Manager receives registration from worker */
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv || !priv->is_manager) {
+                    rdma_error_report(
+                        "TCP: REGISTER_NODE received by non-manager");
+                    break;
+                }
+
+                if (!payload || hdr.msg_len < sizeof(TcpRegisterNodePayload)) {
+                    rdma_error_report("TCP: Invalid REGISTER_NODE payload");
+                    break;
+                }
+
+                TcpRegisterNodePayload *reg = (TcpRegisterNodePayload *)payload;
+                uint32_t requested_id = ntohl(reg->requested_node_id);
+                uint16_t worker_port = ntohs(reg->port);
+                char worker_host[256];
+                strncpy(worker_host, reg->hostname, sizeof(worker_host) - 1);
+                worker_host[sizeof(worker_host) - 1] = '\0';
+
+                qemu_mutex_lock(&priv->mesh_table_lock);
+
+                /* Assign node ID */
+                uint32_t assigned_id = requested_id;
+                if (requested_id == 0xFFFFFFFF ||
+                    g_hash_table_lookup(priv->mesh_nodes,
+                                        GUINT_TO_POINTER(requested_id))) {
+                    /* Auto-assign: find next available ID */
+                    assigned_id = priv->next_available_node_id;
+                    while (g_hash_table_lookup(priv->mesh_nodes,
+                                               GUINT_TO_POINTER(assigned_id))) {
+                        assigned_id++;
+                    }
+                    priv->next_available_node_id = assigned_id + 1;
+                }
+
+                /* Update connection with assigned node ID */
+                conn->node_id = assigned_id;
+
+                /* Create mesh node info */
+                MeshNodeInfo *node =
+                    mesh_node_info_new(assigned_id, worker_host, worker_port);
+                node->sockfd = conn->sockfd;
+                node->conn = conn;
+
+                /* Add to mesh table */
+                g_hash_table_insert(priv->mesh_nodes,
+                                    GUINT_TO_POINTER(assigned_id), node);
+
+                /* Add to connections table */
+                qemu_mutex_lock(&priv->conn_table_lock);
+                g_hash_table_insert(priv->connections,
+                                    GUINT_TO_POINTER(assigned_id), conn);
+                qemu_mutex_unlock(&priv->conn_table_lock);
+
+                qemu_mutex_unlock(&priv->mesh_table_lock);
+
+                rdma_info_report("TCP: Registered node %u at %s:%u",
+                                 assigned_id, worker_host, worker_port);
+
+                /* Send registration response */
+                TcpRegisterRespPayload resp;
+                resp.assigned_node_id = htonl(assigned_id);
+                resp.num_nodes = htonl(g_hash_table_size(priv->mesh_nodes));
+                resp.result = htonl(0); /* Success */
+
+                tcp_send_message(conn->sockfd, TCP_MSG_REGISTER_RESP, &resp,
+                                 sizeof(resp), priv->next_seq++,
+                                 priv->local_node_id, assigned_id, 0, 0);
+
+                /* Broadcast updated topology to all nodes */
+                tcp_broadcast_mesh_topology(priv);
+                break;
+            }
+
+            case TCP_MSG_REGISTER_RESP: {
+                /* Worker receives registration response from manager */
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv || priv->is_manager) {
+                    rdma_error_report("TCP: REGISTER_RESP received by manager");
+                    break;
+                }
+
+                if (!payload || hdr.msg_len < sizeof(TcpRegisterRespPayload)) {
+                    rdma_error_report("TCP: Invalid REGISTER_RESP payload");
+                    break;
+                }
+
+                TcpRegisterRespPayload *resp =
+                    (TcpRegisterRespPayload *)payload;
+                uint32_t assigned_id = ntohl(resp->assigned_node_id);
+                int32_t result = ntohl(resp->result);
+
+                if (result != 0) {
+                    rdma_error_report("TCP: Registration failed: %d", result);
+                    break;
+                }
+
+                priv->local_node_id = assigned_id;
+                conn->node_id = assigned_id;
+
+                rdma_info_report(
+                    "TCP: Registered with manager, assigned node_id=%u",
+                    assigned_id);
+                break;
+            }
+
+            case TCP_MSG_MESH_TOPOLOGY: {
+                /* Worker receives mesh topology from manager */
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv || priv->is_manager) {
+                    rdma_error_report("TCP: MESH_TOPOLOGY received by manager");
+                    break;
+                }
+
+                if (!payload || hdr.msg_len < sizeof(TcpMeshTopologyPayload)) {
+                    rdma_error_report("TCP: Invalid MESH_TOPOLOGY payload");
+                    break;
+                }
+
+                TcpMeshTopologyPayload *topo =
+                    (TcpMeshTopologyPayload *)payload;
+                uint32_t num_nodes = ntohl(topo->num_nodes);
+
+                rdma_info_report("TCP: Received mesh topology with %u nodes",
+                                 num_nodes);
+
+                /* Connect to all other nodes */
+                qemu_mutex_lock(&priv->conn_table_lock);
+                for (uint32_t i = 0; i < num_nodes && i < 64; i++) {
+                    uint32_t peer_id = ntohl(topo->nodes[i].node_id);
+                    if (peer_id == priv->local_node_id) {
+                        continue; /* Skip self */
+                    }
+
+                    /* Check if already connected */
+                    if (g_hash_table_lookup(priv->connections,
+                                            GUINT_TO_POINTER(peer_id))) {
+                        continue;
+                    }
+
+                    char peer_host[256];
+                    strncpy(peer_host, topo->nodes[i].hostname,
+                            sizeof(peer_host) - 1);
+                    peer_host[sizeof(peer_host) - 1] = '\0';
+                    uint16_t peer_port = ntohs(topo->nodes[i].port);
+
+                    rdma_info_report("TCP: Connecting to peer node %u at %s:%u",
+                                     peer_id, peer_host, peer_port);
+
+                    TcpConnection *peer_conn =
+                        tcp_connection_new(peer_id, peer_host, peer_port);
+                    peer_conn->priv = priv;
+                    peer_conn->sockfd =
+                        tcp_connect_to_remote(peer_host, peer_port);
+
+                    if (peer_conn->sockfd < 0) {
+                        rdma_error_report("TCP: Failed to connect to peer %u",
+                                          peer_id);
+                        tcp_connection_free(peer_conn);
+                        continue;
+                    }
+
+                    peer_conn->is_connected = true;
+
+                    /* Send handshake */
+                    if (tcp_send_handshake(peer_conn, priv->local_node_id,
+                                           TCP_MSG_HANDSHAKE) < 0) {
+                        rdma_error_report(
+                            "TCP: Failed to send handshake to peer %u",
+                            peer_id);
+                        tcp_connection_free(peer_conn);
+                        continue;
+                    }
+
+                    /* Start receive thread */
+                    char thread_name[32];
+                    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                             peer_id);
+                    peer_conn->recv_thread_running = true;
+                    qemu_thread_create(&peer_conn->recv_thread, thread_name,
+                                       tcp_recv_thread_per_conn, peer_conn,
+                                       QEMU_THREAD_JOINABLE);
+
+                    /* Add to connections table */
+                    g_hash_table_insert(priv->connections,
+                                        GUINT_TO_POINTER(peer_id), peer_conn);
+
+                    rdma_info_report("TCP: Connected to peer node %u", peer_id);
+                }
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                break;
+            }
+
+            case TCP_MSG_HEARTBEAT: {
+                /* Manager receives heartbeat from worker */
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv || !priv->is_manager) {
+                    break;
+                }
+
+                qemu_mutex_lock(&priv->mesh_table_lock);
+                MeshNodeInfo *node = g_hash_table_lookup(
+                    priv->mesh_nodes, GUINT_TO_POINTER(hdr.src_node_id));
+                if (node) {
+                    node->last_heartbeat = time(NULL);
+                    node->is_alive = true;
+                }
+                qemu_mutex_unlock(&priv->mesh_table_lock);
+
+                /* Send heartbeat response */
+                tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT_RESP, NULL, 0,
+                                 priv->next_seq++, priv->local_node_id,
+                                 hdr.src_node_id, 0, 0);
+                break;
+            }
+
+            case TCP_MSG_HEARTBEAT_RESP: {
+                /* Worker receives heartbeat response from manager */
+                /* No action needed, just confirms manager is alive */
+                break;
+            }
+
             default:
-                rdma_warn_report("TCP: Unknown message type %u", hdr.msg_type);
+                rdma_warn_report("TCP: Unknown message type %u from node %u",
+                                 hdr.msg_type, hdr.src_node_id);
                 break;
             }
 
@@ -541,13 +1208,397 @@ static void *tcp_recv_thread(void *opaque)
         }
 
         if (pfd.revents & (POLLHUP | POLLERR)) {
-            rdma_info_report("TCP: Connection closed or error");
+            rdma_info_report("TCP: Connection to node %u closed or error",
+                             conn->node_id);
             break;
         }
     }
 
-    rdma_info_report("TCP: Receive thread exiting");
+    rdma_info_report("TCP: Receive thread exiting for node %u", conn->node_id);
     return NULL;
+}
+
+/* Send handshake to remote node */
+static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
+                              TcpMsgType msg_type)
+{
+    TcpHandshakePayload payload;
+    payload.node_id = htonl(local_node_id);
+    payload.version = htonl(TCP_PROTOCOL_VERSION);
+
+    return tcp_send_message(conn->sockfd, msg_type, &payload, sizeof(payload),
+                            1, local_node_id, conn->node_id, 0, 0);
+}
+
+/* Accept thread - accepts incoming connections and adds them to table */
+static void *tcp_accept_thread(void *opaque)
+{
+    TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
+    struct sockaddr_in client_addr;
+    socklen_t client_len;
+    int sockfd;
+    int flags;
+    TcpMsgHeader hdr;
+    void *payload = NULL;
+    TcpHandshakePayload *hs_payload;
+    TcpConnection *conn;
+    char thread_name[32];
+
+    rdma_info_report("TCP: Accept thread started");
+
+    while (priv->accept_thread_running) {
+        client_len = sizeof(client_addr);
+        sockfd = accept(priv->listen_fd, (struct sockaddr *)&client_addr,
+                        &client_len);
+
+        if (sockfd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(100000); /* 100ms */
+                continue;
+            }
+            if (!priv->accept_thread_running) {
+                break;
+            }
+            rdma_error_report("TCP: Failed to accept connection: %s",
+                              strerror(errno));
+            continue;
+        }
+
+        /* Set socket to non-blocking */
+        flags = fcntl(sockfd, F_GETFL, 0);
+        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+        rdma_info_report("TCP: Accepted connection from %s:%u",
+                         inet_ntoa(client_addr.sin_addr),
+                         ntohs(client_addr.sin_port));
+
+        if (priv->is_manager) {
+            /* Manager mode: accept connection and let receive thread handle
+             * REGISTER_NODE */
+            conn = g_new0(TcpConnection, 1);
+            conn->node_id = 0xFFFFFFFF; /* Unknown until registration */
+            conn->sockfd = sockfd;
+            conn->remote_host = g_strdup(inet_ntoa(client_addr.sin_addr));
+            conn->remote_port = ntohs(client_addr.sin_port);
+            conn->is_connected = true;
+            conn->priv = priv;
+            qemu_mutex_init(&conn->lock);
+
+            /* Start receive thread - it will handle REGISTER_NODE */
+            snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
+            conn->recv_thread_running = true;
+            qemu_thread_create(&conn->recv_thread, thread_name,
+                               tcp_recv_thread_per_conn, conn,
+                               QEMU_THREAD_JOINABLE);
+
+            /* Connection will be added to table when REGISTER_NODE is received
+             */
+        } else {
+            /* Worker mode: receive handshake to identify remote node */
+            int retry_count = 0;
+            int max_retries = 50; /* 5 seconds with 100ms sleep */
+            int recv_ret;
+
+            while (retry_count < max_retries) {
+                recv_ret = tcp_recv_message(sockfd, &hdr, &payload);
+                if (recv_ret == 0) {
+                    /* Message received successfully */
+                    if (hdr.msg_type == TCP_MSG_HANDSHAKE) {
+                        /* Success! */
+                        break;
+                    } else {
+                        rdma_error_report(
+                            "TCP: Expected handshake, got message type %u",
+                            hdr.msg_type);
+                        close(sockfd);
+                        if (payload) {
+                            g_free(payload);
+                        }
+                        goto next_connection;
+                    }
+                } else if (recv_ret == -EAGAIN) {
+                    /* Socket would block, retry */
+                    usleep(100000); /* 100ms */
+                    retry_count++;
+                    continue;
+                } else {
+                    /* Real error */
+                    rdma_error_report("TCP: Error receiving handshake from "
+                                      "incoming connection");
+                    close(sockfd);
+                    if (payload) {
+                        g_free(payload);
+                    }
+                    goto next_connection;
+                }
+            }
+
+            if (retry_count >= max_retries) {
+                rdma_error_report("TCP: Timeout waiting for handshake from "
+                                  "incoming connection");
+                close(sockfd);
+                if (payload) {
+                    g_free(payload);
+                }
+                continue;
+            }
+
+            hs_payload = (TcpHandshakePayload *)payload;
+            uint32_t remote_node_id = ntohl(hs_payload->node_id);
+
+            rdma_info_report("TCP: Handshake from node %u", remote_node_id);
+
+            /* Create connection object */
+            conn = g_new0(TcpConnection, 1);
+            conn->node_id = remote_node_id;
+            conn->sockfd = sockfd;
+            conn->remote_host = g_strdup(inet_ntoa(client_addr.sin_addr));
+            conn->remote_port = ntohs(client_addr.sin_port);
+            conn->is_connected = true;
+            conn->priv = priv;
+            qemu_mutex_init(&conn->lock);
+
+            /* Add to connection table */
+            qemu_mutex_lock(&priv->conn_table_lock);
+            g_hash_table_insert(priv->connections,
+                                GUINT_TO_POINTER(remote_node_id), conn);
+            qemu_mutex_unlock(&priv->conn_table_lock);
+
+            /* Send handshake response */
+            tcp_send_handshake(conn, priv->local_node_id,
+                               TCP_MSG_HANDSHAKE_RESP);
+
+            /* Start receive thread for this connection */
+            snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                     remote_node_id);
+            conn->recv_thread_running = true;
+            qemu_thread_create(&conn->recv_thread, thread_name,
+                               tcp_recv_thread_per_conn, conn,
+                               QEMU_THREAD_JOINABLE);
+
+            g_free(payload);
+            payload = NULL;
+        }
+
+    next_connection:
+        continue;
+    }
+
+    rdma_info_report("TCP: Accept thread exiting");
+    return NULL;
+}
+
+/*
+ * Manager/Worker Helper Functions
+ */
+
+/* Broadcast mesh topology to all connected workers (manager only) */
+static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
+{
+    if (!priv->is_manager) {
+        return;
+    }
+
+    TcpMeshTopologyPayload topo;
+    uint32_t num_nodes = 0;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+
+    /* Build topology payload */
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+
+    while (g_hash_table_iter_next(&iter, &key, &value) && num_nodes < 64) {
+        MeshNodeInfo *node = (MeshNodeInfo *)value;
+        topo.nodes[num_nodes].node_id = htonl(node->node_id);
+        strncpy(topo.nodes[num_nodes].hostname, node->hostname, 255);
+        topo.nodes[num_nodes].hostname[255] = '\0';
+        topo.nodes[num_nodes].port = htons(node->port);
+        topo.nodes[num_nodes].is_alive = node->is_alive ? 1 : 0;
+        topo.nodes[num_nodes].reserved[0] = 0;
+        topo.nodes[num_nodes].reserved[1] = 0;
+        topo.nodes[num_nodes].reserved[2] = 0;
+        num_nodes++;
+    }
+
+    topo.num_nodes = htonl(num_nodes);
+
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    /* Broadcast to all connected workers */
+    qemu_mutex_lock(&priv->conn_table_lock);
+    GHashTableIter conn_iter;
+    g_hash_table_iter_init(&conn_iter, priv->connections);
+
+    while (g_hash_table_iter_next(&conn_iter, &key, &value)) {
+        TcpConnection *conn = (TcpConnection *)value;
+        if (conn && conn->is_connected && conn->sockfd >= 0) {
+            qemu_mutex_lock(&conn->lock);
+            tcp_send_message(conn->sockfd, TCP_MSG_MESH_TOPOLOGY, &topo,
+                             sizeof(TcpMeshTopologyPayload), priv->next_seq++,
+                             priv->local_node_id, conn->node_id, 0, 0);
+            qemu_mutex_unlock(&conn->lock);
+        }
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    rdma_info_report("TCP: Broadcast mesh topology to %u nodes", num_nodes);
+}
+
+/* Manager health check thread */
+static void *tcp_manager_health_check_thread(void *opaque)
+{
+    TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
+
+    rdma_info_report("TCP: Manager health check thread started");
+
+    while (priv->health_check_running) {
+        qemu_mutex_lock(&priv->mesh_table_lock);
+
+        GHashTableIter iter;
+        gpointer key, value;
+        g_hash_table_iter_init(&iter, priv->mesh_nodes);
+
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            MeshNodeInfo *node = (MeshNodeInfo *)value;
+
+            /* Send heartbeat request */
+            if (node->conn && node->conn->is_connected &&
+                node->conn->sockfd >= 0) {
+                qemu_mutex_lock(&node->conn->lock);
+                tcp_send_message(node->conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
+                                 priv->next_seq++, priv->local_node_id,
+                                 node->node_id, 0, 0);
+                qemu_mutex_unlock(&node->conn->lock);
+            }
+
+            /* Check if node hasn't responded (timeout: 3x interval) */
+            time_t now = time(NULL);
+            if (now - node->last_heartbeat >
+                priv->health_check_interval_sec * 3) {
+                if (node->is_alive) {
+                    rdma_warn_report("TCP: Node %u failed health check (last "
+                                     "heartbeat: %ld seconds ago)",
+                                     node->node_id, now - node->last_heartbeat);
+                    node->is_alive = false;
+                    /* Broadcast updated topology */
+                    qemu_mutex_unlock(&priv->mesh_table_lock);
+                    tcp_broadcast_mesh_topology(priv);
+                    qemu_mutex_lock(&priv->mesh_table_lock);
+                }
+            }
+        }
+
+        qemu_mutex_unlock(&priv->mesh_table_lock);
+
+        /* Sleep for health check interval */
+        g_usleep(priv->health_check_interval_sec * G_USEC_PER_SEC);
+    }
+
+    rdma_info_report("TCP: Manager health check thread exiting");
+    return NULL;
+}
+
+/* Worker registers with manager */
+static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
+{
+    TcpRegisterNodePayload reg;
+    TcpMsgHeader hdr;
+    void *payload = NULL;
+    int ret;
+    char hostname[256];
+
+    /* Get local hostname */
+    if (gethostname(hostname, sizeof(hostname)) < 0) {
+        strncpy(hostname, "localhost", sizeof(hostname) - 1);
+    }
+    hostname[sizeof(hostname) - 1] = '\0';
+
+    /* Connect to manager */
+    priv->manager_conn =
+        tcp_connection_new(0, priv->manager_host, priv->manager_port);
+    priv->manager_conn->priv = priv;
+    priv->manager_conn->sockfd =
+        tcp_connect_to_remote(priv->manager_host, priv->manager_port);
+
+    if (priv->manager_conn->sockfd < 0) {
+        rdma_error_report("TCP: Failed to connect to manager at %s:%u",
+                          priv->manager_host, priv->manager_port);
+        tcp_connection_free(priv->manager_conn);
+        priv->manager_conn = NULL;
+        return -1;
+    }
+
+    priv->manager_conn->is_connected = true;
+
+    /* Start receive thread for manager connection */
+    char thread_name[32];
+    snprintf(thread_name, sizeof(thread_name), "tcp-mgr-recv");
+    priv->manager_conn->recv_thread_running = true;
+    qemu_thread_create(&priv->manager_conn->recv_thread, thread_name,
+                       tcp_recv_thread_per_conn, priv->manager_conn,
+                       QEMU_THREAD_JOINABLE);
+
+    /* Prepare registration payload */
+    memset(&reg, 0, sizeof(reg));
+    strncpy(reg.hostname, hostname, sizeof(reg.hostname) - 1);
+    reg.hostname[sizeof(reg.hostname) - 1] = '\0';
+    reg.port = htons(priv->listen_port);
+    reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
+
+    /* Send registration request */
+    ret = tcp_send_message(priv->manager_conn->sockfd, TCP_MSG_REGISTER_NODE,
+                           &reg, sizeof(reg), priv->next_seq++, 0, 0, 0, 0);
+    if (ret < 0) {
+        rdma_error_report("TCP: Failed to send registration request");
+        return -1;
+    }
+
+    /* Wait for registration response */
+    int retry_count = 0;
+    int max_retries = 50; /* 5 seconds with 100ms sleep */
+
+    while (retry_count < max_retries) {
+        ret = tcp_recv_message(priv->manager_conn->sockfd, &hdr, &payload);
+        if (ret == -EAGAIN) {
+            g_usleep(100000); /* 100ms */
+            retry_count++;
+            continue;
+        }
+        if (ret < 0) {
+            rdma_error_report("TCP: Failed to receive registration response");
+            return -1;
+        }
+
+        if (hdr.msg_type == TCP_MSG_REGISTER_RESP) {
+            if (payload) {
+                TcpRegisterRespPayload *resp =
+                    (TcpRegisterRespPayload *)payload;
+                int32_t result = ntohl(resp->result);
+                if (result == 0) {
+                    /* Registration successful - topology will come next */
+                    g_free(payload);
+                    rdma_info_report(
+                        "TCP: Successfully registered with manager");
+                    return 0;
+                } else {
+                    rdma_error_report("TCP: Registration failed: %d", result);
+                    g_free(payload);
+                    return -1;
+                }
+            }
+        }
+
+        if (payload) {
+            g_free(payload);
+            payload = NULL;
+        }
+        retry_count++;
+    }
+
+    rdma_error_report("TCP: Registration timeout");
+    return -1;
 }
 
 /*
@@ -557,17 +1608,9 @@ static void *tcp_recv_thread(void *opaque)
 static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 {
     TcpBackendPrivate *priv;
-    char *host = NULL;
-    uint16_t port = 0;
-    bool listen_mode = false;
     int ret;
 
     rdma_info_report("TCP backend: Initializing");
-
-    ret = parse_tcp_config(config, &host, &port, &listen_mode);
-    if (ret < 0) {
-        return ret;
-    }
 
     priv = g_new0(TcpBackendPrivate, 1);
 
@@ -580,6 +1623,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                       (GDestroyNotify)g_free);
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->connections =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                              (GDestroyNotify)tcp_connection_free);
 
     priv->next_pd_handle = 1;
     priv->next_mr_handle = 1;
@@ -587,57 +1633,180 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->next_qpn = 100;
     priv->next_seq = 1;
 
-    priv->remote_host = host;
-    priv->remote_port = port;
-    priv->is_listening = listen_mode;
+    priv->listen_fd = -1;
+    priv->is_listening = false;
+    priv->accept_thread_running = false;
 
     qemu_mutex_init(&priv->lock);
-    qemu_mutex_init(&priv->conn_lock);
+    qemu_mutex_init(&priv->conn_table_lock);
 
-    if (listen_mode) {
-        priv->listen_fd = tcp_listen_on_port(port);
+    /* Initialize manager/worker fields */
+    priv->is_manager = false;
+    priv->mesh_nodes = NULL;
+    priv->health_check_running = false;
+    priv->health_check_interval_sec = 5; /* Default 5 seconds */
+    priv->next_available_node_id = 1;    /* Manager starts assigning from 1 */
+    priv->manager_host = NULL;
+    priv->manager_port = 0;
+    priv->manager_conn = NULL;
+
+    /* Default mesh metadata */
+    backend_dev->mesh_enabled = false;
+    backend_dev->mesh_node_id = 0;
+    backend_dev->mesh_num_nodes = 0;
+
+    /* Determine mode from config string */
+    if (strstr(config, "manager:")) {
+        /* Manager mode: tcp:manager:<ip>:<port> or tcp:manager:listen:<port> */
+        char *manager_host = NULL;
+        uint16_t manager_port = 0;
+        bool listen_mode = false;
+
+        priv->mode = TCP_MODE_MANAGER;
+        priv->is_manager = true;
+        priv->local_node_id = 0; /* Manager is always node 0 */
+
+        ret = parse_tcp_config_manager(config, &manager_host, &manager_port,
+                                       &listen_mode);
+        if (ret < 0) {
+            goto error;
+        }
+
+        /* Initialize mesh nodes table */
+        priv->mesh_nodes =
+            g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                  (GDestroyNotify)mesh_node_info_free);
+        qemu_mutex_init(&priv->mesh_table_lock);
+
+        /* Add manager itself to mesh table */
+        MeshNodeInfo *manager_node = mesh_node_info_new(0, "manager", 0);
+        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(0),
+                            manager_node);
+
+        backend_dev->mesh_enabled = true;
+        backend_dev->mesh_node_id = 0;
+        backend_dev->mesh_num_nodes = 1; /* Will grow as workers register */
+
+        rdma_info_report("TCP backend: Manager mode on port %u", manager_port);
+
+        /* Start listening */
+        priv->listen_port = manager_port;
+        priv->listen_fd = tcp_listen_on_port(manager_port);
         if (priv->listen_fd < 0) {
-            g_free(host);
-            g_hash_table_destroy(priv->pds);
-            g_hash_table_destroy(priv->mrs);
-            g_hash_table_destroy(priv->cqs);
-            g_hash_table_destroy(priv->qps);
-            g_hash_table_destroy(priv->qp_pairs);
-            qemu_mutex_destroy(&priv->lock);
-            qemu_mutex_destroy(&priv->conn_lock);
-            g_free(priv);
-            return -1;
+            g_free(manager_host);
+            goto error;
         }
-        priv->sockfd = -1;
-        priv->is_connected = false;
-    } else {
-        priv->sockfd = tcp_connect_to_remote(host, port);
-        if (priv->sockfd < 0) {
-            g_free(host);
-            g_hash_table_destroy(priv->pds);
-            g_hash_table_destroy(priv->mrs);
-            g_hash_table_destroy(priv->cqs);
-            g_hash_table_destroy(priv->qps);
-            g_hash_table_destroy(priv->qp_pairs);
-            qemu_mutex_destroy(&priv->lock);
-            qemu_mutex_destroy(&priv->conn_lock);
-            g_free(priv);
-            return -1;
-        }
-        priv->is_connected = true;
-        priv->listen_fd = -1;
+        priv->is_listening = true;
 
-        /* Start receive thread */
-        priv->recv_thread_running = true;
-        qemu_thread_create(&priv->recv_thread, "tcp-recv", tcp_recv_thread,
-                           priv, QEMU_THREAD_JOINABLE);
+        /* Start accept thread */
+        priv->accept_thread_running = true;
+        qemu_thread_create(&priv->accept_thread, "tcp-accept",
+                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+
+        /* Start health check thread */
+        priv->health_check_running = true;
+        qemu_thread_create(&priv->health_check_thread, "tcp-health",
+                           tcp_manager_health_check_thread, priv,
+                           QEMU_THREAD_JOINABLE);
+
+        g_free(manager_host);
+        rdma_info_report("TCP backend: Manager initialized");
+
+    } else if (strstr(config, "worker:")) {
+        /* Worker mode: tcp:worker:<manager_ip>:<manager_port> */
+        char *manager_host = NULL;
+        uint16_t manager_port = 0;
+
+        priv->mode = TCP_MODE_WORKER;
+        priv->is_manager = false;
+
+        ret = parse_tcp_config_worker(config, &manager_host, &manager_port);
+        if (ret < 0) {
+            goto error;
+        }
+
+        priv->manager_host = manager_host;
+        priv->manager_port = manager_port;
+
+        /* Find an available port for this worker */
+        priv->listen_port =
+            0; /* Will be assigned by manager or use ephemeral */
+        struct sockaddr_in addr;
+        socklen_t len = sizeof(addr);
+        int test_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (test_fd >= 0) {
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = INADDR_ANY;
+            addr.sin_port = 0; /* Let OS assign */
+            if (bind(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                if (getsockname(test_fd, (struct sockaddr *)&addr, &len) == 0) {
+                    priv->listen_port = ntohs(addr.sin_port);
+                }
+            }
+            close(test_fd);
+        }
+
+        /* Start listening on ephemeral port */
+        priv->listen_fd = tcp_listen_on_port(priv->listen_port);
+        if (priv->listen_fd < 0) {
+            g_free(manager_host);
+            goto error;
+        }
+        priv->is_listening = true;
+
+        /* Start accept thread */
+        priv->accept_thread_running = true;
+        qemu_thread_create(&priv->accept_thread, "tcp-accept",
+                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+
+        /* Register with manager */
+        ret = tcp_worker_register_with_manager(priv);
+        if (ret < 0) {
+            g_free(manager_host);
+            goto error;
+        }
+
+        rdma_info_report("TCP backend: Worker initialized, registered with "
+                         "manager");
+
+    } else {
+        rdma_error_report("TCP backend: Invalid config. Must be "
+                          "tcp:manager:... or tcp:worker:...");
+        goto error;
     }
 
     backend_dev->backend_private = priv;
-
-    rdma_info_report("TCP backend: Initialized successfully (%s mode)",
-                     listen_mode ? "listen" : "connect");
     return 0;
+
+error:
+    if (priv->listen_fd >= 0) {
+        close(priv->listen_fd);
+    }
+    if (priv->health_check_running) {
+        priv->health_check_running = false;
+        qemu_thread_join(&priv->health_check_thread);
+    }
+    if (priv->mesh_nodes) {
+        g_hash_table_destroy(priv->mesh_nodes);
+    }
+    if (priv->mesh_table_lock.initialized) {
+        qemu_mutex_destroy(&priv->mesh_table_lock);
+    }
+    if (priv->manager_conn) {
+        tcp_connection_free(priv->manager_conn);
+    }
+    g_free(priv->manager_host);
+    g_hash_table_destroy(priv->pds);
+    g_hash_table_destroy(priv->mrs);
+    g_hash_table_destroy(priv->cqs);
+    g_hash_table_destroy(priv->qps);
+    g_hash_table_destroy(priv->qp_pairs);
+    g_hash_table_destroy(priv->connections);
+    qemu_mutex_destroy(&priv->lock);
+    qemu_mutex_destroy(&priv->conn_table_lock);
+    g_free(priv);
+    return -1;
 }
 
 static void tcp_fini(RdmaBackendDev *backend_dev)
@@ -650,25 +1819,38 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
 
     rdma_info_report("TCP backend: Cleaning up");
 
-    /* Stop receive thread */
-    if (priv->recv_thread_running) {
-        priv->recv_thread_running = false;
-        qemu_thread_join(&priv->recv_thread);
+    /* Stop health check thread (manager only) */
+    if (priv->health_check_running) {
+        priv->health_check_running = false;
+        qemu_thread_join(&priv->health_check_thread);
     }
 
-    /* Close connections */
-    qemu_mutex_lock(&priv->conn_lock);
-    if (priv->sockfd >= 0) {
-        close(priv->sockfd);
-        priv->sockfd = -1;
+    /* Stop accept thread */
+    if (priv->accept_thread_running) {
+        priv->accept_thread_running = false;
+        qemu_thread_join(&priv->accept_thread);
     }
+
+    /* Close listen socket */
     if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
         priv->listen_fd = -1;
     }
-    qemu_mutex_unlock(&priv->conn_lock);
 
-    g_free(priv->remote_host);
+    /* Clean up manager/worker specific resources */
+    if (priv->mesh_nodes) {
+        g_hash_table_destroy(priv->mesh_nodes);
+    }
+    if (priv->mesh_table_lock.initialized) {
+        qemu_mutex_destroy(&priv->mesh_table_lock);
+    }
+    if (priv->manager_conn) {
+        tcp_connection_free(priv->manager_conn);
+    }
+    g_free(priv->manager_host);
+
+    /* Clean up all connections (threads are stopped in tcp_connection_free) */
+    g_hash_table_destroy(priv->connections);
 
     g_hash_table_destroy(priv->pds);
     g_hash_table_destroy(priv->mrs);
@@ -677,7 +1859,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     g_hash_table_destroy(priv->qp_pairs);
 
     qemu_mutex_destroy(&priv->lock);
-    qemu_mutex_destroy(&priv->conn_lock);
+    qemu_mutex_destroy(&priv->conn_table_lock);
 
     g_free(priv);
     backend_dev->backend_private = NULL;
@@ -694,7 +1876,8 @@ static int tcp_query_port(RdmaBackendDev *backend_dev,
     attr->state = IBV_PORT_ACTIVE;
     attr->max_mtu = IBV_MTU_4096;
     attr->active_mtu = IBV_MTU_1024;
-    attr->gid_tbl_len = 1;
+    /* Allow multiple GIDs so the driver can expose per-node mesh GIDs */
+    attr->gid_tbl_len = MAX_PORT_GIDS;
     attr->port_cap_flags = IBV_PORT_CM_SUP;
     attr->max_msg_sz = 0x80000000;
     attr->pkey_tbl_len = 1;
@@ -844,8 +2027,10 @@ static void tcp_destroy_cq(RdmaBackendCQ *cq)
         }
         g_queue_free(tcq->completions);
         qemu_mutex_destroy(&tcq->lock);
+        /* Note: g_hash_table_remove will automatically free tcq via g_free
+         * since the hash table was created with g_free as the
+         * value_destroy_func */
         g_hash_table_remove(priv->cqs, GUINT_TO_POINTER(handle));
-        g_free(tcq);
     }
     qemu_mutex_unlock(&priv->lock);
 
@@ -904,8 +2089,10 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     tqp->qp_type = qp_type;
     tqp->state = IBV_QPS_RESET;
     tqp->pd_handle = (uint32_t)(uintptr_t)pd->ibpd;
+    tqp->remote_node_id = 0; /* Default to node 0 (manager) */
     tqp->send_queue = g_queue_new();
     tqp->recv_queue = g_queue_new();
+    tqp->pending_data = g_queue_new();
     qemu_mutex_init(&tqp->lock);
 
     /* Look up CQs */
@@ -982,6 +2169,11 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         tqp->remote_qpn = dqpn;
         if (dgid) {
             memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
+            /* Extract node ID from GID if in worker mode */
+            /* For now, use a simple encoding: node_id in last byte */
+            if (priv->mode == TCP_MODE_WORKER) {
+                tqp->remote_node_id = dgid->raw[15];
+            }
         }
         tqp->rq_psn = rq_psn;
         if (qkey_set) {
@@ -990,7 +2182,8 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
     qemu_mutex_unlock(&priv->lock);
 
-    rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u)", qpn, dqpn);
+    rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, node=%u)", qpn, dqpn,
+                     tqp ? tqp->remote_node_id : 0);
     return 0;
 }
 
@@ -1052,11 +2245,14 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
     TcpQP *tqp;
     TcpWR *wr;
+    TcpConnection *conn;
     uint32_t seq;
     int ret;
 
-    if (!priv || !priv->is_connected) {
-        rdma_error_report("TCP: Not connected, cannot post send");
+    rdma_info_report("TCP: >>> post_send CALLED for QPN %u", qpn);
+
+    if (!priv) {
+        rdma_error_report("TCP: Invalid backend");
         return;
     }
 
@@ -1064,46 +2260,62 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
     if (!tqp) {
         qemu_mutex_unlock(&priv->lock);
+        rdma_error_report("TCP: QP %u not found", qpn);
         return;
     }
 
+    /* Get remote node ID and connection */
+    uint32_t dst_node = tqp->remote_node_id;
+
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
-    wr->num_sge = num_sge;
-    for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-        wr->sge[i].addr = (void *)(uintptr_t)sge[i].addr;
-        wr->sge[i].length = sge[i].length;
-        wr->sge[i].lkey = sge[i].lkey;
-    }
+    wr->num_sge = 0;
+    tcp_wr_map_sge(tqp, wr, sge, num_sge);
     g_queue_push_tail(tqp->send_queue, wr);
     seq = priv->next_seq++;
     qemu_mutex_unlock(&priv->lock);
 
+    /* Get connection for destination node */
+    conn = tcp_get_connection(priv, dst_node);
+    if (!conn || !conn->is_connected) {
+        rdma_error_report("TCP: No connection to node %u", dst_node);
+        return;
+    }
+
     /* Send POST_SEND message over TCP */
-    qemu_mutex_lock(&priv->conn_lock);
-    if (priv->sockfd >= 0) {
+    qemu_mutex_lock(&conn->lock);
+    if (conn->sockfd >= 0) {
         /* Send work request */
-        ret = tcp_send_message(priv->sockfd, TCP_MSG_POST_SEND, wr,
-                               sizeof(*wr) + sizeof(TcpSGE) * num_sge, seq);
+        ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, wr, sizeof(*wr),
+                               seq, priv->local_node_id, dst_node, qpn,
+                               tqp->remote_qpn);
         if (ret < 0) {
-            rdma_error_report("TCP: Failed to send POST_SEND");
+            rdma_error_report("TCP: Failed to send POST_SEND to node %u",
+                              dst_node);
         }
 
         /* Send data payloads */
         for (uint32_t i = 0; i < num_sge; i++) {
-            if (sge[i].addr && sge[i].length > 0) {
-                ret = tcp_send_message(priv->sockfd, TCP_MSG_DATA,
-                                       (const void *)(uintptr_t)sge[i].addr,
-                                       sge[i].length, seq);
+            void *host_buf = (i < 32) ? wr->sge[i].host_addr : NULL;
+            uint32_t len = (i < 32) ? wr->sge[i].length : 0;
+            if (host_buf && len > 0) {
+                ret = tcp_send_message(conn->sockfd, TCP_MSG_DATA, host_buf,
+                                       len, seq, priv->local_node_id, dst_node,
+                                       qpn, tqp->remote_qpn);
                 if (ret < 0) {
-                    rdma_error_report("TCP: Failed to send data");
+                    rdma_error_report("TCP: Failed to send data to node %u",
+                                      dst_node);
                 }
             }
         }
     }
-    qemu_mutex_unlock(&priv->conn_lock);
+    qemu_mutex_unlock(&conn->lock);
 
-    rdma_info_report("TCP: Posted send to QP %u, %u SGEs", qpn, num_sge);
+    /* Done with mapped send buffers */
+    tcp_wr_unmap_sge(tqp, wr);
+
+    rdma_info_report("TCP: Posted send QP %u -> node %u, %u SGEs", qpn,
+                     dst_node, num_sge);
 }
 
 static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
@@ -1114,7 +2326,10 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
     TcpQP *tqp;
     TcpWR *wr;
-    uint32_t seq;
+    TcpConnection *conn;
+    uint32_t seq = 0;
+
+    rdma_info_report("TCP: >>> post_recv CALLED for QPN %u", qpn);
 
     if (!priv) {
         return;
@@ -1127,25 +2342,87 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
+    uint32_t dst_node = tqp->remote_node_id;
+
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
-    wr->num_sge = num_sge;
-    for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-        wr->sge[i].addr = (void *)(uintptr_t)sge[i].addr;
-        wr->sge[i].length = sge[i].length;
-        wr->sge[i].lkey = sge[i].lkey;
+    wr->num_sge = 0;
+    tcp_wr_map_sge(tqp, wr, sge, num_sge);
+
+    /* Check if there's pending data waiting for this recv WR */
+    TcpPendingData *pending = g_queue_pop_head(tqp->pending_data);
+    if (pending) {
+        /* We have buffered data - process it immediately */
+        rdma_info_report(
+            "TCP: Processing buffered data (%u bytes) for new recv WR",
+            pending->length);
+
+        uint32_t bytes_copied = 0;
+        for (uint32_t i = 0; i < num_sge && bytes_copied < pending->length;
+             i++) {
+            uint32_t to_copy = sge[i].length;
+            if (bytes_copied + to_copy > pending->length) {
+                to_copy = pending->length - bytes_copied;
+            }
+            void *host_buf = wr->sge[i].host_addr;
+            if (host_buf && to_copy > 0) {
+                memcpy(host_buf, (char *)pending->data + bytes_copied, to_copy);
+                bytes_copied += to_copy;
+            }
+        }
+
+        /* Post completion directly */
+        qemu_mutex_unlock(&priv->lock);
+        rdma_backend_complete_work(IBV_WC_SUCCESS, 0, bytes_copied, qpn,
+                                   IBV_WC_RECV, ctx);
+        qemu_mutex_lock(&priv->lock);
+
+        rdma_info_report("TCP: Completed buffered recv, wr_id=%lu, bytes=%u",
+                         (uint64_t)(uintptr_t)ctx, bytes_copied);
+
+        tcp_wr_unmap_sge(tqp, wr);
+        g_free(wr);
+
+        /* Send completion ACK */
+        TcpConnection *src_conn =
+            tcp_get_connection(priv, pending->src_node_id);
+        if (src_conn && src_conn->is_connected) {
+            qemu_mutex_lock(&src_conn->lock);
+            if (src_conn->sockfd >= 0) {
+                tcp_send_message(src_conn->sockfd, TCP_MSG_COMPLETION, NULL, 0,
+                                 seq, priv->local_node_id, pending->src_node_id,
+                                 qpn, pending->src_qpn);
+            }
+            qemu_mutex_unlock(&src_conn->lock);
+        }
+
+        g_free(pending->data);
+        g_free(pending);
+        g_free(wr);
+        qemu_mutex_unlock(&priv->lock);
+
+        rdma_info_report("TCP: Posted recv (used buffered data) to QP %u", qpn);
+        return;
     }
+
+    /* No pending data - queue the WR normally */
     g_queue_push_tail(tqp->recv_queue, wr);
     seq = priv->next_seq++;
     qemu_mutex_unlock(&priv->lock);
 
-    /* Send POST_RECV message over TCP */
-    qemu_mutex_lock(&priv->conn_lock);
-    if (priv->sockfd >= 0 && priv->is_connected) {
-        tcp_send_message(priv->sockfd, TCP_MSG_POST_RECV, wr,
-                         sizeof(*wr) + sizeof(TcpSGE) * num_sge, seq);
+    /* Get connection */
+    conn = tcp_get_connection(priv, dst_node);
+    if (!conn || !conn->is_connected) {
+        return;
     }
-    qemu_mutex_unlock(&priv->conn_lock);
+
+    /* Send POST_RECV message over TCP */
+    qemu_mutex_lock(&conn->lock);
+    if (conn->sockfd >= 0) {
+        tcp_send_message(conn->sockfd, TCP_MSG_POST_RECV, wr, sizeof(*wr), seq,
+                         priv->local_node_id, dst_node, qpn, tqp->remote_qpn);
+    }
+    qemu_mutex_unlock(&conn->lock);
 
     rdma_info_report("TCP: Posted recv to QP %u, %u SGEs", qpn, num_sge);
 }
@@ -1157,7 +2434,17 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
                        union ibv_gid *gid)
 {
-    rdma_info_report("TCP: Added GID");
+    TcpBackendPrivate *priv = get_private(backend_dev);
+
+    /* In worker mode, encode local node ID in GID */
+    if (priv && priv->mode == TCP_MODE_WORKER) {
+        memset(gid, 0, sizeof(*gid));
+        gid->raw[15] = (uint8_t)priv->local_node_id;
+        rdma_info_report("TCP: Added GID with node_id=%u", priv->local_node_id);
+    } else {
+        rdma_info_report("TCP: Added GID");
+    }
+
     return 0;
 }
 

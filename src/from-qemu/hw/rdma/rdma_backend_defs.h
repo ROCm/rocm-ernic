@@ -124,6 +124,11 @@ typedef struct RdmaBackendDev {
     RdmaDeviceResources *rdma_dev_res;
     uint8_t port_num;
 
+    /* Mesh metadata (used by TCP mesh backend) */
+    bool mesh_enabled;
+    uint8_t mesh_node_id;
+    uint8_t mesh_num_nodes;
+
     /* Verbs-specific fields (kept for verbs backend) */
     struct ibv_device *ib_dev;
     struct ibv_context *context;

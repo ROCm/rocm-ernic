@@ -210,6 +210,9 @@ struct rocm_ernic_dev {
     unsigned long flags;
     struct list_head device_link;
     unsigned int dsr_version;
+    bool mesh_enabled;
+    u8 mesh_node_id;
+    u8 mesh_num_nodes;
 
     /* Locking and interrupt information. */
     spinlock_t cmd_lock; /* Command lock. */
@@ -244,6 +247,7 @@ struct rocm_ernic_dev {
 
     /* Network device information. */
     struct net_device *netdev;
+    struct net_device *mesh_dummy_netdev;
     struct notifier_block nb_netdev;
 };
 

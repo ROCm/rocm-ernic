@@ -250,6 +250,8 @@ static int load_dsr(PVRDMADev *dev)
                      (uint64_t)dsr->cmd_slot_dma);
     dsr_info->req = rdma_pci_dma_map(pci_dev, dsr->cmd_slot_dma,
                                      sizeof(union pvrdma_cmd_req));
+    rdma_info_report("load_dsr: mapped cmd_slot to host ptr=%p (dma=%#lx)",
+                     dsr_info->req, (uint64_t)dsr->cmd_slot_dma);
     if (!dsr_info->req) {
         rdma_error_report("Failed to map to command slot address");
         rc = -ENOMEM;
@@ -257,8 +259,12 @@ static int load_dsr(PVRDMADev *dev)
     }
 
     /* Map to response slot */
+    rdma_info_report("load_dsr: resp_slot_dma = %#lx",
+                     (uint64_t)dsr->resp_slot_dma);
     dsr_info->rsp = rdma_pci_dma_map(pci_dev, dsr->resp_slot_dma,
                                      sizeof(union pvrdma_cmd_resp));
+    rdma_info_report("load_dsr: mapped resp_slot to host ptr=%p (dma=%#lx)",
+                     dsr_info->rsp, (uint64_t)dsr->resp_slot_dma);
     if (!dsr_info->rsp) {
         rdma_error_report("Failed to map to response slot address");
         rc = -ENOMEM;
@@ -358,6 +364,12 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     dsr->caps.node_guid = dev->node_guid;
     dsr->caps.phys_port_cnt = MAX_PORTS;
     dsr->caps.max_pkeys = MAX_PKEYS;
+    /* Mesh metadata for TCP backend */
+    dsr->caps.mesh_node_id =
+        dev->backend_dev.mesh_enabled ? dev->backend_dev.mesh_node_id : 0xff;
+    dsr->caps.mesh_num_nodes =
+        dev->backend_dev.mesh_enabled ? dev->backend_dev.mesh_num_nodes : 0;
+    dsr->caps.mesh_flags = dev->backend_dev.mesh_enabled ? 1 : 0;
 
     /* Per libvfio-user pattern from server.c:
      * Immediately call vfu_sgl_put() after writing to flush to guest.
@@ -485,11 +497,33 @@ static void pvrdma_start(PVRDMADev *dev)
 
 static void activate_device(PVRDMADev *dev)
 {
+    union ibv_gid default_gid;
+    int ret;
+
     rdma_info_report("activate_device: Activating device (backend=%s)",
                      dev->backend_dev.context ? "available" : "not available");
     pvrdma_start(dev);
     set_reg_val(dev, PVRDMA_REG_ERR, 0);
     rdma_info_report("activate_device: Device activated successfully");
+
+    /* Initialize default GID (index 0) for TCP mesh backend */
+    /* The backend will set node-specific GID if in mesh mode */
+    memset(&default_gid, 0, sizeof(default_gid));
+    default_gid.raw[0] = 0xfe;
+    default_gid.raw[1] = 0x80;
+    default_gid.raw[8] = 0x02;
+    default_gid.raw[11] = 0xff;
+    default_gid.raw[12] = 0xfe;
+    /* Last bytes will be set by tcp_add_gid if in mesh mode */
+
+    ret = rdma_rm_add_gid(&dev->rdma_dev_res, &dev->backend_dev,
+                          dev->backend_eth_device_name, &default_gid, 0);
+    if (ret == 0) {
+        rdma_info_report("activate_device: Initialized default GID at index 0");
+    } else {
+        rdma_info_report("activate_device: Failed to add default GID (ret=%d)",
+                         ret);
+    }
 }
 
 static int unquiesce_device(PVRDMADev *dev)
@@ -627,14 +661,25 @@ void pvrdma_uar_write_impl(void *opaque, hwaddr addr, uint64_t val,
 {
     PVRDMADev *dev = opaque;
 
+    rdma_info_report(">>> UAR WRITE: addr=0x%lx, val=0x%lx, size=%u",
+                     (unsigned long)addr, (unsigned long)val, size);
+
     dev->stats.uar_writes++;
 
     switch (addr & 0xFFF) { /* Mask with 0xFFF as each UC gets page */
     case PVRDMA_UAR_QP_OFFSET:
+        rdma_info_report(
+            ">>> UAR: QP doorbell! val=0x%lx, flags: send=%d recv=%d",
+            (unsigned long)val, !!(val & PVRDMA_UAR_QP_SEND),
+            !!(val & PVRDMA_UAR_QP_RECV));
         if (val & PVRDMA_UAR_QP_SEND) {
+            rdma_info_report(">>> UAR: Calling pvrdma_qp_send(handle=%u)",
+                             val & PVRDMA_UAR_HANDLE_MASK);
             pvrdma_qp_send(dev, val & PVRDMA_UAR_HANDLE_MASK);
         }
         if (val & PVRDMA_UAR_QP_RECV) {
+            rdma_info_report(">>> UAR: Calling pvrdma_qp_recv(handle=%u)",
+                             val & PVRDMA_UAR_HANDLE_MASK);
             pvrdma_qp_recv(dev, val & PVRDMA_UAR_HANDLE_MASK);
         }
         break;
@@ -840,6 +885,10 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     if (rc) {
         goto out;
     }
+    /* Ensure backend holds the live rdma_dev_res pointer after any init reorders */
+    dev->backend_dev.rdma_dev_res = &dev->rdma_dev_res;
+    rdma_info_report("pvrdma_realize: backend_dev.rdma_dev_res=%p (expected %p)",
+                     dev->backend_dev.rdma_dev_res, &dev->rdma_dev_res);
 
     init_dev_caps(dev);
 

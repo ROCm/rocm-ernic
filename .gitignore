@@ -104,3 +104,7 @@ modules.order
 modules.order
 Module.symvers
 .cursor/
+setup-docs/
+docs/
+scripts/
+setup-scripts/

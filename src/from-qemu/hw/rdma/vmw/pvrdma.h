@@ -92,7 +92,7 @@ struct PVRDMADev {
     MemoryRegion regs;
     uint32_t regs_data[RDMA_BAR1_REGS_SIZE];
     MemoryRegion uar;
-    uint32_t uar_data[RDMA_BAR2_UAR_SIZE];
+    uint32_t uar_data[RDMA_BAR2_UAR_SIZE / sizeof(uint32_t)];
     DSRInfo dsr_info;
     int interrupt_mask;
     struct ibv_device_attr dev_attr;
