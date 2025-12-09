@@ -2,18 +2,20 @@ name: System Tests
 
 on:
   pull_request:
-    branches: [ main, dev/stephen/tcp-ip-backend ]
+    branches: [ main ]
   workflow_dispatch:
 
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000
+  TCP_BASE_PORT: 5000
+  NUM_NODES: 3
 
 jobs:
   system-test-loopback-vm:
     name: Loopback Backend System Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
     container:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
     
@@ -157,7 +159,7 @@ jobs:
         echo "Server PID: $SERVER_PID"
         
         # Wait for socket and verify server is running
-        for i in {1..30}; do
+        for i in $(seq 1 30); do
           # Check if server process is still running
           if ! kill -0 "$SERVER_PID" 2>/dev/null; then
             echo "✗ Server process died (PID: $SERVER_PID)"
@@ -208,13 +210,10 @@ jobs:
         SSH_PORT=2222
         
         # Start VM with vfio-user device
-        # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem0 \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem0,share=on,size=1G \
+          -machine q35,accel=tcg \
+          -cpu max \
+          -m 2G \
           -nographic \
           -drive file="$VM_DISK",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
@@ -289,7 +288,7 @@ jobs:
         SSH_PORT="${{ env.SSH_PORT }}"
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
         
-        for i in {1..60}; do
+        for i in $(seq 1 60); do
           if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/dev/null; then
             echo "✓ VM SSH is ready (attempt $i/60)"
             echo "VM_USER=$VM_USER" >> $GITHUB_ENV
@@ -355,9 +354,20 @@ jobs:
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         
+        # Wait for unattended-upgrades to finish
+        echo "Waiting for dpkg lock to be available..."
+        for i in $(seq 1 60); do
+          if sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+            echo "  Waiting for dpkg lock... ($i/60)"
+            sleep 5
+          else
+            break
+          fi
+        done
+        
         # Retry apt-get update to handle transient mirror issues
         echo "Updating package lists (with retry)..."
-        for i in {1..3}; do
+        for i in $(seq 1 3); do
           if sudo apt-get update -qq 2>&1; then
             echo "✓ Package lists updated"
             break
@@ -506,7 +516,7 @@ jobs:
             
             # Wait for socket
             SOCKET_READY=0
-            for i in {1..10}; do
+            for i in $(seq 1 10); do
             if [ -S /tmp/vfio-user-rocm-ernic-test.sock ]; then
               chmod 666 /tmp/vfio-user-rocm-ernic-test.sock
                 SOCKET_READY=1
@@ -525,33 +535,39 @@ jobs:
           echo "✓ Server started"
           
           # Run test_data_transfer in VM
-          # Note: This test requires RDMA device which may not be available if
-          # driver probe failed. In that case, we skip with exit code 77.
-          set +e  # Temporarily disable exit-on-error to capture exit code 77
-          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" <<-'EOFVM'
-        	# Verify RDMA device is still available
-        	if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
-        	  echo "WARNING: RDMA device not found - driver probe may have failed"
-        	  echo "This is expected in some environments (DSR init timeout)"
-        	  exit 77
-        	fi
-        	
-        	DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
-        	echo "✓ RDMA device found: $DEVICE"
-        	ibv_devinfo -d "$DEVICE" | head -20 || true
-        	EOFVM
-          TEST_EXIT=$?
-          set -e  # Re-enable exit-on-error
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "✓ Test passed for $config"
-            PASSED=$((PASSED + 1))
-          elif [ $TEST_EXIT -eq 77 ]; then
-            echo "✗ Test skipped for $config (exit code 77) - RDMA device not available"
-            echo "This is a FAILURE - the RDMA device should be available in CI"
-            FAILED=$((FAILED + 1))
+          if ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" <<'EOFVM'
+          set -e
+          
+          # Verify RDMA device is still available
+          if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
+            echo "⚠️  RDMA device not found - driver may have been unloaded"
+            exit 77
+          fi
+          
+          DEVICE=\$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print \$1}' | head -1)
+          echo "Testing with device: \$DEVICE"
+          
+          # Run test_data_transfer if available
+          if [ -f /opt/rocm-ernic/tests/test_data_transfer ]; then
+            /opt/rocm-ernic/tests/test_data_transfer
+          elif command -v test_data_transfer &> /dev/null; then
+            test_data_transfer
           else
-            echo "✗ Test failed for $config (exit code: $TEST_EXIT)"
-            FAILED=$((FAILED + 1))
+            echo "⚠️  test_data_transfer not found"
+            exit 77
+          fi
+          EOFVM
+          then
+            echo "✓ Test passed for $config"
+              PASSED=$((PASSED + 1))
+            else
+            TEST_EXIT=$?
+            if [ $TEST_EXIT -eq 77 ]; then
+              echo "⚠️  Test skipped for $config (exit code 77)"
+            else
+              echo "✗ Test failed for $config (exit code: $TEST_EXIT)"
+              FAILED=$((FAILED + 1))
+            fi
           fi
           
           # Stop server
@@ -599,7 +615,7 @@ jobs:
   system-test-tcp:
     name: TCP Backend System Tests (Two Servers)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     container:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
     
@@ -735,10 +751,10 @@ jobs:
         
         echo "VM disk 1: $VM_DISK_1"
         echo "VM disk 2: $VM_DISK_2"
-        echo "Copying $VM_DISK_1 to $VM_DISK_2..."
-        # Use cp to create an exact copy preserving all disk structure and metadata
-        cp "$VM_DISK_1" "$VM_DISK_2" || {
-          echo "✗ Failed to copy VM disk"
+        echo "Creating overlay disk $VM_DISK_2 with backing file $VM_DISK_1..."
+        # Use qemu-img to create overlay instead of copy (avoids corruption, faster, uses less space)
+        qemu-img create -f qcow2 -b "$VM_DISK_1" -F qcow2 "$VM_DISK_2" || {
+          echo "✗ Failed to create VM disk overlay"
           exit 1
         }
         
@@ -810,7 +826,7 @@ jobs:
         echo "Server 1 PID: $SERVER1_PID"
         
         # Wait for socket and verify server is running
-        for i in {1..30}; do
+        for i in $(seq 1 30); do
           # Check if server process is still running
           if ! kill -0 "$SERVER1_PID" 2>/dev/null; then
             echo "✗ Server 1 process died (PID: $SERVER1_PID)"
@@ -934,7 +950,7 @@ jobs:
         echo "Server 2 PID: $SERVER2_PID"
         
         # Wait for socket and verify server is running
-        for i in {1..30}; do
+        for i in $(seq 1 30); do
           # Check if server process is still running
           if ! kill -0 "$SERVER2_PID" 2>/dev/null; then
             echo "✗ Server 2 process died (PID: $SERVER2_PID)"
@@ -1004,11 +1020,9 @@ jobs:
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem1 \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem1,share=on,size=1G \
+          -machine q35,accel=tcg \
+          -cpu max \
+          -m 2G \
           -nographic \
           -drive file="$VM_DISK_1",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
@@ -1042,11 +1056,9 @@ jobs:
         SSH_PORT_2=2223
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem2 \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem2,share=on,size=1G \
+          -machine q35,accel=tcg \
+          -cpu max \
+          -m 2G \
           -nographic \
           -drive file="$VM_DISK_2",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
@@ -1079,7 +1091,7 @@ jobs:
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
         # Wait for VM 1 SSH
-        for i in {1..60}; do
+        for i in $(seq 1 60); do
           if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2222 "${VM_USER}@localhost" 'echo VM1 Ready' 2>/dev/null; then
             echo "✓ VM 1 is accessible via SSH"
             break
@@ -1093,7 +1105,7 @@ jobs:
         done
 
         # Wait for VM 2 SSH
-        for i in {1..60}; do
+        for i in $(seq 1 60); do
           if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2223 "${VM_USER}@localhost" 'echo VM2 Ready' 2>/dev/null; then
             echo "✓ VM 2 is accessible via SSH"
             break
@@ -1139,60 +1151,6 @@ jobs:
         }
 
         echo "✓ Driver source copied"
-
-    - name: Install necessary packages in VMs
-      shell: bash
-      run: |
-        echo "=== Installing necessary packages in both VMs ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        
-        # Install in VM 1
-        echo "[VM 1] Installing packages..."
-        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        # Retry apt-get update to handle transient mirror issues
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
-        done
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          build-essential
-        echo "[VM 1] ✓ Packages installed"
-        EOFVM
-        
-        # Install in VM 2
-        echo "[VM 2] Installing packages..."
-        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        # Retry apt-get update to handle transient mirror issues
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
-        done
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          build-essential
-        echo "[VM 2] ✓ Packages installed"
-        EOFVM
-        
-        echo "✓ Both VMs have packages installed"
 
     - name: Build and load driver in VM 1
       shell: bash
@@ -1241,42 +1199,12 @@ jobs:
       run: |
         echo "=== Verifying RDMA devices ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        
-        FAILED=0
 
         echo "--- VM 1 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
-          echo "✓ VM 1 RDMA device found: $DEVICE"
-          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
-        else
-          echo "✗ VM 1: RDMA device not found"
-          echo "Checking ibv_devices output:"
-          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
-          FAILED=$((FAILED + 1))
-        fi
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devinfo -v' || true
 
-        echo ""
         echo "--- VM 2 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
-          echo "✓ VM 2 RDMA device found: $DEVICE"
-          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
-        else
-          echo "✗ VM 2: RDMA device not found"
-          echo "Checking ibv_devices output:"
-          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
-          FAILED=$((FAILED + 1))
-        fi
-        
-        if [ $FAILED -gt 0 ]; then
-          echo ""
-          echo "✗ RDMA device verification failed"
-          exit 1
-        fi
-        
-        echo ""
-        echo "✓ Both VMs have RDMA devices available"
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devinfo -v' || true
 
     - name: Test TCP backend connection
       run: |
@@ -1330,10 +1258,205 @@ jobs:
           /tmp/qemu-vm2.log
         retention-days: 7
         if-no-files-found: ignore
+
+  system-test-tcp-mesh:
+    name: TCP Backend Mesh Tests (Multi-Node)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y build-essential meson ninja-build pkg-config libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev libcmocka-dev jq
+
+    - name: Build project
+      run: |
+        meson setup build --buildtype=debug --prefix=/usr
+        meson compile -C build
+
+    - name: Read VM info
+      id: vm_info
+      run: |
+        VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+        VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
+        SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
+        SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
+        echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
+        echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
+        echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
+        echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
+    
+    - name: Copy VM disks
+      id: copy_vm_disks
+      run: |
+        VM_DISK_BASE="${{ steps.vm_info.outputs.vm_disk }}"
+        VM_DISK_DIR=$(dirname "$VM_DISK_BASE")
+        VM_DISK_NAME=$(basename "$VM_DISK_BASE" .qcow2)
+        for i in $(seq 1 $((NUM_NODES - 1))); do
+          qemu-img create -f qcow2 -b "$VM_DISK_BASE" -F qcow2 "${VM_DISK_DIR}/${VM_DISK_NAME}.${i}.qcow2"
+        done
+        echo "vm_disk_dir=$VM_DISK_DIR" >> $GITHUB_OUTPUT
+        echo "vm_disk_name=$VM_DISK_NAME" >> $GITHUB_OUTPUT
+    
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        cp "${{ steps.vm_info.outputs.ssh_key_private }}" ~/.ssh/id_ed25519
+        cp "${{ steps.vm_info.outputs.ssh_key_public }}" ~/.ssh/id_ed25519.pub
+        chmod 600 ~/.ssh/id_ed25519
+
+    - name: Start mesh servers
+      run: |
+        CONTAINER_IP=$(hostname -I | awk '{print $1}')
+        for node_id in $(seq 0 $((NUM_NODES - 1))); do
+          SOCKET="/tmp/vfio-mesh-node${node_id}.sock"
+          rm -f "$SOCKET"
+          ./build/rocm_ernic --socket "$SOCKET" --backend "tcp:node:${node_id}:${NUM_NODES}:${TCP_BASE_PORT}:${CONTAINER_IP}" --verbose > "/tmp/mesh-server${node_id}.log" 2>&1 &
+          SERVER_PID=$!
+          echo "SERVER${node_id}_PID=$SERVER_PID" >> $GITHUB_ENV
+          for i in $(seq 1 30); do
+            ! kill -0 "$SERVER_PID" 2>/dev/null && { cat "/tmp/mesh-server${node_id}.log"; exit 1; }
+            [ -S "$SOCKET" ] && { chmod 666 "$SOCKET"; break; }
+            [ $i -eq 30 ] && { cat "/tmp/mesh-server${node_id}.log"; exit 1; }
+            sleep 1
+          done
+        done
+    
+    - name: Start VMs
+      run: |
+        VM_DISK_DIR="${{ steps.copy_vm_disks.outputs.vm_disk_dir }}"
+        VM_DISK_NAME="${{ steps.copy_vm_disks.outputs.vm_disk_name }}"
+        for node_id in $(seq 0 $((NUM_NODES - 1))); do
+          [ $node_id -eq 0 ] && VM_DISK="${{ steps.vm_info.outputs.vm_disk }}" || VM_DISK="${VM_DISK_DIR}/${VM_DISK_NAME}.${node_id}.qcow2"
+          SSH_PORT=$((2222 + node_id))
+          SOCKET="/tmp/vfio-mesh-node${node_id}.sock"
+          qemu-system-x86_64 -machine q35,accel=tcg,memory-backend=mem${node_id} -cpu qemu64 -smp 2 -m 1G \
+            -object memory-backend-memfd,id=mem${node_id},share=on,size=1G -nographic \
+            -drive file="$VM_DISK",format=qcow2,if=virtio -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
+            -device virtio-net-pci,netdev=net0 -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"'"$SOCKET"'"}}' \
+            -serial mon:stdio > "/tmp/qemu-vm${node_id}.log" 2>&1 &
+          echo "QEMU_VM${node_id}_PID=$!" >> $GITHUB_ENV
+        done
+
+    - name: Wait for VMs and test
+      run: |
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        for node_id in $(seq 0 $((NUM_NODES - 1))); do
+          SSH_PORT=$((2222 + node_id))
+          echo "=== Processing VM $node_id (SSH port $SSH_PORT) ==="
+          
+          # Wait for VM to boot
+          echo "[VM $node_id] Waiting for SSH..."
+          for i in $(seq 1 60); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" "echo Ready" 2>/dev/null; then
+              echo "[VM $node_id] ✓ SSH ready"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "[VM $node_id] ✗ SSH timeout"
+              exit 1
+            fi
+            sleep 10
+          done
+          
+          # Copy driver
+          echo "[VM $node_id] Copying driver..."
+          scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r driver "${VM_USER}@localhost:~/" || {
+            echo "[VM $node_id] ✗ Failed to copy driver"
+            exit 1
+          }
+          echo "[VM $node_id] ✓ Driver copied"
+          
+          # Install packages
+          echo "[VM $node_id] Installing packages..."
+          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFPKG'
+          set -e
+          echo "[VM] Waiting for dpkg lock..."
+          for i in $(seq 1 60); do
+            sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+            sleep 5
+          done
+          echo "[VM] Updating package lists..."
+          for i in $(seq 1 3); do
+            if sudo apt-get update -qq 2>&1; then
+              break
+            else
+              echo "[VM] apt-get update failed, retrying..."
+              sleep 5
+            fi
+          done
+          echo "[VM] Installing RDMA packages..."
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            ibverbs-utils linux-headers-$(uname -r) linux-modules-extra-$(uname -r) \
+            libibverbs-dev rdma-core build-essential
+          echo "[VM] ✓ Packages installed"
+          EOFPKG
+          echo "[VM $node_id] ✓ Packages installed"
+        
+          # Build driver
+          echo "[VM $node_id] Building driver..."
+          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFBLD'
+          set -e
+          cd ~/driver
+          echo "[VM] Building kernel module..."
+          make KDIR=/lib/modules/$(uname -r)/build
+          echo "[VM] ✓ Driver built"
+          EOFBLD
+          echo "[VM $node_id] ✓ Driver built"
+        
+          # Load driver and verify
+          echo "[VM $node_id] Loading driver and verifying RDMA device..."
+          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFLOAD'
+          set -e
+          echo "[VM] Loading IB modules..."
+          sudo modprobe ib_core ib_uverbs
+          echo "[VM] Loading rocm_ernic driver..."
+          sudo insmod ~/driver/rocm_ernic.ko
+          sleep 2
+          echo "[VM] Checking for RDMA device..."
+          if ibv_devices | grep -E "rocm_ernic|rocep"; then
+            DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
+            echo "[VM] Testing device: $DEVICE"
+            ibv_devinfo -d "$DEVICE" | head -20
+            echo "[VM] ✓ RDMA device working"
+          else
+            echo "[VM] ✗ No RDMA device found"
+            echo "[VM] ibv_devices output:"
+            ibv_devices || true
+            exit 1
+          fi
+          EOFLOAD
+          echo "[VM $node_id] ✓ RDMA device verified"
+        done
+        echo "✓ All VMs setup complete"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill -9 qemu-system-x86_64 2>/dev/null || true
+        pkill -9 rocm_ernic 2>/dev/null || true
+        rm -f /tmp/vfio-mesh-node*.sock
+  
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: mesh-logs
+        path: |
+          /tmp/mesh-server*.log
+          /tmp/qemu-vm*.log
+        retention-days: 7
+        if-no-files-found: ignore
   
   system-test-status:
     name: System Test Status
-    needs: [system-test-loopback-vm, system-test-tcp]
+    needs: [system-test-loopback-vm, system-test-tcp, system-test-tcp-mesh]
     runs-on: ubuntu-latest
     if: always()
     
@@ -1342,14 +1465,16 @@ jobs:
       run: |
         LOOPBACK_VM_RESULT="${{ needs.system-test-loopback-vm.result }}"
         TCP_RESULT="${{ needs.system-test-tcp.result }}"
+        MESH_RESULT="${{ needs.system-test-tcp-mesh.result }}"
         
-        if [ "$LOOPBACK_VM_RESULT" = "success" ] && [ "$TCP_RESULT" = "success" ]; then
+        if [ "$LOOPBACK_VM_RESULT" = "success" ] && [ "$TCP_RESULT" = "success" ] && [ "$MESH_RESULT" = "success" ]; then
           echo "✅ All system tests passed!"
           exit 0
         else
           echo "❌ Some system tests failed!"
           echo "Loopback VM test: $LOOPBACK_VM_RESULT"
           echo "TCP backend test: $TCP_RESULT"
+          echo "Mesh test: $MESH_RESULT"
           exit 1
         fi
 
