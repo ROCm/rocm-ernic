@@ -731,6 +731,9 @@ static int create_uc(PVRDMADev *dev, union pvrdma_cmd_req *req,
     struct pvrdma_cmd_create_uc *cmd = &req->create_uc;
     struct pvrdma_cmd_create_uc_resp *resp = &rsp->create_uc_resp;
 
+    rdma_info_report("create_uc: ENTRY dev=%p, &dev->rdma_dev_res=%p", dev,
+                     &dev->rdma_dev_res);
+
     memset(resp, 0, sizeof(*resp));
     return rdma_rm_alloc_uc(&dev->rdma_dev_res, cmd->pfn, &resp->ctx_handle);
 }

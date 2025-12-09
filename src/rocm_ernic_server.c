@@ -342,7 +342,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Allocate BAR memory */
     dev->bar0_mem = calloc(1, RDMA_BAR0_MSIX_SIZE);
     dev->bar1_mem = calloc(1, RDMA_BAR1_REGS_SIZE * sizeof(uint32_t));
-    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE * sizeof(uint32_t));
+    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE);
 
     if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem) {
         err(EXIT_FAILURE, "Failed to allocate BAR memory");

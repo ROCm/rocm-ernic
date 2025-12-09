@@ -127,6 +127,21 @@ static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
 
 static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
 {
+    if (!tbl) {
+        rdma_error_report("rdma_res_tbl_alloc: tbl is NULL");
+        return NULL;
+    }
+    if (!handle) {
+        rdma_error_report("rdma_res_tbl_alloc: handle pointer is NULL");
+        return NULL;
+    }
+    if (!tbl->bitmap) {
+        rdma_error_report("rdma_res_tbl_alloc: Table %s bitmap is NULL "
+                          "(tbl=%p, tbl_sz=%u, res_sz=%u)",
+                          tbl->name, tbl, tbl->tbl_sz, tbl->res_sz);
+        return NULL;
+    }
+
     qemu_mutex_lock(&tbl->lock);
 
     *handle = find_first_zero_bit(tbl->bitmap, tbl->tbl_sz);
@@ -326,6 +341,9 @@ int rdma_rm_alloc_uc(RdmaDeviceResources *dev_res, uint32_t pfn,
                      uint32_t *uc_handle)
 {
     RdmaRmUC *uc;
+
+    rdma_info_report("rdma_rm_alloc_uc: ENTRY dev_res=%p, uc_tbl=%p, tbl_sz=%u",
+                     dev_res, &dev_res->uc_tbl, dev_res->uc_tbl.tbl_sz);
 
     /* TODO: Need to make sure pfn is between bar start address and
      * bsd+RDMA_BAR2_UAR_SIZE
@@ -921,6 +939,8 @@ static void fini_ports(RdmaDeviceResources *dev_res,
 
 int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
 {
+    rdma_info_report("rdma_rm_init: ENTRY dev_res=%p", dev_res);
+
     dev_res->qp_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                              destroy_qp_hash_key, NULL);
     if (!dev_res->qp_hash) {
@@ -934,6 +954,8 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
     res_tbl_init("CQE_CTX", &dev_res->cqe_ctx_tbl,
                  dev_attr->max_qp * dev_attr->max_qp_wr, sizeof(void *));
     res_tbl_init("UC", &dev_res->uc_tbl, MAX_UCS, sizeof(RdmaRmUC));
+    rdma_info_report("rdma_rm_init: UC table initialized at %p with tbl_sz=%u",
+                     &dev_res->uc_tbl, dev_res->uc_tbl.tbl_sz);
     res_tbl_init("SRQ", &dev_res->srq_tbl, dev_attr->max_srq,
                  sizeof(RdmaRmSRQ));
 
