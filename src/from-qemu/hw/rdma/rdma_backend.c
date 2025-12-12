@@ -341,6 +341,18 @@ int rdma_backend_query_port(RdmaBackendDev *backend_dev,
 {
     int rc;
 
+    /* Prefer backend-specific implementation (e.g., TCP/loopback) */
+    if (backend_dev && backend_dev->backend_ops &&
+        backend_dev->backend_ops->query_port) {
+        rc = backend_dev->backend_ops->query_port(backend_dev, port_attr);
+        if (rc) {
+            rdma_error_report("backend query_port fail, rc=%d", rc);
+            return rc;
+        }
+        return 0;
+    }
+
+    /* Verbs backend fallback */
     rc = ibv_query_port(backend_dev->context, backend_dev->port_num, port_attr);
     if (rc) {
         rdma_error_report("ibv_query_port fail, rc=%d, errno=%d", rc, errno);
@@ -1294,7 +1306,18 @@ int rdma_backend_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
     RdmaCmMuxMsg msg = {};
     int ret;
 
+    /* Call backend-specific add_gid if available */
+    if (backend_dev->backend_ops && backend_dev->backend_ops->add_gid) {
+        ret = backend_dev->backend_ops->add_gid(backend_dev, ifname, gid);
+        if (ret) {
+            rdma_error_report("Backend add_gid failed (%d)", ret);
+            return ret;
+        }
+        /* Backend handled it, no need for rdmacm_mux for modern backends */
+        return 0;
+    }
 
+    /* Legacy path: use rdmacm_mux (for old verbs backend) */
     msg.hdr.op_code = RDMACM_MUX_OP_CODE_REG;
     memcpy(msg.hdr.sgid.raw, gid->raw, sizeof(msg.hdr.sgid));
 

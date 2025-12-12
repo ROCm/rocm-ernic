@@ -263,6 +263,10 @@ struct rocm_ernic_device_caps {
     u8 bmme_flags; /* FRWR Mem Mgmt Extensions */
     u8 gid_types;  /* ROCM_ERNIC_GID_TYPE_FLAG_ */
     u32 max_fast_reg_page_list_len;
+    /* Mesh/virtual topology metadata (for TCP mesh backend) */
+    u8 mesh_node_id;   /* Local mesh node id (0-based), 0xff if unused */
+    u8 mesh_num_nodes; /* Total nodes in mesh, 0 if unused */
+    u16 mesh_flags;    /* Reserved for future mesh features */
 };
 
 struct rocm_ernic_ring_page_info {

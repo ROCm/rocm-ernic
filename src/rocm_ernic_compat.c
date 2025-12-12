@@ -326,12 +326,18 @@ void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
+    rdma_info_report(">>> WRAPPER: pvrdma_uar_write called: handle=%p offset=0x%lx val=0x%x size=%u",
+                     handle, (unsigned long)offset, value, size);
+
     if (!pvrdma) {
+        rdma_error_report(">>> WRAPPER: pvrdma handle is NULL!");
         return;
     }
 
+    rdma_info_report(">>> WRAPPER: Forwarding to pvrdma_uar_write_impl");
     /* Forward to QEMU UAR write implementation */
     pvrdma_uar_write_impl(pvrdma, offset, value, size);
+    rdma_info_report(">>> WRAPPER: pvrdma_uar_write_impl returned");
 }
 
 uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
@@ -667,12 +673,16 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
 
             /* Free the SG structure */
             free(dma_mappings[i].sg);
+            dma_mappings[i].sg = NULL; /* Prevent double-free */
 
             /* Remove from table by shifting remaining entries */
             for (int j = i; j < num_dma_mappings - 1; j++) {
                 dma_mappings[j] = dma_mappings[j + 1];
             }
             num_dma_mappings--;
+            
+            /* Clear the last entry (now unused) */
+            memset(&dma_mappings[num_dma_mappings], 0, sizeof(dma_mappings[0]));
 
             rdma_info_report(
                 "DMA unmap: Released and removed mapping (now %d mappings)",

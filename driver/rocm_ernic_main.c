@@ -51,9 +51,58 @@
 #include <rdma/ib_addr.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
+#include <rdma/ib_cache.h>
 #include <net/addrconf.h>
 
 #include "rocm_ernic.h"
+
+static void rocm_ernic_release_netdev(struct rocm_ernic_dev *dev)
+{
+    if (dev->mesh_dummy_netdev) {
+        unregister_netdev(dev->mesh_dummy_netdev);
+        free_netdev(dev->mesh_dummy_netdev);
+        dev->mesh_dummy_netdev = NULL;
+        dev->netdev = NULL;
+        return;
+    }
+
+    if (dev->netdev) {
+        dev_put(dev->netdev);
+        dev->netdev = NULL;
+    }
+}
+
+static struct net_device *
+rocm_ernic_create_mesh_netdev(struct rocm_ernic_dev *dev)
+{
+    struct net_device *ndev;
+    u8 mac[ETH_ALEN] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    int ret;
+
+    mac[ETH_ALEN - 1] = dev->mesh_node_id;
+
+    dev_info(&dev->pdev->dev, "mesh mode: creating dummy netdev\n");
+
+    ndev = alloc_netdev(0, "ernicm%d", NET_NAME_ENUM, ether_setup);
+    if (!ndev)
+        return NULL;
+
+    eth_hw_addr_set(ndev, mac);
+    ndev->addr_assign_type = NET_ADDR_SET;
+
+    ret = register_netdev(ndev);
+    if (ret) {
+        dev_warn(&dev->pdev->dev,
+                 "mesh mode: register_netdev failed (%d)\n", ret);
+        free_netdev(ndev);
+        return NULL;
+    }
+
+    dev_info(&dev->pdev->dev, "mesh mode: registered dummy netdev %s mac %pM\n",
+             ndev->name, ndev->dev_addr);
+
+    return ndev;
+}
 
 #define DRV_NAME    "rocm_ernic"
 #define DRV_VERSION "1.0.1.0-k"
@@ -66,6 +115,14 @@
 static DEFINE_MUTEX(rocm_ernic_device_list_lock);
 static LIST_HEAD(rocm_ernic_device_list);
 static struct workqueue_struct *event_wq;
+
+/* Default-off: the ad-hoc dummy netdev used for mesh testing was crashing
+ * some guest kernels. Keep it opt-in so we fall back to the safer loopback
+ * pairing unless explicitly requested. */
+static bool mesh_use_dummy_netdev;
+module_param(mesh_use_dummy_netdev, bool, 0444);
+MODULE_PARM_DESC(mesh_use_dummy_netdev,
+                 "Use dummy mesh netdev (default: false for stability)");
 
 static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context);
 static int rocm_ernic_del_gid(const struct ib_gid_attr *attr, void **context);
@@ -636,11 +693,27 @@ static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
 {
     struct rocm_ernic_dev *dev = to_vdev(attr->device);
     bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
+    union ib_gid gid = attr->gid;
 
     dev_info(&dev->pdev->dev,
-             "add_gid called: index=%d gid=%pI6c netdev=%s%s\n", attr->index,
-             &attr->gid, dev->netdev ? dev->netdev->name : "none",
-             is_loopback ? " (loopback)" : "");
+             "add_gid called: index=%d gid=%pI6c netdev=%s%s mesh=%d id=%u\n",
+             attr->index, &attr->gid, dev->netdev ? dev->netdev->name : "none",
+             is_loopback ? " (loopback)" : "", dev->mesh_enabled,
+             dev->mesh_node_id);
+
+    /* For mesh-enabled TCP backend, enforce deterministic GID encoding */
+    if (dev->mesh_enabled) {
+        memset(&gid, 0, sizeof(gid));
+        gid.raw[0] = 0xfe;
+        gid.raw[1] = 0x80;
+        gid.raw[8] = 0x02;
+        gid.raw[11] = 0xff;
+        gid.raw[12] = 0xfe;
+        gid.raw[15] = dev->mesh_node_id;
+        dev_info(&dev->pdev->dev,
+                 "mesh mode: overriding GID to %pI6c (node_id=%u)\n", &gid,
+                 dev->mesh_node_id);
+    }
 
     if (!dev->sgid_tbl) {
         dev_warn(&dev->pdev->dev, "sgid table not initialized\n");
@@ -658,7 +731,7 @@ static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
      * need actual network bindings - it operates purely in software.
      */
     if (is_loopback) {
-        memcpy(&dev->sgid_tbl[attr->index], &attr->gid, sizeof(attr->gid));
+        memcpy(&dev->sgid_tbl[attr->index], &gid, sizeof(gid));
         dev_info(&dev->pdev->dev,
                  "added GID to local table (loopback mode): index=%d\n",
                  attr->index);
@@ -667,8 +740,7 @@ static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
 
     /* For real netdev (vmxnet3), use full binding flow */
     return rocm_ernic_add_gid_at_index(
-        dev, &attr->gid, ib_gid_type_to_rocm_ernic(attr->gid_type),
-        attr->index);
+        dev, &gid, ib_gid_type_to_rocm_ernic(attr->gid_type), attr->index);
 }
 
 static int rocm_ernic_del_gid_at_index(struct rocm_ernic_dev *dev, int index)
@@ -1005,23 +1077,55 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
         goto err_free_cq_ring;
     }
 
+    /* Mesh metadata from device (used by TCP mesh backend) */
+    dev->mesh_node_id = dev->dsr->caps.mesh_node_id;
+    dev->mesh_num_nodes = dev->dsr->caps.mesh_num_nodes;
+    dev->mesh_enabled =
+        (dev->mesh_num_nodes > 0 && dev->mesh_node_id != 0xff);
+    if (dev->mesh_enabled && mesh_use_dummy_netdev) {
+        dev_info(&pdev->dev,
+                 "mesh mode detected: node_id=%u total_nodes=%u\n",
+                 dev->mesh_node_id, dev->mesh_num_nodes);
+        dev->mesh_dummy_netdev = rocm_ernic_create_mesh_netdev(dev);
+        if (dev->mesh_dummy_netdev) {
+            dev->netdev = dev->mesh_dummy_netdev;
+            dev_info(&pdev->dev,
+                     "mesh mode: created dummy netdev %s mac %pM\n",
+                     dev->netdev->name, dev->netdev->dev_addr);
+        } else {
+            dev_warn(&pdev->dev,
+                     "mesh mode: failed to create dummy netdev, "
+                     "falling back to loopback pairing\n");
+        }
+    } else if (dev->mesh_enabled) {
+        dev_info(&pdev->dev,
+                 "mesh mode detected (node_id=%u total_nodes=%u) - "
+                 "dummy netdev disabled, using loopback pairing for GID "
+                 "management\n",
+                 dev->mesh_node_id, dev->mesh_num_nodes);
+    }
+
     /*
      * Optional: Check for paired vmxnet3 device (VMware compatibility).
      * For standalone AMD emulated RDMA, this is not required.
      */
-    pdev_net = pci_get_slot(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 0));
-    if (!pdev_net) {
-        dev_info(&pdev->dev, "no paired net device found (standalone mode)\n");
-        pdev_net = NULL;
-    } else if (pdev_net->vendor != PCI_VENDOR_ID_VMWARE ||
-               pdev_net->device != PCI_DEVICE_ID_VMWARE_VMXNET3) {
-        dev_info(&pdev->dev,
-                 "paired device is not vmxnet3 (standalone mode)\n");
-        pci_dev_put(pdev_net);
-        pdev_net = NULL;
+    if (!dev->netdev) {
+        pdev_net =
+            pci_get_slot(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 0));
+        if (!pdev_net) {
+            dev_info(&pdev->dev,
+                     "no paired net device found (standalone mode)\n");
+            pdev_net = NULL;
+        } else if (pdev_net->vendor != PCI_VENDOR_ID_VMWARE ||
+                   pdev_net->device != PCI_DEVICE_ID_VMWARE_VMXNET3) {
+            dev_info(&pdev->dev,
+                     "paired device is not vmxnet3 (standalone mode)\n");
+            pci_dev_put(pdev_net);
+            pdev_net = NULL;
+        }
     }
 
-    if (pdev_net) {
+    if (!dev->netdev && pdev_net) {
         dev->netdev = pci_get_drvdata(pdev_net);
         pci_dev_put(pdev_net);
         if (dev->netdev) {
@@ -1031,7 +1135,7 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
             dev_info(&pdev->dev,
                      "paired device has no netdev (standalone mode)\n");
         }
-    } else {
+    } else if (!dev->netdev) {
         /*
          * Standalone mode: Associate with loopback device to enable
          * automatic RDMA GID management. The RDMA core will populate
@@ -1076,6 +1180,19 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
         goto err_free_uar_table;
     }
     dev_dbg(&pdev->dev, "gid table len %d\n", dev->dsr->caps.gid_tbl_len);
+    
+    /* Initialize default GID at index 0 using mesh metadata when available */
+    memset(&dev->sgid_tbl[0], 0, sizeof(union ib_gid));
+    dev->sgid_tbl[0].raw[0] = 0xfe;
+    dev->sgid_tbl[0].raw[1] = 0x80;
+    dev->sgid_tbl[0].raw[8] = 0x02;
+    dev->sgid_tbl[0].raw[11] = 0xff;
+    dev->sgid_tbl[0].raw[12] = 0xfe;
+    dev->sgid_tbl[0].raw[15] =
+        dev->mesh_enabled ? dev->mesh_node_id : 0;
+    dev_info(&pdev->dev,
+             "initialized default GID[0]=%pI6c (mesh_enabled=%d node_id=%u)\n",
+             &dev->sgid_tbl[0], dev->mesh_enabled, dev->mesh_node_id);
 
     rocm_ernic_enable_intrs(dev);
 
@@ -1122,8 +1239,7 @@ err_free_intrs:
     rocm_ernic_free_irq(dev);
     pci_free_irq_vectors(pdev);
 err_free_cq_ring:
-    dev_put(dev->netdev);
-    dev->netdev = NULL;
+    rocm_ernic_release_netdev(dev);
     rocm_ernic_page_dir_cleanup(dev, &dev->cq_pdir);
 err_free_async_ring:
     rocm_ernic_page_dir_cleanup(dev, &dev->async_pdir);
@@ -1162,8 +1278,7 @@ static void rocm_ernic_pci_remove(struct pci_dev *pdev)
 
     flush_workqueue(event_wq);
 
-    dev_put(dev->netdev);
-    dev->netdev = NULL;
+    rocm_ernic_release_netdev(dev);
 
     /* Unregister ib device */
     ib_unregister_device(&dev->ib_dev);

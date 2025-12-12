@@ -199,11 +199,14 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         /* UAR writes are typically doorbells */
         memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
 
+        vfu_log(vfu_ctx, LOG_INFO, 
+                ">>> BAR2 (UAR) WRITE: offset=%#lx val=%#x count=%zu - FORWARDING TO PVRDMA",
+                offset, val, count);
+
         /* Forward to QEMU UAR handler via wrapper */
         pvrdma_uar_write(dev->pvrdma_handle, offset, val, sizeof(val));
 
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) write: offset=%#lx val=%#x",
-                offset, val);
+        vfu_log(vfu_ctx, LOG_INFO, ">>> BAR2 (UAR) write forwarded successfully");
     } else {
         /* UAR reads */
         val = pvrdma_uar_read(dev->pvrdma_handle, offset, sizeof(val));
@@ -534,21 +537,51 @@ static void usage(const char *progname)
     fprintf(stderr,
             "                      verbs:device=mlx5_0,ethdev=eth0,port=1 - "
             "All options\n");
-    fprintf(stderr, "  tcp: TCP/IP network backend (connects two servers)\n");
-    fprintf(stderr, "                    Options:\n");
+    fprintf(stderr, "  tcp: TCP/IP network backend\n");
+    fprintf(stderr, "                    Legacy Mode (2 nodes):\n");
     fprintf(
         stderr,
         "                      tcp:host:port    - Connect to remote server\n");
     fprintf(
         stderr,
         "                      tcp:listen:port  - Listen for connections\n");
+    fprintf(stderr, "                    Mesh Mode (N nodes):\n");
+    fprintf(
+        stderr,
+        "                      tcp:node:<id>:<num>:<port>[:<pattern>]\n");
+    fprintf(
+        stderr,
+        "                        id      - This node's ID (0-based)\n");
+    fprintf(
+        stderr,
+        "                        num     - Total number of nodes\n");
+    fprintf(
+        stderr,
+        "                        port    - Base port (each node uses port+id)\n");
+    fprintf(
+        stderr,
+        "                        pattern - Hostname pattern with %%u for node ID\n");
+    fprintf(
+        stderr,
+        "                                  (default: localhost)\n");
     fprintf(stderr, "                    Examples:\n");
+    fprintf(stderr, "                      Legacy:\n");
     fprintf(
         stderr,
-        "                      tcp:192.168.1.100:5000  - Connect to server\n");
+        "                        tcp:192.168.1.100:5000  - Connect to server\n");
     fprintf(
         stderr,
-        "                      tcp:listen:5000          - Listen on port\n");
+        "                        tcp:listen:5000         - Listen on port\n");
+    fprintf(stderr, "                      Mesh:\n");
+    fprintf(
+        stderr,
+        "                        tcp:node:0:3:5000                - Node 0 of 3, localhost\n");
+    fprintf(
+        stderr,
+        "                        tcp:node:1:8:15000               - Node 1 of 8, localhost\n");
+    fprintf(
+        stderr,
+        "                        tcp:node:2:4:20000:node%%u.local  - Node 2 of 4, custom hostnames\n");
 }
 
 /**

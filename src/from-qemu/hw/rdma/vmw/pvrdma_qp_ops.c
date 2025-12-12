@@ -177,14 +177,22 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
     uint32_t dqpn = 0;
     uint32_t dqkey = 0;
 
+    rdma_info_report(">>> DOORBELL: pvrdma_qp_send called for qp_handle=%u", qp_handle);
+
     qp = rdma_rm_get_qp(&dev->rdma_dev_res, qp_handle);
     if (unlikely(!qp)) {
+        rdma_error_report(">>> DOORBELL: QP not found for handle %u", qp_handle);
         return;
     }
 
+    rdma_info_report(">>> DOORBELL: Found QP, qp_type=%d", qp->qp_type);
+
     ring = (PvrdmaRing *)qp->opaque;
 
+    rdma_info_report(">>> DOORBELL: Getting WQE from ring=%p", ring);
     wqe = pvrdma_ring_next_elem_read(ring);
+    rdma_info_report(">>> DOORBELL: Got WQE=%p", wqe);
+    
     while (wqe) {
         CompHandlerCtx *comp_ctx;
         uint32_t pvrdma_opcode = wqe->hdr.opcode;
