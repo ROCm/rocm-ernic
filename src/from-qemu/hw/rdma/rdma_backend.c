@@ -92,6 +92,11 @@ void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
         return;
     }
 
+    rdma_info_report(
+        ">>> rdma_backend_complete_work: status=%d qp_num=%u opcode=%d "
+        "byte_len=%u ctx=%p",
+        status, qp_num, opcode, byte_len, ctx);
+
     wc.status = status;
     wc.vendor_err = vendor_err;
     wc.byte_len = byte_len;
@@ -99,6 +104,7 @@ void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
     wc.opcode = opcode;
 
     comp_handler(ctx, &wc);
+    rdma_info_report(">>> rdma_backend_complete_work: handler returned");
 }
 
 static void free_cqe_ctx(gpointer data, gpointer user_data)
@@ -341,6 +347,18 @@ int rdma_backend_query_port(RdmaBackendDev *backend_dev,
 {
     int rc;
 
+    /* Prefer backend-specific implementation (e.g., TCP/loopback) */
+    if (backend_dev && backend_dev->backend_ops &&
+        backend_dev->backend_ops->query_port) {
+        rc = backend_dev->backend_ops->query_port(backend_dev, port_attr);
+        if (rc) {
+            rdma_error_report("backend query_port fail, rc=%d", rc);
+            return rc;
+        }
+        return 0;
+    }
+
+    /* Verbs backend fallback */
     rc = ibv_query_port(backend_dev->context, backend_dev->port_num, port_attr);
     if (rc) {
         rdma_error_report("ibv_query_port fail, rc=%d, errno=%d", rc, errno);
@@ -550,7 +568,15 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     /* Check if backend handles post_send directly (e.g., loopback with sync
      * completion) */
+    rdma_info_report(">>> rdma_backend_post_send: qp->backend_ops=%p",
+                     qp->backend_ops);
+    if (qp->backend_ops) {
+        rdma_info_report(
+            ">>> rdma_backend_post_send: backend_ops->post_send=%p",
+            qp->backend_ops->post_send);
+    }
     if (qp->backend_ops && qp->backend_ops->post_send) {
+        rdma_info_report(">>> rdma_backend_post_send: Using backend post_send");
         rc = build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
                                   &backend_dev->rdma_dev_res->stats.tx_len);
         if (rc) {
@@ -563,6 +589,9 @@ void rdma_backend_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         /* Backend handles completion synchronously, we're done */
         backend_dev->rdma_dev_res->stats.tx++;
         return;
+    } else {
+        rdma_info_report(
+            ">>> rdma_backend_post_send: Falling back to async backend");
     }
 
     /* For async backends (verbs), allocate context for completion tracking */
@@ -1294,7 +1323,18 @@ int rdma_backend_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
     RdmaCmMuxMsg msg = {};
     int ret;
 
+    /* Call backend-specific add_gid if available */
+    if (backend_dev->backend_ops && backend_dev->backend_ops->add_gid) {
+        ret = backend_dev->backend_ops->add_gid(backend_dev, ifname, gid);
+        if (ret) {
+            rdma_error_report("Backend add_gid failed (%d)", ret);
+            return ret;
+        }
+        /* Backend handled it, no need for rdmacm_mux for modern backends */
+        return 0;
+    }
 
+    /* Legacy path: use rdmacm_mux (for old verbs backend) */
     msg.hdr.op_code = RDMACM_MUX_OP_CODE_REG;
     memcpy(msg.hdr.sgid.raw, gid->raw, sizeof(msg.hdr.sgid));
 

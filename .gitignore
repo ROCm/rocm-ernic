@@ -92,6 +92,7 @@ wordlist.dic
 *.o.cmd
 *.ko.cmd
 .*.cmd
+*.o.d
 Module.symvers
 modules.order
 
@@ -104,3 +105,6 @@ modules.order
 modules.order
 Module.symvers
 .cursor/
+setup-docs/
+docs/
+setup-scripts/

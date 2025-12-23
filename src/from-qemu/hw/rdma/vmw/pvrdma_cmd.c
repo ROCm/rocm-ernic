@@ -155,7 +155,7 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
     }
 
     /* Query backend if available, otherwise use defaults */
-    if (dev->backend_dev.context) {
+    if (dev->backend_dev.context || dev->backend_dev.backend_ops) {
         if (rdma_backend_query_port(&dev->backend_dev, &attrs)) {
             return -ENOMEM;
         }
@@ -173,6 +173,11 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
         attrs.pkey_tbl_len = 1;
         attrs.active_width = 1;
         attrs.active_speed = 1;
+    }
+
+    /* Ensure ample GID table for mesh/TCP backends */
+    if (attrs.gid_tbl_len < MAX_PORT_GIDS) {
+        attrs.gid_tbl_len = MAX_PORT_GIDS;
     }
 
     memset(resp, 0, sizeof(*resp));
@@ -224,10 +229,21 @@ static int create_pd(PVRDMADev *dev, union pvrdma_cmd_req *req,
 {
     struct pvrdma_cmd_create_pd *cmd = &req->create_pd;
     struct pvrdma_cmd_create_pd_resp *resp = &rsp->create_pd_resp;
+    int rc;
 
+    rdma_info_report("create_pd: ENTRY ctx_handle=%u", cmd->ctx_handle);
     memset(resp, 0, sizeof(*resp));
-    return rdma_rm_alloc_pd(&dev->rdma_dev_res, &dev->backend_dev,
-                            &resp->pd_handle, cmd->ctx_handle);
+    rc = rdma_rm_alloc_pd(&dev->rdma_dev_res, &dev->backend_dev,
+                          &resp->pd_handle, cmd->ctx_handle);
+    if (rc) {
+        rdma_error_report("create_pd: FAILED rc=%d ctx_handle=%u", rc,
+                          cmd->ctx_handle);
+    } else {
+        rdma_info_report("create_pd: SUCCESS pd_handle=%u ctx_handle=%u",
+                         resp->pd_handle, cmd->ctx_handle);
+    }
+
+    return rc;
 }
 
 static int destroy_pd(PVRDMADev *dev, union pvrdma_cmd_req *req,
@@ -730,9 +746,21 @@ static int create_uc(PVRDMADev *dev, union pvrdma_cmd_req *req,
 {
     struct pvrdma_cmd_create_uc *cmd = &req->create_uc;
     struct pvrdma_cmd_create_uc_resp *resp = &rsp->create_uc_resp;
+    int rc;
+
+    rdma_info_report("create_uc: ENTRY pfn=0x%lx dev=%p rdma_dev_res=%p",
+                     cmd->pfn, dev, &dev->rdma_dev_res);
 
     memset(resp, 0, sizeof(*resp));
-    return rdma_rm_alloc_uc(&dev->rdma_dev_res, cmd->pfn, &resp->ctx_handle);
+    rc = rdma_rm_alloc_uc(&dev->rdma_dev_res, cmd->pfn, &resp->ctx_handle);
+    if (rc) {
+        rdma_error_report("create_uc: FAILED rc=%d pfn=0x%lx", rc, cmd->pfn);
+    } else {
+        rdma_info_report("create_uc: SUCCESS ctx_handle=%u pfn=0x%lx",
+                         resp->ctx_handle, cmd->pfn);
+    }
+
+    return rc;
 }
 
 static int destroy_uc(PVRDMADev *dev, union pvrdma_cmd_req *req,
@@ -924,6 +952,8 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
 
     dsr_info = &dev->dsr_info;
 
+    rdma_info_report(">>> pvrdma_exec_cmd: dsr=%p req=%p rsp=%p", dsr_info->dsr,
+                     dsr_info->req, dsr_info->rsp);
     if (!dsr_info->dsr) {
         /* Buggy or malicious guest driver */
         rdma_error_report("Exec command without dsr, req or rsp buffers");
@@ -955,6 +985,10 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     dsr_info->rsp->hdr.response = dsr_info->req->hdr.response;
     dsr_info->rsp->hdr.ack = cmd_handlers[dsr_info->req->hdr.cmd].ack;
     dsr_info->rsp->hdr.err = err < 0 ? -err : 0;
+    rdma_info_report(
+        ">>> pvrdma_exec_cmd: RESP prepared response=0x%x ack=0x%x err=%u",
+        dsr_info->rsp->hdr.response, dsr_info->rsp->hdr.ack,
+        dsr_info->rsp->hdr.err);
 
 
     dev->stats.commands++;

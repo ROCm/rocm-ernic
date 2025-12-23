@@ -10,6 +10,7 @@ CONFIG
 CPUs
 CQ
 CQs
+CQEs
 Config
 Ctrl
 DMA
@@ -86,6 +87,8 @@ Recv
 RoCE
 Runtime
 SGEs
+SIGINT
+SIGTERM
 SPDK
 SRQ
 SRQs
@@ -106,6 +109,8 @@ VMs
 VMware
 VMware's
 Vtable
+WQE
+WQEs
 Yuval
 abi
 addr
@@ -318,6 +323,7 @@ sysfs
 sz
 tbl
 tcp
+txt
 tmp
 toolchains
 typedef

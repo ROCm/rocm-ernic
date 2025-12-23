@@ -127,6 +127,21 @@ static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
 
 static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
 {
+    if (!tbl) {
+        rdma_error_report("rdma_res_tbl_alloc: tbl is NULL");
+        return NULL;
+    }
+    if (!handle) {
+        rdma_error_report("rdma_res_tbl_alloc: handle pointer is NULL");
+        return NULL;
+    }
+    if (!tbl->bitmap) {
+        rdma_error_report("rdma_res_tbl_alloc: Table %s bitmap is NULL "
+                          "(tbl=%p, tbl_sz=%u, res_sz=%u)",
+                          tbl->name, tbl, tbl->tbl_sz, tbl->res_sz);
+        return NULL;
+    }
+
     qemu_mutex_lock(&tbl->lock);
 
     *handle = find_first_zero_bit(tbl->bitmap, tbl->tbl_sz);
@@ -242,47 +257,57 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         return -ENOMEM;
     }
 
+    /* Set MR fields */
+    mr->start = guest_start;
+    mr->length = guest_length;
     if (host_virt) {
         mr->virt = host_virt;
-        mr->start = guest_start;
-        mr->length = guest_length;
         mr->virt += (mr->start & (PAGE_SIZE - 1));
+    } else {
+        mr->virt = NULL; /* Loopback backend can work without host_virt */
+    }
 
-        /* Create backend MR using vtable dispatch */
-        if (pd->backend_pd.backend_ops &&
-            pd->backend_pd.backend_ops->create_mr) {
-            ret = pd->backend_pd.backend_ops->create_mr(
-                &mr->backend_mr, &pd->backend_pd, mr->virt, mr->length,
-                guest_start, access_flags);
-            if (ret) {
-                rdma_error_report("Backend create_mr failed: %d", ret);
-                ret = -EIO;
-                goto out_dealloc_mr;
-            }
-            mr->backend_mr.backend_ops =
-                pd->backend_pd.backend_ops; /* Store for destroy */
-#ifdef LEGACY_RDMA_REG_MR
-            /* We keep mr_handle in lkey so send and recv get get mr ptr */
-            *lkey = *mr_handle;
-#else
-            /* Get lkey from backend */
-            if (pd->backend_pd.backend_ops->mr_lkey) {
-                *lkey = pd->backend_pd.backend_ops->mr_lkey(&mr->backend_mr);
-            } else {
-                *lkey = *mr_handle; /* Fallback to handle */
-            }
-#endif
-            rdma_info_report(
-                "rdma_rm_alloc_mr: Created MR handle %u via backend '%s'",
-                *mr_handle, pd->backend_pd.backend_ops->name);
-        } else {
-            /* No backend - generate a fake lkey from handle */
-            rdma_info_report(
-                "rdma_rm_alloc_mr: No backend, allocated MR handle %u",
-                *mr_handle);
-            memset(&mr->backend_mr, 0, sizeof(mr->backend_mr));
-            *lkey = *mr_handle; /* Use handle as lkey */
+    /* Create backend MR using vtable dispatch */
+    /* This must be called even if host_virt is NULL (for loopback backend) */
+    if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_mr) {
+        ret = pd->backend_pd.backend_ops->create_mr(
+            &mr->backend_mr, &pd->backend_pd, mr->virt, mr->length, guest_start,
+            access_flags);
+        if (ret) {
+            rdma_error_report("Backend create_mr failed: %d", ret);
+            ret = -EIO;
+            goto out_dealloc_mr;
         }
+        mr->backend_mr.backend_ops =
+            pd->backend_pd.backend_ops; /* Store for destroy */
+#ifdef LEGACY_RDMA_REG_MR
+        /* We keep mr_handle in lkey so send and recv get get mr ptr */
+        *lkey = *mr_handle;
+#else
+        /* Get lkey from backend */
+        if (pd->backend_pd.backend_ops->mr_lkey) {
+            rdma_info_report(">>> rdma_rm_alloc_mr: Calling backend->mr_lkey, "
+                             "mr_handle=%u, backend_mr.ibmr=%p",
+                             *mr_handle, mr->backend_mr.ibmr);
+            *lkey = pd->backend_pd.backend_ops->mr_lkey(&mr->backend_mr);
+            rdma_info_report(">>> rdma_rm_alloc_mr: Backend returned lkey=0x%x",
+                             *lkey);
+        } else {
+            *lkey = *mr_handle; /* Fallback to handle */
+            rdma_info_report(">>> rdma_rm_alloc_mr: No backend->mr_lkey, using "
+                             "handle as lkey=0x%x",
+                             *lkey);
+        }
+#endif
+        rdma_info_report(
+            "rdma_rm_alloc_mr: Created MR handle %u via backend '%s'",
+            *mr_handle, pd->backend_pd.backend_ops->name);
+    } else {
+        /* No backend - generate a fake lkey from handle */
+        rdma_info_report("rdma_rm_alloc_mr: No backend, allocated MR handle %u",
+                         *mr_handle);
+        memset(&mr->backend_mr, 0, sizeof(mr->backend_mr));
+        *lkey = *mr_handle; /* Use handle as lkey */
     }
 
     *rkey = -1;
@@ -326,6 +351,9 @@ int rdma_rm_alloc_uc(RdmaDeviceResources *dev_res, uint32_t pfn,
                      uint32_t *uc_handle)
 {
     RdmaRmUC *uc;
+
+    rdma_info_report("rdma_rm_alloc_uc: ENTRY dev_res=%p, uc_tbl=%p, tbl_sz=%u",
+                     dev_res, &dev_res->uc_tbl, dev_res->uc_tbl.tbl_sz);
 
     /* TODO: Need to make sure pfn is between bar start address and
      * bsd+RDMA_BAR2_UAR_SIZE
@@ -921,6 +949,8 @@ static void fini_ports(RdmaDeviceResources *dev_res,
 
 int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
 {
+    rdma_info_report("rdma_rm_init: ENTRY dev_res=%p", dev_res);
+
     dev_res->qp_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                              destroy_qp_hash_key, NULL);
     if (!dev_res->qp_hash) {
@@ -934,6 +964,8 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
     res_tbl_init("CQE_CTX", &dev_res->cqe_ctx_tbl,
                  dev_attr->max_qp * dev_attr->max_qp_wr, sizeof(void *));
     res_tbl_init("UC", &dev_res->uc_tbl, MAX_UCS, sizeof(RdmaRmUC));
+    rdma_info_report("rdma_rm_init: UC table initialized at %p with tbl_sz=%u",
+                     &dev_res->uc_tbl, dev_res->uc_tbl.tbl_sz);
     res_tbl_init("SRQ", &dev_res->srq_tbl, dev_attr->max_srq,
                  sizeof(RdmaRmSRQ));
 

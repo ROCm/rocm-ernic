@@ -83,6 +83,12 @@ typedef struct RdmaRmUC {
     uint64_t uc_handle;
 } RdmaRmUC;
 
+/* WQE processing state for incremental batch processing */
+typedef struct RdmaRmQPWqeProcessingState {
+    bool processing_active;  /* Is this QP currently processing WQEs? */
+    uint32_t wqes_processed; /* Count for this batch */
+} RdmaRmQPWqeProcessingState;
+
 typedef struct RdmaRmQP {
     RdmaBackendQP backend_qp;
     void *opaque;
@@ -92,12 +98,20 @@ typedef struct RdmaRmQP {
     uint32_t recv_cq_handle;
     enum ibv_qp_state qp_state;
     uint8_t is_srq;
+    RdmaRmQPWqeProcessingState wqe_state; /* WQE processing state */
 } RdmaRmQP;
+
+/* WQE processing state for SRQ incremental batch processing */
+typedef struct RdmaRmSRQWqeProcessingState {
+    bool processing_active;  /* Is this SRQ currently processing WQEs? */
+    uint32_t wqes_processed; /* Count for this batch */
+} RdmaRmSRQWqeProcessingState;
 
 typedef struct RdmaRmSRQ {
     RdmaBackendSRQ backend_srq;
     uint32_t recv_cq_handle;
     void *opaque;
+    RdmaRmSRQWqeProcessingState wqe_state; /* WQE processing state */
 } RdmaRmSRQ;
 
 typedef struct RdmaRmGid {

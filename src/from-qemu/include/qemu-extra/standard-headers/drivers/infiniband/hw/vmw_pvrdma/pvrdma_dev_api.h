@@ -262,6 +262,10 @@ struct pvrdma_device_caps {
     uint8_t bmme_flags; /* FRWR Mem Mgmt Extensions */
     uint8_t gid_types;  /* PVRDMA_GID_TYPE_FLAG_ */
     uint32_t max_fast_reg_page_list_len;
+    /* Mesh/virtual topology metadata (for TCP mesh backend) */
+    uint8_t mesh_node_id;   /* Local mesh node id (0-based), 0xff if unused */
+    uint8_t mesh_num_nodes; /* Total nodes in mesh, 0 if unused */
+    uint16_t mesh_flags;    /* Reserved for future mesh features */
 };
 
 struct pvrdma_ring_page_info {

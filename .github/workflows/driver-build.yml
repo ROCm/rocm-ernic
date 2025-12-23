@@ -15,7 +15,7 @@ jobs:
     
     strategy:
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-24.04]
       fail-fast: false
     
     steps:
@@ -47,35 +47,57 @@ jobs:
     - name: Build driver module
       run: |
         cd driver
-        make KDIR=/lib/modules/$(uname -r)/build
+        echo "=== Building driver modules ==="
+        make KDIR=/lib/modules/$(uname -r)/build 2>&1 | tee build.log
+        BUILD_EXIT_CODE=${PIPESTATUS[0]}
+        if [ $BUILD_EXIT_CODE -ne 0 ]; then
+          echo "❌ Driver build failed with exit code $BUILD_EXIT_CODE"
+          echo "=== Build log ==="
+          cat build.log
+          exit $BUILD_EXIT_CODE
+        fi
+        echo "✅ Driver build completed"
     
     - name: Verify driver build
       run: |
         cd driver
-        if [ ! -f rocm_ernic.ko ]; then
-          echo "❌ Driver module rocm_ernic.ko not found!"
+        echo "=== Verifying driver modules ==="
+        if [ ! -f rocm_ernic_eth.ko ] || [ ! -f rocm_ernic_rdma.ko ]; then
+          echo "❌ Driver modules not found!"
+          echo "Expected: rocm_ernic_eth.ko and rocm_ernic_rdma.ko"
+          echo "=== Files in driver directory ==="
+          ls -lh *.ko 2>/dev/null || echo "No .ko files found"
+          echo ""
+          echo "=== Build log (last 50 lines) ==="
+          tail -50 build.log 2>/dev/null || echo "No build.log found"
           exit 1
         fi
-        echo "✅ Driver module built successfully"
-        ls -lh rocm_ernic.ko
-        file rocm_ernic.ko
-        modinfo rocm_ernic.ko
+        echo "✅ Driver modules built successfully"
+        ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
+        file rocm_ernic_eth.ko rocm_ernic_rdma.ko
+        modinfo rocm_ernic_eth.ko
+        modinfo rocm_ernic_rdma.ko
     
     - name: Check for build warnings
       run: |
         cd driver
-        make KDIR=/lib/modules/$(uname -r)/build 2>&1 | tee build.log
-        if grep -i "warning:" build.log; then
-          echo "⚠️  Build warnings detected (non-fatal)"
+        if [ -f build.log ]; then
+          if grep -i "warning:" build.log; then
+            echo "⚠️  Build warnings detected (non-fatal)"
+          else
+            echo "✅ No build warnings"
+          fi
         else
-          echo "✅ No build warnings"
+          echo "⚠️  build.log not found, cannot check warnings"
         fi
     
-    - name: Upload driver artifact
+    - name: Upload driver artifacts
       uses: actions/upload-artifact@v4
       with:
         name: rocm_ernic-${{ matrix.os }}-$(uname -r)
-        path: driver/rocm_ernic.ko
+        path: |
+          driver/rocm_ernic_eth.ko
+          driver/rocm_ernic_rdma.ko
         retention-days: 7
     
     - name: Clean build artifacts

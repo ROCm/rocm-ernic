@@ -24,6 +24,8 @@ in production via the RDMA backend.
   - MSI-X interrupt support (command ring, async events, completion queue)
   - Compatible with the Linux kernel `rocm_ernic` driver which is available in
     the [driver](./driver) directory.
+  - Comprehensive statistics collection (doorbell rings, WQE processing, CQE
+    posting) with periodic updates to a file
 
 # Architecture
 
@@ -129,6 +131,34 @@ sudo ninja -C build install
 ./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
                    --backend none
 ```
+
+## Statistics Collection
+
+The server can collect detailed statistics about doorbell rings, WQE processing,
+and completion queue entries. Statistics are written to a file approximately
+every second while the server is running.
+
+```bash
+# Start server with statistics collection
+./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+                   --backend loopback \
+                   --stats-file /tmp/rocm_ernic_stats.txt
+
+# Monitor statistics in real-time
+watch -n 0.5 cat /tmp/rocm_ernic_stats.txt
+```
+
+The statistics file includes:
+- Device-level statistics (commands, register reads/writes, UAR writes,
+  interrupts)
+- Per-QP statistics:
+  - Doorbell rings (send, receive, SRQ)
+  - WQEs processed (total and by opcode type)
+  - CQEs posted
+  - Continuation callbacks scheduled
+
+Statistics are automatically written on server exit (SIGINT/SIGTERM) in
+addition to the periodic updates.
 
 # Acknowledgments
 

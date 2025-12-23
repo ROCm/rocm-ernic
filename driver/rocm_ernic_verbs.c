@@ -71,7 +71,7 @@ int rocm_ernic_query_device(struct ib_device *ibdev,
         return -EINVAL;
 
     props->fw_ver = dev->dsr->caps.fw_ver;
-    props->sys_image_guid = dev->dsr->caps.sys_image_guid;
+    props->sys_image_guid = dev->sys_image_guid;
     props->max_mr_size = dev->dsr->caps.max_mr_size;
     props->page_size_cap = dev->dsr->caps.page_size_cap;
     props->vendor_id = dev->dsr->caps.vendor_id;
@@ -189,6 +189,7 @@ int rocm_ernic_query_gid(struct ib_device *ibdev, u32 port, int index,
                          union ib_gid *gid)
 {
     struct rocm_ernic_dev *dev = to_vdev(ibdev);
+    bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
 
     if (index >= dev->dsr->caps.gid_tbl_len)
         return -EINVAL;
@@ -200,6 +201,21 @@ int rocm_ernic_query_gid(struct ib_device *ibdev, u32 port, int index,
     }
 
     memcpy(gid, &dev->sgid_tbl[index], sizeof(union ib_gid));
+
+    /* If GID is zero in loopback mode, return deterministic GID */
+    if (is_loopback && !memcmp(gid, &(union ib_gid){0}, sizeof(*gid))) {
+        memset(gid, 0, sizeof(*gid));
+        gid->raw[0] = 0xfe;
+        gid->raw[1] = 0x80;
+        gid->raw[8] = 0x02;
+        gid->raw[11] = 0xff;
+        gid->raw[12] = 0xfe;
+        gid->raw[15] = dev->mesh_enabled ? dev->mesh_node_id : 0;
+        dev_info(&dev->pdev->dev,
+                 "query_gid: returning deterministic GID %pI6c for loopback "
+                 "mode (index=%d)\n",
+                 gid, index);
+    }
 
     dev_info(&dev->pdev->dev,
              "query_gid: port=%u index=%d sgid_tbl[0]=%02x%02x::%02x "
@@ -393,7 +409,11 @@ int rocm_ernic_mmap(struct ib_ucontext *ibcontext, struct vm_area_struct *vma)
     }
 
     /* Map UAR to kernel space, VM_LOCKED? */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
     vm_flags_set(vma, VM_DONTCOPY | VM_DONTEXPAND);
+#else
+    vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND;
+#endif
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
     if (io_remap_pfn_range(vma, start, context->uar.pfn, size,
                            vma->vm_page_prot))

@@ -48,14 +48,39 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/netdevice.h>
+#include <linux/rtnetlink.h>
+#include <linux/rcupdate.h>
+#include <linux/delay.h>
 #include <rdma/ib_addr.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
+#include <rdma/ib_cache.h>
 #include <net/addrconf.h>
 
 #include "rocm_ernic.h"
+#include "rocm_ernic_eth.h"
 
-#define DRV_NAME    "rocm_ernic"
+/* Ethernet register offsets */
+#define ROCM_ERNIC_ETH_ICR 0x58
+/* Ethernet Interrupt Cause bits */
+#define ROCM_ERNIC_ETH_ICR_RX_PACKET (1 << 1) /* Receive Packet */
+
+/* RDMA driver attaches to Ethernet driver's device */
+/* Netdev is managed by Ethernet driver, we just reference it */
+static void rocm_ernic_release_netdev(struct rocm_ernic_dev *dev)
+{
+    /* Netdev is owned by Ethernet driver, we just release our reference */
+    if (dev->netdev) {
+        /* IB device should already be disconnected by caller */
+        dev_put(dev->netdev);
+        dev->netdev = NULL;
+    }
+    dev->mesh_dummy_netdev =
+        NULL; /* Not used when Ethernet driver owns netdev */
+}
+
+#define DRV_NAME    "rocm_ernic_rdma"
 #define DRV_VERSION "1.0.1.0-k"
 
 /* Kernel compatibility: PCI_IRQ_LEGACY was renamed to PCI_IRQ_INTX in 5.17 */
@@ -66,6 +91,16 @@
 static DEFINE_MUTEX(rocm_ernic_device_list_lock);
 static LIST_HEAD(rocm_ernic_device_list);
 static struct workqueue_struct *event_wq;
+static struct workqueue_struct *probe_wq;
+
+/* Default-off: the ad-hoc dummy netdev used for mesh testing was crashing
+ * some guest kernels. Keep it opt-in so we fall back to the safer loopback
+ * pairing unless explicitly requested. */
+static bool mesh_use_dummy_netdev;
+module_param(mesh_use_dummy_netdev, bool, 0444);
+MODULE_PARM_DESC(mesh_use_dummy_netdev,
+                 "Use dummy mesh netdev (default: false for stability)");
+
 
 static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context);
 static int rocm_ernic_del_gid(const struct ib_gid_attr *attr, void **context);
@@ -109,10 +144,9 @@ static void rocm_ernic_get_fw_ver_str(struct ib_device *device, char *str)
 {
     struct rocm_ernic_dev *dev =
         container_of(device, struct rocm_ernic_dev, ib_dev);
-    snprintf(str, IB_FW_VERSION_NAME_MAX, "%d.%d.%d\n",
-             (int)(dev->dsr->caps.fw_ver >> 32),
-             (int)(dev->dsr->caps.fw_ver >> 16) & 0xffff,
-             (int)dev->dsr->caps.fw_ver & 0xffff);
+    /* Format firmware version as hex (git SHA) */
+    snprintf(str, IB_FW_VERSION_NAME_MAX, "%016llx\n",
+             (unsigned long long)dev->dsr->caps.fw_ver);
 }
 
 static int rocm_ernic_init_device(struct rocm_ernic_dev *dev)
@@ -222,25 +256,55 @@ static const struct ib_device_ops rocm_ernic_dev_srq_ops = {
 static int rocm_ernic_register_device(struct rocm_ernic_dev *dev)
 {
     int ret = -1;
+    u8 mac[ETH_ALEN];
 
-    /* For standalone mode, generate a valid node_guid if not provided */
-    if (!dev->netdev && dev->dsr->caps.node_guid == 0) {
-        /* Generate a node GUID from PCI bus/device/function */
-        dev->ib_dev.node_guid =
-            0x0002c900ULL << 32 | (dev->pdev->bus->number << 16) |
-            (PCI_SLOT(dev->pdev->devfn) << 8) | PCI_FUNC(dev->pdev->devfn);
-        dev_info(&dev->pdev->dev,
-                 "generated node_guid for standalone mode: %016llx\n",
-                 dev->ib_dev.node_guid);
+    /* Generate node_guid from netdev MAC address if not provided by server */
+    if (dev->dsr->caps.node_guid == 0) {
+        if (dev->netdev && dev->netdev->addr_len == ETH_ALEN) {
+            /* Generate node_guid from MAC address using EUI-64 format */
+            /* Format: MAC[0:2] | 0xFFFE | MAC[3:5], with MAC[0] ^= 0x02 */
+            /* EUI-64: (MAC[0]^02):MAC[1]:MAC[2]:FF:FE:MAC[3]:MAC[4]:MAC[5] */
+            memcpy(mac, dev->netdev->dev_addr, ETH_ALEN);
+            mac[0] ^= 0x02; /* Set local bit */
+            dev->ib_dev.node_guid = ((u64)mac[0] << 56) | ((u64)mac[1] << 48) |
+                                    ((u64)mac[2] << 40) | ((u64)0xff << 32) |
+                                    ((u64)0xfe << 24) | ((u64)mac[3] << 16) |
+                                    ((u64)mac[4] << 8) | (u64)mac[5];
+            dev_info(&dev->pdev->dev,
+                     "generated node_guid from netdev MAC %pM: %016llx\n",
+                     dev->netdev->dev_addr, dev->ib_dev.node_guid);
+        } else {
+            /* Fallback: Generate from PCI bus/device/function */
+            dev->ib_dev.node_guid =
+                0x0002c900ULL << 32 | (dev->pdev->bus->number << 16) |
+                (PCI_SLOT(dev->pdev->devfn) << 8) | PCI_FUNC(dev->pdev->devfn);
+            dev_info(&dev->pdev->dev,
+                     "generated node_guid from PCI location: %016llx\n",
+                     dev->ib_dev.node_guid);
+        }
     } else {
         dev->ib_dev.node_guid = dev->dsr->caps.node_guid;
     }
 
-    dev->sys_image_guid = dev->dsr->caps.sys_image_guid;
+    /* For single-port devices, sys_image_guid should match node_guid */
+    if (dev->dsr->caps.sys_image_guid == 0) {
+        dev->sys_image_guid = dev->ib_dev.node_guid;
+        dev_info(&dev->pdev->dev,
+                 "set sys_image_guid to match node_guid: %016llx\n",
+                 dev->sys_image_guid);
+    } else {
+        dev->sys_image_guid = dev->dsr->caps.sys_image_guid;
+        dev_info(&dev->pdev->dev,
+                 "set sys_image_guid from dsr->caps: %016llx\n",
+                 dev->sys_image_guid);
+    }
     dev->flags = 0;
     dev->ib_dev.num_comp_vectors = 1;
     dev->ib_dev.dev.parent = &dev->pdev->dev;
 
+    /* Set node type to IB_CA for RoCE (RDMA over Converged Ethernet)
+     * The link_layer callback returns IB_LINK_LAYER_ETHERNET to indicate RoCE
+     */
     dev->ib_dev.node_type = RDMA_NODE_IB_CA;
     dev->ib_dev.phys_port_cnt = dev->dsr->caps.phys_port_cnt;
 
@@ -306,6 +370,8 @@ static irqreturn_t rocm_ernic_intr0_handler(int irq, void *dev_id)
 {
     u32 icr = ROCM_ERNIC_INTR_CAUSE_RESPONSE;
     struct rocm_ernic_dev *dev = dev_id;
+    void __iomem *regs;
+    u32 eth_icr;
 
     dev_dbg(&dev->pdev->dev, "interrupt 0 (response) handler\n");
 
@@ -316,8 +382,30 @@ static irqreturn_t rocm_ernic_intr0_handler(int irq, void *dev_id)
             return IRQ_NONE;
     }
 
+    /* Always handle command completion interrupts - needed during device
+     * registration (before ib_active is set) */
     if (icr == ROCM_ERNIC_INTR_CAUSE_RESPONSE)
         complete(&dev->cmd_done);
+
+    /* Check for Ethernet interrupts - only process if device is active */
+    if (dev->ib_active) {
+        regs = rocm_ernic_eth_get_regs(dev->pdev);
+        if (regs) {
+            eth_icr = ioread32(regs + ROCM_ERNIC_ETH_ICR);
+            dev_dbg(&dev->pdev->dev, "Ethernet ICR: 0x%08x\n", eth_icr);
+            if (eth_icr & ROCM_ERNIC_ETH_ICR_RX_PACKET) {
+                dev_info(
+                    &dev->pdev->dev,
+                    "Ethernet RX interrupt detected, processing RX packets\n");
+                /* Process RX packets */
+                rocm_ernic_eth_handle_rx_interrupt(dev->pdev);
+                /* ICR is read-to-clear, so reading it already cleared the bits
+                 */
+            }
+        } else {
+            dev_dbg(&dev->pdev->dev, "Ethernet registers not available\n");
+        }
+    }
 
     return IRQ_HANDLED;
 }
@@ -427,6 +515,8 @@ static irqreturn_t rocm_ernic_intr1_handler(int irq, void *dev_id)
     int ring_slots = (dev->dsr->async_ring_pages.num_pages - 1) * PAGE_SIZE /
                      sizeof(struct rocm_ernic_eqe);
     unsigned int head;
+    int processed = 0;
+    const int max_process = ring_slots; /* Safety limit */
 
     dev_dbg(&dev->pdev->dev, "interrupt 1 (async event) handler\n");
 
@@ -437,7 +527,8 @@ static irqreturn_t rocm_ernic_intr1_handler(int irq, void *dev_id)
     if (!dev->ib_active)
         return IRQ_HANDLED;
 
-    while (rocm_ernic_idx_ring_has_data(ring, ring_slots, &head) > 0) {
+    while (processed < max_process &&
+           rocm_ernic_idx_ring_has_data(ring, ring_slots, &head) > 0) {
         struct rocm_ernic_eqe *eqe;
 
         eqe = get_eqe(dev, head);
@@ -482,6 +573,14 @@ static irqreturn_t rocm_ernic_intr1_handler(int irq, void *dev_id)
         }
 
         rocm_ernic_idx_ring_inc(&ring->cons_head, ring_slots);
+        processed++;
+    }
+
+    if (processed >= max_process) {
+        dev_warn(&dev->pdev->dev,
+                 "interrupt 1 handler processed %d events (limit), "
+                 "ring may be corrupted\n",
+                 processed);
     }
 
     return IRQ_HANDLED;
@@ -501,10 +600,13 @@ static irqreturn_t rocm_ernic_intrx_handler(int irq, void *dev_id)
     int ring_slots = (dev->dsr->cq_ring_pages.num_pages - 1) * PAGE_SIZE /
                      sizeof(struct rocm_ernic_cqne);
     unsigned int head;
+    int processed = 0;
+    const int max_process = ring_slots; /* Safety limit */
 
     dev_dbg(&dev->pdev->dev, "interrupt x (completion) handler\n");
 
-    while (rocm_ernic_idx_ring_has_data(ring, ring_slots, &head) > 0) {
+    while (processed < max_process &&
+           rocm_ernic_idx_ring_has_data(ring, ring_slots, &head) > 0) {
         struct rocm_ernic_cqne *cqne;
         struct rocm_ernic_cq *cq;
 
@@ -522,6 +624,14 @@ static irqreturn_t rocm_ernic_intrx_handler(int irq, void *dev_id)
                 complete(&cq->free);
         }
         rocm_ernic_idx_ring_inc(&ring->cons_head, ring_slots);
+        processed++;
+    }
+
+    if (processed >= max_process) {
+        dev_warn(&dev->pdev->dev,
+                 "interrupt x handler processed %d completions (limit), "
+                 "ring may be corrupted\n",
+                 processed);
     }
 
     return IRQ_HANDLED;
@@ -636,11 +746,31 @@ static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
 {
     struct rocm_ernic_dev *dev = to_vdev(attr->device);
     bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
+    bool is_dummy =
+        dev->netdev && (dev->netdev->priv_flags & IFF_NO_QUEUE) && !is_loopback;
+    union ib_gid gid = attr->gid;
+    u8 mac[ETH_ALEN];
+    bool gid_is_zero;
 
     dev_info(&dev->pdev->dev,
-             "add_gid called: index=%d gid=%pI6c netdev=%s%s\n", attr->index,
-             &attr->gid, dev->netdev ? dev->netdev->name : "none",
-             is_loopback ? " (loopback)" : "");
+             "add_gid called: index=%d gid=%pI6c netdev=%s%s%s mesh=%d id=%u\n",
+             attr->index, &attr->gid, dev->netdev ? dev->netdev->name : "none",
+             is_loopback ? " (loopback)" : "", is_dummy ? " (dummy)" : "",
+             dev->mesh_enabled, dev->mesh_node_id);
+
+    /* For mesh-enabled TCP backend, enforce deterministic GID encoding */
+    if (dev->mesh_enabled) {
+        memset(&gid, 0, sizeof(gid));
+        gid.raw[0] = 0xfe;
+        gid.raw[1] = 0x80;
+        gid.raw[8] = 0x02;
+        gid.raw[11] = 0xff;
+        gid.raw[12] = 0xfe;
+        gid.raw[15] = dev->mesh_node_id;
+        dev_info(&dev->pdev->dev,
+                 "mesh mode: overriding GID to %pI6c (node_id=%u)\n", &gid,
+                 dev->mesh_node_id);
+    }
 
     if (!dev->sgid_tbl) {
         dev_warn(&dev->pdev->dev, "sgid table not initialized\n");
@@ -652,23 +782,69 @@ static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
     }
 
     /*
-     * For loopback-associated devices (standalone mode), skip the
-     * CREATE_BIND device command which requires real network binding.
-     * Just update the local GID table. The loopback backend doesn't
-     * need actual network bindings - it operates purely in software.
+     * For dummy netdev (no IP addresses), generate GID from MAC address.
+     * Format: fe80::<EUI-64> where EUI-64 is MAC converted to EUI-64 format.
      */
-    if (is_loopback) {
-        memcpy(&dev->sgid_tbl[attr->index], &attr->gid, sizeof(attr->gid));
+    gid_is_zero = !memcmp(&gid, &(union ib_gid){0}, sizeof(gid));
+    if (is_dummy && gid_is_zero && dev->netdev->addr_len == ETH_ALEN) {
+        /* Generate IPv6 link-local GID from MAC address */
+        memcpy(mac, dev->netdev->dev_addr, ETH_ALEN);
+        mac[0] ^= 0x02; /* Set local bit for EUI-64 */
+
+        memset(&gid, 0, sizeof(gid));
+        gid.raw[0] = 0xfe;
+        gid.raw[1] = 0x80; /* Link-local prefix */
+        gid.raw[8] = mac[0];
+        gid.raw[9] = mac[1];
+        gid.raw[10] = mac[2];
+        gid.raw[11] = 0xff;
+        gid.raw[12] = 0xfe;
+        gid.raw[13] = mac[3];
+        gid.raw[14] = mac[4];
+        gid.raw[15] = mac[5];
+
         dev_info(&dev->pdev->dev,
-                 "added GID to local table (loopback mode): index=%d\n",
-                 attr->index);
+                 "dummy netdev: generated GID %pI6c from MAC %pM\n", &gid,
+                 dev->netdev->dev_addr);
+    }
+
+    /*
+     * For loopback or dummy netdev devices, skip the CREATE_BIND device
+     * command which requires real network binding. Just update the local
+     * GID table. These devices don't need actual network bindings - they
+     * operate purely in software.
+     *
+     * Also handle case where netdev might not be set yet (early in probe)
+     * but we receive a zero GID - treat as loopback mode.
+     */
+    if (is_loopback || is_dummy || (!dev->netdev && gid_is_zero)) {
+        if (gid_is_zero) {
+            /* RDMA core provided zero GID - use deterministic format
+             * matching what loopback backend sets */
+            memset(&gid, 0, sizeof(gid));
+            gid.raw[0] = 0xfe;
+            gid.raw[1] = 0x80;
+            gid.raw[8] = 0x02;
+            gid.raw[11] = 0xff;
+            gid.raw[12] = 0xfe;
+            gid.raw[15] = dev->mesh_enabled ? dev->mesh_node_id : 0;
+            dev_info(
+                &dev->pdev->dev,
+                "loopback mode: using deterministic GID %pI6c for index %d\n",
+                &gid, attr->index);
+        }
+
+        memcpy(&dev->sgid_tbl[attr->index], &gid, sizeof(gid));
+        dev_info(
+            &dev->pdev->dev,
+            "added GID to local table (loopback mode): index=%d gid=%pI6c\n",
+            attr->index, &gid);
         return 0;
     }
 
-    /* For real netdev (vmxnet3), use full binding flow */
+    /* For real netdev, use full binding flow */
     return rocm_ernic_add_gid_at_index(
-        dev, &attr->gid, ib_gid_type_to_rocm_ernic(attr->gid_type),
-        attr->index);
+        dev, &gid, ib_gid_type_to_rocm_ernic(attr->gid_type), attr->index);
 }
 
 static int rocm_ernic_del_gid_at_index(struct rocm_ernic_dev *dev, int index)
@@ -722,7 +898,7 @@ static int rocm_ernic_del_gid(const struct ib_gid_attr *attr, void **context)
         return 0;
     }
 
-    /* For real netdev (vmxnet3), use full unbinding flow */
+    /* For real netdev, use full unbinding flow */
     dev_dbg(&dev->pdev->dev, "removing gid at index %u from %s", attr->index,
             dev->netdev->name);
     return rocm_ernic_del_gid_at_index(dev, attr->index);
@@ -732,29 +908,20 @@ static void rocm_ernic_netdevice_event_handle(struct rocm_ernic_dev *dev,
                                               struct net_device *ndev,
                                               unsigned long event)
 {
-    struct pci_dev *pdev_net;
-    unsigned int slot;
-
     switch (event) {
     case NETDEV_REBOOT:
         rocm_ernic_dispatch_event(dev, 1, IB_EVENT_PORT_ERR);
         break;
     case NETDEV_UNREGISTER:
-        ib_device_set_netdev(&dev->ib_dev, NULL, 1);
-        dev_put(dev->netdev);
-        dev->netdev = NULL;
+        /* Only handle unregister if this is our dummy netdev */
+        if (dev->netdev == ndev) {
+            ib_device_set_netdev(&dev->ib_dev, NULL, 1);
+            dev_put(dev->netdev);
+            dev->netdev = NULL;
+        }
         break;
     case NETDEV_REGISTER:
-        /* vmxnet3 will have same bus, slot. But func will be 0 */
-        slot = PCI_SLOT(dev->pdev->devfn);
-        pdev_net = pci_get_slot(dev->pdev->bus, PCI_DEVFN(slot, 0));
-        if ((dev->netdev == NULL) && (pci_get_drvdata(pdev_net) == ndev)) {
-            /* this is our netdev */
-            ib_device_set_netdev(&dev->ib_dev, ndev, 1);
-            dev->netdev = ndev;
-            dev_hold(ndev);
-        }
-        pci_dev_put(pdev_net);
+        /* Our dummy netdev is already set during probe, no pairing needed */
         break;
 
     default:
@@ -804,17 +971,37 @@ static int rocm_ernic_netdevice_event(struct notifier_block *this,
     return NOTIFY_DONE;
 }
 
-static int rocm_ernic_pci_probe(struct pci_dev *pdev,
-                                const struct pci_device_id *id)
+/* Attach RDMA driver to an Ethernet driver device */
+static int rocm_ernic_attach_to_eth_dev(struct pci_dev *pdev)
 {
-    struct pci_dev *pdev_net;
     struct rocm_ernic_dev *dev;
+    struct rocm_ernic_eth_dev *eth_dev;
+    struct net_device *netdev;
+    void __iomem *regs;
     int ret;
-    unsigned long start;
-    unsigned long len;
+    unsigned long uar_start;
+    unsigned long uar_len;
     dma_addr_t slot_dma = 0;
 
-    dev_dbg(&pdev->dev, "initializing driver %s\n", pci_name(pdev));
+    dev_info(&pdev->dev, "RDMA driver attaching to Ethernet device %s\n",
+             pci_name(pdev));
+    pr_info("rocm_ernic_rdma: Attaching to PCI device %s\n", pci_name(pdev));
+
+    /* Get Ethernet driver's device */
+    eth_dev = rocm_ernic_eth_get_dev(pdev);
+    if (!eth_dev) {
+        dev_err(&pdev->dev, "Ethernet driver not found for device\n");
+        return -ENODEV;
+    }
+
+    /* Get netdev and regs from Ethernet driver */
+    netdev = rocm_ernic_eth_get_netdev(pdev);
+    regs = rocm_ernic_eth_get_regs(pdev);
+    if (!netdev || !regs) {
+        dev_err(&pdev->dev, "Ethernet driver not ready (netdev=%p regs=%p)\n",
+                netdev, regs);
+        return -ENODEV;
+    }
 
     /* Allocate zero-out device */
     dev = ib_alloc_device(rocm_ernic_dev, ib_dev);
@@ -832,69 +1019,24 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
         goto err_free_device;
 
     dev->pdev = pdev;
-    pci_set_drvdata(pdev, dev);
+    dev->netdev = netdev;
+    dev->regs = regs;
+    dev_hold(netdev); /* Hold reference to Ethernet driver's netdev */
 
-    ret = pci_enable_device(pdev);
-    if (ret) {
-        dev_err(&pdev->dev, "cannot enable PCI device\n");
-        goto err_free_device;
-    }
+    /* PCI device is already enabled by Ethernet driver, but we need to
+     * map UAR (BAR2) which is RDMA-specific */
+    uar_start = pci_resource_start(pdev, ROCM_ERNIC_PCI_RESOURCE_UAR);
+    uar_len = pci_resource_len(pdev, ROCM_ERNIC_PCI_RESOURCE_UAR);
 
-    dev_dbg(&pdev->dev, "PCI resource flags BAR0 %#lx\n",
-            pci_resource_flags(pdev, 0));
-    dev_dbg(&pdev->dev, "PCI resource len %#llx\n",
-            (unsigned long long)pci_resource_len(pdev, 0));
-    dev_dbg(&pdev->dev, "PCI resource start %#llx\n",
-            (unsigned long long)pci_resource_start(pdev, 0));
-    dev_dbg(&pdev->dev, "PCI resource flags BAR1 %#lx\n",
-            pci_resource_flags(pdev, 1));
-    dev_dbg(&pdev->dev, "PCI resource len %#llx\n",
-            (unsigned long long)pci_resource_len(pdev, 1));
-    dev_dbg(&pdev->dev, "PCI resource start %#llx\n",
-            (unsigned long long)pci_resource_start(pdev, 1));
-
-    if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM) ||
-        !(pci_resource_flags(pdev, 1) & IORESOURCE_MEM)) {
-        dev_err(&pdev->dev, "PCI BAR region not MMIO\n");
-        ret = -ENOMEM;
-        goto err_disable_pdev;
-    }
-
-    ret = pci_request_regions(pdev, DRV_NAME);
-    if (ret) {
-        dev_err(&pdev->dev, "cannot request PCI resources\n");
-        goto err_disable_pdev;
-    }
-
-    /* Enable 64-Bit DMA */
-    ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
-    if (ret) {
-        dev_err(&pdev->dev, "dma_set_mask failed\n");
-        goto err_free_resource;
-    }
-    dma_set_max_seg_size(&pdev->dev, UINT_MAX);
-    pci_set_master(pdev);
-
-    /* Map register space */
-    start = pci_resource_start(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_REG);
-    len = pci_resource_len(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_REG);
-    dev->regs = ioremap(start, len);
-    if (!dev->regs) {
-        dev_err(&pdev->dev, "register mapping failed\n");
-        ret = -ENOMEM;
-        goto err_free_resource;
-    }
-
-    /* Setup per-device UAR. */
+    /* Setup per-device UAR (BAR2) - RDMA-specific, not mapped by Ethernet
+     * driver */
     dev->driver_uar.index = 0;
-    dev->driver_uar.pfn =
-        pci_resource_start(dev->pdev, ROCM_ERNIC_PCI_RESOURCE_UAR) >>
-        PAGE_SHIFT;
-    dev->driver_uar.map = ioremap(dev->driver_uar.pfn << PAGE_SHIFT, PAGE_SIZE);
+    dev->driver_uar.pfn = uar_start >> PAGE_SHIFT;
+    dev->driver_uar.map = ioremap(uar_start, uar_len);
     if (!dev->driver_uar.map) {
         dev_err(&pdev->dev, "failed to remap UAR pages\n");
         ret = -ENOMEM;
-        goto err_unmap_regs;
+        goto err_release_netdev_ref;
     }
 
     dev->dsr_version = rocm_ernic_read_reg(dev, ROCM_ERNIC_REG_VERSION);
@@ -1005,52 +1147,19 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
         goto err_free_cq_ring;
     }
 
-    /*
-     * Optional: Check for paired vmxnet3 device (VMware compatibility).
-     * For standalone AMD emulated RDMA, this is not required.
-     */
-    pdev_net = pci_get_slot(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 0));
-    if (!pdev_net) {
-        dev_info(&pdev->dev, "no paired net device found (standalone mode)\n");
-        pdev_net = NULL;
-    } else if (pdev_net->vendor != PCI_VENDOR_ID_VMWARE ||
-               pdev_net->device != PCI_DEVICE_ID_VMWARE_VMXNET3) {
-        dev_info(&pdev->dev,
-                 "paired device is not vmxnet3 (standalone mode)\n");
-        pci_dev_put(pdev_net);
-        pdev_net = NULL;
-    }
+    /* Mesh metadata from device (used by TCP mesh backend) */
+    dev->mesh_node_id = dev->dsr->caps.mesh_node_id;
+    dev->mesh_num_nodes = dev->dsr->caps.mesh_num_nodes;
+    dev->mesh_enabled = (dev->mesh_num_nodes > 0 && dev->mesh_node_id != 0xff);
 
-    if (pdev_net) {
-        dev->netdev = pci_get_drvdata(pdev_net);
-        pci_dev_put(pdev_net);
-        if (dev->netdev) {
-            dev_hold(dev->netdev);
-            dev_info(&pdev->dev, "paired device to %s\n", dev->netdev->name);
-        } else {
-            dev_info(&pdev->dev,
-                     "paired device has no netdev (standalone mode)\n");
-        }
-    } else {
-        /*
-         * Standalone mode: Associate with loopback device to enable
-         * automatic RDMA GID management. The RDMA core will populate
-         * GIDs based on the netdev's IP addresses and call our add_gid
-         * callback, allowing userspace to query GIDs via sysfs.
-         */
-        struct net_device *lo_dev = dev_get_by_name(&init_net, "lo");
-        if (lo_dev) {
-            dev->netdev = lo_dev;
-            /* dev_hold not needed - dev_get_by_name already incremented
-             * refcount */
-            dev_info(&pdev->dev, "standalone mode: associated with loopback "
-                                 "device for GID management\n");
-        } else {
-            dev->netdev = NULL;
-            dev_info(&pdev->dev, "standalone mode: no loopback device "
-                                 "available (GID management limited)\n");
-        }
+    /* Netdev is provided by Ethernet driver - already set above */
+    if (!dev->netdev) {
+        dev_err(&pdev->dev, "netdev not provided by Ethernet driver\n");
+        ret = -ENODEV;
+        goto err_free_cq_ring;
     }
+    dev_info(&pdev->dev, "using netdev %s from Ethernet driver\n",
+             dev->netdev->name);
 
     /* Interrupt setup */
     ret = rocm_ernic_alloc_intrs(dev);
@@ -1076,6 +1185,18 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
         goto err_free_uar_table;
     }
     dev_dbg(&pdev->dev, "gid table len %d\n", dev->dsr->caps.gid_tbl_len);
+
+    /* Initialize default GID at index 0 using mesh metadata when available */
+    memset(&dev->sgid_tbl[0], 0, sizeof(union ib_gid));
+    dev->sgid_tbl[0].raw[0] = 0xfe;
+    dev->sgid_tbl[0].raw[1] = 0x80;
+    dev->sgid_tbl[0].raw[8] = 0x02;
+    dev->sgid_tbl[0].raw[11] = 0xff;
+    dev->sgid_tbl[0].raw[12] = 0xfe;
+    dev->sgid_tbl[0].raw[15] = dev->mesh_enabled ? dev->mesh_node_id : 0;
+    dev_info(&pdev->dev,
+             "initialized default GID[0]=%pI6c (mesh_enabled=%d node_id=%u)\n",
+             &dev->sgid_tbl[0], dev->mesh_enabled, dev->mesh_node_id);
 
     rocm_ernic_enable_intrs(dev);
 
@@ -1108,7 +1229,9 @@ static int rocm_ernic_pci_probe(struct pci_dev *pdev,
         goto err_unreg_ibdev;
     }
 
-    dev_info(&pdev->dev, "attached to device\n");
+    dev_info(&pdev->dev, "RDMA driver attached to Ethernet device\n");
+    pr_info("rocm_ernic_rdma: RDMA driver attached to PCI device %s\n",
+            pci_name(pdev));
     return 0;
 
 err_unreg_ibdev:
@@ -1122,8 +1245,7 @@ err_free_intrs:
     rocm_ernic_free_irq(dev);
     pci_free_irq_vectors(pdev);
 err_free_cq_ring:
-    dev_put(dev->netdev);
-    dev->netdev = NULL;
+    rocm_ernic_release_netdev(dev);
     rocm_ernic_page_dir_cleanup(dev, &dev->cq_pdir);
 err_free_async_ring:
     rocm_ernic_page_dir_cleanup(dev, &dev->async_pdir);
@@ -1133,13 +1255,8 @@ err_free_dsr:
     dma_free_coherent(&pdev->dev, sizeof(*dev->dsr), dev->dsr, dev->dsrbase);
 err_uar_unmap:
     iounmap(dev->driver_uar.map);
-err_unmap_regs:
-    iounmap(dev->regs);
-err_free_resource:
-    pci_release_regions(pdev);
-err_disable_pdev:
-    pci_disable_device(pdev);
-    pci_set_drvdata(pdev, NULL);
+err_release_netdev_ref:
+    rocm_ernic_release_netdev(dev);
 err_free_device:
     mutex_lock(&rocm_ernic_device_list_lock);
     list_del(&dev->device_link);
@@ -1148,31 +1265,67 @@ err_free_device:
     return ret;
 }
 
-static void rocm_ernic_pci_remove(struct pci_dev *pdev)
+static void rocm_ernic_detach_from_eth_dev(struct pci_dev *pdev)
 {
-    struct rocm_ernic_dev *dev = pci_get_drvdata(pdev);
+    struct rocm_ernic_dev *dev = NULL;
+    struct rocm_ernic_dev *tmp;
+
+    /* Find RDMA device attached to this PCI device */
+    mutex_lock(&rocm_ernic_device_list_lock);
+    list_for_each_entry(tmp, &rocm_ernic_device_list, device_link)
+    {
+        if (tmp->pdev == pdev) {
+            dev = tmp;
+            break;
+        }
+    }
+    mutex_unlock(&rocm_ernic_device_list_lock);
 
     if (!dev)
         return;
 
-    dev_info(&pdev->dev, "detaching from device\n");
+    dev_info(&pdev->dev, "RDMA driver detaching from Ethernet device\n");
+    pr_info("rocm_ernic_rdma: Detaching from PCI device %s\n", pci_name(pdev));
+
+    /* Disable interrupts FIRST to prevent interrupt handler from accessing
+     * device during cleanup */
+    rocm_ernic_disable_intrs(dev);
 
     unregister_netdevice_notifier(&dev->nb_netdev);
     dev->nb_netdev.notifier_call = NULL;
 
     flush_workqueue(event_wq);
 
-    dev_put(dev->netdev);
-    dev->netdev = NULL;
+    /* Disconnect IB device from netdev before unregistering IB device */
+    if (dev->ib_active) {
+        ib_device_set_netdev(&dev->ib_dev, NULL, 1);
+        dev->ib_active = false;
+    }
 
-    /* Unregister ib device */
+    /* Wait for RCU grace period BEFORE releasing netdev.
+     * This ensures all RCU readers that might reference the netdev have
+     * finished. RCU readers don't increment the refcount, so they can still
+     * hold references even when usage count is 0. */
+    synchronize_rcu();
+
+    /* Small delay to ensure all async operations (work items, timers, etc.)
+     * that might reference the netdev have completed */
+    msleep(50);
+
+    /* Release netdev BEFORE unregistering IB device to avoid hang.
+     * The IB device is already disconnected, so it's safe to release the
+     * netdev. This prevents ib_unregister_device from triggering callbacks that
+     * might reference the netdev. */
+    rocm_ernic_release_netdev(dev);
+
+    /* Unregister IB device - this will clean up remaining IB references */
     ib_unregister_device(&dev->ib_dev);
 
     mutex_lock(&rocm_ernic_device_list_lock);
     list_del(&dev->device_link);
     mutex_unlock(&rocm_ernic_device_list_lock);
 
-    rocm_ernic_disable_intrs(dev);
+    /* Interrupts already disabled above */
     rocm_ernic_free_irq(dev);
     pci_free_irq_vectors(pdev);
 
@@ -1183,7 +1336,7 @@ static void rocm_ernic_pci_remove(struct pci_dev *pdev)
     rocm_ernic_free_slots(dev);
     dma_free_coherent(&pdev->dev, sizeof(*dev->dsr), dev->dsr, dev->dsrbase);
 
-    iounmap(dev->regs);
+    /* Note: regs are owned by Ethernet driver, don't unmap */
     kfree(dev->sgid_tbl);
     kfree(dev->cq_tbl);
     kfree(dev->srq_tbl);
@@ -1191,54 +1344,129 @@ static void rocm_ernic_pci_remove(struct pci_dev *pdev)
     rocm_ernic_uar_table_cleanup(dev);
     iounmap(dev->driver_uar.map);
 
-    ib_dealloc_device(&dev->ib_dev);
+    /* Note: netdev is owned by Ethernet driver, we just release our reference
+     */
 
-    /* Free pci resources */
-    pci_release_regions(pdev);
-    pci_disable_device(pdev);
-    pci_set_drvdata(pdev, NULL);
+    ib_dealloc_device(&dev->ib_dev);
 }
 
 /* AMD Emulated RDMA device (for vfio-user) */
 #define PCI_VENDOR_ID_ROCM_ERNIC 0x1022 /* AMD */
 #define PCI_DEVICE_ID_ROCM_ERNIC 0x1484 /* Emulated RDMA */
 
-static const struct pci_device_id rocm_ernic_pci_table[] = {
-    {
-        PCI_DEVICE(PCI_VENDOR_ID_ROCM_ERNIC, PCI_DEVICE_ID_ROCM_ERNIC),
-    },
-    {0},
+struct rocm_ernic_probe_work {
+    struct work_struct work;
+    struct pci_dev *pdev;
 };
 
-MODULE_DEVICE_TABLE(pci, rocm_ernic_pci_table);
+static void rocm_ernic_probe_work_fn(struct work_struct *work)
+{
+    struct rocm_ernic_probe_work *probe_work =
+        container_of(work, struct rocm_ernic_probe_work, work);
+    struct pci_dev *pdev = probe_work->pdev;
+    int ret;
 
-static struct pci_driver rocm_ernic_driver = {
-    .name = DRV_NAME,
-    .id_table = rocm_ernic_pci_table,
-    .probe = rocm_ernic_pci_probe,
-    .remove = rocm_ernic_pci_remove,
-};
+    pr_info("rocm_ernic_rdma: Deferred probe for PCI device %s\n",
+            pci_name(pdev));
+    ret = rocm_ernic_attach_to_eth_dev(pdev);
+    if (ret && ret != -ENODEV) {
+        dev_warn(&pdev->dev, "RDMA driver attach failed: %d\n", ret);
+        pr_warn("rocm_ernic_rdma: Failed to attach to %s: %d\n", pci_name(pdev),
+                ret);
+    }
+
+    pci_dev_put(pdev);
+    kfree(probe_work);
+}
+
+/* Scan PCI bus for Ethernet devices and attach RDMA driver */
+static void rocm_ernic_scan_for_devices(void)
+{
+    struct pci_dev *pdev = NULL;
+    struct rocm_ernic_probe_work *probe_work;
+    int found_count = 0;
+
+    pr_info("rocm_ernic_rdma: Scanning for Ethernet devices...\n");
+    while ((pdev = pci_get_device(PCI_VENDOR_ID_ROCM_ERNIC,
+                                  PCI_DEVICE_ID_ROCM_ERNIC, pdev))) {
+        /* Check if Ethernet driver has probed this device */
+        if (!rocm_ernic_eth_get_dev(pdev)) {
+            pr_debug("rocm_ernic_rdma: PCI device %s not probed by Ethernet "
+                     "driver yet\n",
+                     pci_name(pdev));
+            continue;
+        }
+        found_count++;
+
+        /* Check if RDMA driver already attached */
+        {
+            struct rocm_ernic_dev *dev;
+            bool already_attached = false;
+            mutex_lock(&rocm_ernic_device_list_lock);
+            list_for_each_entry(dev, &rocm_ernic_device_list, device_link)
+            {
+                if (dev->pdev == pdev) {
+                    already_attached = true;
+                    break;
+                }
+            }
+            mutex_unlock(&rocm_ernic_device_list_lock);
+            if (already_attached)
+                continue;
+        }
+
+        /* Schedule deferred probe */
+        probe_work = kmalloc(sizeof(*probe_work), GFP_KERNEL);
+        if (!probe_work) {
+            dev_err(&pdev->dev, "failed to allocate probe work\n");
+            continue;
+        }
+
+        INIT_WORK(&probe_work->work, rocm_ernic_probe_work_fn);
+        probe_work->pdev = pci_dev_get(pdev);
+        queue_work(probe_wq, &probe_work->work);
+    }
+    pr_info("rocm_ernic_rdma: Found %d Ethernet device(s) to attach to\n",
+            found_count);
+}
 
 static int __init rocm_ernic_init(void)
 {
-    int err;
-
     event_wq = alloc_ordered_workqueue("rocm_ernic_event_wq", WQ_MEM_RECLAIM);
     if (!event_wq)
         return -ENOMEM;
 
-    err = pci_register_driver(&rocm_ernic_driver);
-    if (err)
+    probe_wq = alloc_ordered_workqueue("rocm_ernic_probe_wq", WQ_MEM_RECLAIM);
+    if (!probe_wq) {
         destroy_workqueue(event_wq);
+        return -ENOMEM;
+    }
 
-    return err;
+    /* Scan for existing Ethernet devices */
+    rocm_ernic_scan_for_devices();
+
+    pr_info("rocm_ernic_rdma: RDMA driver module loaded\n");
+    return 0;
 }
 
 static void __exit rocm_ernic_cleanup(void)
 {
-    pci_unregister_driver(&rocm_ernic_driver);
+    struct rocm_ernic_dev *dev, *tmp;
 
-    destroy_workqueue(event_wq);
+    /* Detach from all devices */
+    mutex_lock(&rocm_ernic_device_list_lock);
+    list_for_each_entry_safe(dev, tmp, &rocm_ernic_device_list, device_link)
+    {
+        rocm_ernic_detach_from_eth_dev(dev->pdev);
+    }
+    mutex_unlock(&rocm_ernic_device_list_lock);
+
+    if (probe_wq)
+        destroy_workqueue(probe_wq);
+    if (event_wq)
+        destroy_workqueue(event_wq);
+
+    pr_info("rocm_ernic_rdma: RDMA driver module unloaded\n");
 }
 
 module_init(rocm_ernic_init);
@@ -1247,3 +1475,6 @@ module_exit(rocm_ernic_cleanup);
 MODULE_AUTHOR("Advanced Micro Devices, Inc");
 MODULE_DESCRIPTION("AMD ROCm ERNIC - Emulated RDMA NIC driver");
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_SOFTDEP("pre: rocm_ernic_eth");
+MODULE_SOFTDEP("pre: ib_core");
+MODULE_SOFTDEP("pre: ib_uverbs");
