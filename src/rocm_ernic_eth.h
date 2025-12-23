@@ -28,6 +28,8 @@
 #define ROCM_ERNIC_ETH_RX_TAIL 0x54 /* Receive Descriptor Tail */
 #define ROCM_ERNIC_ETH_ICR     0x58 /* Ethernet Interrupt Cause */
 #define ROCM_ERNIC_ETH_IMR     0x5c /* Ethernet Interrupt Mask */
+#define ROCM_ERNIC_ETH_MAC0    0x60 /* MAC Address bytes 0-3 (little-endian) */
+#define ROCM_ERNIC_ETH_MAC1    0x64 /* MAC Address bytes 4-5 (little-endian) */
 
 /* Ethernet Control Register bits */
 #define ROCM_ERNIC_ETH_CTL_ENABLE    (1 << 0)  /* Enable Ethernet */

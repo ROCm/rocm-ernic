@@ -392,11 +392,21 @@ uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
     uint32_t val = 0;
 
     if (!pvrdma) {
+        rdma_warn_report("pvrdma_regs_read: handle is NULL, returning 0");
         return 0;
     }
 
     /* Forward to QEMU register read implementation */
-    val = pvrdma_regs_read_impl(pvrdma, offset, size);
+    val = (uint32_t)pvrdma_regs_read_impl(pvrdma, offset, size);
+
+    /* Ensure we never return an error value that could be misinterpreted */
+    /* If the implementation returns an error (negative), return 0 instead */
+    if ((int32_t)val < 0) {
+        rdma_warn_report("pvrdma_regs_read: implementation returned error "
+                         "value %d for offset 0x%lx, returning 0",
+                         (int32_t)val, offset);
+        return 0;
+    }
 
     return val;
 }

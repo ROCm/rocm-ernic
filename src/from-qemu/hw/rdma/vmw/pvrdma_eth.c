@@ -43,6 +43,12 @@ uint64_t pvrdma_eth_regs_read(PVRDMADev *dev, hwaddr addr)
     PVRDMAEthState *eth = get_eth_state(dev);
     uint32_t val = 0;
 
+    if (!eth) {
+        rdma_warn_report("Ethernet state is NULL, returning 0 for addr=0x%lx",
+                         addr);
+        return 0;
+    }
+
     switch (addr) {
     case ROCM_ERNIC_ETH_CTL:
         val = eth->ctl;
@@ -88,6 +94,15 @@ uint64_t pvrdma_eth_regs_read(PVRDMADev *dev, hwaddr addr)
         break;
     case ROCM_ERNIC_ETH_IMR:
         val = eth->imr;
+        break;
+    case ROCM_ERNIC_ETH_MAC0:
+        /* Return MAC address bytes 0-3 as little-endian uint32_t */
+        val = dev->mac_addr[0] | (dev->mac_addr[1] << 8) |
+              (dev->mac_addr[2] << 16) | (dev->mac_addr[3] << 24);
+        break;
+    case ROCM_ERNIC_ETH_MAC1:
+        /* Return MAC address bytes 4-5 as little-endian uint32_t */
+        val = dev->mac_addr[4] | (dev->mac_addr[5] << 8);
         break;
     default:
         val = 0;
@@ -153,6 +168,10 @@ void pvrdma_eth_regs_write(PVRDMADev *dev, hwaddr addr, uint64_t val)
         break;
     case ROCM_ERNIC_ETH_IMR:
         eth->imr = val;
+        break;
+    case ROCM_ERNIC_ETH_MAC0:
+    case ROCM_ERNIC_ETH_MAC1:
+        /* MAC address registers are read-only - ignore writes */
         break;
     default:
         break;
