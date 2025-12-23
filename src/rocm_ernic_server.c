@@ -151,6 +151,8 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         return -1;
     }
 
+    /* Ensure offset is within valid range (including MAC registers at
+     * 0x60-0x64) */
     if (offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
         vfu_log(vfu_ctx, LOG_ERR,
                 "BAR1 access out of bounds: offset=%#lx count=%zu", offset,
@@ -177,6 +179,14 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                 val);
     } else {
         /* Forward read to QEMU register handler via wrapper */
+        /* Ensure pvrdma_handle is valid before calling */
+        if (!dev->pvrdma_handle) {
+            vfu_log(vfu_ctx, LOG_ERR,
+                    "BAR1 read: pvrdma_handle is NULL at offset=%#lx", offset);
+            errno = EFAULT;
+            return -1;
+        }
+
         val = pvrdma_regs_read(dev->pvrdma_handle, offset, sizeof(val));
         memcpy(buf, &val, sizeof(val));
 

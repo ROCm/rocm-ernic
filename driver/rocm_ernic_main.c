@@ -387,24 +387,22 @@ static irqreturn_t rocm_ernic_intr0_handler(int irq, void *dev_id)
     if (icr == ROCM_ERNIC_INTR_CAUSE_RESPONSE)
         complete(&dev->cmd_done);
 
-    /* Check for Ethernet interrupts - only process if device is active */
-    if (dev->ib_active) {
-        regs = rocm_ernic_eth_get_regs(dev->pdev);
-        if (regs) {
-            eth_icr = ioread32(regs + ROCM_ERNIC_ETH_ICR);
-            dev_dbg(&dev->pdev->dev, "Ethernet ICR: 0x%08x\n", eth_icr);
-            if (eth_icr & ROCM_ERNIC_ETH_ICR_RX_PACKET) {
-                dev_info(
-                    &dev->pdev->dev,
-                    "Ethernet RX interrupt detected, processing RX packets\n");
-                /* Process RX packets */
-                rocm_ernic_eth_handle_rx_interrupt(dev->pdev);
-                /* ICR is read-to-clear, so reading it already cleared the bits
-                 */
-            }
-        } else {
-            dev_dbg(&dev->pdev->dev, "Ethernet registers not available\n");
+    /* Check for Ethernet interrupts - process independently of RDMA state */
+    /* Ethernet device can work standalone without RDMA being active */
+    regs = rocm_ernic_eth_get_regs(dev->pdev);
+    if (regs) {
+        eth_icr = ioread32(regs + ROCM_ERNIC_ETH_ICR);
+        dev_dbg(&dev->pdev->dev, "Ethernet ICR: 0x%08x\n", eth_icr);
+        if (eth_icr & ROCM_ERNIC_ETH_ICR_RX_PACKET) {
+            dev_info(&dev->pdev->dev,
+                     "Ethernet RX interrupt detected, processing RX packets\n");
+            /* Process RX packets */
+            rocm_ernic_eth_handle_rx_interrupt(dev->pdev);
+            /* ICR is read-to-clear, so reading it already cleared the bits
+             */
         }
+    } else {
+        dev_dbg(&dev->pdev->dev, "Ethernet registers not available\n");
     }
 
     return IRQ_HANDLED;

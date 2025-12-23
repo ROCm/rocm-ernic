@@ -731,9 +731,11 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
 
     dev->stats.regs_reads++;
 
-    /* Check if this is an Ethernet register (0x28-0x5c) */
-    if (addr >= 0x28 && addr <= 0x5c) {
-        return pvrdma_eth_regs_read(dev, addr);
+    /* Check if this is an Ethernet register (0x28-0x64) */
+    if (addr >= 0x28 && addr <= 0x64) {
+        uint64_t eth_val = pvrdma_eth_regs_read(dev, addr);
+        /* Ensure we return a valid 32-bit value */
+        return (uint32_t)eth_val;
     }
 
     if (get_reg_val(dev, addr, &val)) {
@@ -826,8 +828,8 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
     default:
-        /* Check if this is an Ethernet register (0x28-0x5c) */
-        if (addr >= 0x28 && addr <= 0x5c) {
+        /* Check if this is an Ethernet register (0x28-0x64) */
+        if (addr >= 0x28 && addr <= 0x64) {
             /* Handle Ethernet registers */
             pvrdma_eth_regs_write(dev, addr, val);
         }

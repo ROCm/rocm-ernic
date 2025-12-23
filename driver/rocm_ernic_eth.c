@@ -43,6 +43,8 @@
 #define ROCM_ERNIC_ETH_RX_TAIL 0x54
 #define ROCM_ERNIC_ETH_ICR     0x58
 #define ROCM_ERNIC_ETH_IMR     0x5c
+#define ROCM_ERNIC_ETH_MAC0    0x60 /* MAC Address bytes 0-3 (little-endian) */
+#define ROCM_ERNIC_ETH_MAC1    0x64 /* MAC Address bytes 4-5 (little-endian) */
 
 /* Ethernet Control Register bits */
 #define ROCM_ERNIC_ETH_CTL_ENABLE     (1 << 0)
@@ -276,13 +278,15 @@ static int rocm_ernic_eth_open(struct net_device *ndev)
     iowrite32(ROCM_ERNIC_ETH_ICR_RX_PACKET, eth_dev->regs + ROCM_ERNIC_ETH_IMR);
     dev_info(&eth_dev->pdev->dev, "Ethernet IMR enabled for RX packets\n");
 
-    /* Check status register for link up */
+    /* For virtual device, always set carrier ON */
+    /* STATUS register check is informational but carrier should be ON */
     status = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_STATUS);
+    netif_carrier_on(ndev);
     if (status & ROCM_ERNIC_ETH_STATUS_LINK_UP) {
-        netif_carrier_on(ndev);
         dev_info(&eth_dev->pdev->dev, "Ethernet link up on %s\n", ndev->name);
     } else {
-        netif_carrier_off(ndev);
+        dev_dbg(&eth_dev->pdev->dev,
+                "Ethernet STATUS register shows link down (virtual device)\n");
     }
 
     return 0;
@@ -626,8 +630,29 @@ static struct net_device *rocm_ernic_eth_create_netdev(
     u8 mac[ETH_ALEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
     int ret;
 
-    /* Use device function number in MAC for uniqueness */
-    mac[ETH_ALEN - 1] = PCI_FUNC(eth_dev->pdev->devfn);
+    /* Read MAC address from device registers */
+    if (eth_dev->regs) {
+        u32 mac0 = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_MAC0);
+        u32 mac1 = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_MAC1);
+
+        mac[0] = (u8)(mac0 & 0xff);
+        mac[1] = (u8)((mac0 >> 8) & 0xff);
+        mac[2] = (u8)((mac0 >> 16) & 0xff);
+        mac[3] = (u8)((mac0 >> 24) & 0xff);
+        mac[4] = (u8)(mac1 & 0xff);
+        mac[5] = (u8)((mac1 >> 8) & 0xff);
+
+        /* Fallback to default if MAC is all zeros or invalid */
+        if (mac[0] == 0 && mac[1] == 0 && mac[2] == 0 && mac[3] == 0 &&
+            mac[4] == 0 && mac[5] == 0) {
+            /* Use default MAC with function number */
+            mac[0] = 0x02;
+            mac[ETH_ALEN - 1] = PCI_FUNC(eth_dev->pdev->devfn);
+        }
+    } else {
+        /* No regs yet, use default with function number */
+        mac[ETH_ALEN - 1] = PCI_FUNC(eth_dev->pdev->devfn);
+    }
 
     /* Allocate netdev with ethernet setup and private data (pointer size) */
     ndev = alloc_netdev(sizeof(struct rocm_ernic_eth_dev *), name_fmt,
@@ -661,14 +686,22 @@ static struct net_device *rocm_ernic_eth_create_netdev(
         return NULL;
     }
 
-    /* Set carrier state after successful registration */
-    netif_carrier_off(ndev);
+    /* Set carrier ON immediately for virtual device */
+    /* Virtual devices like rocm_ernic don't have physical link detection,
+     * so carrier should be ON by default. The STATUS register check is
+     * informational but shouldn't block carrier ON for virtual devices. */
+    netif_carrier_on(ndev);
 
-    /* Check status register and set carrier on if link is up */
+    /* Check status register for informational purposes */
     if (eth_dev->regs) {
         u32 status = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_STATUS);
         if (status & ROCM_ERNIC_ETH_STATUS_LINK_UP) {
-            netif_carrier_on(ndev);
+            dev_info(&eth_dev->pdev->dev,
+                     "Ethernet STATUS register confirms link up\n");
+        } else {
+            dev_dbg(&eth_dev->pdev->dev,
+                    "Ethernet STATUS register shows link down (virtual device, "
+                    "carrier ON anyway)\n");
         }
     }
 
