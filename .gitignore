@@ -108,3 +108,6 @@ Module.symvers
 setup-docs/
 docs/
 setup-scripts/
+
+# Ignore nohup.out
+nohup.out
