@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <err.h>
 #include <signal.h>
@@ -511,6 +512,9 @@ static void usage(const char *progname)
     fprintf(stderr, "  -S, --stats-file PATH Statistics output file path\n");
     fprintf(stderr, "                       (stats written every ~1 second)\n");
     fprintf(stderr,
+            "  -l, --log-file PATH  Write all output to PATH (default: "
+            "stdout/stderr)\n");
+    fprintf(stderr,
             "  -m, --mac ADDRESS    MAC address (format: XX:XX:XX:XX:XX:XX)\n");
     fprintf(stderr, "                       (default: 02:00:00:00:00:00)\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
@@ -783,6 +787,7 @@ int main(int argc, char *argv[])
     vfu_ctx_t *vfu_ctx;
     rocm_ernic_dev_t *dev;
     const char *socket_path = DEFAULT_SOCKET_PATH;
+    const char *log_file_path = NULL;
     struct sigaction sa;
     int ret, opt;
 
@@ -793,6 +798,7 @@ int main(int argc, char *argv[])
         {"backend", required_argument, 0, 'b'},
         {"verbose", no_argument, 0, 'v'},
         {"stats-file", required_argument, 0, 'S'},
+        {"log-file", required_argument, 0, 'l'},
         {"mac", required_argument, 0, 'm'},
         {"help", no_argument, 0, 'h'},
         /* Backend-specific options (verbs only) */
@@ -820,7 +826,7 @@ int main(int argc, char *argv[])
     dev->mac_addr[0] = 0x02;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vS:m:h", long_options, NULL)) !=
+    while ((opt = getopt_long(argc, argv, "s:b:vS:m:l:h", long_options, NULL)) !=
            -1) {
         switch (opt) {
         /* Common options */
@@ -840,6 +846,9 @@ int main(int argc, char *argv[])
                 free(dev->stats_file_path);
             }
             dev->stats_file_path = strdup(optarg);
+            break;
+        case 'l':
+            log_file_path = optarg;
             break;
         case 'm':
             /* Parse MAC address: format XX:XX:XX:XX:XX:XX */
@@ -888,6 +897,17 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* Redirect stdout and stderr to log file if requested */
+    if (log_file_path) {
+        int fd = open(log_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            err(EXIT_FAILURE, "Failed to open log file: %s", log_file_path);
+        }
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+
     /* Setup signal handlers */
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
@@ -902,6 +922,9 @@ int main(int argc, char *argv[])
            "Support)\n");
     printf("  Socket: %s\n", socket_path);
     printf("  Backend: %s\n", dev->backend_type_str);
+    if (log_file_path) {
+        printf("  Log file: %s\n", log_file_path);
+    }
 
     /* Show backend-specific options only for verbs backend */
     if (!strcmp(get_backend_type_base(dev->backend_type_str), "verbs")) {
