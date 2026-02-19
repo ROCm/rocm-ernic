@@ -5,7 +5,7 @@
 # Modified version of qemu-minimal's run-vm to support vfio-user devices
 # 
 # This script launches a VM that connects to a vfio-user device server
-# (like rocm_ernic) via a Unix socket.
+# (like rocm-ernic) via a Unix socket.
 #
 # Usage:
 #   VFIO_USER_SOCKET=/var/run/vfu-pvrdma.sock ./run-vm-vfio-user.sh
@@ -27,8 +27,8 @@ VFIO_USER_SOCKET=${VFIO_USER_SOCKET:-/tmp/vfio-user-rocm-ernic.sock}
 # Check if vfio-user socket exists
 if [ ! -S "${VFIO_USER_SOCKET}" ]; then
     echo "ERROR: vfio-user socket not found: ${VFIO_USER_SOCKET}"
-    echo "Please start rocm_ernic server first:"
-    echo "  sudo ./build/rocm_ernic --socket ${VFIO_USER_SOCKET}"
+    echo "Please start rocm-ernic server first:"
+    echo "  sudo ./build/rocm-ernic --socket ${VFIO_USER_SOCKET}"
     exit 1
 fi
 

@@ -113,8 +113,8 @@ add_project_link_arguments(
   language: 'c'
 )
 
-# Build rocm_ernic executable with full RDMA backend
-executable('rocm_ernic',
+# Build rocm-ernic executable with full RDMA backend
+executable('rocm-ernic',
   [server_sources, bridge_sources, rdma_backend_sources, 
    pvrdma_device_sources, utility_sources, qemu_stub_sources],
   include_directories: inc_dirs,

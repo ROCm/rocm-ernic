@@ -76,7 +76,7 @@ static void signal_handler(int signo)
  */
 static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
 {
-    const char *prefix = "rocm_ernic";
+    const char *prefix = "rocm-ernic";
 
     switch (level) {
     case LOG_EMERG:
@@ -352,8 +352,8 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
     /* Set PCI class code: Network Controller - InfiniBand (RDMA-capable) */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
-                      0x07,                            /* Subclass: InfiniBand */
-                      0x00);                           /* Prog-if */
+                      0x07,  /* Subclass: InfiniBand */
+                      0x00); /* Prog-if */
 
 
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
@@ -894,7 +894,7 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
-    printf("rocm_ernic: Starting rocm-ernic device server (Multi-Backend "
+    printf("rocm-ernic: Starting rocm-ernic device server (Multi-Backend "
            "Support)\n");
     printf("  Socket: %s\n", socket_path);
     printf("  Backend: %s\n", dev->backend_type_str);
@@ -959,7 +959,7 @@ int main(int argc, char *argv[])
     /* Set stats file path if provided */
     if (dev->stats_file_path && dev->pvrdma_handle) {
         pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
-        printf("rocm_ernic: Statistics will be written to: %s (every ~1 "
+        printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
                "second)\n",
                dev->stats_file_path);
     }
@@ -1000,14 +1000,14 @@ int main(int argc, char *argv[])
     /* Set socket permissions to allow non-root QEMU to connect */
     if (chmod(socket_path, 0666) < 0) {
         fprintf(stderr,
-                "rocm_ernic: WARNING: Failed to set socket permissions: %s\n",
+                "rocm-ernic: WARNING: Failed to set socket permissions: %s\n",
                 strerror(errno));
         fprintf(stderr,
-                "rocm_ernic: You may need to manually run: sudo chmod 666 %s\n",
+                "rocm-ernic: You may need to manually run: sudo chmod 666 %s\n",
                 socket_path);
     } else {
         printf(
-            "rocm_ernic: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n",
+            "rocm-ernic: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n",
             socket_path);
         fflush(stdout);
     }
@@ -1139,7 +1139,7 @@ int main(int argc, char *argv[])
 
     unlink(socket_path);
 
-    printf("rocm_ernic: Shutdown complete\n");
+    printf("rocm-ernic: Shutdown complete\n");
 
     return EXIT_SUCCESS;
 }

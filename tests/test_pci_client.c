@@ -1,7 +1,7 @@
 /*
- * Simple vfio-user client test program for rocm_ernic
+ * Simple vfio-user client test program for rocm-ernic
  *
- * Connects to the rocm_ernic server via socket and performs basic
+ * Connects to the rocm-ernic server via socket and performs basic
  * PCI configuration space queries to verify the device is working.
  *
  * Copyright (C) 2025
@@ -259,7 +259,7 @@ static void usage(const char *progname)
 {
     printf("Usage: %s [OPTIONS]\n", progname);
     printf("\n");
-    printf("Test client for rocm_ernic vfio-user server\n");
+    printf("Test client for rocm-ernic vfio-user server\n");
     printf("\n");
     printf("Options:\n");
     printf("  -s, --socket PATH   Socket path (default: "
@@ -295,7 +295,7 @@ int main(int argc, char **argv)
     }
 
     printf("=================================================\n");
-    printf("  rocm_ernic PCI Configuration Test Client\n");
+    printf("  rocm-ernic PCI Configuration Test Client\n");
     printf("=================================================\n\n");
 
     printf("Connecting to: %s\n", socket_path);

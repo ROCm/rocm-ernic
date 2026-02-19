@@ -118,17 +118,17 @@ sudo ninja -C build install
 
 ```bash
 # Start the ROCm ERNIC device server with verbs backend
-./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
                    --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
                    --verbose
 
 # Start with loopback backend (for testing)
-./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
                    --backend loopback \
                    --verbose
 
 # Start with no backend (minimal stubs)
-./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
                    --backend none
 ```
 
@@ -140,7 +140,7 @@ every second while the server is running.
 
 ```bash
 # Start server with statistics collection
-./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
                    --backend loopback \
                    --stats-file /tmp/rocm_ernic_stats.txt
 

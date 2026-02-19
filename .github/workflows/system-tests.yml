@@ -130,24 +130,24 @@ jobs:
           libjson-c-dev \
           libcmocka-dev
     
-    - name: Build rocm_ernic server
+    - name: Build rocm-ernic server
       run: |
-        echo "=== Building rocm_ernic server ==="
+        echo "=== Building rocm-ernic server ==="
         meson setup build \
           --buildtype=debug \
           --prefix=/usr
         meson compile -C build
-        ls -lh build/rocm_ernic
+        ls -lh build/rocm-ernic
         echo "✓ Server built successfully"
 
-    - name: Start rocm_ernic server
+    - name: Start rocm-ernic server
       shell: bash
       run: |
-        echo "=== Starting rocm_ernic server ==="
+        echo "=== Starting rocm-ernic server ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
         
-        ./build/rocm_ernic \
+        ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback:mode=preserve \
           --verbose > /tmp/vfu_server.log 2>&1 &
@@ -512,7 +512,7 @@ jobs:
           rm -f /tmp/vfio-user-rocm-ernic*.sock
           
           # Start server with this configuration
-          ./build/rocm_ernic \
+          ./build/rocm-ernic \
             --socket /tmp/vfio-user-rocm-ernic-test.sock \
               --backend "$config" \
             --verbose > /tmp/vfu_server_${config//[:\/=]/_}.log 2>&1 &
@@ -657,8 +657,8 @@ jobs:
 
     - name: Verify binaries
       run: |
-        ls -lh build/rocm_ernic
-        file build/rocm_ernic
+        ls -lh build/rocm-ernic
+        file build/rocm-ernic
 
     - name: Read VM info
       id: vm_info
@@ -815,7 +815,7 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
         
-        ./build/rocm_ernic \
+        ./build/rocm-ernic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
           --verbose > /tmp/server1.log 2>&1 &
@@ -940,7 +940,7 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-server2.sock
 
-        ./build/rocm_ernic \
+        ./build/rocm-ernic \
           --socket /tmp/vfio-user-server2.sock \
           --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \
           --verbose > /tmp/server2.log 2>&1 &
@@ -1463,7 +1463,7 @@ jobs:
 
         # Force kill if needed
         pkill -9 qemu-system-x86_64 2>/dev/null || true
-        pkill -9 rocm_ernic 2>/dev/null || true
+        pkill -9 rocm-ernic 2>/dev/null || true
         
         echo "✓ Cleanup complete"
   

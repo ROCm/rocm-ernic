@@ -4,7 +4,7 @@
 
 This is the Linux kernel driver for the AMD ROCm ERNIC (Emulated RDMA NIC),
 designed for use with the libvfio-user based userspace device server
-(`rocm_ernic`). The driver enables RDMA functionality in virtual machines.
+(`rocm-ernic`). The driver enables RDMA functionality in virtual machines.
 
 ## Building the Driver
 
@@ -33,12 +33,12 @@ dmesg | grep rocm_ernic
 # [  xxx] rocm_ernic 0000:00:04.0: registered ibdev rocm_ernicX
 ```
 
-## Testing with rocm_ernic Server
+## Testing with rocm-ernic server
 
 1. Start the vfio-user server:
    ```bash
    cd /home/stebates/Projects/rocm-ernic
-   sudo ./build/rocm_ernic --socket /tmp/vfio-user-rocm-ernic.sock
+   sudo ./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock
    ```
 
 2. Launch QEMU with memory-backend-memfd:

@@ -5,7 +5,7 @@ set -e
 
 TCP_PORT=5000
 BUILD_DIR="./build"
-SERVER_BIN="$BUILD_DIR/rocm_ernic"
+SERVER_BIN="$BUILD_DIR/rocm-ernic"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -30,8 +30,8 @@ cleanup() {
     if [ -n "$SERVER3_PID" ]; then
         kill "$SERVER3_PID" 2>/dev/null || true
     fi
-    # Also kill any remaining rocm_ernic processes from this test
-    pkill -f "rocm_ernic.*tcp.*server" 2>/dev/null || true
+    # Also kill any remaining rocm-ernic processes from this test
+    pkill -f "rocm-ernic.*tcp.*server" 2>/dev/null || true
     sleep 1
     rm -f /tmp/vfio-user-server*.sock
     rm -f /tmp/tcp-test-server*.log
@@ -76,7 +76,7 @@ check_port() {
 # Clean up any existing test processes and ports
 echo "Checking for existing processes..."
 check_port $TCP_PORT
-pkill -f "rocm_ernic.*tcp.*server" 2>/dev/null || true
+pkill -f "rocm-ernic.*tcp.*server" 2>/dev/null || true
 sleep 1
 rm -f /tmp/vfio-user-server*.sock
 rm -f /tmp/tcp-test-server*.log

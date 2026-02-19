@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BIN_NAME=${BIN_NAME:-./build/rocm_ernic}
+BIN_NAME=${BIN_NAME:-./build/rocm-ernic}
 INSTANCES=${INSTANCES:-4}
 MANAGER_IP=${MANAGER_IP:-127.0.0.1}
 MANAGER_PORT=${MANAGER_PORT:-6320}

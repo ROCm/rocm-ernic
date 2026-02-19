@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Test runner for rocm_ernic
+# Test runner for rocm-ernic
 #
 # Usage: run-test.sh <test_client_path> <server_path>
 #
@@ -38,7 +38,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "================================================="
-echo "  rocm_ernic Test Harness"
+echo "  rocm-ernic Test Harness"
 echo "================================================="
 echo ""
 
