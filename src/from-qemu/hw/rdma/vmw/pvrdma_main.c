@@ -132,7 +132,19 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     }
 
     fprintf(fp, "=== ROCm ERNIC Statistics ===\n");
-    fprintf(fp, "Write count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
+    fprintf(fp, "Instance:\n");
+    fprintf(fp, "  socket  : %s\n",
+            dev->stats_socket_path ? dev->stats_socket_path : "(not set)");
+    fprintf(fp, "  backend : %s\n",
+            dev->stats_backend_str ? dev->stats_backend_str : "(not set)");
+    if (dev->mac_addr_set) {
+        fprintf(fp, "  mac     : %02x:%02x:%02x:%02x:%02x:%02x\n",
+                dev->mac_addr[0], dev->mac_addr[1], dev->mac_addr[2],
+                dev->mac_addr[3], dev->mac_addr[4], dev->mac_addr[5]);
+    } else {
+        fprintf(fp, "  mac     : (not set)\n");
+    }
+    fprintf(fp, "\nWrite count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
     fprintf(fp, "Device Statistics:\n");
     fprintf(fp, "  commands         : %" PRIu64 "\n", dev->stats.commands);
     fprintf(fp, "  bar0_reads       : %" PRIu64 "\n", dev->stats.bar0_reads);
@@ -1180,6 +1192,8 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     dev->stats.stats_file = NULL;
     dev->stats.stats_fp = NULL;
     dev->stats.stats_write_count = 0;
+    dev->stats_socket_path = NULL;
+    dev->stats_backend_str = NULL;
 
     dev->shutdown_notifier.notify = pvrdma_shutdown_notifier;
     qemu_register_shutdown_notifier(&dev->shutdown_notifier);

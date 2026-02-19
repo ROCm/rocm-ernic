@@ -963,6 +963,8 @@ int main(int argc, char *argv[])
     /* Set stats file path if provided */
     if (dev->stats_file_path && dev->pvrdma_handle) {
         pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
+        pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
+                                        dev->backend_type_str);
         printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
                "second)\n",
                dev->stats_file_path);

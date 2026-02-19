@@ -211,6 +211,10 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         free(pvrdma->stats.stats_file);
         pvrdma->stats.stats_file = NULL;
     }
+    free(pvrdma->stats_socket_path);
+    pvrdma->stats_socket_path = NULL;
+    free(pvrdma->stats_backend_str);
+    pvrdma->stats_backend_str = NULL;
     if (pvrdma->stats.stats_fp) {
         fclose(pvrdma->stats.stats_fp);
         pvrdma->stats.stats_fp = NULL;
@@ -516,6 +520,24 @@ void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
     } else {
         pvrdma->stats.stats_file = NULL;
     }
+}
+
+void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
+                                    const char *socket_path,
+                                    const char *backend_type_str)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+
+    free(pvrdma->stats_socket_path);
+    pvrdma->stats_socket_path = socket_path ? strdup(socket_path) : NULL;
+
+    free(pvrdma->stats_backend_str);
+    pvrdma->stats_backend_str =
+        backend_type_str ? strdup(backend_type_str) : NULL;
 }
 
 void pvrdma_write_stats(pvrdma_handle_t handle)

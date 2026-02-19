@@ -132,6 +132,9 @@ struct PVRDMADev {
     VMXNET3State *func0;
     Notifier shutdown_notifier;
     PVRDMADevStats stats;
+    /* Optional strings for stats file display (freed in cleanup) */
+    char *stats_socket_path;  /* Socket path for this instance */
+    char *stats_backend_str;  /* Full backend string (e.g. loopback:mode=...) */
 
     /* DHCP server (for loopback mode and TCP manager mode) */
     void *dhcp_server; /* DhcpServer* - forward declared to avoid include */

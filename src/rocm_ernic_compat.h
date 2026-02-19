@@ -154,6 +154,16 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
 void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file);
 
 /**
+ * pvrdma_set_stats_instance_info - Set instance info for stats file display
+ * @handle: Device handle
+ * @socket_path: Socket path for this instance (may be NULL)
+ * @backend_type_str: Full backend string e.g. loopback (may be NULL)
+ */
+void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
+                                    const char *socket_path,
+                                    const char *backend_type_str);
+
+/**
  * pvrdma_write_stats - Write statistics to file
  * @handle: Device handle
  */
