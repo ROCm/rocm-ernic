@@ -64,6 +64,6 @@ dmesg | grep rocm_ernic
 
 4. Verify the device is recognized:
    ```bash
-   lspci | grep 1022:1485
+   lspci | grep 1022:1488
    ibv_devices
    ```

@@ -13,7 +13,7 @@ performs basic PCI configuration space queries.
 **Tests Performed:**
 - Socket connection to server
 - PCI Vendor ID verification (AMD: 0x1022)
-- PCI Device ID verification (ROCm ERNIC: 0x1485)
+- PCI Device ID verification (ROCm ERNIC: 0x1488)
 - PCI Class Code verification (Network Controller, InfiniBand: 0x02 07 00)
 - PCI Header Type verification (Type 0)
 - BAR register reads

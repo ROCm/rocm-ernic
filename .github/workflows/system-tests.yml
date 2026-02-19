@@ -316,7 +316,7 @@ jobs:
         
         echo "=== PCI Devices ==="
         sudo lspci | grep -i amd || echo "AMD device not found yet"
-        sudo lspci -nn | grep -E "1022:1485|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
+        sudo lspci -nn | grep -E "1022:1488|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
         
         echo ""
         echo "=== Checking for RDMA device ==="

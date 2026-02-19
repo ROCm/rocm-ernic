@@ -113,6 +113,13 @@ void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
  */
 uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
 
+/**
+ * pvrdma_bar0_mmio_count - Record a BAR0 (MSI-X) MMIO access for statistics
+ * @handle: Device handle
+ * @is_write: true for write, false for read
+ */
+void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
+
 /*
  * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */
@@ -124,15 +131,20 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
 /**
  * pvrdma_get_stats - Get device statistics
  * @handle: Device handle
- * @commands: Pointer to receive command count
- * @regs_reads: Pointer to receive register read count
- * @regs_writes: Pointer to receive register write count
- * @uar_writes: Pointer to receive UAR write count
- * @interrupts: Pointer to receive interrupt count
+ * @commands: Pointer to receive command count (optional)
+ * @regs_reads: Pointer to receive register read count (optional)
+ * @regs_writes: Pointer to receive register write count (optional)
+ * @uar_writes: Pointer to receive UAR write count (optional)
+ * @interrupts: Pointer to receive interrupt count (optional)
+ * @uar_reads: Pointer to receive UAR read count (optional)
+ * @bar0_reads: Pointer to receive BAR0 read count (optional)
+ * @bar0_writes: Pointer to receive BAR0 write count (optional)
  */
 void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
                       uint64_t *regs_reads, uint64_t *regs_writes,
-                      uint64_t *uar_writes, uint64_t *interrupts);
+                      uint64_t *uar_writes, uint64_t *interrupts,
+                      uint64_t *uar_reads, uint64_t *bar0_reads,
+                      uint64_t *bar0_writes);
 
 /**
  * pvrdma_set_stats_file - Set statistics output file path

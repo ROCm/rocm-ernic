@@ -39,10 +39,10 @@
 #include "rocm_ernic_compat.h"
 
 /* AMD ROCm ERNIC device IDs (for vfio-user).
- * 0x1484 is reserved for AMD Starship/Matisse GPP Bridge; use 0x1485 for
- * ROCm ERNIC emulated RDMA NIC. */
+ * 0x1484 = GPP Bridge, 0x1485 = Reserved SPP, 0x1486 = CCP/PSP, 0x1487 = HD
+ * Audio; use 0x1488 for ROCm ERNIC so no other kernel driver binds. */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1485
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1488
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -121,6 +121,10 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         memcpy(dev->bar0_mem + offset, buf, count);
     } else {
         memcpy(buf, dev->bar0_mem + offset, count);
+    }
+
+    if (dev->pvrdma_handle) {
+        pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
     }
 
     return count;

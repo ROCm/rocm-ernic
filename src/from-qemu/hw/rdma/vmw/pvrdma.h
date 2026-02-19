@@ -97,7 +97,10 @@ typedef struct PVRDMADevStats {
     uint64_t commands;
     uint64_t regs_reads;
     uint64_t regs_writes;
+    uint64_t uar_reads;
     uint64_t uar_writes;
+    uint64_t bar0_reads;
+    uint64_t bar0_writes;
     uint64_t interrupts;
     GHashTable *qp_stats;            /* Per-QP statistics (key: QP handle) */
     char *stats_file;                /* Stats output file path */

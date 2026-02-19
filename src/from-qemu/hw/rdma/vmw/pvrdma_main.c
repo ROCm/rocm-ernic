@@ -135,9 +135,18 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     fprintf(fp, "Write count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
     fprintf(fp, "Device Statistics:\n");
     fprintf(fp, "  commands         : %" PRIu64 "\n", dev->stats.commands);
+    fprintf(fp, "  bar0_reads       : %" PRIu64 "\n", dev->stats.bar0_reads);
+    fprintf(fp, "  bar0_writes      : %" PRIu64 "\n", dev->stats.bar0_writes);
     fprintf(fp, "  regs_reads       : %" PRIu64 "\n", dev->stats.regs_reads);
     fprintf(fp, "  regs_writes      : %" PRIu64 "\n", dev->stats.regs_writes);
+    fprintf(fp, "  uar_reads        : %" PRIu64 "\n", dev->stats.uar_reads);
     fprintf(fp, "  uar_writes       : %" PRIu64 "\n", dev->stats.uar_writes);
+    fprintf(fp, "  mmio_reads_total : %" PRIu64 "\n",
+            dev->stats.bar0_reads + dev->stats.regs_reads +
+                dev->stats.uar_reads);
+    fprintf(fp, "  mmio_writes_total: %" PRIu64 "\n",
+            dev->stats.bar0_writes + dev->stats.regs_writes +
+                dev->stats.uar_writes);
     fprintf(fp, "  interrupts       : %" PRIu64 "\n", dev->stats.interrupts);
     fprintf(fp, "  total_bytes_sent : %" PRIu64 "\n",
             dev->stats.total_bytes_sent);
@@ -549,7 +558,7 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     dsr->caps.max_pkeys = MAX_PKEYS;
     /* Vendor and hardware version information */
     dsr->caps.vendor_id = 0x1022;      /* AMD vendor ID */
-    dsr->caps.vendor_part_id = 0x1485; /* ROCm ERNIC device ID */
+    dsr->caps.vendor_part_id = 0x1488; /* ROCm ERNIC device ID */
     dsr->caps.hw_ver = 1;              /* Hardware version 1 */
     /* Mesh metadata for TCP backend */
     dsr->caps.mesh_node_id =
@@ -851,6 +860,11 @@ static const MemoryRegionOps regs_ops = {
 /* Implementation function - called from bridge wrapper */
 uint64_t pvrdma_uar_read_impl(void *opaque, hwaddr addr, unsigned size)
 {
+    PVRDMADev *dev = opaque;
+
+    if (dev) {
+        dev->stats.uar_reads++;
+    }
     return 0xffffffff;
 }
 

@@ -26,7 +26,7 @@
 
 /* AMD ROCm ERNIC device IDs */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1485
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1488
 
 /* Test results */
 typedef struct {

@@ -450,6 +450,20 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
     return val;
 }
 
+void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    if (is_write) {
+        pvrdma->stats.bar0_writes++;
+    } else {
+        pvrdma->stats.bar0_reads++;
+    }
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -460,7 +474,9 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
 
 void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
                       uint64_t *regs_reads, uint64_t *regs_writes,
-                      uint64_t *uar_writes, uint64_t *interrupts)
+                      uint64_t *uar_writes, uint64_t *interrupts,
+                      uint64_t *uar_reads, uint64_t *bar0_reads,
+                      uint64_t *bar0_writes)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
@@ -478,6 +494,12 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
         *uar_writes = pvrdma->stats.uar_writes;
     if (interrupts)
         *interrupts = pvrdma->stats.interrupts;
+    if (uar_reads)
+        *uar_reads = pvrdma->stats.uar_reads;
+    if (bar0_reads)
+        *bar0_reads = pvrdma->stats.bar0_reads;
+    if (bar0_writes)
+        *bar0_writes = pvrdma->stats.bar0_writes;
 }
 
 void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
