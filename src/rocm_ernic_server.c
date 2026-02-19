@@ -38,9 +38,11 @@
 #include "rocm_ernic_internal.h"
 #include "rocm_ernic_compat.h"
 
-/* AMD ROCm ERNIC device IDs (for vfio-user) */
+/* AMD ROCm ERNIC device IDs (for vfio-user).
+ * 0x1484 is reserved for AMD Starship/Matisse GPP Bridge; use 0x1485 for
+ * ROCm ERNIC emulated RDMA NIC. */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1485
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -348,10 +350,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                    PCI_VENDOR_ID_AMD,          /* Subsystem Vendor ID */
                    PCI_DEVICE_ID_ROCM_ERNIC);  /* Subsystem ID */
 
-    /* Set PCI class code: Network Controller - Other */
-    vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class */
-                      0x80,                            /* Sub class (other) */
-                      0x00); /* Programming interface */
+    /* Set PCI class code: Network Controller - InfiniBand (RDMA-capable) */
+    vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
+                      0x07,                            /* Subclass: InfiniBand */
+                      0x00);                           /* Prog-if */
 
 
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",

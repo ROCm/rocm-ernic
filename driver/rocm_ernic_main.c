@@ -1350,7 +1350,7 @@ static void rocm_ernic_detach_from_eth_dev(struct pci_dev *pdev)
 
 /* AMD Emulated RDMA device (for vfio-user) */
 #define PCI_VENDOR_ID_ROCM_ERNIC 0x1022 /* AMD */
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484 /* Emulated RDMA */
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1485 /* Emulated RDMA */
 
 struct rocm_ernic_probe_work {
     struct work_struct work;

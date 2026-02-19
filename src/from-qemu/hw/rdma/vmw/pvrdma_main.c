@@ -549,7 +549,7 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     dsr->caps.max_pkeys = MAX_PKEYS;
     /* Vendor and hardware version information */
     dsr->caps.vendor_id = 0x1022;      /* AMD vendor ID */
-    dsr->caps.vendor_part_id = 0x1484; /* ROCm ERNIC device ID */
+    dsr->caps.vendor_part_id = 0x1485; /* ROCm ERNIC device ID */
     dsr->caps.hw_ver = 1;              /* Hardware version 1 */
     /* Mesh metadata for TCP backend */
     dsr->caps.mesh_node_id =

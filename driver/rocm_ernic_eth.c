@@ -781,7 +781,7 @@ EXPORT_SYMBOL(rocm_ernic_eth_get_pdev);
 
 /* PCI device IDs */
 #define PCI_VENDOR_ID_ROCM_ERNIC 0x1022 /* AMD */
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484 /* Emulated RDMA */
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x1485 /* Emulated RDMA */
 
 static const struct pci_device_id rocm_ernic_eth_pci_table[] = {
     {
