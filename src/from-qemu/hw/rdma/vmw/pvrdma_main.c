@@ -144,6 +144,8 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     } else {
         fprintf(fp, "  mac     : (not set)\n");
     }
+    fprintf(fp, "  connection : %s\n",
+            dev->stats_connection_str ? dev->stats_connection_str : "(not set)");
     fprintf(fp, "\nWrite count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
     fprintf(fp, "Device Statistics:\n");
     fprintf(fp, "  commands         : %" PRIu64 "\n", dev->stats.commands);
@@ -1194,6 +1196,7 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     dev->stats.stats_write_count = 0;
     dev->stats_socket_path = NULL;
     dev->stats_backend_str = NULL;
+    dev->stats_connection_str = NULL;
 
     dev->shutdown_notifier.notify = pvrdma_shutdown_notifier;
     qemu_register_shutdown_notifier(&dev->shutdown_notifier);

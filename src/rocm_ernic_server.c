@@ -255,6 +255,7 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    const char *conn_str = "disconnected";
 
     vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%d)", type);
 
@@ -262,19 +263,29 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     case VFU_RESET_DEVICE:
         /* Reset device state but keep context alive */
         dev->device_active = false;
+        conn_str = "disconnected (device reset)";
         break;
 
     case VFU_RESET_LOST_CONN:
         /* Client disconnected, prepare for new connection */
         vfu_log(vfu_ctx, LOG_INFO, "Client connection lost");
         dev->device_active = false;
+        conn_str = "disconnected (lost connection)";
         break;
 
     case VFU_RESET_PCI_FLR:
         /* PCI Function Level Reset */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         dev->device_active = false;
+        conn_str = "disconnected (PCI FLR)";
         break;
+    }
+
+    if (dev->pvrdma_handle) {
+        pvrdma_set_stats_connection_state(dev->pvrdma_handle, conn_str);
+        if (dev->stats_file_path) {
+            pvrdma_write_stats(dev->pvrdma_handle);
+        }
     }
 
     return 0;
@@ -479,6 +490,18 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     }
 
     vfu_log(vfu_ctx, LOG_INFO, "Added MSI-X capability at offset 0x%zx", ret);
+
+    /* Ensure standard PCI header tail (0x34-0x3f) is set for config reads */
+    {
+        vfu_pci_config_space_t *cfg = vfu_pci_get_config_space(vfu_ctx);
+        if (cfg) {
+            uint8_t *p = (uint8_t *)cfg;
+            p[0x34] = (uint8_t)ret; /* capability pointer */
+            for (int i = 0x35; i <= 0x3f; i++) {
+                p[i] = 0;
+            }
+        }
+    }
 
     /* Setup interrupt vector count - libvfio-user will manage table/PBA */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_MSIX_IRQ, RDMA_MAX_INTRS);
@@ -1072,6 +1095,9 @@ int main(int argc, char *argv[])
         }
 
         vfu_log(vfu_ctx, LOG_INFO, "Client connected!");
+        if (dev->pvrdma_handle) {
+            pvrdma_set_stats_connection_state(dev->pvrdma_handle, "connected");
+        }
 
         /* Run device - process requests from client */
         int loop_count = 0;
@@ -1102,6 +1128,13 @@ int main(int argc, char *argv[])
                 if (errno == ENOTCONN) {
                     vfu_log(vfu_ctx, LOG_INFO,
                             "Client disconnected after %d loops", loop_count);
+                    if (dev->pvrdma_handle) {
+                        pvrdma_set_stats_connection_state(dev->pvrdma_handle,
+                                    "disconnected (client closed)");
+                        if (dev->stats_file_path) {
+                            pvrdma_write_stats(dev->pvrdma_handle);
+                        }
+                    }
                     break;
                 } else if (errno == EINTR) {
                     /* Interrupted by signal */

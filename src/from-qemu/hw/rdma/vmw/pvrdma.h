@@ -133,8 +133,9 @@ struct PVRDMADev {
     Notifier shutdown_notifier;
     PVRDMADevStats stats;
     /* Optional strings for stats file display (freed in cleanup) */
-    char *stats_socket_path;  /* Socket path for this instance */
-    char *stats_backend_str;  /* Full backend string (e.g. loopback:mode=...) */
+    char *stats_socket_path;   /* Socket path for this instance */
+    char *stats_backend_str;   /* Full backend string (e.g. loopback:mode=...) */
+    char *stats_connection_str; /* e.g. "connected", "disconnected (lost conn)" */
 
     /* DHCP server (for loopback mode and TCP manager mode) */
     void *dhcp_server; /* DhcpServer* - forward declared to avoid include */
