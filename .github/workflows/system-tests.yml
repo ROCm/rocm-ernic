@@ -2,7 +2,19 @@ name: System Tests
 
 on:
   pull_request:
-    branches: [ main, dev/stephen/tcp-ip-backend ]
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'meson.build'
+      - 'meson_options.txt'
+      - 'driver/**'
+      - 'scripts/setup-vm-rocm-ernic.py'
+      - 'scripts/85-rocm-ernic-net.rules'
+      - 'scripts/99-rocm-ernic-dmesg.conf'
+      - 'scripts/netplan-rocm-ernic.yaml.example'
+      - 'scripts/pci.ids.rocm-ernic'
+      - '.github/workflows/system-tests.yml'
   workflow_dispatch:
 
 # Container image with QEMU and libvfio-user pre-built
@@ -124,6 +136,7 @@ jobs:
           meson \
           ninja-build \
           pkg-config \
+          rsync \
           libibverbs-dev \
           librdmacm-dev \
           libglib2.0-dev \
@@ -304,182 +317,96 @@ jobs:
         tail -100 /tmp/qemu.log
         exit 1
     
-    - name: Verify RDMA NIC in VM
+    - name: Copy full repo to VM
       shell: bash
       run: |
-        echo "=== Verifying RDMA NIC in VM ==="
+        echo "=== Copying full repo to VM (excluding .git) ==="
         SSH_PORT="${{ env.SSH_PORT }}"
         VM_USER="${{ env.VM_USER }}"
-        
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        
-        echo "=== PCI Devices ==="
-        sudo lspci | grep -i amd || echo "AMD device not found yet"
-        sudo lspci -nn | grep -E "1022:1488|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
-        
-        echo ""
-        echo "=== Checking for RDMA device ==="
-        if command -v ibv_devices &> /dev/null; then
-          ibv_devices || echo "No RDMA devices found"
-        else
-          echo "ibv_devices not available"
-        fi
-        
-        echo ""
-        echo "=== Kernel modules ==="
-        lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
-        EOFVM
-    
-    - name: Copy driver source to VM
-      shell: bash
-      run: |
-        echo "=== Copying driver source to VM ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
-        VM_USER="${{ env.VM_USER }}"
-        
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
-          driver/ "${VM_USER}@localhost:/tmp/" || {
-          echo "✗ Failed to copy driver source to VM"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'mkdir -p /tmp/rocm-ernic'
+        rsync -a --exclude='.git' -e "ssh -o StrictHostKeyChecking=no -p $SSH_PORT" \
+          ./ "${VM_USER}@localhost:/tmp/rocm-ernic/" || {
+          echo "✗ Failed to copy repo to VM"
           exit 1
         }
-        echo "✓ Driver source copied to VM"
-    
-    - name: Install necessary packages inside VM
+        echo "✓ Repo copied to VM at /tmp/rocm-ernic"
+
+    - name: Run setup script in VM
       shell: bash
       run: |
-        echo "=== Installing necessary packages inside the VM ==="
+        echo "=== Running setup-vm-rocm-ernic.py in VM ==="
         SSH_PORT="${{ env.SSH_PORT }}"
         VM_USER="${{ env.VM_USER }}"
-        
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" \
+          'cd /tmp/rocm-ernic && sudo python3 scripts/setup-vm-rocm-ernic.py --no-mount' || {
+          echo "✗ Setup script failed in VM"
+          exit 1
+        }
+        echo "✓ Setup script completed"
+
+    - name: Verify lspci (1022:8000)
+      shell: bash
+      run: |
+        echo "=== Verifying ROCm ERNIC device (1022:8000) in VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
-        
-        # Retry apt-get update to handle transient mirror issues
-        echo "Updating package lists (with retry)..."
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            echo "✓ Package lists updated"
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
-        done
-        
-        echo "Installing RDMA packages..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core
-        echo "✓ Necessary packages installed"
+        echo "=== PCI devices (AMD / 1022:8000) ==="
+        sudo lspci -nn
+        if ! sudo lspci -nn | grep -qE "1022:8000|1022:08000"; then
+          echo "✗ ROCm ERNIC device 1022:8000 not found in lspci"
+          exit 1
+        fi
+        echo "✓ ROCm ERNIC device 1022:8000 found"
+        if command -v ibv_devices &> /dev/null; then
+          ibv_devices || true
+        fi
+        lsmod | grep -E "ib_|rocm" || true
         EOFVM
 
-    - name: Build and load driver in VM
+    - name: Verify interface name (roc0s0)
       shell: bash
       run: |
-        echo "=== Building and loading driver in VM ==="
+        echo "=== Verifying udev interface name roc0s0 in VM ==="
         SSH_PORT="${{ env.SSH_PORT }}"
         VM_USER="${{ env.VM_USER }}"
-        
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
-        
-        echo "=== Kernel Version ==="
-        uname -r
-        
-        echo ""
-        echo "=== Building Driver ==="
-        cd /tmp/driver
-        make KDIR=/lib/modules/$(uname -r)/build
-        if [ ! -f rocm_ernic_eth.ko ] || [ ! -f rocm_ernic_rdma.ko ]; then
-          echo "✗ Driver modules not found!"
-          echo "Expected: rocm_ernic_eth.ko and rocm_ernic_rdma.ko"
-          ls -lh *.ko 2>/dev/null || echo "No .ko files found"
+        if ! ip -o link show | grep -q "roc0s0"; then
+          echo "✗ Interface roc0s0 not found (udev rule 85-rocm-ernic-net.rules may not be applied)"
+          ip -o link show
           exit 1
         fi
-        ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
-        echo "✓ Driver built for kernel $(uname -r)"
-        
-        echo ""
-        echo "=== Loading InfiniBand Core ==="
-        if ! sudo modprobe ib_core; then
-          echo "✗ Failed to load ib_core module"
-          echo "This module is required for the rocm_ernic driver."
-          echo "Checking available modules:"
-          find /lib/modules/$(uname -r) -name "*ib_core*" 2>/dev/null || echo "No ib_core module found"
-          echo ""
-          echo "You may need to install linux-modules-extra:"
-          echo "  sudo apt-get update && sudo apt-get install linux-modules-extra-$(uname -r)"
-          exit 1
-        fi
-        
-        if ! sudo modprobe ib_uverbs; then
-          echo "✗ Failed to load ib_uverbs module"
-          echo "This module is required for the rocm_ernic driver."
-          echo "Checking available modules:"
-          find /lib/modules/$(uname -r) -name "*ib_uverbs*" 2>/dev/null || echo "No ib_uverbs module found"
-          exit 1
-        fi
-        
-        echo "Loaded IB modules:"
-        lsmod | grep ib_ || echo "No IB modules loaded"
-        
-        # Verify required symbols are available
-        echo ""
-        echo "=== Verifying InfiniBand symbols ==="
-        if ! grep -q "ib_umem_get" /proc/kallsyms 2>/dev/null; then
-          echo "✗ ib_umem_get symbol not found in kernel"
-          echo "The InfiniBand core modules may not be properly loaded or may not export symbols."
-          exit 1
-        fi
-        if ! grep -q "ib_umem_release" /proc/kallsyms 2>/dev/null; then
-          echo "✗ ib_umem_release symbol not found in kernel"
-          echo "The InfiniBand core modules may not be properly loaded or may not export symbols."
-          exit 1
-        fi
-        echo "✓ Required InfiniBand symbols are available"
-        
-        echo ""
-        echo "=== Loading Driver ==="
-        # Load eth module first (required dependency)
-        sudo insmod ./rocm_ernic_eth.ko 2>&1 || {
-          echo "⚠️  Driver eth module load failed"
-          echo "Kernel messages:"
-          sudo dmesg | tail -30
-          exit 1
-        }
-        
-        # Load rdma module (depends on eth module)
-        sudo insmod ./rocm_ernic_rdma.ko 2>&1 || {
-          echo "⚠️  Driver rdma module load failed"
-          echo "Kernel messages:"
-          sudo dmesg | tail -30
-          exit 1
-        }
-        
-        echo "✓ Driver loaded successfully"
-        lsmod | grep rocm_ernic
-        
-        echo ""
-        echo "=== Checking RDMA Device ==="
-        sleep 2  # Give device time to register
-        if ibv_devices | grep -E "rocm_ernic|rocep"; then
-          DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
-          echo "✓ RDMA device found: $DEVICE"
-          ibv_devinfo -d "$DEVICE" | head -20 || true
-        else
-          echo "⚠️  RDMA device not found after driver load"
-          echo "PCI devices:"
-          sudo lspci | grep -i amd || true
-          echo "Kernel messages:"
-          sudo dmesg | tail -30
-          exit 1
-        fi
+        echo "✓ Interface roc0s0 found"
+        ip -o link show roc0s0
         EOFVM
-    
+
+    - name: Verify netplan (roc0s0 dhcp4)
+      shell: bash
+      run: |
+        echo "=== Verifying netplan config for roc0s0 in VM ==="
+        SSH_PORT="${{ env.SSH_PORT }}"
+        VM_USER="${{ env.VM_USER }}"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        FOUND=0
+        for f in /etc/netplan/*.yaml; do
+          [ -f "$f" ] || continue
+          if grep -q 'roc0s0' "$f" && grep -q 'dhcp4' "$f"; then
+            FOUND=1
+            break
+          fi
+        done
+        if [ "$FOUND" -ne 1 ]; then
+          echo "✗ No netplan file found with roc0s0 and dhcp4"
+          ls -la /etc/netplan/ 2>/dev/null || true
+          cat /etc/netplan/*.yaml 2>/dev/null || true
+          exit 1
+        fi
+        echo "✓ Netplan config for roc0s0 with dhcp4 found"
+        EOFVM
+
     - name: Run loopback backend tests
       shell: bash
       run: |
@@ -642,6 +569,7 @@ jobs:
           meson \
           ninja-build \
           pkg-config \
+          rsync \
           libibverbs-dev \
           librdmacm-dev \
           libglib2.0-dev \
@@ -1267,123 +1195,104 @@ jobs:
           sleep 10
         done
 
-    - name: Copy driver source to VMs
+    - name: Copy full repo to VMs
       shell: bash
       run: |
-        echo "=== Copying driver source to VMs ==="
+        echo "=== Copying full repo to VMs (excluding .git) ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Copy to VM 1
-        scp -o StrictHostKeyChecking=no -P 2222 -r driver "${VM_USER}@localhost:~/" || {
-          echo "✗ Failed to copy driver to VM 1"
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'mkdir -p /tmp/rocm-ernic'
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'mkdir -p /tmp/rocm-ernic'
+
+        rsync -a --exclude='.git' -e "ssh -o StrictHostKeyChecking=no -p 2222" \
+          ./ "${VM_USER}@localhost:/tmp/rocm-ernic/" || {
+          echo "✗ Failed to copy repo to VM 1"
           exit 1
         }
-
-        # Copy to VM 2
-        scp -o StrictHostKeyChecking=no -P 2223 -r driver "${VM_USER}@localhost:~/" || {
-          echo "✗ Failed to copy driver to VM 2"
+        rsync -a --exclude='.git' -e "ssh -o StrictHostKeyChecking=no -p 2223" \
+          ./ "${VM_USER}@localhost:/tmp/rocm-ernic/" || {
+          echo "✗ Failed to copy repo to VM 2"
           exit 1
         }
+        echo "✓ Repo copied to both VMs at /tmp/rocm-ernic"
 
-        echo "✓ Driver source copied"
-
-    - name: Install necessary packages in VMs
+    - name: Run setup script in VM 1
       shell: bash
       run: |
-        echo "=== Installing necessary packages in both VMs ==="
+        echo "=== Running setup-vm-rocm-ernic.py in VM 1 ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        
-        # Install in VM 1
-        echo "[VM 1] Installing packages..."
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" \
+          'cd /tmp/rocm-ernic && sudo python3 scripts/setup-vm-rocm-ernic.py --no-mount' || {
+          echo "✗ Setup script failed in VM 1"
+          exit 1
+        }
+        echo "✓ Setup script completed in VM 1"
+
+    - name: Run setup script in VM 2
+      shell: bash
+      run: |
+        echo "=== Running setup-vm-rocm-ernic.py in VM 2 ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" \
+          'cd /tmp/rocm-ernic && sudo python3 scripts/setup-vm-rocm-ernic.py --no-mount' || {
+          echo "✗ Setup script failed in VM 2"
+          exit 1
+        }
+        echo "✓ Setup script completed in VM 2"
+
+    - name: Verify lspci and udev/netplan in VM 1
+      shell: bash
+      run: |
+        echo "=== Verifying lspci (1022:8000), roc0s0, netplan in VM 1 ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
         ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
         set -e
-        # Retry apt-get update to handle transient mirror issues
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
+        if ! sudo lspci -nn | grep -qE "1022:8000|1022:08000"; then
+          echo "✗ VM 1: ROCm ERNIC device 1022:8000 not found in lspci"
+          exit 1
+        fi
+        if ! ip -o link show | grep -q "roc0s0"; then
+          echo "✗ VM 1: Interface roc0s0 not found"
+          exit 1
+        fi
+        FOUND=0
+        for f in /etc/netplan/*.yaml; do
+          [ -f "$f" ] || continue
+          if grep -q 'roc0s0' "$f" && grep -q 'dhcp4' "$f"; then FOUND=1; break; fi
         done
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          build-essential
-        echo "[VM 1] ✓ Packages installed"
+        if [ "$FOUND" -ne 1 ]; then
+          echo "✗ VM 1: No netplan with roc0s0 and dhcp4"
+          exit 1
+        fi
+        echo "✓ VM 1: lspci 1022:8000, roc0s0, netplan OK"
         EOFVM
-        
-        # Install in VM 2
-        echo "[VM 2] Installing packages..."
+
+    - name: Verify lspci and udev/netplan in VM 2
+      shell: bash
+      run: |
+        echo "=== Verifying lspci (1022:8000), roc0s0, netplan in VM 2 ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
         ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
         set -e
-        # Retry apt-get update to handle transient mirror issues
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
+        if ! sudo lspci -nn | grep -qE "1022:8000|1022:08000"; then
+          echo "✗ VM 2: ROCm ERNIC device 1022:8000 not found in lspci"
+          exit 1
+        fi
+        if ! ip -o link show | grep -q "roc0s0"; then
+          echo "✗ VM 2: Interface roc0s0 not found"
+          exit 1
+        fi
+        FOUND=0
+        for f in /etc/netplan/*.yaml; do
+          [ -f "$f" ] || continue
+          if grep -q 'roc0s0' "$f" && grep -q 'dhcp4' "$f"; then FOUND=1; break; fi
         done
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          build-essential
-        echo "[VM 2] ✓ Packages installed"
+        if [ "$FOUND" -ne 1 ]; then
+          echo "✗ VM 2: No netplan with roc0s0 and dhcp4"
+          exit 1
+        fi
+        echo "✓ VM 2: lspci 1022:8000, roc0s0, netplan OK"
         EOFVM
-        
-        echo "✓ Both VMs have packages installed"
-
-    - name: Build and load driver in VM 1
-      shell: bash
-      run: |
-        echo "=== Building driver in VM 1 ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-
-        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" <<'EOF'
-          cd ~/driver
-          make KDIR=/lib/modules/$(uname -r)/build
-
-          sudo modprobe ib_core
-          sudo modprobe ib_uverbs
-          sudo insmod rocm_ernic_eth.ko
-          sudo insmod rocm_ernic_rdma.ko
-
-          sleep 2
-
-          ibv_devinfo || echo "No RDMA devices yet"
-        EOF
-
-        echo "✓ Driver loaded in VM 1"
-
-    - name: Build and load driver in VM 2
-      shell: bash
-      run: |
-        echo "=== Building driver in VM 2 ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-
-        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" <<'EOF'
-          cd ~/driver
-          make KDIR=/lib/modules/$(uname -r)/build
-
-          sudo modprobe ib_core
-          sudo modprobe ib_uverbs
-          sudo insmod rocm_ernic_eth.ko
-          sudo insmod rocm_ernic_rdma.ko
-
-          sleep 2
-
-          ibv_devinfo || echo "No RDMA devices yet"
-        EOF
-
-        echo "✓ Driver loaded in VM 2"
 
     - name: Verify RDMA devices in VMs
       shell: bash

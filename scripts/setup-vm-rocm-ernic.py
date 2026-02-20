@@ -105,9 +105,14 @@ def main():
         kver = os.uname().release
         run([
             "apt-get", "install", "-y", "-qq",
-            "build-essential", "rdma-core", f"linux-headers-{kver}",
+            "build-essential",
+            "rdma-core",
+            f"linux-headers-{kver}",
+            f"linux-modules-extra-{kver}",
+            "ibverbs-utils",
         ])
-        print("  Installed build-essential, rdma-core, linux-headers.")
+        print("  Installed build-essential, rdma-core, linux-headers, "
+              "linux-modules-extra, ibverbs-utils.")
 
     # 3. Build and load driver
     if not args.no_driver:
@@ -117,8 +122,29 @@ def main():
             sys.exit(1)
         run(["make", "clean"], cwd=driver_dir)
         run(["make"], cwd=driver_dir)
+        # Install udev rule before loading driver so the NIC is named roc0s0
+        # on add (rule runs on ACTION=="add").
+        if not args.no_udev:
+            udev_src = os.path.join(script_dir, "85-rocm-ernic-net.rules")
+            udev_dst = "/etc/udev/rules.d/85-rocm-ernic-net.rules"
+            if os.path.isfile(udev_src):
+                shutil.copy2(udev_src, udev_dst)
+                run(["udevadm", "control", "--reload-rules"])
+                print("  Udev rule installed (roc0s0) before driver load.")
+        kver = os.uname().release
+        # Load InfiniBand core (ib_core, ib_uverbs; latter often in
+        # linux-modules-extra). If ib_uverbs missing, install -extra and retry.
         run(["modprobe", "ib_core"], check=False)
-        run(["modprobe", "ib_uverbs"], check=False)
+        try:
+            run(["modprobe", "ib_uverbs"], check=True)
+        except subprocess.CalledProcessError:
+            print("  ib_uverbs not found, installing linux-modules-extra..."
+                  )
+            run([
+                "apt-get", "install", "-y", "-qq",
+                f"linux-modules-extra-{kver}",
+            ])
+            run(["modprobe", "ib_uverbs"])
         eth_ko = os.path.join(driver_dir, "rocm_ernic_eth.ko")
         rdma_ko = os.path.join(driver_dir, "rocm_ernic_rdma.ko")
         if os.path.isfile(eth_ko) and not module_loaded("rocm_ernic_eth"):
@@ -213,6 +239,20 @@ def main():
                 shutil.copy2(src, dst)
                 run(["udevadm", "control", "--reload-rules"])
                 print("  Installed and reloaded udev.")
+            # If driver is already loaded but interface is not roc0s0 (e.g. enp0s4),
+            # unload and reload so udev sees ACTION=="add" and applies the rename.
+            if module_loaded("rocm_ernic_rdma") and module_loaded("rocm_ernic_eth"):
+                run(["rmmod", "rocm_ernic_rdma"], check=False)
+                run(["rmmod", "rocm_ernic_eth"], check=False)
+                run(["modprobe", "ib_core"], check=False)
+                run(["modprobe", "ib_uverbs"], check=False)
+                eth_ko = os.path.join(driver_dir, "rocm_ernic_eth.ko")
+                rdma_ko = os.path.join(driver_dir, "rocm_ernic_rdma.ko")
+                if os.path.isfile(eth_ko):
+                    run(["insmod", eth_ko])
+                if os.path.isfile(rdma_ko):
+                    run(["insmod", rdma_ko])
+                print("  Reloaded driver so udev could apply roc0s0 rename.")
         else:
             print("  Rule file not found:", src)
 

@@ -92,30 +92,10 @@ jobs:
       - name: Test loopback backend configurations
         run: |
           echo "=== Testing loopback backend configurations ==="
-          if [ -f tests/test_loopback_ci.sh ]; then
-            SERVER_BIN=build/rocm-ernic \
-            TEST_BIN=build/tests/test_data_transfer \
-            tests/test_loopback_ci.sh
-          else
-            echo "⚠️  test_loopback_ci.sh not found, skipping loopback config tests"
-            # Fallback: test basic loopback startup
-            echo "Testing basic loopback backend..."
-            timeout 10 build/rocm-ernic \
-              --socket /tmp/test-loopback.sock \
-              --backend loopback:mode=preserve \
-              --verbose > /tmp/loopback-test.log 2>&1 &
-            SERVER_PID=$!
-            sleep 2
-            if [ -S /tmp/test-loopback.sock ]; then
-              echo "✓ Loopback backend started successfully"
-              kill $SERVER_PID 2>/dev/null || true
-              rm -f /tmp/test-loopback.sock
-            else
-              echo "✗ Loopback backend failed to start"
-              cat /tmp/loopback-test.log
-              exit 1
-            fi
-          fi
+          SERVER_BIN=build/rocm-ernic \
+          TEST_BIN=build/tests/test_data_transfer \
+          BUILD_DIR=build \
+          tests/test_loopback_configs.sh
       
       - name: Upload test results
         if: always()

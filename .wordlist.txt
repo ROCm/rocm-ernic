@@ -13,6 +13,7 @@ CQs
 CQEs
 Config
 Ctrl
+DHCP
 DMA
 DSR
 DSRHIGH
@@ -43,6 +44,7 @@ IB
 IBV
 Incrementing
 InfiniBand
+IPv
 KDIR
 KVM
 Kconfig
@@ -90,6 +92,7 @@ SGEs
 SIGINT
 SIGTERM
 SPDK
+StrictHostKeyChecking
 SRQ
 SRQs
 Shaia
@@ -120,6 +123,8 @@ api
 args
 aspell
 async
+batesste
+dhcp4
 attr
 attrs
 backend
@@ -135,6 +140,7 @@ cmake
 cmd
 codebase
 compat
+conf
 config
 const
 cppcheck
@@ -143,11 +149,13 @@ cqe
 cqs
 ctrl
 ctx
+cz
 deadbeef
 del
 depmod
 dereference
 dev
+distros
 devel
 devinfo
 dir
@@ -159,11 +167,13 @@ elmail
 emrdma
 emrdmaX
 enum
+enp
 env
 ernic
 ernicX
 eth
 ethdev
+ethernet
 eventfd
 exe
 fba
@@ -264,6 +274,7 @@ oneline
 openssh
 param
 paravirtualized
+py
 passthrough
 pci
 pdir
@@ -294,8 +305,11 @@ redhat
 repo
 resyncing
 ret
+rsync
 rkey
+scp
 roadmap
+roc0s0
 roce
 rocep
 rocm
@@ -321,6 +335,7 @@ sudo
 symlink
 symvers
 sys
+sysctl
 sysfs
 sz
 tbl
@@ -330,13 +345,17 @@ tmp
 toolchains
 typedef
 ubuntu
+ucw
 uint
 uint16
 uint32
 uint64
 uint8
+uid
 undef
+udev
 unexported
+unix
 unmapping
 upstreamed
 upstreaming
@@ -357,6 +376,7 @@ vmw
 vmxnet
 vtable
 vvv
+workflow
 wsl
 xAA
 xFD
@@ -364,5 +384,6 @@ xFE
 xFF
 xdeadbeef
 xxxx
+yaml
 yml
 yuval

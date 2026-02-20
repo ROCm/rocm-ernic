@@ -1,14 +1,15 @@
 #!/bin/bash
-# Test multiple loopback backend configurations
-# This script tests rdma_cm emulation with different backend options
+# Test multiple loopback backend configurations.
+# Uses TEST_BIN for client test (default: test_rdma_cm). CI may set
+# TEST_BIN=build/tests/test_data_transfer. Override SERVER_BIN/BUILD_DIR as needed.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
-SERVER_BIN="$BUILD_DIR/rocm-ernic"
-TEST_BIN="$BUILD_DIR/tests/test_rdma_cm"
+SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
+TEST_BIN="${TEST_BIN:-$BUILD_DIR/tests/test_rdma_cm}"
 SOCKET_PATH="/tmp/test-loopback-$$.sock"
 
 # Colors for output
