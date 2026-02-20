@@ -57,6 +57,7 @@
 #include <rdma/ib_verbs.h>
 #include "rocm_ernic-abi.h"
 
+#include "rocm_ernic_pci_ids.h"
 #include "rocm_ernic_ring.h"
 #include "rocm_ernic_dev_api.h"
 #include "rocm_ernic_verbs.h"

@@ -24,6 +24,7 @@
 #include <linux/if_ether.h>
 
 #include "rocm_ernic_eth.h"
+#include "rocm_ernic_pci_ids.h"
 
 #define DRV_NAME_ETH "rocm_ernic_eth"
 #define DRV_VERSION  "1.0.1.0-k"
@@ -778,10 +779,6 @@ struct pci_dev *rocm_ernic_eth_get_pdev(struct rocm_ernic_eth_dev *eth_dev)
     return eth_dev ? eth_dev->pdev : NULL;
 }
 EXPORT_SYMBOL(rocm_ernic_eth_get_pdev);
-
-/* PCI device IDs */
-#define PCI_VENDOR_ID_ROCM_ERNIC 0x1022 /* AMD */
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1488 /* Emulated RDMA */
 
 static const struct pci_device_id rocm_ernic_eth_pci_table[] = {
     {
