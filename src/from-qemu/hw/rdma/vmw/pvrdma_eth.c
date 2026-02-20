@@ -360,17 +360,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
             memcpy(resp_eth->dst_mac, eth_hdr->src_mac, 6);
             /* Use device MAC address if set, otherwise use default MAC */
             uint8_t src_mac[6];
-            if (dev->mac_addr_set) {
-                memcpy(src_mac, dev->mac_addr, 6);
-            } else {
-                /* Default MAC: 02:00:00:00:00:00 (matches server default) */
-                src_mac[0] = 0x02;
-                src_mac[1] = 0x00;
-                src_mac[2] = 0x00;
-                src_mac[3] = 0x00;
-                src_mac[4] = 0x00;
-                src_mac[5] = 0x00;
-            }
+            memcpy(src_mac, dev->mac_addr, 6);
             memcpy(resp_eth->src_mac, src_mac, 6);
             resp_eth->ethertype = htons(ETH_ETHERTYPE_ARP);
 
@@ -538,18 +528,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                     memcpy(resp_eth->dst_mac, eth_hdr->src_mac, 6);
                     /* Use device MAC address if set, otherwise use default MAC
                      */
-                    if (dev->mac_addr_set) {
-                        memcpy(resp_eth->src_mac, dev->mac_addr, 6);
-                    } else {
-                        /* Default MAC: 02:00:00:00:00:00 (matches server
-                         * default) */
-                        resp_eth->src_mac[0] = 0x02;
-                        resp_eth->src_mac[1] = 0x00;
-                        resp_eth->src_mac[2] = 0x00;
-                        resp_eth->src_mac[3] = 0x00;
-                        resp_eth->src_mac[4] = 0x00;
-                        resp_eth->src_mac[5] = 0x00;
-                    }
+                    memcpy(resp_eth->src_mac, dev->mac_addr, 6);
                     resp_eth->ethertype = htons(ETH_ETHERTYPE_IP);
 
                     /* IP header */
@@ -662,18 +641,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                 /* Ethernet header */
                 memcpy(resp_eth->dst_mac, eth_hdr->src_mac, 6);
                 /* Use device MAC address if set, otherwise use default MAC */
-                if (dev->mac_addr_set) {
-                    memcpy(resp_eth->src_mac, dev->mac_addr, 6);
-                } else {
-                    /* Default MAC: 02:00:00:00:00:00 (matches server default)
-                     */
-                    resp_eth->src_mac[0] = 0x02;
-                    resp_eth->src_mac[1] = 0x00;
-                    resp_eth->src_mac[2] = 0x00;
-                    resp_eth->src_mac[3] = 0x00;
-                    resp_eth->src_mac[4] = 0x00;
-                    resp_eth->src_mac[5] = 0x00;
-                }
+                memcpy(resp_eth->src_mac, dev->mac_addr, 6);
                 resp_eth->ethertype = htons(ETH_ETHERTYPE_IP);
                 rdma_info_report("ICMP: Reply Ethernet header: "
                                  "dst_mac=%02x:%02x:%02x:%02x:%02x:%02x "
@@ -942,18 +910,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                         memcpy(resp_eth->dst_mac, eth_hdr->src_mac, 6);
                         /* Use device MAC address if set, otherwise use default
                          * MAC */
-                        if (dev->mac_addr_set) {
-                            memcpy(resp_eth->src_mac, dev->mac_addr, 6);
-                        } else {
-                            /* Default MAC: 02:00:00:00:00:00 (matches server
-                             * default) */
-                            resp_eth->src_mac[0] = 0x02;
-                            resp_eth->src_mac[1] = 0x00;
-                            resp_eth->src_mac[2] = 0x00;
-                            resp_eth->src_mac[3] = 0x00;
-                            resp_eth->src_mac[4] = 0x00;
-                            resp_eth->src_mac[5] = 0x00;
-                        }
+                        memcpy(resp_eth->src_mac, dev->mac_addr, 6);
 
                         /* Inject response */
                         int ret =

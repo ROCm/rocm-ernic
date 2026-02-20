@@ -97,7 +97,10 @@ typedef struct PVRDMADevStats {
     uint64_t commands;
     uint64_t regs_reads;
     uint64_t regs_writes;
+    uint64_t uar_reads;
     uint64_t uar_writes;
+    uint64_t bar0_reads;
+    uint64_t bar0_writes;
     uint64_t interrupts;
     GHashTable *qp_stats;            /* Per-QP statistics (key: QP handle) */
     char *stats_file;                /* Stats output file path */
@@ -107,6 +110,7 @@ typedef struct PVRDMADevStats {
     uint64_t total_bytes_received;   /* Total bytes received across all QPs */
     uint64_t total_bytes_rdma_read;  /* Total bytes read via RDMA Read */
     uint64_t total_bytes_rdma_write; /* Total bytes written via RDMA Write */
+    uint64_t flr_reset_count;        /* PCI Function Level Reset count */
 } PVRDMADevStats;
 
 struct PVRDMADev {
@@ -129,6 +133,13 @@ struct PVRDMADev {
     VMXNET3State *func0;
     Notifier shutdown_notifier;
     PVRDMADevStats stats;
+    /* Optional strings for stats file display (freed in cleanup) */
+    char *stats_socket_path; /* Socket path for this instance */
+    char *stats_backend_str; /* Full backend string (e.g. loopback:mode=...) */
+    char *
+        stats_connection_str; /* e.g. "connected", "disconnected (lost conn)" */
+    uint16_t stats_pci_vid;   /* PCI Vendor ID for stats display */
+    uint16_t stats_pci_did;   /* PCI Device ID for stats display */
 
     /* DHCP server (for loopback mode and TCP manager mode) */
     void *dhcp_server; /* DhcpServer* - forward declared to avoid include */

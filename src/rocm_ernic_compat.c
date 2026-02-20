@@ -211,6 +211,12 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         free(pvrdma->stats.stats_file);
         pvrdma->stats.stats_file = NULL;
     }
+    free(pvrdma->stats_socket_path);
+    pvrdma->stats_socket_path = NULL;
+    free(pvrdma->stats_backend_str);
+    pvrdma->stats_backend_str = NULL;
+    free(pvrdma->stats_connection_str);
+    pvrdma->stats_connection_str = NULL;
     if (pvrdma->stats.stats_fp) {
         fclose(pvrdma->stats.stats_fp);
         pvrdma->stats.stats_fp = NULL;
@@ -450,6 +456,20 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
     return val;
 }
 
+void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    if (is_write) {
+        pvrdma->stats.bar0_writes++;
+    } else {
+        pvrdma->stats.bar0_reads++;
+    }
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -460,7 +480,9 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
 
 void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
                       uint64_t *regs_reads, uint64_t *regs_writes,
-                      uint64_t *uar_writes, uint64_t *interrupts)
+                      uint64_t *uar_writes, uint64_t *interrupts,
+                      uint64_t *uar_reads, uint64_t *bar0_reads,
+                      uint64_t *bar0_writes)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
@@ -478,6 +500,12 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
         *uar_writes = pvrdma->stats.uar_writes;
     if (interrupts)
         *interrupts = pvrdma->stats.interrupts;
+    if (uar_reads)
+        *uar_reads = pvrdma->stats.uar_reads;
+    if (bar0_reads)
+        *bar0_reads = pvrdma->stats.bar0_reads;
+    if (bar0_writes)
+        *bar0_writes = pvrdma->stats.bar0_writes;
 }
 
 void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
@@ -493,6 +521,58 @@ void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
         pvrdma->stats.stats_file = strdup(stats_file);
     } else {
         pvrdma->stats.stats_file = NULL;
+    }
+}
+
+void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
+                                    const char *socket_path,
+                                    const char *backend_type_str)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+
+    free(pvrdma->stats_socket_path);
+    pvrdma->stats_socket_path = socket_path ? strdup(socket_path) : NULL;
+
+    free(pvrdma->stats_backend_str);
+    pvrdma->stats_backend_str =
+        backend_type_str ? strdup(backend_type_str) : NULL;
+}
+
+void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
+                              uint16_t did)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (pvrdma) {
+        pvrdma->stats_pci_vid = vid;
+        pvrdma->stats_pci_did = did;
+    }
+}
+
+void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
+                                       const char *connection_str)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+
+    free(pvrdma->stats_connection_str);
+    pvrdma->stats_connection_str =
+        connection_str ? strdup(connection_str) : NULL;
+}
+
+void pvrdma_inc_stats_flr_count(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (pvrdma) {
+        pvrdma->stats.flr_reset_count++;
     }
 }
 

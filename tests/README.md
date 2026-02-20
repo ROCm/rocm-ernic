@@ -1,20 +1,20 @@
 # rocm-ernic Tests
 
 This directory contains test programs and infrastructure for testing
-the rocm_ernic libvfio-user-based server.
+the rocm-ernic libvfio-user-based server.
 
 ## Test Programs
 
 ### test_pci_client
 
-A simple vfio-user client that connects to the rocm_ernic server and
+A simple vfio-user client that connects to the rocm-ernic server and
 performs basic PCI configuration space queries.
 
 **Tests Performed:**
 - Socket connection to server
 - PCI Vendor ID verification (AMD: 0x1022)
-- PCI Device ID verification (ROCm ERNIC: 0x1484)
-- PCI Class Code verification (Network Controller: 0x02xxxx)
+- PCI Device ID verification (ROCm ERNIC: 0x8000)
+- PCI Class Code verification (Network Controller, Ethernet: 0x02 00 00)
 - PCI Header Type verification (Type 0)
 - BAR register reads
 - Interrupt configuration reads
@@ -40,14 +40,14 @@ operations and verifies data integrity and pattern generation.
 
 **Requirements:**
 - libibverbs library
-- RDMA device available (via rocm_ernic driver or hardware)
+- RDMA device available (via rocm-ernic driver or hardware)
 
 **Exit Codes:**
 - 0: All tests passed
 - 1: Test failure or no RDMA device available
 
 **Note:** This test requires an RDMA device to be available. In CI, this
-may require the rocm_ernic server running with loopback backend and a VM
+may require the rocm-ernic server running with loopback backend and a VM
 with the driver loaded, or it will be skipped if no device is found.
 
 ## Running Tests
@@ -62,7 +62,7 @@ From project root:
 
 This will:
 1. Check that binaries are built
-1. Start the rocm_ernic server
+1. Start the rocm-ernic server
 1. Run the test client
 1. Clean up automatically
 
@@ -78,7 +78,7 @@ ninja -C build
 Start the server in one terminal:
 
 ```bash
-./build/rocm_ernic /tmp/test.sock
+./build/rocm-ernic /tmp/test.sock
 ```
 
 Run the test client in another terminal:
@@ -145,7 +145,7 @@ test(
     find_program('run-test.sh'),
     args: [
         meson.current_build_dir() / 'test_new_feature',
-        meson.project_build_root() / 'rocm_ernic'
+        meson.project_build_root() / 'rocm-ernic'
     ],
     timeout: 30,
     is_parallel: false

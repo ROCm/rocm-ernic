@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
-SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm_ernic}"
+SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
 TEST_BIN="${TEST_BIN:-$BUILD_DIR/tests/test_data_transfer}"
 SOCKET_BASE="/tmp/test-loopback-ci-$$"
 

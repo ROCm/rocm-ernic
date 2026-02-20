@@ -2,7 +2,7 @@
 #
 # local-vm-test.sh
 #
-# Comprehensive local testing script for rocm_ernic with a VM
+# Comprehensive local testing script for rocm-ernic with a VM
 # This mimics the CI integration test but runs locally
 #
 
@@ -50,7 +50,7 @@ function cleanup() {
     if [ -f /tmp/rocm-ernic-server.pid ]; then
         PID=$(cat /tmp/rocm-ernic-server.pid)
         if ps -p $PID > /dev/null 2>&1; then
-            log_info "Stopping rocm_ernic server (PID: $PID)..."
+            log_info "Stopping rocm-ernic server (PID: $PID)..."
             sudo kill $PID || true
             sleep 1
         fi
@@ -73,8 +73,8 @@ if [ ! -d "$PROJECT_ROOT/build" ]; then
     exit 1
 fi
 
-if [ ! -f "$PROJECT_ROOT/build/rocm_ernic" ]; then
-    log_error "rocm_ernic executable not found. Please run: ninja -C build"
+if [ ! -f "$PROJECT_ROOT/build/rocm-ernic" ]; then
+    log_error "rocm-ernic executable not found. Please run: ninja -C build"
     exit 1
 fi
 
@@ -93,7 +93,7 @@ fi
 log_info "✓ All prerequisites met"
 
 # Build the server if needed
-log_info "Building rocm_ernic server..."
+log_info "Building rocm-ernic server..."
 cd "$PROJECT_ROOT"
 ninja -C build
 log_info "✓ Build complete"
@@ -113,14 +113,14 @@ else
     BACKEND_ARGS="--backend loopback"
 fi
 
-# Start rocm_ernic server
-log_info "Starting rocm_ernic server..."
+# Start rocm-ernic server
+log_info "Starting rocm-ernic server..."
 log_info "Socket: $SOCKET_PATH"
 log_info "Backend: $BACKEND_ARGS"
 log_info "Log: $SERVER_LOG"
 
 sudo rm -f ${SOCKET_PATH}
-sudo ${PROJECT_ROOT}/build/rocm_ernic \
+sudo ${PROJECT_ROOT}/build/rocm-ernic \
     --socket ${SOCKET_PATH} \
     ${BACKEND_ARGS} \
     > ${SERVER_LOG} 2>&1 &

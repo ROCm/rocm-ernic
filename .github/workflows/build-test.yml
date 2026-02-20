@@ -60,7 +60,7 @@ jobs:
       - name: Verify rdma_cm protocol symbols
         run: |
           echo "=== Verifying rdma_cm_proto.c symbols ==="
-          if nm build/rocm_ernic 2>/dev/null | grep -q "rdma_cm_process_message"; then
+          if nm build/rocm-ernic 2>/dev/null | grep -q "rdma_cm_process_message"; then
             echo "✓ rdma_cm_process_message symbol found in binary"
           else
             echo "⚠️  rdma_cm_process_message symbol not found (may be inlined)"
@@ -68,17 +68,17 @@ jobs:
       
       - name: Verify binaries exist
         run: |
-          ls -lh build/rocm_ernic
+          ls -lh build/rocm-ernic
           ls -lh build/tests/test_pci_client
           ls -lh build/tests/test_data_transfer
-          file build/rocm_ernic
+          file build/rocm-ernic
           file build/tests/test_pci_client
           file build/tests/test_data_transfer
       
       - name: Check binary dependencies
         run: |
-          echo "=== rocm_ernic dependencies ==="
-          ldd build/rocm_ernic
+          echo "=== rocm-ernic dependencies ==="
+          ldd build/rocm-ernic
           echo ""
           echo "=== test_pci_client dependencies ==="
           ldd build/tests/test_pci_client
@@ -93,14 +93,14 @@ jobs:
         run: |
           echo "=== Testing loopback backend configurations ==="
           if [ -f tests/test_loopback_ci.sh ]; then
-            SERVER_BIN=build/rocm_ernic \
+            SERVER_BIN=build/rocm-ernic \
             TEST_BIN=build/tests/test_data_transfer \
             tests/test_loopback_ci.sh
           else
             echo "⚠️  test_loopback_ci.sh not found, skipping loopback config tests"
             # Fallback: test basic loopback startup
             echo "Testing basic loopback backend..."
-            timeout 10 build/rocm_ernic \
+            timeout 10 build/rocm-ernic \
               --socket /tmp/test-loopback.sock \
               --backend loopback:mode=preserve \
               --verbose > /tmp/loopback-test.log 2>&1 &
@@ -131,7 +131,7 @@ jobs:
         with:
           name: binaries-${{ matrix.os }}
           path: |
-            build/rocm_ernic
+            build/rocm-ernic
             build/tests/test_pci_client
             build/tests/test_data_transfer
           retention-days: 7

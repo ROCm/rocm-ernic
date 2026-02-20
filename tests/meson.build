@@ -30,7 +30,7 @@ test(
     find_program('run-test.sh'),
     args: [
         meson.current_build_dir() / 'test_pci_client',
-        meson.project_build_root() / 'rocm_ernic'
+        meson.project_build_root() / 'rocm-ernic'
     ],
     timeout: 30,
     is_parallel: false

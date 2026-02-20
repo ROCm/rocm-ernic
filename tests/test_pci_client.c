@@ -1,7 +1,7 @@
 /*
- * Simple vfio-user client test program for rocm_ernic
+ * Simple vfio-user client test program for rocm-ernic
  *
- * Connects to the rocm_ernic server via socket and performs basic
+ * Connects to the rocm-ernic server via socket and performs basic
  * PCI configuration space queries to verify the device is working.
  *
  * Copyright (C) 2025
@@ -26,7 +26,7 @@
 
 /* AMD ROCm ERNIC device IDs */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1484
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000
 
 /* Test results */
 typedef struct {
@@ -95,10 +95,10 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
         }
         break;
     case PCI_CLASS_REVISION:
-        /* PCI_REVISION_ID is at offset 0x08, but PCI_CLASS_REVISION
-         * reads all 4 bytes (revision + class code) */
+        /* PCI_REVISION_ID at 0x08; PCI_CLASS_REVISION reads 4 bytes
+         * (revision + class). 0x02000001 = Ethernet Controller, revision 1 */
         if (count >= 4) {
-            *(uint32_t *)buf = 0x02000001; /* Network controller, revision 1 */
+            *(uint32_t *)buf = 0x02000001;
         } else if (count == 1) {
             *(uint8_t *)buf = 0x01; /* Just revision */
         }
@@ -162,10 +162,11 @@ static int run_pci_tests(int fd, test_results_t *results)
 
     printf("  Revision:   0x%02x\n", results->revision);
     printf("  Class Code: 0x%06x", results->class_code);
-    if ((results->class_code >> 16) == 0x02) {
-        printf(" (Network Controller) ✓\n");
+    if ((results->class_code >> 16) == 0x02 &&
+        ((results->class_code >> 8) & 0xFF) == 0x00) {
+        printf(" (Network Controller, Ethernet) ✓\n");
     } else {
-        printf(" (expected Network Controller) ✗\n");
+        printf(" (expected 02:00:00 Ethernet) ✗\n");
     }
 
     /* Read header type */
@@ -242,6 +243,10 @@ static bool validate_results(const test_results_t *results)
         printf("  ✗ Class code is not Network Controller\n");
         passed = false;
     }
+    if (((results->class_code >> 8) & 0xFF) != 0x00) {
+        printf("  ✗ Subclass is not Ethernet (0x00)\n");
+        passed = false;
+    }
 
     if (passed) {
         printf("  ✓ All validation checks passed\n");
@@ -254,7 +259,7 @@ static void usage(const char *progname)
 {
     printf("Usage: %s [OPTIONS]\n", progname);
     printf("\n");
-    printf("Test client for rocm_ernic vfio-user server\n");
+    printf("Test client for rocm-ernic vfio-user server\n");
     printf("\n");
     printf("Options:\n");
     printf("  -s, --socket PATH   Socket path (default: "
@@ -290,7 +295,7 @@ int main(int argc, char **argv)
     }
 
     printf("=================================================\n");
-    printf("  rocm_ernic PCI Configuration Test Client\n");
+    printf("  rocm-ernic PCI Configuration Test Client\n");
     printf("=================================================\n\n");
 
     printf("Connecting to: %s\n", socket_path);

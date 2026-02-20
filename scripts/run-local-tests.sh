@@ -21,8 +21,8 @@ if [ ! -d "build" ]; then
 fi
 
 # Check if binaries exist
-if [ ! -x "build/rocm_ernic" ]; then
-    echo "Error: rocm_ernic not found in build directory"
+if [ ! -x "build/rocm-ernic" ]; then
+    echo "Error: rocm-ernic not found in build directory"
     echo "Run 'ninja -C build' to build the project"
     exit 1
 fi
@@ -34,12 +34,12 @@ if [ ! -x "build/tests/test_pci_client" ]; then
 fi
 
 echo "================================================="
-echo "  Running rocm_ernic Local Tests"
+echo "  Running rocm-ernic Local Tests"
 echo "================================================="
 echo ""
 
 # Run the test harness
 exec "$PROJECT_ROOT/tests/run-test.sh" \
     "$PROJECT_ROOT/build/tests/test_pci_client" \
-    "$PROJECT_ROOT/build/rocm_ernic"
+    "$PROJECT_ROOT/build/rocm-ernic"
 
