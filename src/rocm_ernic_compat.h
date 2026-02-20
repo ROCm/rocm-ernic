@@ -164,6 +164,15 @@ void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
                                     const char *backend_type_str);
 
 /**
+ * pvrdma_set_stats_pci_ids - Set PCI VID:DID for stats file display
+ * @handle: Device handle
+ * @vid: PCI Vendor ID (e.g. 0x1022)
+ * @did: PCI Device ID (e.g. 0x1488)
+ */
+void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
+                              uint16_t did);
+
+/**
  * pvrdma_set_stats_connection_state - Set connection state for stats display
  * @handle: Device handle
  * @connection_str: e.g. "connected", "disconnected (lost connection)" (may be
@@ -171,6 +180,12 @@ void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
  */
 void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
                                       const char *connection_str);
+
+/**
+ * pvrdma_inc_stats_flr_count - Increment PCI FLR reset count for stats
+ * @handle: Device handle
+ */
+void pvrdma_inc_stats_flr_count(pvrdma_handle_t handle);
 
 /**
  * pvrdma_write_stats - Write statistics to file

@@ -133,43 +133,63 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
 
     fprintf(fp, "=== ROCm ERNIC Statistics ===\n");
     fprintf(fp, "Instance:\n");
-    fprintf(fp, "  socket  : %s\n",
+    fprintf(fp, "  %-11s : %s\n", "socket",
             dev->stats_socket_path ? dev->stats_socket_path : "(not set)");
-    fprintf(fp, "  backend : %s\n",
+    fprintf(fp, "  %-11s : %s\n", "backend",
             dev->stats_backend_str ? dev->stats_backend_str : "(not set)");
+    if (dev->stats_pci_vid || dev->stats_pci_did) {
+        fprintf(fp, "  %-11s : 0x%04x:0x%04x\n", "pci",
+                dev->stats_pci_vid, dev->stats_pci_did);
+    } else {
+        fprintf(fp, "  %-11s : (not set)\n", "pci");
+    }
     if (dev->mac_addr_set) {
-        fprintf(fp, "  mac     : %02x:%02x:%02x:%02x:%02x:%02x\n",
+        fprintf(fp, "  %-11s : %02x:%02x:%02x:%02x:%02x:%02x\n", "mac",
                 dev->mac_addr[0], dev->mac_addr[1], dev->mac_addr[2],
                 dev->mac_addr[3], dev->mac_addr[4], dev->mac_addr[5]);
     } else {
-        fprintf(fp, "  mac     : (not set)\n");
+        fprintf(fp, "  %-11s : (not set)\n", "mac");
     }
-    fprintf(fp, "  connection : %s\n",
+    fprintf(fp, "  %-11s : %s\n", "connection",
             dev->stats_connection_str ? dev->stats_connection_str : "(not set)");
     fprintf(fp, "\nWrite count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
     fprintf(fp, "Device Statistics:\n");
-    fprintf(fp, "  commands         : %" PRIu64 "\n", dev->stats.commands);
-    fprintf(fp, "  bar0_reads       : %" PRIu64 "\n", dev->stats.bar0_reads);
-    fprintf(fp, "  bar0_writes      : %" PRIu64 "\n", dev->stats.bar0_writes);
-    fprintf(fp, "  regs_reads       : %" PRIu64 "\n", dev->stats.regs_reads);
-    fprintf(fp, "  regs_writes      : %" PRIu64 "\n", dev->stats.regs_writes);
-    fprintf(fp, "  uar_reads        : %" PRIu64 "\n", dev->stats.uar_reads);
-    fprintf(fp, "  uar_writes       : %" PRIu64 "\n", dev->stats.uar_writes);
-    fprintf(fp, "  mmio_reads_total : %" PRIu64 "\n",
+#define STATS_LABEL_WIDTH 23
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "commands",
+            dev->stats.commands);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "bar0_reads",
+            dev->stats.bar0_reads);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "bar0_writes",
+            dev->stats.bar0_writes);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "regs_reads",
+            dev->stats.regs_reads);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "regs_writes",
+            dev->stats.regs_writes);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "uar_reads",
+            dev->stats.uar_reads);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "uar_writes",
+            dev->stats.uar_writes);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "mmio_reads_total",
             dev->stats.bar0_reads + dev->stats.regs_reads +
                 dev->stats.uar_reads);
-    fprintf(fp, "  mmio_writes_total: %" PRIu64 "\n",
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "mmio_writes_total",
             dev->stats.bar0_writes + dev->stats.regs_writes +
                 dev->stats.uar_writes);
-    fprintf(fp, "  interrupts       : %" PRIu64 "\n", dev->stats.interrupts);
-    fprintf(fp, "  total_bytes_sent : %" PRIu64 "\n",
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "interrupts",
+            dev->stats.interrupts);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "flr_reset_count",
+            dev->stats.flr_reset_count);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "total_bytes_sent",
             dev->stats.total_bytes_sent);
-    fprintf(fp, "  total_bytes_received : %" PRIu64 "\n",
-            dev->stats.total_bytes_received);
-    fprintf(fp, "  total_bytes_rdma_read : %" PRIu64 "\n",
-            dev->stats.total_bytes_rdma_read);
-    fprintf(fp, "  total_bytes_rdma_write : %" PRIu64 "\n",
-            dev->stats.total_bytes_rdma_write);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "total_bytes_received", dev->stats.total_bytes_received);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "total_bytes_rdma_read", dev->stats.total_bytes_rdma_read);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "total_bytes_rdma_write", dev->stats.total_bytes_rdma_write);
+#undef STATS_LABEL_WIDTH
     fprintf(fp, "\n");
 
     fprintf(fp, "Per-QP Statistics:\n");
@@ -1197,6 +1217,8 @@ static void pvrdma_realize(PCIDevice *pdev, Error **errp)
     dev->stats_socket_path = NULL;
     dev->stats_backend_str = NULL;
     dev->stats_connection_str = NULL;
+    dev->stats_pci_vid = 0;
+    dev->stats_pci_did = 0;
 
     dev->shutdown_notifier.notify = pvrdma_shutdown_notifier;
     qemu_register_shutdown_notifier(&dev->shutdown_notifier);

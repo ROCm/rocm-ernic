@@ -542,6 +542,17 @@ void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
         backend_type_str ? strdup(backend_type_str) : NULL;
 }
 
+void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
+                              uint16_t did)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (pvrdma) {
+        pvrdma->stats_pci_vid = vid;
+        pvrdma->stats_pci_did = did;
+    }
+}
+
 void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
                                        const char *connection_str)
 {
@@ -554,6 +565,15 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str =
         connection_str ? strdup(connection_str) : NULL;
+}
+
+void pvrdma_inc_stats_flr_count(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (pvrdma) {
+        pvrdma->stats.flr_reset_count++;
+    }
 }
 
 void pvrdma_write_stats(pvrdma_handle_t handle)

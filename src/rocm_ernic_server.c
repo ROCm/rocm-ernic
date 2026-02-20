@@ -251,37 +251,43 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
 /**
  * Device reset callback
+ *
+ * Only VFU_RESET_LOST_CONN means the client disconnected. VFU_RESET_DEVICE and
+ * VFU_RESET_PCI_FLR are sent by the still-connected client (guest-initiated).
  */
 static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
-    const char *conn_str = "disconnected";
+    const char *conn_str = NULL;
 
     vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%d)", type);
 
     switch (type) {
     case VFU_RESET_DEVICE:
-        /* Reset device state but keep context alive */
+        /* Guest requested device reset; client still connected */
         dev->device_active = false;
-        conn_str = "disconnected (device reset)";
+        conn_str = "connected (device reset)";
         break;
 
     case VFU_RESET_LOST_CONN:
-        /* Client disconnected, prepare for new connection */
+        /* Socket/connection lost */
         vfu_log(vfu_ctx, LOG_INFO, "Client connection lost");
         dev->device_active = false;
         conn_str = "disconnected (lost connection)";
         break;
 
     case VFU_RESET_PCI_FLR:
-        /* PCI Function Level Reset */
+        /* Guest requested PCI FLR; client still connected */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         dev->device_active = false;
-        conn_str = "disconnected (PCI FLR)";
+        conn_str = "connected (PCI FLR)";
+        if (dev->pvrdma_handle) {
+            pvrdma_inc_stats_flr_count(dev->pvrdma_handle);
+        }
         break;
     }
 
-    if (dev->pvrdma_handle) {
+    if (dev->pvrdma_handle && conn_str) {
         pvrdma_set_stats_connection_state(dev->pvrdma_handle, conn_str);
         if (dev->stats_file_path) {
             pvrdma_write_stats(dev->pvrdma_handle);
@@ -1011,6 +1017,8 @@ int main(int argc, char *argv[])
         pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
         pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
                                         dev->backend_type_str);
+        pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_AMD,
+                                 PCI_DEVICE_ID_ROCM_ERNIC);
         printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
                "second)\n",
                dev->stats_file_path);
