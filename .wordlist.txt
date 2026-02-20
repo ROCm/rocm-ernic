@@ -185,6 +185,7 @@ hardcode
 hardcoded
 hardcodes
 hca
+hostfs
 hostname
 https
 hw
@@ -248,6 +249,7 @@ nd
 ndev
 netdev
 netlink
+netplan
 nic
 ninja
 nn

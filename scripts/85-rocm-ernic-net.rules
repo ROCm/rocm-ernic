@@ -1,0 +1,5 @@
+# Rename ROCm ERNIC ethernet interface to roc0s0 (single-NIC).
+# Number 85 ensures this runs after 80-net-setup-link.rules so our NAME wins.
+# Install: sudo cp 85-rocm-ernic-net.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules
+SUBSYSTEM=="net", ACTION=="add", ATTR{device/driver}=="rocm_ernic_eth", NAME="roc0s0"

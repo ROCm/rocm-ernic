@@ -1,0 +1,8 @@
+# Example netplan snippet for ROCm ERNIC interface (roc0s0) with DHCP IPv4.
+# Merge into /etc/netplan/*.yaml or add as e.g. /etc/netplan/01-rocm-ernic.yaml,
+# then run: sudo netplan apply
+network:
+  version: 2
+  ethernets:
+    roc0s0:
+      dhcp4: true
