@@ -26,7 +26,7 @@
 
 /* AMD ROCm ERNIC device IDs */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1488
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000
 
 /* Test results */
 typedef struct {
@@ -96,9 +96,9 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
         break;
     case PCI_CLASS_REVISION:
         /* PCI_REVISION_ID at 0x08; PCI_CLASS_REVISION reads 4 bytes
-         * (revision + class). 0x02070001 = InfiniBand, revision 1 */
+         * (revision + class). 0x02000001 = Ethernet Controller, revision 1 */
         if (count >= 4) {
-            *(uint32_t *)buf = 0x02070001;
+            *(uint32_t *)buf = 0x02000001;
         } else if (count == 1) {
             *(uint8_t *)buf = 0x01; /* Just revision */
         }
@@ -163,10 +163,10 @@ static int run_pci_tests(int fd, test_results_t *results)
     printf("  Revision:   0x%02x\n", results->revision);
     printf("  Class Code: 0x%06x", results->class_code);
     if ((results->class_code >> 16) == 0x02 &&
-        ((results->class_code >> 8) & 0xFF) == 0x07) {
-        printf(" (Network Controller, InfiniBand) ✓\n");
+        ((results->class_code >> 8) & 0xFF) == 0x00) {
+        printf(" (Network Controller, Ethernet) ✓\n");
     } else {
-        printf(" (expected 02:07:00 InfiniBand) ✗\n");
+        printf(" (expected 02:00:00 Ethernet) ✗\n");
     }
 
     /* Read header type */
@@ -243,8 +243,8 @@ static bool validate_results(const test_results_t *results)
         printf("  ✗ Class code is not Network Controller\n");
         passed = false;
     }
-    if (((results->class_code >> 8) & 0xFF) != 0x07) {
-        printf("  ✗ Subclass is not InfiniBand (0x07)\n");
+    if (((results->class_code >> 8) & 0xFF) != 0x00) {
+        printf("  ✗ Subclass is not Ethernet (0x00)\n");
         passed = false;
     }
 

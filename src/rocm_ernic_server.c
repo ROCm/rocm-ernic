@@ -41,9 +41,9 @@
 
 /* AMD ROCm ERNIC device IDs (for vfio-user).
  * 0x1484 = GPP Bridge, 0x1485 = Reserved SPP, 0x1486 = CCP/PSP, 0x1487 = HD
- * Audio; use 0x1488 for ROCm ERNIC so no other kernel driver binds. */
+ * Audio; use 0x8000 for ROCm ERNIC so no other kernel driver binds. */
 #define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x1488
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -372,9 +372,9 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                    PCI_VENDOR_ID_AMD,          /* Subsystem Vendor ID */
                    PCI_DEVICE_ID_ROCM_ERNIC);  /* Subsystem ID */
 
-    /* Set PCI class code: Network Controller - InfiniBand (RDMA-capable) */
+    /* Set PCI class code: Network Controller - Ethernet (RoCEv2) */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
-                      0x07,  /* Subclass: InfiniBand */
+                      0x00,  /* Subclass: Ethernet Controller */
                       0x00); /* Prog-if */
 
 
@@ -540,12 +540,12 @@ static void usage(const char *progname)
     fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
     fprintf(stderr, "  -S, --stats-file PATH Statistics output file path\n");
     fprintf(stderr, "                       (stats written every ~1 second)\n");
-    fprintf(stderr,
-            "  -l, --log-file PATH  Write all output to PATH (default: "
-            "stdout/stderr)\n");
+    fprintf(stderr, "  -l, --log-file PATH  Write all output to PATH (default: "
+                    "stdout/stderr)\n");
     fprintf(stderr,
             "  -m, --mac ADDRESS    MAC address (format: XX:XX:XX:XX:XX:XX)\n");
-    fprintf(stderr, "                       (default: 02:00:00:00:00:00)\n");
+    fprintf(stderr, "                       (default: 72:6f:63:6d:2d:6e, "
+                    "rocm-nic)\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -850,13 +850,18 @@ int main(int argc, char *argv[])
     dev->device_initialized = false;
     dev->device_active = false;
     dev->mac_addr_set = false;
-    /* Default MAC: 02:00:00:00:00:00 */
-    memset(dev->mac_addr, 0, 6);
-    dev->mac_addr[0] = 0x02;
+    /* Default MAC: 72:6f:63:6d:2d:6e (first 6 bytes of "rocm-nic" in ASCII hex)
+     */
+    dev->mac_addr[0] = 0x72;
+    dev->mac_addr[1] = 0x6f;
+    dev->mac_addr[2] = 0x63;
+    dev->mac_addr[3] = 0x6d;
+    dev->mac_addr[4] = 0x2d;
+    dev->mac_addr[5] = 0x6e;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vS:m:l:h", long_options, NULL)) !=
-           -1) {
+    while ((opt = getopt_long(argc, argv, "s:b:vS:m:l:h", long_options,
+                              NULL)) != -1) {
         switch (opt) {
         /* Common options */
         case 's':
@@ -1016,7 +1021,7 @@ int main(int argc, char *argv[])
     if (dev->stats_file_path && dev->pvrdma_handle) {
         pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
         pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
-                                        dev->backend_type_str);
+                                       dev->backend_type_str);
         pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_AMD,
                                  PCI_DEVICE_ID_ROCM_ERNIC);
         printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
@@ -1137,8 +1142,8 @@ int main(int argc, char *argv[])
                     vfu_log(vfu_ctx, LOG_INFO,
                             "Client disconnected after %d loops", loop_count);
                     if (dev->pvrdma_handle) {
-                        pvrdma_set_stats_connection_state(dev->pvrdma_handle,
-                                    "disconnected (client closed)");
+                        pvrdma_set_stats_connection_state(
+                            dev->pvrdma_handle, "disconnected (client closed)");
                         if (dev->stats_file_path) {
                             pvrdma_write_stats(dev->pvrdma_handle);
                         }

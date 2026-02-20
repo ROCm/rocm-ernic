@@ -138,20 +138,17 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     fprintf(fp, "  %-11s : %s\n", "backend",
             dev->stats_backend_str ? dev->stats_backend_str : "(not set)");
     if (dev->stats_pci_vid || dev->stats_pci_did) {
-        fprintf(fp, "  %-11s : 0x%04x:0x%04x\n", "pci",
-                dev->stats_pci_vid, dev->stats_pci_did);
+        fprintf(fp, "  %-11s : 0x%04x:0x%04x\n", "pci", dev->stats_pci_vid,
+                dev->stats_pci_did);
     } else {
         fprintf(fp, "  %-11s : (not set)\n", "pci");
     }
-    if (dev->mac_addr_set) {
-        fprintf(fp, "  %-11s : %02x:%02x:%02x:%02x:%02x:%02x\n", "mac",
-                dev->mac_addr[0], dev->mac_addr[1], dev->mac_addr[2],
-                dev->mac_addr[3], dev->mac_addr[4], dev->mac_addr[5]);
-    } else {
-        fprintf(fp, "  %-11s : (not set)\n", "mac");
-    }
+    fprintf(fp, "  %-11s : %02x:%02x:%02x:%02x:%02x:%02x\n", "mac",
+            dev->mac_addr[0], dev->mac_addr[1], dev->mac_addr[2],
+            dev->mac_addr[3], dev->mac_addr[4], dev->mac_addr[5]);
     fprintf(fp, "  %-11s : %s\n", "connection",
-            dev->stats_connection_str ? dev->stats_connection_str : "(not set)");
+            dev->stats_connection_str ? dev->stats_connection_str
+                                      : "(not set)");
     fprintf(fp, "\nWrite count: %" PRIu64 "\n\n", dev->stats.stats_write_count);
     fprintf(fp, "Device Statistics:\n");
 #define STATS_LABEL_WIDTH 23
@@ -169,8 +166,7 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
             dev->stats.uar_reads);
     fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "uar_writes",
             dev->stats.uar_writes);
-    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
-            "mmio_reads_total",
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "mmio_reads_total",
             dev->stats.bar0_reads + dev->stats.regs_reads +
                 dev->stats.uar_reads);
     fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
@@ -592,7 +588,7 @@ static void init_dsr_dev_caps(PVRDMADev *dev)
     dsr->caps.max_pkeys = MAX_PKEYS;
     /* Vendor and hardware version information */
     dsr->caps.vendor_id = 0x1022;      /* AMD vendor ID */
-    dsr->caps.vendor_part_id = 0x1488; /* ROCm ERNIC device ID */
+    dsr->caps.vendor_part_id = 0x8000; /* ROCm ERNIC device ID */
     dsr->caps.hw_ver = 1;              /* Hardware version 1 */
     /* Mesh metadata for TCP backend */
     dsr->caps.mesh_node_id =
