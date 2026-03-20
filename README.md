@@ -86,31 +86,43 @@ in production via the RDMA backend.
 
 ```bash
 # Ubuntu/Debian
-sudo apt install meson ninja-build libibverbs-dev librdmacm-dev libglib2.0-dev
+sudo apt install cmake meson ninja-build pkg-config \
+  libibverbs-dev librdmacm-dev libglib2.0-dev
 
 # Build and install libvfio-user (if not already installed)
+# Note: libvfio-user uses Meson, not CMake
 cd /path/to/libvfio-user
-mkdir build && cd build
-cmake ..
-make && sudo make install
+meson setup build --prefix=/usr
+ninja -C build
+sudo ninja -C build install
+sudo ldconfig
 ```
 
 ## Compilation
 
 ```bash
 # From the project root directory
-meson setup build
-ninja -C build
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
 
-# The executable will be at: build/rocm_ernic
+# The executable will be at: build/rocm-ernic
 ```
 
 ## Installation
 
 ```bash
-sudo ninja -C build install
-# Installs to /usr/local/bin/rocm_ernic by default
+sudo cmake --install build
+# Installs to /usr/local/bin/rocm-ernic by default
 ```
+
+## Build Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `CMAKE_BUILD_TYPE` | `Debug` | Build type |
+| `ERNIC_USE_SANITIZERS` | `OFF` | Enable ASAN/LSAN/UBSAN |
+| `ERNIC_USE_THREAD_SANITIZER` | `OFF` | Enable TSAN |
+| `CMAKE_INSTALL_PREFIX` | `/usr/local` | Install prefix |
 
 # Usage
 

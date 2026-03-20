@@ -84,7 +84,7 @@ rm -f /tmp/tcp-test-server*.log
 # Check if server binary exists
 if [ ! -f "$SERVER_BIN" ]; then
     echo -e "${RED}✗ Server binary not found: $SERVER_BIN${NC}"
-    echo "Please build the project first: meson compile -C build"
+    echo "Please build the project first: cmake --build build"
     exit 1
 fi
 

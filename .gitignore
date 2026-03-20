@@ -7,9 +7,11 @@
 *.so
 *.so.*
 
-# Meson build files
-/meson-logs/
-/meson-private/
+# CMake build files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
 compile_commands.json
 
 # Executables

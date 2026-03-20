@@ -69,7 +69,7 @@ trap cleanup EXIT
 log_info "Checking prerequisites..."
 
 if [ ! -d "$PROJECT_ROOT/build" ]; then
-    log_error "Build directory not found. Please run: meson setup build && ninja -C build"
+    log_error "Build directory not found. Please run: cmake -B build -G Ninja && cmake --build build"
     exit 1
 fi
 

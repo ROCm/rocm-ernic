@@ -315,7 +315,7 @@ int main(void)
                             "creation failed\n");
             fprintf(stderr, "This test requires a VM with loopback backend\n");
             cleanup_resources(&ctx);
-            return 77; /* Meson skip code */
+            return 77; /* CTest skip code */
         }
         fprintf(stderr, "\n✗ Setup failed\n");
         ret = 1;

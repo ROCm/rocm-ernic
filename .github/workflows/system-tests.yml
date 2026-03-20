@@ -28,7 +28,7 @@ jobs:
         echo ""
         echo "=== Available Tools ==="
         qemu-system-x86_64 --version || echo "QEMU not found"
-        meson --version || echo "Meson not found"
+        cmake --version || echo "CMake not found"
         ninja --version || echo "Ninja not found"
         pkg-config --exists libibverbs && pkg-config --modversion libibverbs || echo "libibverbs not found"
         echo ""
@@ -121,7 +121,7 @@ jobs:
         apt-get update
         apt-get install -y \
           build-essential \
-          meson \
+          cmake \
           ninja-build \
           pkg-config \
           libibverbs-dev \
@@ -133,10 +133,10 @@ jobs:
     - name: Build rocm-ernic server
       run: |
         echo "=== Building rocm-ernic server ==="
-        meson setup build \
-          --buildtype=debug \
-          --prefix=/usr
-        meson compile -C build
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_INSTALL_PREFIX=/usr
+        cmake --build build
         ls -lh build/rocm-ernic
         echo "✓ Server built successfully"
 
@@ -628,8 +628,8 @@ jobs:
         qemu-system-x86_64 --version
         echo ""
         echo "=== Build tools ==="
-        meson --version
-        ninja --version
+        cmake --version || echo "CMake not found (will be installed)"
+        ninja --version || echo "Ninja not found (will be installed)"
         echo ""
         echo "=== Network ==="
         ip addr show || true
@@ -639,7 +639,7 @@ jobs:
         apt-get update
         apt-get install -y \
           build-essential \
-          meson \
+          cmake \
           ninja-build \
           pkg-config \
           libibverbs-dev \
@@ -650,10 +650,10 @@ jobs:
 
     - name: Build project
       run: |
-        meson setup build \
-          --buildtype=debug \
-          --prefix=/usr
-        meson compile -C build
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_INSTALL_PREFIX=/usr
+        cmake --build build
 
     - name: Verify binaries
       run: |

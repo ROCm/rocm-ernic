@@ -16,7 +16,7 @@ cd "$PROJECT_ROOT"
 # Check if build directory exists
 if [ ! -d "build" ]; then
     echo "Error: build directory not found"
-    echo "Run 'meson setup build && ninja -C build' first"
+    echo "Run 'cmake -B build -G Ninja && cmake --build build' first"
     exit 1
 fi
 
