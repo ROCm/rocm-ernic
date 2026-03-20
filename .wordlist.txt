@@ -1,12 +1,15 @@
 
 ABI
 APIs
+ASAN
 Apfelbaum
 Async
 BARs
 Backend
 Backends
+CMake
 CONFIG
+CTest
 CPUs
 CQ
 CQs
@@ -21,6 +24,7 @@ Datagram
 Datagrams
 Deallocated
 Dereferencing
+DCMAKE
 Dockerfile
 EAGAIN
 EFAULT
@@ -46,6 +50,7 @@ InfiniBand
 KDIR
 KVM
 Kconfig
+LSAN
 Loopback
 MMIO
 MRs
@@ -95,7 +100,9 @@ SRQs
 Shaia
 TCP
 TODO
+TSAN
 UAR
+UBSAN
 UC
 UD
 Upstreamable
@@ -132,6 +139,8 @@ chmod
 ci
 cli
 cmake
+cmakelang
+ctest
 cmd
 codebase
 compat
@@ -166,6 +175,7 @@ eth
 ethdev
 eventfd
 exe
+executables
 fba
 fbb
 fbc
@@ -214,6 +224,7 @@ iproute
 irqs
 ko
 kvm
+ldconfig
 len
 libglib
 libibverbs
@@ -233,6 +244,7 @@ md
 memfd
 memset
 meson
+CMakeLists
 mkdir
 mlx
 modprobe

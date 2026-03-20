@@ -7,7 +7,10 @@ on:
       - '**.c'
       - '**.h'
       - '**.sh'
+      - '**.cmake'
+      - '**/CMakeLists.txt'
       - '.clang-format'
+      - '.cmake-format.py'
       - '.github/workflows/lint.yml'
   workflow_dispatch:
 
@@ -70,3 +73,20 @@ jobs:
           find . -name '*.sh' -type f -not -path './.git/*' | \
             xargs shellcheck \
               -e SC2086,SC2154,SC2024,SC2034,SC2164,SC2181,SC2317
+
+  lint-cmake:
+    name: cmake-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install cmake-lint
+        run: pip install cmakelang
+
+      - name: Lint CMake files
+        run: |
+          cmake-lint \
+            CMakeLists.txt \
+            tests/CMakeLists.txt \
+            cmake/*.cmake

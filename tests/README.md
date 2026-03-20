@@ -14,7 +14,8 @@ performs basic PCI configuration space queries.
 - Socket connection to server
 - PCI Vendor ID verification (AMD: 0x1022)
 - PCI Device ID verification (ROCm ERNIC: 0x8000)
-- PCI Class Code verification (Network Controller, Ethernet: 0x02 00 00)
+- PCI Class Code verification (Network Controller, Ethernet:
+  0x02 00 00)
 - PCI Header Type verification (Type 0)
 - BAR register reads
 - Interrupt configuration reads
@@ -25,8 +26,9 @@ performs basic PCI configuration space queries.
 
 ### test_data_transfer
 
-Comprehensive RDMA data transfer test using libibverbs. Tests send/recv
-operations and verifies data integrity and pattern generation.
+Comprehensive RDMA data transfer test using libibverbs. Tests
+send/recv operations and verifies data integrity and pattern
+generation.
 
 **Tests Performed:**
 - RDMA device discovery and opening
@@ -46,9 +48,10 @@ operations and verifies data integrity and pattern generation.
 - 0: All tests passed
 - 1: Test failure or no RDMA device available
 
-**Note:** This test requires an RDMA device to be available. In CI, this
-may require the rocm-ernic server running with loopback backend and a VM
-with the driver loaded, or it will be skipped if no device is found.
+**Note:** This test requires an RDMA device to be available. In CI,
+this may require the rocm-ernic server running with loopback backend
+and a VM with the driver loaded, or it will be skipped if no device
+is found.
 
 ## Running Tests
 
@@ -71,8 +74,8 @@ This will:
 Build the project:
 
 ```bash
-meson setup build
-ninja -C build
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
 ```
 
 Start the server in one terminal:
@@ -87,18 +90,18 @@ Run the test client in another terminal:
 ./build/tests/test_pci_client --socket /tmp/test.sock
 ```
 
-### Meson Test Framework
+### CTest
 
-Run all tests via meson:
+Run all tests via CTest:
 
 ```bash
-meson test -C build
+ctest --test-dir build
 ```
 
 With verbose output:
 
 ```bash
-meson test -C build --verbose
+ctest --test-dir build --output-on-failure
 ```
 
 ## Test Infrastructure
@@ -113,43 +116,38 @@ Test harness script that orchestrates test execution:
 - Cleans up processes and temporary files
 - Reports test results
 
-### meson.build
+### CMakeLists.txt
 
-Meson build configuration for tests:
-- Builds test client program
-- Registers test with meson test framework
-- Sets test timeout (30 seconds)
-- Ensures tests run sequentially (not parallel)
+CMake build configuration for tests:
+- Builds test executables
+- Registers tests with CTest
+- Sets test timeouts (30 or 60 seconds)
+- Ensures tests run sequentially (not in parallel)
 
 ## Adding New Tests
 
 To add a new test:
 
 1. Create test program in `tests/` directory
-2. Add executable to `tests/meson.build`
-3. Register test with `test()` function
+2. Add executable to `tests/CMakeLists.txt`
+3. Register test with `add_test()`
 4. Update this README
 
 Example:
 
-```meson
-test_new_feature = executable(
-    'test_new_feature',
-    'test_new_feature.c',
-    dependencies: [],
-    install: false
+```cmake
+add_executable(test_new_feature
+    test_new_feature.c
 )
 
-test(
-    'new-feature-test',
-    find_program('run-test.sh'),
-    args: [
-        meson.current_build_dir() / 'test_new_feature',
-        meson.project_build_root() / 'rocm-ernic'
-    ],
-    timeout: 30,
-    is_parallel: false
+add_test(
+    NAME new-feature-test
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run-test.sh
+        $<TARGET_FILE:test_new_feature>
+        $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(new-feature-test PROPERTIES
+    TIMEOUT 30
+    RUN_SERIAL TRUE
 )
 ```
-
-

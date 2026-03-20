@@ -6,8 +6,8 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'meson.build'
-      - 'meson_options.txt'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
       - '.github/workflows/build-test.yml'
   workflow_dispatch:
 
@@ -30,6 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
+            cmake \
             meson \
             ninja-build \
             pkg-config \
@@ -48,14 +49,14 @@ jobs:
           sudo ninja -C build install
           sudo ldconfig
       
-      - name: Configure project with Meson
+      - name: Configure project with CMake
         run: |
-          meson setup build \
-            --buildtype=debug \
-            --prefix=/usr
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_INSTALL_PREFIX=/usr
       
-      - name: Build project with Ninja
-        run: ninja -C build
+      - name: Build project
+        run: cmake --build build
       
       - name: Verify rdma_cm protocol symbols
         run: |
@@ -87,7 +88,7 @@ jobs:
           ldd build/tests/test_data_transfer
       
       - name: Run tests
-        run: meson test -C build --verbose --print-errorlogs
+        run: ctest --test-dir build --output-on-failure
       
       - name: Test loopback backend configurations
         run: |
@@ -122,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.os }}
-          path: build/meson-logs/testlog.txt
+          path: build/Testing/
           retention-days: 7
       
       - name: Upload binaries
@@ -135,4 +136,3 @@ jobs:
             build/tests/test_pci_client
             build/tests/test_data_transfer
           retention-days: 7
-
