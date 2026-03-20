@@ -23,6 +23,20 @@ IMAGES=${IMAGES:-/home/stebates/Projects/qemu-minimal/images}
 SSH_PORT=${SSH_PORT:-2222}
 KVM=${KVM:-enable}
 VFIO_USER_SOCKET=${VFIO_USER_SOCKET:-/tmp/vfio-user-rocm-ernic.sock}
+QMP_SOCKET=${QMP_SOCKET:-/tmp/qemu-qmp.sock}
+
+# Remove stale QMP socket from a previous QEMU crash
+if [ -e "${QMP_SOCKET}" ]; then
+    if [ -S "${QMP_SOCKET}" ]; then
+        rm -f "${QMP_SOCKET}" || {
+            echo "ERROR: Failed to remove stale QMP socket: ${QMP_SOCKET}"
+            exit 1
+        }
+    else
+        echo "ERROR: QMP socket path exists and is not a socket: ${QMP_SOCKET}"
+        exit 1
+    fi
+fi
 
 # Check if vfio-user socket exists
 if [ ! -S "${VFIO_USER_SOCKET}" ]; then
@@ -75,6 +89,10 @@ echo "  VCPUs:          ${VCPUS}"
 echo "  Memory:         ${VMEM} MB"
 echo "  SSH Port:       ${SSH_PORT}"
 echo "  vfio-user:      ${VFIO_USER_SOCKET}"
+echo "  QMP socket:     ${QMP_SOCKET}"
+echo ""
+echo "Hot-reload:"
+echo "  scripts/hot-reload.sh"
 echo ""
 echo "To connect:"
 echo "  ssh -p ${SSH_PORT} ubuntu@localhost"
@@ -82,13 +100,10 @@ echo ""
 echo "Press Ctrl-A then X to exit QEMU"
 echo ""
 
-# NOTE: vfio-user-pci device support requires QEMU with vfio-user client
-# support. This should be available in QEMU 7.0+
+# vfio-user-pci requires QEMU 10.1+ with vfio-user client support.
 #
-# The device specification tries different formats depending on QEMU version:
-# - Modern: -device vfio-user-pci,socket=${VFIO_USER_SOCKET}
-# - Some versions: -chardev socket,id=vfio0,path=${VFIO_USER_SOCKET}
-#                  -device vfio-user-pci,chardev=vfio0
+# A PCIe root port is used so the device can be hot-unplugged and
+# re-added at runtime via QMP (see scripts/hot-reload.sh).
 
 exec ${QEMU_PATH}qemu-system-${QARCH} \
    ${QARCH_ARGS} \
@@ -97,8 +112,10 @@ exec ${QEMU_PATH}qemu-system-${QARCH} \
    -machine memory-backend=mem0 \
    ${FILESYSTEM_ARGS} \
    -nographic \
+   -qmp unix:${QMP_SOCKET},server,nowait \
    -drive if=virtio,format=qcow2,file=${IMAGES}/${VM_NAME}.qcow2 \
    -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
    -device virtio-net-pci,netdev=net0 \
-   -device '{"driver":"vfio-user-pci","socket":{"path":"'"${VFIO_USER_SOCKET}"'","type":"unix"}}'
+   -device pcie-root-port,id=rp0,slot=0,chassis=0 \
+   -device '{"driver":"vfio-user-pci","id":"ernic0","bus":"rp0","socket":{"path":"'"${VFIO_USER_SOCKET}"'","type":"unix"}}'
 
