@@ -17,8 +17,11 @@ CQs
 CQEs
 Config
 Ctrl
+DKMS
 DMA
 DSR
+DV
+dmabuf
 DSRHIGH
 DSRLOW
 Datagram
@@ -108,8 +111,11 @@ TCP
 TODO
 TSAN
 UAR
+UAPI
 UBSAN
 UC
+UMEM
+umem
 UD
 Upstreamable
 Upstreaming
@@ -157,6 +163,7 @@ const
 cppcheck
 cq
 cqe
+cqn
 cqs
 ctrl
 ctx
@@ -168,7 +175,11 @@ dev
 devel
 devinfo
 dir
+dkms
+dlopen
+dlsym
 dma
+dmabuf
 dmesg
 doorbell
 doorbells
@@ -269,6 +280,7 @@ mtu
 mut
 mutex
 nchunks
+ncqe
 nd
 ndev
 netdev
@@ -359,6 +371,7 @@ tmp
 toolchains
 typedef
 ubuntu
+uapi
 uint
 uint16
 uint32

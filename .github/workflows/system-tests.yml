@@ -373,8 +373,57 @@ jobs:
           linux-headers-$(uname -r) \
           linux-modules-extra-$(uname -r) \
           libibverbs-dev \
-          rdma-core
+          rdma-core \
+          cmake \
+          ninja-build \
+          pkg-config
         echo "✓ Necessary packages installed"
+        EOFVM
+
+    - name: Copy rdma-core provider to VM
+      shell: bash
+      run: |
+        echo "=== Copying rdma-core provider to VM ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-provider"
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
+          rdma-core/providers rdma-core/rocm-ernic-dv \
+          "${VM_USER}@localhost:/tmp/rdma-core-provider/"
+        echo "✓ Provider source copied to VM"
+
+    - name: Build custom rdma-core provider in VM
+      shell: bash
+      run: |
+        echo "=== Building custom rdma-core provider ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        RDMA_CORE_VER="62.0"
+        BUILD_DIR="/tmp/rdma-core-build"
+        SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
+        TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        URL="https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VER}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        mkdir -p "${BUILD_DIR}"
+        echo "Downloading rdma-core v${RDMA_CORE_VER}..."
+        curl -fsSL -o "${TARBALL}" "${URL}"
+        tar xf "${TARBALL}" -C "${BUILD_DIR}"
+        echo "Injecting rocm_ernic provider..."
+        cp -r /tmp/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
+        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
+          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
+        fi
+        echo "Building rdma-core..."
+        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
+        cmake --build "${BUILD_DIR}/build" -j$(nproc)
+        echo "Installing rdma-core..."
+        sudo cmake --install "${BUILD_DIR}/build"
+        sudo ldconfig
+        echo "Verifying provider..."
+        find /usr/lib -name "librocm_ernic*" 2>/dev/null || echo "Provider may be in lib64"
+        echo "✓ Custom rdma-core provider installed"
         EOFVM
 
     - name: Build and load driver in VM
@@ -1285,7 +1334,19 @@ jobs:
           exit 1
         }
 
-        echo "✓ Driver source copied"
+        # Copy rdma-core provider to both VMs
+        for PORT in 2222 2223; do
+          ssh -o StrictHostKeyChecking=no -p "$PORT" \
+            "${VM_USER}@localhost" "mkdir -p ~/rdma-core-provider"
+          scp -o StrictHostKeyChecking=no -P "$PORT" -r \
+            rdma-core/providers rdma-core/rocm-ernic-dv \
+            "${VM_USER}@localhost:~/rdma-core-provider/" || {
+            echo "✗ Failed to copy rdma-core provider to VM (port $PORT)"
+            exit 1
+          }
+        done
+
+        echo "✓ Driver source and provider copied"
 
     - name: Install necessary packages in VMs
       shell: bash
@@ -1312,7 +1373,10 @@ jobs:
           linux-modules-extra-$(uname -r) \
           libibverbs-dev \
           rdma-core \
-          build-essential
+          build-essential \
+          cmake \
+          ninja-build \
+          pkg-config
         echo "[VM 1] ✓ Packages installed"
         EOFVM
         
@@ -1335,11 +1399,66 @@ jobs:
           linux-modules-extra-$(uname -r) \
           libibverbs-dev \
           rdma-core \
-          build-essential
+          build-essential \
+          cmake \
+          ninja-build \
+          pkg-config
         echo "[VM 2] ✓ Packages installed"
         EOFVM
         
         echo "✓ Both VMs have packages installed"
+
+    - name: Build custom rdma-core provider in VM 1
+      shell: bash
+      run: |
+        echo "[VM 1] Building custom rdma-core provider..."
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        RDMA_CORE_VER="62.0"
+        BUILD_DIR="/tmp/rdma-core-build"
+        SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
+        TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        URL="https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VER}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        mkdir -p "${BUILD_DIR}"
+        curl -fsSL -o "${TARBALL}" "${URL}"
+        tar xf "${TARBALL}" -C "${BUILD_DIR}"
+        cp -r ~/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
+        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
+          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
+        fi
+        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
+        cmake --build "${BUILD_DIR}/build" -j$(nproc)
+        sudo cmake --install "${BUILD_DIR}/build"
+        sudo ldconfig
+        echo "✓ Custom rdma-core provider installed"
+        EOFVM
+
+    - name: Build custom rdma-core provider in VM 2
+      shell: bash
+      run: |
+        echo "[VM 2] Building custom rdma-core provider..."
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        RDMA_CORE_VER="62.0"
+        BUILD_DIR="/tmp/rdma-core-build"
+        SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
+        TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        URL="https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VER}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        mkdir -p "${BUILD_DIR}"
+        curl -fsSL -o "${TARBALL}" "${URL}"
+        tar xf "${TARBALL}" -C "${BUILD_DIR}"
+        cp -r ~/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
+        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
+          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
+        fi
+        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
+        cmake --build "${BUILD_DIR}/build" -j$(nproc)
+        sudo cmake --install "${BUILD_DIR}/build"
+        sudo ldconfig
+        echo "✓ Custom rdma-core provider installed"
+        EOFVM
 
     - name: Build and load driver in VM 1
       shell: bash

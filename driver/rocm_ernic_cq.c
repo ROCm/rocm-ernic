@@ -96,7 +96,12 @@ int rocm_ernic_req_notify_cq(struct ib_cq *ibcq,
  * rocm_ernic_create_cq - create completion queue
  * @ibcq: Allocated CQ
  * @attr: completion queue attributes
- * @attrs: bundle
+ * @attrs: bundle (kernel >= 6.11) or udata
+ *
+ * Handles both standard and DV paths.  In DV mode the
+ * userspace provider sets comp_mask in the extended udata;
+ * the kernel still pins the buffer via ib_umem_get() using
+ * the address supplied in buf_addr/buf_size.
  *
  * @return: 0 on success
  */
@@ -122,35 +127,35 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     struct rocm_ernic_cmd_create_cq *cmd = &req.create_cq;
     struct rocm_ernic_cmd_create_cq_resp *resp = &rsp.create_cq_resp;
     struct rocm_ernic_create_cq_resp cq_resp = {};
-    struct rocm_ernic_create_cq ucmd;
+    struct rocm_ernic_create_cq ucmd = {};
     struct rocm_ernic_ucontext *context = rdma_udata_to_drv_context(
         udata, struct rocm_ernic_ucontext, ibucontext);
 
     BUILD_BUG_ON(sizeof(struct rocm_ernic_cqe) != 64);
 
     dev_info(&dev->pdev->dev,
-             "CQ create: ENTRY (entries=%d, flags=0x%x, is_kernel=%d)\n",
+             "CQ create: ENTRY (entries=%d, "
+             "flags=0x%x, is_kernel=%d)\n",
              entries, attr->flags, !udata);
 
     if (attr->flags) {
-        dev_warn(&dev->pdev->dev, "CQ create: EOPNOTSUPP (flags=0x%x)\n",
+        dev_warn(&dev->pdev->dev,
+                 "CQ create: EOPNOTSUPP "
+                 "(flags=0x%x)\n",
                  attr->flags);
         return -EOPNOTSUPP;
     }
 
     entries = roundup_pow_of_two(entries);
-    dev_info(&dev->pdev->dev, "CQ create: rounded entries=%d, max_cqe=%d\n",
-             entries, dev->dsr->caps.max_cqe);
     if (entries < 1 || entries > dev->dsr->caps.max_cqe) {
-        dev_warn(&dev->pdev->dev, "CQ create: EINVAL (entries check failed)\n");
+        dev_warn(&dev->pdev->dev, "CQ create: EINVAL "
+                                  "(entries check failed)\n");
         return -EINVAL;
     }
 
-    dev_info(&dev->pdev->dev,
-             "CQ create: checking CQ limit (num_cqs=%d, max_cq=%d)\n",
-             atomic_read(&dev->num_cqs), dev->dsr->caps.max_cq);
     if (!atomic_add_unless(&dev->num_cqs, 1, dev->dsr->caps.max_cq)) {
-        dev_warn(&dev->pdev->dev, "CQ create: ENOMEM (max CQs reached)\n");
+        dev_warn(&dev->pdev->dev, "CQ create: ENOMEM "
+                                  "(max CQs reached)\n");
         return -ENOMEM;
     }
 
@@ -158,7 +163,7 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     cq->is_kernel = !udata;
 
     if (!cq->is_kernel) {
-        if (ib_copy_from_udata(&ucmd, udata, sizeof(ucmd))) {
+        if (ib_copy_from_udata(&ucmd, udata, min(udata->inlen, sizeof(ucmd)))) {
             ret = -EFAULT;
             goto err_cq;
         }
@@ -172,33 +177,26 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 
         npages = ib_umem_num_dma_blocks(cq->umem, PAGE_SIZE);
     } else {
-        /* One extra page for shared ring state */
         npages = 1 + (entries * sizeof(struct rocm_ernic_cqe) + PAGE_SIZE - 1) /
                          PAGE_SIZE;
-
-        /* Skip header page. */
         cq->offset = PAGE_SIZE;
     }
 
     if (npages < 0 || npages > ROCM_ERNIC_PAGE_DIR_MAX_PAGES) {
-        dev_warn(&dev->pdev->dev, "overflow pages in completion queue\n");
+        dev_warn(&dev->pdev->dev, "overflow pages in CQ\n");
         ret = -EINVAL;
         goto err_umem;
     }
 
-    dev_info(&dev->pdev->dev,
-             "CQ create: about to init page dir (npages=%d, is_kernel=%d)\n",
-             npages, cq->is_kernel);
     ret = rocm_ernic_page_dir_init(dev, &cq->pdir, npages, cq->is_kernel);
     if (ret) {
         dev_warn(&dev->pdev->dev,
-                 "could not allocate page directory (ret=%d, npages=%d)\n", ret,
-                 npages);
+                 "could not allocate page directory "
+                 "(ret=%d, npages=%d)\n",
+                 ret, npages);
         goto err_umem;
     }
-    dev_info(&dev->pdev->dev, "CQ create: page dir init succeeded\n");
 
-    /* Ring state is always the first page. Set in library for user cq. */
     if (cq->is_kernel)
         cq->ring_state = cq->pdir.pages[0];
     else
@@ -217,13 +215,17 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_CREATE_CQ_RESP);
     if (ret < 0) {
         dev_warn(&dev->pdev->dev,
-                 "could not create completion queue, error: %d\n", ret);
+                 "could not create CQ, "
+                 "error: %d\n",
+                 ret);
         goto err_page_dir;
     }
 
     cq->ibcq.cqe = resp->cqe;
     cq->cq_handle = resp->cq_handle;
     cq_resp.cqn = resp->cq_handle;
+    cq_resp.ncqe = resp->cqe;
+    cq_resp.cqe_size = sizeof(struct rocm_ernic_cqe);
     spin_lock_irqsave(&dev->cq_tbl_lock, flags);
     dev->cq_tbl[cq->cq_handle % dev->dsr->caps.max_cq] = cq;
     spin_unlock_irqrestore(&dev->cq_tbl_lock, flags);
@@ -231,8 +233,8 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     if (!cq->is_kernel) {
         cq->uar = &context->uar;
 
-        /* Copy udata back. */
-        if (ib_copy_to_udata(udata, &cq_resp, sizeof(cq_resp))) {
+        if (ib_copy_to_udata(udata, &cq_resp,
+                             min(udata->outlen, sizeof(cq_resp)))) {
             dev_warn(&dev->pdev->dev, "failed to copy back udata\n");
             rocm_ernic_destroy_cq(&cq->ibcq, udata);
             return -EINVAL;

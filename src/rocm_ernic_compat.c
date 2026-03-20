@@ -23,8 +23,16 @@
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
-/* Now we can include QEMU headers */
-#define VFU_PVRDMA_INTERNAL_IMPL
+/*
+ * QEMU headers -- suppress warnings from upstream code
+ * that we do not own.  This is the standard pattern for
+ * third-party header inclusions.
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
+#pragma GCC diagnostic ignored "-Wshift-overflow"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wpacked"
 #include "from-qemu/hw/rdma/vmw/pvrdma.h"
 #include "from-qemu/hw/rdma/vmw/pvrdma_qp_ops.h"
 #include "from-qemu/hw/rdma/rdma_backend.h"
@@ -35,6 +43,12 @@
 #include "from-qemu/utils/dhcp_proxy.h"
 #include "from-qemu/include/qemu-extra/standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "from-qemu/include/qemu-extra/standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
+#include "from-qemu/include/qemu-extra/hw/pci/pci.h"
+#pragma GCC diagnostic pop
+
+/* Forward declaration -- defined later in this file,
+ * also referenced via extern in pvrdma_main.c. */
+void pvrdma_dsr_flush(void *handle);
 
 /*
  * DMA Mapping Tracking
@@ -143,20 +157,21 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
 
         /* Calculate max_qp_wr */
         pvrdma->dev_attr.max_qp_wr =
-            pg_tbl_bytes /
-                (wr_sz + sizeof(struct pvrdma_sge) * pvrdma->dev_attr.max_sge) -
-            PAGE_SIZE; /* First page is ring state */
+            (int)(pg_tbl_bytes /
+                      (wr_sz + sizeof(struct pvrdma_sge) *
+                                   (size_t)pvrdma->dev_attr.max_sge) -
+                  PAGE_SIZE);
 
         /* Calculate max_cqe */
-        pvrdma->dev_attr.max_cqe = pg_tbl_bytes / sizeof(struct pvrdma_cqe) -
-                                   PAGE_SIZE; /* First page is ring state */
+        pvrdma->dev_attr.max_cqe =
+            (int)(pg_tbl_bytes / sizeof(struct pvrdma_cqe) - PAGE_SIZE);
 
         /* Calculate max_srq_wr */
         pvrdma->dev_attr.max_srq_wr =
-            pg_tbl_bytes / ((sizeof(struct pvrdma_rq_wqe_hdr) +
-                             sizeof(struct pvrdma_sge)) *
-                            pvrdma->dev_attr.max_sge) -
-            PAGE_SIZE;
+            (int)(pg_tbl_bytes / ((sizeof(struct pvrdma_rq_wqe_hdr) +
+                                   sizeof(struct pvrdma_sge)) *
+                                  (size_t)pvrdma->dev_attr.max_sge) -
+                  PAGE_SIZE);
 
         rdma_info_report("  max_qp_wr=%d", pvrdma->dev_attr.max_qp_wr);
         rdma_info_report("  max_cqe=%d", pvrdma->dev_attr.max_cqe);
@@ -450,8 +465,7 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
         return 0;
     }
 
-    /* Forward to QEMU UAR read implementation */
-    val = pvrdma_uar_read_impl(pvrdma, offset, size);
+    val = (uint32_t)pvrdma_uar_read_impl(pvrdma, offset, size);
 
     return val;
 }
@@ -584,8 +598,6 @@ void pvrdma_write_stats(pvrdma_handle_t handle)
         return;
     }
 
-    /* Forward declaration - implementation in pvrdma_main.c */
-    void pvrdma_write_stats_impl(PVRDMADev * dev);
     pvrdma_write_stats_impl(pvrdma);
 }
 

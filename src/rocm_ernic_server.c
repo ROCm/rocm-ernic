@@ -96,6 +96,8 @@ static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
     case LOG_DEBUG:
         printf("%s: DEBUG: %s\n", prefix, msg);
         break;
+    default:
+        break;
     }
 }
 
@@ -107,10 +109,10 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
-    if (offset + count > RDMA_BAR0_MSIX_SIZE) {
+    if ((size_t)offset + count > RDMA_BAR0_MSIX_SIZE) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "BAR0 access out of bounds: offset=%#lx count=%zu", offset,
-                count);
+                "BAR0 access out of bounds: offset=%#lx count=%zu",
+                (unsigned long)offset, count);
         errno = EINVAL;
         return -1;
     }
@@ -119,16 +121,16 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     /* Any other accesses to BAR0 are just memory reads/writes */
 
     if (is_write) {
-        memcpy(dev->bar0_mem + offset, buf, count);
+        memcpy((char *)dev->bar0_mem + offset, buf, count);
     } else {
-        memcpy(buf, dev->bar0_mem + offset, count);
+        memcpy(buf, (char *)dev->bar0_mem + offset, count);
     }
 
     if (dev->pvrdma_handle) {
         pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
     }
 
-    return count;
+    return (ssize_t)count;
 }
 
 /**
@@ -160,10 +162,10 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
     /* Ensure offset is within valid range (including MAC registers at
      * 0x60-0x64) */
-    if (offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
+    if ((size_t)offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "BAR1 access out of bounds: offset=%#lx count=%zu", offset,
-                count);
+                "BAR1 access out of bounds: offset=%#lx count=%zu",
+                (unsigned long)offset, count);
         errno = EINVAL;
         return -1;
     }
@@ -171,8 +173,8 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     /* Register accesses must be 32-bit aligned */
     if (count != sizeof(uint32_t) || (offset & 0x3)) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "BAR1 access not 32-bit aligned: offset=%#lx count=%zu", offset,
-                count);
+                "BAR1 access not 32-bit aligned: offset=%#lx count=%zu",
+                (unsigned long)offset, count);
         errno = EINVAL;
         return -1;
     }
@@ -180,28 +182,29 @@ static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     if (is_write) {
         /* Forward write to QEMU register handler via wrapper */
         memcpy(&val, buf, sizeof(val));
-        pvrdma_regs_write(dev->pvrdma_handle, offset, val, sizeof(val));
+        pvrdma_regs_write(dev->pvrdma_handle, (hwaddr)offset, val, sizeof(val));
 
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 write: offset=%#lx val=%#x", offset,
-                val);
+        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 write: offset=%#lx val=%#x",
+                (unsigned long)offset, val);
     } else {
         /* Forward read to QEMU register handler via wrapper */
         /* Ensure pvrdma_handle is valid before calling */
         if (!dev->pvrdma_handle) {
             vfu_log(vfu_ctx, LOG_ERR,
-                    "BAR1 read: pvrdma_handle is NULL at offset=%#lx", offset);
+                    "BAR1 read: pvrdma_handle is NULL at offset=%#lx",
+                    (unsigned long)offset);
             errno = EFAULT;
             return -1;
         }
 
-        val = pvrdma_regs_read(dev->pvrdma_handle, offset, sizeof(val));
+        val = pvrdma_regs_read(dev->pvrdma_handle, (hwaddr)offset, sizeof(val));
         memcpy(buf, &val, sizeof(val));
 
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 read: offset=%#lx val=%#x", offset,
-                val);
+        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 read: offset=%#lx val=%#x",
+                (unsigned long)offset, val);
     }
 
-    return count;
+    return (ssize_t)count;
 }
 
 /**
@@ -214,10 +217,10 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
     uint32_t val;
 
-    if (offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
+    if ((size_t)offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "BAR2 access out of bounds: offset=%#lx count=%zu", offset,
-                count);
+                "BAR2 access out of bounds: offset=%#lx count=%zu",
+                (unsigned long)offset, count);
         errno = EINVAL;
         return -1;
     }
@@ -227,25 +230,24 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
 
         vfu_log(vfu_ctx, LOG_INFO,
-                ">>> BAR2 (UAR) WRITE: offset=%#lx val=%#x count=%zu - "
-                "FORWARDING TO PVRDMA",
-                offset, val, count);
+                ">>> BAR2 (UAR) WRITE: offset=%#lx val=%#x count=%zu"
+                " - FORWARDING TO PVRDMA",
+                (unsigned long)offset, val, count);
 
-        /* Forward to QEMU UAR handler via wrapper */
-        pvrdma_uar_write(dev->pvrdma_handle, offset, val, sizeof(val));
+        pvrdma_uar_write(dev->pvrdma_handle, (hwaddr)offset, val, sizeof(val));
 
         vfu_log(vfu_ctx, LOG_INFO,
                 ">>> BAR2 (UAR) write forwarded successfully");
     } else {
         /* UAR reads */
-        val = pvrdma_uar_read(dev->pvrdma_handle, offset, sizeof(val));
+        val = pvrdma_uar_read(dev->pvrdma_handle, (hwaddr)offset, sizeof(val));
         memcpy(buf, &val, (count < sizeof(val)) ? count : sizeof(val));
 
         vfu_log(vfu_ctx, LOG_DEBUG, "BAR2 (UAR) read: offset=%#lx val=%#x",
-                offset, val);
+                (unsigned long)offset, val);
     }
 
-    return count;
+    return (ssize_t)count;
 }
 
 
@@ -260,7 +262,7 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
     const char *conn_str = NULL;
 
-    vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%d)", type);
+    vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%u)", type);
 
     switch (type) {
     case VFU_RESET_DEVICE:
@@ -284,6 +286,8 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         if (dev->pvrdma_handle) {
             pvrdma_inc_stats_flr_count(dev->pvrdma_handle);
         }
+        break;
+    default:
         break;
     }
 
@@ -379,7 +383,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
 
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
-            PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_ROCM_ERNIC);
+            (unsigned)PCI_VENDOR_ID_AMD, (unsigned)PCI_DEVICE_ID_ROCM_ERNIC);
 
     return 0;
 }
@@ -459,7 +463,7 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_INTX_IRQ, 1);
     if (ret < 0) {
         vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %m");
-        return ret;
+        return (int)ret;
     }
 
     /* MSI-X capability structure (12 bytes total) */
@@ -469,7 +473,7 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         uint16_t ctrl;  /* Message Control register */
         uint32_t table; /* Table Offset/BIR */
         uint32_t pba;   /* PBA Offset/BIR */
-    } __attribute__((packed)) msix_cap;
+    } msix_cap;
 
     /* Build MSI-X capability structure */
     msix_cap.id = PCI_CAP_ID_MSIX; /* 0x11 */
@@ -492,10 +496,10 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ret = vfu_pci_add_capability(vfu_ctx, 0, 0, &msix_cap);
     if (ret < 0) {
         vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %m");
-        return ret;
+        return (int)ret;
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, "Added MSI-X capability at offset 0x%zx", ret);
+    vfu_log(vfu_ctx, LOG_INFO, "Added MSI-X capability at offset 0x%zd", ret);
 
     /* Ensure standard PCI header tail (0x34-0x3f) is set for config reads */
     {
@@ -513,14 +517,14 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_MSIX_IRQ, RDMA_MAX_INTRS);
     if (ret < 0) {
         vfu_log(vfu_ctx, LOG_ERR, "Failed to setup MSI-X IRQ count: %m");
-        return ret;
+        return (int)ret;
     }
 
     vfu_log(vfu_ctx, LOG_INFO,
             "Interrupts configured: INTx=1, MSI-X=%d vectors "
             "(table=BAR%d:0x%x, pba=BAR%d:0x%x)",
-            RDMA_MAX_INTRS, MSIX_TABLE_BIR, MSIX_TABLE_OFFSET, MSIX_PBA_BIR,
-            MSIX_PBA_OFFSET);
+            RDMA_MAX_INTRS, MSIX_TABLE_BIR, (unsigned)MSIX_TABLE_OFFSET,
+            MSIX_PBA_BIR, (unsigned)MSIX_PBA_OFFSET);
 
     return 0;
 }
@@ -887,7 +891,7 @@ int main(int argc, char *argv[])
         case 'm':
             /* Parse MAC address: format XX:XX:XX:XX:XX:XX */
             {
-                int mac[6];
+                unsigned int mac[6];
                 int count =
                     sscanf(optarg, "%02x:%02x:%02x:%02x:%02x:%02x", &mac[0],
                            &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
@@ -901,8 +905,8 @@ int main(int argc, char *argv[])
                     exit(EXIT_FAILURE);
                 }
                 for (int i = 0; i < 6; i++) {
-                    if (mac[i] < 0 || mac[i] > 255) {
-                        fprintf(stderr, "Error: Invalid MAC address byte: %d\n",
+                    if (mac[i] > 255) {
+                        fprintf(stderr, "Error: Invalid MAC address byte: %u\n",
                                 mac[i]);
                         free(dev->backend_type_str);
                         free(dev);
@@ -1093,7 +1097,7 @@ int main(int argc, char *argv[])
         /* Attach to client (non-blocking) */
         ret = vfu_attach_ctx(vfu_ctx);
         if (ret < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 /* No client yet, sleep and retry */
                 usleep(100000); /* 100ms */
                 continue;
