@@ -248,7 +248,7 @@ jobs:
         SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
         SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
         SSH_KEY="${{ steps.vm_info.outputs.ssh_key }}"
-        SSH_PORT="${{ env.SSH_PORT }}"
+        SSH_PORT="$SSH_PORT"
         
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
@@ -286,7 +286,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Waiting for VM SSH ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
+        SSH_PORT="$SSH_PORT"
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
         
         for i in {1..60}; do
@@ -308,8 +308,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Verifying RDMA NIC in VM ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
-        VM_USER="${{ env.VM_USER }}"
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
         
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
@@ -335,8 +335,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Copying driver source to VM ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
-        VM_USER="${{ env.VM_USER }}"
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
         
         scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
           driver/ "${VM_USER}@localhost:/tmp/" || {
@@ -349,8 +349,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Installing necessary packages inside the VM ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
-        VM_USER="${{ env.VM_USER }}"
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
         
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
@@ -381,8 +381,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Building and loading driver in VM ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
-        VM_USER="${{ env.VM_USER }}"
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
         
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
@@ -484,8 +484,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Running loopback backend tests ==="
-        SSH_PORT="${{ env.SSH_PORT }}"
-        VM_USER="${{ env.VM_USER }}"
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
         
         # Test configurations (bash array syntax)
           declare -a CONFIGS=(
@@ -507,8 +507,8 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
           # Stop previous server if running
-          kill "${{ env.SERVER_PID }}" 2>/dev/null || true
-          wait "${{ env.SERVER_PID }}" 2>/dev/null || true
+          kill "$SERVER_PID" 2>/dev/null || true
+          wait "$SERVER_PID" 2>/dev/null || true
           rm -f /tmp/vfio-user-rocm-ernic*.sock
           
           # Start server with this configuration
@@ -598,13 +598,13 @@ jobs:
       if: always()
       run: |
         # Stop QEMU
-        if [ -n "${{ env.QEMU_PID }}" ]; then
-          kill "${{ env.QEMU_PID }}" 2>/dev/null || true
+        if [ -n "$QEMU_PID" ]; then
+          kill "$QEMU_PID" 2>/dev/null || true
         fi
         
         # Stop server
-        if [ -n "${{ env.SERVER_PID }}" ]; then
-          kill "${{ env.SERVER_PID }}" 2>/dev/null || true
+        if [ -n "$SERVER_PID" ]; then
+          kill "$SERVER_PID" 2>/dev/null || true
         fi
         
         # Clean up
