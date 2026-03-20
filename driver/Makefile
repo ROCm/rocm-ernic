@@ -11,7 +11,8 @@ obj-m += rocm_ernic_eth.o
 obj-m += rocm_ernic_rdma.o
 rocm_ernic_rdma-y := rocm_ernic_cmd.o rocm_ernic_cq.o rocm_ernic_doorbell.o \
                      rocm_ernic_main.o rocm_ernic_misc.o rocm_ernic_mr.o \
-                     rocm_ernic_qp.o rocm_ernic_srq.o rocm_ernic_verbs.o
+                     rocm_ernic_qp.o rocm_ernic_srq.o rocm_ernic_uapi.o \
+                     rocm_ernic_verbs.o
 
 # Current directory (where the driver source is)
 PWD := $(shell pwd)

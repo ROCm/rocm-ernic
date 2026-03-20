@@ -59,6 +59,7 @@
 #include <net/addrconf.h>
 
 #include "rocm_ernic.h"
+#include "rocm_ernic_driver_id.h"
 #include "rocm_ernic_eth.h"
 
 /* Ethernet register offsets */
@@ -199,7 +200,7 @@ static void rocm_ernic_dispatch_event(struct rocm_ernic_dev *dev, int port,
 
 static const struct ib_device_ops rocm_ernic_dev_ops = {
     .owner = THIS_MODULE,
-    .driver_id = RDMA_DRIVER_VMW_PVRDMA, /* Use VMware ID for compatibility */
+    .driver_id = RDMA_DRIVER_ROCM_ERNIC,
     .uverbs_abi_ver = ROCM_ERNIC_UVERBS_ABI_VERSION,
 
     .add_gid = rocm_ernic_add_gid,

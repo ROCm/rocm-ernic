@@ -155,10 +155,15 @@ struct rocm_ernic_create_cq {
     __aligned_u64 buf_addr;
     __u32 buf_size;
     __u32 reserved;
+    __aligned_u64 comp_mask;
+    __u32 ncqe;
+    __u32 cqe_size;
 };
 
 struct rocm_ernic_create_cq_resp {
     __u32 cqn;
+    __u32 ncqe;
+    __u32 cqe_size;
     __u32 reserved;
 };
 
@@ -185,11 +190,23 @@ struct rocm_ernic_create_qp {
     __u32 rbuf_size;
     __u32 sbuf_size;
     __aligned_u64 qp_addr;
+    __aligned_u64 comp_mask;
+    __u32 sq_wqe_size;
+    __u32 sq_depth;
+    __u32 rq_wqe_size;
+    __u32 rq_depth;
 };
 
 struct rocm_ernic_create_qp_resp {
     __u32 qpn;
     __u32 qp_handle;
+    __u32 sq_depth;
+    __u32 rq_depth;
+    __u32 sq_wqe_size;
+    __u32 rq_wqe_size;
+    __aligned_u64 uar_mmap_offset;
+    __u32 uar_qp_offset;
+    __u32 uar_cq_offset;
 };
 
 /* ROCM_ERNIC masked atomic compare and swap */

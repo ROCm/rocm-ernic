@@ -214,6 +214,22 @@ target_compile_options(rocm-ernic PRIVATE
     -g
 )
 
+# Suppress strict warnings for QEMU-ported upstream code.
+# These files are derived from QEMU and will not be
+# modified to fix sign-conversion, format, packed,
+# switch-enum, etc. warnings.  Our own code (src/*.c,
+# tests/) still gets full warnings via
+# ernic_set_compiler_flags().
+set(QEMU_PORTED_SOURCES
+    ${RDMA_BACKEND_SOURCES}
+    ${PVRDMA_DEVICE_SOURCES}
+    ${UTILITY_SOURCES}
+    ${QEMU_STUB_SOURCES}
+)
+set_source_files_properties(${QEMU_PORTED_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "-w"
+)
+
 target_link_directories(rocm-ernic PRIVATE
     ${VFIO_USER_LIBRARY_DIRS}
     ${GLIB2_LIBRARY_DIRS}
@@ -227,6 +243,14 @@ target_link_libraries(rocm-ernic PRIVATE
 )
 
 ernic_set_compiler_flags(rocm-ernic)
+
+option(ERNIC_WERROR
+  "Treat compiler warnings as errors for project code"
+  ON)
+
+if(ERNIC_WERROR)
+    target_compile_options(rocm-ernic PRIVATE -Werror)
+endif()
 
 # ---------------------------------------------------------------
 # Tests

@@ -16,6 +16,9 @@ set_target_properties(test_pci_client PROPERTIES
 add_executable(test_data_transfer
     test_data_transfer.c
 )
+target_compile_definitions(test_data_transfer PRIVATE
+    _GNU_SOURCE
+)
 target_include_directories(test_data_transfer PRIVATE
     ${IBVERBS_INCLUDE_DIRS}
 )

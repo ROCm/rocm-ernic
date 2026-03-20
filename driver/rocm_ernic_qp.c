@@ -49,8 +49,10 @@
 #include <rdma/ib_addr.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
+#include <rdma/uverbs_ioctl.h>
 
 #include "rocm_ernic.h"
+#include "rocm_ernic_dv_uapi.h"
 
 static void __rocm_ernic_destroy_qp(struct rocm_ernic_dev *dev,
                                     struct rocm_ernic_qp *qp);
@@ -202,11 +204,13 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     struct rocm_ernic_cmd_create_qp *cmd = &req.create_qp;
     struct rocm_ernic_cmd_create_qp_resp *resp = &rsp.create_qp_resp;
     struct rocm_ernic_cmd_create_qp_resp_v2 *resp_v2 = &rsp.create_qp_resp_v2;
-    struct rocm_ernic_create_qp ucmd;
+    struct rocm_ernic_create_qp ucmd = {};
     struct rocm_ernic_create_qp_resp qp_resp = {};
+    struct rocm_ernic_ucontext *context = NULL;
     unsigned long flags;
     int ret;
     bool is_srq = !!init_attr->srq;
+    bool dv_mode = false;
 
     if (init_attr->create_flags) {
         dev_warn(&dev->pdev->dev, "invalid create queuepair flags %#x\n",
@@ -252,48 +256,101 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         if (!qp->is_kernel) {
             dev_dbg(&dev->pdev->dev, "create queuepair from user space\n");
 
-            if (ib_copy_from_udata(&ucmd, udata, sizeof(ucmd))) {
+            if (ib_copy_from_udata(&ucmd, udata,
+                                   min(udata->inlen, sizeof(ucmd)))) {
                 ret = -EFAULT;
                 goto err_qp;
             }
 
-            /* Userspace supports qpn and qp handles? */
+            dv_mode = !!(ucmd.comp_mask & ROCM_ERNIC_QP_DV_ENABLE);
+
             if (dev->dsr_version >= ROCM_ERNIC_QPHANDLE_VERSION &&
                 udata->outlen < sizeof(qp_resp)) {
-                dev_warn(&dev->pdev->dev, "create queuepair not supported\n");
+                dev_warn(&dev->pdev->dev, "create queuepair: "
+                                          "outlen too small\n");
                 ret = -EOPNOTSUPP;
                 goto err_qp;
             }
 
-            if (!is_srq) {
-                /* set qp->sq.wqe_cnt, shift, buf_size.. */
-                qp->rumem = ib_umem_get(ibqp->device, ucmd.rbuf_addr,
-                                        ucmd.rbuf_size, 0);
-                if (IS_ERR(qp->rumem)) {
-                    ret = PTR_ERR(qp->rumem);
+            context = rdma_udata_to_drv_context(
+                udata, struct rocm_ernic_ucontext, ibucontext);
+
+            if (dv_mode) {
+                /*
+                 * DV path: userspace provides buffer
+                 * addresses and explicit sizing via
+                 * the extended create_qp fields.
+                 */
+                int sbytes = PAGE_ALIGN(ucmd.sq_depth * ucmd.sq_wqe_size);
+                int rbytes = PAGE_ALIGN(ucmd.rq_depth * ucmd.rq_wqe_size);
+
+                qp->sumem = ib_umem_get(ibqp->device, ucmd.sbuf_addr, sbytes,
+                                        IB_ACCESS_LOCAL_WRITE);
+                if (IS_ERR(qp->sumem)) {
+                    ret = PTR_ERR(qp->sumem);
                     goto err_qp;
                 }
-                qp->srq = NULL;
+
+                if (!is_srq && ucmd.rbuf_addr) {
+                    qp->rumem = ib_umem_get(ibqp->device, ucmd.rbuf_addr,
+                                            rbytes, IB_ACCESS_LOCAL_WRITE);
+                    if (IS_ERR(qp->rumem)) {
+                        ib_umem_release(qp->sumem);
+                        ret = PTR_ERR(qp->rumem);
+                        goto err_qp;
+                    }
+                    qp->srq = NULL;
+                } else if (is_srq) {
+                    qp->rumem = NULL;
+                    qp->srq = to_vsrq(init_attr->srq);
+                } else {
+                    qp->rumem = NULL;
+                    qp->srq = NULL;
+                }
+
+                qp->sq.wqe_size = ucmd.sq_wqe_size;
+                qp->sq.wqe_cnt = ucmd.sq_depth;
+                qp->rq.wqe_size = ucmd.rq_wqe_size;
+                qp->rq.wqe_cnt = ucmd.rq_depth;
+
+                qp->npages_send = ib_umem_num_dma_blocks(qp->sumem, PAGE_SIZE);
+                if (!is_srq && qp->rumem)
+                    qp->npages_recv =
+                        ib_umem_num_dma_blocks(qp->rumem, PAGE_SIZE);
+                else
+                    qp->npages_recv = 0;
+                qp->npages = qp->npages_send + qp->npages_recv;
             } else {
-                qp->rumem = NULL;
-                qp->srq = to_vsrq(init_attr->srq);
-            }
+                if (!is_srq) {
+                    qp->rumem = ib_umem_get(ibqp->device, ucmd.rbuf_addr,
+                                            ucmd.rbuf_size, 0);
+                    if (IS_ERR(qp->rumem)) {
+                        ret = PTR_ERR(qp->rumem);
+                        goto err_qp;
+                    }
+                    qp->srq = NULL;
+                } else {
+                    qp->rumem = NULL;
+                    qp->srq = to_vsrq(init_attr->srq);
+                }
 
-            qp->sumem =
-                ib_umem_get(ibqp->device, ucmd.sbuf_addr, ucmd.sbuf_size, 0);
-            if (IS_ERR(qp->sumem)) {
+                qp->sumem = ib_umem_get(ibqp->device, ucmd.sbuf_addr,
+                                        ucmd.sbuf_size, 0);
+                if (IS_ERR(qp->sumem)) {
+                    if (!is_srq)
+                        ib_umem_release(qp->rumem);
+                    ret = PTR_ERR(qp->sumem);
+                    goto err_qp;
+                }
+
+                qp->npages_send = ib_umem_num_dma_blocks(qp->sumem, PAGE_SIZE);
                 if (!is_srq)
-                    ib_umem_release(qp->rumem);
-                ret = PTR_ERR(qp->sumem);
-                goto err_qp;
+                    qp->npages_recv =
+                        ib_umem_num_dma_blocks(qp->rumem, PAGE_SIZE);
+                else
+                    qp->npages_recv = 0;
+                qp->npages = qp->npages_send + qp->npages_recv;
             }
-
-            qp->npages_send = ib_umem_num_dma_blocks(qp->sumem, PAGE_SIZE);
-            if (!is_srq)
-                qp->npages_recv = ib_umem_num_dma_blocks(qp->rumem, PAGE_SIZE);
-            else
-                qp->npages_recv = 0;
-            qp->npages = qp->npages_send + qp->npages_recv;
         } else {
             ret = rocm_ernic_set_sq_size(to_vdev(ibqp->device), &init_attr->cap,
                                          qp);
@@ -306,11 +363,7 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
                 goto err_qp;
 
             qp->npages = qp->npages_send + qp->npages_recv;
-
-            /* Skip header page. */
             qp->sq.offset = ROCM_ERNIC_QP_NUM_HEADER_PAGES * PAGE_SIZE;
-
-            /* Recv queue pages are after send pages. */
             qp->rq.offset = qp->npages_send * PAGE_SIZE;
         }
 
@@ -323,17 +376,17 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         ret =
             rocm_ernic_page_dir_init(dev, &qp->pdir, qp->npages, qp->is_kernel);
         if (ret) {
-            dev_warn(&dev->pdev->dev, "could not allocate page directory\n");
+            dev_warn(&dev->pdev->dev, "could not allocate page "
+                                      "directory\n");
             goto err_umem;
         }
 
         if (!qp->is_kernel) {
             rocm_ernic_page_dir_insert_umem(&qp->pdir, qp->sumem, 0);
-            if (!is_srq)
+            if (!is_srq && qp->rumem)
                 rocm_ernic_page_dir_insert_umem(&qp->pdir, qp->rumem,
                                                 qp->npages_send);
         } else {
-            /* Ring state is always the first page. */
             qp->sq.ring = qp->pdir.pages[0];
             qp->rq.ring = is_srq ? NULL : &qp->sq.ring[1];
         }
@@ -343,7 +396,6 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         goto err_qp;
     }
 
-    /* Not supported */
     init_attr->cap.max_inline_data = 0;
 
     memset(cmd, 0, sizeof(*cmd));
@@ -375,12 +427,13 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 
     ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_CREATE_QP_RESP);
     if (ret < 0) {
-        dev_warn(&dev->pdev->dev, "could not create queuepair, error: %d\n",
+        dev_warn(&dev->pdev->dev,
+                 "could not create queuepair, "
+                 "error: %d\n",
                  ret);
         goto err_pdir;
     }
 
-    /* max_send_wr/_recv_wr/_send_sge/_recv_sge/_inline_data */
     qp->port = init_attr->port_num;
 
     if (dev->dsr_version >= ROCM_ERNIC_QPHANDLE_VERSION) {
@@ -398,6 +451,17 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     if (udata) {
         qp_resp.qpn = qp->ibqp.qp_num;
         qp_resp.qp_handle = qp->qp_handle;
+
+        if (dv_mode) {
+            qp_resp.sq_depth = qp->sq.wqe_cnt;
+            qp_resp.rq_depth = qp->rq.wqe_cnt;
+            qp_resp.sq_wqe_size = qp->sq.wqe_size;
+            qp_resp.rq_wqe_size = qp->rq.wqe_size;
+            qp_resp.uar_qp_offset = ROCM_ERNIC_UAR_QP_OFFSET;
+            qp_resp.uar_cq_offset = ROCM_ERNIC_UAR_CQ_OFFSET;
+            if (context)
+                qp_resp.uar_mmap_offset = (u64)context->uar.pfn << PAGE_SHIFT;
+        }
 
         if (ib_copy_to_udata(udata, &qp_resp,
                              min(udata->outlen, sizeof(qp_resp)))) {
