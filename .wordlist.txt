@@ -7,6 +7,7 @@ Async
 BARs
 Backend
 Backends
+Breathe
 CMake
 CONFIG
 CTest
@@ -26,6 +27,7 @@ Deallocated
 Dereferencing
 DCMAKE
 Dockerfile
+Doxygen
 EAGAIN
 EFAULT
 EINTR
@@ -80,6 +82,7 @@ RDMA
 README
 ROCm
 RTR
+RST
 RTS
 RdmaBackendDev
 RdmaBackendLoopback
@@ -98,6 +101,7 @@ SPDK
 SRQ
 SRQs
 Shaia
+Sphinx
 TCP
 TODO
 TSAN
@@ -132,6 +136,7 @@ attrs
 backend
 backends
 bool
+breathe
 bringup
 cd
 checksumming
@@ -144,6 +149,7 @@ ctest
 cmd
 codebase
 compat
+conf
 config
 const
 cppcheck
@@ -163,6 +169,10 @@ dir
 dma
 dmesg
 doorbell
+doorbells
+doxyfile
+doxygen
+doxygenfile
 dsr
 elmail
 emrdma
@@ -240,6 +250,7 @@ lsmod
 lspci
 malloc
 marcel
+maxdepth
 md
 memfd
 memset
@@ -317,6 +328,7 @@ sge
 shaia
 shellcheck
 sizeof
+sphinx
 src
 sshpass
 stdin
@@ -335,6 +347,7 @@ sysfs
 sz
 tbl
 tcp
+toctree
 txt
 tmp
 toolchains

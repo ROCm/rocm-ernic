@@ -1,0 +1,63 @@
+# Doxyfile for rocm-ernic
+# Generated from docs/Doxyfile.in by CMake
+#
+# Doxygen generates XML consumed by Breathe; Sphinx
+# produces the final HTML output.
+
+PROJECT_NAME           = "@PROJECT_NAME@"
+PROJECT_NUMBER         = "@PROJECT_VERSION@"
+PROJECT_BRIEF          = "Emulated RDMA NIC for Virtual Machines"
+
+OUTPUT_DIRECTORY       = @ERNIC_DOC_PATH@
+INPUT                  = @ERNIC_DOXYFILE_INPUT@
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+
+# Exclude QEMU-derived code (not our public API)
+EXCLUDE_PATTERNS       = */from-qemu/*
+
+# XML output for Breathe (Sphinx integration)
+GENERATE_HTML          = NO
+GENERATE_LATEX         = NO
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+XML_PROGRAMLISTING     = YES
+
+# Warning settings
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+# Kernel driver headers use Linux kernel-doc style
+# (@param_name) which Doxygen treats as unknown commands.
+# Disable fatal warnings to tolerate both conventions.
+WARN_AS_ERROR          = NO
+WARN_NO_PARAMDOC       = NO
+
+# C-only project
+OPTIMIZE_OUTPUT_FOR_C  = YES
+
+# Preprocessing
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = __attribute__(x)=
+
+# Source browsing (available via Breathe)
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = YES
+
+# Diagrams
+HAVE_DOT               = NO
+
+# Sorting
+SORT_MEMBER_DOCS       = YES
+SORT_BRIEF_DOCS        = YES
+
+# Miscellaneous
+TYPEDEF_HIDES_STRUCT   = NO
+SHOW_INCLUDE_FILES     = YES
