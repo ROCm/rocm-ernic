@@ -17,3 +17,17 @@ matrix:
   - '**/*.md'
   default_encoding: utf-8
 
+- name: reStructuredText
+  aspell:
+    lang: en
+  sources:
+  - 'docs/**/*.rst'
+  pipeline:
+  - pyspelling.filters.text
+  dictionary:
+    wordlists:
+    - .wordlist.txt
+    output: wordlist.dic
+    encoding: utf-8
+  default_encoding: utf-8
+

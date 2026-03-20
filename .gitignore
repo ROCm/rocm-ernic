@@ -108,7 +108,6 @@ modules.order
 Module.symvers
 .cursor/
 setup-docs/
-docs/
 setup-scripts/
 
 # Ignore nohup.out

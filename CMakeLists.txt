@@ -37,6 +37,17 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
 # Add cmake/ to the module search path
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
+# Docs-only mode: build documentation without requiring
+# libvfio-user, glib, or libibverbs.
+option(ERNIC_DOCS_ONLY
+  "Only configure documentation targets"
+  OFF)
+
+if(ERNIC_DOCS_ONLY)
+    include(ErnicDocumentation)
+    return()
+endif()
+
 # Enable CTest (automatically calls enable_testing())
 include(CTest)
 
@@ -228,6 +239,11 @@ add_subdirectory(tests)
 include(ErnicInstall)
 
 # ---------------------------------------------------------------
+# Documentation (optional, requires -DERNIC_BUILD_DOCS=ON)
+# ---------------------------------------------------------------
+include(ErnicDocumentation)
+
+# ---------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------
 message("")
@@ -253,4 +269,7 @@ message("")
 message("  Sanitizers:")
 message("    ASAN/LSAN/UBSAN : ${ERNIC_USE_SANITIZERS}")
 message("    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
+message("")
+message("  Documentation:")
+message("    Build docs : ${ERNIC_BUILD_DOCS}")
 message("")
