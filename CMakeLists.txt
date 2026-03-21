@@ -263,6 +263,16 @@ add_subdirectory(tests)
 include(ErnicInstall)
 
 # ---------------------------------------------------------------
+# Kernel module (DKMS)
+# ---------------------------------------------------------------
+include(ErnicKernelModule)
+
+# ---------------------------------------------------------------
+# rdma-core with rocm_ernic provider
+# ---------------------------------------------------------------
+include(ErnicRdmaCore)
+
+# ---------------------------------------------------------------
 # Documentation (optional, requires -DERNIC_BUILD_DOCS=ON)
 # ---------------------------------------------------------------
 include(ErnicDocumentation)
@@ -293,6 +303,15 @@ message("")
 message("  Sanitizers:")
 message("    ASAN/LSAN/UBSAN : ${ERNIC_USE_SANITIZERS}")
 message("    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
+message("")
+message("  Kernel module (DKMS):")
+message("    ERNIC_BUILD_KMOD : ${ERNIC_BUILD_KMOD}")
+message("")
+message("  rdma-core:")
+message("    ERNIC_RDMA_CORE_BUILD :"
+  " ${ERNIC_RDMA_CORE_BUILD}")
+message("    RDMA_CORE_VERSION     :"
+  " ${RDMA_CORE_VERSION}")
 message("")
 message("  Documentation:")
 message("    Build docs : ${ERNIC_BUILD_DOCS}")
