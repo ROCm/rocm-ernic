@@ -14,4 +14,9 @@ with section("lint"):
         # expressions and version strings.  Matches the
         # hipFile .cmakelintrc approach.
         "C0301",
+        # E1122 crashes cmake-lint on add_custom_target()
+        # with COMMAND arguments (IndexError in the
+        # formatter).  CMake validates these calls at
+        # configure time so this lint adds no value.
+        "E1122",
     ]
