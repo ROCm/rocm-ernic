@@ -633,6 +633,122 @@ jobs:
             exit 1
         fi
     
+    - name: Sysfs loopback smoke test
+      shell: bash
+      run: |
+        echo "=== Sysfs Loopback Smoke Test ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+
+        # Start a loopback server for the sysfs test
+        ./build/rocm-ernic \
+          --socket /tmp/vfio-user-rocm-ernic-test.sock \
+          --backend loopback \
+          --verbose > /tmp/vfu_server_sysfs.log 2>&1 &
+        SERVER_PID=$!
+        SOCKET_READY=0
+        for i in {1..10}; do
+          if [ -S /tmp/vfio-user-rocm-ernic-test.sock ]; then
+            chmod 666 /tmp/vfio-user-rocm-ernic-test.sock
+            SOCKET_READY=1
+            break
+          fi
+          sleep 0.5
+        done
+        if [ $SOCKET_READY -eq 0 ]; then
+          echo "Server failed to start for sysfs test"
+          tail -20 /tmp/vfu_server_sysfs.log
+          exit 1
+        fi
+
+        set +e
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" <<-'EOFVM'
+        	SYSFS_ETH=""
+        	SYSFS_IB=""
+
+        	# Locate the Ethernet loopback attribute
+        	for d in /sys/class/net/rocm_ernic*; do
+        	  if [ -f "$d/device/loopback" ]; then
+        	    SYSFS_ETH="$d/device/loopback"
+        	    break
+        	  fi
+        	done
+
+        	# Locate the IB loopback attribute
+        	for d in /sys/class/infiniband/rocm_ernic*; do
+        	  if [ -f "$d/loopback" ]; then
+        	    SYSFS_IB="$d/loopback"
+        	    break
+        	  fi
+        	done
+
+        	if [ -z "$SYSFS_ETH" ] && [ -z "$SYSFS_IB" ]; then
+        	  echo "No sysfs loopback attributes found"
+        	  exit 77
+        	fi
+
+        	FAIL=0
+
+        	# -- Ethernet attribute --
+        	if [ -n "$SYSFS_ETH" ]; then
+        	  echo "Ethernet attr: $SYSFS_ETH"
+        	  V=$(cat "$SYSFS_ETH")
+        	  echo "  default value: $V"
+        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
+
+        	  echo 1 | sudo tee "$SYSFS_ETH" > /dev/null
+        	  V=$(cat "$SYSFS_ETH")
+        	  echo "  after enable: $V"
+        	  [ "$V" = "1" ] || { echo "  expected 1"; FAIL=1; }
+
+        	  echo 0 | sudo tee "$SYSFS_ETH" > /dev/null
+        	  V=$(cat "$SYSFS_ETH")
+        	  echo "  after disable: $V"
+        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
+        	fi
+
+        	# -- IB attribute --
+        	if [ -n "$SYSFS_IB" ]; then
+        	  echo "IB attr: $SYSFS_IB"
+        	  V=$(cat "$SYSFS_IB")
+        	  echo "  default value: $V"
+        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
+
+        	  echo 1 | sudo tee "$SYSFS_IB" > /dev/null
+        	  V=$(cat "$SYSFS_IB")
+        	  echo "  after enable: $V"
+        	  [ "$V" = "1" ] || { echo "  expected 1"; FAIL=1; }
+
+        	  echo 0 | sudo tee "$SYSFS_IB" > /dev/null
+        	  V=$(cat "$SYSFS_IB")
+        	  echo "  after disable: $V"
+        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
+        	fi
+
+        	if [ $FAIL -ne 0 ]; then
+        	  echo "Sysfs loopback smoke test FAILED"
+        	  exit 1
+        	fi
+        	echo "Sysfs loopback smoke test PASSED"
+        EOFVM
+        TEST_EXIT=$?
+        set -e
+
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+        rm -f /tmp/vfio-user-rocm-ernic-test.sock
+
+        if [ $TEST_EXIT -eq 0 ]; then
+          echo "Sysfs loopback smoke test passed"
+        elif [ $TEST_EXIT -eq 77 ]; then
+          echo "Sysfs loopback smoke test skipped"
+          echo "(RDMA device not available)"
+        else
+          echo "Sysfs loopback smoke test FAILED"
+          exit 1
+        fi
+    
     - name: Show logs
       if: always()
       run: |

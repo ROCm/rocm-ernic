@@ -250,6 +250,9 @@ struct rocm_ernic_dev {
     struct net_device *netdev;
     struct net_device *mesh_dummy_netdev;
     struct notifier_block nb_netdev;
+
+    /* Sysfs-controlled loopback: skip GID binding, use local table */
+    bool loopback_mode;
 };
 
 struct rocm_ernic_netdevice_work {

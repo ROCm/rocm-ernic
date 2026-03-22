@@ -54,6 +54,49 @@ the InfiniBand device are visible:
    lspci | grep 1022:1488
    ibv_devices
 
+Sysfs Loopback Mode
+-------------------
+
+The driver exposes a ``loopback`` sysfs attribute on both the
+Ethernet PCI device and the InfiniBand device. When enabled,
+the driver operates without a real network path: TX packets
+are reflected back as RX at the Ethernet layer, and the RDMA
+module skips GID binding commands. This is useful for testing
+RDMA applications in the guest without a fully configured
+userspace server backend.
+
+**Ethernet-level loopback** (TX packets reflected as RX):
+
+.. code-block:: bash
+
+   # Enable
+   echo 1 > /sys/class/net/rocm_ernic0/device/loopback
+
+   # Disable
+   echo 0 > /sys/class/net/rocm_ernic0/device/loopback
+
+   # Check current state
+   cat /sys/class/net/rocm_ernic0/device/loopback
+
+**RDMA-level loopback** (skips GID binding, syncs with
+Ethernet loopback):
+
+.. code-block:: bash
+
+   # Enable (also enables Ethernet loopback)
+   echo 1 > /sys/class/infiniband/rocm_ernic0/loopback
+
+   # Disable
+   echo 0 > /sys/class/infiniband/rocm_ernic0/loopback
+
+   # Check current state
+   cat /sys/class/infiniband/rocm_ernic0/loopback
+
+The RDMA-level attribute is the primary control; writing to
+it automatically propagates to the Ethernet module. Writing
+directly to the Ethernet attribute only affects the Ethernet
+layer.
+
 End-to-End Workflow
 -------------------
 

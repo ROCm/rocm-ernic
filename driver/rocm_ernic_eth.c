@@ -554,6 +554,29 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
         return NETDEV_TX_OK;
     }
 
+    if (eth_dev->loopback_mode) {
+        struct sk_buff *lb_skb;
+        struct ethhdr *eth;
+
+        lb_skb = skb_copy(skb, GFP_ATOMIC);
+        if (!lb_skb) {
+            dev_kfree_skb_any(skb);
+            return NETDEV_TX_OK;
+        }
+
+        if (skb_headlen(lb_skb) >= ETH_HLEN) {
+            eth = eth_hdr(lb_skb);
+            ether_addr_copy(eth->h_dest, ndev->dev_addr);
+            ether_addr_copy(eth->h_source, ndev->dev_addr);
+        }
+
+        lb_skb->protocol = eth_type_trans(lb_skb, ndev);
+        lb_skb->pkt_type = PACKET_HOST;
+        netif_receive_skb(lb_skb);
+        dev_kfree_skb_any(skb);
+        return NETDEV_TX_OK;
+    }
+
     ring = &eth_dev->tx_ring;
     if (!ring->desc) {
         dev_kfree_skb_any(skb);
@@ -780,6 +803,73 @@ struct pci_dev *rocm_ernic_eth_get_pdev(struct rocm_ernic_eth_dev *eth_dev)
 }
 EXPORT_SYMBOL(rocm_ernic_eth_get_pdev);
 
+bool rocm_ernic_eth_get_loopback(struct pci_dev *pdev)
+{
+    struct rocm_ernic_eth_dev *eth_dev = rocm_ernic_eth_get_dev(pdev);
+
+    return eth_dev ? eth_dev->loopback_mode : false;
+}
+EXPORT_SYMBOL(rocm_ernic_eth_get_loopback);
+
+void rocm_ernic_eth_set_loopback(struct pci_dev *pdev, bool enable)
+{
+    struct rocm_ernic_eth_dev *eth_dev = rocm_ernic_eth_get_dev(pdev);
+
+    if (!eth_dev)
+        return;
+
+    if (eth_dev->loopback_mode != enable) {
+        eth_dev->loopback_mode = enable;
+        dev_info(&pdev->dev, "Ethernet loopback mode %s\n",
+                 enable ? "enabled" : "disabled");
+    }
+}
+EXPORT_SYMBOL(rocm_ernic_eth_set_loopback);
+
+static ssize_t loopback_show(struct device *device,
+                             struct device_attribute *attr, char *buf)
+{
+    struct pci_dev *pdev = to_pci_dev(device);
+    struct rocm_ernic_eth_dev *eth_dev = pci_get_drvdata(pdev);
+
+    if (!eth_dev)
+        return -ENODEV;
+
+    return sysfs_emit(buf, "%d\n", eth_dev->loopback_mode ? 1 : 0);
+}
+
+static ssize_t loopback_store(struct device *device,
+                              struct device_attribute *attr, const char *buf,
+                              size_t count)
+{
+    struct pci_dev *pdev = to_pci_dev(device);
+    bool enable;
+    int ret;
+
+    ret = kstrtobool(buf, &enable);
+    if (ret)
+        return ret;
+
+    rocm_ernic_eth_set_loopback(pdev, enable);
+
+    return count;
+}
+static DEVICE_ATTR_RW(loopback);
+
+static struct attribute *rocm_ernic_eth_pci_attrs[] = {
+    &dev_attr_loopback.attr,
+    NULL,
+};
+
+static const struct attribute_group rocm_ernic_eth_pci_attr_group = {
+    .attrs = rocm_ernic_eth_pci_attrs,
+};
+
+static const struct attribute_group *rocm_ernic_eth_pci_groups[] = {
+    &rocm_ernic_eth_pci_attr_group,
+    NULL,
+};
+
 static const struct pci_device_id rocm_ernic_eth_pci_table[] = {
     {
         PCI_DEVICE(PCI_VENDOR_ID_ROCM_ERNIC, PCI_DEVICE_ID_ROCM_ERNIC),
@@ -908,6 +998,7 @@ static struct pci_driver rocm_ernic_eth_driver = {
     .id_table = rocm_ernic_eth_pci_table,
     .probe = rocm_ernic_eth_pci_probe,
     .remove = rocm_ernic_eth_pci_remove,
+    .driver.dev_groups = rocm_ernic_eth_pci_groups,
 };
 
 static int __init rocm_ernic_eth_init(void)

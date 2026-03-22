@@ -130,10 +130,44 @@ static ssize_t board_id_show(struct device *device,
 }
 static DEVICE_ATTR_RO(board_id);
 
+static ssize_t loopback_show(struct device *device,
+                             struct device_attribute *attr, char *buf)
+{
+    struct ib_device *ibdev = container_of(device, struct ib_device, dev);
+    struct rocm_ernic_dev *dev = to_vdev(ibdev);
+
+    return sysfs_emit(buf, "%d\n", dev->loopback_mode ? 1 : 0);
+}
+
+static ssize_t loopback_store(struct device *device,
+                              struct device_attribute *attr, const char *buf,
+                              size_t count)
+{
+    struct ib_device *ibdev = container_of(device, struct ib_device, dev);
+    struct rocm_ernic_dev *dev = to_vdev(ibdev);
+    bool enable;
+    int ret;
+
+    ret = kstrtobool(buf, &enable);
+    if (ret)
+        return ret;
+
+    if (dev->loopback_mode != enable) {
+        dev->loopback_mode = enable;
+        rocm_ernic_eth_set_loopback(dev->pdev, enable);
+        dev_info(&dev->pdev->dev, "RDMA loopback mode %s\n",
+                 enable ? "enabled" : "disabled");
+    }
+
+    return count;
+}
+static DEVICE_ATTR_RW(loopback);
+
 static struct attribute *rocm_ernic_class_attributes[] = {
     &dev_attr_hw_rev.attr,
     &dev_attr_hca_type.attr,
     &dev_attr_board_id.attr,
+    &dev_attr_loopback.attr,
     NULL,
 };
 
@@ -744,7 +778,8 @@ static int rocm_ernic_add_gid_at_index(struct rocm_ernic_dev *dev,
 static int rocm_ernic_add_gid(const struct ib_gid_attr *attr, void **context)
 {
     struct rocm_ernic_dev *dev = to_vdev(attr->device);
-    bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
+    bool is_loopback = dev->loopback_mode ||
+                       (dev->netdev && (dev->netdev->flags & IFF_LOOPBACK));
     bool is_dummy =
         dev->netdev && (dev->netdev->priv_flags & IFF_NO_QUEUE) && !is_loopback;
     union ib_gid gid = attr->gid;
@@ -876,7 +911,8 @@ static int rocm_ernic_del_gid_at_index(struct rocm_ernic_dev *dev, int index)
 static int rocm_ernic_del_gid(const struct ib_gid_attr *attr, void **context)
 {
     struct rocm_ernic_dev *dev = to_vdev(attr->device);
-    bool is_loopback = dev->netdev && (dev->netdev->flags & IFF_LOOPBACK);
+    bool is_loopback = dev->loopback_mode ||
+                       (dev->netdev && (dev->netdev->flags & IFF_LOOPBACK));
 
     dev_info(&dev->pdev->dev, "del_gid called: index=%d netdev=%s%s\n",
              attr->index, dev->netdev ? dev->netdev->name : "none",

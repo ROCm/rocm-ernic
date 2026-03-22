@@ -59,6 +59,8 @@ struct rocm_ernic_eth_dev {
     struct rocm_ernic_eth_tx_ring tx_ring;
     /* RX descriptor ring */
     struct rocm_ernic_eth_rx_ring rx_ring;
+    /* Sysfs-controlled loopback: TX packets are reflected as RX */
+    bool loopback_mode;
     /* Private data for Ethernet driver */
     void *priv;
 };
@@ -69,5 +71,7 @@ struct net_device *rocm_ernic_eth_get_netdev(struct pci_dev *pdev);
 void __iomem *rocm_ernic_eth_get_regs(struct pci_dev *pdev);
 struct pci_dev *rocm_ernic_eth_get_pdev(struct rocm_ernic_eth_dev *eth_dev);
 void rocm_ernic_eth_handle_rx_interrupt(struct pci_dev *pdev);
+bool rocm_ernic_eth_get_loopback(struct pci_dev *pdev);
+void rocm_ernic_eth_set_loopback(struct pci_dev *pdev, bool enable);
 
 #endif /* __ROCM_ERNIC_ETH_H__ */
