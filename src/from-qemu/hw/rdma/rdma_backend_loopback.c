@@ -55,6 +55,8 @@ typedef struct {
     uint32_t pd_handle;
 } LoopbackMR;
 
+GHashTable *global_mrs_table = NULL;
+
 typedef struct {
     enum ibv_wc_status status;
     uint64_t wr_id;
@@ -470,6 +472,9 @@ out:
     return ret;
 }
 
+static void *loopback_translate_addr(PCIDevice *pci_dev, uint64_t guest_addr,
+                                     uint64_t len);
+
 /*
  * Helper: Copy data from source SGEs to a single remote address (RDMA
  * Write/Read) Returns number of bytes copied, or -1 on error
@@ -483,31 +488,30 @@ static int loopback_copy_to_remote_addr(
     uint32_t remote_offset = 0;
     uint32_t total_copied = 0;
     void *src_host = NULL, *dst_host = NULL;
-    uint64_t src_mapped_len = 0, dst_mapped_len = 0;
+    uint64_t src_mapped_len = 0;
+    uint64_t dst_mapped_len = 0;
     int ret = 0;
+    bool dst_is_mr = false, src_is_mr = false;
 
-    /* Map remote address */
+    /* Map remote address via MR or DMA */
     dst_mapped_len = total_len;
-    dst_host = rdma_pci_dma_map(pci_dev, remote_addr, dst_mapped_len);
+    dst_host = loopback_translate_addr(pci_dev, remote_addr, dst_mapped_len);
     if (!dst_host) {
-        rdma_error_report("Loopback: Failed to map remote addr=%#lx len=%u",
+        rdma_error_report("Loopback: Failed to map remote "
+                          "addr=%#lx len=%u",
                           (unsigned long)remote_addr, total_len);
         return -1;
     }
 
     while (src_idx < num_src_sge && remote_offset < total_len) {
-        /* Map source buffer if needed */
         if (!src_host || src_offset >= src_mapped_len) {
-            if (src_host) {
-                rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
-                src_host = NULL;
-            }
+            src_host = NULL;
             if (src_idx >= num_src_sge) {
                 break;
             }
             src_mapped_len = src_sge[src_idx].length;
-            src_host = rdma_pci_dma_map(pci_dev, src_sge[src_idx].addr,
-                                        src_mapped_len);
+            src_host = loopback_translate_addr(pci_dev, src_sge[src_idx].addr,
+                                               src_mapped_len);
             if (!src_host) {
                 rdma_error_report(
                     "Loopback: Failed to map source SGE[%u] addr=%#lx len=%u",
@@ -586,32 +590,25 @@ static int loopback_copy_from_remote_addr(
     uint64_t src_mapped_len = 0, dst_mapped_len = 0;
     int ret = 0;
 
-    /* Map remote address */
+    /* Map remote address via MR or DMA */
     src_mapped_len = total_len;
-    src_host = rdma_pci_dma_map(pci_dev, remote_addr, src_mapped_len);
+    src_host = loopback_translate_addr(pci_dev, remote_addr, src_mapped_len);
     if (!src_host) {
-        rdma_error_report("Loopback: Failed to map remote addr=%#lx len=%u",
+        rdma_error_report("Loopback: Failed to map remote "
+                          "addr=%#lx len=%u",
                           (unsigned long)remote_addr, total_len);
         return -1;
     }
 
     while (dst_idx < num_dst_sge && remote_offset < total_len) {
-        /* Map destination buffer if needed */
         if (!dst_host || dst_offset >= dst_mapped_len) {
-            if (dst_host) {
-                /* Sync writes before unmapping */
-                pci_dma_sync(pci_dev,
-                             (dma_addr_t)(uintptr_t)dst_sge[dst_idx - 1].addr,
-                             dst_mapped_len);
-                rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
-                dst_host = NULL;
-            }
+            dst_host = NULL;
             if (dst_idx >= num_dst_sge) {
                 break;
             }
             dst_mapped_len = dst_sge[dst_idx].length;
-            dst_host = rdma_pci_dma_map(pci_dev, dst_sge[dst_idx].addr,
-                                        dst_mapped_len);
+            dst_host = loopback_translate_addr(pci_dev, dst_sge[dst_idx].addr,
+                                               dst_mapped_len);
             if (!dst_host) {
                 rdma_error_report(
                     "Loopback: Failed to map dest SGE[%u] addr=%#lx len=%u",
@@ -869,11 +866,9 @@ static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
     LoopbackMR *lmr = g_new0(LoopbackMR, 1);
     uint32_t pd_handle = (uint32_t)(uintptr_t)pd->ibpd;
 
-    /* For now, use a simplified approach without backend_dev */
     static uint32_t mr_counter = 1;
-    static GHashTable *global_mrs = NULL;
-    if (!global_mrs) {
-        global_mrs =
+    if (!global_mrs_table) {
+        global_mrs_table =
             g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     }
 
@@ -882,20 +877,61 @@ static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
     lmr->length = length;
     lmr->guest_start = guest_start;
     lmr->access_flags = access;
-    lmr->lkey = lmr->handle;           /* Simple: lkey = handle */
-    lmr->rkey = lmr->handle + 0x10000; /* rkey = handle + offset */
+    lmr->lkey = lmr->handle;
+    lmr->rkey = lmr->handle + 0x10000;
     lmr->pd_handle = pd_handle;
 
-    g_hash_table_insert(global_mrs, GUINT_TO_POINTER(lmr->handle), lmr);
+    g_hash_table_insert(global_mrs_table, GUINT_TO_POINTER(lmr->handle), lmr);
 
     /* Store handle in mr structure */
     mr->ibpd = pd->ibpd;
     mr->ibmr = (struct ibv_mr *)(uintptr_t)lmr->handle;
 
-    rdma_info_report(
-        "Loopback: Created MR handle %u, lkey=0x%x, rkey=0x%x, len=%zu",
-        lmr->handle, lmr->lkey, lmr->rkey, length);
+    rdma_info_report("Loopback: Created MR handle %u, lkey=0x%x, rkey=0x%x, "
+                     "len=%zu, virt=%p, guest_start=0x%lx",
+                     lmr->handle, lmr->lkey, lmr->rkey, length, addr,
+                     (unsigned long)guest_start);
     return 0;
+}
+
+/*
+ * Translate a guest virtual address to a host
+ * virtual address using the MR mapping. Look up
+ * the MR by lkey, compute the offset from
+ * guest_start, and return virt + offset.
+ * Falls back to rdma_pci_dma_map if no MR found.
+ */
+/*
+ * Iterate all MRs to find one containing the
+ * guest virtual address. Returns host_virt + offset.
+ */
+static void *loopback_translate_addr(PCIDevice *pci_dev, uint64_t guest_addr,
+                                     uint64_t len)
+{
+    if (!global_mrs_table)
+        goto fallback;
+
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, global_mrs_table);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        LoopbackMR *lmr = (LoopbackMR *)value;
+        if (!lmr->virt)
+            continue;
+        uint64_t start = lmr->guest_start;
+        uint64_t end = start + lmr->length;
+        if (guest_addr >= start && guest_addr + len <= end) {
+            uint64_t off = guest_addr - start;
+            rdma_info_report("Loopback: translate 0x%lx -> "
+                             "MR %u virt+0x%lx",
+                             (unsigned long)guest_addr, lmr->handle,
+                             (unsigned long)off);
+            return (uint8_t *)lmr->virt + off;
+        }
+    }
+
+fallback:
+    return rdma_pci_dma_map(pci_dev, guest_addr, len);
 }
 
 static void loopback_destroy_mr(RdmaBackendMR *mr)
