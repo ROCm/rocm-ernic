@@ -42,8 +42,12 @@ jobs:
       
       - name: Clone and build libvfio-user
         run: |
+          # Pin to 082925c6 (Fix default "make all", Mar 16 2026)
+          # to avoid API break in f3742ed9 (#835) which added
+          # max_regions param to vfu_setup_device_dma().
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
+          git checkout 082925c6
           meson setup build --prefix=/usr -Dwarning_level=0
           ninja -C build
           sudo ninja -C build install
