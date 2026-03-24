@@ -8,9 +8,11 @@ on:
       - '**.h'
       - '**.sh'
       - '**.cmake'
+      - '**.py'
       - '**/CMakeLists.txt'
       - '.clang-format'
       - '.cmake-format.py'
+      - 'service/**'
       - '.github/workflows/lint.yml'
   workflow_dispatch:
 
@@ -70,9 +72,29 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          find . -name '*.sh' -type f -not -path './.git/*' | \
+          SCRIPTS=$(find . -name '*.sh' -type f \
+            -not -path './.git/*')
+          SCRIPTS+=" service/rocm-ernic-launcher"
+          SCRIPTS+=" service/rocm-ernic-driver-pack"
+          echo "${SCRIPTS}" | \
             xargs shellcheck \
               -e SC2086,SC2154,SC2024,SC2034,SC2164,SC2181,SC2317
+
+  lint-python:
+    name: python-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Lint Python files
+        run: |
+          flake8 service/ernicctl \
+            --max-line-length=80 \
+            --extend-ignore=E501
 
   lint-cmake:
     name: cmake-lint

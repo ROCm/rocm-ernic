@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'service/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/build-test.yml'

@@ -1,0 +1,387 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# rocm-ernic-launcher
+#
+# Manages rocm-ernic server instances for the systemd
+# service.  Reads configuration from environment
+# variables (set by EnvironmentFile= or exported by
+# the caller).
+#
+# Usage:
+#   rocm-ernic-launcher            # start all
+#   rocm-ernic-launcher --stop     # stop all
+#   rocm-ernic-launcher --reload   # reconcile
+#   rocm-ernic-launcher --add-instance
+#   rocm-ernic-launcher --remove-instance N
+#
+# Install: /usr/local/libexec/rocm-ernic/
+
+set -euo pipefail
+
+# ── Defaults (overridden by env file) ─────────────
+
+ERNIC_BIN="${ERNIC_BIN:-/usr/local/bin/rocm-ernic}"
+ERNIC_RUN_DIR="${ERNIC_RUN_DIR:-/run/rocm-ernic}"
+ERNIC_LOG_DIR="${ERNIC_LOG_DIR:-/var/log/rocm-ernic}"
+ERNIC_INSTANCES="${ERNIC_INSTANCES:-4}"
+ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6320}"
+ERNIC_MANAGER_IP="${ERNIC_MANAGER_IP:-127.0.0.1}"
+ERNIC_VERBOSE="${ERNIC_VERBOSE:-false}"
+
+MANIFEST="${ERNIC_RUN_DIR}/instances.json"
+
+# ── Helpers ───────────────────────────────────────
+
+log_info()  { echo "rocm-ernic-launcher: $*"; }
+log_error() { echo "rocm-ernic-launcher: ERROR: $*" >&2; }
+
+gen_mac_deterministic() {
+    local idx="$1"
+    local seed
+    seed="$(cat /etc/machine-id 2>/dev/null \
+        || echo "fallback-machine-id")"
+    local raw
+    raw="$(printf '%s-%d' "${seed}" "${idx}" \
+        | md5sum | cut -c1-12)"
+    local b1 b2 b3 b4 b5 b6
+    b1="${raw:0:2}"
+    b2="${raw:2:2}"
+    b3="${raw:4:2}"
+    b4="${raw:6:2}"
+    b5="${raw:8:2}"
+    b6="${raw:10:2}"
+    # Clear multicast bit, set locally-administered bit
+    b1=$(printf '%02x' $(( (0x${b1} & 0xFE) | 0x02 )))
+    echo "${b1}:${b2}:${b3}:${b4}:${b5}:${b6}"
+}
+
+get_mac_for_instance() {
+    local idx="$1"
+    local var="ERNIC_MAC_${idx}"
+    local val="${!var:-}"
+    if [ -n "${val}" ]; then
+        echo "${val}"
+    else
+        gen_mac_deterministic "${idx}"
+    fi
+}
+
+wait_for_socket() {
+    local path="$1"
+    local timeout="${2:-15}"
+    local i
+    for (( i=0; i < timeout * 2; i++ )); do
+        if [ -S "${path}" ]; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    log_error "Socket ${path} not created" \
+        "after ${timeout}s"
+    return 1
+}
+
+pid_alive() {
+    kill -0 "$1" 2>/dev/null
+}
+
+# ── Manifest I/O ──────────────────────────────────
+# Uses Python one-liners for JSON manipulation so we
+# have no dependency beyond python3 (always present
+# on Ubuntu).
+
+manifest_init() {
+    echo '{"instances":[]}' > "${MANIFEST}"
+}
+
+manifest_add_instance() {
+    local id="$1" role="$2" pid="$3"
+    local mac="$4" sock="$5"
+    python3 -c "
+import json, sys
+m = json.load(open('${MANIFEST}'))
+m['instances'].append({
+    'id': ${id},
+    'role': '${role}',
+    'pid': ${pid},
+    'mac': '${mac}',
+    'socket': '${sock}',
+    'vm': None
+})
+json.dump(m, open('${MANIFEST}', 'w'), indent=2)
+"
+}
+
+manifest_remove_instance() {
+    local id="$1"
+    python3 -c "
+import json
+m = json.load(open('${MANIFEST}'))
+m['instances'] = [
+    i for i in m['instances'] if i['id'] != ${id}
+]
+json.dump(m, open('${MANIFEST}', 'w'), indent=2)
+"
+}
+
+manifest_get_pids() {
+    python3 -c "
+import json
+m = json.load(open('${MANIFEST}'))
+for i in m['instances']:
+    print(i['pid'])
+"
+}
+
+manifest_next_id() {
+    python3 -c "
+import json
+m = json.load(open('${MANIFEST}'))
+ids = [i['id'] for i in m['instances']]
+print(max(ids) + 1 if ids else 1)
+"
+}
+
+manifest_instance_pid() {
+    local id="$1"
+    python3 -c "
+import json
+m = json.load(open('${MANIFEST}'))
+for i in m['instances']:
+    if i['id'] == ${id}:
+        print(i['pid'])
+        break
+"
+}
+
+# ── Start a single instance ──────────────────────
+
+start_instance() {
+    local id="$1" role="$2" mac="$3"
+    local sock="${ERNIC_RUN_DIR}/${id}.sock"
+    local stats="${ERNIC_RUN_DIR}/${id}.stats"
+    local logfile="${ERNIC_LOG_DIR}/${id}.log"
+
+    local verbose_flag=""
+    if [ "${ERNIC_VERBOSE}" = "true" ]; then
+        verbose_flag="--verbose"
+    fi
+
+    local backend
+    if [ "${role}" = "manager" ]; then
+        backend="tcp:manager:listen:${ERNIC_TCP_PORT}"
+    else
+        backend="tcp:worker:${ERNIC_MANAGER_IP}:${ERNIC_TCP_PORT}"
+    fi
+
+    rm -f "${sock}"
+
+    ${ERNIC_BIN} \
+        --socket "${sock}" \
+        --stats-file "${stats}" \
+        --mac "${mac}" \
+        --backend "${backend}" \
+        --log-file "${logfile}" \
+        ${verbose_flag} &
+    local pid=$!
+
+    if ! wait_for_socket "${sock}" 15; then
+        log_error "Instance ${id} (${role})" \
+            "failed to create socket"
+        kill "${pid}" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! pid_alive "${pid}"; then
+        log_error "Instance ${id} (${role})" \
+            "exited during startup"
+        return 1
+    fi
+
+    chmod 666 "${sock}" 2>/dev/null || true
+    manifest_add_instance \
+        "${id}" "${role}" "${pid}" "${mac}" "${sock}"
+    log_info "Started instance ${id}" \
+        "(${role}, PID ${pid}, MAC ${mac})"
+}
+
+# ── Actions ───────────────────────────────────────
+
+do_start() {
+    if [ -f "${MANIFEST}" ]; then
+        log_error "Manifest already exists;" \
+            "service may be running."
+        log_error "Use --stop first or" \
+            "--reload to reconcile."
+        exit 1
+    fi
+
+    mkdir -p "${ERNIC_RUN_DIR}" "${ERNIC_LOG_DIR}"
+    manifest_init
+
+    for (( i=1; i <= ERNIC_INSTANCES; i++ )); do
+        local role="worker"
+        if [ "${i}" -eq 1 ]; then
+            role="manager"
+        fi
+        local mac
+        mac="$(get_mac_for_instance "${i}")"
+        start_instance "${i}" "${role}" "${mac}"
+        if [ "${i}" -eq 1 ]; then
+            sleep 0.5
+        else
+            sleep 0.1
+        fi
+    done
+
+    log_info "All ${ERNIC_INSTANCES} instances started."
+}
+
+do_stop() {
+    if [ ! -f "${MANIFEST}" ]; then
+        log_info "No manifest found; nothing to stop."
+        return 0
+    fi
+
+    local pids
+    pids="$(manifest_get_pids)"
+
+    for pid in ${pids}; do
+        if pid_alive "${pid}"; then
+            log_info "Sending SIGTERM to PID ${pid}"
+            kill "${pid}" 2>/dev/null || true
+        fi
+    done
+
+    sleep 2
+
+    for pid in ${pids}; do
+        if pid_alive "${pid}"; then
+            log_info "Sending SIGKILL to PID ${pid}"
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
+    done
+
+    rm -f "${MANIFEST}"
+    rm -f "${ERNIC_RUN_DIR}"/*.sock
+    log_info "All instances stopped."
+}
+
+do_reload() {
+    if [ ! -f "${MANIFEST}" ]; then
+        log_info "No manifest; performing full start."
+        do_start
+        return
+    fi
+
+    local current_count
+    current_count="$(python3 -c "
+import json
+m = json.load(open('${MANIFEST}'))
+print(len(m['instances']))
+")"
+
+    if [ "${current_count}" -lt "${ERNIC_INSTANCES}" ]; then
+        local diff=$(( ERNIC_INSTANCES - current_count ))
+        log_info "Adding ${diff} instance(s)" \
+            "to reach ${ERNIC_INSTANCES}."
+        for (( n=0; n < diff; n++ )); do
+            do_add_instance
+        done
+    elif [ "${current_count}" -gt "${ERNIC_INSTANCES}" ]; then
+        local diff=$(( current_count - ERNIC_INSTANCES ))
+        log_info "Removing ${diff} instance(s)" \
+            "to reach ${ERNIC_INSTANCES}."
+        for (( n=0; n < diff; n++ )); do
+            local last_id
+            last_id="$(python3 -c "
+import json
+m = json.load(open('${MANIFEST}'))
+ids = sorted(i['id'] for i in m['instances'])
+print(ids[-1])
+")"
+            do_remove_instance "${last_id}"
+        done
+    else
+        log_info "Instance count unchanged" \
+            "(${current_count})."
+    fi
+}
+
+do_add_instance() {
+    if [ ! -f "${MANIFEST}" ]; then
+        log_error "No manifest; start service first."
+        exit 1
+    fi
+
+    local new_id
+    new_id="$(manifest_next_id)"
+    local mac
+    mac="$(get_mac_for_instance "${new_id}")"
+
+    start_instance "${new_id}" "worker" "${mac}"
+    log_info "Added instance ${new_id}."
+    echo "${new_id}"
+}
+
+do_remove_instance() {
+    local id="$1"
+    if [ ! -f "${MANIFEST}" ]; then
+        log_error "No manifest; nothing to remove."
+        exit 1
+    fi
+
+    local pid
+    pid="$(manifest_instance_pid "${id}")"
+    if [ -z "${pid}" ]; then
+        log_error "Instance ${id} not found."
+        exit 1
+    fi
+
+    if pid_alive "${pid}"; then
+        log_info "Stopping instance ${id}" \
+            "(PID ${pid})..."
+        kill "${pid}" 2>/dev/null || true
+        sleep 1
+        if pid_alive "${pid}"; then
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
+    fi
+
+    rm -f "${ERNIC_RUN_DIR}/${id}.sock"
+    manifest_remove_instance "${id}"
+    log_info "Removed instance ${id}."
+}
+
+# ── Main ──────────────────────────────────────────
+
+case "${1:-}" in
+    --stop)
+        do_stop
+        ;;
+    --reload)
+        do_reload
+        ;;
+    --add-instance)
+        do_add_instance
+        ;;
+    --remove-instance)
+        if [ -z "${2:-}" ]; then
+            log_error "Usage: $0 --remove-instance N"
+            exit 1
+        fi
+        do_remove_instance "$2"
+        ;;
+    ""|--start)
+        do_start
+        ;;
+    *)
+        log_error "Unknown action: $1"
+        echo "Usage: $0 [--stop|--reload" \
+            "|--add-instance|--remove-instance N]"
+        exit 1
+        ;;
+esac

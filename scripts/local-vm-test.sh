@@ -164,10 +164,13 @@ log_info "Starting VM with vfio-user device (background)..."
 
 cd "$QEMU_MINIMAL"
 
+RUN_VM="${QEMU_MINIMAL}/qemu/run-vm"
+
 # Set environment for run-vm
 export QEMU_PATH=${QEMU_PATH}
 export VM_NAME=${VM_NAME}
-export VFIO_USER_SOCKET=${SOCKET_PATH}
+export VFIO_USERDEV=${SOCKET_PATH}
+export QMP_SOCKET="true"
 export SSH_PORT=2222
 export KVM=enable
 export VCPUS=4
@@ -179,15 +182,14 @@ log_info "  QEMU: $QEMU_PATH"
 log_info "  vfio-user socket: $SOCKET_PATH"
 log_info "  SSH port: 2222"
 
-# Check if run-vm script exists
-if [ ! -f "${PROJECT_ROOT}/scripts/run-vm-vfio-user.sh" ]; then
-    log_error "run-vm-vfio-user.sh not found in scripts/"
+if [ ! -f "${RUN_VM}" ]; then
+    log_error "qemu-minimal run-vm not found: ${RUN_VM}"
     exit 1
 fi
 
 # Start VM in background
 log_info "Launching VM..."
-${PROJECT_ROOT}/scripts/run-vm-vfio-user.sh > /tmp/vm-output.log 2>&1 &
+${RUN_VM} > /tmp/vm-output.log 2>&1 &
 VM_PID=$!
 log_info "VM started (PID: $VM_PID)"
 

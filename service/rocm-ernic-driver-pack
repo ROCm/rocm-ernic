@@ -1,0 +1,84 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# rocm-ernic-driver-pack
+#
+# Builds a tarball containing everything a VM needs to
+# compile and load the rocm-ernic kernel driver:
+#   - driver source (*.c, *.h, Makefile, dkms.conf)
+#   - ABI / UAPI headers
+#   - DKMS setup script
+#   - vm-driver-install.sh (self-contained installer)
+#
+# The tarball is placed at $ERNIC_DRIVER_TARBALL
+# (default /tmp/rocm-ernic-driver.tar.gz).
+#
+# Install: /usr/local/libexec/rocm-ernic/
+
+set -euo pipefail
+
+ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-/usr/share/rocm-ernic/driver}"
+ERNIC_DRIVER_TARBALL="${ERNIC_DRIVER_TARBALL:-/tmp/rocm-ernic-driver.tar.gz}"
+
+STAGING="/tmp/rocm-ernic-driver-staging"
+DEST="${STAGING}/rocm-ernic-driver"
+
+log_info() { echo "driver-pack: $*"; }
+log_error() { echo "driver-pack: ERROR: $*" >&2; }
+
+if [ ! -d "${ERNIC_DRIVER_SOURCE}" ]; then
+    log_error "Driver source not found:" \
+        "${ERNIC_DRIVER_SOURCE}"
+    exit 1
+fi
+
+rm -rf "${STAGING}"
+mkdir -p "${DEST}"
+
+log_info "Collecting driver sources from" \
+    "${ERNIC_DRIVER_SOURCE}..."
+
+for ext in c h; do
+    for f in "${ERNIC_DRIVER_SOURCE}"/*."${ext}"; do
+        [ -f "${f}" ] && cp "${f}" "${DEST}/"
+    done
+done
+
+for name in Makefile dkms.conf Kconfig; do
+    if [ -f "${ERNIC_DRIVER_SOURCE}/${name}" ]; then
+        cp "${ERNIC_DRIVER_SOURCE}/${name}" "${DEST}/"
+    fi
+done
+
+if [ -f "${ERNIC_DRIVER_SOURCE}/setup-rocm-ernic-dkms.sh" ]; then
+    cp "${ERNIC_DRIVER_SOURCE}/setup-rocm-ernic-dkms.sh" \
+        "${DEST}/"
+    chmod +x "${DEST}/setup-rocm-ernic-dkms.sh"
+fi
+
+# Generate the in-VM installer script from the
+# installed template.
+TEMPLATE="/usr/local/share/rocm-ernic/vm-driver-install.sh.in"
+if [ -f "${TEMPLATE}" ]; then
+    cp "${TEMPLATE}" "${DEST}/vm-driver-install.sh"
+    chmod +x "${DEST}/vm-driver-install.sh"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if [ -f "${SCRIPT_DIR}/vm-driver-install.sh.in" ]; then
+        cp "${SCRIPT_DIR}/vm-driver-install.sh.in" \
+            "${DEST}/vm-driver-install.sh"
+        chmod +x "${DEST}/vm-driver-install.sh"
+    fi
+fi
+
+log_info "Creating tarball ${ERNIC_DRIVER_TARBALL}..."
+tar czf "${ERNIC_DRIVER_TARBALL}" \
+    -C "${STAGING}" rocm-ernic-driver
+
+rm -rf "${STAGING}"
+
+log_info "Driver tarball ready:" \
+    "${ERNIC_DRIVER_TARBALL}"
+ls -lh "${ERNIC_DRIVER_TARBALL}"

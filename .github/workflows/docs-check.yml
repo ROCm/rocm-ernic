@@ -9,6 +9,7 @@ on:
       - 'docs/**'
       - 'src/**/*.h'
       - 'driver/**/*.h'
+      - 'service/**'
       - 'README.md'
       - 'requirements.txt'
       - '.github/workflows/docs-check.yml'
