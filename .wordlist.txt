@@ -194,6 +194,7 @@ enum
 env
 ernic
 ernicX
+ernicctl
 eth
 ethdev
 eventfd
@@ -219,6 +220,7 @@ hardcoded
 hardcodes
 hca
 hostname
+hotplug
 https
 hw
 ib
@@ -252,6 +254,7 @@ len
 libglib
 libibverbs
 librdmacm
+libexec
 libvfio
 lifecycle
 linux
@@ -356,14 +359,19 @@ str
 strstr
 struct
 structs
+subcommand
+subcommands
 subnet
 sudo
+systemctl
+systemd
 symlink
 symvers
 sys
 sysfs
 sz
 tbl
+tarball
 tcp
 toctree
 txt

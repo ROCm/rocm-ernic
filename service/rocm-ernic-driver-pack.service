@@ -1,0 +1,22 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Oneshot service that builds the rocm-ernic driver
+# tarball for distribution to VMs.
+#
+# Install: /usr/lib/systemd/system/rocm-ernic-driver-pack.service
+
+[Unit]
+Description=Build rocm-ernic driver tarball for VMs
+After=local-fs.target
+
+[Service]
+Type=oneshot
+
+EnvironmentFile=/etc/rocm-ernic/rocm-ernic.env
+
+ExecStart=/usr/local/libexec/rocm-ernic/rocm-ernic-driver-pack
+
+[Install]
+WantedBy=rocm-ernic.service

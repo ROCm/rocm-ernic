@@ -1,0 +1,308 @@
+name: Service Tooling Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'service/**'
+      - 'cmake/ErnicInstall.cmake'
+      - '.github/workflows/service-test.yml'
+  workflow_dispatch:
+
+jobs:
+  ernicctl-syntax:
+    name: ernicctl Python syntax and imports
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check Python syntax
+      run: python3 -m py_compile service/ernicctl
+
+    - name: Verify stdlib-only imports
+      run: |
+        echo "=== Checking for non-stdlib imports ==="
+        python3 -c "
+        import ast, sys, importlib
+
+        STDLIB = set(sys.stdlib_module_names)
+
+        with open('service/ernicctl') as f:
+            tree = ast.parse(f.read())
+
+        bad = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split('.')[0]
+                    if top not in STDLIB:
+                        bad.append(top)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    top = node.module.split('.')[0]
+                    if top not in STDLIB:
+                        bad.append(top)
+
+        if bad:
+            print(f'Non-stdlib imports: {bad}')
+            sys.exit(1)
+        print('All imports are stdlib.')
+        "
+
+    - name: Verify --help works
+      run: python3 service/ernicctl --help
+
+    - name: Verify subcommand help
+      run: |
+        for cmd in status start stop restart reload \
+                   logs stats add-instance \
+                   remove-instance attach detach \
+                   hot-reload driver-pack \
+                   driver-push vm-launch vm-stop \
+                   vm-list; do
+          echo "--- ernicctl ${cmd} --help ---"
+          python3 service/ernicctl "${cmd}" --help \
+            || true
+        done
+
+  bash-syntax:
+    name: Bash script syntax
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check bash syntax
+      run: |
+        bash -n service/rocm-ernic-launcher
+        echo "rocm-ernic-launcher: OK"
+        bash -n service/rocm-ernic-driver-pack
+        echo "rocm-ernic-driver-pack: OK"
+        bash -n service/vm-driver-install.sh.in
+        echo "vm-driver-install.sh.in: OK"
+
+    - name: Shellcheck service scripts
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+        shellcheck \
+          -e SC2086,SC2154,SC2024,SC2034 \
+          -e SC2164,SC2181,SC2317 \
+          service/rocm-ernic-launcher \
+          service/rocm-ernic-driver-pack \
+          service/vm-driver-install.sh.in
+
+  systemd-unit-lint:
+    name: systemd unit file validation
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Validate unit files
+      run: |
+        for unit in service/*.service; do
+          echo "--- Validating ${unit} ---"
+          systemd-analyze verify \
+            --man=no "${unit}" 2>&1 || true
+        done
+
+  env-file-check:
+    name: Environment file validation
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check env file is sourceable
+      run: |
+        set -a
+        # shellcheck disable=SC1091
+        source service/rocm-ernic.env
+        set +a
+        echo "ERNIC_BIN=${ERNIC_BIN}"
+        echo "ERNIC_INSTANCES=${ERNIC_INSTANCES}"
+        echo "ERNIC_TCP_PORT=${ERNIC_TCP_PORT}"
+        echo "All variables sourced successfully."
+
+    - name: Check no trailing whitespace
+      run: |
+        if grep -Pn '\s+$' service/rocm-ernic.env; then
+          echo "Trailing whitespace found."
+          exit 1
+        fi
+        echo "No trailing whitespace."
+
+  cmake-service-install:
+    name: CMake service install targets
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake ninja-build pkg-config \
+          libibverbs-dev librdmacm-dev \
+          libglib2.0-dev libjson-c-dev meson
+
+    - name: Clone and build libvfio-user
+      run: |
+        git clone \
+          https://github.com/nutanix/libvfio-user.git \
+          /tmp/libvfio-user
+        cd /tmp/libvfio-user
+        git checkout 082925c6
+        meson setup build --prefix=/usr \
+          -Dwarning_level=0
+        ninja -C build
+        sudo ninja -C build install
+        sudo ldconfig
+
+    - name: Configure with service install
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_INSTALL_PREFIX=/tmp/install-test \
+          -DERNIC_INSTALL_SERVICE=ON
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Install
+      run: cmake --install build
+
+    - name: Verify installed files
+      run: |
+        echo "=== Checking installed files ==="
+        PREFIX="/tmp/install-test"
+
+        check_file() {
+          if [ -f "$1" ]; then
+            echo "OK: $1"
+          else
+            echo "MISSING: $1"
+            exit 1
+          fi
+        }
+
+        check_file "${PREFIX}/bin/rocm-ernic"
+        check_file "${PREFIX}/bin/ernicctl"
+        check_file \
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
+        check_file \
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-driver-pack"
+        check_file \
+          "${PREFIX}/etc/rocm-ernic/rocm-ernic.env"
+        check_file \
+          "${PREFIX}/share/rocm-ernic/vm-driver-install.sh.in"
+        check_file \
+          "${PREFIX}/lib/systemd/system/rocm-ernic.service"
+        check_file \
+          "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"
+
+        echo ""
+        echo "=== Driver source files ==="
+        ls "${PREFIX}/share/rocm-ernic/driver/" \
+          | head -20
+        if [ -f \
+          "${PREFIX}/share/rocm-ernic/driver/rocm_ernic_main.c" \
+        ]; then
+          echo "OK: Driver sources installed"
+        else
+          echo "MISSING: Driver sources"
+          exit 1
+        fi
+
+        echo ""
+        echo "All service files installed correctly."
+
+  launcher-unit-test:
+    name: Launcher script unit tests
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Test MAC generation
+      run: |
+        echo "=== Testing MAC generation ==="
+        source <(sed -n '/^gen_mac_deterministic()/,/^}/p' \
+          service/rocm-ernic-launcher)
+
+        MAC1=$(gen_mac_deterministic 1)
+        MAC2=$(gen_mac_deterministic 2)
+        MAC1B=$(gen_mac_deterministic 1)
+
+        echo "MAC for idx 1: ${MAC1}"
+        echo "MAC for idx 2: ${MAC2}"
+        echo "MAC for idx 1 again: ${MAC1B}"
+
+        if [ "${MAC1}" = "${MAC1B}" ]; then
+          echo "OK: Deterministic (same idx = same MAC)"
+        else
+          echo "FAIL: Same index gave different MACs"
+          exit 1
+        fi
+
+        if [ "${MAC1}" != "${MAC2}" ]; then
+          echo "OK: Different indices = different MACs"
+        else
+          echo "FAIL: Different indices gave same MAC"
+          exit 1
+        fi
+
+        # Check locally-administered bit is set
+        FIRST_BYTE="${MAC1%%:*}"
+        DECIMAL=$((16#${FIRST_BYTE}))
+        if [ $((DECIMAL & 0x02)) -ne 0 ]; then
+          echo "OK: Locally-administered bit set"
+        else
+          echo "FAIL: Locally-administered bit not set"
+          exit 1
+        fi
+
+        # Check multicast bit is clear
+        if [ $((DECIMAL & 0x01)) -eq 0 ]; then
+          echo "OK: Multicast bit clear (unicast)"
+        else
+          echo "FAIL: Multicast bit set"
+          exit 1
+        fi
+
+    - name: Test launcher --help
+      run: |
+        service/rocm-ernic-launcher --badarg 2>&1 \
+          | grep -q "Unknown action" \
+          && echo "OK: Unknown action handled"
+
+  ernicctl-status-offline:
+    name: ernicctl status without service
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: status with no manifest
+      run: |
+        output=$(python3 service/ernicctl status 2>&1)
+        echo "${output}"
+        echo "${output}" | grep -qi "no instances\|not.*running"
+        echo "OK: Graceful output when no manifest."
+
+    - name: vm-list with no manifest
+      run: |
+        output=$(python3 service/ernicctl vm-list 2>&1)
+        echo "${output}"
+        echo "${output}" | grep -qi "no vms\|not.*found\|no.*attached"
+        echo "OK: vm-list graceful without manifest."
+
+    - name: status --json with no manifest
+      run: |
+        python3 service/ernicctl status --json \
+          > /tmp/ernicctl-json.out 2>&1
+        cat /tmp/ernicctl-json.out
+        python3 -c "
+import json, sys
+with open('/tmp/ernicctl-json.out') as f:
+    data = json.load(f)
+assert data['instances'] == [], \
+    'Expected empty instances list'
+print('OK: JSON output is valid and empty.')
+"

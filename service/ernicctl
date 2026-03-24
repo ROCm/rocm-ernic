@@ -1,0 +1,989 @@
+#!/usr/bin/env python3
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# ernicctl -- admin CLI for the rocm-ernic systemd service.
+#
+# Manages rocm-ernic server instances, VM lifecycle,
+# hotplug, and driver distribution.  Uses only the
+# Python 3 standard library (no pip dependencies).
+# Requires socat on the host for QMP communication.
+#
+# Install: /usr/local/bin/ernicctl
+
+import argparse
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+# ── Defaults (overridden by env) ──────────────────
+
+ENV_FILE = "/etc/rocm-ernic/rocm-ernic.env"
+
+DEFAULTS = {
+    "ERNIC_BIN": "/usr/local/bin/rocm-ernic",
+    "ERNIC_RUN_DIR": "/run/rocm-ernic",
+    "ERNIC_LOG_DIR": "/var/log/rocm-ernic",
+    "ERNIC_INSTANCES": "4",
+    "ERNIC_TCP_PORT": "6320",
+    "ERNIC_MANAGER_IP": "127.0.0.1",
+    "ERNIC_VERBOSE": "false",
+    "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/driver",
+    "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
+    "ERNIC_QEMU_MINIMAL": os.path.expanduser(
+        "~/Projects/qemu-minimal"
+    ),
+    "ERNIC_QEMU_PATH": "/opt/qemu-v10.1.2/bin/",
+    "ERNIC_VM_IMAGE_DIR": "",
+    "ERNIC_VM_NAME": "stebates-test-vm",
+    "ERNIC_VM_VCPUS": "4",
+    "ERNIC_VM_MEM": "8192",
+    "ERNIC_VM_SSH_USER": "ubuntu",
+    "ERNIC_VM_SSH_BASE_PORT": "2222",
+}
+
+
+def load_env():
+    """Merge defaults, env file, and process env."""
+    cfg = dict(DEFAULTS)
+    if os.path.isfile(ENV_FILE):
+        with open(ENV_FILE) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                cfg[key.strip()] = val.strip()
+    for key in cfg:
+        if key in os.environ:
+            cfg[key] = os.environ[key]
+    if not cfg["ERNIC_VM_IMAGE_DIR"]:
+        cfg["ERNIC_VM_IMAGE_DIR"] = os.path.join(
+            cfg["ERNIC_QEMU_MINIMAL"], "images"
+        )
+    return cfg
+
+
+CFG = load_env()
+
+RUN_DIR = CFG["ERNIC_RUN_DIR"]
+LOG_DIR = CFG["ERNIC_LOG_DIR"]
+MANIFEST = os.path.join(RUN_DIR, "instances.json")
+LAUNCHER = (
+    "/usr/local/libexec/rocm-ernic/rocm-ernic-launcher"
+)
+
+
+# ── Manifest helpers ─────────────────────────────
+
+def read_manifest():
+    if not os.path.isfile(MANIFEST):
+        return {"instances": []}
+    with open(MANIFEST) as fh:
+        return json.load(fh)
+
+
+def write_manifest(data):
+    with open(MANIFEST, "w") as fh:
+        json.dump(data, fh, indent=2)
+
+
+def find_instance(manifest, inst_id):
+    for inst in manifest["instances"]:
+        if inst["id"] == inst_id:
+            return inst
+    return None
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+# ── QMP helpers ──────────────────────────────────
+
+def qmp_send(qmp_socket, command):
+    """Send a QMP command via socat and return the
+    raw response string."""
+    payload = (
+        '{"execute":"qmp_capabilities"}\n'
+        + command
+        + "\n"
+    )
+    try:
+        result = subprocess.run(
+            ["socat", "-", f"UNIX-CONNECT:{qmp_socket}"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout
+    except FileNotFoundError:
+        print(
+            "ERROR: socat is required for QMP."
+            "  Install: sudo apt install socat",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print(
+            f"ERROR: QMP timeout on {qmp_socket}",
+            file=sys.stderr,
+        )
+        return ""
+
+
+def qmp_device_add(qmp_socket, device_id, root_port,
+                   vfio_socket):
+    cmd = json.dumps({
+        "execute": "device_add",
+        "arguments": {
+            "driver": "vfio-user-pci",
+            "id": device_id,
+            "bus": root_port,
+            "socket": {
+                "path": vfio_socket,
+                "type": "unix",
+            },
+        },
+    })
+    resp = qmp_send(qmp_socket, cmd)
+    if '"error"' in resp:
+        print(f"ERROR: device_add failed: {resp}",
+              file=sys.stderr)
+        return False
+    return True
+
+
+def qmp_device_del(qmp_socket, device_id):
+    cmd = json.dumps({
+        "execute": "device_del",
+        "arguments": {"id": device_id},
+    })
+    resp = qmp_send(qmp_socket, cmd)
+    if '"error"' in resp:
+        print(f"WARNING: device_del: {resp}",
+              file=sys.stderr)
+    return True
+
+
+def qmp_quit(qmp_socket):
+    cmd = '{"execute":"quit"}'
+    qmp_send(qmp_socket, cmd)
+
+
+# ── SSH helper ───────────────────────────────────
+
+def guest_ssh(ssh_user, ssh_port, command):
+    return subprocess.run(
+        [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=5",
+            "-p", str(ssh_port),
+            f"{ssh_user}@localhost",
+            command,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+# ── Subcommands: service lifecycle ───────────────
+
+def cmd_status(args):
+    m = read_manifest()
+
+    if args.json:
+        for inst in m["instances"]:
+            inst["state"] = (
+                "running" if pid_alive(inst["pid"])
+                else "dead"
+            )
+        print(json.dumps(m, indent=2))
+        return
+
+    if not m["instances"]:
+        print("No instances found.  Service may not"
+              " be running.")
+        return
+
+    fmt = (
+        "{:<4} {:<9} {:<7} {:<19}"
+        " {:<30} {:<12} {}"
+    )
+    print(fmt.format(
+        "ID", "ROLE", "PID", "MAC",
+        "SOCKET", "VM", "STATE",
+    ))
+    for inst in m["instances"]:
+        alive = pid_alive(inst["pid"])
+        state = "running" if alive else "dead"
+        vm_info = "-"
+        if inst.get("vm") and inst["vm"]:
+            vm = inst["vm"]
+            if vm.get("attached"):
+                vm_info = f"qmp:{vm.get('ssh_port', '?')}"
+            else:
+                vm_info = "detached"
+        print(fmt.format(
+            inst["id"],
+            inst["role"],
+            inst["pid"] if alive else 0,
+            inst["mac"],
+            inst["socket"],
+            vm_info,
+            state,
+        ))
+
+
+def cmd_start(_args):
+    subprocess.run(
+        ["systemctl", "start", "rocm-ernic"],
+        check=True,
+    )
+
+
+def cmd_stop(_args):
+    subprocess.run(
+        ["systemctl", "stop", "rocm-ernic"],
+        check=True,
+    )
+
+
+def cmd_restart(_args):
+    subprocess.run(
+        ["systemctl", "restart", "rocm-ernic"],
+        check=True,
+    )
+
+
+def cmd_reload(_args):
+    subprocess.run(
+        ["systemctl", "reload", "rocm-ernic"],
+        check=True,
+    )
+
+
+def cmd_logs(args):
+    inst_id = args.instance
+    if inst_id:
+        logfile = os.path.join(LOG_DIR, f"{inst_id}.log")
+        if not os.path.isfile(logfile):
+            print(f"No log file for instance {inst_id}.")
+            return
+        subprocess.run(["tail", "-f", logfile])
+    else:
+        import glob
+        logs = sorted(
+            glob.glob(os.path.join(LOG_DIR, "*.log"))
+        )
+        if not logs:
+            print("No log files found.")
+            return
+        subprocess.run(["tail", "-f"] + logs)
+
+
+def cmd_stats(args):
+    inst_id = args.instance
+    if inst_id:
+        sf = os.path.join(RUN_DIR, f"{inst_id}.stats")
+        if os.path.isfile(sf):
+            with open(sf) as fh:
+                print(fh.read())
+        else:
+            print(f"No stats file for instance"
+                  f" {inst_id}.")
+    else:
+        import glob
+        for sf in sorted(
+            glob.glob(os.path.join(RUN_DIR, "*.stats"))
+        ):
+            name = pathlib.Path(sf).stem
+            print(f"=== Instance {name} ===")
+            with open(sf) as fh:
+                print(fh.read())
+
+
+# ── Subcommands: dynamic mesh ────────────────────
+
+def cmd_add_instance(_args):
+    result = subprocess.run(
+        [LAUNCHER, "--add-instance"],
+        capture_output=True,
+        text=True,
+    )
+    print(result.stdout, end="")
+    if result.returncode != 0:
+        print(result.stderr, end="", file=sys.stderr)
+        sys.exit(result.returncode)
+
+
+def cmd_remove_instance(args):
+    inst_id = args.instance
+    m = read_manifest()
+    inst = find_instance(m, inst_id)
+    if inst and inst.get("vm") and inst["vm"]:
+        if inst["vm"].get("attached"):
+            print(f"Detaching instance {inst_id}"
+                  " from VM first...")
+            _do_detach(inst, unload_driver=False)
+
+    result = subprocess.run(
+        [LAUNCHER, "--remove-instance", str(inst_id)],
+        capture_output=True,
+        text=True,
+    )
+    print(result.stdout, end="")
+    if result.returncode != 0:
+        print(result.stderr, end="", file=sys.stderr)
+        sys.exit(result.returncode)
+
+
+def cmd_attach(args):
+    m = read_manifest()
+    inst = find_instance(m, args.instance)
+    if not inst:
+        print(f"ERROR: Instance {args.instance}"
+              " not found.", file=sys.stderr)
+        sys.exit(1)
+    if not pid_alive(inst["pid"]):
+        print(f"ERROR: Instance {args.instance}"
+              " is not running.", file=sys.stderr)
+        sys.exit(1)
+
+    device_id = args.device_id or f"ernic{args.instance}"
+    root_port = args.root_port or "pcie-vfu.1"
+    ssh_port = args.ssh_port or int(
+        CFG["ERNIC_VM_SSH_BASE_PORT"]
+    ) + args.instance - 1
+    ssh_user = args.ssh_user or CFG["ERNIC_VM_SSH_USER"]
+
+    print(f"Hot-plugging instance {args.instance}"
+          f" into VM (QMP: {args.qmp})...")
+
+    if qmp_device_add(
+        args.qmp, device_id, root_port, inst["socket"]
+    ):
+        inst["vm"] = {
+            "qmp_socket": args.qmp,
+            "device_id": device_id,
+            "root_port": root_port,
+            "ssh_port": ssh_port,
+            "ssh_user": ssh_user,
+            "attached": True,
+        }
+        write_manifest(m)
+        print(f"Instance {args.instance} attached.")
+    else:
+        sys.exit(1)
+
+
+def _do_detach(inst, unload_driver=False):
+    vm = inst["vm"]
+    if not vm:
+        return
+
+    if unload_driver and vm.get("ssh_port"):
+        print("Unloading guest driver via SSH...")
+        guest_ssh(
+            vm.get("ssh_user", "ubuntu"),
+            vm["ssh_port"],
+            "sudo rmmod rocm_ernic_rdma 2>/dev/null;"
+            " sudo rmmod rocm_ernic_eth 2>/dev/null",
+        )
+        time.sleep(1)
+
+    print(f"QMP device_del {vm['device_id']}...")
+    qmp_device_del(vm["qmp_socket"], vm["device_id"])
+    time.sleep(2)
+
+    inst["vm"]["attached"] = False
+
+
+def cmd_detach(args):
+    m = read_manifest()
+    inst = find_instance(m, args.instance)
+    if not inst:
+        print(f"ERROR: Instance {args.instance}"
+              " not found.", file=sys.stderr)
+        sys.exit(1)
+    if not inst.get("vm") or not inst["vm"]:
+        print(f"Instance {args.instance}"
+              " is not attached to a VM.")
+        return
+    _do_detach(inst, unload_driver=args.unload_driver)
+    write_manifest(m)
+    print(f"Instance {args.instance} detached.")
+
+
+def cmd_hot_reload(args):
+    m = read_manifest()
+    inst = find_instance(m, args.instance)
+    if not inst:
+        print(f"ERROR: Instance {args.instance}"
+              " not found.", file=sys.stderr)
+        sys.exit(1)
+
+    vm = inst.get("vm")
+    had_vm = vm and vm.get("attached")
+    vm_snapshot = dict(vm) if vm else None
+
+    # Step 1: detach from VM
+    if had_vm:
+        print("Step 1/6: Detaching from VM...")
+        _do_detach(inst, unload_driver=True)
+        write_manifest(m)
+    else:
+        print("Step 1/6: No VM attached, skipping.")
+
+    # Step 2: rebuild (optional)
+    if not args.no_build:
+        print("Step 2/6: Rebuilding server...")
+        project_root = os.environ.get(
+            "ERNIC_PROJECT_ROOT", "/usr/local"
+        )
+        build_dir = os.path.join(project_root, "build")
+        if os.path.isdir(build_dir):
+            subprocess.run(
+                ["cmake", "--build", build_dir],
+                check=True,
+            )
+        else:
+            print("  No build dir found, skipping.")
+    else:
+        print("Step 2/6: Skipping build (--no-build).")
+
+    # Step 3: stop old server
+    print("Step 3/6: Stopping old server...")
+    old_pid = inst["pid"]
+    if pid_alive(old_pid):
+        os.kill(old_pid, signal.SIGTERM)
+        time.sleep(2)
+        if pid_alive(old_pid):
+            os.kill(old_pid, signal.SIGKILL)
+            time.sleep(1)
+    sock_path = inst["socket"]
+    if os.path.exists(sock_path):
+        os.remove(sock_path)
+
+    # Step 4: start new server
+    print("Step 4/6: Starting new server...")
+    verbose_flag = ""
+    if CFG["ERNIC_VERBOSE"] == "true":
+        verbose_flag = "--verbose"
+
+    backend = (
+        f"tcp:manager:listen:{CFG['ERNIC_TCP_PORT']}"
+        if inst["role"] == "manager"
+        else f"tcp:worker:"
+             f"{CFG['ERNIC_MANAGER_IP']}:"
+             f"{CFG['ERNIC_TCP_PORT']}"
+    )
+
+    stats = os.path.join(RUN_DIR, f"{inst['id']}.stats")
+    logfile = os.path.join(
+        LOG_DIR, f"{inst['id']}.log"
+    )
+    cmd = [
+        CFG["ERNIC_BIN"],
+        "--socket", sock_path,
+        "--stats-file", stats,
+        "--mac", inst["mac"],
+        "--backend", backend,
+        "--log-file", logfile,
+    ]
+    if verbose_flag:
+        cmd.append(verbose_flag)
+
+    proc = subprocess.Popen(cmd)
+
+    for _ in range(30):
+        if os.path.exists(sock_path) \
+                and pathlib.Path(sock_path).is_socket():
+            break
+        time.sleep(0.5)
+    else:
+        print("ERROR: Socket not created.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if proc.poll() is not None:
+        print("ERROR: Server exited.", file=sys.stderr)
+        sys.exit(1)
+
+    inst["pid"] = proc.pid
+    os.chmod(sock_path, 0o666)
+
+    # Step 5: re-attach to VM
+    if had_vm and vm_snapshot:
+        print("Step 5/6: Re-attaching to VM...")
+        if qmp_device_add(
+            vm_snapshot["qmp_socket"],
+            vm_snapshot["device_id"],
+            vm_snapshot["root_port"],
+            sock_path,
+        ):
+            inst["vm"] = dict(vm_snapshot)
+            inst["vm"]["attached"] = True
+        else:
+            print("WARNING: Re-attach failed.",
+                  file=sys.stderr)
+    else:
+        print("Step 5/6: No VM to re-attach.")
+
+    # Step 6: update driver (optional)
+    if args.update_driver and had_vm and vm_snapshot:
+        print("Step 6/6: Updating guest driver...")
+        tarball = CFG["ERNIC_DRIVER_TARBALL"]
+        if os.path.isfile(tarball):
+            ssh_port = vm_snapshot.get("ssh_port", 2222)
+            ssh_user = vm_snapshot.get(
+                "ssh_user", "ubuntu"
+            )
+            subprocess.run([
+                "scp",
+                "-o", "StrictHostKeyChecking=no",
+                "-P", str(ssh_port),
+                tarball,
+                f"{ssh_user}@localhost:/tmp/",
+            ])
+            guest_ssh(
+                ssh_user,
+                ssh_port,
+                "cd /tmp && tar xzf"
+                " rocm-ernic-driver.tar.gz"
+                " && cd rocm-ernic-driver"
+                " && ./vm-driver-install.sh",
+            )
+        else:
+            print(f"  Tarball not found: {tarball}")
+    else:
+        print("Step 6/6: Skipping driver update.")
+
+    write_manifest(m)
+    print(f"Hot-reload complete for instance"
+          f" {args.instance} (PID {inst['pid']}).")
+
+
+# ── Subcommands: driver distribution ─────────────
+
+def cmd_driver_pack(_args):
+    pack_script = (
+        "/usr/local/libexec/rocm-ernic"
+        "/rocm-ernic-driver-pack"
+    )
+    if os.path.isfile(pack_script):
+        subprocess.run([pack_script], check=True)
+    else:
+        script_dir = os.path.dirname(
+            os.path.abspath(__file__)
+        )
+        alt = os.path.join(
+            script_dir, "rocm-ernic-driver-pack"
+        )
+        if os.path.isfile(alt):
+            subprocess.run([alt], check=True)
+        else:
+            print("ERROR: driver-pack script not"
+                  " found.", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_driver_push(args):
+    tarball = CFG["ERNIC_DRIVER_TARBALL"]
+    if not os.path.isfile(tarball):
+        print(f"Tarball not found: {tarball}")
+        print("Run 'ernicctl driver-pack' first.")
+        sys.exit(1)
+
+    port = str(args.port)
+    target = args.target
+
+    print(f"Copying {tarball} to {target}:/tmp/ ...")
+    subprocess.run([
+        "scp",
+        "-o", "StrictHostKeyChecking=no",
+        "-P", port,
+        tarball,
+        f"{target}:/tmp/",
+    ], check=True)
+
+    if args.install:
+        print("Running installer on remote host...")
+        user, _, host = target.partition("@")
+        if not host:
+            host = user
+            user = CFG["ERNIC_VM_SSH_USER"]
+        guest_ssh(
+            user, int(port),
+            "cd /tmp && tar xzf"
+            " rocm-ernic-driver.tar.gz"
+            " && cd rocm-ernic-driver"
+            " && ./vm-driver-install.sh",
+        )
+    print("Done.")
+
+
+# ── Subcommands: VM management ───────────────────
+
+def cmd_vm_launch(args):
+    m = read_manifest()
+    inst = find_instance(m, args.instance)
+    if not inst:
+        print(f"ERROR: Instance {args.instance}"
+              " not found.", file=sys.stderr)
+        sys.exit(1)
+    if not pid_alive(inst["pid"]):
+        print(f"ERROR: Instance {args.instance}"
+              " is not running.", file=sys.stderr)
+        sys.exit(1)
+
+    run_vm = os.path.join(
+        CFG["ERNIC_QEMU_MINIMAL"], "qemu", "run-vm"
+    )
+    if not os.path.isfile(run_vm):
+        print(f"ERROR: run-vm not found: {run_vm}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    ssh_port = args.ssh_port or (
+        int(CFG["ERNIC_VM_SSH_BASE_PORT"])
+        + args.instance - 1
+    )
+    vm_name = args.vm_name or CFG["ERNIC_VM_NAME"]
+    vcpus = str(args.vcpus or CFG["ERNIC_VM_VCPUS"])
+    mem = str(args.mem or CFG["ERNIC_VM_MEM"])
+
+    qmp_sock = os.path.join(
+        RUN_DIR, f"qmp-{args.instance}.sock"
+    )
+
+    env = dict(os.environ)
+    env.update({
+        "QEMU_PATH": CFG["ERNIC_QEMU_PATH"],
+        "VM_NAME": vm_name,
+        "IMAGES": CFG["ERNIC_VM_IMAGE_DIR"],
+        "SSH_PORT": str(ssh_port),
+        "VCPUS": vcpus,
+        "VMEM": mem,
+        "KVM": "enable",
+        "VFIO_USERDEV": inst["socket"],
+        "QMP_SOCKET": qmp_sock,
+    })
+
+    print(f"Launching VM for instance {args.instance}:")
+    print(f"  VM name:     {vm_name}")
+    print(f"  SSH port:    {ssh_port}")
+    print(f"  vfio-user:   {inst['socket']}")
+    print(f"  QMP socket:  {qmp_sock}")
+
+    logfile = os.path.join(
+        LOG_DIR, f"vm-{args.instance}.log"
+    )
+    with open(logfile, "w") as lf:
+        proc = subprocess.Popen(
+            [run_vm],
+            env=env,
+            stdout=lf,
+            stderr=subprocess.STDOUT,
+        )
+
+    device_id = f"ernic{args.instance}"
+    root_port = "pcie-vfu.1"
+
+    inst["vm"] = {
+        "qmp_socket": qmp_sock,
+        "device_id": device_id,
+        "root_port": root_port,
+        "ssh_port": ssh_port,
+        "ssh_user": (
+            args.ssh_user or CFG["ERNIC_VM_SSH_USER"]
+        ),
+        "attached": True,
+        "vm_pid": proc.pid,
+        "vm_name": vm_name,
+    }
+    write_manifest(m)
+    print(f"VM started (PID {proc.pid}).")
+    print(f"Log: {logfile}")
+    print(f"SSH: ssh -p {ssh_port}"
+          f" {inst['vm']['ssh_user']}@localhost")
+
+
+def cmd_vm_stop(args):
+    m = read_manifest()
+    inst = find_instance(m, args.instance)
+    if not inst:
+        print(f"ERROR: Instance {args.instance}"
+              " not found.", file=sys.stderr)
+        sys.exit(1)
+
+    vm = inst.get("vm")
+    if not vm:
+        print(f"Instance {args.instance}"
+              " has no VM attached.")
+        return
+
+    vm_pid = vm.get("vm_pid")
+    qmp_sock = vm.get("qmp_socket")
+
+    if qmp_sock and os.path.exists(qmp_sock):
+        print("Sending QEMU quit via QMP...")
+        qmp_quit(qmp_sock)
+        time.sleep(3)
+
+    if vm_pid and pid_alive(vm_pid):
+        print(f"Killing VM process {vm_pid}...")
+        os.kill(vm_pid, signal.SIGTERM)
+        time.sleep(2)
+        if pid_alive(vm_pid):
+            os.kill(vm_pid, signal.SIGKILL)
+
+    inst["vm"] = None
+    write_manifest(m)
+    print(f"VM for instance {args.instance} stopped.")
+
+
+def cmd_vm_list(_args):
+    m = read_manifest()
+    has_vms = False
+    fmt = "{:<4} {:<12} {:<7} {:<10} {:<30} {}"
+    print(fmt.format(
+        "ID", "VM_NAME", "VM_PID",
+        "SSH_PORT", "QMP_SOCKET", "STATE",
+    ))
+    for inst in m["instances"]:
+        vm = inst.get("vm")
+        if not vm:
+            continue
+        has_vms = True
+        vm_pid = vm.get("vm_pid", 0)
+        alive = pid_alive(vm_pid) if vm_pid else False
+        state = "running" if alive else "stopped"
+        print(fmt.format(
+            inst["id"],
+            vm.get("vm_name", "-"),
+            vm_pid if alive else 0,
+            vm.get("ssh_port", "-"),
+            vm.get("qmp_socket", "-"),
+            state,
+        ))
+    if not has_vms:
+        print("No VMs attached to any instance.")
+
+
+# ── Argument parser ──────────────────────────────
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="ernicctl",
+        description=(
+            "Admin CLI for the rocm-ernic"
+            " systemd service."
+        ),
+    )
+    sub = p.add_subparsers(dest="command")
+
+    # -- service lifecycle --
+    sp = sub.add_parser(
+        "status", help="Show instance status",
+    )
+    sp.add_argument(
+        "--json", action="store_true",
+        help="Output as JSON",
+    )
+
+    sub.add_parser("start", help="Start the service")
+    sub.add_parser("stop", help="Stop the service")
+    sub.add_parser(
+        "restart", help="Restart the service",
+    )
+    sub.add_parser(
+        "reload", help="Reload service configuration",
+    )
+
+    sp = sub.add_parser(
+        "logs", help="Tail instance logs",
+    )
+    sp.add_argument(
+        "instance", nargs="?", type=int, default=None,
+        help="Instance ID (omit for all)",
+    )
+
+    sp = sub.add_parser(
+        "stats", help="Show instance stats",
+    )
+    sp.add_argument(
+        "instance", nargs="?", type=int, default=None,
+        help="Instance ID (omit for all)",
+    )
+
+    # -- dynamic mesh --
+    sub.add_parser(
+        "add-instance",
+        help="Add a new worker to the mesh",
+    )
+
+    sp = sub.add_parser(
+        "remove-instance",
+        help="Remove an instance from the mesh",
+    )
+    sp.add_argument(
+        "instance", type=int, help="Instance ID",
+    )
+
+    sp = sub.add_parser(
+        "attach",
+        help="Hot-plug instance into a running VM",
+    )
+    sp.add_argument(
+        "instance", type=int, help="Instance ID",
+    )
+    sp.add_argument(
+        "--qmp", required=True,
+        help="QMP socket path",
+    )
+    sp.add_argument("--device-id", default=None)
+    sp.add_argument("--root-port", default=None)
+    sp.add_argument(
+        "--ssh-port", type=int, default=None,
+    )
+    sp.add_argument("--ssh-user", default=None)
+
+    sp = sub.add_parser(
+        "detach",
+        help="Hot-unplug instance from its VM",
+    )
+    sp.add_argument(
+        "instance", type=int, help="Instance ID",
+    )
+    sp.add_argument(
+        "--unload-driver", action="store_true",
+        help="rmmod guest driver before detaching",
+    )
+
+    sp = sub.add_parser(
+        "hot-reload",
+        help="Full hot-reload cycle for an instance",
+    )
+    sp.add_argument(
+        "instance", type=int, help="Instance ID",
+    )
+    sp.add_argument(
+        "--no-build", action="store_true",
+        help="Skip the rebuild step",
+    )
+    sp.add_argument(
+        "--update-driver", action="store_true",
+        help="Push and reload guest driver",
+    )
+
+    # -- driver distribution --
+    sub.add_parser(
+        "driver-pack",
+        help="Build the driver tarball",
+    )
+
+    sp = sub.add_parser(
+        "driver-push",
+        help="Push driver tarball to a VM",
+    )
+    sp.add_argument(
+        "target", help="SSH target (user@host)",
+    )
+    sp.add_argument(
+        "--port", type=int, default=22,
+        help="SSH port (default 22)",
+    )
+    sp.add_argument(
+        "--install", action="store_true",
+        help="Run installer after copying",
+    )
+
+    # -- VM management --
+    sp = sub.add_parser(
+        "vm-launch",
+        help="Launch a VM for an instance",
+    )
+    sp.add_argument(
+        "instance", type=int, help="Instance ID",
+    )
+    sp.add_argument("--vm-name", default=None)
+    sp.add_argument(
+        "--ssh-port", type=int, default=None,
+    )
+    sp.add_argument(
+        "--ssh-user", default=None,
+    )
+    sp.add_argument(
+        "--vcpus", type=int, default=None,
+    )
+    sp.add_argument(
+        "--mem", type=int, default=None,
+        help="VM memory in MB",
+    )
+
+    sp = sub.add_parser(
+        "vm-stop", help="Stop a VM",
+    )
+    sp.add_argument(
+        "instance", type=int, help="Instance ID",
+    )
+
+    sub.add_parser(
+        "vm-list", help="List running VMs",
+    )
+
+    return p
+
+
+DISPATCH = {
+    "status": cmd_status,
+    "start": cmd_start,
+    "stop": cmd_stop,
+    "restart": cmd_restart,
+    "reload": cmd_reload,
+    "logs": cmd_logs,
+    "stats": cmd_stats,
+    "add-instance": cmd_add_instance,
+    "remove-instance": cmd_remove_instance,
+    "attach": cmd_attach,
+    "detach": cmd_detach,
+    "hot-reload": cmd_hot_reload,
+    "driver-pack": cmd_driver_pack,
+    "driver-push": cmd_driver_push,
+    "vm-launch": cmd_vm_launch,
+    "vm-stop": cmd_vm_stop,
+    "vm-list": cmd_vm_list,
+}
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    handler = DISPATCH.get(args.command)
+    if handler:
+        handler(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

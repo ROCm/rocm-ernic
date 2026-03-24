@@ -7,7 +7,8 @@
 # hot-plug the vfio-user-pci device while the VM stays up.
 #
 # Prerequisites:
-#   - VM launched via run-vm-vfio-user.sh (QMP + root port)
+#   - VM launched with QMP + PCIe root port support
+#     (e.g. via ernicctl vm-launch or qemu-minimal run-vm)
 #   - socat installed on the host
 #   - Guest driver (rocm_ernic.ko) already built in the guest
 #
@@ -31,7 +32,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Shared conventions with local-vm-test.sh / run-vm-vfio-user.sh
+# Shared conventions with local-vm-test.sh
 SOCKET_PATH=${VFIO_USER_SOCKET:-/tmp/vfio-user-rocm-ernic.sock}
 QMP_SOCKET=${QMP_SOCKET:-/tmp/qemu-qmp.sock}
 SERVER_LOG="/tmp/rocm-ernic-server.log"
@@ -143,7 +144,7 @@ fi
 
 if [ ! -S "${QMP_SOCKET}" ]; then
     log_error "QMP socket not found: ${QMP_SOCKET}"
-    log_error "Was the VM started with run-vm-vfio-user.sh?"
+    log_error "Was the VM started with QMP support?"
     exit 1
 fi
 

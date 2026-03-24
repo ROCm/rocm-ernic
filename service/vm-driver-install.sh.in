@@ -1,0 +1,168 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# vm-driver-install.sh
+#
+# Self-contained installer for the rocm-ernic kernel
+# driver inside a guest VM.  Distributed inside the
+# driver tarball created by rocm-ernic-driver-pack.
+#
+# This script:
+#   1. Builds rocm_ernic_eth.ko and rocm_ernic_rdma.ko
+#      against the running kernel.
+#   2. Loads prerequisite IB modules.
+#   3. Inserts the driver modules.
+#   4. Verifies the RDMA device appears.
+#
+# Usage:
+#   cd /tmp/rocm-ernic-driver && ./vm-driver-install.sh
+#
+# Options:
+#   --build-only    Build but do not load modules.
+#   --unload        Unload the driver modules.
+#   --dkms          Use DKMS instead of insmod.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_ONLY=false
+UNLOAD=false
+USE_DKMS=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build-only) BUILD_ONLY=true; shift ;;
+        --unload)     UNLOAD=true;     shift ;;
+        --dkms)       USE_DKMS=true;   shift ;;
+        -h|--help)
+            echo "Usage: $0 [--build-only]" \
+                "[--unload] [--dkms]"
+            exit 0
+            ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+log_info()  { echo "[INFO]  $*"; }
+log_error() { echo "[ERROR] $*" >&2; }
+
+# ── Unload ────────────────────────────────────────
+
+if ${UNLOAD}; then
+    log_info "Unloading rocm_ernic modules..."
+    sudo rmmod rocm_ernic_rdma 2>/dev/null || true
+    sudo rmmod rocm_ernic_eth  2>/dev/null || true
+    log_info "Modules unloaded."
+    exit 0
+fi
+
+# ── DKMS path ─────────────────────────────────────
+
+if ${USE_DKMS}; then
+    if [ -x "${SCRIPT_DIR}/setup-rocm-ernic-dkms.sh" ]; then
+        log_info "Running DKMS installer..."
+        "${SCRIPT_DIR}/setup-rocm-ernic-dkms.sh"
+        exit $?
+    else
+        log_error "setup-rocm-ernic-dkms.sh not found."
+        exit 1
+    fi
+fi
+
+# ── Prerequisites ─────────────────────────────────
+
+KVER="$(uname -r)"
+KDIR="/lib/modules/${KVER}/build"
+
+if [ ! -d "${KDIR}" ]; then
+    log_error "Kernel headers not found for ${KVER}."
+    log_error "Install with:" \
+        "sudo apt install linux-headers-${KVER}"
+    exit 1
+fi
+
+if ! command -v make &>/dev/null; then
+    log_error "make is required but not installed."
+    exit 1
+fi
+
+# ── Build ─────────────────────────────────────────
+
+log_info "Building driver for kernel ${KVER}..."
+cd "${SCRIPT_DIR}"
+make KDIR="${KDIR}"
+
+if [ ! -f rocm_ernic_eth.ko ] \
+    || [ ! -f rocm_ernic_rdma.ko ]; then
+    log_error "Build produced no .ko files."
+    ls -lh *.ko 2>/dev/null || true
+    exit 1
+fi
+
+log_info "Built:"
+ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
+
+if ${BUILD_ONLY}; then
+    log_info "Build-only mode; stopping here."
+    exit 0
+fi
+
+# ── Load IB core modules ─────────────────────────
+
+log_info "Loading InfiniBand core modules..."
+
+if ! sudo modprobe ib_core; then
+    log_error "Failed to load ib_core."
+    log_error "You may need:" \
+        "sudo apt install" \
+        "linux-modules-extra-${KVER}"
+    exit 1
+fi
+
+if ! sudo modprobe ib_uverbs; then
+    log_error "Failed to load ib_uverbs."
+    exit 1
+fi
+
+# ── Insert driver modules ────────────────────────
+
+log_info "Loading rocm_ernic_eth..."
+sudo insmod ./rocm_ernic_eth.ko || {
+    log_error "insmod rocm_ernic_eth.ko failed."
+    sudo dmesg | tail -20
+    exit 1
+}
+
+log_info "Loading rocm_ernic_rdma..."
+sudo insmod ./rocm_ernic_rdma.ko || {
+    log_error "insmod rocm_ernic_rdma.ko failed."
+    sudo dmesg | tail -20
+    exit 1
+}
+
+log_info "Modules loaded:"
+lsmod | grep rocm_ernic
+
+# ── Verify RDMA device ───────────────────────────
+
+log_info "Verifying RDMA device..."
+sleep 2
+
+if ibv_devices 2>/dev/null \
+    | grep -qE "rocm_ernic|rocep"; then
+    DEVICE="$(ibv_devices \
+        | grep -E "rocm_ernic|rocep" \
+        | awk '{print $1}' | head -1)"
+    log_info "RDMA device found: ${DEVICE}"
+    ibv_devinfo -d "${DEVICE}" 2>/dev/null \
+        | head -20 || true
+else
+    log_error "RDMA device not detected."
+    log_error "Check dmesg for details."
+    sudo dmesg | grep -i rocm_ernic | tail -10
+    exit 1
+fi
+
+log_info "Driver installation complete."

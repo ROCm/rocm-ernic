@@ -1,0 +1,32 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# systemd unit for the rocm-ernic multi-instance
+# vfio-user RDMA server.
+#
+# Install: /usr/lib/systemd/system/rocm-ernic.service
+
+[Unit]
+Description=ROCm eRNIC vfio-user RDMA server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+EnvironmentFile=/etc/rocm-ernic/rocm-ernic.env
+
+RuntimeDirectory=rocm-ernic
+StateDirectory=rocm-ernic
+LogsDirectory=rocm-ernic
+
+ExecStart=/usr/local/libexec/rocm-ernic/rocm-ernic-launcher
+ExecStop=/usr/local/libexec/rocm-ernic/rocm-ernic-launcher --stop
+ExecReload=/usr/local/libexec/rocm-ernic/rocm-ernic-launcher --reload
+
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
