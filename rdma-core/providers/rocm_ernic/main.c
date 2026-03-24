@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * rdma-core provider entry point for rocm_ernic.
- * Written against rdma-core v62.0 APIs.
+ * Compatible with rdma-core v50+ and v62+ APIs.
  */
 
 #include <stdio.h>
@@ -52,7 +52,7 @@ rocm_ernic_alloc_context(struct ibv_device *ibdev,
 {
     struct rocm_ernic_context *ctx;
     struct ibv_get_context cmd;
-    struct ib_uverbs_get_context_resp resp;
+    struct rocm_ernic_alloc_ucontext_resp resp = {};
 
     ctx = verbs_init_and_alloc_context(
         ibdev, cmd_fd, ctx, vctx,
@@ -62,12 +62,16 @@ rocm_ernic_alloc_context(struct ibv_device *ibdev,
 
     if (ibv_cmd_get_context(
             &ctx->vctx, &cmd, sizeof(cmd),
-            NULL, &resp, sizeof(resp))) {
+#ifdef HAVE_IBV_FD_ARR
+            NULL,
+#endif
+            &resp.ibv_resp, sizeof(resp))) {
         verbs_uninit_context(&ctx->vctx);
         free(ctx);
         return NULL;
     }
 
+    ctx->qp_tab_size = resp.qp_tab_size;
     ctx->dv_abi_version = ROCM_ERNIC_DV_API_VERSION;
 
     verbs_set_ops(&ctx->vctx, &rocm_ernic_ctx_ops);

@@ -165,4 +165,24 @@ else
     exit 1
 fi
 
+# ── Harden systemd shutdown ───────────────────
+
+log_info "Tuning systemd shutdown timeouts..."
+
+if grep -q '^#KillUserProcesses=no' \
+    /etc/systemd/logind.conf 2>/dev/null; then
+    sudo sed -i \
+        's/^#KillUserProcesses=no/KillUserProcesses=yes/' \
+        /etc/systemd/logind.conf
+fi
+
+if grep -q '^#DefaultTimeoutStopSec=90s' \
+    /etc/systemd/system.conf 2>/dev/null; then
+    sudo sed -i \
+        's/^#DefaultTimeoutStopSec=90s/DefaultTimeoutStopSec=15s/' \
+        /etc/systemd/system.conf
+fi
+
+sudo systemctl daemon-reexec 2>/dev/null || true
+
 log_info "Driver installation complete."

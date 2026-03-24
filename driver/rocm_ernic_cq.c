@@ -163,19 +163,31 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     cq->is_kernel = !udata;
 
     if (!cq->is_kernel) {
-        if (ib_copy_from_udata(&ucmd, udata, min(udata->inlen, sizeof(ucmd)))) {
-            ret = -EFAULT;
-            goto err_cq;
+        if (udata->inlen >= sizeof(ucmd)) {
+            if (ib_copy_from_udata(&ucmd, udata,
+                                   sizeof(ucmd))) {
+                ret = -EFAULT;
+                goto err_cq;
+            }
+        } else if (udata->inlen > 0) {
+            memset(&ucmd, 0, sizeof(ucmd));
+            if (ib_copy_from_udata(&ucmd, udata,
+                                   udata->inlen)) {
+                ret = -EFAULT;
+                goto err_cq;
+            }
         }
 
-        cq->umem = ib_umem_get(ibdev, ucmd.buf_addr, ucmd.buf_size,
+        cq->umem = ib_umem_get(ibdev,
+                               ucmd.buf_addr,
+                               ucmd.buf_size,
                                IB_ACCESS_LOCAL_WRITE);
         if (IS_ERR(cq->umem)) {
             ret = PTR_ERR(cq->umem);
             goto err_cq;
         }
-
-        npages = ib_umem_num_dma_blocks(cq->umem, PAGE_SIZE);
+        npages = ib_umem_num_dma_blocks(
+            cq->umem, PAGE_SIZE);
     } else {
         npages = 1 + (entries * sizeof(struct rocm_ernic_cqe) + PAGE_SIZE - 1) /
                          PAGE_SIZE;

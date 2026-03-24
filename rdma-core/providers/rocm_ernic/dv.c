@@ -29,7 +29,7 @@ rocm_ernic_dv_umem_reg(struct ibv_context *ctx,
     struct rocm_ernic_dv_umem *umem;
     int ret;
 
-    if (!in || !in->addr || in->size == 0) {
+    if (!in || in->size == 0) {
         errno = EINVAL;
         return NULL;
     }
@@ -41,15 +41,25 @@ rocm_ernic_dv_umem_reg(struct ibv_context *ctx,
         return NULL;
     }
 
-    ret = ibv_dontfork_range(in->addr, in->size);
-    if (ret) {
-        errno = ret;
-        return NULL;
+    /*
+     * Skip ibv_dontfork_range for dmabuf-backed
+     * buffers and GPU device memory where addr
+     * may not be a valid CPU VA.
+     */
+    if (!(in->comp_mask &
+          ROCM_ERNIC_DV_UMEM_FLAGS_DMABUF) &&
+        in->addr) {
+        ret = ibv_dontfork_range(in->addr, in->size);
+        if (ret) {
+            errno = ret;
+            return NULL;
+        }
     }
 
     umem = calloc(1, sizeof(*umem));
     if (!umem) {
-        ibv_dofork_range(in->addr, in->size);
+        if (in->addr)
+            ibv_dofork_range(in->addr, in->size);
         errno = ENOMEM;
         return NULL;
     }
@@ -73,7 +83,8 @@ int rocm_ernic_dv_umem_dereg(
     if (!umem)
         return -EINVAL;
 
-    ibv_dofork_range(umem->addr, umem->size);
+    if (umem->addr)
+        ibv_dofork_range(umem->addr, umem->size);
     free(umem);
     return 0;
 }
@@ -85,7 +96,9 @@ struct ibv_cq *rocm_ernic_dv_create_cq(
     struct rocm_ernic_dv_cq_init_attr *attr)
 {
     struct rocm_ernic_cq *cq;
-    struct ib_uverbs_create_cq_resp resp = {};
+    struct rocm_ernic_create_cq_cmd cmd = {};
+    struct rocm_ernic_create_cq_resp_ex resp = {};
+    struct rocm_ernic_dv_umem *umem;
     int ret;
 
     if (!attr || !attr->umem_handle ||
@@ -94,28 +107,36 @@ struct ibv_cq *rocm_ernic_dv_create_cq(
         return NULL;
     }
 
+    umem = (struct rocm_ernic_dv_umem *)
+        attr->umem_handle;
+
     cq = calloc(1, sizeof(*cq));
     if (!cq) {
         errno = ENOMEM;
         return NULL;
     }
 
+    cmd.buf_addr = (uintptr_t)umem->addr;
+    cmd.buf_size = (uint32_t)umem->size;
+    cmd.ncqe = attr->ncqe;
+    cmd.cqe_size = sizeof(struct rocm_ernic_cqe);
+
     ret = ibv_cmd_create_cq(
         ctx, (int)attr->ncqe, NULL, 0,
-        &cq->vcq.cq, NULL, 0,
-        &resp, sizeof(resp));
+        &cq->vcq.cq,
+        &cmd.ibv_cmd, sizeof(cmd),
+        &resp.ibv_resp, sizeof(resp));
     if (ret) {
         free(cq);
         errno = -ret;
         return NULL;
     }
 
-    cq->cqn = resp.cq_handle;
-    cq->ncqe = attr->ncqe;
-    cq->cqe_size = sizeof(struct rocm_ernic_cqe);
-
-    struct rocm_ernic_dv_umem *umem =
-        (struct rocm_ernic_dv_umem *)attr->umem_handle;
+    cq->cqn = resp.cqn;
+    cq->ncqe = resp.ncqe ? resp.ncqe : attr->ncqe;
+    cq->cqe_size = resp.cqe_size
+                       ? resp.cqe_size
+                       : sizeof(struct rocm_ernic_cqe);
     cq->buf = umem->addr;
     cq->buf_len = umem->size;
 
@@ -147,8 +168,10 @@ struct ibv_qp *rocm_ernic_dv_create_qp(
 {
     struct rocm_ernic_qp *qp;
     struct ibv_qp_init_attr ib_attr = {};
-    struct ibv_create_qp cmd = {};
-    struct ib_uverbs_create_qp_resp resp = {};
+    struct rocm_ernic_create_qp_cmd cmd = {};
+    struct rocm_ernic_create_qp_resp_ex resp = {};
+    struct rocm_ernic_dv_umem *sq_umem;
+    struct rocm_ernic_dv_umem *rq_umem;
     int ret;
 
     if (!attr || !attr->send_cq ||
@@ -156,6 +179,11 @@ struct ibv_qp *rocm_ernic_dv_create_qp(
         errno = EINVAL;
         return NULL;
     }
+
+    sq_umem = (struct rocm_ernic_dv_umem *)
+        attr->sq_umem_handle;
+    rq_umem = (struct rocm_ernic_dv_umem *)
+        attr->rq_umem_handle;
 
     qp = calloc(1, sizeof(*qp));
     if (!qp) {
@@ -175,9 +203,22 @@ struct ibv_qp *rocm_ernic_dv_create_qp(
         attr->max_inline_data;
     ib_attr.qp_type = attr->qp_type;
 
-    ret = ibv_cmd_create_qp(pd, &qp->vqp.qp, &ib_attr,
-                            &cmd, sizeof(cmd),
-                            &resp, sizeof(resp));
+    cmd.sbuf_addr = (uintptr_t)sq_umem->addr;
+    cmd.sbuf_size = (uint32_t)sq_umem->size;
+    cmd.sq_wqe_size = attr->sq_wqe_size;
+    cmd.sq_depth = attr->max_send_wr;
+    if (rq_umem) {
+        cmd.rbuf_addr = (uintptr_t)rq_umem->addr;
+        cmd.rbuf_size = (uint32_t)rq_umem->size;
+        cmd.rq_wqe_size = attr->rq_wqe_size;
+        cmd.rq_depth = attr->max_recv_wr;
+    }
+
+    ret = ibv_cmd_create_qp(pd, &qp->vqp.qp,
+                            &ib_attr,
+                            &cmd.ibv_cmd, sizeof(cmd),
+                            &resp.ibv_resp,
+                            sizeof(resp));
     if (ret) {
         free(qp);
         errno = -ret;
@@ -186,6 +227,12 @@ struct ibv_qp *rocm_ernic_dv_create_qp(
 
     qp->qpn = resp.qpn;
     qp->qp_handle = resp.qp_handle;
+    qp->sq_depth = resp.sq_depth;
+    qp->rq_depth = resp.rq_depth;
+    qp->sq_wqe_size = resp.sq_wqe_size;
+    qp->rq_wqe_size = resp.rq_wqe_size;
+    qp->uar_qp_offset = resp.uar_qp_offset;
+    qp->uar_cq_offset = resp.uar_cq_offset;
 
     return &qp->vqp.qp;
 }

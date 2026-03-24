@@ -107,9 +107,17 @@ struct ib_mr *rocm_ernic_get_dma_mr(struct ib_pd *pd, int acc)
  *
  * @return: ib_mr pointer on success, otherwise returns an errno.
  */
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+struct ib_mr *rocm_ernic_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+                                     u64 virt_addr, int access_flags,
+                                     struct ib_dmah *dmah,
+                                     struct ib_udata *udata)
+#else
 struct ib_mr *rocm_ernic_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
                                      u64 virt_addr, int access_flags,
                                      struct ib_udata *udata)
+#endif
 {
     struct rocm_ernic_dev *dev = to_vdev(pd->device);
     struct rocm_ernic_user_mr *mr = NULL;

@@ -1483,14 +1483,27 @@ static int __init rocm_ernic_init(void)
 static void __exit rocm_ernic_cleanup(void)
 {
     struct rocm_ernic_dev *dev, *tmp;
+    struct pci_dev *pdev;
 
-    /* Detach from all devices */
-    mutex_lock(&rocm_ernic_device_list_lock);
-    list_for_each_entry_safe(dev, tmp, &rocm_ernic_device_list, device_link)
-    {
-        rocm_ernic_detach_from_eth_dev(dev->pdev);
+    /*
+     * rocm_ernic_detach_from_eth_dev takes the same
+     * mutex internally, so calling it with the lock
+     * held causes a deadlock.  Pop one device at a
+     * time, release the lock, then detach.
+     */
+    while (true) {
+        pdev = NULL;
+        mutex_lock(&rocm_ernic_device_list_lock);
+        list_for_each_entry_safe(dev, tmp,
+            &rocm_ernic_device_list, device_link) {
+            pdev = dev->pdev;
+            break;
+        }
+        mutex_unlock(&rocm_ernic_device_list_lock);
+        if (!pdev)
+            break;
+        rocm_ernic_detach_from_eth_dev(pdev);
     }
-    mutex_unlock(&rocm_ernic_device_list_lock);
 
     if (probe_wq)
         destroy_workqueue(probe_wq);

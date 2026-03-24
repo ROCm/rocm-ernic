@@ -171,6 +171,12 @@ VM and QEMU settings
    * - ``ERNIC_VM_SSH_BASE_PORT``
      - ``2222``
      - Base SSH port (instance N uses base + N - 1)
+   * - ``ERNIC_VM_BACKING``
+     - (unset)
+     - Golden backing qcow2. When set and a
+       per-instance overlay does not exist,
+       ``ernicctl vm-launch`` creates one
+       automatically via ``qemu-img create``.
 
 Driver settings
 ^^^^^^^^^^^^^^^
@@ -210,15 +216,15 @@ Or use ``ernicctl`` which wraps ``systemctl``:
 
 The ``ernicctl status`` command shows a table of all
 instances with their PID, MAC, socket, VM attachment,
-and liveness state:
+liveness state, and log file path:
 
 .. code-block:: text
 
-   ID  ROLE      PID    MAC                SOCKET                    VM         STATE
-   1   manager   12345  02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock   qmp:2222   attached
-   2   worker    12346  02:a1:b2:c3:d4:02  /run/rocm-ernic/2.sock   qmp:2223   attached
-   3   worker    12347  02:a1:b2:c3:d4:03  /run/rocm-ernic/3.sock   -          running
-   4   worker    0      02:a1:b2:c3:d4:04  /run/rocm-ernic/4.sock   -          dead
+   ID  ROLE      PID    MAC                SOCKET                         VM           STATE      LOG
+   1   manager   12345  02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         qmp:2222     running    /var/log/rocm-ernic/1.log
+   2   worker    12346  02:a1:b2:c3:d4:02  /run/rocm-ernic/2.sock         qmp:2223     running    /var/log/rocm-ernic/2.log
+   3   worker    12347  02:a1:b2:c3:d4:03  /run/rocm-ernic/3.sock         -            running    /var/log/rocm-ernic/3.log
+   4   worker    0      02:a1:b2:c3:d4:04  /run/rocm-ernic/4.sock         -            dead       /var/log/rocm-ernic/4.log
 
 Pass ``--json`` for machine-readable output.
 
