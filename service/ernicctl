@@ -112,6 +112,96 @@ def pid_alive(pid):
         return False
 
 
+# ── Stats helpers ────────────────────────────────
+
+def parse_stats_file(path):
+    """Parse a .stats text file into {key: value}.
+
+    Integer values are returned as int; string values
+    (like connection state) are returned as str.
+    Returns empty dict if file is missing or unreadable.
+    """
+    result = {}
+    if not os.path.isfile(path):
+        return result
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if " : " not in line:
+                    continue
+                key, _, val = line.partition(" : ")
+                key = key.strip()
+                val = val.strip()
+                try:
+                    result[key] = int(val)
+                except ValueError:
+                    result[key] = val
+    except OSError:
+        pass
+    return result
+
+
+def count_qps(path):
+    """Count QP sections in a raw stats file."""
+    count = 0
+    if not os.path.isfile(path):
+        return count
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.strip().startswith("QP ") \
+                        and line.strip().endswith(":"):
+                    count += 1
+    except OSError:
+        pass
+    return count
+
+
+def format_bytes(n):
+    """Format byte count with auto-scaled short units.
+
+    Returns a compact string like '0B', '1.2K', '45M'.
+    """
+    if n < 0:
+        return "-"
+    units = ["B", "K", "M", "G", "T"]
+    val = float(n)
+    for u in units:
+        if val < 1024.0 or u == units[-1]:
+            if val == int(val) and val < 10000:
+                return f"{int(val)}{u}"
+            if val < 10:
+                return f"{val:.1f}{u}"
+            return f"{int(val)}{u}"
+        val /= 1024.0
+    return f"{int(val)}T"
+
+
+def format_txrx(tx, rx):
+    """Format a TX/RX pair as 'TX/RX'."""
+    return f"{format_bytes(tx)}/{format_bytes(rx)}"
+
+
+def read_all_stats():
+    """Read stats for every *.stats file in RUN_DIR.
+
+    Returns {instance_id_int: stats_dict}.
+    """
+    import glob
+    result = {}
+    for sf in glob.glob(
+        os.path.join(RUN_DIR, "*.stats")
+    ):
+        name = pathlib.Path(sf).stem
+        try:
+            inst_id = int(name)
+        except ValueError:
+            continue
+        result[inst_id] = parse_stats_file(sf)
+    return result
+
+
 # ── QMP helpers ──────────────────────────────────
 
 def qmp_send(qmp_socket, command):
@@ -205,17 +295,156 @@ def guest_ssh(ssh_user, ssh_port, command):
 
 # ── Subcommands: service lifecycle ───────────────
 
+def _get_uptime(pid):
+    """Return process uptime in seconds, or None."""
+    try:
+        with open("/proc/uptime") as f:
+            sys_up = float(f.read().split()[0])
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(") ", 1)[1]
+            start_ticks = int(fields.split()[19])
+        hz = os.sysconf("SC_CLK_TCK")
+        age = sys_up - (start_ticks / hz)
+        return max(0, age)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def format_duration(secs):
+    """Format seconds as compact duration string."""
+    if secs is None:
+        return "-"
+    s = int(secs)
+    if s < 60:
+        return f"{s}s"
+    m = s // 60
+    if m < 60:
+        return f"{m}m{s % 60:02d}s"
+    h = m // 60
+    if h < 24:
+        return f"{h}h{m % 60:02d}m"
+    d = h // 24
+    return f"{d}d{h % 24:02d}h"
+
+
+def _get_vm_info(inst):
+    """Build the VM column string from manifest."""
+    if not inst.get("vm") or not inst["vm"]:
+        return "-"
+    vm = inst["vm"]
+    if vm.get("attached"):
+        pid = vm.get("vm_pid", "?")
+        port = vm.get("ssh_port", "?")
+        return f"{pid}:{port}"
+    return "detached"
+
+
+def _get_vm_uptime(inst):
+    """Return formatted VM uptime, or '-'."""
+    if not inst.get("vm") or not inst["vm"]:
+        return "-"
+    vm = inst["vm"]
+    vm_pid = vm.get("vm_pid")
+    if not vm_pid or not vm.get("attached"):
+        return "-"
+    return format_duration(_get_uptime(vm_pid))
+
+
+def _get_byte_cols(stats):
+    """Compute IP and RDMA TX/RX strings."""
+    if not stats:
+        return "-", "-"
+    ip_tx = stats.get("total_ip_bytes_tx", 0)
+    ip_rx = stats.get("total_ip_bytes_rx", 0)
+    rdma_tx = (
+        stats.get("total_bytes_sent", 0)
+        + stats.get("total_bytes_rdma_write", 0)
+    )
+    rdma_rx = (
+        stats.get("total_bytes_received", 0)
+        + stats.get("total_bytes_rdma_read", 0)
+    )
+    return (
+        format_txrx(ip_tx, ip_rx),
+        format_txrx(rdma_tx, rdma_rx),
+    )
+
+
+def _delta_stats(s1, s2):
+    """Compute per-key delta between two stats dicts.
+
+    Returns None if either is empty.  Returns -1 for
+    any key whose value decreased (server restart).
+    """
+    if not s1 or not s2:
+        return None
+    out = {}
+    for k in s2:
+        if not isinstance(s2[k], int):
+            out[k] = s2[k]
+            continue
+        v1 = s1.get(k, 0)
+        v2 = s2[k]
+        if not isinstance(v1, int):
+            v1 = 0
+        out[k] = v2 - v1 if v2 >= v1 else -1
+    return out
+
+
 def cmd_status(args):
     m = read_manifest()
+    rate = getattr(args, "rate", None)
+
+    all_stats = read_all_stats()
+
+    if rate:
+        snap1 = {k: dict(v) for k, v in
+                 all_stats.items()}
+        time.sleep(rate)
+        all_stats = read_all_stats()
+        for iid in all_stats:
+            all_stats[iid] = _delta_stats(
+                snap1.get(iid, {}), all_stats[iid]
+            ) or {}
 
     if args.json:
         for inst in m["instances"]:
+            iid = inst["id"]
+            alive = pid_alive(inst["pid"])
             inst["state"] = (
-                "running" if pid_alive(inst["pid"])
-                else "dead"
+                "running" if alive else "dead"
             )
             inst["log_file"] = os.path.join(
-                LOG_DIR, f"{inst['id']}.log"
+                LOG_DIR, f"{iid}.log"
+            )
+            up = _get_uptime(inst["pid"]) if alive \
+                else None
+            inst["uptime_seconds"] = (
+                int(up) if up is not None else None
+            )
+            vm = inst.get("vm")
+            vm_pid = (
+                vm.get("vm_pid") if vm
+                and vm.get("attached") else None
+            )
+            vm_up = _get_uptime(vm_pid) \
+                if vm_pid else None
+            inst["vm_uptime_seconds"] = (
+                int(vm_up) if vm_up is not None
+                else None
+            )
+            st = all_stats.get(iid, {})
+            inst["ip_bytes_tx"] = st.get(
+                "total_ip_bytes_tx", 0)
+            inst["ip_bytes_rx"] = st.get(
+                "total_ip_bytes_rx", 0)
+            inst["rdma_bytes_tx"] = (
+                st.get("total_bytes_sent", 0)
+                + st.get("total_bytes_rdma_write", 0)
+            )
+            inst["rdma_bytes_rx"] = (
+                st.get("total_bytes_received", 0)
+                + st.get("total_bytes_rdma_read", 0)
             )
         print(json.dumps(m, indent=2))
         return
@@ -226,23 +455,26 @@ def cmd_status(args):
         return
 
     fmt = (
-        "{:<4} {:<9} {:<7} {:<19}"
-        " {:<30} {:<12} {:<10} {}"
+        "{:<4} {:<9} {:<7} {:<10} {:<10}"
+        " {:<19} {:<30} {:<12} {:<10}"
+        " {:<15} {:<15} {}"
     )
     print(fmt.format(
-        "ID", "ROLE", "PID", "MAC",
-        "SOCKET", "VM", "STATE", "LOG",
+        "ID", "ROLE", "PID", "STATE", "UPTIME",
+        "MAC", "SOCKET", "VM", "VM_UPTIME",
+        "IP (TX/RX)", "RDMA (TX/RX)", "LOG",
     ))
     for inst in m["instances"]:
         alive = pid_alive(inst["pid"])
         state = "running" if alive else "dead"
-        vm_info = "-"
-        if inst.get("vm") and inst["vm"]:
-            vm = inst["vm"]
-            if vm.get("attached"):
-                vm_info = f"qmp:{vm.get('ssh_port', '?')}"
-            else:
-                vm_info = "detached"
+        vm_info = _get_vm_info(inst)
+        vm_up = _get_vm_uptime(inst)
+        st = all_stats.get(inst["id"], {})
+        ip_col, rdma_col = _get_byte_cols(st)
+        uptime = format_duration(
+            _get_uptime(inst["pid"]) if alive
+            else None
+        )
         logfile = os.path.join(
             LOG_DIR, f"{inst['id']}.log"
         )
@@ -250,10 +482,14 @@ def cmd_status(args):
             inst["id"],
             inst["role"],
             inst["pid"] if alive else 0,
+            state,
+            uptime,
             inst["mac"],
             inst["socket"],
             vm_info,
-            state,
+            vm_up,
+            ip_col,
+            rdma_col,
             logfile,
         ))
 
@@ -305,7 +541,87 @@ def cmd_logs(args):
         subprocess.run(["tail", "-f"] + logs)
 
 
+def _stats_summary_row(iid, stats, sf):
+    """Build one summary-table row for an instance."""
+    if not stats:
+        return (str(iid), "-", "-", "-",
+                "-", "-", "-", "-", "-", "-")
+    conn = stats.get("connection", "-")
+    if isinstance(conn, str) and len(conn) > 10:
+        conn = conn[:10]
+    ip_col = format_txrx(
+        stats.get("total_ip_bytes_tx", 0),
+        stats.get("total_ip_bytes_rx", 0),
+    )
+    sr_col = format_txrx(
+        stats.get("total_bytes_sent", 0),
+        stats.get("total_bytes_received", 0),
+    )
+    rw_col = format_txrx(
+        stats.get("total_bytes_rdma_read", 0),
+        stats.get("total_bytes_rdma_write", 0),
+    )
+    mmio_r = stats.get("mmio_reads_total", 0)
+    mmio_w = stats.get("mmio_writes_total", 0)
+    if not isinstance(mmio_r, int):
+        mmio_r = 0
+    if not isinstance(mmio_w, int):
+        mmio_w = 0
+    mmio_col = format_txrx(mmio_r, mmio_w)
+    cmds = stats.get("commands", 0)
+    ints = stats.get("interrupts", 0)
+    qps = count_qps(sf)
+    flr = stats.get("flr_reset_count", 0)
+    return (
+        str(iid), conn, ip_col, sr_col,
+        rw_col, mmio_col,
+        str(cmds), str(ints),
+        str(qps), str(flr),
+    )
+
+
+def _print_stats_summary(inst_id):
+    """Print a one-row-per-instance summary table."""
+    import glob
+    fmt = (
+        "{:<4} {:<11} {:<15} {:<15}"
+        " {:<15} {:<15}"
+        " {:<7} {:<7} {:<4} {}"
+    )
+    print(fmt.format(
+        "ID", "CONN",
+        "IP (TX/RX)", "RDMA-SR (TX/RX)",
+        "RDMA-RW (R/W)", "MMIO (R/W)",
+        "CMDS", "INTS", "QPS", "FLR",
+    ))
+    if inst_id:
+        sf = os.path.join(
+            RUN_DIR, f"{inst_id}.stats"
+        )
+        stats = parse_stats_file(sf)
+        row = _stats_summary_row(inst_id, stats, sf)
+        print(fmt.format(*row))
+    else:
+        for sf in sorted(
+            glob.glob(
+                os.path.join(RUN_DIR, "*.stats")
+            )
+        ):
+            name = pathlib.Path(sf).stem
+            try:
+                iid = int(name)
+            except ValueError:
+                continue
+            stats = parse_stats_file(sf)
+            row = _stats_summary_row(iid, stats, sf)
+            print(fmt.format(*row))
+
+
 def cmd_stats(args):
+    if getattr(args, "summary", False):
+        _print_stats_summary(args.instance)
+        return
+
     inst_id = args.instance
     if inst_id:
         sf = os.path.join(RUN_DIR, f"{inst_id}.stats")
@@ -878,6 +1194,11 @@ def build_parser():
         "--json", action="store_true",
         help="Output as JSON",
     )
+    sp.add_argument(
+        "--rate", type=int, default=None,
+        metavar="SECS",
+        help="Show byte deltas over SECS seconds",
+    )
 
     sub.add_parser("start", help="Start the service")
     sub.add_parser("stop", help="Stop the service")
@@ -902,6 +1223,10 @@ def build_parser():
     sp.add_argument(
         "instance", nargs="?", type=int, default=None,
         help="Instance ID (omit for all)",
+    )
+    sp.add_argument(
+        "--summary", action="store_true",
+        help="Concise one-row-per-instance table",
     )
 
     # -- dynamic mesh --

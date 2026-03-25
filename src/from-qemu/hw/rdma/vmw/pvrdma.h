@@ -110,6 +110,8 @@ typedef struct PVRDMADevStats {
     uint64_t total_bytes_received;   /* Total bytes received across all QPs */
     uint64_t total_bytes_rdma_read;  /* Total bytes read via RDMA Read */
     uint64_t total_bytes_rdma_write; /* Total bytes written via RDMA Write */
+    uint64_t total_ip_bytes_tx;      /* Total IP/Ethernet bytes transmitted */
+    uint64_t total_ip_bytes_rx;      /* Total IP/Ethernet bytes received */
     uint64_t flr_reset_count;        /* PCI Function Level Reset count */
 } PVRDMADevStats;
 

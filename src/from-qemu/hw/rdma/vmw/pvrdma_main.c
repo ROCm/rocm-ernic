@@ -185,6 +185,10 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
             "total_bytes_rdma_read", dev->stats.total_bytes_rdma_read);
     fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
             "total_bytes_rdma_write", dev->stats.total_bytes_rdma_write);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "total_ip_bytes_tx", dev->stats.total_ip_bytes_tx);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
+            "total_ip_bytes_rx", dev->stats.total_ip_bytes_rx);
 #undef STATS_LABEL_WIDTH
     fprintf(fp, "\n");
 

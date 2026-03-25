@@ -94,6 +94,7 @@ int eth_rx_inject_frame(PVRDMADev *dev, const void *frame_data, size_t len)
 
     /* Advance tail pointer */
     eth->rx_tail = next_tail;
+    dev->stats.total_ip_bytes_rx += len;
 
     /* Set interrupt */
     eth->icr |= ROCM_ERNIC_ETH_ICR_RX_PACKET;
