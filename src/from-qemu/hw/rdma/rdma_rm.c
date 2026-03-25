@@ -280,25 +280,19 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         }
         mr->backend_mr.backend_ops =
             pd->backend_pd.backend_ops; /* Store for destroy */
-#ifdef LEGACY_RDMA_REG_MR
-        /* We keep mr_handle in lkey so send and recv get get mr ptr */
-        *lkey = *mr_handle;
-#else
-        /* Get lkey from backend */
+        /*
+         * Prefer the backend-provided lkey so
+         * guest SGE lkeys match the backend MR.
+         * Fall back to mr_handle for backends that
+         * return 0 (e.g. "none").
+         */
         if (pd->backend_pd.backend_ops->mr_lkey) {
-            rdma_info_report(">>> rdma_rm_alloc_mr: Calling backend->mr_lkey, "
-                             "mr_handle=%u, backend_mr.ibmr=%p",
-                             *mr_handle, mr->backend_mr.ibmr);
-            *lkey = pd->backend_pd.backend_ops->mr_lkey(&mr->backend_mr);
-            rdma_info_report(">>> rdma_rm_alloc_mr: Backend returned lkey=0x%x",
-                             *lkey);
+            uint32_t blkey =
+                pd->backend_pd.backend_ops->mr_lkey(&mr->backend_mr);
+            *lkey = blkey ? blkey : *mr_handle;
         } else {
-            *lkey = *mr_handle; /* Fallback to handle */
-            rdma_info_report(">>> rdma_rm_alloc_mr: No backend->mr_lkey, using "
-                             "handle as lkey=0x%x",
-                             *lkey);
+            *lkey = *mr_handle;
         }
-#endif
         rdma_info_report(
             "rdma_rm_alloc_mr: Created MR handle %u via backend '%s'",
             *mr_handle, pd->backend_pd.backend_ops->name);

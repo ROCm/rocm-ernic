@@ -343,6 +343,12 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
                     goto err_qp;
                 }
 
+                /* wqe_cnt set after rounding below */
+                qp->sq.wqe_size = ucmd.sq_wqe_size ? ucmd.sq_wqe_size : 128;
+                qp->rq.wqe_size = ucmd.rq_wqe_size ? ucmd.rq_wqe_size : 128;
+                qp->sq.offset = ROCM_ERNIC_QP_NUM_HEADER_PAGES * PAGE_SIZE;
+                qp->rq.offset = 0;
+
                 qp->npages_send = ib_umem_num_dma_blocks(qp->sumem, PAGE_SIZE);
                 if (!is_srq)
                     qp->npages_recv =
@@ -398,6 +404,21 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 
     init_attr->cap.max_inline_data = 0;
 
+    /*
+     * Round capacities to power-of-2 for PVRDMA ring
+     * protocol compatibility.  The ring index validation
+     * uses bitmask operations that require this.
+     */
+    init_attr->cap.max_send_wr =
+        roundup_pow_of_two(max(1U, init_attr->cap.max_send_wr));
+    init_attr->cap.max_recv_wr =
+        roundup_pow_of_two(max(1U, init_attr->cap.max_recv_wr));
+
+    if (!qp->sq.wqe_cnt)
+        qp->sq.wqe_cnt = init_attr->cap.max_send_wr;
+    if (!qp->rq.wqe_cnt)
+        qp->rq.wqe_cnt = init_attr->cap.max_recv_wr;
+
     memset(cmd, 0, sizeof(*cmd));
     cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_QP;
     cmd->pd_handle = to_vpd(ibqp->pd)->pd_handle;
@@ -451,17 +472,14 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     if (udata) {
         qp_resp.qpn = qp->ibqp.qp_num;
         qp_resp.qp_handle = qp->qp_handle;
-
-        if (dv_mode) {
-            qp_resp.sq_depth = qp->sq.wqe_cnt;
-            qp_resp.rq_depth = qp->rq.wqe_cnt;
-            qp_resp.sq_wqe_size = qp->sq.wqe_size;
-            qp_resp.rq_wqe_size = qp->rq.wqe_size;
-            qp_resp.uar_qp_offset = ROCM_ERNIC_UAR_QP_OFFSET;
-            qp_resp.uar_cq_offset = ROCM_ERNIC_UAR_CQ_OFFSET;
-            if (context)
-                qp_resp.uar_mmap_offset = (u64)context->uar.pfn << PAGE_SHIFT;
-        }
+        qp_resp.sq_depth = qp->sq.wqe_cnt;
+        qp_resp.rq_depth = qp->rq.wqe_cnt;
+        qp_resp.sq_wqe_size = qp->sq.wqe_size;
+        qp_resp.rq_wqe_size = qp->rq.wqe_size;
+        qp_resp.uar_qp_offset = ROCM_ERNIC_UAR_QP_OFFSET;
+        qp_resp.uar_cq_offset = ROCM_ERNIC_UAR_CQ_OFFSET;
+        if (context)
+            qp_resp.uar_mmap_offset = (u64)context->uar.pfn << PAGE_SHIFT;
 
         if (ib_copy_to_udata(udata, &qp_resp,
                              min(udata->outlen, sizeof(qp_resp)))) {

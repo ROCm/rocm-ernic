@@ -189,11 +189,12 @@ int rocm_ernic_create_srq(struct ib_srq *ibsrq,
     dev->srq_tbl[srq->srq_handle % dev->dsr->caps.max_srq] = srq;
     spin_unlock_irqrestore(&dev->srq_tbl_lock, flags);
 
-    /* Copy udata back. */
-    if (ib_copy_to_udata(udata, &srq_resp, sizeof(srq_resp))) {
-        dev_warn(&dev->pdev->dev, "failed to copy back udata\n");
-        rocm_ernic_destroy_srq(&srq->ibsrq, udata);
-        return -EINVAL;
+    if (udata && udata->outlen >= sizeof(srq_resp)) {
+        if (ib_copy_to_udata(udata, &srq_resp, sizeof(srq_resp))) {
+            dev_warn(&dev->pdev->dev, "failed to copy back udata\n");
+            rocm_ernic_destroy_srq(&srq->ibsrq, udata);
+            return -EINVAL;
+        }
     }
 
     return 0;

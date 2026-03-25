@@ -455,3 +455,18 @@ Hot-reloading after a code change
 
    # Rebuild server and cycle instance 1
    sudo ernicctl hot-reload 1 --update-driver
+
+Guest VM Hardening
+^^^^^^^^^^^^^^^^^^
+
+The ``vm-driver-install.sh`` script automatically
+configures systemd to avoid long shutdown hangs
+caused by stale user session scopes:
+
+- ``KillUserProcesses=yes`` in
+  ``/etc/systemd/logind.conf``
+- ``DefaultTimeoutStopSec=15s`` in
+  ``/etc/systemd/system.conf``
+
+These settings are applied on first driver install
+and persist across reboots.

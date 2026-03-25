@@ -348,13 +348,16 @@ int rocm_ernic_alloc_ucontext(struct ib_ucontext *uctx, struct ib_udata *udata)
 
     context->ctx_handle = resp->ctx_handle;
 
-    /* copy back to user */
+    /* copy back to user (tolerate outlen=0 from providers
+     * that don't request driver-specific response data) */
     uresp.qp_tab_size = vdev->dsr->caps.max_qp;
-    ret = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
-    if (ret) {
-        rocm_ernic_uar_free(vdev, &context->uar);
-        rocm_ernic_dealloc_ucontext(&context->ibucontext);
-        return -EFAULT;
+    if (udata && udata->outlen >= sizeof(uresp)) {
+        ret = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
+        if (ret) {
+            rocm_ernic_uar_free(vdev, &context->uar);
+            rocm_ernic_dealloc_ucontext(&context->ibucontext);
+            return -EFAULT;
+        }
     }
 
     return 0;
@@ -461,7 +464,7 @@ int rocm_ernic_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
     pd->pdn = resp->pd_handle;
     pd_resp.pdn = resp->pd_handle;
 
-    if (udata) {
+    if (udata && udata->outlen >= sizeof(pd_resp)) {
         if (ib_copy_to_udata(udata, &pd_resp, sizeof(pd_resp))) {
             dev_warn(&dev->pdev->dev,
                      "failed to copy back protection domain\n");

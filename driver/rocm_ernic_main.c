@@ -1494,8 +1494,8 @@ static void __exit rocm_ernic_cleanup(void)
     while (true) {
         pdev = NULL;
         mutex_lock(&rocm_ernic_device_list_lock);
-        list_for_each_entry_safe(dev, tmp,
-            &rocm_ernic_device_list, device_link) {
+        list_for_each_entry_safe(dev, tmp, &rocm_ernic_device_list, device_link)
+        {
             pdev = dev->pdev;
             break;
         }

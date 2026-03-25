@@ -91,6 +91,87 @@ With verbose output on failure:
 
    ctest --test-dir build --output-on-failure
 
+Multi-VM RDMA Testing
+---------------------
+
+With two VMs launched via ``ernicctl``, you can run
+standard RDMA benchmarks over the emulated NICs.
+
+Prerequisites:
+
+1. Start the rocm-ernic service and launch two VMs
+   (see :doc:`service`).
+2. Install the driver and custom rdma-core v62 in
+   both VMs (see ``ernicctl driver-push``).
+3. Configure IP addresses on the rocm-ernic NICs
+   (``enp1s0``) in both VMs.
+
+ibv_rc_pingpong
+^^^^^^^^^^^^^^^
+
+Latency test using RC (Reliable Connection) QPs:
+
+.. code-block:: bash
+
+   # VM 1 (server):
+   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
+     ibv_rc_pingpong -d rocep1s0 -g 1 -n 100
+
+   # VM 2 (client, use multicast NIC for OOB):
+   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
+     ibv_rc_pingpong -d rocep1s0 -g 1 -n 100 \
+     192.168.100.10
+
+Expected output (TCP mesh backend):
+
+::
+
+   40960 bytes in 0.37 seconds = 0.89 Mbit/sec
+   5 iters in 0.37 seconds = 73960.40 usec/iter
+
+ib_send_bw
+^^^^^^^^^^
+
+Bandwidth test using the perftest suite:
+
+.. code-block:: bash
+
+   # VM 1 (server):
+   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
+     ib_send_bw -d rocep1s0 -x 1 -n 10 \
+     --report_gbits
+
+   # VM 2 (client):
+   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
+     ib_send_bw -d rocep1s0 -x 1 -n 10 \
+     --report_gbits 192.168.100.10
+
+Expected output:
+
+::
+
+   #bytes  #iterations  BW peak[Gb/sec]  BW average[Gb/sec]
+   65536   10           0.79             0.12
+
+Ethernet Connectivity
+^^^^^^^^^^^^^^^^^^^^^
+
+The emulated NICs support IP over Ethernet via frame
+forwarding through the TCP mesh.  Ping between VMs:
+
+.. code-block:: bash
+
+   # VM 1:
+   sudo ip link set enp1s0 up
+   sudo ip addr add 192.168.200.10/24 dev enp1s0
+
+   # VM 2:
+   sudo ip link set enp1s0 up
+   sudo ip addr add 192.168.200.20/24 dev enp1s0
+
+   # From VM 1:
+   ping 192.168.200.20
+
 Adding New Tests
 ----------------
 

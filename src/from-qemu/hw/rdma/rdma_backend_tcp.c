@@ -19,6 +19,7 @@
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "vmw/pvrdma.h"
 #include "../../utils/dhcp_server.h"
+#include "../../utils/eth_rx_inject.h"
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
@@ -47,8 +48,10 @@
  *   uint8_t  payload[];    // Variable length payload
  */
 
-#define TCP_PROTOCOL_MAGIC   0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION 2          /* Multi-node version */
+#define TCP_PROTOCOL_MAGIC    0x52444D41 /* "RDMA" */
+#define TCP_PROTOCOL_VERSION  2          /* Multi-node version */
+#define TCP_MAX_ETH_FRAME_LEN 2048
+#define TCP_MAX_PAYLOAD_LEN   (16u << 20) /* 16 MiB */
 
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,
@@ -72,6 +75,7 @@ typedef enum {
     /* DHCP messages */
     TCP_MSG_DHCP_REQUEST,  /* Worker -> Manager: DHCP request from VM */
     TCP_MSG_DHCP_RESPONSE, /* Manager -> Worker: DHCP response for VM */
+    TCP_MSG_ETH_FRAME,     /* Node -> Node: raw Ethernet frame */
 } TcpMsgType;
 
 typedef struct {
@@ -753,6 +757,10 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload)
     }
 
     /* Allocate and receive payload */
+    if (hdr->msg_len > TCP_MAX_PAYLOAD_LEN) {
+        rdma_error_report("TCP: payload too large: %u", hdr->msg_len);
+        return -1;
+    }
     if (hdr->msg_len > 0) {
         *payload = g_malloc(hdr->msg_len);
         total_recv = 0;
@@ -932,6 +940,10 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                         /* Send completion ACK back to sender */
                         TcpConnection *src_conn =
                             tcp_get_connection(priv, hdr.src_node_id);
+                        if ((!src_conn || !src_conn->is_connected) &&
+                            priv->manager_conn &&
+                            priv->manager_conn->is_connected)
+                            src_conn = priv->manager_conn;
                         if (src_conn && src_conn->is_connected) {
                             qemu_mutex_lock(&src_conn->lock);
                             if (src_conn->sockfd >= 0) {
@@ -1321,6 +1333,53 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 /* Worker receives DHCP response from manager */
                 /* This is handled by dhcp_proxy in pvrdma_eth.c */
                 rdma_info_report("TCP: Received DHCP_RESPONSE from manager");
+                break;
+            }
+
+            case TCP_MSG_ETH_FRAME: {
+                TcpBackendPrivate *priv = conn->priv;
+                if (hdr.msg_len > TCP_MAX_ETH_FRAME_LEN) {
+                    rdma_error_report("TCP: ETH frame too large: %u",
+                                      hdr.msg_len);
+                    break;
+                }
+                if (priv && priv->backend_dev && payload && hdr.msg_len > 0) {
+                    PVRDMADev *pvrdma_dev =
+                        (PVRDMADev *)((char *)priv->backend_dev -
+                                      offsetof(PVRDMADev, backend_dev));
+                    int ret =
+                        eth_rx_inject_frame(pvrdma_dev, payload, hdr.msg_len);
+                    if (ret == 0) {
+                        rdma_info_report("TCP: Injected ETH frame "
+                                         "(%u bytes) from node %u",
+                                         hdr.msg_len, hdr.src_node_id);
+                    }
+
+                    if (priv->is_manager) {
+                        GHashTableIter fwd_iter;
+                        gpointer fk, fv;
+
+                        qemu_mutex_lock(&priv->mesh_table_lock);
+                        g_hash_table_iter_init(&fwd_iter, priv->mesh_nodes);
+                        while (g_hash_table_iter_next(&fwd_iter, &fk, &fv)) {
+                            uint32_t nid = GPOINTER_TO_UINT(fk);
+                            if (nid == hdr.src_node_id)
+                                continue;
+                            TcpConnection *fwd_conn =
+                                tcp_get_connection(priv, nid);
+                            if (fwd_conn && fwd_conn->is_connected &&
+                                fwd_conn->sockfd >= 0) {
+                                qemu_mutex_lock(&fwd_conn->lock);
+                                tcp_send_message(fwd_conn->sockfd,
+                                                 TCP_MSG_ETH_FRAME, payload,
+                                                 hdr.msg_len, 0,
+                                                 hdr.src_node_id, nid, 0, 0);
+                                qemu_mutex_unlock(&fwd_conn->lock);
+                            }
+                        }
+                        qemu_mutex_unlock(&priv->mesh_table_lock);
+                    }
+                }
                 break;
             }
 
@@ -2342,12 +2401,23 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         tqp->remote_qpn = dqpn;
         if (dgid) {
             memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
-            /* Extract node ID from GID if in worker mode */
-            /* For now, use a simple encoding: node_id in last byte */
-            if (priv->mode == TCP_MODE_WORKER) {
-                tqp->remote_node_id = dgid->raw[15];
-            }
         }
+
+        /*
+         * Extract remote node ID from the dgid that
+         * tcp_add_gid() encoded (node_id in raw[15]).
+         * Fall back to simple heuristics only when
+         * dgid is NULL (kernel-internal QP transitions
+         * that lack routing info).
+         */
+        if (dgid) {
+            tqp->remote_node_id = (uint32_t)dgid->raw[15];
+        } else if (priv->mode == TCP_MODE_WORKER) {
+            tqp->remote_node_id = 0;
+        } else {
+            tqp->remote_node_id = (priv->local_node_id == 0) ? 1 : 0;
+        }
+
         tqp->rq_psn = rq_psn;
         if (qkey_set) {
             tqp->qkey = qkey;
@@ -2355,8 +2425,9 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
     qemu_mutex_unlock(&priv->lock);
 
-    rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, node=%u)", qpn, dqpn,
-                     tqp ? tqp->remote_node_id : 0);
+    rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, "
+                     "node=%u, mode=%d)",
+                     qpn, dqpn, tqp ? tqp->remote_node_id : 0, priv->mode);
     return 0;
 }
 
@@ -2429,7 +2500,10 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
-    qemu_mutex_lock(&priv->lock);
+    if (qemu_mutex_trylock(&priv->lock)) {
+        usleep(100);
+        qemu_mutex_lock(&priv->lock);
+    }
     tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
     if (!tqp) {
         qemu_mutex_unlock(&priv->lock);
@@ -2450,6 +2524,10 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     /* Get connection for destination node */
     conn = tcp_get_connection(priv, dst_node);
+    if ((!conn || !conn->is_connected) && priv->manager_conn &&
+        priv->manager_conn->is_connected) {
+        conn = priv->manager_conn;
+    }
     if (!conn || !conn->is_connected) {
         rdma_error_report("TCP: No connection to node %u", dst_node);
         return;
@@ -2682,3 +2760,42 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .modify_srq = NULL,
     .post_srq_recv = NULL,
 };
+
+int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
+                               size_t len)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+    int sent = 0;
+
+    if (!priv || len == 0 || len > TCP_MAX_ETH_FRAME_LEN)
+        return -1;
+
+    if (priv->is_manager) {
+        GHashTableIter iter;
+        gpointer key, value;
+
+        qemu_mutex_lock(&priv->mesh_table_lock);
+        g_hash_table_iter_init(&iter, priv->mesh_nodes);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            uint32_t node_id = GPOINTER_TO_UINT(key);
+            TcpConnection *conn = tcp_get_connection(priv, node_id);
+            if (conn && conn->is_connected && conn->sockfd >= 0) {
+                qemu_mutex_lock(&conn->lock);
+                tcp_send_message(conn->sockfd, TCP_MSG_ETH_FRAME, frame, len, 0,
+                                 priv->local_node_id, node_id, 0, 0);
+                qemu_mutex_unlock(&conn->lock);
+                sent++;
+            }
+        }
+        qemu_mutex_unlock(&priv->mesh_table_lock);
+    } else if (priv->manager_conn && priv->manager_conn->is_connected &&
+               priv->manager_conn->sockfd >= 0) {
+        qemu_mutex_lock(&priv->manager_conn->lock);
+        tcp_send_message(priv->manager_conn->sockfd, TCP_MSG_ETH_FRAME, frame,
+                         len, 0, priv->local_node_id, 0, 0, 0);
+        qemu_mutex_unlock(&priv->manager_conn->lock);
+        sent++;
+    }
+
+    return sent;
+}

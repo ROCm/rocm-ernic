@@ -742,7 +742,7 @@ def cmd_vm_launch(args):
         "IMAGES": CFG["ERNIC_VM_IMAGE_DIR"],
         "SSH_PORT": str(ssh_port),
         "VCPUS": vcpus,
-        "VMEM": f"{mem}M",
+        "VMEM": mem,
         "KVM": "enable",
         "VFIO_USERDEV": inst["socket"],
         "QMP_SOCKET": qmp_sock,

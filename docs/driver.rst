@@ -97,6 +97,31 @@ it automatically propagates to the Ethernet module. Writing
 directly to the Ethernet attribute only affects the Ethernet
 layer.
 
+Kernel Compatibility
+--------------------
+
+The driver builds against kernels 6.8 through 6.17+.
+Notable API changes handled automatically via
+``LINUX_VERSION_CODE`` guards:
+
+- **Kernel 6.11+**: ``create_cq`` takes
+  ``struct uverbs_attr_bundle *`` instead of
+  ``struct ib_udata *``.
+- **Kernel 6.17+**: ``reg_user_mr`` gains a
+  ``struct ib_dmah *`` parameter.
+- **Kernel 6.17 (HWE)**: write-based ``POST_SEND``,
+  ``POST_RECV``, and ``POLL_CQ`` uverbs handlers are
+  removed.  The rdma-core provider implements these as
+  userspace-direct ring buffer operations (see
+  :doc:`architecture`).
+
+To use the HWE kernel on Ubuntu 24.04 VMs:
+
+.. code-block:: bash
+
+   sudo apt install linux-generic-hwe-24.04
+   sudo reboot
+
 End-to-End Workflow
 -------------------
 
