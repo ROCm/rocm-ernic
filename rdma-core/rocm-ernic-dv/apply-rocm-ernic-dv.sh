@@ -58,11 +58,12 @@ if ! grep -q "rocm_ernic" \
     echo ""
     echo "Registering provider in CMakeLists.txt..."
 
-    # Find the last add_subdirectory(providers/...)
-    # line and append ours after it
-    if grep -q "add_subdirectory(providers/" \
-        "${RDMA_CORE}/CMakeLists.txt"; then
-        sed -i '/add_subdirectory(providers\//!b;:a;n;/add_subdirectory(providers\//ba;i\add_subdirectory(providers/rocm_ernic)' \
+    # Append after the last add_subdirectory(providers/...)
+    last_line="$(grep -n "add_subdirectory(providers/" \
+        "${RDMA_CORE}/CMakeLists.txt" \
+        | tail -1 | cut -d: -f1)"
+    if [ -n "${last_line}" ]; then
+        sed -i "${last_line}a\\add_subdirectory(providers/rocm_ernic)" \
             "${RDMA_CORE}/CMakeLists.txt"
     else
         echo "add_subdirectory(providers/rocm_ernic)" \

@@ -116,8 +116,11 @@ void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
     const uint32_t tail = qatomic_read(&ring->ring_state->prod_tail);
     const uint32_t head = qatomic_read(&ring->ring_state->cons_head);
 
-    rdma_info_report(">>> pvrdma_ring_next_elem_read: ring=%p, pages=%p", ring,
-                     ring ? ring->pages : NULL);
+    rdma_info_report(">>> pvrdma_ring_next_elem_read: "
+                     "ring=%p tail=%u head=%u "
+                     "max=%u ring_state=%p",
+                     ring, tail, head, ring->max_elems,
+                     (void *)ring->ring_state);
 
     if (tail & ~((ring->max_elems << 1) - 1) ||
         head & ~((ring->max_elems << 1) - 1) || tail == head) {

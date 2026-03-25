@@ -64,6 +64,10 @@ int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
                                RdmaBackendType type, const char *config);
 void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
 
+/* Ethernet frame forwarding via TCP mesh */
+int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
+                               size_t len);
+
 /* Legacy verbs backend init (for compatibility) */
 int rdma_backend_init(RdmaBackendDev *backend_dev, PCIDevice *pdev,
                       RdmaDeviceResources *rdma_dev_res,

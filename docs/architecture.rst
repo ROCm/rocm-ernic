@@ -108,10 +108,46 @@ process. Ideal for driver development and CI testing.
 TCP/IP
 ^^^^^^
 
-Connects two rocm-ernic server instances over a TCP socket.
-The protocol serializes RDMA work requests and completions
-across the network. Useful for multi-VM testing without
-RDMA hardware.
+Connects two or more rocm-ernic server instances over TCP
+in a manager/worker mesh.  The protocol serializes RDMA work
+requests, data payloads, and completions across the network.
+Instance 1 acts as the mesh manager; instances 2..N connect
+as workers.
+
+The TCP backend also forwards raw Ethernet frames between
+nodes, enabling IP connectivity (ping, ARP) over the
+emulated NIC.  Frames that the server's Ethernet handler
+does not process locally (ARP for non-server IPs, ICMP,
+arbitrary IP traffic) are broadcast to all mesh peers via
+``TCP_MSG_ETH_FRAME`` messages.  The manager acts as a hub,
+re-broadcasting frames from one worker to all others.
+
+Userspace Data Path
+"""""""""""""""""""
+
+On kernels 6.14 and later, the write-based uverbs handlers
+for ``POST_SEND``, ``POST_RECV``, and ``POLL_CQ`` are no
+longer available.  The rdma-core provider implements these
+operations as direct reads and writes to shared-memory ring
+buffers:
+
+- **post_send / post_recv**: write WQE headers and SGEs
+  into the mmap'd QP ring buffer, advance the producer
+  tail index, and ring the UAR doorbell (a BAR2 write
+  trapped by libvfio-user).
+
+- **poll_cq**: read CQE entries from the mmap'd CQ buffer
+  using the shared ring state (producer/consumer atomics
+  in the CQ header page).
+
+The QP and CQ buffers are allocated by the provider via
+``mmap(MAP_PRIVATE | MAP_ANONYMOUS)`` and pinned by the
+kernel driver via ``ib_umem_get``.  The server accesses the
+same physical pages through DMA mapping
+(``rdma_pci_dma_map``).  Ring state synchronization uses
+``_Atomic uint32_t`` on the provider side and
+``qatomic_read/set`` on the server side, both backed by
+the same shared page.
 
 RDMA / Verbs
 ^^^^^^^^^^^^^

@@ -163,9 +163,17 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     cq->is_kernel = !udata;
 
     if (!cq->is_kernel) {
-        if (ib_copy_from_udata(&ucmd, udata, min(udata->inlen, sizeof(ucmd)))) {
-            ret = -EFAULT;
-            goto err_cq;
+        if (udata->inlen >= sizeof(ucmd)) {
+            if (ib_copy_from_udata(&ucmd, udata, sizeof(ucmd))) {
+                ret = -EFAULT;
+                goto err_cq;
+            }
+        } else if (udata->inlen > 0) {
+            memset(&ucmd, 0, sizeof(ucmd));
+            if (ib_copy_from_udata(&ucmd, udata, udata->inlen)) {
+                ret = -EFAULT;
+                goto err_cq;
+            }
         }
 
         cq->umem = ib_umem_get(ibdev, ucmd.buf_addr, ucmd.buf_size,
@@ -174,7 +182,6 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
             ret = PTR_ERR(cq->umem);
             goto err_cq;
         }
-
         npages = ib_umem_num_dma_blocks(cq->umem, PAGE_SIZE);
     } else {
         npages = 1 + (entries * sizeof(struct rocm_ernic_cqe) + PAGE_SIZE - 1) /
@@ -197,10 +204,20 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
         goto err_umem;
     }
 
-    if (cq->is_kernel)
+    if (cq->is_kernel) {
         cq->ring_state = cq->pdir.pages[0];
-    else
+    } else {
         rocm_ernic_page_dir_insert_umem(&cq->pdir, cq->umem, 0);
+        if (npages > 1) {
+            struct scatterlist *sg = cq->umem->sgt_append.sgt.sgl;
+            struct page *first_page = sg_page(sg);
+
+            cq->ring_state = (struct rocm_ernic_ring_state *)kmap(first_page);
+            if (cq->ring_state)
+                memset(cq->ring_state, 0, sizeof(*cq->ring_state));
+            cq->offset = PAGE_SIZE;
+        }
+    }
 
     refcount_set(&cq->refcnt, 1);
     init_completion(&cq->free);
@@ -244,6 +261,11 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     return 0;
 
 err_page_dir:
+    if (cq->ring_state && !cq->is_kernel) {
+        struct scatterlist *sg = cq->umem->sgt_append.sgt.sgl;
+        kunmap(sg_page(sg));
+        cq->ring_state = NULL;
+    }
     rocm_ernic_page_dir_cleanup(dev, &cq->pdir);
 err_umem:
     ib_umem_release(cq->umem);
@@ -258,6 +280,12 @@ static void rocm_ernic_free_cq(struct rocm_ernic_dev *dev,
     if (refcount_dec_and_test(&cq->refcnt))
         complete(&cq->free);
     wait_for_completion(&cq->free);
+
+    if (!cq->is_kernel && cq->ring_state && cq->umem) {
+        struct scatterlist *sg = cq->umem->sgt_append.sgt.sgl;
+        kunmap(sg_page(sg));
+        cq->ring_state = NULL;
+    }
 
     ib_umem_release(cq->umem);
 

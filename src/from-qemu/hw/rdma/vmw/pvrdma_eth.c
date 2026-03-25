@@ -394,8 +394,6 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
             }
             return;
         }
-
-        return; /* Not an ARP request for our IP, ignore */
     }
 
     /* Handle IP packets */
@@ -933,6 +931,18 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
 
                 return;
             }
+        }
+    }
+
+    /* Default: forward frame to all mesh peers */
+    if (dev->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
+        dev->backend_dev.backend_private) {
+        int sent =
+            tcp_backend_send_eth_frame(&dev->backend_dev, frame_data, len);
+        if (sent > 0) {
+            rdma_info_report("ETH: Forwarded frame (%zu bytes, "
+                             "ethertype=0x%04x) to %d peer(s)",
+                             len, ethertype, sent);
         }
     }
 }

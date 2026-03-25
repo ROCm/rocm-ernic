@@ -19,6 +19,14 @@
 
 set -euo pipefail
 
+ENV_FILE="/etc/rocm-ernic/rocm-ernic.env"
+if [ -f "${ENV_FILE}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+    set +a
+fi
+
 ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-/usr/share/rocm-ernic/driver}"
 ERNIC_DRIVER_TARBALL="${ERNIC_DRIVER_TARBALL:-/tmp/rocm-ernic-driver.tar.gz}"
 

@@ -98,7 +98,7 @@ mkdir -p "${CMAKE_BUILD}"
 cmake -S "${SRC_DIR}" -B "${CMAKE_BUILD}" \
   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
   -DCMAKE_BUILD_TYPE=Release \
-  -DIOCTL_MODE=both \
+  -DIOCTL_MODE=write \
   -DNO_PYVERBS=1 \
   -DNO_MAN_PAGES=1 \
   -DENABLE_STATIC=0

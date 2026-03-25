@@ -45,6 +45,8 @@ DEFAULTS = {
     "ERNIC_VM_MEM": "8192",
     "ERNIC_VM_SSH_USER": "ubuntu",
     "ERNIC_VM_SSH_BASE_PORT": "2222",
+    "ERNIC_VM_BACKING": "",
+    "ERNIC_VM_MCAST_GROUP": "",
 }
 
 
@@ -212,6 +214,9 @@ def cmd_status(args):
                 "running" if pid_alive(inst["pid"])
                 else "dead"
             )
+            inst["log_file"] = os.path.join(
+                LOG_DIR, f"{inst['id']}.log"
+            )
         print(json.dumps(m, indent=2))
         return
 
@@ -222,11 +227,11 @@ def cmd_status(args):
 
     fmt = (
         "{:<4} {:<9} {:<7} {:<19}"
-        " {:<30} {:<12} {}"
+        " {:<30} {:<12} {:<10} {}"
     )
     print(fmt.format(
         "ID", "ROLE", "PID", "MAC",
-        "SOCKET", "VM", "STATE",
+        "SOCKET", "VM", "STATE", "LOG",
     ))
     for inst in m["instances"]:
         alive = pid_alive(inst["pid"])
@@ -238,6 +243,9 @@ def cmd_status(args):
                 vm_info = f"qmp:{vm.get('ssh_port', '?')}"
             else:
                 vm_info = "detached"
+        logfile = os.path.join(
+            LOG_DIR, f"{inst['id']}.log"
+        )
         print(fmt.format(
             inst["id"],
             inst["role"],
@@ -246,6 +254,7 @@ def cmd_status(args):
             inst["socket"],
             vm_info,
             state,
+            logfile,
         ))
 
 
@@ -667,6 +676,61 @@ def cmd_vm_launch(args):
     vcpus = str(args.vcpus or CFG["ERNIC_VM_VCPUS"])
     mem = str(args.mem or CFG["ERNIC_VM_MEM"])
 
+    image_dir = CFG["ERNIC_VM_IMAGE_DIR"]
+    overlay = os.path.join(
+        image_dir, f"{vm_name}.qcow2"
+    )
+    backing = CFG.get("ERNIC_VM_BACKING", "")
+    if not os.path.isfile(overlay):
+        if backing and os.path.isfile(backing):
+            gen_vm = os.path.join(
+                CFG["ERNIC_QEMU_MINIMAL"],
+                "qemu", "gen-vm",
+            )
+            if os.path.isfile(gen_vm):
+                print("Creating overlay via gen-vm:")
+                print(f"  backing: {backing}")
+                print(f"  overlay: {overlay}")
+                gen_env = dict(os.environ)
+                gen_env.update({
+                    "VM_NAME": vm_name,
+                    "IMAGES": image_dir,
+                    "BACKING_FILE": backing,
+                })
+                subprocess.run(
+                    [gen_vm], env=gen_env, check=True,
+                )
+            else:
+                print("Creating overlay via qemu-img:")
+                print(f"  backing: {backing}")
+                print(f"  overlay: {overlay}")
+                subprocess.run([
+                    "qemu-img", "create",
+                    "-F", "qcow2",
+                    "-b", backing,
+                    "-f", "qcow2",
+                    overlay,
+                ], check=True)
+        elif backing:
+            print(
+                f"ERROR: Backing file not found:"
+                f" {backing}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            print(
+                f"ERROR: VM image not found:"
+                f" {overlay}",
+                file=sys.stderr,
+            )
+            print(
+                "Set ERNIC_VM_BACKING in the env file"
+                " to auto-create overlays.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     qmp_sock = os.path.join(
         RUN_DIR, f"qmp-{args.instance}.sock"
     )
@@ -684,11 +748,20 @@ def cmd_vm_launch(args):
         "QMP_SOCKET": qmp_sock,
     })
 
+    if backing:
+        env["BACKING_SHARED"] = "true"
+
+    mcast = CFG.get("ERNIC_VM_MCAST_GROUP", "")
+    if mcast:
+        env["MCAST_GROUP"] = mcast
+
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
     print(f"  SSH port:    {ssh_port}")
     print(f"  vfio-user:   {inst['socket']}")
     print(f"  QMP socket:  {qmp_sock}")
+    if mcast:
+        print(f"  MCAST group: {mcast}")
 
     logfile = os.path.join(
         LOG_DIR, f"vm-{args.instance}.log"

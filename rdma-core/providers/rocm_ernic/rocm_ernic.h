@@ -11,8 +11,8 @@
 #include <stdint.h>
 #include <pthread.h>
 
-#define ROCM_ERNIC_VENDOR_ID 0x1022
-#define ROCM_ERNIC_DEVICE_ID 0x8000
+#define ROCM_ERNIC_VENDOR_ID          0x1022
+#define ROCM_ERNIC_DEVICE_ID          0x8000
 #define ROCM_ERNIC_UVERBS_ABI_VERSION 3
 
 struct rocm_ernic_cqe {
@@ -33,6 +33,63 @@ struct rocm_ernic_cqe {
     uint8_t smac[6];
     uint8_t network_hdr_type;
     uint8_t reserved2[6];
+};
+
+struct rocm_ernic_alloc_ucontext_resp {
+    struct ib_uverbs_get_context_resp ibv_resp;
+    __u32 qp_tab_size;
+    __u32 reserved;
+};
+
+struct rocm_ernic_alloc_pd_resp_ex {
+    struct ib_uverbs_alloc_pd_resp ibv_resp;
+    __u32 pdn;
+    __u32 reserved;
+};
+
+struct rocm_ernic_create_cq_cmd {
+    struct ibv_create_cq ibv_cmd;
+    __aligned_u64 buf_addr;
+    __u32 buf_size;
+    __u32 reserved;
+    __aligned_u64 comp_mask;
+    __u32 ncqe;
+    __u32 cqe_size;
+};
+
+struct rocm_ernic_create_cq_resp_ex {
+    struct ib_uverbs_create_cq_resp ibv_resp;
+    __u32 cqn;
+    __u32 ncqe;
+    __u32 cqe_size;
+    __u32 reserved;
+};
+
+struct rocm_ernic_create_qp_cmd {
+    struct ibv_create_qp ibv_cmd;
+    __aligned_u64 rbuf_addr;
+    __aligned_u64 sbuf_addr;
+    __u32 rbuf_size;
+    __u32 sbuf_size;
+    __aligned_u64 qp_addr;
+    __aligned_u64 comp_mask;
+    __u32 sq_wqe_size;
+    __u32 sq_depth;
+    __u32 rq_wqe_size;
+    __u32 rq_depth;
+};
+
+struct rocm_ernic_create_qp_resp_ex {
+    struct ib_uverbs_create_qp_resp ibv_resp;
+    __u32 qpn;
+    __u32 qp_handle;
+    __u32 sq_depth;
+    __u32 rq_depth;
+    __u32 sq_wqe_size;
+    __u32 rq_wqe_size;
+    __aligned_u64 uar_mmap_offset;
+    __u32 uar_qp_offset;
+    __u32 uar_cq_offset;
 };
 
 struct rocm_ernic_device {
@@ -57,7 +114,11 @@ struct rocm_ernic_cq {
     uint32_t cqe_size;
     void *buf;
     size_t buf_len;
+    struct rocm_ernic_ring *cq_rx_ring;
+    size_t cq_offset;
 };
+
+struct rocm_ernic_ring;
 
 struct rocm_ernic_qp {
     struct verbs_qp vqp;
@@ -70,76 +131,70 @@ struct rocm_ernic_qp {
     void *uar_ptr;
     uint32_t uar_qp_offset;
     uint32_t uar_cq_offset;
+    uint64_t uar_mmap_offset;
+    void *sq_buf;
+    size_t sq_buf_size;
+    void *rq_buf;
+    size_t rq_buf_size;
+    struct rocm_ernic_ring *sq_ring;
+    struct rocm_ernic_ring *rq_ring;
+    size_t sq_offset;
+    size_t rq_offset;
 };
 
-static inline struct rocm_ernic_device *
-to_rocm_ernic_dev(struct ibv_device *ibdev)
+static inline struct rocm_ernic_device *to_rocm_ernic_dev(
+    struct ibv_device *ibdev)
 {
-    return container_of(ibdev, struct rocm_ernic_device,
-                        vdev.device);
+    return container_of(ibdev, struct rocm_ernic_device, vdev.device);
 }
 
-static inline struct rocm_ernic_context *
-to_rocm_ernic_ctx(struct ibv_context *ibctx)
+static inline struct rocm_ernic_context *to_rocm_ernic_ctx(
+    struct ibv_context *ibctx)
 {
-    return container_of(ibctx, struct rocm_ernic_context,
-                        vctx.context);
+    return container_of(ibctx, struct rocm_ernic_context, vctx.context);
 }
 
-static inline struct rocm_ernic_pd *
-to_rocm_ernic_pd(struct ibv_pd *ibpd)
+static inline struct rocm_ernic_pd *to_rocm_ernic_pd(struct ibv_pd *ibpd)
 {
     return container_of(ibpd, struct rocm_ernic_pd, ibvpd);
 }
 
-static inline struct rocm_ernic_cq *
-to_rocm_ernic_cq(struct ibv_cq *ibcq)
+static inline struct rocm_ernic_cq *to_rocm_ernic_cq(struct ibv_cq *ibcq)
 {
     return container_of(ibcq, struct rocm_ernic_cq, vcq.cq);
 }
 
-static inline struct rocm_ernic_qp *
-to_rocm_ernic_qp(struct ibv_qp *ibqp)
+static inline struct rocm_ernic_qp *to_rocm_ernic_qp(struct ibv_qp *ibqp)
 {
     return container_of(ibqp, struct rocm_ernic_qp, vqp.qp);
 }
 
-int rocm_ernic_query_device(
-    struct ibv_context *ctx,
-    const struct ibv_query_device_ex_input *in,
-    struct ibv_device_attr_ex *attr, size_t attr_size);
-int rocm_ernic_query_port(struct ibv_context *ctx,
-                          uint8_t port,
+int rocm_ernic_query_device(struct ibv_context *ctx,
+                            const struct ibv_query_device_ex_input *in,
+                            struct ibv_device_attr_ex *attr, size_t attr_size);
+int rocm_ernic_query_port(struct ibv_context *ctx, uint8_t port,
                           struct ibv_port_attr *attr);
 struct ibv_pd *rocm_ernic_alloc_pd(struct ibv_context *ctx);
 int rocm_ernic_dealloc_pd(struct ibv_pd *pd);
-struct ibv_mr *rocm_ernic_reg_mr(struct ibv_pd *pd,
-                                 void *addr, size_t length,
+struct ibv_mr *rocm_ernic_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
                                  uint64_t hca_va, int access);
 int rocm_ernic_dereg_mr(struct verbs_mr *vmr);
-struct ibv_cq *rocm_ernic_create_cq_v(
-    struct ibv_context *ctx, int cqe,
-    struct ibv_comp_channel *ch, int comp_vector);
+struct ibv_cq *rocm_ernic_create_cq_v(struct ibv_context *ctx, int cqe,
+                                      struct ibv_comp_channel *ch,
+                                      int comp_vector);
 int rocm_ernic_destroy_cq_v(struct ibv_cq *cq);
-int rocm_ernic_poll_cq_v(struct ibv_cq *cq, int ne,
-                         struct ibv_wc *wc);
-int rocm_ernic_req_notify_cq_v(struct ibv_cq *cq,
-                               int solicited_only);
-struct ibv_qp *rocm_ernic_create_qp_v(
-    struct ibv_pd *pd, struct ibv_qp_init_attr *attr);
-int rocm_ernic_modify_qp_v(struct ibv_qp *qp,
-                           struct ibv_qp_attr *attr,
+int rocm_ernic_poll_cq_v(struct ibv_cq *cq, int ne, struct ibv_wc *wc);
+int rocm_ernic_req_notify_cq_v(struct ibv_cq *cq, int solicited_only);
+struct ibv_qp *rocm_ernic_create_qp_v(struct ibv_pd *pd,
+                                      struct ibv_qp_init_attr *attr);
+int rocm_ernic_modify_qp_v(struct ibv_qp *qp, struct ibv_qp_attr *attr,
                            int attr_mask);
-int rocm_ernic_query_qp_v(struct ibv_qp *qp,
-                          struct ibv_qp_attr *attr,
-                          int attr_mask,
-                          struct ibv_qp_init_attr *init_attr);
+int rocm_ernic_query_qp_v(struct ibv_qp *qp, struct ibv_qp_attr *attr,
+                          int attr_mask, struct ibv_qp_init_attr *init_attr);
 int rocm_ernic_destroy_qp_v(struct ibv_qp *qp);
-int rocm_ernic_post_send_v(struct ibv_qp *qp,
-                           struct ibv_send_wr *wr,
+int rocm_ernic_post_send_v(struct ibv_qp *qp, struct ibv_send_wr *wr,
                            struct ibv_send_wr **bad_wr);
-int rocm_ernic_post_recv_v(struct ibv_qp *qp,
-                           struct ibv_recv_wr *wr,
+int rocm_ernic_post_recv_v(struct ibv_qp *qp, struct ibv_recv_wr *wr,
                            struct ibv_recv_wr **bad_wr);
 
 #endif /* __ROCM_ERNIC_PROVIDER_H__ */

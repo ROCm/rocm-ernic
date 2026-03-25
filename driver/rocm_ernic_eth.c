@@ -283,6 +283,7 @@ static int rocm_ernic_eth_open(struct net_device *ndev)
     /* STATUS register check is informational but carrier should be ON */
     status = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_STATUS);
     netif_carrier_on(ndev);
+    netif_start_queue(ndev);
     if (status & ROCM_ERNIC_ETH_STATUS_LINK_UP) {
         dev_info(&eth_dev->pdev->dev, "Ethernet link up on %s\n", ndev->name);
     } else {
@@ -317,6 +318,7 @@ static int rocm_ernic_eth_stop(struct net_device *ndev)
     rocm_ernic_eth_free_tx_ring(eth_dev);
     rocm_ernic_eth_free_rx_ring(eth_dev);
 
+    netif_stop_queue(ndev);
     netif_carrier_off(ndev);
 
     return 0;
@@ -479,11 +481,9 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
                              netif_running(eth_dev->netdev),
                              netif_carrier_ok(eth_dev->netdev));
 
-                    /* Only deliver if interface is up and running */
                     if (netif_running(eth_dev->netdev)) {
-                        /* Deliver to network stack using netif_receive_skb for
-                         * better integration with network stack (handles
-                         * bridging, VLAN, etc.) */
+                        eth_dev->netdev->stats.rx_packets++;
+                        eth_dev->netdev->stats.rx_bytes += pkt_len;
                         netif_receive_skb(skb);
                     } else {
                         dev_warn(
@@ -550,6 +550,7 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
     u32 tail;
 
     if (!eth_dev || !eth_dev->regs) {
+        ndev->stats.tx_dropped++;
         dev_kfree_skb_any(skb);
         return NETDEV_TX_OK;
     }
@@ -560,6 +561,7 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
 
         lb_skb = skb_copy(skb, GFP_ATOMIC);
         if (!lb_skb) {
+            ndev->stats.tx_dropped++;
             dev_kfree_skb_any(skb);
             return NETDEV_TX_OK;
         }
@@ -570,8 +572,15 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
             ether_addr_copy(eth->h_source, ndev->dev_addr);
         }
 
+        ndev->stats.tx_packets++;
+        ndev->stats.tx_bytes += skb->len;
+
         lb_skb->protocol = eth_type_trans(lb_skb, ndev);
         lb_skb->pkt_type = PACKET_HOST;
+
+        ndev->stats.rx_packets++;
+        ndev->stats.rx_bytes += lb_skb->len;
+
         netif_receive_skb(lb_skb);
         dev_kfree_skb_any(skb);
         return NETDEV_TX_OK;
@@ -579,6 +588,7 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
 
     ring = &eth_dev->tx_ring;
     if (!ring->desc) {
+        ndev->stats.tx_dropped++;
         dev_kfree_skb_any(skb);
         return NETDEV_TX_OK;
     }
@@ -590,15 +600,16 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
     tail = ring->tail;
     next_tail = (tail + 1) % ring->size;
     if (next_tail == ring->head) {
-        /* Ring full - drop packet */
+        ndev->stats.tx_dropped++;
         dev_kfree_skb_any(skb);
-        return NETDEV_TX_BUSY;
+        return NETDEV_TX_OK;
     }
 
     /* Map skb data for DMA */
     dma_addr =
         dma_map_single(&eth_dev->pdev->dev, skb->data, skb->len, DMA_TO_DEVICE);
     if (dma_mapping_error(&eth_dev->pdev->dev, dma_addr)) {
+        ndev->stats.tx_dropped++;
         dev_kfree_skb_any(skb);
         return NETDEV_TX_OK;
     }
@@ -622,6 +633,9 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
 
     /* Update tail pointer */
     ring->tail = next_tail;
+
+    ndev->stats.tx_packets++;
+    ndev->stats.tx_bytes += skb->len;
 
     /* Write tail register to trigger server processing */
     iowrite32(next_tail, eth_dev->regs + ROCM_ERNIC_ETH_TX_TAIL);
