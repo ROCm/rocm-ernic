@@ -216,17 +216,33 @@ Or use ``ernicctl`` which wraps ``systemctl``:
 
 The ``ernicctl status`` command shows a table of all
 instances with their PID, MAC, socket, VM attachment,
-liveness state, and log file path:
+IP and RDMA byte counts (TX/RX), liveness state,
+uptime, and log file path:
 
 .. code-block:: text
 
-   ID  ROLE      PID    MAC                SOCKET                         VM           STATE      LOG
-   1   manager   12345  02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         qmp:2222     running    /var/log/rocm-ernic/1.log
-   2   worker    12346  02:a1:b2:c3:d4:02  /run/rocm-ernic/2.sock         qmp:2223     running    /var/log/rocm-ernic/2.log
-   3   worker    12347  02:a1:b2:c3:d4:03  /run/rocm-ernic/3.sock         -            running    /var/log/rocm-ernic/3.log
-   4   worker    0      02:a1:b2:c3:d4:04  /run/rocm-ernic/4.sock         -            dead       /var/log/rocm-ernic/4.log
+   ID  ROLE      PID    STATE      UPTIME     MAC                SOCKET                         VM           IP (TX/RX)      RDMA (TX/RX)    LOG
+   1   manager   12345  running    2h15m      02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         67890:2222   1.2K/3.4K       45M/12M         /var/log/rocm-ernic/1.log
+   2   worker    12346  running    2h14m      02:a1:b2:c3:d4:02  /run/rocm-ernic/2.sock         67891:2223   0B/0B           0B/0B           /var/log/rocm-ernic/2.log
+   3   worker    12347  running    2h14m      02:a1:b2:c3:d4:03  /run/rocm-ernic/3.sock         -            -               -               /var/log/rocm-ernic/3.log
+   4   worker    0      dead       -          02:a1:b2:c3:d4:04  /run/rocm-ernic/4.sock         -            -               -               /var/log/rocm-ernic/4.log
 
-Pass ``--json`` for machine-readable output.
+The VM column shows ``vm_pid:ssh_port`` when a VM is
+attached, ``detached`` when detached, or ``-`` when no
+VM is associated. The IP and RDMA columns show
+TX/RX byte totals with auto-scaled units (B, K, M,
+G, T). The UPTIME column shows how long each server
+process has been running (``45s``, ``3m47s``,
+``2h15m``, ``3d04h``).
+
+Pass ``--json`` for machine-readable output (includes
+raw ``ip_bytes_tx``, ``ip_bytes_rx``,
+``rdma_bytes_tx``, ``rdma_bytes_rx`` fields).
+
+Pass ``--rate SECS`` to show byte deltas measured over
+a SECS-second window instead of cumulative totals.
+This is useful with ``watch`` to monitor live
+throughput.
 
 ernicctl Command Reference
 --------------------------
@@ -236,13 +252,30 @@ Service lifecycle
 
 .. code-block:: bash
 
-   ernicctl start              # systemctl start
-   ernicctl stop               # systemctl stop
-   ernicctl restart            # systemctl restart
-   ernicctl reload             # re-read env, adjust instances
-   ernicctl status [--json]    # show instance table
-   ernicctl logs [N]           # tail logs (instance N or all)
-   ernicctl stats [N]          # show stats (instance N or all)
+   ernicctl start                    # systemctl start
+   ernicctl stop                     # systemctl stop
+   ernicctl restart                  # systemctl restart
+   ernicctl reload                   # re-read env
+   ernicctl status [--json]          # instance table
+   ernicctl status --rate 5          # 5s byte deltas
+   ernicctl logs [N]                 # tail logs
+   ernicctl stats [N]                # raw stats dump
+   ernicctl stats --summary          # one-row summary
+
+The ``ernicctl stats --summary`` command prints a
+concise table with one row per instance:
+
+.. code-block:: text
+
+   ID  CONN        IP (TX/RX)      RDMA-SR (TX/RX) RDMA-RW (R/W)   MMIO (R/W)      CMDS    INTS    QPS  FLR
+   1   connected   1.2K/3.4K       45M/12M         8.1M/22M        123K/456K       89      789     3    0
+   2   connected   0B/0B           0B/0B           0B/0B           0B/0B           0       0       0    0
+
+Columns: CONN = connection state, RDMA-SR = Send/Recv
+bytes, RDMA-RW = Read/Write bytes, MMIO = register
+reads/writes, CMDS = commands processed, INTS =
+interrupts, QPS = active queue pairs, FLR = Function
+Level Reset count.
 
 Dynamic mesh management
 ^^^^^^^^^^^^^^^^^^^^^^^

@@ -246,6 +246,7 @@ void pvrdma_eth_process_tx(PVRDMADev *dev)
 
         /* Process Ethernet frame */
         pvrdma_eth_rx_frame(dev, packet_vaddr, packet_len);
+        dev->stats.total_ip_bytes_tx += packet_len;
 
         /* Mark descriptor as done */
         desc.status |= ROCM_ERNIC_ETH_DESC_STATUS_DD;
