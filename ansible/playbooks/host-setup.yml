@@ -1,0 +1,109 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 1: Build, install, configure, and start the
+# rocm-ernic systemd service on the local host.
+
+---
+- name: Host setup -- build and install rocm-ernic service
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+
+    # ── Build ────────────────────────────────────────
+    - name: Configure the CMake build
+      ansible.builtin.command:
+        argv:
+          - cmake
+          - -B
+          - "{{ ernic_build_dir }}"
+          - -G
+          - Ninja
+          - "-DCMAKE_BUILD_TYPE={{ ernic_build_type }}"
+          - -DCMAKE_INSTALL_PREFIX=/usr/local
+          - -DERNIC_INSTALL_SERVICE=ON
+        chdir: "{{ ernic_project_root }}"
+        creates: "{{ ernic_build_dir }}/build.ninja"
+      when: not ernic_skip_build
+
+    - name: Build the project
+      ansible.builtin.command:
+        argv:
+          - cmake
+          - --build
+          - "{{ ernic_build_dir }}"
+        chdir: "{{ ernic_project_root }}"
+      changed_when: true
+      when: not ernic_skip_build
+
+    # ── Install ──────────────────────────────────────
+    - name: Install rocm-ernic (server, ernicctl, systemd units)
+      ansible.builtin.command:
+        argv:
+          - cmake
+          - --install
+          - "{{ ernic_build_dir }}"
+      become: true
+      changed_when: true
+      when: not ernic_skip_build
+
+    # ── Env file ─────────────────────────────────────
+    - name: Ensure /etc/rocm-ernic directory exists
+      ansible.builtin.file:
+        path: /etc/rocm-ernic
+        state: directory
+        mode: "0755"
+        owner: root
+        group: root
+      become: true
+
+    - name: Template the rocm-ernic env file
+      ansible.builtin.template:
+        src: "{{ ernic_project_root }}/ansible/templates/rocm-ernic.env.j2"
+        dest: /etc/rocm-ernic/rocm-ernic.env
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    # ── Systemd ──────────────────────────────────────
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+      become: true
+
+    - name: Check if service is already running
+      ansible.builtin.stat:
+        path: "{{ ernic_run_dir }}/instances.json"
+      register: ernic_manifest
+
+    - name: Start the rocm-ernic service
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - start
+      become: true
+      changed_when: true
+      when: not ernic_manifest.stat.exists
+
+    # ── Verify ───────────────────────────────────────
+    - name: Wait for instance sockets to appear
+      ansible.builtin.wait_for:
+        path: "{{ ernic_run_dir }}/{{ item }}.sock"
+        timeout: 30
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    - name: Verify service status
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - status
+          - --json
+      register: ernic_status
+      changed_when: false
+
+    - name: Display service status
+      ansible.builtin.debug:
+        var: ernic_status.stdout_lines

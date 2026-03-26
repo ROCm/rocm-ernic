@@ -1,0 +1,295 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 3: Provision guest VMs with RDMA packages, the
+# rocm-ernic kernel driver, and the custom rdma-core
+# provider.  Configure IP addresses on the emulated
+# NICs for inter-VM connectivity.
+
+---
+- name: Guest setup -- driver, rdma-core, NIC config
+  hosts: ernic_vms
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # ── RDMA packages via collection role ────────────
+    - name: Install RDMA packages via sbates130272.batesste.rdma_setup
+      ansible.builtin.include_role:
+        name: sbates130272.batesste.rdma_setup
+
+    # ── Extra packages ───────────────────────────────
+    - name: Install additional build and test packages
+      ansible.builtin.apt:
+        name:
+          - iperf3
+          - build-essential
+          - cmake
+          - ninja-build
+          - pkg-config
+          - curl
+        state: present
+        update_cache: true
+      register: guest_apt_result
+      retries: 3
+      delay: 10
+      until: guest_apt_result is success
+
+    # ── Copy driver source ───────────────────────────
+    - name: Copy driver source to guest
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/driver/"
+        dest: /tmp/driver/
+        mode: "0755"
+
+    # ── Copy rdma-core provider ──────────────────────
+    - name: Create rdma-core provider directory
+      ansible.builtin.file:
+        path: /tmp/rdma-core-provider
+        state: directory
+        mode: "0755"
+
+    - name: Copy rdma-core providers directory
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/rdma-core/providers/"
+        dest: /tmp/rdma-core-provider/providers/
+        mode: "0755"
+
+    - name: Copy rdma-core rocm-ernic-dv directory
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/rdma-core/rocm-ernic-dv/"
+        dest: /tmp/rdma-core-provider/rocm-ernic-dv/
+        mode: "0755"
+
+    # ── Build custom rdma-core with provider ─────────
+    - name: Check if custom rdma-core is already installed
+      ansible.builtin.stat:
+        path: /usr/lib/libibverbs/librocm_ernic.so
+      register: ernic_provider_check
+
+    - name: Set rdma-core path facts
+      ansible.builtin.set_fact:
+        rc_ver: "{{ ernic_rdma_core_version }}"
+        rc_base: /tmp/rdma-core-build
+      when: not ernic_provider_check.stat.exists
+
+    - name: Build and install custom rdma-core
+      when: not ernic_provider_check.stat.exists
+      vars:
+        rc_src: "{{ rc_base }}/rdma-core-{{ rc_ver }}"
+        rc_tar: "{{ rc_base }}/rdma-core-{{ rc_ver }}.tar.gz"
+        rc_url: >-
+          https://github.com/linux-rdma/rdma-core/releases/download/v{{ rc_ver }}/rdma-core-{{ rc_ver }}.tar.gz
+      block:
+        - name: Create rdma-core build directory
+          ansible.builtin.file:
+            path: "{{ rc_base }}"
+            state: directory
+            mode: "0755"
+
+        - name: Download rdma-core tarball
+          ansible.builtin.get_url:
+            url: "{{ rc_url }}"
+            dest: "{{ rc_tar }}"
+            mode: "0644"
+
+        - name: Extract rdma-core tarball
+          ansible.builtin.unarchive:
+            src: "{{ rc_tar }}"
+            dest: "{{ rc_base }}/"
+            remote_src: true
+
+        - name: Inject rocm_ernic provider
+          ansible.builtin.copy:
+            src: /tmp/rdma-core-provider/providers/rocm_ernic/
+            dest: "{{ rc_src }}/providers/rocm_ernic/"
+            remote_src: true
+            mode: "0755"
+
+        - name: Check if provider is registered
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -q
+              - rocm_ernic
+              - "{{ rc_src }}/CMakeLists.txt"
+          register: provider_grep
+          failed_when: false
+          changed_when: false
+
+        - name: Register provider in CMakeLists.txt
+          ansible.builtin.lineinfile:
+            path: "{{ rc_src }}/CMakeLists.txt"
+            line: "add_subdirectory(providers/rocm_ernic)"
+            insertafter: EOF
+          when: provider_grep.rc != 0
+
+        - name: Configure rdma-core build
+          ansible.builtin.command:
+            argv:
+              - cmake
+              - -S
+              - "{{ rc_src }}"
+              - -B
+              - "{{ rc_base }}/build"
+              - -GNinja
+              - -DCMAKE_INSTALL_PREFIX=/usr
+              - -DCMAKE_BUILD_TYPE=Release
+              - -DNO_PYVERBS=1
+              - -DNO_MAN_PAGES=1
+              - -DENABLE_STATIC=0
+          changed_when: true
+
+        - name: Build rdma-core
+          ansible.builtin.command:
+            argv:
+              - cmake
+              - --build
+              - "{{ rc_base }}/build"
+              - "-j{{ ansible_processor_vcpus | default(2) }}"
+          changed_when: true
+
+        - name: Install rdma-core
+          ansible.builtin.command:
+            argv:
+              - cmake
+              - --install
+              - "{{ rc_base }}/build"
+          changed_when: true
+
+        - name: Run ldconfig
+          ansible.builtin.command:
+            cmd: ldconfig
+          changed_when: true
+
+    # ── Build and load kernel driver ─────────────────
+    - name: Build the kernel driver
+      community.general.make:
+        chdir: /tmp/driver
+        params:
+          KDIR: "/lib/modules/{{ ansible_kernel }}/build"
+
+    - name: Verify driver modules were built
+      ansible.builtin.stat:
+        path: "/tmp/driver/{{ item }}"
+      register: driver_ko_stat
+      failed_when: not driver_ko_stat.stat.exists
+      loop:
+        - rocm_ernic_eth.ko
+        - rocm_ernic_rdma.ko
+
+    - name: Load ib_core module
+      community.general.modprobe:
+        name: ib_core
+        state: present
+
+    - name: Load ib_uverbs module
+      community.general.modprobe:
+        name: ib_uverbs
+        state: present
+
+    - name: Check if rocm_ernic_eth is already loaded
+      ansible.builtin.command:
+        argv:
+          - lsmod
+      register: lsmod_output
+      changed_when: false
+
+    - name: Load rocm_ernic_eth module
+      ansible.builtin.command:
+        argv:
+          - insmod
+          - /tmp/driver/rocm_ernic_eth.ko
+      when: "'rocm_ernic_eth' not in lsmod_output.stdout"
+      changed_when: true
+
+    - name: Load rocm_ernic_rdma module
+      ansible.builtin.command:
+        argv:
+          - insmod
+          - /tmp/driver/rocm_ernic_rdma.ko
+      when: "'rocm_ernic_rdma' not in lsmod_output.stdout"
+      changed_when: true
+
+    # ── Verify RDMA device ───────────────────────────
+    - name: Wait for RDMA device to register
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Check for RDMA device
+      ansible.builtin.command:
+        cmd: ibv_devices
+      register: ibv_devices_output
+      changed_when: false
+
+    - name: Verify rocm-ernic RDMA device exists
+      ansible.builtin.assert:
+        that:
+          - "'rocep' in ibv_devices_output.stdout"
+        fail_msg: >-
+          RDMA device not found. ibv_devices output:
+          {{ ibv_devices_output.stdout }}
+
+    - name: Display RDMA device info
+      ansible.builtin.shell:
+        cmd: >-
+          ibv_devinfo -d
+          $(ibv_devices | grep rocep | awk '{print $1}' | head -1)
+          | head -20
+      register: ibv_devinfo_output
+      changed_when: false
+
+    - name: Show RDMA device details
+      ansible.builtin.debug:
+        var: ibv_devinfo_output.stdout_lines
+
+    # ── Configure emulated NIC IP addresses ──────────
+    - name: Bring emulated NIC up
+      ansible.builtin.command:
+        argv:
+          - ip
+          - link
+          - set
+          - "{{ ernic_nic_name }}"
+          - up
+      changed_when: true
+
+    - name: Check existing IP on NIC
+      ansible.builtin.command:
+        argv:
+          - ip
+          - addr
+          - show
+          - dev
+          - "{{ ernic_nic_name }}"
+      register: nic_addr_check
+      changed_when: false
+
+    - name: Assign IP address to emulated NIC
+      ansible.builtin.command:
+        argv:
+          - ip
+          - addr
+          - add
+          - "{{ vm_ip }}/24"
+          - dev
+          - "{{ ernic_nic_name }}"
+      when: "vm_ip not in nic_addr_check.stdout"
+      changed_when: true
+
+    - name: Display NIC configuration
+      ansible.builtin.command:
+        argv:
+          - ip
+          - addr
+          - show
+          - dev
+          - "{{ ernic_nic_name }}"
+      register: nic_config
+      changed_when: false
+
+    - name: Show NIC details
+      ansible.builtin.debug:
+        var: nic_config.stdout_lines

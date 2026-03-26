@@ -1,0 +1,147 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 2: Create a golden VM backing image (if needed)
+# and launch VMs via ernicctl.  VMs are registered as
+# dynamic Ansible hosts in the ernic_vms group for
+# subsequent plays.
+
+---
+- name: VM creation -- golden image and launch
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+
+    # ── Golden backing image ─────────────────────────
+    - name: Check for existing golden backing image
+      ansible.builtin.stat:
+        path: "{{ ernic_vm_image_dir }}/{{ ernic_vm_name }}-backing.qcow2"
+      register: ernic_backing_stat
+
+    - name: Display golden image status
+      ansible.builtin.debug:
+        msg: >-
+          Golden backing image
+          {{ 'EXISTS' if ernic_backing_stat.stat.exists else 'MISSING' }}
+          at {{ ernic_vm_image_dir }}/{{ ernic_vm_name }}-backing.qcow2
+
+    - name: Ensure images directory exists
+      ansible.builtin.file:
+        path: "{{ ernic_vm_image_dir }}"
+        state: directory
+        mode: "0755"
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Create golden backing image via gen-vm
+      ansible.builtin.command:
+        argv:
+          - "{{ ernic_qemu_minimal }}/qemu/gen-vm"
+      environment:
+        QEMU_PATH: "{{ ernic_qemu_path }}"
+        VM_NAME: "{{ ernic_vm_name }}"
+        IMAGES: "{{ ernic_vm_image_dir }}"
+        RELEASE: "{{ ernic_vm_release }}"
+        SIZE: "64"
+        VCPUS: "{{ ernic_vm_vcpus | string }}"
+        VMEM: "{{ ernic_vm_mem | string }}"
+        SSH_PORT: "{{ ernic_vm_ssh_base_port | string }}"
+        KVM: enable
+        USERNAME: "{{ ernic_vm_ssh_user }}"
+        PASS: password
+        PACKAGES: "{{ ernic_qemu_minimal }}/packages.d/packages-default"
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    # ── Launch VMs via ernicctl ──────────────────────
+    - name: Check for existing VM list
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - vm-list
+      register: ernic_vm_list_check
+      changed_when: false
+      failed_when: false
+
+    - name: Launch VMs for each instance
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - vm-launch
+          - "{{ item }}"
+          - --vm-name
+          - "{{ ernic_vm_name }}"
+          - --ssh-port
+          - "{{ (ernic_vm_ssh_base_port | int + item - 1) | string }}"
+          - --ssh-user
+          - "{{ ernic_vm_ssh_user }}"
+          - --vcpus
+          - "{{ ernic_vm_vcpus | string }}"
+          - --mem
+          - "{{ ernic_vm_mem | string }}"
+      become: true
+      changed_when: true
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    # ── Wait for SSH ─────────────────────────────────
+    - name: Wait for SSH on each VM
+      ansible.builtin.wait_for:
+        host: localhost
+        port: "{{ ernic_vm_ssh_base_port | int + item - 1 }}"
+        delay: 10
+        timeout: 300
+        state: started
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    - name: Wait for SSH authentication to be ready
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - ConnectTimeout=5
+          - -p
+          - "{{ (ernic_vm_ssh_base_port | int + item - 1) | string }}"
+          - "{{ ernic_vm_ssh_user }}@localhost"
+          - echo
+          - ready
+      register: ssh_check
+      until: ssh_check.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    # ── Register VM hosts ────────────────────────────
+    - name: Add VMs to the ernic_vms inventory group
+      ansible.builtin.add_host:
+        name: "ernic_vm_{{ item }}"
+        groups: ernic_vms
+        ansible_host: localhost
+        ansible_port: "{{ ernic_vm_ssh_base_port | int + item - 1 }}"
+        ansible_user: "{{ ernic_vm_ssh_user }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+        vm_index: "{{ item }}"
+        vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    - name: Set last SSH port fact
+      ansible.builtin.set_fact:
+        ernic_last_ssh_port: >-
+          {{ ernic_vm_ssh_base_port | int
+             + ernic_instances | int - 1 }}
+
+    - name: Display registered VMs
+      ansible.builtin.debug:
+        msg: >-
+          Registered {{ ernic_instances }} VMs
+          (ports {{ ernic_vm_ssh_base_port }}
+          - {{ ernic_last_ssh_port }})

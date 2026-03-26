@@ -481,6 +481,21 @@ Adding a server to a running mesh
    sudo ernicctl vm-launch 4
    ernicctl status
 
+Automated workflow via Ansible
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``ansible/`` directory contains playbooks that
+automate the entire workflow: build, install, configure
+the env file, create golden VM images, launch VMs,
+provision guests with the driver and custom rdma-core,
+and run iperf3 / perftest sanity tests.  See
+:doc:`testing` for details.
+
+.. code-block:: bash
+
+   cd ansible
+   ansible-playbook site.yml
+
 Hot-reloading after a code change
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

@@ -1,0 +1,208 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 4: Run sanity tests between two VMs.
+#   - iperf3 for TCP/IP over the emulated Ethernet NICs
+#   - perftest (ib_send_bw) for RDMA bandwidth
+#   - ibv_rc_pingpong for RDMA latency
+#
+# This play assumes exactly two VMs (ernic_vm_1 and
+# ernic_vm_2) with IPs already configured by
+# guest-setup.yml.
+
+---
+- name: Sanity tests -- iperf3 and perftest
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vm1_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm2_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int + 1 }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm1_ip: "{{ ernic_nic_subnet }}.10"
+    vm2_ip: "{{ ernic_nic_subnet }}.20"
+
+  tasks:
+
+    - name: Skip all tests if requested
+      ansible.builtin.meta: end_play
+      when: ernic_skip_tests | bool
+
+    # ─────────────────────────────────────────────────
+    # TCP/IP sanity test (iperf3)
+    # ─────────────────────────────────────────────────
+    - name: "TCP/IP test: verify connectivity via ping"
+      ansible.builtin.shell:
+        cmd: "{{ vm1_ssh }} 'ping -c 3 -W 5 {{ vm2_ip }}'"
+      register: ping_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display ping results
+      ansible.builtin.debug:
+        var: ping_result.stdout_lines
+
+    - name: "TCP/IP test: start iperf3 server on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'nohup iperf3 -s -D
+          --pidfile /tmp/iperf3.pid'
+      changed_when: true
+
+    - name: Wait for iperf3 server to start
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: "TCP/IP test: run iperf3 client from VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }} 'iperf3 -c {{ vm1_ip }}
+          -t 10 --json'
+      register: iperf_result
+      changed_when: false
+      failed_when: iperf_result.rc != 0
+
+    - name: Parse iperf3 results
+      ansible.builtin.set_fact:
+        iperf_json: "{{ iperf_result.stdout | from_json }}"
+      failed_when: false
+
+    - name: Display iperf3 summary
+      ansible.builtin.debug:
+        msg: >-
+          iperf3 TCP throughput:
+          {{ (iperf_json.end.sum_sent.bits_per_second
+              | default(0) | float / 1000000)
+             | round(2) }} Mbps sent,
+          {{ (iperf_json.end.sum_received.bits_per_second
+              | default(0) | float / 1000000)
+             | round(2) }} Mbps received
+      when: iperf_json is defined and iperf_json.end is defined
+
+    - name: Display raw iperf3 output on parse failure
+      ansible.builtin.debug:
+        var: iperf_result.stdout_lines
+      when: iperf_json is not defined or iperf_json.end is not defined
+
+    - name: "TCP/IP test: stop iperf3 server on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'kill $(cat /tmp/iperf3.pid)
+          2>/dev/null; rm -f /tmp/iperf3.pid'
+      changed_when: true
+      failed_when: false
+
+    # ─────────────────────────────────────────────────
+    # RDMA bandwidth test (ib_send_bw)
+    # ─────────────────────────────────────────────────
+    - name: "RDMA BW test: start ib_send_bw server on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'nohup ib_send_bw
+          -d rocep1s0 -x 1 -n 10 --report_gbits
+          > /tmp/ib_send_bw_server.log 2>&1 &'
+      changed_when: true
+
+    - name: Wait for ib_send_bw server to listen
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: "RDMA BW test: run ib_send_bw client from VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }} 'ib_send_bw
+          -d rocep1s0 -x 1 -n 10 --report_gbits
+          {{ vm1_ip }}'
+      register: ib_send_bw_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display ib_send_bw results
+      ansible.builtin.debug:
+        var: ib_send_bw_result.stdout_lines
+
+    - name: Collect ib_send_bw server log
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'cat /tmp/ib_send_bw_server.log'
+      register: ib_send_bw_server_log
+      changed_when: false
+      failed_when: false
+
+    - name: Display ib_send_bw server output
+      ansible.builtin.debug:
+        var: ib_send_bw_server_log.stdout_lines
+
+    # ─────────────────────────────────────────────────
+    # RDMA latency test (ibv_rc_pingpong)
+    # ─────────────────────────────────────────────────
+    - name: "RDMA latency test: start ibv_rc_pingpong server on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'nohup ibv_rc_pingpong
+          -d rocep1s0 -g 1 -n 100
+          > /tmp/ibv_rc_pingpong_server.log 2>&1 &'
+      changed_when: true
+
+    - name: Wait for ibv_rc_pingpong server to listen
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: "RDMA latency test: run ibv_rc_pingpong client from VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }} 'ibv_rc_pingpong
+          -d rocep1s0 -g 1 -n 100
+          {{ vm1_ip }}'
+      register: ibv_rc_pingpong_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display ibv_rc_pingpong client results
+      ansible.builtin.debug:
+        var: ibv_rc_pingpong_result.stdout_lines
+
+    - name: Collect ibv_rc_pingpong server log
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'cat /tmp/ibv_rc_pingpong_server.log'
+      register: ibv_rc_pingpong_server_log
+      changed_when: false
+      failed_when: false
+
+    - name: Display ibv_rc_pingpong server output
+      ansible.builtin.debug:
+        var: ibv_rc_pingpong_server_log.stdout_lines
+
+    # ─────────────────────────────────────────────────
+    # Summary
+    # ─────────────────────────────────────────────────
+    - name: Set test result facts
+      ansible.builtin.set_fact:
+        iperf_pass: "{{ iperf_result.rc == 0 }}"
+        bw_pass: "{{ ib_send_bw_result.rc == 0 }}"
+        pp_pass: "{{ ibv_rc_pingpong_result.rc == 0 }}"
+
+    - name: Sanity test summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Sanity Test Results ==="
+          - "iperf3:         {{ 'PASS' if iperf_pass else 'FAIL' }}"
+          - "ib_send_bw:     {{ 'PASS' if bw_pass else 'FAIL' }}"
+          - "ibv_rc_pingpong: {{ 'PASS' if pp_pass else 'FAIL' }}"
+
+    - name: Fail if any test failed
+      ansible.builtin.assert:
+        that:
+          - iperf_result.rc == 0
+        fail_msg: >-
+          One or more sanity tests failed.  Check the
+          output above for details.

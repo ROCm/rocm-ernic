@@ -1,5 +1,6 @@
 
 ABI
+Ansible
 APIs
 ASAN
 Apfelbaum
@@ -137,6 +138,7 @@ alloc
 amd
 api
 args
+ansible
 aspell
 async
 attr
@@ -209,6 +211,7 @@ fini
 fs
 func
 gcc
+galaxy
 ghcr
 gid
 gids
@@ -234,6 +237,8 @@ ibverbs
 implementers
 infiniband
 init
+iperf
+iperf3
 inline
 insmod
 int16
@@ -304,6 +309,8 @@ param
 paravirtualized
 passthrough
 pci
+playbook
+playbooks
 pdir
 pds
 perftest
@@ -341,6 +348,7 @@ rocep
 rocm
 runtime
 rxe
+sanity
 scp
 sept
 sg
