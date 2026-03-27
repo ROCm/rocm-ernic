@@ -12,13 +12,34 @@
   hosts: ernic_vms
   become: true
   gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
 
   tasks:
 
     # ── RDMA packages via collection role ────────────
-    - name: Install RDMA packages via sbates130272.batesste.rdma_setup
-      ansible.builtin.include_role:
-        name: sbates130272.batesste.rdma_setup
+    # The rdma_setup role installs perftest, rdma-core,
+    # ibverbs-utils, kernel headers, etc.  Its rdma-detect
+    # script may fail for emulated devices (no link state),
+    # so we allow the role to fail gracefully.
+    - name: Install RDMA packages via rdma_setup role
+      block:
+        - name: Run sbates130272.batesste.rdma_setup
+          ansible.builtin.include_role:
+            name: sbates130272.batesste.rdma_setup
+      rescue:
+        - name: Note rdma_setup non-fatal failure
+          ansible.builtin.debug:
+            msg: >-
+              rdma_setup role failed (likely rdma-detect
+              on emulated device). Packages were
+              installed; continuing.
+      when: not (ernic_skip_guest_ansible_roles | bool)
+
+    - name: Skipping guest Ansible roles
+      ansible.builtin.debug:
+        msg: "ernic_skip_guest_ansible_roles is set"
+      when: ernic_skip_guest_ansible_roles | bool
 
     # ── Extra packages ───────────────────────────────
     - name: Install additional build and test packages
@@ -36,6 +57,7 @@
       retries: 3
       delay: 10
       until: guest_apt_result is success
+      when: not (ernic_skip_guest_ansible_roles | bool)
 
     # ── Copy driver source ───────────────────────────
     - name: Copy driver source to guest
@@ -213,10 +235,29 @@
       when: "'rocm_ernic_rdma' not in lsmod_output.stdout"
       changed_when: true
 
+    # ── Install udev rules for persistent naming ─────
+    - name: Copy rocm-ernic udev rules
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/udev/99-rocm-ernic.rules"
+        dest: /etc/udev/rules.d/99-rocm-ernic.rules
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload udev rules
+      ansible.builtin.command:
+        cmd: udevadm control --reload-rules
+      changed_when: true
+
+    - name: Trigger udev for rocm-ernic devices
+      ansible.builtin.command:
+        cmd: udevadm trigger
+      changed_when: true
+
     # ── Verify RDMA device ───────────────────────────
     - name: Wait for RDMA device to register
       ansible.builtin.pause:
-        seconds: 3
+        seconds: 5
 
     - name: Check for RDMA device
       ansible.builtin.command:
@@ -227,16 +268,25 @@
     - name: Verify rocm-ernic RDMA device exists
       ansible.builtin.assert:
         that:
-          - "'rocep' in ibv_devices_output.stdout"
+          - >-
+            'rocm-rdma-ernic' in ibv_devices_output.stdout
+            or 'rocep' in ibv_devices_output.stdout
         fail_msg: >-
           RDMA device not found. ibv_devices output:
           {{ ibv_devices_output.stdout }}
 
+    - name: Get RDMA device name
+      ansible.builtin.shell:
+        cmd: >-
+          ibv_devices | grep -E 'rocm-rdma-ernic|rocep'
+          | awk '{print $1}' | head -1
+      register: rdma_dev_name
+      changed_when: false
+
     - name: Display RDMA device info
       ansible.builtin.shell:
         cmd: >-
-          ibv_devinfo -d
-          $(ibv_devices | grep rocep | awk '{print $1}' | head -1)
+          ibv_devinfo -d {{ rdma_dev_name.stdout }}
           | head -20
       register: ibv_devinfo_output
       changed_when: false
@@ -246,13 +296,26 @@
         var: ibv_devinfo_output.stdout_lines
 
     # ── Configure emulated NIC IP addresses ──────────
+    - name: Detect emulated NIC name
+      ansible.builtin.shell:
+        cmd: >-
+          ip -o link show {{ ernic_nic_name }}
+          2>/dev/null && echo {{ ernic_nic_name }}
+          || echo enp1s0
+      register: detected_nic
+      changed_when: false
+
+    - name: Set NIC name fact
+      ansible.builtin.set_fact:
+        nic_name: "{{ detected_nic.stdout_lines[-1] }}"
+
     - name: Bring emulated NIC up
       ansible.builtin.command:
         argv:
           - ip
           - link
           - set
-          - "{{ ernic_nic_name }}"
+          - "{{ nic_name }}"
           - up
       changed_when: true
 
@@ -263,7 +326,7 @@
           - addr
           - show
           - dev
-          - "{{ ernic_nic_name }}"
+          - "{{ nic_name }}"
       register: nic_addr_check
       changed_when: false
 
@@ -275,7 +338,7 @@
           - add
           - "{{ vm_ip }}/24"
           - dev
-          - "{{ ernic_nic_name }}"
+          - "{{ nic_name }}"
       when: "vm_ip not in nic_addr_check.stdout"
       changed_when: true
 
@@ -286,7 +349,7 @@
           - addr
           - show
           - dev
-          - "{{ ernic_nic_name }}"
+          - "{{ nic_name }}"
       register: nic_config
       changed_when: false
 

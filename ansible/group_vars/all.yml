@@ -8,7 +8,7 @@
 
 ---
 # ── Project paths ────────────────────────────────
-ernic_project_root: "{{ playbook_dir }}/.."
+ernic_project_root: "{{ playbook_dir }}/../.."
 ernic_build_dir: "{{ ernic_project_root }}/build"
 ernic_build_type: Release
 
@@ -35,9 +35,12 @@ ernic_vm_mem: 16384
 ernic_vm_ssh_user: ubuntu
 ernic_vm_ssh_base_port: 2250
 ernic_vm_release: noble
+ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
 
-# Optional -- uncomment or pass via -e to enable.
-# ernic_vm_backing: /path/to/golden-backing.qcow2
+# Golden backing qcow2 for per-VM overlays.
+# Each VM gets its own overlay; BACKING_SHARED=true
+# is set automatically by ernicctl vm-launch.
+ernic_vm_backing: "{{ ernic_vm_image_dir }}/{{ ernic_vm_name }}-backing.qcow2"
 # ernic_vm_mcast_group: "230.0.0.1:1234"
 # ernic_mac_overrides:
 #   1: "aa:bb:cc:dd:ee:01"
@@ -47,13 +50,21 @@ ernic_vm_release: noble
 ernic_rdma_core_version: "62.0"
 
 # ── Guest NIC configuration ─────────────────────
-ernic_nic_name: enp1s0
+ernic_nic_name: rocm-ernic0
 ernic_nic_subnet: "192.168.200"
+# iperf3 rate limit and duration.
+# Bandwidth uses human-readable format:
+#   100B/s, 1KiB/s, 10MiB/s, 1GiB/s
+# Stripped to iperf3 -b compatible form at runtime.
+ernic_iperf_bandwidth: "100B/s"
+ernic_iperf_duration: 10
 
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false
 ernic_skip_golden_image: false
+ernic_skip_guest_ansible_roles: false
 ernic_skip_tests: false
+ernic_force_vm_cleanup: false
 
 # ── rdma_setup role overrides ────────────────────
 rdma_setup_reboot: false

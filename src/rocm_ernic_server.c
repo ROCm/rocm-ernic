@@ -1031,6 +1031,7 @@ int main(int argc, char *argv[])
         printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
                "second)\n",
                dev->stats_file_path);
+        pvrdma_write_stats(dev->pvrdma_handle);
     }
 
     /* Setup PCI configuration */

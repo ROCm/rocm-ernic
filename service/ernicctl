@@ -344,8 +344,13 @@ def _get_vm_uptime(inst):
     if not inst.get("vm") or not inst["vm"]:
         return "-"
     vm = inst["vm"]
+    if not vm.get("attached"):
+        return "-"
+    launched = vm.get("launched_at")
+    if launched:
+        return format_duration(time.time() - launched)
     vm_pid = vm.get("vm_pid")
-    if not vm_pid or not vm.get("attached"):
+    if not vm_pid:
         return "-"
     return format_duration(_get_uptime(vm_pid))
 
@@ -423,12 +428,15 @@ def cmd_status(args):
                 int(up) if up is not None else None
             )
             vm = inst.get("vm")
-            vm_pid = (
-                vm.get("vm_pid") if vm
-                and vm.get("attached") else None
-            )
-            vm_up = _get_uptime(vm_pid) \
-                if vm_pid else None
+            if vm and vm.get("attached") \
+                    and vm.get("launched_at"):
+                vm_up = time.time() \
+                    - vm["launched_at"]
+            elif vm and vm.get("attached") \
+                    and vm.get("vm_pid"):
+                vm_up = _get_uptime(vm.get("vm_pid"))
+            else:
+                vm_up = None
             inst["vm_uptime_seconds"] = (
                 int(vm_up) if vm_up is not None
                 else None
@@ -1104,6 +1112,7 @@ def cmd_vm_launch(args):
         "attached": True,
         "vm_pid": proc.pid,
         "vm_name": vm_name,
+        "launched_at": time.time(),
     }
     write_manifest(m)
     print(f"VM started (PID {proc.pid}).")
@@ -1369,8 +1378,30 @@ DISPATCH = {
 }
 
 
+def suggest_command(invalid):
+    """Suggest the closest valid command."""
+    from difflib import get_close_matches
+    matches = get_close_matches(
+        invalid, DISPATCH.keys(), n=1, cutoff=0.5
+    )
+    if matches:
+        return matches[0]
+    return None
+
+
 def main():
     parser = build_parser()
+    if len(sys.argv) > 1 \
+            and sys.argv[1] not in DISPATCH \
+            and not sys.argv[1].startswith("-"):
+        suggestion = suggest_command(sys.argv[1])
+        msg = (
+            f"Unknown command: '{sys.argv[1]}'."
+        )
+        if suggestion:
+            msg += f" Did you mean '{suggestion}'?"
+        print(f"ERROR: {msg}", file=sys.stderr)
+        sys.exit(1)
     args = parser.parse_args()
     if not args.command:
         parser.print_help()

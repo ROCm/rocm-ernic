@@ -9,6 +9,8 @@
 - name: Host setup -- build and install rocm-ernic service
   hosts: localhost
   gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
 
   tasks:
 
@@ -79,6 +81,65 @@
         path: "{{ ernic_run_dir }}/instances.json"
       register: ernic_manifest
 
+    - name: Stop VMs attached to existing instances
+      ansible.builtin.shell:
+        cmd: >-
+          for i in $(seq 1 20); do
+            ernicctl vm-stop $i 2>/dev/null || true;
+          done
+      become: true
+      changed_when: true
+      when: ernic_manifest.stat.exists
+
+    - name: Find QEMU processes on target SSH ports
+      ansible.builtin.shell:
+        cmd: >-
+          ss -tlnp 2>/dev/null
+          | grep ':{{ item }} '
+          | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
+          | head -1
+      register: cleanup_port_pids
+      changed_when: false
+      failed_when: false
+      loop: "{{ range(ernic_vm_ssh_base_port | int,
+                 ernic_vm_ssh_base_port | int
+                 + ernic_instances | int) | list }}"
+      when: ernic_manifest.stat.exists
+
+    - name: Kill QEMU processes on target SSH ports
+      ansible.builtin.command:
+        argv:
+          - kill
+          - -9
+          - "{{ item.stdout }}"
+      become: true
+      changed_when: true
+      failed_when: false
+      loop: "{{ cleanup_port_pids.results | default([]) }}"
+      when:
+        - ernic_manifest.stat.exists
+        - item.stdout is defined
+        - item.stdout | length > 0
+
+    - name: Wait for killed processes to release ports
+      ansible.builtin.pause:
+        seconds: 3
+      when: ernic_manifest.stat.exists
+
+    - name: Stop existing service for clean restart
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - stop
+      become: true
+      changed_when: true
+      when: ernic_manifest.stat.exists
+
+    - name: Wait for cleanup to complete
+      ansible.builtin.pause:
+        seconds: 3
+      when: ernic_manifest.stat.exists
+
     - name: Start the rocm-ernic service
       ansible.builtin.command:
         argv:
@@ -86,7 +147,6 @@
           - start
       become: true
       changed_when: true
-      when: not ernic_manifest.stat.exists
 
     # ── Verify ───────────────────────────────────────
     - name: Wait for instance sockets to appear
