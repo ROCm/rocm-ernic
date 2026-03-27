@@ -25,7 +25,7 @@ struct rocm_ernic_eth_desc {
 } __packed;
 
 /* TX descriptor ring */
-#define ROCM_ERNIC_ETH_TX_RING_SIZE 64
+#define ROCM_ERNIC_ETH_TX_RING_SIZE 256
 struct rocm_ernic_eth_tx_ring {
     struct rocm_ernic_eth_desc *desc; /* Descriptor ring */
     dma_addr_t desc_dma;              /* DMA address of descriptor ring */
@@ -37,7 +37,7 @@ struct rocm_ernic_eth_tx_ring {
 };
 
 /* RX descriptor ring */
-#define ROCM_ERNIC_ETH_RX_RING_SIZE   64
+#define ROCM_ERNIC_ETH_RX_RING_SIZE   256
 #define ROCM_ERNIC_ETH_RX_BUFFER_SIZE 2048
 struct rocm_ernic_eth_rx_ring {
     struct rocm_ernic_eth_desc *desc; /* Descriptor ring */

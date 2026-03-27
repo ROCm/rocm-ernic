@@ -382,155 +382,61 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
     if (!ring->desc)
         return;
 
-    /* Read tail pointer from register (updated by server) */
     tail = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_RX_TAIL);
     head = ring->head;
 
-    dev_info(&eth_dev->pdev->dev, "RX processing: head=%u tail=%u\n", head,
-             tail);
-
-    /* Process received packets */
     while (head != tail) {
         desc = &ring->desc[head];
 
-        /* Check if descriptor has data */
-        if (desc->status & ROCM_ERNIC_ETH_DESC_STATUS_DD) {
-            pkt_len = desc->length;
-            dev_info(&eth_dev->pdev->dev,
-                     "RX: Processing descriptor %u: len=%u status=0x%x\n", head,
-                     pkt_len, desc->status);
-            if (pkt_len > 0 && pkt_len <= ROCM_ERNIC_ETH_RX_BUFFER_SIZE) {
-                buf = ring->buffers[head];
-                dma_addr = ring->buffer_dma[head];
-
-                /* Validate buffer and DMA address before use */
-                if (!buf || !dma_addr) {
-                    dev_warn(&eth_dev->pdev->dev,
-                             "RX: Invalid buffer at descriptor %u (buf=%p "
-                             "dma_addr=%pad)\n",
-                             head, buf, &dma_addr);
-                    /* Clear descriptor status and advance - buffer will be
-                     * re-allocated on next use */
-                    desc->status = 0;
-                    /* Advance head and continue to next descriptor */
-                    head = (head + 1) % ring->size;
-                    /* Break out of inner if, but continue while loop */
-                    break;
-                }
-
-                /* Allocate new skb for received packet */
-                skb = netdev_alloc_skb_ip_align(eth_dev->netdev, pkt_len);
-                if (skb) {
-                    /* Copy packet data from DMA buffer */
-                    skb_put_data(skb, buf, pkt_len);
-
-                    /* Set device before eth_type_trans */
-                    skb->dev = eth_dev->netdev;
-
-                    /* Check Ethernet header for IP packets before
-                     * eth_type_trans */
-                    if (pkt_len >= 14) {
-                        struct ethhdr *ethh = (struct ethhdr *)skb->data;
-                        u16 ethertype = ntohs(ethh->h_proto);
-
-                        dev_info(
-                            &eth_dev->pdev->dev,
-                            "RX: Ethernet packet: ethertype=0x%04x len=%u\n",
-                            ethertype, pkt_len);
-
-                        if (ethertype == ETH_P_IP && pkt_len >= 54) {
-                            struct iphdr *iph =
-                                (struct iphdr *)(skb->data + 14);
-                            dev_info(&eth_dev->pdev->dev,
-                                     "RX: IP packet: protocol=%u src=%pI4 "
-                                     "dst=%pI4 len=%u\n",
-                                     iph->protocol, &iph->saddr, &iph->daddr,
-                                     pkt_len);
-
-                            if (iph->protocol == IPPROTO_TCP &&
-                                pkt_len >= 34 + 20) {
-                                struct tcphdr *tcph =
-                                    (struct tcphdr *)(skb->data + 34);
-                                u8 tcp_flags = tcph->syn << 1 | tcph->ack |
-                                               tcph->fin | (tcph->rst << 2) |
-                                               (tcph->psh << 3);
-                                dev_info(&eth_dev->pdev->dev,
-                                         "RX: TCP packet: %pI4:%u -> %pI4:%u "
-                                         "flags=0x%02x seq=%u ack=%u len=%u\n",
-                                         &iph->saddr, ntohs(tcph->source),
-                                         &iph->daddr, ntohs(tcph->dest),
-                                         tcp_flags, ntohl(tcph->seq),
-                                         ntohl(tcph->ack_seq), pkt_len);
-                            } else if (iph->protocol == IPPROTO_TCP) {
-                                dev_warn(&eth_dev->pdev->dev,
-                                         "RX: TCP packet too short: "
-                                         "protocol=%u len=%u (need >=54)\n",
-                                         iph->protocol, pkt_len);
-                            }
-                        }
-                    }
-
-                    skb->protocol = eth_type_trans(skb, eth_dev->netdev);
-                    skb->pkt_type = PACKET_HOST; /* Packet is for us */
-
-                    dev_info(&eth_dev->pdev->dev,
-                             "RX: Delivering packet to network stack: len=%u "
-                             "protocol=0x%04x dev=%s up=%d running=%d\n",
-                             pkt_len, ntohs(skb->protocol),
-                             eth_dev->netdev->name,
-                             netif_running(eth_dev->netdev),
-                             netif_carrier_ok(eth_dev->netdev));
-
-                    if (netif_running(eth_dev->netdev)) {
-                        eth_dev->netdev->stats.rx_packets++;
-                        eth_dev->netdev->stats.rx_bytes += pkt_len;
-                        netif_receive_skb(skb);
-                    } else {
-                        dev_warn(
-                            &eth_dev->pdev->dev,
-                            "RX: Interface not running, dropping packet\n");
-                        dev_kfree_skb_any(skb);
-                    }
-                } else {
-                    dev_warn(&eth_dev->pdev->dev,
-                             "RX: Failed to allocate skb for packet len=%u\n",
-                             pkt_len);
-                }
-
-                /* Re-allocate buffer for this descriptor */
-                dma_free_coherent(&eth_dev->pdev->dev,
-                                  ROCM_ERNIC_ETH_RX_BUFFER_SIZE, buf, dma_addr);
-                buf = dma_alloc_coherent(&eth_dev->pdev->dev,
-                                         ROCM_ERNIC_ETH_RX_BUFFER_SIZE,
-                                         &dma_addr, GFP_ATOMIC);
-                if (buf) {
-                    ring->buffers[head] = buf;
-                    ring->buffer_dma[head] = dma_addr;
-                    desc->addr = dma_addr;
-                    desc->length = ROCM_ERNIC_ETH_RX_BUFFER_SIZE;
-                } else {
-                    dev_warn(&eth_dev->pdev->dev,
-                             "RX: Failed to re-allocate buffer for descriptor "
-                             "%u\n",
-                             head);
-                    /* Mark buffer as invalid */
-                    ring->buffers[head] = NULL;
-                    ring->buffer_dma[head] = 0;
-                }
-
-                /* Clear descriptor status */
-                desc->status = 0;
-            }
-
-            /* Advance head */
-            head = (head + 1) % ring->size;
-        } else {
-            /* Descriptor not ready yet, stop processing */
+        if (!(desc->status & ROCM_ERNIC_ETH_DESC_STATUS_DD)) {
             break;
         }
+
+        pkt_len = desc->length;
+        if (pkt_len == 0 || pkt_len > ROCM_ERNIC_ETH_RX_BUFFER_SIZE) {
+            desc->status = 0;
+            desc->length = ROCM_ERNIC_ETH_RX_BUFFER_SIZE;
+            head = (head + 1) % ring->size;
+            continue;
+        }
+
+        buf = ring->buffers[head];
+        dma_addr = ring->buffer_dma[head];
+
+        if (!buf || !dma_addr) {
+            dev_warn_ratelimited(
+                &eth_dev->pdev->dev,
+                "RX: Invalid buffer at descriptor %u\n",
+                head);
+            desc->status = 0;
+            head = (head + 1) % ring->size;
+            break;
+        }
+
+        skb = netdev_alloc_skb_ip_align(
+            eth_dev->netdev, pkt_len);
+        if (skb) {
+            skb_put_data(skb, buf, pkt_len);
+            skb->protocol = eth_type_trans(
+                skb, eth_dev->netdev);
+            skb->pkt_type = PACKET_HOST;
+
+            if (netif_running(eth_dev->netdev)) {
+                eth_dev->netdev->stats.rx_packets++;
+                eth_dev->netdev->stats.rx_bytes += pkt_len;
+                netif_receive_skb(skb);
+            } else {
+                dev_kfree_skb_any(skb);
+            }
+        } else {
+            eth_dev->netdev->stats.rx_dropped++;
+        }
+
+        desc->status = 0;
+        desc->length = ROCM_ERNIC_ETH_RX_BUFFER_SIZE;
+        head = (head + 1) % ring->size;
     }
 
-    /* Update head pointer and register */
     if (head != ring->head) {
         ring->head = head;
         iowrite32(head, eth_dev->regs + ROCM_ERNIC_ETH_RX_HEAD);
