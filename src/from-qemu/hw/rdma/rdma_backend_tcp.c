@@ -50,10 +50,11 @@
  *   uint8_t  payload[];    // Variable length payload
  */
 
-#define TCP_PROTOCOL_MAGIC    0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION  2          /* Multi-node version */
-#define TCP_MAX_ETH_FRAME_LEN 2048
-#define TCP_MAX_PAYLOAD_LEN   (16u << 20) /* 16 MiB */
+#define TCP_PROTOCOL_MAGIC     0x52444D41 /* "RDMA" */
+#define TCP_PROTOCOL_VERSION   2          /* Multi-node version */
+#define TCP_MAX_ETH_FRAME_LEN  2048
+#define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
+#define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
 
 /* Tunable defaults -- overridable via env vars */
 #define TCP_DEFAULT_LISTEN_BACKLOG    32
@@ -1714,7 +1715,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                  dlen, rk, (unsigned long)raddr,
                                  hdr.src_node_id);
 
-                tcp_update_stats(priv, dlen, IBV_WC_RDMA_WRITE);
+                tcp_update_stats(priv, dlen, IBV_WC_RECV);
 
                 TcpConnection *src_conn =
                     tcp_get_connection(priv, hdr.src_node_id);
@@ -1766,7 +1767,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                  dlen, rk, (unsigned long)raddr,
                                  hdr.src_node_id);
 
-                tcp_update_stats(priv, dlen, IBV_WC_RDMA_READ);
+                tcp_update_stats(priv, dlen, IBV_WC_SEND);
 
                 TcpConnection *src_conn =
                     tcp_get_connection(priv, hdr.src_node_id);
@@ -3168,10 +3169,11 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                    dst_node, qpn, tqp->remote_qpn);
             if (ret < 0)
                 rdma_error_report("TCP: RDMA READ REQ send failed");
-        } else {
+        } else if (total_len <= TCP_COALESCE_THRESHOLD) {
             /*
-             * Coalesce WR metadata and SGE data into
-             * one message to avoid per-SGE overhead.
+             * Small message: coalesce WR metadata and
+             * SGE data into one message to avoid
+             * per-SGE syscall overhead.
              */
             uint32_t payload_sz = sizeof(*wr) + total_len;
             uint8_t *buf = g_malloc(payload_sz);
@@ -3190,7 +3192,37 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                    dst_node, qpn, tqp->remote_qpn);
             g_free(buf);
             if (ret < 0)
-                rdma_error_report("TCP: POST_SEND failed to node %u", dst_node);
+                rdma_error_report("TCP: POST_SEND failed to "
+                                  "node %u",
+                                  dst_node);
+        } else {
+            /*
+             * Large message: send WR header and each
+             * SGE separately to avoid copying multi-MB
+             * payloads through a temporary buffer.
+             */
+            ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, wr,
+                                   sizeof(*wr), seq, priv->local_node_id,
+                                   dst_node, qpn, tqp->remote_qpn);
+            if (ret < 0) {
+                rdma_error_report("TCP: POST_SEND header failed "
+                                  "to node %u",
+                                  dst_node);
+            } else {
+                for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+                    if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
+                        ret = tcp_send_message(
+                            conn->sockfd, TCP_MSG_DATA, wr->sge[i].host_addr,
+                            wr->sge[i].length, seq, priv->local_node_id,
+                            dst_node, qpn, tqp->remote_qpn);
+                        if (ret < 0) {
+                            rdma_error_report("TCP: DATA send "
+                                              "failed");
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
     qemu_mutex_unlock(&conn->lock);
