@@ -102,7 +102,7 @@ int eth_rx_inject_frame(PVRDMADev *dev, const void *frame_data, size_t len)
         post_interrupt(dev, INTR_VEC_CMD_RING);
     }
 
-    rdma_info_report("Injected %zu bytes into RX descriptor %u", len, desc_idx);
+    /* Hot path -- no logging here */
 
     return 0;
 }

@@ -1347,13 +1347,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     PVRDMADev *pvrdma_dev =
                         (PVRDMADev *)((char *)priv->backend_dev -
                                       offsetof(PVRDMADev, backend_dev));
-                    int ret =
-                        eth_rx_inject_frame(pvrdma_dev, payload, hdr.msg_len);
-                    if (ret == 0) {
-                        rdma_info_report("TCP: Injected ETH frame "
-                                         "(%u bytes) from node %u",
-                                         hdr.msg_len, hdr.src_node_id);
-                    }
+                    eth_rx_inject_frame(
+                        pvrdma_dev, payload, hdr.msg_len);
 
                     if (priv->is_manager) {
                         GHashTableIter fwd_iter;

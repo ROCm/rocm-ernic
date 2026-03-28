@@ -940,21 +940,13 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
     }
 
     /* Trigger MSI-X interrupt via libvfio-user */
-    rdma_info_report(">>> post_interrupt: About to trigger IRQ vector %u",
-                     vector);
     ret = vfu_irq_trigger(vfu_ctx, vector);
-    rdma_info_report(
-        ">>> post_interrupt: vfu_irq_trigger returned %d (errno=%d)", ret,
-        ret < 0 ? errno : 0);
     if (ret < 0) {
-        rdma_error_report("Failed to trigger interrupt vector %u: %s", vector,
-                          strerror(errno));
+        rdma_error_report(
+            "Failed to trigger IRQ vector %u: %s",
+            vector, strerror(errno));
         return;
     }
 
     pvrdma->stats.interrupts++;
-
-    rdma_info_report(
-        ">>> post_interrupt: Successfully triggered interrupt vector %u",
-        vector);
 }

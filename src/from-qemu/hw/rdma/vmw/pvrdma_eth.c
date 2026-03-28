@@ -219,11 +219,6 @@ void pvrdma_eth_process_tx(PVRDMADev *dev)
         /* Read descriptor */
         memcpy(&desc, desc_vaddr, sizeof(desc));
 
-        rdma_info_report("TX: Descriptor %u: addr=0x%" PRIx64
-                         " len=%u status=0x%02x cmd=0x%02x",
-                         desc_idx, desc.addr, desc.length, desc.status,
-                         desc.cmd);
-
         /* Map packet buffer from guest memory */
         packet_len = desc.length;
         if (packet_len == 0 || packet_len > 2048) {
@@ -240,9 +235,6 @@ void pvrdma_eth_process_tx(PVRDMADev *dev)
             rdma_pci_dma_unmap(pci_dev, desc_vaddr, desc_len);
             break;
         }
-
-        rdma_info_report("TX: Processing Ethernet frame: %" PRIu64 " bytes",
-                         packet_len);
 
         /* Process Ethernet frame */
         pvrdma_eth_rx_frame(dev, packet_vaddr, packet_len);
@@ -261,9 +253,6 @@ void pvrdma_eth_process_tx(PVRDMADev *dev)
 
         /* Advance head pointer */
         eth->tx_head = (eth->tx_head + 1) % eth->tx_len;
-
-        rdma_info_report("TX: Descriptor %u completed, new head=%u", desc_idx,
-                         eth->tx_head);
 
         /* Set interrupt */
         eth->icr |= ROCM_ERNIC_ETH_ICR_TX_COMPLETE;
@@ -938,12 +927,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
     /* Default: forward frame to all mesh peers */
     if (dev->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
         dev->backend_dev.backend_private) {
-        int sent =
-            tcp_backend_send_eth_frame(&dev->backend_dev, frame_data, len);
-        if (sent > 0) {
-            rdma_info_report("ETH: Forwarded frame (%zu bytes, "
-                             "ethertype=0x%04x) to %d peer(s)",
-                             len, ethertype, sent);
-        }
+        tcp_backend_send_eth_frame(
+            &dev->backend_dev, frame_data, len);
     }
 }
