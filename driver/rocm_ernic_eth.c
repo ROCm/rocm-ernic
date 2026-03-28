@@ -404,21 +404,17 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
         dma_addr = ring->buffer_dma[head];
 
         if (!buf || !dma_addr) {
-            dev_warn_ratelimited(
-                &eth_dev->pdev->dev,
-                "RX: Invalid buffer at descriptor %u\n",
-                head);
+            dev_warn_ratelimited(&eth_dev->pdev->dev,
+                                 "RX: Invalid buffer at descriptor %u\n", head);
             desc->status = 0;
             head = (head + 1) % ring->size;
             break;
         }
 
-        skb = netdev_alloc_skb_ip_align(
-            eth_dev->netdev, pkt_len);
+        skb = netdev_alloc_skb_ip_align(eth_dev->netdev, pkt_len);
         if (skb) {
             skb_put_data(skb, buf, pkt_len);
-            skb->protocol = eth_type_trans(
-                skb, eth_dev->netdev);
+            skb->protocol = eth_type_trans(skb, eth_dev->netdev);
             skb->pkt_type = PACKET_HOST;
 
             if (netif_running(eth_dev->netdev)) {

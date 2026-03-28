@@ -1,12 +1,21 @@
 /*
- * rdma_cm Protocol Handler Implementation
+ * rdma_cm Protocol Handler Implementation (loopback mode only)
  *
- * Based on InfiniBand Subnet Administration (SA) protocol format used by
- * rdma_cm. Handles connection establishment over TCP/IP (port 18515).
+ * Stub CM responder used when a single VM talks to itself
+ * (RDMA_BACKEND_TYPE_LOOPBACK).  It provides basic echo /
+ * REQ-REP handling so that rdma_cm can complete a connection
+ * without a real peer.
+ *
+ * This module is NOT used by the TCP mesh backend.  In
+ * multi-VM mode, CM frames are forwarded through the mesh
+ * and the guest TCP/CM stacks negotiate natively.
+ *
+ * Based on InfiniBand Subnet Administration (SA) protocol
+ * format used by rdma_cm.
  *
  * References:
  * - Linux kernel: drivers/infiniband/core/cma.c
- * - InfiniBand Architecture Specification, Volume 1, Chapter 15 (SA)
+ * - IB Architecture Spec, Vol 1, Ch 15 (SA)
  * - RFC 5040 (RDMA Protocol Specification)
  *
  * Copyright (C) 2025 Advanced Micro Devices, Inc.

@@ -1,7 +1,12 @@
 /*
  * TCP Connection State Management for rdma_cm
+ * (loopback mode only)
  *
- * Manages TCP connection state machine for rdma_cm protocol over TCP/IP.
+ * In-process TCP state machine used by the loopback CM
+ * stub (pvrdma_eth_handle_cm_loopback) when there is no
+ * real peer VM.  The TCP mesh backend does not use this
+ * module; it forwards raw Ethernet frames to the peer
+ * and lets the guest kernel TCP stack handle state.
  *
  * Copyright (C) 2025 Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later

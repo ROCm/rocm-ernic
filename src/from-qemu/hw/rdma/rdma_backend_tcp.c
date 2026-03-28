@@ -321,6 +321,32 @@ static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
     return (TcpBackendPrivate *)backend_dev->backend_private;
 }
 
+static void tcp_update_stats(TcpBackendPrivate *priv, uint32_t bytes,
+                             enum ibv_wc_opcode opcode)
+{
+    if (!priv || !priv->backend_dev || !priv->backend_dev->dev) {
+        return;
+    }
+    PVRDMADev *dev = (PVRDMADev *)priv->backend_dev->dev;
+
+    switch (opcode) {
+    case IBV_WC_SEND:
+        dev->stats.total_bytes_sent += bytes;
+        break;
+    case IBV_WC_RECV:
+        dev->stats.total_bytes_received += bytes;
+        break;
+    case IBV_WC_RDMA_READ:
+        dev->stats.total_bytes_rdma_read += bytes;
+        break;
+    case IBV_WC_RDMA_WRITE:
+        dev->stats.total_bytes_rdma_write += bytes;
+        break;
+    default:
+        break;
+    }
+}
+
 static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
                            uint32_t num_sge)
 {
@@ -925,6 +951,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                         /* Post completion directly to guest */
                         qemu_mutex_unlock(&priv->lock);
+                        tcp_update_stats(priv, bytes_copied, IBV_WC_RECV);
                         rdma_backend_complete_work(
                             IBV_WC_SUCCESS, 0, bytes_copied, hdr.dst_qpn,
                             IBV_WC_RECV, (void *)recv_wr->wr_id);
@@ -996,9 +1023,13 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
                     if (send_wr) {
                         uint64_t wr_id = send_wr->wr_id;
+                        uint32_t send_bytes = 0;
+                        for (uint32_t si = 0; si < send_wr->num_sge; si++)
+                            send_bytes += send_wr->sge[si].length;
                         g_free(send_wr);
 
                         qemu_mutex_unlock(&priv->lock);
+                        tcp_update_stats(priv, send_bytes, IBV_WC_SEND);
                         rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0,
                                                    hdr.dst_qpn, IBV_WC_SEND,
                                                    (void *)wr_id);
@@ -1347,8 +1378,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     PVRDMADev *pvrdma_dev =
                         (PVRDMADev *)((char *)priv->backend_dev -
                                       offsetof(PVRDMADev, backend_dev));
-                    eth_rx_inject_frame(
-                        pvrdma_dev, payload, hdr.msg_len);
+                    eth_rx_inject_frame(pvrdma_dev, payload, hdr.msg_len);
 
                     if (priv->is_manager) {
                         GHashTableIter fwd_iter;
@@ -2162,34 +2192,19 @@ static void tcp_destroy_pd(RdmaBackendPD *pd)
 static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                          size_t length, uint64_t guest_start, int access)
 {
-    TcpMR *tmr = g_new0(TcpMR, 1);
-    uint32_t pd_handle = (uint32_t)(uintptr_t)pd->ibpd;
-
-    /* Find backend_dev from a global registry or use static */
-    static uint32_t mr_counter = 1;
-    static GHashTable *global_mrs = NULL;
-    if (!global_mrs) {
-        global_mrs =
-            g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    }
-
-    tmr->handle = mr_counter++;
-    tmr->virt = addr;
-    tmr->length = length;
-    tmr->guest_start = guest_start;
-    tmr->access_flags = access;
-    tmr->lkey = tmr->handle;
-    tmr->rkey = tmr->handle + 0x10000;
-    tmr->pd_handle = pd_handle;
-
-    g_hash_table_insert(global_mrs, GUINT_TO_POINTER(tmr->handle), tmr);
+    (void)access;
 
     mr->ibpd = pd->ibpd;
-    mr->ibmr = (struct ibv_mr *)(uintptr_t)tmr->handle;
+    mr->ibmr = NULL;
 
-    rdma_info_report("TCP: Created MR handle %u, lkey=0x%x, rkey=0x%x, "
-                     "len=%zu",
-                     tmr->handle, tmr->lkey, tmr->rkey, length);
+    /*
+     * MR bookkeeping (lkey, host_virt, bounds) lives in
+     * the RdmaRmMR allocated by rdma_rm_alloc_mr.
+     * tcp_mr_lkey returns 0, so the RM layer uses the
+     * resource-table handle as lkey -- keeping lookups
+     * in tcp_wr_map_sge consistent.
+     */
+    rdma_info_report("TCP: Created MR len=%zu", length);
     return 0;
 }
 
@@ -2200,14 +2215,20 @@ static void tcp_destroy_mr(RdmaBackendMR *mr)
 
 static uint32_t tcp_mr_lkey(const RdmaBackendMR *mr)
 {
-    uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    return handle; /* lkey = handle */
+    (void)mr;
+    /*
+     * Return 0 so rdma_rm_alloc_mr uses the resource
+     * table handle as the lkey.  This keeps lkeys in
+     * sync with rdma_rm_get_mr lookups in the SGE
+     * mapping path (tcp_wr_map_sge).
+     */
+    return 0;
 }
 
 static uint32_t tcp_mr_rkey(const RdmaBackendMR *mr)
 {
-    uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    return handle + 0x10000; /* rkey = handle + offset */
+    (void)mr;
+    return 0;
 }
 
 /*
@@ -2290,6 +2311,7 @@ static void tcp_poll_cq(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq)
 
     if (comp) {
         /* Post completion to device */
+        tcp_update_stats(priv, comp->byte_len, comp->opcode);
         rdma_backend_complete_work(comp->status, 0, comp->byte_len,
                                    comp->qp_num, comp->opcode,
                                    (void *)(uintptr_t)comp->wr_id);
@@ -2620,6 +2642,7 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
         /* Post completion directly */
         qemu_mutex_unlock(&priv->lock);
+        tcp_update_stats(priv, bytes_copied, IBV_WC_RECV);
         rdma_backend_complete_work(IBV_WC_SUCCESS, 0, bytes_copied, qpn,
                                    IBV_WC_RECV, ctx);
         qemu_mutex_lock(&priv->lock);

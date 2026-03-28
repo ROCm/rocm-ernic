@@ -173,7 +173,7 @@ static int query_port(PVRDMADev *dev, union pvrdma_cmd_req *req,
         attrs.pkey_tbl_len = 1;
         attrs.active_width = 1;
         attrs.active_speed = 1;
-        attrs.phys_state = 5;   /* LinkUp */
+        attrs.phys_state = 5; /* LinkUp */
     }
 
     /* Ensure ample GID table for mesh/TCP backends */

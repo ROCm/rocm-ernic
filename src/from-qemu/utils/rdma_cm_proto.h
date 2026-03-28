@@ -1,8 +1,9 @@
 /*
- * rdma_cm Protocol Handler
+ * rdma_cm Protocol Handler (loopback mode only)
  *
- * Parses and generates rdma_cm protocol messages over TCP.
- * Used for connection setup on port 18515.
+ * Stub CM responder for loopback / single-VM mode.
+ * Not used by the TCP mesh backend; see pvrdma_eth.c
+ * for the forwarding path used in multi-VM mode.
  *
  * Copyright (C) 2025 Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later

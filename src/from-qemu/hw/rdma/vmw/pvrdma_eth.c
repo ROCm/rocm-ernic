@@ -264,6 +264,171 @@ void pvrdma_eth_process_tx(PVRDMADev *dev)
 }
 
 /**
+ * Handle rdma_cm TCP (port 18515) locally for loopback mode.
+ *
+ * In loopback mode there is no peer VM, so we emulate a
+ * minimal TCP state machine and CM responder inside the
+ * server process.  This path is NOT used by the TCP mesh
+ * backend -- there CM frames are forwarded to the peer.
+ */
+static void pvrdma_eth_handle_cm_loopback(PVRDMADev *dev,
+                                          struct eth_header *eth_hdr,
+                                          struct ip_header *ip_hdr,
+                                          struct tcp_header *tcp_hdr,
+                                          const void *frame_data, size_t len,
+                                          uint16_t src_port, uint16_t dst_port)
+{
+    if (!dev->tcp_connections) {
+        dev->tcp_connections = g_hash_table_new_full(
+            g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)tcp_conn_free);
+    }
+
+    uint32_t src_ip = ip_hdr->src_ip;
+    uint32_t dst_ip = ip_hdr->dst_ip;
+    uint16_t local_port =
+        (dst_port == TCP_PORT_RDMA_CM) ? TCP_PORT_RDMA_CM : src_port;
+    uint16_t remote_port =
+        (dst_port == TCP_PORT_RDMA_CM) ? src_port : TCP_PORT_RDMA_CM;
+    uint32_t local_ip = dst_ip;
+    uint32_t remote_ip = src_ip;
+    bool is_server = (dst_port == TCP_PORT_RDMA_CM);
+
+    uint8_t flags = tcp_hdr->flags;
+    uint32_t seq = ntohl(tcp_hdr->seq);
+    uint32_t ack = ntohl(tcp_hdr->ack);
+
+    rdma_info_report("TCP: Packet received: flags=0x%02x seq=%u "
+                     "ack=%u src_port=%u dst_port=%u",
+                     flags, seq, ack, src_port, dst_port);
+
+    TcpConnection *conn = tcp_conn_find(dev->tcp_connections, local_ip,
+                                        remote_ip, local_port, remote_port);
+
+    if (!conn) {
+        conn = tcp_conn_find(dev->tcp_connections, remote_ip, local_ip,
+                             remote_port, local_port);
+        if (conn) {
+            rdma_info_report("TCP: Found connection via reverse "
+                             "lookup");
+        }
+    }
+
+    if (!conn) {
+        uint64_t key = ((uint64_t)local_ip << 32) | remote_ip |
+                       ((uint64_t)local_port << 48) |
+                       ((uint64_t)remote_port << 32);
+        rdma_info_report("TCP: Creating new connection: "
+                         "local=%08x:%u remote=%08x:%u "
+                         "is_server=%d",
+                         local_ip, local_port, remote_ip, remote_port,
+                         is_server);
+        conn = tcp_conn_create(local_ip, remote_ip, local_port, remote_port,
+                               is_server);
+        g_hash_table_insert(dev->tcp_connections, GUINT_TO_POINTER(key), conn);
+    } else {
+        rdma_info_report("TCP: Found existing connection: "
+                         "state=%d",
+                         conn->state);
+    }
+
+    size_t tcp_hdr_len = (tcp_hdr->data_off >> 4) * 4;
+    size_t tcp_payload_offset = sizeof(struct eth_header) + 20 + tcp_hdr_len;
+    size_t tcp_payload_len = len - tcp_payload_offset;
+    const void *tcp_payload = NULL;
+
+    if (tcp_payload_len > 0 && tcp_payload_len <= len) {
+        tcp_payload = (const uint8_t *)frame_data + tcp_payload_offset;
+    }
+
+    rdma_info_report("TCP: Processing packet: state=%d "
+                     "flags=0x%02x seq=%u ack=%u payload_len=%zu",
+                     conn->state, flags, seq, ack, tcp_payload_len);
+
+    int need_response = tcp_conn_process_packet(conn, tcp_hdr, seq, ack, flags);
+
+    if (conn->state == TCP_STATE_ESTABLISHED && tcp_payload_len > 0) {
+        conn->local_ack = seq + tcp_payload_len;
+        rdma_info_report("TCP: Updated local_ack to %u "
+                         "(seq=%u + payload=%zu)",
+                         conn->local_ack, seq, tcp_payload_len);
+    }
+
+    rdma_info_report("TCP: After processing: state=%d "
+                     "need_response=%d local_ack=%u",
+                     conn->state, need_response, conn->local_ack);
+
+    uint8_t rdma_cm_response[256];
+    size_t rdma_cm_resp_len = 0;
+
+    if (conn->state == TCP_STATE_ESTABLISHED && tcp_payload &&
+        tcp_payload_len > 0 && (flags & TCP_FLAG_PSH)) {
+        rdma_info_report("TCP: Connection ESTABLISHED, "
+                         "processing rdma_cm message");
+        rdma_cm_resp_len =
+            rdma_cm_process_message(tcp_payload, tcp_payload_len,
+                                    rdma_cm_response, sizeof(rdma_cm_response));
+
+        if (rdma_cm_resp_len > 0) {
+            need_response = 1;
+            rdma_info_report("TCP: rdma_cm response generated: "
+                             "%zu bytes",
+                             rdma_cm_resp_len);
+        }
+    } else if (conn->state != TCP_STATE_ESTABLISHED) {
+        rdma_info_report("TCP: Connection not ESTABLISHED "
+                         "(state=%d), skipping rdma_cm "
+                         "processing",
+                         conn->state);
+    } else if (!(flags & TCP_FLAG_PSH)) {
+        rdma_info_report("TCP: No PSH flag, skipping rdma_cm "
+                         "processing");
+    }
+
+    if (need_response) {
+        uint8_t resp_frame[1514];
+        uint32_t resp_len = 0;
+        uint8_t resp_flags = TCP_FLAG_ACK;
+
+        if (conn->state == TCP_STATE_SYN_RECEIVED) {
+            resp_flags |= TCP_FLAG_SYN;
+        }
+
+        if (rdma_cm_resp_len > 0) {
+            resp_flags |= TCP_FLAG_PSH;
+        }
+
+        rdma_info_report("TCP: Generating response: flags=0x%02x "
+                         "state=%d local_seq=%u local_ack=%u "
+                         "payload_len=%zu",
+                         resp_flags, conn->state, conn->local_seq,
+                         conn->local_ack, rdma_cm_resp_len);
+        int gen_ret = tcp_conn_generate_response(
+            conn, resp_flags, rdma_cm_resp_len > 0 ? rdma_cm_response : NULL,
+            rdma_cm_resp_len, resp_frame, sizeof(resp_frame), &resp_len);
+        if (gen_ret == 0) {
+            struct eth_header *resp_eth = (struct eth_header *)resp_frame;
+            memcpy(resp_eth->dst_mac, eth_hdr->src_mac, 6);
+            memcpy(resp_eth->src_mac, dev->mac_addr, 6);
+
+            int ret = eth_rx_inject_frame(dev, resp_frame, resp_len);
+            if (ret != 0) {
+                rdma_error_report("TCP: Failed to inject response "
+                                  "frame: %d (flags=0x%02x len=%u)",
+                                  ret, resp_flags, resp_len);
+            } else {
+                rdma_info_report("TCP: Sent TCP response: "
+                                 "flags=0x%02x len=%u",
+                                 resp_flags, resp_len);
+            }
+        } else {
+            rdma_error_report("TCP: Failed to generate response: "
+                              "%d",
+                              gen_ret);
+        }
+    }
+}
+
+/**
  * Receive Ethernet frame from VM - parse and handle TCP/IP for rdma_cm
  */
 void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
@@ -739,187 +904,23 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
 
             /* Handle rdma_cm protocol on port 18515 */
             if (dst_port == TCP_PORT_RDMA_CM || src_port == TCP_PORT_RDMA_CM) {
-                /* Initialize TCP connections hash table if needed */
-                if (!dev->tcp_connections) {
-                    dev->tcp_connections = g_hash_table_new_full(
-                        g_direct_hash, g_direct_equal, NULL,
-                        (GDestroyNotify)tcp_conn_free);
-                }
-
-                uint32_t src_ip = ip_hdr->src_ip;
-                uint32_t dst_ip = ip_hdr->dst_ip;
-                uint16_t local_port = (dst_port == TCP_PORT_RDMA_CM)
-                                          ? TCP_PORT_RDMA_CM
-                                          : src_port;
-                uint16_t remote_port = (dst_port == TCP_PORT_RDMA_CM)
-                                           ? src_port
-                                           : TCP_PORT_RDMA_CM;
-                uint32_t local_ip = dst_ip;
-                uint32_t remote_ip = src_ip;
-                bool is_server = (dst_port == TCP_PORT_RDMA_CM);
-
-                /* Extract TCP flags and sequence numbers BEFORE connection
-                 * lookup */
-                uint8_t flags = tcp_hdr->flags;
-                uint32_t seq = ntohl(tcp_hdr->seq);
-                uint32_t ack = ntohl(tcp_hdr->ack);
-
-                rdma_info_report(
-                    "TCP: Packet received: flags=0x%02x seq=%u ack=%u "
-                    "src_port=%u dst_port=%u",
-                    flags, seq, ack, src_port, dst_port);
-
-                /* Find or create TCP connection */
-                TcpConnection *conn =
-                    tcp_conn_find(dev->tcp_connections, local_ip, remote_ip,
-                                  local_port, remote_port);
-
-                if (!conn) {
-                    /* Try reverse lookup (for ACK packets) */
-                    conn = tcp_conn_find(dev->tcp_connections, remote_ip,
-                                         local_ip, remote_port, local_port);
-                    if (conn) {
-                        rdma_info_report(
-                            "TCP: Found connection via reverse lookup");
-                    }
-                }
-
-                if (!conn) {
-                    /* Create new connection */
-                    uint64_t key = ((uint64_t)local_ip << 32) | remote_ip |
-                                   ((uint64_t)local_port << 48) |
-                                   ((uint64_t)remote_port << 32);
-                    rdma_info_report(
-                        "TCP: Creating new connection: local=%08x:%u "
-                        "remote=%08x:%u is_server=%d",
-                        local_ip, local_port, remote_ip, remote_port,
-                        is_server);
-                    conn = tcp_conn_create(local_ip, remote_ip, local_port,
-                                           remote_port, is_server);
-                    g_hash_table_insert(dev->tcp_connections,
-                                        GUINT_TO_POINTER(key), conn);
+                if (dev->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP) {
+                    /*
+                     * Multi-VM mesh: forward CM frames to
+                     * the peer via tcp_backend_send_eth_frame
+                     * and let the guest TCP/CM stacks handle
+                     * the connection natively.
+                     */
+                    rdma_info_report("TCP CM: Forwarding CM frame "
+                                     "(ports %u->%u) to mesh",
+                                     src_port, dst_port);
                 } else {
-                    rdma_info_report("TCP: Found existing connection: state=%d",
-                                     conn->state);
+                    /* Loopback: handle CM locally via stub */
+                    pvrdma_eth_handle_cm_loopback(dev, eth_hdr, ip_hdr, tcp_hdr,
+                                                  frame_data, len, src_port,
+                                                  dst_port);
+                    return;
                 }
-
-                /* Get TCP payload */
-                size_t tcp_hdr_len = (tcp_hdr->data_off >> 4) * 4;
-                size_t tcp_payload_offset =
-                    sizeof(struct eth_header) + 20 + tcp_hdr_len;
-                size_t tcp_payload_len = len - tcp_payload_offset;
-                const void *tcp_payload = NULL;
-
-                if (tcp_payload_len > 0 && tcp_payload_len <= len) {
-                    tcp_payload =
-                        (const uint8_t *)frame_data + tcp_payload_offset;
-                }
-
-                rdma_info_report(
-                    "TCP: Processing packet: state=%d flags=0x%02x "
-                    "seq=%u ack=%u payload_len=%zu",
-                    conn->state, flags, seq, ack, tcp_payload_len);
-
-                /* Process TCP packet and update state */
-                int need_response =
-                    tcp_conn_process_packet(conn, tcp_hdr, seq, ack, flags);
-
-                /* Update local_ack for data packets (ACK what we've received)
-                 */
-                if (conn->state == TCP_STATE_ESTABLISHED &&
-                    tcp_payload_len > 0) {
-                    conn->local_ack = seq + tcp_payload_len;
-                    rdma_info_report(
-                        "TCP: Updated local_ack to %u (seq=%u + payload=%zu)",
-                        conn->local_ack, seq, tcp_payload_len);
-                }
-
-                rdma_info_report(
-                    "TCP: After processing: state=%d need_response=%d "
-                    "local_ack=%u",
-                    conn->state, need_response, conn->local_ack);
-
-                /* Process rdma_cm protocol message if connection established */
-                uint8_t rdma_cm_response[256];
-                size_t rdma_cm_resp_len = 0;
-
-                if (conn->state == TCP_STATE_ESTABLISHED && tcp_payload &&
-                    tcp_payload_len > 0 && (flags & TCP_FLAG_PSH)) {
-                    rdma_info_report("TCP: Connection ESTABLISHED, processing "
-                                     "rdma_cm message");
-                    rdma_cm_resp_len = rdma_cm_process_message(
-                        tcp_payload, tcp_payload_len, rdma_cm_response,
-                        sizeof(rdma_cm_response));
-
-                    if (rdma_cm_resp_len > 0) {
-                        need_response = 1; /* Need to send response */
-                        rdma_info_report("TCP: rdma_cm response generated: %zu "
-                                         "bytes",
-                                         rdma_cm_resp_len);
-                    }
-                } else if (conn->state != TCP_STATE_ESTABLISHED) {
-                    rdma_info_report(
-                        "TCP: Connection not ESTABLISHED (state=%d), "
-                        "skipping rdma_cm processing",
-                        conn->state);
-                } else if (!(flags & TCP_FLAG_PSH)) {
-                    rdma_info_report("TCP: No PSH flag, skipping rdma_cm "
-                                     "processing");
-                }
-
-                /* Generate TCP response if needed */
-                if (need_response) {
-                    uint8_t resp_frame[1514];
-                    uint32_t resp_len = 0;
-                    uint8_t resp_flags = TCP_FLAG_ACK;
-
-                    if (conn->state == TCP_STATE_SYN_RECEIVED) {
-                        resp_flags |= TCP_FLAG_SYN;
-                    }
-
-                    if (rdma_cm_resp_len > 0) {
-                        resp_flags |= TCP_FLAG_PSH;
-                    }
-
-                    rdma_info_report("TCP: Generating response: flags=0x%02x "
-                                     "state=%d local_seq=%u local_ack=%u "
-                                     "payload_len=%zu",
-                                     resp_flags, conn->state, conn->local_seq,
-                                     conn->local_ack, rdma_cm_resp_len);
-                    int gen_ret = tcp_conn_generate_response(
-                        conn, resp_flags,
-                        rdma_cm_resp_len > 0 ? rdma_cm_response : NULL,
-                        rdma_cm_resp_len, resp_frame, sizeof(resp_frame),
-                        &resp_len);
-                    if (gen_ret == 0) {
-                        /* Copy Ethernet header from request */
-                        struct eth_header *resp_eth =
-                            (struct eth_header *)resp_frame;
-                        memcpy(resp_eth->dst_mac, eth_hdr->src_mac, 6);
-                        /* Use device MAC address if set, otherwise use default
-                         * MAC */
-                        memcpy(resp_eth->src_mac, dev->mac_addr, 6);
-
-                        /* Inject response */
-                        int ret =
-                            eth_rx_inject_frame(dev, resp_frame, resp_len);
-                        if (ret != 0) {
-                            rdma_error_report(
-                                "TCP: Failed to inject response frame: %d "
-                                "(flags=0x%02x len=%u)",
-                                ret, resp_flags, resp_len);
-                        } else {
-                            rdma_info_report(
-                                "TCP: Sent TCP response: flags=0x%02x len=%u",
-                                resp_flags, resp_len);
-                        }
-                    } else {
-                        rdma_error_report(
-                            "TCP: Failed to generate response: %d", gen_ret);
-                    }
-                }
-
-                return;
             }
         }
     }
@@ -927,7 +928,6 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
     /* Default: forward frame to all mesh peers */
     if (dev->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
         dev->backend_dev.backend_private) {
-        tcp_backend_send_eth_frame(
-            &dev->backend_dev, frame_data, len);
+        tcp_backend_send_eth_frame(&dev->backend_dev, frame_data, len);
     }
 }

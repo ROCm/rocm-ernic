@@ -291,6 +291,21 @@
       ansible.builtin.debug:
         var: ibv_devinfo_output.stdout_lines
 
+    # ── Disable KillUserProcesses ─────────────────────
+    # Perftest server processes (ib_send_bw, etc.) are
+    # launched over SSH. Without this, systemd-logind
+    # kills them when the SSH session ends.
+    - name: Disable KillUserProcesses in logind
+      ansible.builtin.copy:
+        dest: /etc/systemd/logind.conf.d/99-kill-user-processes.conf
+        content: |
+          [Login]
+          KillUserProcesses=no
+        owner: root
+        group: root
+        mode: "0644"
+      notify: restart logind
+
     # ── Set unique hostname per VM ────────────────────
     - name: Set VM hostname
       ansible.builtin.hostname:
@@ -363,3 +378,9 @@
     - name: Show NIC details
       ansible.builtin.debug:
         var: nic_config.stdout_lines
+
+  handlers:
+    - name: restart logind
+      ansible.builtin.systemd:
+        name: systemd-logind
+        state: restarted
