@@ -1,0 +1,119 @@
+name: Performance Benchmark
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  TCP_PORT: 5000
+
+jobs:
+  benchmark-sweep:
+    name: Bandwidth and Latency Sweep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: >-
+        sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          pkg-config \
+          libibverbs-dev \
+          librdmacm-dev \
+          libglib2.0-dev \
+          libjson-c-dev
+
+    - name: Build rocm-ernic
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release
+        ninja -C build
+
+    - name: Start TCP mesh (manager + worker)
+      run: |
+        build/rocm-ernic \
+          --backend tcp:manager:listen:${TCP_PORT} \
+          --socket /tmp/ernic-mgr.sock &
+        sleep 2
+        build/rocm-ernic \
+          --backend tcp:worker:127.0.0.1:${TCP_PORT} \
+          --socket /tmp/ernic-wkr.sock &
+        sleep 5
+
+    - name: Bandwidth sweep
+      id: bw
+      run: |
+        SIZES="4096 8192 16384 32768 65536 131072"
+        SIZES="$SIZES 262144 524288 1048576 2097152"
+        echo "size,send_bw,write_bw,read_bw" > bw.csv
+        for sz in $SIZES; do
+          sbw=$(ib_send_bw -s $sz -n 100 \
+            -d rocep1s0 --report_gbits 2>/dev/null \
+            | tail -1 | awk '{print $4}')
+          wbw=$(ib_write_bw -s $sz -n 100 \
+            -d rocep1s0 --report_gbits 2>/dev/null \
+            | tail -1 | awk '{print $4}')
+          rbw=$(ib_read_bw -s $sz -n 100 \
+            -d rocep1s0 --report_gbits 2>/dev/null \
+            | tail -1 | awk '{print $4}')
+          echo "$sz,$sbw,$wbw,$rbw" >> bw.csv
+        done
+        cat bw.csv
+
+    - name: Latency sweep
+      id: lat
+      run: |
+        SIZES="4096 8192 16384 32768 65536 131072"
+        SIZES="$SIZES 262144 524288 1048576"
+        echo "size,send_lat,write_lat,read_lat" > lat.csv
+        for sz in $SIZES; do
+          slat=$(ib_send_lat -s $sz -n 50 \
+            -d rocep1s0 2>/dev/null \
+            | tail -1 | awk '{print $5}')
+          wlat=$(ib_write_lat -s $sz -n 50 \
+            -d rocep1s0 2>/dev/null \
+            | tail -1 | awk '{print $5}')
+          rlat=$(ib_read_lat -s $sz -n 50 \
+            -d rocep1s0 2>/dev/null \
+            | tail -1 | awk '{print $5}')
+          echo "$sz,$slat,$wlat,$rlat" >> lat.csv
+        done
+        cat lat.csv
+
+    - name: Check regressions
+      run: |
+        echo "=== Bandwidth regression check ==="
+        MIN_BW_64K=0.5
+        bw_64k=$(grep "^65536," bw.csv \
+          | cut -d, -f2)
+        echo "Send BW at 64K: ${bw_64k} Gb/s"
+        echo "(threshold: ${MIN_BW_64K} Gb/s)"
+
+        if [ -n "$bw_64k" ]; then
+          pass=$(echo "$bw_64k >= $MIN_BW_64K" | bc -l)
+          if [ "$pass" != "1" ]; then
+            echo "REGRESSION: BW below threshold"
+            exit 1
+          fi
+        fi
+        echo "All regression checks passed"
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: |
+          bw.csv
+          lat.csv

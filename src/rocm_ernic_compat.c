@@ -601,6 +601,22 @@ void pvrdma_write_stats(pvrdma_handle_t handle)
     pvrdma_write_stats_impl(pvrdma);
 }
 
+void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+
+    pvrdma_drain_deferred_completions();
+
+    if (__atomic_exchange_n(&pvrdma->pending_cq_interrupt, 0,
+                            __ATOMIC_ACQUIRE)) {
+        post_interrupt(pvrdma, INTR_VEC_CMD_COMPLETION_Q);
+    }
+}
+
 /*
  * DMA Mapping (called FROM QEMU code)
  */
@@ -787,7 +803,9 @@ void pvrdma_dsr_flush(void *handle)
              */
             rdma_info_report(
                 "  Calling vfu_sgl_put() to flush and RELEASE mapping...");
-            vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
+            if (mapping->vfu_ctx && mapping->sg) {
+                vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
+            }
 
             /* Mark mapping as released */
             mapping->host_addr = NULL;
@@ -829,12 +847,18 @@ int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
                 mapping->guest_addr, mapping->len, mapping->sg);
 
             /* Call vfu_sgl_put() to sync writes back to guest */
+            if (!mapping->vfu_ctx || !mapping->sg) {
+                rdma_error_report("DMA sync: NULL vfu_ctx or sg "
+                                  "for mapping #%d",
+                                  i);
+                return -EINVAL;
+            }
             vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
 
-            rdma_info_report("DMA sync: vfu_sgl_put() called - writes should "
-                             "now be visible");
+            rdma_info_report("DMA sync: vfu_sgl_put() called - "
+                             "writes should now be visible");
 
-            /* Now we need to re-acquire the mapping for future use */
+            /* Re-acquire the mapping for future use */
             int ret =
                 vfu_sgl_get(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1, 0);
             if (ret < 0) {
@@ -884,8 +908,10 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
                              dma_mappings[i].guest_addr);
 
             /* Release the SGL mapping */
-            vfu_sgl_put(dma_mappings[i].vfu_ctx, dma_mappings[i].sg,
-                        &dma_mappings[i].iov, 1);
+            if (dma_mappings[i].vfu_ctx && dma_mappings[i].sg) {
+                vfu_sgl_put(dma_mappings[i].vfu_ctx, dma_mappings[i].sg,
+                            &dma_mappings[i].iov, 1);
+            }
 
             /* Free the SG structure */
             free(dma_mappings[i].sg);

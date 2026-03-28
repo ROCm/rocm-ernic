@@ -59,6 +59,15 @@ ernic_nic_subnet: "192.168.200"
 ernic_iperf_bandwidth: "100B/s"
 ernic_iperf_duration: 10
 
+# ── Performance sweep defaults ───────────────────
+ernic_perf_bw_iters: 100
+ernic_perf_lat_iters: 50
+ernic_perf_reliability_iters: 100
+ernic_perf_reliability_runs: 5
+ernic_perf_reliability_size: 65536
+ernic_perf_pingpong_iters: 100
+ernic_perf_pingpong_size: 4096
+
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false
 ernic_skip_golden_image: false

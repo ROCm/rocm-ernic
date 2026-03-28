@@ -267,6 +267,30 @@ struct ibv_mr *rocm_ernic_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
     return &vmr->ibv_mr;
 }
 
+struct ibv_mr *rocm_ernic_reg_dmabuf_mr(
+    struct ibv_pd *pd, uint64_t offset,
+    size_t length, uint64_t iova, int fd,
+    int access)
+{
+    struct verbs_mr *vmr;
+    int ret;
+
+    vmr = calloc(1, sizeof(*vmr));
+    if (!vmr)
+        return NULL;
+
+    ret = ibv_cmd_reg_dmabuf_mr(
+        pd, offset, length, iova, fd, access,
+        vmr, NULL);
+    if (ret) {
+        free(vmr);
+        errno = -ret;
+        return NULL;
+    }
+
+    return &vmr->ibv_mr;
+}
+
 int rocm_ernic_dereg_mr(struct verbs_mr *vmr)
 {
     int ret;

@@ -269,8 +269,10 @@ static const struct ib_device_ops rocm_ernic_dev_ops = {
     .query_port = rocm_ernic_query_port,
     .query_qp = rocm_ernic_query_qp,
     .reg_user_mr = rocm_ernic_reg_user_mr,
+#if IS_ENABLED(CONFIG_DMA_SHARED_BUFFER)
+    .reg_user_mr_dmabuf = rocm_ernic_reg_user_mr_dmabuf,
+#endif
     .req_notify_cq = rocm_ernic_req_notify_cq,
-    /* .report_port_event removed in kernel 6.8+ */
 
     INIT_RDMA_OBJ_SIZE(ib_ah, rocm_ernic_ah, ibah),
     INIT_RDMA_OBJ_SIZE(ib_cq, rocm_ernic_cq, ibcq),

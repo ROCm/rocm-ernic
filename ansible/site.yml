@@ -9,6 +9,7 @@
 #   2. VM creation  -- golden image, launch VMs
 #   3. Guest setup  -- driver, rdma-core, NIC config
 #   4. Sanity tests -- iperf3, perftest
+#   5. Performance tests -- full BW/lat sweeps (optional)
 #
 # Usage:
 #   cd ansible
@@ -17,6 +18,12 @@
 # Override variables with -e:
 #   ansible-playbook site.yml -e ernic_instances=4
 #   ansible-playbook site.yml -e ernic_skip_build=true
+#
+# Run the performance sweep after the sanity tests:
+#   ansible-playbook playbooks/performance-tests.yml
+#
+# Or run everything including the sweep:
+#   ansible-playbook site.yml -e ernic_run_perf=true
 
 ---
 - name: "Phase 1: Host setup"

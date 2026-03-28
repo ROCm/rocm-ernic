@@ -6,6 +6,7 @@ ASAN
 Apfelbaum
 Async
 BARs
+BW
 Backend
 Backends
 Breathe
@@ -14,6 +15,7 @@ CONFIG
 CTest
 CPUs
 CQ
+CSV
 CQs
 CQEs
 Config
@@ -67,6 +69,7 @@ Makefile
 Makefiles
 Mellanox
 NVMe
+NICs
 Netdev
 PBA
 PCI
@@ -148,6 +151,7 @@ backends
 bool
 breathe
 bringup
+bw
 cd
 checksumming
 chmod
@@ -250,6 +254,7 @@ io
 ioeventfd
 iova
 ip
+iters
 iproute
 irqs
 ko
@@ -313,6 +318,7 @@ playbook
 playbooks
 pdir
 pds
+perf
 perftest
 pingpong
 pkey

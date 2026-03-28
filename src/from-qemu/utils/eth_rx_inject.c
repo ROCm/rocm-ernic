@@ -9,12 +9,42 @@
 #include "from-qemu/hw/rdma/vmw/pvrdma_eth.h"
 #include "rocm_ernic_eth.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
-#include "hw/rdma/rdma.h" /* For rdma_pci_dma_map/unmap */
-#include "hw/pci/pci.h"   /* For PCIDevice and pci_dma_sync */
+#include "hw/rdma/rdma.h"
+#include "hw/pci/pci.h"
 #include <string.h>
 #include <inttypes.h>
+#include <glib.h>
+
+typedef struct {
+    PVRDMADev *dev;
+    void *data;
+    size_t len;
+} DeferredEthRx;
+
+static int eth_rx_inject_frame_impl(PVRDMADev *dev, const void *frame_data,
+                                    size_t len);
+
+static gboolean eth_rx_deferred_cb(gpointer user_data)
+{
+    DeferredEthRx *rx = user_data;
+    eth_rx_inject_frame_impl(rx->dev, rx->data, rx->len);
+    g_free(rx->data);
+    g_free(rx);
+    return G_SOURCE_REMOVE;
+}
 
 int eth_rx_inject_frame(PVRDMADev *dev, const void *frame_data, size_t len)
+{
+    DeferredEthRx *rx = g_new(DeferredEthRx, 1);
+    rx->dev = dev;
+    rx->data = g_memdup2(frame_data, len);
+    rx->len = len;
+    g_idle_add(eth_rx_deferred_cb, rx);
+    return 0;
+}
+
+static int eth_rx_inject_frame_impl(PVRDMADev *dev, const void *frame_data,
+                                    size_t len)
 {
     PVRDMAEthState *eth = get_eth_state(dev);
 

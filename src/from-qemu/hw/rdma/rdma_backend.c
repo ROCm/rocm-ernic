@@ -48,7 +48,7 @@
 #include "rdma_backend_ops.h" /* For RdmaBackendOps structure definition */
 
 #define THR_NAME_LEN 16
-#define THR_POLL_TO  5000
+#define THR_POLL_TO  500
 
 #define MAD_HDR_SIZE sizeof(struct ibv_grh)
 
@@ -140,7 +140,7 @@ static int rdma_poll_cq(RdmaDeviceResources *rdma_dev_res, struct ibv_cq *ibcq)
 {
     int i, ne, total_ne = 0;
     BackendCtx *bctx;
-    struct ibv_wc wc[2];
+    struct ibv_wc wc[16];
     RdmaProtectedGSList *cqe_ctx_list;
 
     WITH_QEMU_LOCK_GUARD(&rdma_dev_res->lock)

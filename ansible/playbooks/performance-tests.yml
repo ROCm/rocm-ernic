@@ -1,0 +1,559 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 5: Full RDMA bandwidth and latency sweeps.
+#
+# Runs ib_{send,write,read}_{bw,lat} across a
+# configurable range of message sizes and iteration
+# counts, then runs ibv_rc_pingpong for multi-run
+# reliability.  Results are collected into a
+# timestamped CSV file on the host for easy comparison
+# between runs.
+#
+# This play assumes exactly two VMs with IPs already
+# configured by guest-setup.yml and that the sanity
+# tests have passed.
+#
+# Usage:
+#   ansible-playbook playbooks/performance-tests.yml
+#
+# Override sweep parameters:
+#   ansible-playbook playbooks/performance-tests.yml \
+#     -e ernic_perf_bw_iters=200 \
+#     -e ernic_perf_lat_iters=100 \
+#     -e ernic_perf_reliability_runs=10
+
+---
+- name: Performance tests -- bandwidth and latency sweeps
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    vm1_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm2_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int + 1 }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm1_ip: "{{ ernic_nic_subnet }}.10"
+    vm2_ip: "{{ ernic_nic_subnet }}.20"
+    rdma_dev: rocep1s0
+
+    bw_iters: "{{ ernic_perf_bw_iters | default(100) }}"
+    lat_iters: "{{ ernic_perf_lat_iters | default(50) }}"
+    rel_iters: "{{ ernic_perf_reliability_iters | default(100) }}"
+    rel_runs: "{{ ernic_perf_reliability_runs | default(5) }}"
+    rel_size: "{{ ernic_perf_reliability_size | default(65536) }}"
+    pp_iters: "{{ ernic_perf_pingpong_iters | default(100) }}"
+    pp_size: "{{ ernic_perf_pingpong_size | default(4096) }}"
+
+    perftest_timeout: 120
+
+    # Shell snippet to kill all perftest binaries.
+    # Sourced inside each per-test SSH command.
+    kill_perftest: >-
+      sudo pkill -9 ib_send_bw  2>/dev/null;
+      sudo pkill -9 ib_write_bw 2>/dev/null;
+      sudo pkill -9 ib_read_bw  2>/dev/null;
+      sudo pkill -9 ib_send_lat  2>/dev/null;
+      sudo pkill -9 ib_write_lat 2>/dev/null;
+      sudo pkill -9 ib_read_lat  2>/dev/null;
+      sudo pkill -9 ibv_rc_pingpong 2>/dev/null;
+      true
+
+    sweep_sizes:
+      - 4096
+      - 8192
+      - 16384
+      - 32768
+      - 65536
+      - 131072
+      - 262144
+      - 524288
+      - 1048576
+      - 2097152
+      - 4194304
+      - 8388608
+
+    bw_verbs:
+      - { tool: ib_send_bw,  label: send  }
+      - { tool: ib_write_bw, label: write }
+      - { tool: ib_read_bw,  label: read  }
+
+    lat_verbs:
+      - { tool: ib_send_lat,  label: send  }
+      - { tool: ib_write_lat, label: write }
+      - { tool: ib_read_lat,  label: read  }
+
+    ts: >-
+      {{ ansible_date_time.date }}-{{
+         ansible_date_time.hour }}{{
+         ansible_date_time.minute }}{{
+         ansible_date_time.second }}
+    results_dir: >-
+      {{ ernic_project_root }}/docs/perf-results
+    bw_csv: "{{ results_dir }}/bw-{{ ts }}.csv"
+    lat_csv: "{{ results_dir }}/lat-{{ ts }}.csv"
+    rel_csv: "{{ results_dir }}/reliability-{{ ts }}.csv"
+
+  tasks:
+
+    - name: Skip if tests disabled
+      ansible.builtin.meta: end_play
+      when: ernic_skip_tests | bool
+
+    # ─────────────────────────────────────────────────
+    # Setup
+    # ─────────────────────────────────────────────────
+    - name: Kill stale perftest on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          '{{ kill_perftest }}'
+      changed_when: false
+      failed_when: false
+
+    - name: Kill stale perftest on VM2
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          '{{ kill_perftest }}'
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for port 18515 to be released
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Verify port 18515 free on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'ss -tlnp 2>/dev/null | grep -q ":18515 "
+          && echo "BUSY" || echo "FREE"'
+      register: port_vm1
+      changed_when: false
+      failed_when: false
+
+    - name: Verify port 18515 free on VM2
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          'ss -tlnp 2>/dev/null | grep -q ":18515 "
+          && echo "BUSY" || echo "FREE"'
+      register: port_vm2
+      changed_when: false
+      failed_when: false
+
+    - name: Show port check result
+      ansible.builtin.debug:
+        msg:
+          - "VM1 port 18515: {{ port_vm1.stdout | trim }}"
+          - "VM2 port 18515: {{ port_vm2.stdout | trim }}"
+
+    - name: Detect RDMA device name on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'ibv_devices
+          | grep -oE "rocep[0-9]+s[0-9]+"
+          | head -1'
+      register: rdma_dev_detect
+      changed_when: false
+      failed_when: false
+
+    - name: Set RDMA device name
+      ansible.builtin.set_fact:
+        rdma_dev: >-
+          {{ rdma_dev_detect.stdout | trim
+             | default('rocep1s0', true) }}
+
+    - name: Create results directory
+      ansible.builtin.file:
+        path: "{{ results_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write CSV headers
+      ansible.builtin.copy:
+        dest: "{{ item.path }}"
+        content: "{{ item.header }}\n"
+        mode: "0644"
+      loop:
+        - path: "{{ bw_csv }}"
+          header: >-
+            verb,size,bw_peak_GBs,bw_avg_GBs,msg_rate_mpps
+        - path: "{{ lat_csv }}"
+          header: >-
+            verb,size,lat_min_us,lat_typical_us,lat_max_us
+        - path: "{{ rel_csv }}"
+          header: >-
+            verb,run,size,bw_peak_GBs,bw_avg_GBs,msg_rate_mpps
+
+    - name: Display sweep configuration
+      ansible.builtin.debug:
+        msg:
+          - "=== Performance Sweep Config ==="
+          - "Device:          {{ rdma_dev }}"
+          - "BW iterations:   {{ bw_iters }}"
+          - "Lat iterations:  {{ lat_iters }}"
+          - "Sizes:           {{ sweep_sizes | length }} (4 KB - 8 MB)"
+          - "Reliability:     {{ rel_runs }} runs x {{ rel_iters }} iters @ {{ rel_size }} B"
+          - "Results dir:     {{ results_dir }}"
+
+    # ─────────────────────────────────────────────────
+    # Bandwidth sweep
+    # ─────────────────────────────────────────────────
+    - name: "BW sweep: {{ item.0.label }} @ {{ item.1 }} B"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.0.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ="{{ item.1 }}"
+          N="{{ bw_iters }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="perftest-bw-$TOOL-$SZ"
+
+          # Clean both VMs before starting server
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
+                --report_gbits \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout {{ perftest_timeout }} \
+              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              --report_gbits $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "{{ item.0.label }},$SZ,FAIL,FAIL,FAIL" \
+              >> "{{ bw_csv }}"
+            echo "FAIL rc=$RC"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "{{ item.0.label }},$SZ,NODATA,NODATA,NODATA" \
+              >> "{{ bw_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          PEAK=$(echo "$LINE" | awk '{print $3}')
+          AVG=$(echo "$LINE"  | awk '{print $4}')
+          MPP=$(echo "$LINE"  | awk '{print $5}')
+
+          # Convert Gb/s to GB/s (divide by 8)
+          PEAK_GB=$(echo "scale=2; $PEAK / 8" | bc -l 2>/dev/null || echo "$PEAK")
+          AVG_GB=$(echo "scale=2; $AVG / 8" | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "{{ item.0.label }},$SZ,$PEAK_GB,$AVG_GB,$MPP" \
+            >> "{{ bw_csv }}"
+          echo "{{ item.0.label }} $SZ: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+      register: bw_result
+      changed_when: false
+      failed_when: false
+      loop: >-
+        {{ bw_verbs | product(sweep_sizes) | list }}
+      loop_control:
+        label: "{{ item.0.label }} @ {{ item.1 }}"
+
+    - name: Display bandwidth sweep results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | default(['(no output)']) }}"
+      loop: "{{ bw_result.results }}"
+      loop_control:
+        label: "{{ item.item.0.label }} @ {{ item.item.1 }}"
+      when: item.stdout is defined
+
+    # ─────────────────────────────────────────────────
+    # Latency sweep
+    # ─────────────────────────────────────────────────
+    - name: "Lat sweep: {{ item.0.label }} @ {{ item.1 }} B"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.0.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ="{{ item.1 }}"
+          N="{{ lat_iters }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="perftest-lat-$TOOL-$SZ"
+
+          # Clean both VMs before starting server
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout {{ perftest_timeout }} \
+              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "{{ item.0.label }},$SZ,FAIL,FAIL,FAIL" \
+              >> "{{ lat_csv }}"
+            echo "FAIL rc=$RC"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "{{ item.0.label }},$SZ,NODATA,NODATA,NODATA" \
+              >> "{{ lat_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          TMIN=$(echo "$LINE"  | awk '{print $4}')
+          TTYP=$(echo "$LINE"  | awk '{print $5}')
+          TMAX=$(echo "$LINE"  | awk '{print $6}')
+
+          echo "{{ item.0.label }},$SZ,$TMIN,$TTYP,$TMAX" \
+            >> "{{ lat_csv }}"
+          echo "{{ item.0.label }} $SZ: min=${TMIN} typ=${TTYP} max=${TMAX} us"
+      register: lat_result
+      changed_when: false
+      failed_when: false
+      loop: >-
+        {{ lat_verbs | product(sweep_sizes) | list }}
+      loop_control:
+        label: "{{ item.0.label }} @ {{ item.1 }}"
+
+    - name: Display latency sweep results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | default(['(no output)']) }}"
+      loop: "{{ lat_result.results }}"
+      loop_control:
+        label: "{{ item.item.0.label }} @ {{ item.item.1 }}"
+      when: item.stdout is defined
+
+    # ─────────────────────────────────────────────────
+    # Reliability tests (multiple runs at fixed size)
+    # ─────────────────────────────────────────────────
+    - name: "Reliability: {{ item.0.label }} run {{ item.1 }}"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.0.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ="{{ rel_size }}"
+          N="{{ rel_iters }}"
+          SERVER_IP="{{ vm1_ip }}"
+          RUN="{{ item.1 }}"
+          UNIT="perftest-rel-$TOOL-run$RUN"
+
+          # Clean both VMs before starting server
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
+                --report_gbits \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout {{ perftest_timeout }} \
+              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              --report_gbits $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "{{ item.0.label }},$RUN,$SZ,FAIL,FAIL,FAIL" \
+              >> "{{ rel_csv }}"
+            echo "FAIL rc=$RC"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "{{ item.0.label }},$RUN,$SZ,NODATA,NODATA,NODATA" \
+              >> "{{ rel_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          PEAK=$(echo "$LINE" | awk '{print $3}')
+          AVG=$(echo "$LINE"  | awk '{print $4}')
+          MPP=$(echo "$LINE"  | awk '{print $5}')
+
+          PEAK_GB=$(echo "scale=2; $PEAK / 8" | bc -l 2>/dev/null || echo "$PEAK")
+          AVG_GB=$(echo "scale=2; $AVG / 8" | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "{{ item.0.label }},$RUN,$SZ,$PEAK_GB,$AVG_GB,$MPP" \
+            >> "{{ rel_csv }}"
+          echo "{{ item.0.label }} run$RUN: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+      register: rel_result
+      changed_when: false
+      failed_when: false
+      loop: >-
+        {{ bw_verbs | product(range(1, rel_runs | int + 1))
+           | list }}
+      loop_control:
+        label: "{{ item.0.label }} run {{ item.1 }}"
+
+    # ─────────────────────────────────────────────────
+    # ibv_rc_pingpong reliability
+    # ─────────────────────────────────────────────────
+    - name: "Pingpong: run {{ item }}"
+      ansible.builtin.shell:
+        cmd: |
+          DEV="{{ rdma_dev }}"
+          N="{{ pp_iters }}"
+          SZ="{{ pp_size }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="perftest-pp-run{{ item }}"
+
+          # Clean both VMs before starting server
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c 'ibv_rc_pingpong -d $DEV -g 1 \
+                -n $N -s $SZ \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout {{ perftest_timeout }} \
+              ibv_rc_pingpong -d $DEV -g 1 \
+              -n $N -s $SZ $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "pingpong,{{ item }},{{ pp_size }},FAIL,FAIL" \
+              >> "{{ rel_csv }}"
+            echo "FAIL rc=$RC"
+            exit 0
+          fi
+
+          BPS=$(echo "$RAW" | grep -oP '[\d.]+\s+Mbit' \
+                | awk '{print $1}')
+          BYTES=$(echo "$RAW" | grep -oP '[\d]+\s+bytes' \
+                  | head -1 | awk '{print $1}')
+          ITERS=$(echo "$RAW" | grep -oP '[\d]+\s+iters' \
+                  | awk '{print $1}')
+
+          if [ -n "$BPS" ] && [ -n "$ITERS" ] && \
+             [ "$ITERS" -gt 0 ] 2>/dev/null; then
+            TOTAL_BITS=$(echo "$BYTES * 8 * 2" | bc 2>/dev/null)
+            TOTAL_US=$(echo "scale=2; $TOTAL_BITS / ($BPS)" \
+                       | bc -l 2>/dev/null)
+            US_ITER=$(echo "scale=2; $TOTAL_US / $ITERS" \
+                      | bc -l 2>/dev/null || echo "N/A")
+          else
+            US_ITER="N/A"
+          fi
+
+          echo "pingpong,{{ item }},$SZ,$BPS,$US_ITER" \
+            >> "{{ rel_csv }}"
+          echo "pingpong run{{ item }}: ${BPS} Mbit/s"
+      register: pp_result
+      changed_when: false
+      failed_when: false
+      loop: "{{ range(1, rel_runs | int + 1) | list }}"
+      loop_control:
+        label: "run {{ item }}"
+
+    # ─────────────────────────────────────────────────
+    # Summary
+    # ─────────────────────────────────────────────────
+    - name: Count failures
+      ansible.builtin.shell:
+        cmd: >-
+          grep -c 'FAIL\|NODATA'
+          "{{ bw_csv }}" "{{ lat_csv }}" "{{ rel_csv }}"
+          2>/dev/null | awk -F: '{s+=$2} END {print s+0}'
+      register: fail_count
+      changed_when: false
+
+    - name: Performance sweep summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Performance Sweep Complete ==="
+          - "Bandwidth CSV:    {{ bw_csv }}"
+          - "Latency CSV:      {{ lat_csv }}"
+          - "Reliability CSV:  {{ rel_csv }}"
+          - "BW data points:   {{ bw_verbs | length * sweep_sizes | length }}"
+          - "Lat data points:  {{ lat_verbs | length * sweep_sizes | length }}"
+          - "Reliability runs: {{ bw_verbs | length * (rel_runs | int) + (rel_runs | int) }}"
+          - "Failures:         {{ fail_count.stdout | default('0') }}"
+
+    - name: Display bandwidth CSV
+      ansible.builtin.shell:
+        cmd: "column -t -s, {{ bw_csv }}"
+      register: bw_table
+      changed_when: false
+
+    - name: Bandwidth results table
+      ansible.builtin.debug:
+        msg: "{{ bw_table.stdout_lines }}"
+
+    - name: Display latency CSV
+      ansible.builtin.shell:
+        cmd: "column -t -s, {{ lat_csv }}"
+      register: lat_table
+      changed_when: false
+
+    - name: Latency results table
+      ansible.builtin.debug:
+        msg: "{{ lat_table.stdout_lines }}"
+
+    - name: Display reliability CSV
+      ansible.builtin.shell:
+        cmd: "column -t -s, {{ rel_csv }}"
+      register: rel_table
+      changed_when: false
+
+    - name: Reliability results table
+      ansible.builtin.debug:
+        msg: "{{ rel_table.stdout_lines }}"

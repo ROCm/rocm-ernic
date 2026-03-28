@@ -44,6 +44,9 @@ ansible-playbook playbooks/guest-setup.yml
 
 # Sanity tests (iperf3 + perftest)
 ansible-playbook playbooks/sanity-tests.yml
+
+# Full performance sweep (BW + latency + reliability)
+ansible-playbook playbooks/performance-tests.yml
 ```
 
 ## Variable Overrides
@@ -62,6 +65,11 @@ ansible-playbook site.yml -e ernic_skip_golden_image=true
 
 # Skip sanity tests
 ansible-playbook site.yml -e ernic_skip_tests=true
+
+# Run performance sweep with custom parameters
+ansible-playbook playbooks/performance-tests.yml \
+  -e ernic_perf_bw_iters=200 \
+  -e ernic_perf_reliability_runs=10
 
 # Specify a golden backing image for overlays
 ansible-playbook site.yml \
@@ -82,10 +90,11 @@ ansible/
 ├── inventory/
 │   └── hosts.yml         # Static inventory
 ├── playbooks/
-│   ├── host-setup.yml    # Build, install, configure
-│   ├── vm-create.yml     # Golden image + VM launch
-│   ├── guest-setup.yml   # Driver + rdma-core
-│   └── sanity-tests.yml  # iperf3 + perftest
+│   ├── host-setup.yml         # Build, install, configure
+│   ├── vm-create.yml          # Golden image + VM launch
+│   ├── guest-setup.yml        # Driver + rdma-core
+│   ├── sanity-tests.yml       # iperf3 + perftest
+│   └── performance-tests.yml  # Full BW/lat sweeps
 └── templates/
     └── rocm-ernic.env.j2 # Env file template
 ```
@@ -111,3 +120,12 @@ ansible/
    emulated Ethernet NICs for TCP/IP validation, then runs
    perftest tools (`ib_send_bw`, `ibv_rc_pingpong`) for
    RDMA verification.
+
+5. **performance-tests** runs the full bandwidth and latency
+   sweeps matching the test report format: `ib_send_bw`,
+   `ib_write_bw`, `ib_read_bw` across 12 message sizes
+   (4 KB to 8 MB), the same for `ib_send_lat`,
+   `ib_write_lat`, `ib_read_lat`, plus multi-run
+   reliability at 64 KB and `ibv_rc_pingpong` rounds.
+   Timestamped CSV files are written to
+   `docs/perf-results/` for easy before/after comparison.

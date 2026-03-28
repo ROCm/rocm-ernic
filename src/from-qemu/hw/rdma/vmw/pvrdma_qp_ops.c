@@ -45,6 +45,20 @@ typedef struct CompHandlerCtx {
     uint32_t rkey;        /* For RDMA Read/Write */
 } CompHandlerCtx;
 
+/*
+ * Deferred completion -- queued by background threads,
+ * drained by the main loop on every iteration.
+ */
+typedef struct DeferredCompletion {
+    PVRDMADev *dev;
+    uint32_t cq_handle;
+    struct pvrdma_cqe cqe;
+    struct ibv_wc wc;
+} DeferredCompletion;
+
+static GQueue *g_deferred_completions;
+static QemuMutex g_deferred_lock;
+
 /* Send Queue WQE */
 typedef struct PvrdmaSqWqe {
     struct pvrdma_sq_wqe_hdr hdr;
@@ -111,12 +125,16 @@ static int pvrdma_post_cqe(PVRDMADev *dev, uint32_t cq_handle,
     cqne->info = cq_handle;
     pvrdma_ring_write_inc(&dev->dsr_info.cq);
 
-    if (cq->notify != CNT_CLEAR) {
-        if (cq->notify == CNT_ARM) {
-            cq->notify = CNT_CLEAR;
-        }
-        post_interrupt(dev, INTR_VEC_CMD_COMPLETION_Q);
+    if (cq->notify == CNT_ARM) {
+        cq->notify = CNT_CLEAR;
     }
+    /*
+     * Signal the main loop to fire the MSI-X
+     * interrupt.  We must not call vfu_irq_trigger
+     * from the TCP recv thread because the
+     * libvfio-user context is not thread-safe.
+     */
+    __atomic_store_n(&dev->pending_cq_interrupt, 1, __ATOMIC_RELEASE);
 
     return 0;
 }
@@ -125,20 +143,22 @@ static void pvrdma_qp_ops_comp_handler(void *ctx, struct ibv_wc *wc)
 {
     CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
 
-    rdma_info_report(
-        ">>> pvrdma_qp_ops_comp_handler: cq_handle=%u wr_id=%lu qp=%u "
-        "opcode=%d status=%d",
-        comp_ctx->cq_handle, comp_ctx->cqe.wr_id, comp_ctx->cqe.qp,
-        comp_ctx->cqe.opcode, wc->status);
+    /*
+     * Queue the completion for the main loop to
+     * post.  All vfio-user / DMA-mapped memory
+     * access must happen on the main thread.
+     */
+    DeferredCompletion *dc = g_new(DeferredCompletion, 1);
+    dc->dev = comp_ctx->dev;
+    dc->cq_handle = comp_ctx->cq_handle;
+    dc->cqe = comp_ctx->cqe;
+    dc->wc = *wc;
 
-    if (pvrdma_post_cqe(comp_ctx->dev, comp_ctx->cq_handle, &comp_ctx->cqe,
-                        wc) < 0) {
-        rdma_error_report(
-            ">>> pvrdma_qp_ops_comp_handler: pvrdma_post_cqe failed!");
-    } else {
-        rdma_info_report(
-            ">>> pvrdma_qp_ops_comp_handler: CQE posted successfully");
-    }
+    qemu_mutex_lock(&g_deferred_lock);
+    g_queue_push_tail(g_deferred_completions, dc);
+    qemu_mutex_unlock(&g_deferred_lock);
+
+    __atomic_store_n(&comp_ctx->dev->pending_cq_interrupt, 1, __ATOMIC_RELEASE);
 
     g_free(ctx);
 }
@@ -156,13 +176,43 @@ static void complete_with_error(uint32_t vendor_err, void *ctx)
 void pvrdma_qp_ops_fini(void)
 {
     rdma_backend_unregister_comp_handler();
+    if (g_deferred_completions) {
+        while (!g_queue_is_empty(g_deferred_completions)) {
+            g_free(g_queue_pop_head(g_deferred_completions));
+        }
+        g_queue_free(g_deferred_completions);
+        g_deferred_completions = NULL;
+    }
+    qemu_mutex_destroy(&g_deferred_lock);
 }
 
 int pvrdma_qp_ops_init(void)
 {
+    g_deferred_completions = g_queue_new();
+    qemu_mutex_init(&g_deferred_lock);
     rdma_backend_register_comp_handler(pvrdma_qp_ops_comp_handler);
 
     return 0;
+}
+
+void pvrdma_drain_deferred_completions(void)
+{
+    if (!g_deferred_completions) {
+        return;
+    }
+
+    for (;;) {
+        qemu_mutex_lock(&g_deferred_lock);
+        DeferredCompletion *dc = g_queue_pop_head(g_deferred_completions);
+        qemu_mutex_unlock(&g_deferred_lock);
+
+        if (!dc) {
+            break;
+        }
+
+        pvrdma_post_cqe(dc->dev, dc->cq_handle, &dc->cqe, &dc->wc);
+        g_free(dc);
+    }
 }
 
 /* Map PVRDMA opcode to IBV completion opcode */

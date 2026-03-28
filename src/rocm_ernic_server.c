@@ -1132,7 +1132,7 @@ int main(int argc, char *argv[])
             /* Write stats periodically (every ~1 second) */
             if (dev->stats_file_path && dev->pvrdma_handle) {
                 time_t now = time(NULL);
-                if (now != last_stats_write && now - last_stats_write >= 1) {
+                if (now > last_stats_write) {
                     pvrdma_write_stats(dev->pvrdma_handle);
                     last_stats_write = now;
                 }
@@ -1146,6 +1146,10 @@ int main(int argc, char *argv[])
             /* Always iterate once (non-blocking) to process idle callbacks */
             /* Idle sources may not show up in g_main_context_pending() */
             gboolean had_events = g_main_context_iteration(main_context, FALSE);
+
+            if (dev->pvrdma_handle) {
+                pvrdma_drain_pending_interrupts(dev->pvrdma_handle);
+            }
 
             if (ret < 0) {
                 if (errno == ENOTCONN) {
@@ -1172,10 +1176,13 @@ int main(int argc, char *argv[])
                 }
             }
 
-            /* If no work was done by either vfu_run_ctx or GLib, sleep briefly
-             * to avoid busy-waiting and consuming 100% CPU */
+            /*
+             * Yield briefly when idle.  100 us keeps the
+             * completion-to-interrupt latency tight while
+             * still avoiding 100 % CPU in the idle case.
+             */
             if (ret == 0 && !had_events) {
-                usleep(1000); /* 1ms sleep to yield CPU */
+                usleep(100);
             }
         }
         vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations",
