@@ -76,6 +76,10 @@ typedef enum {
     TCP_MSG_DHCP_REQUEST,  /* Worker -> Manager: DHCP request from VM */
     TCP_MSG_DHCP_RESPONSE, /* Manager -> Worker: DHCP response for VM */
     TCP_MSG_ETH_FRAME,     /* Node -> Node: raw Ethernet frame */
+    /* RDMA one-sided operations */
+    TCP_MSG_RDMA_WRITE,      /* RDMA Write: DMA to remote MR */
+    TCP_MSG_RDMA_READ_REQ,   /* RDMA Read request */
+    TCP_MSG_RDMA_READ_RESP,  /* RDMA Read response data */
 } TcpMsgType;
 
 typedef struct {
@@ -114,6 +118,13 @@ typedef struct {
     uint8_t is_alive;
     uint8_t reserved[3];
 } __attribute__((packed)) TcpMeshNodeInfo;
+
+/* RDMA Write/Read operation header (prepended to data) */
+typedef struct {
+    uint64_t remote_addr;
+    uint32_t rkey;
+    uint32_t data_len;
+} __attribute__((packed)) TcpRdmaOpHeader;
 
 typedef struct {
     uint32_t num_nodes;
@@ -1408,6 +1419,237 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 break;
             }
 
+            case TCP_MSG_RDMA_WRITE: {
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv || !payload ||
+                    hdr.msg_len < sizeof(TcpRdmaOpHeader)) {
+                    rdma_error_report(
+                        "TCP: Invalid RDMA_WRITE payload");
+                    break;
+                }
+                TcpRdmaOpHeader *oh =
+                    (TcpRdmaOpHeader *)payload;
+                uint64_t raddr = oh->remote_addr;
+                uint32_t rk = oh->rkey;
+                uint32_t dlen = oh->data_len;
+                const void *data =
+                    (const uint8_t *)payload +
+                    sizeof(TcpRdmaOpHeader);
+
+                if (hdr.msg_len <
+                    sizeof(TcpRdmaOpHeader) + dlen) {
+                    rdma_error_report(
+                        "TCP: RDMA_WRITE truncated: "
+                        "msg_len=%u need=%zu",
+                        hdr.msg_len,
+                        sizeof(TcpRdmaOpHeader) + dlen);
+                    break;
+                }
+
+                RdmaDeviceResources *res =
+                    priv->backend_dev->rdma_dev_res;
+                RdmaRmMR *mr = rdma_rm_get_mr(res, rk);
+                if (!mr) {
+                    rdma_error_report(
+                        "TCP: RDMA_WRITE invalid "
+                        "rkey 0x%x", rk);
+                    break;
+                }
+
+                if (raddr < mr->start ||
+                    raddr + dlen >
+                        mr->start + mr->length) {
+                    rdma_error_report(
+                        "TCP: RDMA_WRITE out of bounds "
+                        "addr=0x%lx len=%u "
+                        "mr=[0x%lx..0x%lx]",
+                        (unsigned long)raddr, dlen,
+                        (unsigned long)mr->start,
+                        (unsigned long)(mr->start +
+                                        mr->length));
+                    break;
+                }
+
+                void *host_dst =
+                    (char *)mr->virt +
+                    (raddr - mr->start);
+                memcpy(host_dst, data, dlen);
+
+                PCIDevice *pci_dev =
+                    priv->backend_dev->dev;
+                if (pci_dev)
+                    pci_dma_sync(pci_dev, raddr, dlen);
+
+                rdma_info_report(
+                    "TCP: RDMA_WRITE %u bytes to "
+                    "rkey=0x%x addr=0x%lx from node %u",
+                    dlen, rk, (unsigned long)raddr,
+                    hdr.src_node_id);
+
+                tcp_update_stats(priv, dlen,
+                                 IBV_WC_RDMA_WRITE);
+
+                TcpConnection *src_conn =
+                    tcp_get_connection(
+                        priv, hdr.src_node_id);
+                if ((!src_conn ||
+                     !src_conn->is_connected) &&
+                    priv->manager_conn &&
+                    priv->manager_conn->is_connected)
+                    src_conn = priv->manager_conn;
+                if (src_conn && src_conn->is_connected &&
+                    src_conn->sockfd >= 0) {
+                    qemu_mutex_lock(&src_conn->lock);
+                    tcp_send_message(
+                        src_conn->sockfd,
+                        TCP_MSG_COMPLETION,
+                        NULL, 0, hdr.seq,
+                        priv->local_node_id,
+                        hdr.src_node_id,
+                        hdr.dst_qpn, hdr.src_qpn);
+                    qemu_mutex_unlock(&src_conn->lock);
+                }
+                break;
+            }
+
+            case TCP_MSG_RDMA_READ_REQ: {
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv || !payload ||
+                    hdr.msg_len < sizeof(TcpRdmaOpHeader)) {
+                    rdma_error_report(
+                        "TCP: Invalid RDMA_READ_REQ");
+                    break;
+                }
+                TcpRdmaOpHeader *oh =
+                    (TcpRdmaOpHeader *)payload;
+                uint64_t raddr = oh->remote_addr;
+                uint32_t rk = oh->rkey;
+                uint32_t dlen = oh->data_len;
+
+                RdmaDeviceResources *res =
+                    priv->backend_dev->rdma_dev_res;
+                RdmaRmMR *mr = rdma_rm_get_mr(res, rk);
+                if (!mr) {
+                    rdma_error_report(
+                        "TCP: RDMA_READ invalid "
+                        "rkey 0x%x", rk);
+                    break;
+                }
+
+                if (raddr < mr->start ||
+                    raddr + dlen >
+                        mr->start + mr->length) {
+                    rdma_error_report(
+                        "TCP: RDMA_READ out of bounds");
+                    break;
+                }
+
+                void *host_src =
+                    (char *)mr->virt +
+                    (raddr - mr->start);
+
+                rdma_info_report(
+                    "TCP: RDMA_READ_REQ %u bytes from "
+                    "rkey=0x%x addr=0x%lx for node %u",
+                    dlen, rk, (unsigned long)raddr,
+                    hdr.src_node_id);
+
+                tcp_update_stats(priv, dlen,
+                                 IBV_WC_RDMA_READ);
+
+                TcpConnection *src_conn =
+                    tcp_get_connection(
+                        priv, hdr.src_node_id);
+                if ((!src_conn ||
+                     !src_conn->is_connected) &&
+                    priv->manager_conn &&
+                    priv->manager_conn->is_connected)
+                    src_conn = priv->manager_conn;
+                if (src_conn && src_conn->is_connected &&
+                    src_conn->sockfd >= 0) {
+                    qemu_mutex_lock(&src_conn->lock);
+                    tcp_send_message(
+                        src_conn->sockfd,
+                        TCP_MSG_RDMA_READ_RESP,
+                        host_src, dlen, hdr.seq,
+                        priv->local_node_id,
+                        hdr.src_node_id,
+                        hdr.dst_qpn, hdr.src_qpn);
+                    qemu_mutex_unlock(&src_conn->lock);
+                }
+                break;
+            }
+
+            case TCP_MSG_RDMA_READ_RESP: {
+                TcpBackendPrivate *priv = conn->priv;
+                if (!priv)
+                    break;
+
+                rdma_info_report(
+                    "TCP: RDMA_READ_RESP %u bytes "
+                    "from node %u for qpn %u",
+                    hdr.msg_len, hdr.src_node_id,
+                    hdr.dst_qpn);
+
+                qemu_mutex_lock(&priv->lock);
+                TcpQP *tqp = g_hash_table_lookup(
+                    priv->qps,
+                    GUINT_TO_POINTER(hdr.dst_qpn));
+                if (tqp && tqp->scq) {
+                    TcpWR *send_wr =
+                        g_queue_pop_head(
+                            tqp->send_queue);
+                    if (send_wr && payload &&
+                        hdr.msg_len > 0) {
+                        uint32_t bytes_copied = 0;
+                        for (uint32_t i = 0;
+                             i < send_wr->num_sge &&
+                             bytes_copied < hdr.msg_len;
+                             i++) {
+                            uint32_t to_copy =
+                                send_wr->sge[i].length;
+                            if (bytes_copied + to_copy >
+                                hdr.msg_len)
+                                to_copy = hdr.msg_len -
+                                          bytes_copied;
+                            void *hb =
+                                send_wr->sge[i].host_addr;
+                            if (hb && to_copy > 0) {
+                                memcpy(
+                                    hb,
+                                    (char *)payload +
+                                        bytes_copied,
+                                    to_copy);
+                                bytes_copied += to_copy;
+                            }
+                        }
+
+                        uint64_t wr_id = send_wr->wr_id;
+                        tcp_wr_unmap_sge(tqp, send_wr);
+                        g_free(send_wr);
+
+                        qemu_mutex_unlock(&priv->lock);
+                        tcp_update_stats(
+                            priv, bytes_copied,
+                            IBV_WC_RDMA_READ);
+                        rdma_backend_complete_work(
+                            IBV_WC_SUCCESS, 0,
+                            bytes_copied, hdr.dst_qpn,
+                            IBV_WC_RDMA_READ,
+                            (void *)wr_id);
+                        qemu_mutex_lock(&priv->lock);
+
+                        rdma_info_report(
+                            "TCP: RDMA_READ completed "
+                            "%u bytes", bytes_copied);
+                    } else if (send_wr) {
+                        g_free(send_wr);
+                    }
+                }
+                qemu_mutex_unlock(&priv->lock);
+                break;
+            }
+
             default:
                 rdma_warn_report("TCP: Unknown message type %u from node %u",
                                  hdr.msg_type, hdr.src_node_id);
@@ -2511,7 +2753,29 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t seq;
     int ret;
 
-    rdma_info_report("TCP: >>> post_send CALLED for QPN %u", qpn);
+    /*
+     * Layout of the completion context passed from
+     * pvrdma_qp_ops.c.  Must match CompHandlerCtx.
+     */
+    typedef struct {
+        void *dev;
+        uint32_t cq_handle;
+        struct pvrdma_cqe cqe;
+        uint32_t opcode;
+        uint64_t remote_addr;
+        uint32_t rkey;
+    } TcpCompCtx;
+
+    TcpCompCtx *comp = (TcpCompCtx *)ctx;
+    uint32_t pvrdma_opcode = comp ? comp->opcode : 0;
+    uint64_t remote_addr = comp ? comp->remote_addr : 0;
+    uint32_t rkey = comp ? comp->rkey : 0;
+
+    rdma_info_report(
+        "TCP: >>> post_send QPN %u opcode=%u "
+        "remote_addr=0x%lx rkey=0x%x",
+        qpn, pvrdma_opcode,
+        (unsigned long)remote_addr, rkey);
 
     if (!priv) {
         rdma_error_report("TCP: Invalid backend");
@@ -2522,14 +2786,14 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         usleep(100);
         qemu_mutex_lock(&priv->lock);
     }
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
+    tqp = g_hash_table_lookup(priv->qps,
+                               GUINT_TO_POINTER(qpn));
     if (!tqp) {
         qemu_mutex_unlock(&priv->lock);
         rdma_error_report("TCP: QP %u not found", qpn);
         return;
     }
 
-    /* Get remote node ID and connection */
     uint32_t dst_node = tqp->remote_node_id;
 
     wr = g_new0(TcpWR, 1);
@@ -2540,51 +2804,124 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     seq = priv->next_seq++;
     qemu_mutex_unlock(&priv->lock);
 
-    /* Get connection for destination node */
     conn = tcp_get_connection(priv, dst_node);
-    if ((!conn || !conn->is_connected) && priv->manager_conn &&
+    if ((!conn || !conn->is_connected) &&
+        priv->manager_conn &&
         priv->manager_conn->is_connected) {
         conn = priv->manager_conn;
     }
     if (!conn || !conn->is_connected) {
-        rdma_error_report("TCP: No connection to node %u", dst_node);
+        rdma_error_report(
+            "TCP: No connection to node %u", dst_node);
         return;
     }
 
-    /* Send POST_SEND message over TCP */
+    uint32_t total_len = 0;
+    for (uint32_t i = 0; i < num_sge && i < 32; i++)
+        total_len += wr->sge[i].length;
+
     qemu_mutex_lock(&conn->lock);
     if (conn->sockfd >= 0) {
-        /* Send work request */
-        ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, wr, sizeof(*wr),
-                               seq, priv->local_node_id, dst_node, qpn,
-                               tqp->remote_qpn);
-        if (ret < 0) {
-            rdma_error_report("TCP: Failed to send POST_SEND to node %u",
-                              dst_node);
-        }
+        bool is_write =
+            (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
+             pvrdma_opcode ==
+                 PVRDMA_WR_RDMA_WRITE_WITH_IMM);
+        bool is_read =
+            (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
+             pvrdma_opcode ==
+                 PVRDMA_WR_RDMA_READ_WITH_INV);
 
-        /* Send data payloads */
-        for (uint32_t i = 0; i < num_sge; i++) {
-            void *host_buf = (i < 32) ? wr->sge[i].host_addr : NULL;
-            uint32_t len = (i < 32) ? wr->sge[i].length : 0;
-            if (host_buf && len > 0) {
-                ret = tcp_send_message(conn->sockfd, TCP_MSG_DATA, host_buf,
-                                       len, seq, priv->local_node_id, dst_node,
-                                       qpn, tqp->remote_qpn);
-                if (ret < 0) {
-                    rdma_error_report("TCP: Failed to send data to node %u",
-                                      dst_node);
+        if (is_write) {
+            /*
+             * RDMA Write: send header + data in one
+             * message.  Receiver writes directly to
+             * the MR identified by rkey.
+             */
+            uint32_t payload_sz =
+                sizeof(TcpRdmaOpHeader) + total_len;
+            uint8_t *buf = g_malloc(payload_sz);
+            TcpRdmaOpHeader *oh = (TcpRdmaOpHeader *)buf;
+            oh->remote_addr = remote_addr;
+            oh->rkey = rkey;
+            oh->data_len = total_len;
+
+            uint32_t off = sizeof(TcpRdmaOpHeader);
+            for (uint32_t i = 0;
+                 i < num_sge && i < 32; i++) {
+                if (wr->sge[i].host_addr &&
+                    wr->sge[i].length > 0) {
+                    memcpy(buf + off,
+                           wr->sge[i].host_addr,
+                           wr->sge[i].length);
+                    off += wr->sge[i].length;
+                }
+            }
+
+            ret = tcp_send_message(
+                conn->sockfd, TCP_MSG_RDMA_WRITE,
+                buf, payload_sz, seq,
+                priv->local_node_id, dst_node,
+                qpn, tqp->remote_qpn);
+            g_free(buf);
+            if (ret < 0)
+                rdma_error_report(
+                    "TCP: RDMA WRITE send failed");
+        } else if (is_read) {
+            /*
+             * RDMA Read: send request header only.
+             * Peer reads from its MR and sends data
+             * back in TCP_MSG_RDMA_READ_RESP.
+             */
+            TcpRdmaOpHeader oh;
+            oh.remote_addr = remote_addr;
+            oh.rkey = rkey;
+            oh.data_len = total_len;
+
+            ret = tcp_send_message(
+                conn->sockfd, TCP_MSG_RDMA_READ_REQ,
+                &oh, sizeof(oh), seq,
+                priv->local_node_id, dst_node,
+                qpn, tqp->remote_qpn);
+            if (ret < 0)
+                rdma_error_report(
+                    "TCP: RDMA READ REQ send failed");
+        } else {
+            /* Send verb (existing path) */
+            ret = tcp_send_message(
+                conn->sockfd, TCP_MSG_POST_SEND,
+                wr, sizeof(*wr), seq,
+                priv->local_node_id, dst_node,
+                qpn, tqp->remote_qpn);
+            if (ret < 0)
+                rdma_error_report(
+                    "TCP: POST_SEND failed to node %u",
+                    dst_node);
+
+            for (uint32_t i = 0;
+                 i < num_sge && i < 32; i++) {
+                void *hb = wr->sge[i].host_addr;
+                uint32_t ln = wr->sge[i].length;
+                if (hb && ln > 0) {
+                    ret = tcp_send_message(
+                        conn->sockfd, TCP_MSG_DATA,
+                        hb, ln, seq,
+                        priv->local_node_id, dst_node,
+                        qpn, tqp->remote_qpn);
+                    if (ret < 0)
+                        rdma_error_report(
+                            "TCP: DATA send failed");
                 }
             }
         }
     }
     qemu_mutex_unlock(&conn->lock);
 
-    /* Done with mapped send buffers */
     tcp_wr_unmap_sge(tqp, wr);
 
-    rdma_info_report("TCP: Posted send QP %u -> node %u, %u SGEs", qpn,
-                     dst_node, num_sge);
+    rdma_info_report(
+        "TCP: Posted send QP %u -> node %u, "
+        "%u SGEs, opcode=%u",
+        qpn, dst_node, num_sge, pvrdma_opcode);
 }
 
 static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
