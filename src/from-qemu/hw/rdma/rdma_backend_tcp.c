@@ -2664,18 +2664,87 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         }
 
         /*
-         * Extract remote node ID from the dgid that
-         * tcp_add_gid() encoded (node_id in raw[15]).
-         * Fall back to simple heuristics only when
-         * dgid is NULL (kernel-internal QP transitions
-         * that lack routing info).
+         * Resolve remote node ID from dgid.
+         *
+         * GID index 0 (from tcp_add_gid): node_id is
+         * encoded in raw[15] directly.
+         *
+         * GID index 1+ (IPv4-mapped, from guest kernel):
+         * raw[10..11] = 0xff,0xff and raw[12..15] hold
+         * the IPv4 address.  raw[15] is the last IP
+         * octet, NOT the node_id.  Detect this case and
+         * resolve via the mesh topology.
          */
         if (dgid) {
-            tqp->remote_node_id = (uint32_t)dgid->raw[15];
+            bool is_ipv4_mapped =
+                (dgid->raw[10] == 0xff &&
+                 dgid->raw[11] == 0xff);
+
+            if (!is_ipv4_mapped) {
+                tqp->remote_node_id =
+                    (uint32_t)dgid->raw[15];
+            } else {
+                uint32_t peer_ip =
+                    ((uint32_t)dgid->raw[12] << 24) |
+                    ((uint32_t)dgid->raw[13] << 16) |
+                    ((uint32_t)dgid->raw[14] << 8) |
+                    ((uint32_t)dgid->raw[15]);
+
+                /*
+                 * Search mesh topology for a node
+                 * whose IP matches.  For the manager,
+                 * iterate mesh_nodes.  For workers,
+                 * the only peer is the manager
+                 * (node 0) or other workers; default
+                 * to routing via manager.
+                 */
+                uint32_t resolved = 0xFFFFFFFF;
+                if (priv->is_manager && priv->mesh_nodes) {
+                    GHashTableIter it;
+                    gpointer k, v;
+                    qemu_mutex_lock(
+                        &priv->mesh_table_lock);
+                    g_hash_table_iter_init(
+                        &it, priv->mesh_nodes);
+                    while (g_hash_table_iter_next(
+                        &it, &k, &v)) {
+                        uint32_t nid =
+                            GPOINTER_TO_UINT(k);
+                        if (nid == priv->local_node_id)
+                            continue;
+                        TcpConnection *tc =
+                            tcp_get_connection(
+                                priv, nid);
+                        if (tc && tc->is_connected) {
+                            resolved = nid;
+                            break;
+                        }
+                    }
+                    qemu_mutex_unlock(
+                        &priv->mesh_table_lock);
+                }
+
+                if (resolved != 0xFFFFFFFF) {
+                    tqp->remote_node_id = resolved;
+                } else if (priv->mode ==
+                           TCP_MODE_WORKER) {
+                    tqp->remote_node_id = 0;
+                } else {
+                    tqp->remote_node_id = 1;
+                }
+
+                rdma_info_report(
+                    "TCP: Resolved IPv4 GID "
+                    "%u.%u.%u.%u -> node %u",
+                    dgid->raw[12], dgid->raw[13],
+                    dgid->raw[14], dgid->raw[15],
+                    tqp->remote_node_id);
+            }
         } else if (priv->mode == TCP_MODE_WORKER) {
             tqp->remote_node_id = 0;
         } else {
-            tqp->remote_node_id = (priv->local_node_id == 0) ? 1 : 0;
+            tqp->remote_node_id =
+                (priv->local_node_id == 0) ? 1 : 0;
         }
 
         tqp->rq_psn = rq_psn;
