@@ -98,6 +98,40 @@
           Check NIC configuration and TCP mesh.
 
     # ─────────────────────────────────────────────────
+    # TCP connectivity test (netcat echo)
+    # ─────────────────────────────────────────────────
+    - name: "TCP test: start netcat listener on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'sudo systemctl stop nc-echo 2>/dev/null;
+          sudo systemctl reset-failed nc-echo 2>/dev/null;
+          sudo systemd-run --unit=nc-echo
+          bash -c "echo ERNIC_OK | nc -l -p 9999 -q 1";
+          sleep 1'
+      changed_when: true
+
+    - name: "TCP test: connect from VM2 and read"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          'timeout 30
+          bash -c "nc -w 5 {{ vm1_ip }} 9999"'
+      register: tcp_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display TCP test result
+      ansible.builtin.debug:
+        msg: >-
+          TCP connectivity:
+          {{ 'PASS -- received: '
+             + tcp_result.stdout
+             if tcp_result.rc == 0
+                and 'ERNIC_OK' in tcp_result.stdout
+             else 'FAIL' }}
+
+    # ─────────────────────────────────────────────────
     # RDMA bandwidth test (ib_send_bw)
     # ─────────────────────────────────────────────────
     - name: "RDMA BW test: start ib_send_bw server on VM1"
@@ -122,7 +156,7 @@
         cmd: >-
           {{ vm2_ssh }} 'timeout 30 ib_send_bw
           -d {{ rdma_dev }} -x 1 -n 10 --report_gbits
-          {{ vm1_ip }} 2>&1 || true'
+          {{ vm1_ip }} 2>&1'
       register: ib_send_bw_result
       changed_when: false
       failed_when: false
@@ -167,7 +201,7 @@
         cmd: >-
           {{ vm2_ssh }} 'timeout 30 ibv_rc_pingpong
           -d {{ rdma_dev }} -g 1 -n 100
-          {{ vm1_ip }} 2>&1 || true'
+          {{ vm1_ip }} 2>&1'
       register: ibv_rc_pingpong_result
       changed_when: false
       failed_when: false
@@ -196,22 +230,32 @@
         ping_pass: >-
           {{ ping_v1_to_v2.rc == 0
              and ping_v2_to_v1.rc == 0 }}
-        bw_pass: "{{ ib_send_bw_result.rc == 0 }}"
-        pp_pass: "{{ ibv_rc_pingpong_result.rc == 0 }}"
+        tcp_pass: >-
+          {{ tcp_result.rc == 0
+             and 'ERNIC_OK' in tcp_result.stdout }}
+        bw_pass: >-
+          {{ ib_send_bw_result.rc == 0
+             and ib_send_bw_result.stdout | length > 0 }}
+        pp_pass: >-
+          {{ ibv_rc_pingpong_result.rc == 0
+             and ibv_rc_pingpong_result.stdout | length > 0 }}
 
     - name: Sanity test summary
       ansible.builtin.debug:
         msg:
           - "=== Sanity Test Results ==="
           - "ping:            {{ 'PASS' if ping_pass else 'FAIL' }}"
+          - "tcp:             {{ 'PASS' if tcp_pass else 'FAIL' }}"
           - "ib_send_bw:      {{ 'PASS' if bw_pass else 'FAIL' }}"
           - "ibv_rc_pingpong: {{ 'PASS' if pp_pass else 'FAIL' }}"
 
-    - name: Fail if ping test failed
+    - name: Fail if connectivity tests failed
       ansible.builtin.assert:
         that:
           - ping_v1_to_v2.rc == 0
           - ping_v2_to_v1.rc == 0
+          - tcp_result.rc == 0
+          - "'ERNIC_OK' in tcp_result.stdout"
         fail_msg: >-
-          Ping between VMs failed. Check the output
+          Connectivity tests failed. Check the output
           above for details.

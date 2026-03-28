@@ -202,6 +202,21 @@
         - rocm_ernic_eth.ko
         - rocm_ernic_rdma.ko
 
+    # ── Install udev rules BEFORE loading driver ─────
+    - name: Copy rocm-ernic udev rules
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/udev/99-rocm-ernic.rules"
+        dest: /etc/udev/rules.d/99-rocm-ernic.rules
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload udev rules
+      ansible.builtin.command:
+        cmd: udevadm control --reload-rules
+      changed_when: true
+
+    # ── Load driver modules ──────────────────────────
     - name: Load ib_core module
       community.general.modprobe:
         name: ib_core
@@ -233,25 +248,6 @@
           - insmod
           - /tmp/driver/rocm_ernic_rdma.ko
       when: "'rocm_ernic_rdma' not in lsmod_output.stdout"
-      changed_when: true
-
-    # ── Install udev rules for persistent naming ─────
-    - name: Copy rocm-ernic udev rules
-      ansible.builtin.copy:
-        src: "{{ ernic_project_root }}/udev/99-rocm-ernic.rules"
-        dest: /etc/udev/rules.d/99-rocm-ernic.rules
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Reload udev rules
-      ansible.builtin.command:
-        cmd: udevadm control --reload-rules
-      changed_when: true
-
-    - name: Trigger udev for rocm-ernic devices
-      ansible.builtin.command:
-        cmd: udevadm trigger
       changed_when: true
 
     # ── Verify RDMA device ───────────────────────────
@@ -294,6 +290,17 @@
     - name: Show RDMA device details
       ansible.builtin.debug:
         var: ibv_devinfo_output.stdout_lines
+
+    # ── Set unique hostname per VM ────────────────────
+    - name: Set VM hostname
+      ansible.builtin.hostname:
+        name: "{{ ernic_vm_name }}-{{ vm_index }}"
+
+    - name: Update /etc/hosts with new hostname
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1 {{ ernic_vm_name }}-{{ vm_index }}"
 
     # ── Configure emulated NIC IP addresses ──────────
     - name: Detect emulated NIC name

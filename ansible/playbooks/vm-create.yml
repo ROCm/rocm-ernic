@@ -93,7 +93,7 @@
     # ── Golden backing image ─────────────────────────
     - name: Check for existing golden backing image
       ansible.builtin.stat:
-        path: "{{ ernic_vm_image_dir }}/{{ ernic_vm_name }}-backing.qcow2"
+        path: "{{ ernic_vm_backing }}"
       register: ernic_backing_stat
 
     - name: Display golden image status
@@ -101,13 +101,24 @@
         msg: >-
           Golden backing image
           {{ 'EXISTS' if ernic_backing_stat.stat.exists else 'MISSING' }}
-          at {{ ernic_vm_image_dir }}/{{ ernic_vm_name }}-backing.qcow2
+          at {{ ernic_vm_backing }}
 
     - name: Ensure images directory exists
       ansible.builtin.file:
         path: "{{ ernic_vm_image_dir }}"
         state: directory
         mode: "0755"
+      become: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Ensure backing directory exists
+      ansible.builtin.file:
+        path: "{{ ernic_vm_image_dir }}/backing"
+        state: directory
+        mode: "0755"
+      become: true
       when:
         - not ernic_backing_stat.stat.exists
         - not ernic_skip_golden_image
@@ -119,7 +130,7 @@
       environment:
         QEMU_PATH: "{{ ernic_qemu_path }}"
         VM_NAME: "{{ ernic_vm_name }}"
-        IMAGES: "{{ ernic_vm_image_dir }}"
+        IMAGES: "{{ ernic_vm_image_dir }}/backing"
         RELEASE: "{{ ernic_vm_release }}"
         SIZE: "64"
         VCPUS: "{{ ernic_vm_vcpus | string }}"
@@ -150,7 +161,7 @@
         argv:
           - qemu-nbd
           - --connect=/dev/nbd0
-          - "{{ ernic_vm_image_dir }}/{{ ernic_vm_name }}-backing.qcow2"
+          - "{{ ernic_vm_backing }}"
       become: true
       changed_when: true
       when:
