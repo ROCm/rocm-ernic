@@ -7,6 +7,7 @@ Apfelbaum
 Async
 BARs
 BW
+bidir
 Backend
 Backends
 Breathe
@@ -307,6 +308,7 @@ ns
 num
 numa
 nutanix
+overridable
 nvme
 oneline
 openssh
