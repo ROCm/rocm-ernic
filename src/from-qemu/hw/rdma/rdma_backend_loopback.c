@@ -810,6 +810,7 @@ static int loopback_query_port(RdmaBackendDev *backend_dev,
     attr->pkey_tbl_len = 1;
     attr->active_width = 4; /* 4X */
     attr->active_speed = 4; /* 10 Gbps */
+    attr->phys_state = 5;   /* LinkUp */
     return 0;
 }
 

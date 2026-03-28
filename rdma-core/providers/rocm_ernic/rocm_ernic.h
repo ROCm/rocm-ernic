@@ -178,6 +178,10 @@ struct ibv_pd *rocm_ernic_alloc_pd(struct ibv_context *ctx);
 int rocm_ernic_dealloc_pd(struct ibv_pd *pd);
 struct ibv_mr *rocm_ernic_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
                                  uint64_t hca_va, int access);
+struct ibv_mr *rocm_ernic_reg_dmabuf_mr(
+    struct ibv_pd *pd, uint64_t offset,
+    size_t length, uint64_t iova, int fd,
+    int access);
 int rocm_ernic_dereg_mr(struct verbs_mr *vmr);
 struct ibv_cq *rocm_ernic_create_cq_v(struct ibv_context *ctx, int cqe,
                                       struct ibv_comp_channel *ch,

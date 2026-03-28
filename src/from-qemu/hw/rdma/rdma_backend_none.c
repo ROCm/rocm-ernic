@@ -42,6 +42,7 @@ static int none_query_port(RdmaBackendDev *backend_dev,
     attr->pkey_tbl_len = 1;
     attr->active_width = 1;
     attr->active_speed = 1;
+    attr->phys_state = 5; /* LinkUp */
     return 0;
 }
 

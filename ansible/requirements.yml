@@ -1,0 +1,15 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Ansible Galaxy collection dependencies for rocm-ernic.
+# Install with: ansible-galaxy collection install -r requirements.yml
+
+---
+collections:
+  - name: sbates130272.batesste
+    version: ">=1.0.0"
+  - name: ansible.posix
+    version: ">=1.6.2"
+  - name: community.general
+    version: ">=9.0.0,<12.0.0"

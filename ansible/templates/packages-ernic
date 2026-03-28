@@ -1,0 +1,19 @@
+# packages-ernic: Packages for rocm-ernic test VMs.
+# Uses HWE kernel for latest hardware support.
+  - build-essential
+  - cmake
+  - curl
+  - emacs-nox
+  - git
+  - iperf3
+  - libaio-dev
+  - linux-generic-hwe-24.04
+  - moreutils
+  - ninja-build
+  - nvme-cli
+  - pahole
+  - pkg-config
+  - python-is-python3
+  - python3-pip
+  - sysstat
+  - tree

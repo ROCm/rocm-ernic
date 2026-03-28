@@ -153,6 +153,14 @@ struct PVRDMADev {
     /* MAC address */
     uint8_t mac_addr[6]; /* Device MAC address */
     bool mac_addr_set;   /* Whether MAC address was explicitly set */
+
+    /*
+     * Thread-safe completion interrupt delivery.
+     * The TCP recv thread sets this flag instead of
+     * calling vfu_irq_trigger directly; the main loop
+     * drains it on every iteration.
+     */
+    volatile int pending_cq_interrupt;
 };
 typedef struct PVRDMADev PVRDMADev;
 DECLARE_INSTANCE_CHECKER(PVRDMADev, PVRDMA_DEV, PVRDMA_HW_NAME)

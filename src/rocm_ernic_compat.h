@@ -202,4 +202,11 @@ void pvrdma_write_stats(pvrdma_handle_t handle);
 
 /* DMA functions are now pci_dma_map/unmap declared in hw/pci/pci.h */
 
+/**
+ * pvrdma_drain_pending_interrupts - deliver any CQ
+ * completion interrupts queued by background threads.
+ * Must be called from the main (vfio-user) thread.
+ */
+void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle);
+
 #endif /* ROCM_ERNIC_COMPAT_H */

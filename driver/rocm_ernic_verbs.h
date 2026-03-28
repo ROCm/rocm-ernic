@@ -381,6 +381,20 @@ struct ib_mr *rocm_ernic_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
                                      u64 virt_addr, int access_flags,
                                      struct ib_udata *udata);
 #endif
+#if IS_ENABLED(CONFIG_DMA_SHARED_BUFFER)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+struct ib_mr *rocm_ernic_reg_user_mr_dmabuf(struct ib_pd *pd, u64 offset,
+                                            u64 length, u64 virt_addr, int fd,
+                                            int access_flags,
+                                            struct ib_dmah *dmah,
+                                            struct uverbs_attr_bundle *attrs);
+#else
+struct ib_mr *rocm_ernic_reg_user_mr_dmabuf(struct ib_pd *pd, u64 offset,
+                                            u64 length, u64 virt_addr, int fd,
+                                            int access_flags,
+                                            struct ib_udata *udata);
+#endif
+#endif
 int rocm_ernic_dereg_mr(struct ib_mr *mr, struct ib_udata *udata);
 struct ib_mr *rocm_ernic_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
                                   u32 max_num_sg);

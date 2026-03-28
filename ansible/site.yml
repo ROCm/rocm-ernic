@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Master playbook for rocm-ernic integration testing.
+#
+# Imports all four plays in order:
+#   1. Host setup   -- build, install, configure service
+#   2. VM creation  -- golden image, launch VMs
+#   3. Guest setup  -- driver, rdma-core, NIC config
+#   4. Sanity tests -- iperf3, perftest
+#   5. Performance tests -- full BW/lat sweeps (optional)
+#
+# Usage:
+#   cd ansible
+#   ansible-playbook site.yml
+#
+# Override variables with -e:
+#   ansible-playbook site.yml -e ernic_instances=4
+#   ansible-playbook site.yml -e ernic_skip_build=true
+#
+# Run the performance sweep after the sanity tests:
+#   ansible-playbook playbooks/performance-tests.yml
+#
+# Or run everything including the sweep:
+#   ansible-playbook site.yml -e ernic_run_perf=true
+
+---
+- name: "Phase 1: Host setup"
+  ansible.builtin.import_playbook: playbooks/host-setup.yml
+
+- name: "Phase 2: VM creation"
+  ansible.builtin.import_playbook: playbooks/vm-create.yml
+
+- name: "Phase 3: Guest setup"
+  ansible.builtin.import_playbook: playbooks/guest-setup.yml
+
+- name: "Phase 4: Sanity tests"
+  ansible.builtin.import_playbook: playbooks/sanity-tests.yml

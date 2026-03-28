@@ -1,0 +1,327 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 2: Create a golden VM backing image (if needed)
+# and launch VMs via ernicctl.  VMs are registered as
+# dynamic Ansible hosts in the ernic_vms group for
+# subsequent plays.
+
+---
+- name: VM creation -- golden image and launch
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    # ── Pre-flight: check for port conflicts ─────────
+    - name: Build list of target SSH ports
+      ansible.builtin.set_fact:
+        ernic_target_ports: >-
+          {{ range(ernic_vm_ssh_base_port | int,
+             ernic_vm_ssh_base_port | int
+             + ernic_instances | int)
+             | list }}
+
+    - name: Check for processes listening on target ports
+      ansible.builtin.shell:
+        cmd: >-
+          ss -tlnp 2>/dev/null
+          | grep ':{{ item }} '
+          | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
+          | head -1
+      register: port_check
+      changed_when: false
+      failed_when: false
+      loop: "{{ ernic_target_ports }}"
+
+    - name: Build list of port conflicts
+      ansible.builtin.set_fact:
+        ernic_port_conflicts: >-
+          {{ port_check.results
+             | selectattr('stdout', 'ne', '')
+             | map(attribute='item')
+             | zip(port_check.results
+                   | selectattr('stdout', 'ne', '')
+                   | map(attribute='stdout'))
+             | list }}
+
+    - name: Force-kill conflicting processes
+      ansible.builtin.command:
+        argv:
+          - kill
+          - -9
+          - "{{ conflict[1] }}"
+      become: true
+      loop: "{{ ernic_port_conflicts }}"
+      loop_control:
+        loop_var: conflict
+      changed_when: true
+      when:
+        - ernic_port_conflicts | length > 0
+        - ernic_force_vm_cleanup | bool
+
+    - name: Wait for killed processes to release ports
+      ansible.builtin.pause:
+        seconds: 3
+      when:
+        - ernic_port_conflicts | length > 0
+        - ernic_force_vm_cleanup | bool
+
+    - name: Fail if ports are in use and force not set
+      ansible.builtin.fail:
+        msg: |-
+          SSH port conflict detected! The following
+          ports are already in use:
+          {% for conflict in ernic_port_conflicts %}
+            port {{ conflict[0] }} -- PID {{ conflict[1] }}
+          {% endfor %}
+
+          To force-kill these processes, re-run with:
+            -e ernic_force_vm_cleanup=true
+
+          Or stop them manually:
+          {% for conflict in ernic_port_conflicts %}
+            sudo kill {{ conflict[1] }}
+          {% endfor %}
+      when:
+        - ernic_port_conflicts | length > 0
+        - not (ernic_force_vm_cleanup | bool)
+
+    # ── Golden backing image ─────────────────────────
+    - name: Check for existing golden backing image
+      ansible.builtin.stat:
+        path: "{{ ernic_vm_backing }}"
+      register: ernic_backing_stat
+
+    - name: Display golden image status
+      ansible.builtin.debug:
+        msg: >-
+          Golden backing image
+          {{ 'EXISTS' if ernic_backing_stat.stat.exists else 'MISSING' }}
+          at {{ ernic_vm_backing }}
+
+    - name: Ensure images directory exists
+      ansible.builtin.file:
+        path: "{{ ernic_vm_image_dir }}"
+        state: directory
+        mode: "0755"
+      become: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Ensure backing directory exists
+      ansible.builtin.file:
+        path: "{{ ernic_vm_image_dir }}/backing"
+        state: directory
+        mode: "0755"
+      become: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Create golden backing image via gen-vm
+      ansible.builtin.command:
+        argv:
+          - "{{ ernic_qemu_minimal }}/qemu/gen-vm"
+      environment:
+        QEMU_PATH: "{{ ernic_qemu_path }}"
+        VM_NAME: "{{ ernic_vm_name }}"
+        IMAGES: "{{ ernic_vm_image_dir }}/backing"
+        RELEASE: "{{ ernic_vm_release }}"
+        SIZE: "64"
+        VCPUS: "{{ ernic_vm_vcpus | string }}"
+        VMEM: "{{ ernic_vm_mem | string }}"
+        SSH_PORT: "{{ ernic_vm_ssh_base_port | string }}"
+        KVM: enable
+        USERNAME: "{{ ernic_vm_ssh_user }}"
+        PASS: password
+        PACKAGES: "{{ ernic_vm_packages }}"
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    # ── Fix GRUB in golden image ─────────────────────
+    - name: Load nbd kernel module
+      community.general.modprobe:
+        name: nbd
+        params: max_part=8
+        state: present
+      become: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Connect backing image via qemu-nbd
+      ansible.builtin.command:
+        argv:
+          - qemu-nbd
+          - --connect=/dev/nbd0
+          - "{{ ernic_vm_backing }}"
+      become: true
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Wait for nbd partition to appear
+      ansible.builtin.wait_for:
+        path: /dev/nbd0p1
+        timeout: 10
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Mount backing image root partition
+      ansible.posix.mount:
+        path: /mnt/ernic-golden
+        src: /dev/nbd0p1
+        fstype: ext4
+        state: mounted
+      become: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Fix GRUB timeout in golden image
+      ansible.builtin.shell:
+        cmd: |
+          sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' \
+            /mnt/ernic-golden/etc/default/grub
+          grep -q '^GRUB_TIMEOUT_STYLE=' \
+            /mnt/ernic-golden/etc/default/grub \
+            && sed -i \
+              's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=hidden/' \
+              /mnt/ernic-golden/etc/default/grub \
+            || echo 'GRUB_TIMEOUT_STYLE=hidden' \
+              >> /mnt/ernic-golden/etc/default/grub
+      become: true
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Run update-grub in chroot
+      ansible.builtin.shell:
+        cmd: |
+          mount --bind /dev  /mnt/ernic-golden/dev
+          mount --bind /proc /mnt/ernic-golden/proc
+          mount --bind /sys  /mnt/ernic-golden/sys
+          chroot /mnt/ernic-golden update-grub
+          umount /mnt/ernic-golden/sys
+          umount /mnt/ernic-golden/proc
+          umount /mnt/ernic-golden/dev
+      become: true
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Unmount and disconnect backing image
+      ansible.builtin.shell:
+        cmd: |
+          umount /mnt/ernic-golden
+          qemu-nbd --disconnect /dev/nbd0
+          rmdir /mnt/ernic-golden 2>/dev/null || true
+      become: true
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    # ── Launch VMs via ernicctl ──────────────────────
+    - name: Check for existing VM list
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - vm-list
+      register: ernic_vm_list_check
+      changed_when: false
+      failed_when: false
+
+    - name: Launch VMs for each instance
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - vm-launch
+          - "{{ item }}"
+          - --vm-name
+          - "{{ ernic_vm_name }}-{{ item }}"
+          - --ssh-port
+          - "{{ (ernic_vm_ssh_base_port | int + item - 1) | string }}"
+          - --ssh-user
+          - "{{ ernic_vm_ssh_user }}"
+          - --vcpus
+          - "{{ ernic_vm_vcpus | string }}"
+          - --mem
+          - "{{ ernic_vm_mem | string }}"
+      become: true
+      changed_when: true
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    # ── Wait for SSH ─────────────────────────────────
+    - name: Wait for SSH on each VM
+      ansible.builtin.wait_for:
+        host: localhost
+        port: "{{ ernic_vm_ssh_base_port | int + item - 1 }}"
+        delay: 10
+        timeout: 300
+        state: started
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    - name: Wait for SSH authentication to be ready
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - UserKnownHostsFile=/dev/null
+          - -o
+          - PasswordAuthentication=no
+          - -o
+          - ConnectTimeout=5
+          - -p
+          - "{{ (ernic_vm_ssh_base_port | int + item - 1) | string }}"
+          - "{{ ernic_vm_ssh_user }}@localhost"
+          - echo
+          - ready
+      register: ssh_check
+      until: ssh_check.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    # ── Register VM hosts ────────────────────────────
+    - name: Add VMs to the ernic_vms inventory group
+      ansible.builtin.add_host:
+        name: "ernic_vm_{{ item }}"
+        groups: ernic_vms
+        ansible_host: localhost
+        ansible_port: "{{ ernic_vm_ssh_base_port | int + item - 1 }}"
+        ansible_user: "{{ ernic_vm_ssh_user }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o PasswordAuthentication=no
+        vm_index: "{{ item }}"
+        vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    - name: Set last SSH port fact
+      ansible.builtin.set_fact:
+        ernic_last_ssh_port: >-
+          {{ ernic_vm_ssh_base_port | int
+             + ernic_instances | int - 1 }}
+
+    - name: Display registered VMs
+      ansible.builtin.debug:
+        msg: >-
+          Registered {{ ernic_instances }} VMs
+          (ports {{ ernic_vm_ssh_base_port }}
+          - {{ ernic_last_ssh_port }})

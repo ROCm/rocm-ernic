@@ -112,3 +112,6 @@ setup-scripts/
 
 # Ignore nohup.out
 nohup.out
+
+# Performance benchmark results
+docs/perf-results/

@@ -198,6 +198,99 @@ err_umem:
 }
 
 /**
+ * rocm_ernic_reg_user_mr_dmabuf - register a DMA-buf memory
+ * region for GPU-Direct RDMA.
+ */
+#if IS_ENABLED(CONFIG_DMA_SHARED_BUFFER)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+struct ib_mr *rocm_ernic_reg_user_mr_dmabuf(struct ib_pd *pd, u64 offset,
+                                            u64 length, u64 virt_addr, int fd,
+                                            int access_flags,
+                                            struct ib_dmah *dmah,
+                                            struct uverbs_attr_bundle *attrs)
+#else
+struct ib_mr *rocm_ernic_reg_user_mr_dmabuf(struct ib_pd *pd, u64 offset,
+                                            u64 length, u64 virt_addr, int fd,
+                                            int access_flags,
+                                            struct ib_udata *udata)
+#endif
+{
+    struct rocm_ernic_dev *dev = to_vdev(pd->device);
+    struct rocm_ernic_user_mr *mr = NULL;
+    struct ib_umem_dmabuf *umem_dmabuf;
+    struct ib_umem *umem;
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_create_mr *cmd = &req.create_mr;
+    struct rocm_ernic_cmd_create_mr_resp *resp = &rsp.create_mr_resp;
+    int ret, npages;
+
+    if (length == 0 || fd < 0) {
+        return ERR_PTR(-EINVAL);
+    }
+
+    umem_dmabuf =
+        ib_umem_dmabuf_get_pinned(pd->device, offset, length, fd, access_flags);
+    if (IS_ERR(umem_dmabuf)) {
+        dev_warn(&dev->pdev->dev, "could not get dmabuf umem\n");
+        return ERR_CAST(umem_dmabuf);
+    }
+
+    umem = &umem_dmabuf->umem;
+    npages = ib_umem_num_dma_blocks(umem, PAGE_SIZE);
+    if (npages < 0 || npages > ROCM_ERNIC_PAGE_DIR_MAX_PAGES) {
+        ret = -EINVAL;
+        goto err_umem;
+    }
+
+    mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+    if (!mr) {
+        ret = -ENOMEM;
+        goto err_umem;
+    }
+
+    mr->mmr.iova = virt_addr;
+    mr->mmr.size = length;
+    mr->umem = umem;
+
+    ret = rocm_ernic_page_dir_init(dev, &mr->pdir, npages, false);
+    if (ret)
+        goto err_mr;
+
+    ret = rocm_ernic_page_dir_insert_umem(&mr->pdir, mr->umem, 0);
+    if (ret)
+        goto err_pdir;
+
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_MR;
+    cmd->start = offset;
+    cmd->length = length;
+    cmd->pd_handle = to_vpd(pd)->pd_handle;
+    cmd->access_flags = access_flags;
+    cmd->nchunks = npages;
+    cmd->pdir_dma = mr->pdir.dir_dma;
+
+    ret = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_CREATE_MR_RESP);
+    if (ret < 0)
+        goto err_pdir;
+
+    mr->mmr.mr_handle = resp->mr_handle;
+    mr->ibmr.lkey = resp->lkey;
+    mr->ibmr.rkey = resp->rkey;
+
+    return &mr->ibmr;
+
+err_pdir:
+    rocm_ernic_page_dir_cleanup(dev, &mr->pdir);
+err_mr:
+    kfree(mr);
+err_umem:
+    ib_umem_release(umem);
+    return ERR_PTR(ret);
+}
+#endif /* CONFIG_DMA_SHARED_BUFFER */
+
+/**
  * rocm_ernic_alloc_mr - allocate a memory region
  * @pd: protection domain
  * @mr_type: type of memory region

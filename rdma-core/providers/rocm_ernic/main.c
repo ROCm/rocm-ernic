@@ -30,6 +30,7 @@ static const struct verbs_context_ops rocm_ernic_ctx_ops = {
     .alloc_pd = rocm_ernic_alloc_pd,
     .dealloc_pd = rocm_ernic_dealloc_pd,
     .reg_mr = rocm_ernic_reg_mr,
+    .reg_dmabuf_mr = rocm_ernic_reg_dmabuf_mr,
     .dereg_mr = rocm_ernic_dereg_mr,
     .create_cq = rocm_ernic_create_cq_v,
     .destroy_cq = rocm_ernic_destroy_cq_v,

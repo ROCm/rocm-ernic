@@ -172,6 +172,94 @@ forwarding through the TCP mesh.  Ping between VMs:
    # From VM 1:
    ping 192.168.200.20
 
+Ansible-Based Testing
+---------------------
+
+The ``ansible/`` directory contains playbooks that automate
+the entire multi-VM test workflow: building the server,
+installing the systemd service, creating golden VM images,
+launching VMs, provisioning them with the driver and custom
+rdma-core, and running iperf3 and perftest sanity tests.
+
+Prerequisites
+^^^^^^^^^^^^^
+
+- Ansible 2.16+ (``sudo apt install ansible``)
+- The ``sbates130272.batesste`` Galaxy collection
+
+.. code-block:: bash
+
+   cd ansible
+   ansible-galaxy collection install \
+     -r requirements.yml
+
+Running the full workflow
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A single command builds, deploys, and tests everything:
+
+.. code-block:: bash
+
+   cd ansible
+   ansible-playbook site.yml
+
+This runs four plays in order:
+
+1. **host-setup** -- builds the project, installs the
+   service and ``ernicctl``, templates the env file, and
+   starts the service.
+2. **vm-create** -- creates a golden backing image via
+   ``gen-vm`` (skipped if it already exists), launches
+   VMs with ``ernicctl vm-launch``, and waits for SSH.
+3. **guest-setup** -- uses the ``rdma_setup`` role to
+   install RDMA packages, builds the custom rdma-core
+   provider, builds and loads the kernel driver, and
+   assigns IPs to the emulated NICs.
+4. **sanity-tests** -- runs ``iperf3`` between two VMs
+   for TCP/IP validation and ``ib_send_bw`` /
+   ``ibv_rc_pingpong`` for RDMA verification.
+
+Running individual plays
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Each play can also be run separately:
+
+.. code-block:: bash
+
+   ansible-playbook playbooks/host-setup.yml
+   ansible-playbook playbooks/vm-create.yml
+   ansible-playbook playbooks/guest-setup.yml
+   ansible-playbook playbooks/sanity-tests.yml
+
+Variable overrides
+^^^^^^^^^^^^^^^^^^
+
+Override any default from ``group_vars/all.yml`` with
+``-e``:
+
+.. code-block:: bash
+
+   # Four instances instead of two
+   ansible-playbook site.yml -e ernic_instances=4
+
+   # Skip the build (use existing install)
+   ansible-playbook site.yml -e ernic_skip_build=true
+
+   # Skip golden image creation
+   ansible-playbook site.yml \
+     -e ernic_skip_golden_image=true
+
+   # Skip sanity tests
+   ansible-playbook site.yml -e ernic_skip_tests=true
+
+   # Provide a golden backing image
+   ansible-playbook site.yml \
+     -e ernic_vm_backing=/path/to/backing.qcow2
+
+See ``ansible/group_vars/all.yml`` for the full list of
+tunable variables and ``ansible/README.md`` for additional
+usage notes.
+
 Adding New Tests
 ----------------
 

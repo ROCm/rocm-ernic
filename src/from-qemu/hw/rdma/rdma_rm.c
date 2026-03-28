@@ -304,7 +304,7 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         *lkey = *mr_handle; /* Use handle as lkey */
     }
 
-    *rkey = -1;
+    *rkey = *mr_handle;
 
     mr->pd_handle = pd_handle;
 

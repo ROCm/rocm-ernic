@@ -24,5 +24,6 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle);
 void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle);
 void pvrdma_srq_recv(PVRDMADev *dev, uint32_t srq_handle);
 void pvrdma_cq_poll(RdmaDeviceResources *dev_res, uint32_t cq_handle);
+void pvrdma_drain_deferred_completions(void);
 
 #endif

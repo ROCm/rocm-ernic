@@ -1,5 +1,6 @@
 /*
  * TCP Connection State Management Implementation for rdma_cm
+ * (loopback mode only -- see tcp_conn.h for details)
  *
  * Copyright (C) 2025 Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
