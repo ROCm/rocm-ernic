@@ -58,7 +58,7 @@
 
 /* Tunable defaults -- overridable via env vars */
 #define TCP_DEFAULT_LISTEN_BACKLOG    32
-#define TCP_DEFAULT_SOCKBUF_BYTES     (2 * 1024 * 1024)
+#define TCP_DEFAULT_SOCKBUF_BYTES     (4 * 1024 * 1024)
 #define TCP_DEFAULT_HEALTH_INTERVAL_S 5
 
 static int tcp_env_int(const char *name, int fallback)
@@ -195,6 +195,7 @@ typedef struct {
 typedef struct {
     uint64_t wr_id;
     uint32_t num_sge;
+    enum ibv_wc_opcode wc_opcode;
     TcpSGE sge[32]; /* Max SGEs */
 } TcpWR;
 
@@ -1276,15 +1277,16 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
                     if (send_wr) {
                         uint64_t wr_id = send_wr->wr_id;
+                        enum ibv_wc_opcode op = send_wr->wc_opcode;
                         uint32_t send_bytes = 0;
                         for (uint32_t si = 0; si < send_wr->num_sge; si++)
                             send_bytes += send_wr->sge[si].length;
                         g_free(send_wr);
 
                         qemu_mutex_unlock(&priv->lock);
-                        tcp_update_stats(priv, send_bytes, IBV_WC_SEND);
+                        tcp_update_stats(priv, send_bytes, op);
                         rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0,
-                                                   hdr.dst_qpn, IBV_WC_SEND,
+                                                   hdr.dst_qpn, op,
                                                    (void *)wr_id);
                         qemu_mutex_lock(&priv->lock);
 
@@ -3067,6 +3069,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     typedef struct {
         void *dev;
         uint32_t cq_handle;
+        uint32_t qp_handle;
         struct pvrdma_cqe cqe;
         uint32_t opcode;
         uint64_t remote_addr;
@@ -3077,6 +3080,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t pvrdma_opcode = comp ? comp->opcode : 0;
     uint64_t remote_addr = comp ? comp->remote_addr : 0;
     uint32_t rkey = comp ? comp->rkey : 0;
+    enum ibv_wc_opcode wc_opcode =
+        comp ? (enum ibv_wc_opcode)comp->cqe.opcode : IBV_WC_SEND;
 
     rdma_info_report("TCP: >>> post_send QPN %u opcode=%u "
                      "remote_addr=0x%lx rkey=0x%x",
@@ -3100,6 +3105,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
     wr->num_sge = 0;
+    wr->wc_opcode = wc_opcode;
     tcp_wr_map_sge(tqp, wr, sge, num_sge);
     g_queue_push_tail(tqp->send_queue, wr);
     seq = priv->next_seq++;

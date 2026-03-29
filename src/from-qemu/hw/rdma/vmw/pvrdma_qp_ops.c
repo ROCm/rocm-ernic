@@ -33,11 +33,22 @@
 #include "pvrdma_qp_ops.h"
 
 /* Number of WQEs to process per batch before yielding to event loop */
-#define WQE_BATCH_SIZE 4
+#define WQE_BATCH_SIZE 16
+
+/*
+ * Max send WQEs posted to backend but not yet completed, per QP.
+ * Kept small to prevent TCP buffer exhaustion: the TCP send path
+ * busy-waits when the socket buffer is full, blocking the main
+ * thread and preventing completion delivery.  At 4 WQEs with
+ * 1 MB messages the total in-flight is 4 MB, within the default
+ * TCP socket buffer (net.core.wmem_max).
+ */
+#define MAX_SEND_IN_FLIGHT 4
 
 typedef struct CompHandlerCtx {
     PVRDMADev *dev;
     uint32_t cq_handle;
+    uint32_t qp_handle;
     struct pvrdma_cqe cqe;
     /* RDMA operation parameters */
     uint32_t opcode;      /* PVRDMA_WR_* opcode */
@@ -142,6 +153,17 @@ static int pvrdma_post_cqe(PVRDMADev *dev, uint32_t cq_handle,
 static void pvrdma_qp_ops_comp_handler(void *ctx, struct ibv_wc *wc)
 {
     CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
+
+    /* Decrement in-flight counter for send completions */
+    if (comp_ctx->qp_handle) {
+        RdmaRmQP *qp =
+            rdma_rm_get_qp(&comp_ctx->dev->rdma_dev_res, comp_ctx->qp_handle);
+        if (qp) {
+            uint32_t prev =
+                __atomic_fetch_sub(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
+            (void)prev;
+        }
+    }
 
     /*
      * Queue the completion for the main loop to
@@ -271,19 +293,17 @@ static gboolean continue_qp_recv_processing(gpointer user_data)
 
     ring = &((PvrdmaRing *)qp->opaque)[1];
 
-    /* Reset counter for this batch */
-    qp->wqe_state.wqes_processed = 0;
+    qp->wqe_state.recv_wqes_processed = 0;
 
     wqe = pvrdma_ring_next_elem_read(ring);
 
-    /* Process batch of WQEs */
-    while (wqe && qp->wqe_state.wqes_processed < WQE_BATCH_SIZE) {
+    while (wqe && qp->wqe_state.recv_wqes_processed < WQE_BATCH_SIZE) {
         CompHandlerCtx *comp_ctx;
 
-        /* Prepare CQE */
         comp_ctx = g_new(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->recv_cq_handle;
+        comp_ctx->qp_handle = 0;
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->cqe.opcode = IBV_WC_RECV;
@@ -293,17 +313,15 @@ static gboolean continue_qp_recv_processing(gpointer user_data)
                               dev->dev_attr.max_sge);
             complete_with_error(VENDOR_ERR_INV_NUM_SGE, comp_ctx);
             pvrdma_ring_read_inc(ring);
-            qp->wqe_state.wqes_processed++;
+            qp->wqe_state.recv_wqes_processed++;
             wqe = pvrdma_ring_next_elem_read(ring);
             continue;
         }
 
-        /* Track WQE processing */
         {
             PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
             if (qp_stats) {
                 qp_stats->wqes_processed++;
-                /* RECV opcode is implicit */
                 qp_stats->wqes_by_opcode[PVRDMA_WR_SEND]++;
             }
         }
@@ -313,21 +331,19 @@ static gboolean continue_qp_recv_processing(gpointer user_data)
                                comp_ctx);
 
         pvrdma_ring_read_inc(ring);
-        qp->wqe_state.wqes_processed++;
+        qp->wqe_state.recv_wqes_processed++;
         wqe = pvrdma_ring_next_elem_read(ring);
     }
 
-    /* Check if more WQEs remain */
     if (wqe) {
         more_wqes = true;
     } else {
-        qp->wqe_state.processing_active = false;
-        qp->wqe_state.wqes_processed = 0;
+        qp->wqe_state.recv_processing_active = false;
+        qp->wqe_state.recv_wqes_processed = 0;
     }
 
     g_free(ctx);
 
-    /* Track continuation */
     {
         PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
         if (qp_stats && more_wqes) {
@@ -335,7 +351,6 @@ static gboolean continue_qp_recv_processing(gpointer user_data)
         }
     }
 
-    /* Reschedule if more WQEs remain */
     if (more_wqes) {
         QPContinuationCtx *new_ctx = g_new(QPContinuationCtx, 1);
         new_ctx->dev = dev;
@@ -380,32 +395,32 @@ static gboolean continue_qp_send_processing(gpointer user_data)
 
     ring = (PvrdmaRing *)qp->opaque;
 
-    /* Reset counter for this batch */
-    qp->wqe_state.wqes_processed = 0;
+    qp->wqe_state.send_wqes_processed = 0;
 
     wqe = pvrdma_ring_next_elem_read(ring);
 
-    /* Process batch of WQEs */
-    while (wqe && qp->wqe_state.wqes_processed < WQE_BATCH_SIZE) {
+    while (wqe && qp->wqe_state.send_wqes_processed < WQE_BATCH_SIZE) {
         CompHandlerCtx *comp_ctx;
         uint32_t pvrdma_opcode = wqe->hdr.opcode;
 
-        /* Prepare CQE */
+        if (__atomic_load_n(&qp->send_in_flight, __ATOMIC_ACQUIRE) >=
+            MAX_SEND_IN_FLIGHT) {
+            break;
+        }
+
         comp_ctx = g_new(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
+        comp_ctx->qp_handle = qp_handle;
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->opcode = pvrdma_opcode;
         comp_ctx->remote_addr = 0;
         comp_ctx->rkey = 0;
 
-        /* Map PVRDMA opcode to IBV completion opcode */
         comp_ctx->cqe.opcode = pvrdma_to_ibv_wc_opcode(pvrdma_opcode);
 
-        /* Handle different QP types */
         if (qp->qp_type == IBV_QPT_UD) {
-            /* UD QP: use wr.ud union */
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res,
                                    wqe->hdr.wr.ud.av.gid_index);
             if (!sgid) {
@@ -414,7 +429,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 wqe = pvrdma_ring_next_elem_read(ring);
-                qp->wqe_state.wqes_processed++;
+                qp->wqe_state.send_wqes_processed++;
                 continue;
             }
 
@@ -427,7 +442,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 wqe = pvrdma_ring_next_elem_read(ring);
-                qp->wqe_state.wqes_processed++;
+                qp->wqe_state.send_wqes_processed++;
                 continue;
             }
 
@@ -435,7 +450,6 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             dqpn = wqe->hdr.wr.ud.remote_qpn;
             dqkey = wqe->hdr.wr.ud.remote_qkey;
         } else if (qp->qp_type == IBV_QPT_RC || qp->qp_type == IBV_QPT_UC) {
-            /* RC/UC QP: extract RDMA parameters if present */
             if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
                 pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
                 pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM ||
@@ -444,18 +458,17 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
             }
 
-            /* For RC/UC, use GID from QP attributes */
-            sgid_idx = 0; /* Default GID index */
+            sgid_idx = 0;
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
-            dgid = NULL; /* Not used for connected QPs */
-            dqpn = 0;    /* Remote QPN comes from QP pairing */
-            dqkey = 0;   /* Not used for connected QPs */
+            dgid = NULL;
+            dqpn = 0;
+            dqkey = 0;
         } else {
             rdma_error_report("Unsupported QP type %d for send", qp->qp_type);
             complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
             pvrdma_ring_read_inc(ring);
             wqe = pvrdma_ring_next_elem_read(ring);
-            qp->wqe_state.wqes_processed++;
+            qp->wqe_state.send_wqes_processed++;
             continue;
         }
 
@@ -465,30 +478,30 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             complete_with_error(VENDOR_ERR_INV_NUM_SGE, comp_ctx);
             pvrdma_ring_read_inc(ring);
             wqe = pvrdma_ring_next_elem_read(ring);
-            qp->wqe_state.wqes_processed++;
+            qp->wqe_state.send_wqes_processed++;
             continue;
         }
+
+        __atomic_fetch_add(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
 
         rdma_backend_post_send(&dev->backend_dev, &qp->backend_qp, qp->qp_type,
                                (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge,
                                sgid_idx, sgid, dgid, dqpn, dqkey, comp_ctx);
 
         pvrdma_ring_read_inc(ring);
-        qp->wqe_state.wqes_processed++;
+        qp->wqe_state.send_wqes_processed++;
         wqe = pvrdma_ring_next_elem_read(ring);
     }
 
-    /* Check if more WQEs remain */
     if (wqe) {
         more_wqes = true;
     } else {
-        qp->wqe_state.processing_active = false;
-        qp->wqe_state.wqes_processed = 0;
+        qp->wqe_state.send_processing_active = false;
+        qp->wqe_state.send_wqes_processed = 0;
     }
 
     g_free(ctx);
 
-    /* Track continuation */
     {
         PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
         if (qp_stats && more_wqes) {
@@ -496,7 +509,6 @@ static gboolean continue_qp_send_processing(gpointer user_data)
         }
     }
 
-    /* Reschedule if more WQEs remain */
     if (more_wqes) {
         QPContinuationCtx *new_ctx = g_new(QPContinuationCtx, 1);
         new_ctx->dev = dev;
@@ -626,10 +638,8 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
 
     rdma_info_report(">>> DOORBELL: Found QP, qp_type=%d", qp->qp_type);
 
-    /* Check if already processing - if so, just mark for continuation */
-    if (qp->wqe_state.processing_active) {
-        /* Already processing, will be continued by idle callback */
-        rdma_info_report(">>> DOORBELL: QP %u already processing, "
+    if (qp->wqe_state.send_processing_active) {
+        rdma_info_report(">>> DOORBELL: QP %u send already processing, "
                          "continuation scheduled",
                          qp_handle);
         return;
@@ -642,35 +652,34 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
     rdma_info_report(">>> DOORBELL: Got WQE=%p", wqe);
 
     if (!wqe) {
-        /* No WQEs to process */
         return;
     }
 
-    /* Mark as processing */
-    qp->wqe_state.processing_active = true;
-    qp->wqe_state.wqes_processed = 0;
+    qp->wqe_state.send_processing_active = true;
+    qp->wqe_state.send_wqes_processed = 0;
 
-    /* Process batch of WQEs */
-    while (wqe && qp->wqe_state.wqes_processed < WQE_BATCH_SIZE) {
+    while (wqe && qp->wqe_state.send_wqes_processed < WQE_BATCH_SIZE) {
         CompHandlerCtx *comp_ctx;
         uint32_t pvrdma_opcode = wqe->hdr.opcode;
 
-        /* Prepare CQE */
+        if (__atomic_load_n(&qp->send_in_flight, __ATOMIC_ACQUIRE) >=
+            MAX_SEND_IN_FLIGHT) {
+            break;
+        }
+
         comp_ctx = g_new(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
+        comp_ctx->qp_handle = qp_handle;
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->opcode = pvrdma_opcode;
         comp_ctx->remote_addr = 0;
         comp_ctx->rkey = 0;
 
-        /* Map PVRDMA opcode to IBV completion opcode */
         comp_ctx->cqe.opcode = pvrdma_to_ibv_wc_opcode(pvrdma_opcode);
 
-        /* Handle different QP types */
         if (qp->qp_type == IBV_QPT_UD) {
-            /* UD QP: use wr.ud union */
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res,
                                    wqe->hdr.wr.ud.av.gid_index);
             if (!sgid) {
@@ -678,7 +687,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                                   wqe->hdr.wr.ud.av.gid_index);
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
-                qp->wqe_state.wqes_processed++;
+                qp->wqe_state.send_wqes_processed++;
                 wqe = pvrdma_ring_next_elem_read(ring);
                 continue;
             }
@@ -691,7 +700,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                                   wqe->hdr.wr.ud.av.gid_index);
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
-                qp->wqe_state.wqes_processed++;
+                qp->wqe_state.send_wqes_processed++;
                 wqe = pvrdma_ring_next_elem_read(ring);
                 continue;
             }
@@ -700,7 +709,6 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             dqpn = wqe->hdr.wr.ud.remote_qpn;
             dqkey = wqe->hdr.wr.ud.remote_qkey;
         } else if (qp->qp_type == IBV_QPT_RC || qp->qp_type == IBV_QPT_UC) {
-            /* RC/UC QP: extract RDMA parameters if present */
             if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
                 pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
                 pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM ||
@@ -709,17 +717,16 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
             }
 
-            /* For RC/UC, use GID from QP attributes */
-            sgid_idx = 0; /* Default GID index */
+            sgid_idx = 0;
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
-            dgid = NULL; /* Not used for connected QPs */
-            dqpn = 0;    /* Remote QPN comes from QP pairing */
-            dqkey = 0;   /* Not used for connected QPs */
+            dgid = NULL;
+            dqpn = 0;
+            dqkey = 0;
         } else {
             rdma_error_report("Unsupported QP type %d for send", qp->qp_type);
             complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
             pvrdma_ring_read_inc(ring);
-            qp->wqe_state.wqes_processed++;
+            qp->wqe_state.send_wqes_processed++;
             wqe = pvrdma_ring_next_elem_read(ring);
             continue;
         }
@@ -729,7 +736,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                               dev->dev_attr.max_sge);
             complete_with_error(VENDOR_ERR_INV_NUM_SGE, comp_ctx);
             pvrdma_ring_read_inc(ring);
-            qp->wqe_state.wqes_processed++;
+            qp->wqe_state.send_wqes_processed++;
             wqe = pvrdma_ring_next_elem_read(ring);
             continue;
         }
@@ -740,7 +747,6 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             qp, pvrdma_opcode, (unsigned long)comp_ctx->remote_addr,
             comp_ctx->rkey);
 
-        /* Track WQE processing */
         {
             PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
             if (qp_stats) {
@@ -751,22 +757,22 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             }
         }
 
+        __atomic_fetch_add(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
+
         rdma_backend_post_send(&dev->backend_dev, &qp->backend_qp, qp->qp_type,
                                (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge,
                                sgid_idx, sgid, dgid, dqpn, dqkey, comp_ctx);
 
         pvrdma_ring_read_inc(ring);
-        qp->wqe_state.wqes_processed++;
+        qp->wqe_state.send_wqes_processed++;
         wqe = pvrdma_ring_next_elem_read(ring);
     }
 
-    /* If more WQEs remain, schedule continuation */
     if (wqe) {
         schedule_wqe_processing_continuation(dev, qp_handle);
     } else {
-        /* All WQEs processed, clear processing flag */
-        qp->wqe_state.processing_active = false;
-        qp->wqe_state.wqes_processed = 0;
+        qp->wqe_state.send_processing_active = false;
+        qp->wqe_state.send_wqes_processed = 0;
     }
 }
 
@@ -786,10 +792,8 @@ void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle)
     ring = &((PvrdmaRing *)qp->opaque)[1];
     rdma_info_report(">>> pvrdma_qp_recv: Computed ring=%p", ring);
 
-    /* Check if already processing - if so, just mark for continuation */
-    if (qp->wqe_state.processing_active) {
-        /* Already processing, will be continued by idle callback */
-        rdma_info_report(">>> pvrdma_qp_recv: QP %u already processing, "
+    if (qp->wqe_state.recv_processing_active) {
+        rdma_info_report(">>> pvrdma_qp_recv: QP %u recv already processing, "
                          "continuation scheduled",
                          qp_handle);
         return;
@@ -797,22 +801,19 @@ void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle)
 
     wqe = pvrdma_ring_next_elem_read(ring);
     if (!wqe) {
-        /* No WQEs to process */
         return;
     }
 
-    /* Mark as processing */
-    qp->wqe_state.processing_active = true;
-    qp->wqe_state.wqes_processed = 0;
+    qp->wqe_state.recv_processing_active = true;
+    qp->wqe_state.recv_wqes_processed = 0;
 
-    /* Process batch of WQEs */
-    while (wqe && qp->wqe_state.wqes_processed < WQE_BATCH_SIZE) {
+    while (wqe && qp->wqe_state.recv_wqes_processed < WQE_BATCH_SIZE) {
         CompHandlerCtx *comp_ctx;
 
-        /* Prepare CQE */
         comp_ctx = g_new(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->recv_cq_handle;
+        comp_ctx->qp_handle = 0;
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->cqe.opcode = IBV_WC_RECV;
@@ -822,7 +823,7 @@ void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle)
                               dev->dev_attr.max_sge);
             complete_with_error(VENDOR_ERR_INV_NUM_SGE, comp_ctx);
             pvrdma_ring_read_inc(ring);
-            qp->wqe_state.wqes_processed++;
+            qp->wqe_state.recv_wqes_processed++;
             wqe = pvrdma_ring_next_elem_read(ring);
             continue;
         }
@@ -832,17 +833,15 @@ void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle)
                                comp_ctx);
 
         pvrdma_ring_read_inc(ring);
-        qp->wqe_state.wqes_processed++;
+        qp->wqe_state.recv_wqes_processed++;
         wqe = pvrdma_ring_next_elem_read(ring);
     }
 
-    /* If more WQEs remain, schedule continuation */
     if (wqe) {
         schedule_recv_processing_continuation(dev, qp_handle);
     } else {
-        /* All WQEs processed, clear processing flag */
-        qp->wqe_state.processing_active = false;
-        qp->wqe_state.wqes_processed = 0;
+        qp->wqe_state.recv_processing_active = false;
+        qp->wqe_state.recv_wqes_processed = 0;
     }
 }
 

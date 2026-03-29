@@ -273,7 +273,7 @@
             sudo systemctl reset-failed $UNIT 2>/dev/null;
             sudo systemd-run --unit=$UNIT \
               bash -c '$TOOL -d $DEV -x 1 \
-                -s $SZ -n 100 --tx-depth=10 \
+                -s $SZ -n 100 \
                 --bidirectional --report_gbits \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
@@ -284,7 +284,7 @@
           RAW=$({{ vm2_ssh }} "
             timeout 120 \
               $TOOL -d $DEV -x 1 -s $SZ -n 100 \
-              --tx-depth=10 --bidirectional \
+              --bidirectional \
               --report_gbits \
               $SERVER_IP 2>&1
           ")
