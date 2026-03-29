@@ -147,7 +147,8 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     /* Calculate dynamic device capabilities (from init_dev_caps in
      * pvrdma_main.c) */
     {
-        size_t pg_tbl_bytes = PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
+        size_t pg_tbl_bytes =
+            PVRDMA_PG_TBL_PAGES * PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
         size_t wr_sz = MAX(sizeof(struct pvrdma_sq_wqe_hdr),
                            sizeof(struct pvrdma_rq_wqe_hdr));
 

@@ -68,6 +68,20 @@ ernic_perf_reliability_size: 65536
 ernic_perf_pingpong_iters: 100
 ernic_perf_pingpong_size: 4096
 
+# ── Stress-test defaults ─────────────────────────
+ernic_stress_multi_qp_counts:
+  - 2
+  - 4
+  - 8
+ernic_stress_bidir_sizes:
+  - 65536
+  - 262144
+  - 1048576
+ernic_stress_soak_duration: 300
+ernic_stress_high_iters: 10000
+ernic_stress_qp_churn_cycles: 50
+ernic_stress_concurrent_duration: 60
+
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false
 ernic_skip_golden_image: false

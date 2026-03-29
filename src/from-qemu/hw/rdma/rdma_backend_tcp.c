@@ -51,14 +51,14 @@
  */
 
 #define TCP_PROTOCOL_MAGIC     0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION   2          /* Multi-node version */
+#define TCP_PROTOCOL_VERSION   3          /* v3: wc_opcode in TcpWR */
 #define TCP_MAX_ETH_FRAME_LEN  2048
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
 
 /* Tunable defaults -- overridable via env vars */
 #define TCP_DEFAULT_LISTEN_BACKLOG    32
-#define TCP_DEFAULT_SOCKBUF_BYTES     (2 * 1024 * 1024)
+#define TCP_DEFAULT_SOCKBUF_BYTES     (4 * 1024 * 1024)
 #define TCP_DEFAULT_HEALTH_INTERVAL_S 5
 
 static int tcp_env_int(const char *name, int fallback)
@@ -195,6 +195,7 @@ typedef struct {
 typedef struct {
     uint64_t wr_id;
     uint32_t num_sge;
+    enum ibv_wc_opcode wc_opcode;
     TcpSGE sge[32]; /* Max SGEs */
 } TcpWR;
 
@@ -1276,15 +1277,16 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
                     if (send_wr) {
                         uint64_t wr_id = send_wr->wr_id;
+                        enum ibv_wc_opcode op = send_wr->wc_opcode;
                         uint32_t send_bytes = 0;
                         for (uint32_t si = 0; si < send_wr->num_sge; si++)
                             send_bytes += send_wr->sge[si].length;
                         g_free(send_wr);
 
                         qemu_mutex_unlock(&priv->lock);
-                        tcp_update_stats(priv, send_bytes, IBV_WC_SEND);
+                        tcp_update_stats(priv, send_bytes, op);
                         rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0,
-                                                   hdr.dst_qpn, IBV_WC_SEND,
+                                                   hdr.dst_qpn, op,
                                                    (void *)wr_id);
                         qemu_mutex_lock(&priv->lock);
 
@@ -2002,8 +2004,20 @@ static void *tcp_accept_thread(void *opaque)
 
             hs_payload = (TcpHandshakePayload *)payload;
             uint32_t remote_node_id = ntohl(hs_payload->node_id);
+            uint32_t remote_version = ntohl(hs_payload->version);
 
-            rdma_info_report("TCP: Handshake from node %u", remote_node_id);
+            rdma_info_report("TCP: Handshake from node %u (v%u)",
+                             remote_node_id, remote_version);
+
+            if (remote_version != TCP_PROTOCOL_VERSION) {
+                rdma_error_report(
+                    "TCP: Protocol version mismatch: local=%u remote=%u",
+                    TCP_PROTOCOL_VERSION, remote_version);
+                close(sockfd);
+                g_free(payload);
+                payload = NULL;
+                continue;
+            }
 
             /* Check if connection already exists */
             qemu_mutex_lock(&priv->conn_table_lock);
@@ -3067,6 +3081,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     typedef struct {
         void *dev;
         uint32_t cq_handle;
+        uint32_t qp_handle;
         struct pvrdma_cqe cqe;
         uint32_t opcode;
         uint64_t remote_addr;
@@ -3077,6 +3092,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t pvrdma_opcode = comp ? comp->opcode : 0;
     uint64_t remote_addr = comp ? comp->remote_addr : 0;
     uint32_t rkey = comp ? comp->rkey : 0;
+    enum ibv_wc_opcode wc_opcode =
+        comp ? (enum ibv_wc_opcode)comp->cqe.opcode : IBV_WC_SEND;
 
     rdma_info_report("TCP: >>> post_send QPN %u opcode=%u "
                      "remote_addr=0x%lx rkey=0x%x",
@@ -3084,6 +3101,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     if (!priv) {
         rdma_error_report("TCP: Invalid backend");
+        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
+                                   0, 0, wc_opcode, ctx);
         return;
     }
 
@@ -3092,6 +3111,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     if (!tqp) {
         qemu_mutex_unlock(&priv->lock);
         rdma_error_report("TCP: QP %u not found", qpn);
+        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
+                                   0, qpn, wc_opcode, ctx);
         return;
     }
 
@@ -3100,6 +3121,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
     wr->num_sge = 0;
+    wr->wc_opcode = wc_opcode;
     tcp_wr_map_sge(tqp, wr, sge, num_sge);
     g_queue_push_tail(tqp->send_queue, wr);
     seq = priv->next_seq++;
@@ -3112,7 +3134,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
     if (!conn || !conn->is_connected) {
         rdma_error_report("TCP: No connection to node %u", dst_node);
-        return;
+        goto fail;
     }
 
     uint32_t total_len = 0;
@@ -3224,14 +3246,30 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 }
             }
         }
+    } else {
+        ret = -1;
     }
     qemu_mutex_unlock(&conn->lock);
+
+    if (ret < 0) {
+        goto fail;
+    }
 
     tcp_wr_unmap_sge(tqp, wr);
 
     rdma_info_report("TCP: Posted send QP %u -> node %u, "
                      "%u SGEs, opcode=%u",
                      qpn, dst_node, num_sge, pvrdma_opcode);
+    return;
+
+fail:
+    qemu_mutex_lock(&priv->lock);
+    g_queue_remove(tqp->send_queue, wr);
+    qemu_mutex_unlock(&priv->lock);
+    tcp_wr_unmap_sge(tqp, wr);
+    g_free(wr);
+    rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND, 0,
+                               qpn, wc_opcode, ctx);
 }
 
 static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,

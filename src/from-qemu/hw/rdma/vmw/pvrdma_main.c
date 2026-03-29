@@ -1066,7 +1066,8 @@ static void __attribute__((unused)) init_regs(PCIDevice *pdev)
 
 static void __attribute__((unused)) init_dev_caps(PVRDMADev *dev)
 {
-    size_t pg_tbl_bytes = PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
+    size_t pg_tbl_bytes =
+        PVRDMA_PG_TBL_PAGES * PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
     size_t wr_sz =
         MAX(sizeof(struct pvrdma_sq_wqe_hdr), sizeof(struct pvrdma_rq_wqe_hdr));
 

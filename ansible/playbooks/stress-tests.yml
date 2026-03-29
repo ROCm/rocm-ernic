@@ -1,0 +1,895 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 6: RDMA stress tests.
+#
+# Exercises the emulated RDMA device under conditions
+# the performance-tests.yml never touches: multi-QP,
+# bidirectional, long-duration soak, concurrent verb
+# mix, QP churn, resource limits, and iperf3 TCP
+# baseline.
+#
+# This play assumes exactly two VMs with IPs already
+# configured by guest-setup.yml and that the sanity
+# tests have passed.
+#
+# Usage:
+#   ansible-playbook playbooks/stress-tests.yml
+#
+# Override parameters:
+#   ansible-playbook playbooks/stress-tests.yml \
+#     -e ernic_stress_soak_duration=3600 \
+#     -e ernic_stress_high_iters=50000
+
+---
+- name: Stress tests -- multi-QP, bidir, soak, churn
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    vm1_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm2_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int + 1 }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm1_ip: "{{ ernic_nic_subnet }}.10"
+    vm2_ip: "{{ ernic_nic_subnet }}.20"
+    rdma_dev: rocep1s0
+
+    multi_qp_counts: >-
+      {{ ernic_stress_multi_qp_counts
+         | default([2, 4, 8]) }}
+    bidir_sizes: >-
+      {{ ernic_stress_bidir_sizes
+         | default([65536, 262144, 1048576]) }}
+    soak_duration: >-
+      {{ ernic_stress_soak_duration
+         | default(300) | int }}
+    high_iters: >-
+      {{ ernic_stress_high_iters
+         | default(10000) | int }}
+    qp_churn_cycles: >-
+      {{ ernic_stress_qp_churn_cycles
+         | default(50) | int }}
+    concurrent_duration: >-
+      {{ ernic_stress_concurrent_duration
+         | default(60) | int }}
+
+    iperf_bw: >-
+      {{ ernic_iperf_bandwidth
+         | regex_replace('(?i)iB/s$', '')
+         | regex_replace('(?i)B/s$', '') }}
+    iperf_dur: >-
+      {{ ernic_iperf_duration | default(10) }}
+
+    kill_perftest: >-
+      sudo pkill -9 ib_send_bw  2>/dev/null;
+      sudo pkill -9 ib_write_bw 2>/dev/null;
+      sudo pkill -9 ib_read_bw  2>/dev/null;
+      sudo pkill -9 ib_send_lat  2>/dev/null;
+      sudo pkill -9 ib_write_lat 2>/dev/null;
+      sudo pkill -9 ib_read_lat  2>/dev/null;
+      sudo pkill -9 ibv_rc_pingpong 2>/dev/null;
+      sudo pkill -9 iperf3 2>/dev/null;
+      true
+
+    bw_verbs:
+      - { tool: ib_send_bw,  label: send  }
+      - { tool: ib_write_bw, label: write }
+
+    ts: >-
+      {{ ansible_date_time.date }}-{{
+         ansible_date_time.hour }}{{
+         ansible_date_time.minute }}{{
+         ansible_date_time.second }}
+    results_dir: >-
+      {{ ernic_project_root }}/docs/perf-results
+    stress_csv: >-
+      {{ results_dir }}/stress-{{ ts }}.csv
+
+  tasks:
+
+    - name: Skip if tests disabled
+      ansible.builtin.meta: end_play
+      when: ernic_skip_tests | bool
+
+    # ─────────────────────────────────────────────────
+    # Setup
+    # ─────────────────────────────────────────────────
+    - name: Kill stale perftest on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          '{{ kill_perftest }}'
+      changed_when: false
+      failed_when: false
+
+    - name: Kill stale perftest on VM2
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          '{{ kill_perftest }}'
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for port 18515 to be released
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Detect RDMA device name on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'ibv_devices
+          | grep -oE "rocep[0-9]+s[0-9]+"
+          | head -1'
+      register: rdma_dev_detect
+      changed_when: false
+      failed_when: false
+
+    - name: Set RDMA device name
+      ansible.builtin.set_fact:
+        rdma_dev: >-
+          {{ rdma_dev_detect.stdout | trim
+             | default('rocep1s0', true) }}
+
+    - name: Create results directory
+      ansible.builtin.file:
+        path: "{{ results_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write stress CSV header
+      ansible.builtin.copy:
+        dest: "{{ stress_csv }}"
+        content: >-
+          section,test,detail,result,value
+        mode: "0644"
+
+    - name: Display stress test configuration
+      ansible.builtin.debug:
+        msg:
+          - "=== Stress Test Config ==="
+          - "Device:             {{ rdma_dev }}"
+          - "Multi-QP counts:    {{ multi_qp_counts }}"
+          - "Bidir sizes:        {{ bidir_sizes }}"
+          - "Soak duration:      {{ soak_duration }}s"
+          - "High iterations:    {{ high_iters }}"
+          - "QP churn cycles:    {{ qp_churn_cycles }}"
+          - "Concurrent dur:     {{ concurrent_duration }}s"
+          - "iperf3 bandwidth:   {{ iperf_bw }}"
+          - "iperf3 duration:    {{ iperf_dur }}s"
+          - "Results:            {{ stress_csv }}"
+
+    # ─────────────────────────────────────────────────
+    # 1. Multi-QP bandwidth (-q flag)
+    # ─────────────────────────────────────────────────
+    - name: "Multi-QP: {{ item.0.label }} -q {{ item.1 }}"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.0.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ=65536
+          QPS="{{ item.1 }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="stress-mqp-$TOOL-q$QPS"
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 \
+                -s $SZ -n 100 -q $QPS \
+                --report_gbits \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout 120 \
+              $TOOL -d $DEV -x 1 -s $SZ -n 100 \
+              -q $QPS --report_gbits \
+              $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "multi_qp,{{ item.0.label }},q=$QPS,FAIL,$RC" \
+              >> "{{ stress_csv }}"
+            echo "FAIL rc=$RC"
+            echo "$RAW"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" \
+            | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "multi_qp,{{ item.0.label }},q=$QPS,NODATA,0" \
+              >> "{{ stress_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          PEAK=$(echo "$LINE" | awk '{print $3}')
+          AVG=$(echo "$LINE"  | awk '{print $4}')
+          PEAK_GB=$(echo "scale=2; $PEAK / 8" \
+            | bc -l 2>/dev/null || echo "$PEAK")
+          AVG_GB=$(echo "scale=2; $AVG / 8" \
+            | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "multi_qp,{{ item.0.label }},q=$QPS,PASS,peak=${PEAK_GB}_avg=${AVG_GB}_GBs" \
+            >> "{{ stress_csv }}"
+          echo "{{ item.0.label }} q=$QPS: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+      register: mqp_result
+      changed_when: false
+      failed_when: false
+      loop: >-
+        {{ bw_verbs | product(multi_qp_counts) | list }}
+      loop_control:
+        label: "{{ item.0.label }} -q {{ item.1 }}"
+
+    - name: Display multi-QP results
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.stdout_lines | default(['(no output)']) }}
+      loop: "{{ mqp_result.results }}"
+      loop_control:
+        label: >-
+          {{ item.item.0.label }} -q {{ item.item.1 }}
+      when: item.stdout is defined
+
+    # ─────────────────────────────────────────────────
+    # 2. Bidirectional bandwidth (--bidirectional)
+    # ─────────────────────────────────────────────────
+    - name: "Bidir: {{ item.0.label }} @ {{ item.1 }} B"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.0.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ="{{ item.1 }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="stress-bidir-$TOOL-$SZ"
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 \
+                -s $SZ -n 100 \
+                --bidirectional --report_gbits \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout 120 \
+              $TOOL -d $DEV -x 1 -s $SZ -n 100 \
+              --bidirectional \
+              --report_gbits \
+              $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "bidir,{{ item.0.label }},$SZ,FAIL,$RC" \
+              >> "{{ stress_csv }}"
+            echo "FAIL rc=$RC"
+            echo "$RAW"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" \
+            | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "bidir,{{ item.0.label }},$SZ,NODATA,0" \
+              >> "{{ stress_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          PEAK=$(echo "$LINE" | awk '{print $3}')
+          AVG=$(echo "$LINE"  | awk '{print $4}')
+          PEAK_GB=$(echo "scale=2; $PEAK / 8" \
+            | bc -l 2>/dev/null || echo "$PEAK")
+          AVG_GB=$(echo "scale=2; $AVG / 8" \
+            | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "bidir,{{ item.0.label }},$SZ,PASS,peak=${PEAK_GB}_avg=${AVG_GB}_GBs" \
+            >> "{{ stress_csv }}"
+          echo "{{ item.0.label }} bidir $SZ: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+      register: bidir_result
+      changed_when: false
+      failed_when: false
+      loop: >-
+        {{ bw_verbs | product(bidir_sizes) | list }}
+      loop_control:
+        label: "{{ item.0.label }} bidir @ {{ item.1 }}"
+
+    - name: Display bidirectional results
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.stdout_lines | default(['(no output)']) }}
+      loop: "{{ bidir_result.results }}"
+      loop_control:
+        label: >-
+          {{ item.item.0.label }} @ {{ item.item.1 }}
+      when: item.stdout is defined
+
+    # ─────────────────────────────────────────────────
+    # 3. Duration-based soak (--duration)
+    # ─────────────────────────────────────────────────
+    - name: "Soak: {{ item.label }} --duration {{ soak_duration }}"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ=65536
+          DUR="{{ soak_duration }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="stress-soak-$TOOL"
+          TIMEOUT=$(( DUR + 60 ))
+          STATS_LOG="{{ results_dir }}/soak-stats-{{ item.label }}-{{ ts }}.csv"
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          echo "ts,conn,ip_txrx,rdma_sr,rdma_rw,mmio,cmds,ints,qps,flr" \
+            > "$STATS_LOG"
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 \
+                -s $SZ --duration $DUR \
+                --report_gbits \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          POLL_PID=""
+          if command -v ernicctl >/dev/null 2>&1; then
+            (
+              END=$(( $(date +%s) + DUR + 30 ))
+              while [ "$(date +%s)" -lt "$END" ]; do
+                ROW=$(sudo ernicctl stats --summary \
+                  2>/dev/null | tail -n +2 \
+                  | head -1 \
+                  | awk '{
+                    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",
+                      strftime("%H:%M:%S"),
+                      $2,$3,$4,$5,$6,$7,$8,$9,$10
+                  }')
+                if [ -n "$ROW" ]; then
+                  echo "$ROW" >> "$STATS_LOG"
+                fi
+                sleep 30
+              done
+            ) &
+            POLL_PID=$!
+          fi
+
+          RAW=$({{ vm2_ssh }} "
+            timeout $TIMEOUT \
+              $TOOL -d $DEV -x 1 -s $SZ \
+              --duration $DUR --report_gbits \
+              $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ -n "$POLL_PID" ]; then
+            kill "$POLL_PID" 2>/dev/null
+            wait "$POLL_PID" 2>/dev/null
+          fi
+
+          if [ $RC -ne 0 ]; then
+            echo "soak,{{ item.label }},${DUR}s,FAIL,$RC" \
+              >> "{{ stress_csv }}"
+            echo "FAIL rc=$RC"
+            echo "$RAW"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" \
+            | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "soak,{{ item.label }},${DUR}s,NODATA,0" \
+              >> "{{ stress_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          PEAK=$(echo "$LINE" | awk '{print $3}')
+          AVG=$(echo "$LINE"  | awk '{print $4}')
+          PEAK_GB=$(echo "scale=2; $PEAK / 8" \
+            | bc -l 2>/dev/null || echo "$PEAK")
+          AVG_GB=$(echo "scale=2; $AVG / 8" \
+            | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "soak,{{ item.label }},${DUR}s,PASS,peak=${PEAK_GB}_avg=${AVG_GB}_GBs" \
+            >> "{{ stress_csv }}"
+          echo "{{ item.label }} soak ${DUR}s: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+          echo "Stats log: $STATS_LOG"
+      register: soak_result
+      changed_when: false
+      failed_when: false
+      loop: "{{ bw_verbs }}"
+      loop_control:
+        label: "{{ item.label }} soak {{ soak_duration }}s"
+
+    - name: Display soak results
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.stdout_lines | default(['(no output)']) }}
+      loop: "{{ soak_result.results }}"
+      loop_control:
+        label: "{{ item.item.label }}"
+      when: item.stdout is defined
+
+    # ─────────────────────────────────────────────────
+    # 4. Concurrent verb mix
+    # ─────────────────────────────────────────────────
+    - name: "Concurrent: send + write for {{ concurrent_duration }}s"
+      ansible.builtin.shell:
+        cmd: |
+          DEV="{{ rdma_dev }}"
+          SZ=65536
+          DUR="{{ concurrent_duration }}"
+          SERVER_IP="{{ vm1_ip }}"
+          TIMEOUT=$(( DUR + 60 ))
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop stress-conc-send 2>/dev/null;
+            sudo systemctl reset-failed stress-conc-send 2>/dev/null;
+            sudo systemd-run --unit=stress-conc-send \
+              bash -c 'ib_send_bw -d $DEV -x 1 \
+                -s $SZ --duration $DUR -p 18515 \
+                --report_gbits \
+                >/tmp/stress-conc-send.log 2>&1';
+            sleep 1
+          "
+
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop stress-conc-write 2>/dev/null;
+            sudo systemctl reset-failed stress-conc-write 2>/dev/null;
+            sudo systemd-run --unit=stress-conc-write \
+              bash -c 'ib_write_bw -d $DEV -x 1 \
+                -s $SZ --duration $DUR -p 18516 \
+                --report_gbits \
+                >/tmp/stress-conc-write.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          SEND_OUT=$(mktemp /tmp/stress-conc-send.XXXXXX)
+          WRITE_OUT=$(mktemp /tmp/stress-conc-write.XXXXXX)
+
+          {{ vm2_ssh }} "
+            timeout $TIMEOUT \
+              ib_send_bw -d $DEV -x 1 -s $SZ \
+              --duration $DUR -p 18515 \
+              --report_gbits $SERVER_IP 2>&1
+          " > "$SEND_OUT" 2>&1 &
+          SEND_PID=$!
+
+          sleep 2
+
+          {{ vm2_ssh }} "
+            timeout $TIMEOUT \
+              ib_write_bw -d $DEV -x 1 -s $SZ \
+              --duration $DUR -p 18516 \
+              --report_gbits $SERVER_IP 2>&1
+          " > "$WRITE_OUT" 2>&1 &
+          WRITE_PID=$!
+
+          wait $SEND_PID
+          SEND_RC=$?
+          wait $WRITE_PID
+          WRITE_RC=$?
+
+          RAW_SEND=$(cat "$SEND_OUT")
+          RAW_WRITE=$(cat "$WRITE_OUT")
+          rm -f "$SEND_OUT" "$WRITE_OUT"
+
+          PASS_COUNT=0
+          for VERB_NAME in send write; do
+            if [ "$VERB_NAME" = "send" ]; then
+              RAW="$RAW_SEND"; RC=$SEND_RC
+            else
+              RAW="$RAW_WRITE"; RC=$WRITE_RC
+            fi
+
+            if [ $RC -ne 0 ]; then
+              echo "concurrent,$VERB_NAME,${DUR}s,FAIL,$RC" \
+                >> "{{ stress_csv }}"
+              echo "concurrent $VERB_NAME: FAIL rc=$RC"
+              continue
+            fi
+
+            LINE=$(echo "$RAW" \
+              | grep -E '^\s+[0-9]' | tail -1)
+            if [ -z "$LINE" ]; then
+              echo "concurrent,$VERB_NAME,${DUR}s,NODATA,0" \
+                >> "{{ stress_csv }}"
+              echo "concurrent $VERB_NAME: NODATA"
+              continue
+            fi
+
+            PEAK=$(echo "$LINE" | awk '{print $3}')
+            AVG=$(echo "$LINE"  | awk '{print $4}')
+            PEAK_GB=$(echo "scale=2; $PEAK / 8" \
+              | bc -l 2>/dev/null || echo "$PEAK")
+            AVG_GB=$(echo "scale=2; $AVG / 8" \
+              | bc -l 2>/dev/null || echo "$AVG")
+
+            echo "concurrent,$VERB_NAME,${DUR}s,PASS,peak=${PEAK_GB}_avg=${AVG_GB}_GBs" \
+              >> "{{ stress_csv }}"
+            echo "concurrent $VERB_NAME: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+            PASS_COUNT=$((PASS_COUNT + 1))
+          done
+
+          echo "concurrent: ${PASS_COUNT}/2 verbs passed"
+      register: concurrent_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display concurrent results
+      ansible.builtin.debug:
+        msg: >-
+          {{ concurrent_result.stdout_lines
+             | default(['(no output)']) }}
+
+    # ─────────────────────────────────────────────────
+    # 5. High iteration count
+    # ─────────────────────────────────────────────────
+    - name: "High-iter: {{ item.0.label }} -n {{ high_iters }} @ {{ item.1 }} B"
+      ansible.builtin.shell:
+        cmd: |
+          TOOL="{{ item.0.tool }}"
+          DEV="{{ rdma_dev }}"
+          SZ="{{ item.1 }}"
+          N="{{ high_iters }}"
+          SERVER_IP="{{ vm1_ip }}"
+          UNIT="stress-highiter-$TOOL-$SZ"
+          TIMEOUT=$(( N / 5 + 120 ))
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$TOOL -d $DEV -x 1 \
+                -s $SZ -n $N \
+                --report_gbits \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout $TIMEOUT \
+              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              --report_gbits $SERVER_IP 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "high_iter,{{ item.0.label }},$SZ/$N,FAIL,$RC" \
+              >> "{{ stress_csv }}"
+            echo "FAIL rc=$RC"
+            echo "$RAW"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" \
+            | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "high_iter,{{ item.0.label }},$SZ/$N,NODATA,0" \
+              >> "{{ stress_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          PEAK=$(echo "$LINE" | awk '{print $3}')
+          AVG=$(echo "$LINE"  | awk '{print $4}')
+          PEAK_GB=$(echo "scale=2; $PEAK / 8" \
+            | bc -l 2>/dev/null || echo "$PEAK")
+          AVG_GB=$(echo "scale=2; $AVG / 8" \
+            | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "high_iter,{{ item.0.label }},$SZ/$N,PASS,peak=${PEAK_GB}_avg=${AVG_GB}_GBs" \
+            >> "{{ stress_csv }}"
+          echo "{{ item.0.label }} n=$N $SZ: peak=${PEAK_GB} avg=${AVG_GB} GB/s"
+      register: highiter_result
+      changed_when: false
+      failed_when: false
+      loop: >-
+        {{ bw_verbs | product([65536, 1048576]) | list }}
+      loop_control:
+        label: >-
+          {{ item.0.label }} -n {{ high_iters }} @ {{ item.1 }}
+
+    - name: Display high-iteration results
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.stdout_lines | default(['(no output)']) }}
+      loop: "{{ highiter_result.results }}"
+      loop_control:
+        label: >-
+          {{ item.item.0.label }} @ {{ item.item.1 }}
+      when: item.stdout is defined
+
+    # ─────────────────────────────────────────────────
+    # 6. QP churn / connection cycling
+    # ─────────────────────────────────────────────────
+    - name: "QP churn: {{ qp_churn_cycles }} cycles"
+      ansible.builtin.shell:
+        cmd: |
+          DEV="{{ rdma_dev }}"
+          CYCLES="{{ qp_churn_cycles }}"
+          SERVER_IP="{{ vm1_ip }}"
+          PASSES=0
+          FAILS=0
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          for i in $(seq 1 "$CYCLES"); do
+            UNIT="stress-churn-$i"
+
+            {{ vm1_ssh }} "
+              sudo systemctl stop $UNIT 2>/dev/null;
+              sudo systemctl reset-failed $UNIT 2>/dev/null;
+              sudo systemd-run --unit=$UNIT \
+                bash -c 'ibv_rc_pingpong -d $DEV \
+                  -g 1 -n 20 -s 4096 \
+                  >/tmp/${UNIT}.log 2>&1';
+              sleep 1
+            "
+
+            sleep 3
+
+            RAW=$({{ vm2_ssh }} "
+              timeout 60 ibv_rc_pingpong \
+                -d $DEV -g 1 -n 20 -s 4096 \
+                $SERVER_IP 2>&1
+            ")
+            RC=$?
+
+            if [ $RC -eq 0 ] \
+               && echo "$RAW" | grep -q "Mbit"; then
+              PASSES=$((PASSES + 1))
+            else
+              FAILS=$((FAILS + 1))
+              echo "  cycle $i: FAIL (rc=$RC)"
+            fi
+
+            {{ vm1_ssh }} '{{ kill_perftest }}'
+            {{ vm2_ssh }} '{{ kill_perftest }}'
+            sleep 1
+          done
+
+          RESULT="PASS"
+          if [ "$FAILS" -gt 0 ]; then
+            RESULT="PARTIAL"
+          fi
+
+          echo "qp_churn,pingpong,${CYCLES}_cycles,$RESULT,pass=${PASSES}_fail=${FAILS}" \
+            >> "{{ stress_csv }}"
+          echo "QP churn: $PASSES/$CYCLES passed, $FAILS failed"
+      register: churn_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display QP churn results
+      ansible.builtin.debug:
+        msg: >-
+          {{ churn_result.stdout_lines
+             | default(['(no output)']) }}
+
+    # ─────────────────────────────────────────────────
+    # 7. Resource limit probing
+    # ─────────────────────────────────────────────────
+    - name: "Resource limits: max QP probe"
+      ansible.builtin.shell:
+        cmd: |
+          DEV="{{ rdma_dev }}"
+          SERVER_IP="{{ vm1_ip }}"
+          MAX_QP=0
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 2
+
+          for i in $(seq 1 64); do
+            UNIT="stress-reslim-$i"
+
+            {{ vm1_ssh }} "
+              sudo systemctl stop $UNIT 2>/dev/null;
+              sudo systemctl reset-failed $UNIT 2>/dev/null;
+              sudo systemd-run --unit=$UNIT \
+                bash -c 'ibv_rc_pingpong -d $DEV \
+                  -g 1 -n 5 -s 64 \
+                  >/tmp/${UNIT}.log 2>&1';
+              sleep 1
+            "
+
+            sleep 3
+
+            RAW=$({{ vm2_ssh }} "
+              timeout 30 ibv_rc_pingpong \
+                -d $DEV -g 1 -n 5 -s 64 \
+                $SERVER_IP 2>&1
+            ")
+            RC=$?
+
+            {{ vm1_ssh }} '{{ kill_perftest }}'
+            {{ vm2_ssh }} '{{ kill_perftest }}'
+            sleep 1
+
+            if [ $RC -ne 0 ]; then
+              echo "  QP $i: FAIL (rc=$RC)"
+              break
+            fi
+
+            if ! echo "$RAW" | grep -q "Mbit"; then
+              echo "  QP $i: no throughput data"
+              break
+            fi
+
+            MAX_QP=$i
+          done
+
+          echo "resource_limit,max_qp_sequential,probe,$MAX_QP,of_64_attempted" \
+            >> "{{ stress_csv }}"
+          echo "Max sequential QP create/destroy: $MAX_QP of 64"
+      register: reslim_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display resource limit results
+      ansible.builtin.debug:
+        msg: >-
+          {{ reslim_result.stdout_lines
+             | default(['(no output)']) }}
+
+    # ─────────────────────────────────────────────────
+    # 8. iperf3 TCP baseline
+    # ─────────────────────────────────────────────────
+    - name: "iperf3: TCP baseline over emulated NIC"
+      ansible.builtin.shell:
+        cmd: |
+          SERVER_IP="{{ vm1_ip }}"
+          DUR="{{ iperf_dur }}"
+          BW="{{ iperf_bw }}"
+          UNIT="stress-iperf3"
+
+          {{ vm1_ssh }} '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
+          sleep 1
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c 'iperf3 -s -1 \
+                --bind $SERVER_IP \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout $(( DUR * 4 + 30 )) \
+              iperf3 -c $SERVER_IP -t $DUR \
+              -b $BW --json 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "iperf3,tcp,${DUR}s,FAIL,$RC" \
+              >> "{{ stress_csv }}"
+            echo "iperf3 FAIL rc=$RC"
+            echo "$RAW"
+            exit 0
+          fi
+
+          BPS_SEND=$(echo "$RAW" \
+            | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              bps = d['end']['sum_sent']['bits_per_second']
+              print(f'{bps/1e6:.2f}')
+          except Exception:
+              print('N/A')
+          " 2>/dev/null)
+
+          BPS_RECV=$(echo "$RAW" \
+            | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              bps = d['end']['sum_received']['bits_per_second']
+              print(f'{bps/1e6:.2f}')
+          except Exception:
+              print('N/A')
+          " 2>/dev/null)
+
+          echo "iperf3,tcp,${DUR}s,PASS,send=${BPS_SEND}_recv=${BPS_RECV}_Mbps" \
+            >> "{{ stress_csv }}"
+          echo "iperf3 TCP: send=${BPS_SEND} recv=${BPS_RECV} Mbit/s"
+      register: iperf_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display iperf3 results
+      ansible.builtin.debug:
+        msg: >-
+          {{ iperf_result.stdout_lines
+             | default(['(no output)']) }}
+
+    # ─────────────────────────────────────────────────
+    # Summary
+    # ─────────────────────────────────────────────────
+    - name: Count stress test failures
+      ansible.builtin.shell:
+        cmd: >-
+          grep -c 'FAIL\|NODATA'
+          "{{ stress_csv }}"
+          2>/dev/null || true
+      register: stress_fail_count
+      changed_when: false
+
+    - name: Stress test summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Stress Tests Complete ==="
+          - "Results CSV:  {{ stress_csv }}"
+          - "Failures:     {{ stress_fail_count.stdout | default('0') }}"
+
+    - name: Display stress CSV
+      ansible.builtin.shell:
+        cmd: "column -t -s, {{ stress_csv }}"
+      register: stress_table
+      changed_when: false
+
+    - name: Stress results table
+      ansible.builtin.debug:
+        msg: "{{ stress_table.stdout_lines }}"

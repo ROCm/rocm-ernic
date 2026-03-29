@@ -38,6 +38,14 @@
 #define MAX_AH              64
 #define MAX_SRQ             512
 
+/*
+ * Number of page-table pages backing each WQ/CQ ring.
+ * Upstream PVRDMA uses 1; we double it so that bidirectional
+ * traffic at 64 KB+ does not exhaust MR page-table entries
+ * when both send and recv rings are fully populated.
+ */
+#define PVRDMA_PG_TBL_PAGES 2
+
 #define MAX_RM_TBL_NAME          16
 #define MAX_CONSEQ_EMPTY_POLL_CQ 4096 /* considered as error above this */
 
@@ -83,10 +91,12 @@ typedef struct RdmaRmUC {
     uint64_t uc_handle;
 } RdmaRmUC;
 
-/* WQE processing state for incremental batch processing */
+/* Per-direction WQE processing state for incremental batch processing */
 typedef struct RdmaRmQPWqeProcessingState {
-    bool processing_active;  /* Is this QP currently processing WQEs? */
-    uint32_t wqes_processed; /* Count for this batch */
+    bool send_processing_active;
+    uint32_t send_wqes_processed;
+    bool recv_processing_active;
+    uint32_t recv_wqes_processed;
 } RdmaRmQPWqeProcessingState;
 
 typedef struct RdmaRmQP {
@@ -98,7 +108,8 @@ typedef struct RdmaRmQP {
     uint32_t recv_cq_handle;
     enum ibv_qp_state qp_state;
     uint8_t is_srq;
-    RdmaRmQPWqeProcessingState wqe_state; /* WQE processing state */
+    RdmaRmQPWqeProcessingState wqe_state;
+    _Atomic uint32_t send_in_flight;
 } RdmaRmQP;
 
 /* WQE processing state for SRQ incremental batch processing */
