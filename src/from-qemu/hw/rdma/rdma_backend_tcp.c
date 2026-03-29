@@ -51,7 +51,7 @@
  */
 
 #define TCP_PROTOCOL_MAGIC     0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION   2          /* Multi-node version */
+#define TCP_PROTOCOL_VERSION   3          /* v3: wc_opcode in TcpWR */
 #define TCP_MAX_ETH_FRAME_LEN  2048
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
@@ -2004,8 +2004,20 @@ static void *tcp_accept_thread(void *opaque)
 
             hs_payload = (TcpHandshakePayload *)payload;
             uint32_t remote_node_id = ntohl(hs_payload->node_id);
+            uint32_t remote_version = ntohl(hs_payload->version);
 
-            rdma_info_report("TCP: Handshake from node %u", remote_node_id);
+            rdma_info_report("TCP: Handshake from node %u (v%u)",
+                             remote_node_id, remote_version);
+
+            if (remote_version != TCP_PROTOCOL_VERSION) {
+                rdma_error_report(
+                    "TCP: Protocol version mismatch: local=%u remote=%u",
+                    TCP_PROTOCOL_VERSION, remote_version);
+                close(sockfd);
+                g_free(payload);
+                payload = NULL;
+                continue;
+            }
 
             /* Check if connection already exists */
             qemu_mutex_lock(&priv->conn_table_lock);
@@ -3089,6 +3101,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     if (!priv) {
         rdma_error_report("TCP: Invalid backend");
+        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
+                                   0, 0, wc_opcode, ctx);
         return;
     }
 
@@ -3097,6 +3111,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     if (!tqp) {
         qemu_mutex_unlock(&priv->lock);
         rdma_error_report("TCP: QP %u not found", qpn);
+        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
+                                   0, qpn, wc_opcode, ctx);
         return;
     }
 
@@ -3118,7 +3134,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
     if (!conn || !conn->is_connected) {
         rdma_error_report("TCP: No connection to node %u", dst_node);
-        return;
+        goto fail;
     }
 
     uint32_t total_len = 0;
@@ -3230,14 +3246,30 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 }
             }
         }
+    } else {
+        ret = -1;
     }
     qemu_mutex_unlock(&conn->lock);
+
+    if (ret < 0) {
+        goto fail;
+    }
 
     tcp_wr_unmap_sge(tqp, wr);
 
     rdma_info_report("TCP: Posted send QP %u -> node %u, "
                      "%u SGEs, opcode=%u",
                      qpn, dst_node, num_sge, pvrdma_opcode);
+    return;
+
+fail:
+    qemu_mutex_lock(&priv->lock);
+    g_queue_remove(tqp->send_queue, wr);
+    qemu_mutex_unlock(&priv->lock);
+    tcp_wr_unmap_sge(tqp, wr);
+    g_free(wr);
+    rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND, 0,
+                               qpn, wc_opcode, ctx);
 }
 
 static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,

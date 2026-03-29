@@ -491,28 +491,35 @@
 
           sleep 3
 
-          RAW_SEND=$({{ vm2_ssh }} "
+          SEND_OUT=$(mktemp /tmp/stress-conc-send.XXXXXX)
+          WRITE_OUT=$(mktemp /tmp/stress-conc-write.XXXXXX)
+
+          {{ vm2_ssh }} "
             timeout $TIMEOUT \
               ib_send_bw -d $DEV -x 1 -s $SZ \
               --duration $DUR -p 18515 \
               --report_gbits $SERVER_IP 2>&1
-          ") &
+          " > "$SEND_OUT" 2>&1 &
           SEND_PID=$!
 
           sleep 2
 
-          RAW_WRITE=$({{ vm2_ssh }} "
+          {{ vm2_ssh }} "
             timeout $TIMEOUT \
               ib_write_bw -d $DEV -x 1 -s $SZ \
               --duration $DUR -p 18516 \
               --report_gbits $SERVER_IP 2>&1
-          ") &
+          " > "$WRITE_OUT" 2>&1 &
           WRITE_PID=$!
 
           wait $SEND_PID
           SEND_RC=$?
           wait $WRITE_PID
           WRITE_RC=$?
+
+          RAW_SEND=$(cat "$SEND_OUT")
+          RAW_WRITE=$(cat "$WRITE_OUT")
+          rm -f "$SEND_OUT" "$WRITE_OUT"
 
           PASS_COUNT=0
           for VERB_NAME in send write; do
@@ -866,7 +873,7 @@
         cmd: >-
           grep -c 'FAIL\|NODATA'
           "{{ stress_csv }}"
-          2>/dev/null || echo 0
+          2>/dev/null || true
       register: stress_fail_count
       changed_when: false
 

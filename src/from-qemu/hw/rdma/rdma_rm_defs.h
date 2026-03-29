@@ -38,6 +38,14 @@
 #define MAX_AH              64
 #define MAX_SRQ             512
 
+/*
+ * Number of page-table pages backing each WQ/CQ ring.
+ * Upstream PVRDMA uses 1; we double it so that bidirectional
+ * traffic at 64 KB+ does not exhaust MR page-table entries
+ * when both send and recv rings are fully populated.
+ */
+#define PVRDMA_PG_TBL_PAGES 2
+
 #define MAX_RM_TBL_NAME          16
 #define MAX_CONSEQ_EMPTY_POLL_CQ 4096 /* considered as error above this */
 

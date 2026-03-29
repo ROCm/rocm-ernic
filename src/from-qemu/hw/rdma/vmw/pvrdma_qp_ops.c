@@ -63,6 +63,7 @@ typedef struct CompHandlerCtx {
 typedef struct DeferredCompletion {
     PVRDMADev *dev;
     uint32_t cq_handle;
+    uint32_t qp_handle;
     struct pvrdma_cqe cqe;
     struct ibv_wc wc;
 } DeferredCompletion;
@@ -154,25 +155,18 @@ static void pvrdma_qp_ops_comp_handler(void *ctx, struct ibv_wc *wc)
 {
     CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
 
-    /* Decrement in-flight counter for send completions */
-    if (comp_ctx->qp_handle) {
-        RdmaRmQP *qp =
-            rdma_rm_get_qp(&comp_ctx->dev->rdma_dev_res, comp_ctx->qp_handle);
-        if (qp) {
-            uint32_t prev =
-                __atomic_fetch_sub(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
-            (void)prev;
-        }
-    }
-
     /*
      * Queue the completion for the main loop to
      * post.  All vfio-user / DMA-mapped memory
      * access must happen on the main thread.
+     * send_in_flight is also decremented there to
+     * avoid racing rdma_rm_get_qp (g_hash_table)
+     * against QP alloc/dealloc on the main thread.
      */
     DeferredCompletion *dc = g_new(DeferredCompletion, 1);
     dc->dev = comp_ctx->dev;
     dc->cq_handle = comp_ctx->cq_handle;
+    dc->qp_handle = comp_ctx->qp_handle;
     dc->cqe = comp_ctx->cqe;
     dc->wc = *wc;
 
@@ -230,6 +224,14 @@ void pvrdma_drain_deferred_completions(void)
 
         if (!dc) {
             break;
+        }
+
+        if (dc->qp_handle) {
+            RdmaRmQP *qp =
+                rdma_rm_get_qp(&dc->dev->rdma_dev_res, dc->qp_handle);
+            if (qp) {
+                __atomic_fetch_sub(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
+            }
         }
 
         pvrdma_post_cqe(dc->dev, dc->cq_handle, &dc->cqe, &dc->wc);
@@ -561,6 +563,7 @@ static gboolean continue_srq_recv_processing(gpointer user_data)
         comp_ctx = g_new(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = srq->recv_cq_handle;
+        comp_ctx->qp_handle = 0;
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = 0;
         comp_ctx->cqe.opcode = IBV_WC_RECV;
@@ -885,6 +888,7 @@ void pvrdma_srq_recv(PVRDMADev *dev, uint32_t srq_handle)
         comp_ctx = g_new(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = srq->recv_cq_handle;
+        comp_ctx->qp_handle = 0;
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = 0;
         comp_ctx->cqe.opcode = IBV_WC_RECV;
