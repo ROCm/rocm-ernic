@@ -1,0 +1,216 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 5: GPU RDMA tests using rocm-xio xio-tester.
+#
+# Runs xio-tester between two VMs that each have a
+# vfio-pci-passed GPU and the rocm-ernic emulated NIC
+# with pci-mmio-bridge enabled.
+#
+# This play assumes exactly two VMs with GPUs visible
+# via rocm-smi and xio-tester built by guest-setup.yml.
+
+---
+- name: GPU RDMA tests -- xio-tester 2-node
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    vm1_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -o ForwardAgent=yes
+      -p {{ ernic_vm_ssh_base_port | int }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm2_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -o ForwardAgent=yes
+      -p {{ ernic_vm_ssh_base_port | int + 1 }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm1_ip: "{{ ernic_nic_subnet }}.10"
+    vm2_ip: "{{ ernic_nic_subnet }}.20"
+
+  tasks:
+
+    - name: Skip GPU tests if not enabled
+      ansible.builtin.meta: end_play
+      when: >-
+        not (ernic_gpu_passthrough | bool)
+        or (ernic_skip_gpu_tests | bool)
+
+    # ─────────────────────────────────────────────────
+    # Pre-flight checks
+    # ─────────────────────────────────────────────────
+    - name: "Pre-flight: verify GPU on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'rocm-smi --showid 2>&1'
+      register: gpu_check_vm1
+      changed_when: false
+      failed_when: false
+
+    - name: Display VM1 GPU status
+      ansible.builtin.debug:
+        var: gpu_check_vm1.stdout_lines
+
+    - name: "Pre-flight: verify GPU on VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          'rocm-smi --showid 2>&1'
+      register: gpu_check_vm2
+      changed_when: false
+      failed_when: false
+
+    - name: Display VM2 GPU status
+      ansible.builtin.debug:
+        var: gpu_check_vm2.stdout_lines
+
+    - name: Assert GPUs visible in both VMs
+      ansible.builtin.assert:
+        that:
+          - gpu_check_vm1.rc == 0
+          - gpu_check_vm2.rc == 0
+        fail_msg: >-
+          rocm-smi failed on one or both VMs.
+          Check GPU passthrough configuration.
+
+    - name: "Pre-flight: locate xio-tester on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'find /opt/rocm-xio/build
+          -name xio-tester -type f
+          | head -1'
+      register: xio_tester_vm1
+      changed_when: false
+
+    - name: "Pre-flight: locate xio-tester on VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          'find /opt/rocm-xio/build
+          -name xio-tester -type f
+          | head -1'
+      register: xio_tester_vm2
+      changed_when: false
+
+    - name: Set xio-tester path fact
+      ansible.builtin.set_fact:
+        xio_tester: >-
+          {{ xio_tester_vm1.stdout | trim }}
+
+    - name: Assert xio-tester exists on both VMs
+      ansible.builtin.assert:
+        that:
+          - xio_tester | length > 0
+          - xio_tester_vm2.stdout | trim | length > 0
+        fail_msg: >-
+          xio-tester not found on one or both VMs.
+          Ensure guest-setup.yml completed
+          successfully with ernic_gpu_passthrough.
+
+    - name: Detect RDMA device name on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'ibv_devices
+          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
+          | head -1'
+      register: rdma_dev_detect
+      changed_when: false
+      failed_when: false
+
+    - name: Set RDMA device name
+      ansible.builtin.set_fact:
+        rdma_dev: >-
+          {{ rdma_dev_detect.stdout | trim
+             | default('rocep1s0', true) }}
+
+    # ─────────────────────────────────────────────────
+    # xio-tester: loopback on each VM
+    # ─────────────────────────────────────────────────
+    - name: "GPU RDMA: run xio-tester loopback on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'sudo timeout 120 {{ xio_tester }}
+          --pci-mmio-bridge
+          rdma-ep
+          --provider ernic
+          --device {{ rdma_dev }}
+          --loopback
+          -n 10
+          -v
+          2>&1'
+      register: xio_vm1_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display VM1 xio-tester results
+      ansible.builtin.debug:
+        var: xio_vm1_result.stdout_lines
+
+    - name: "GPU RDMA: run xio-tester loopback on VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }}
+          'sudo timeout 120 {{ xio_tester }}
+          --pci-mmio-bridge
+          rdma-ep
+          --provider ernic
+          --device {{ rdma_dev }}
+          --loopback
+          -n 10
+          -v
+          2>&1'
+      register: xio_vm2_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display VM2 xio-tester results
+      ansible.builtin.debug:
+        var: xio_vm2_result.stdout_lines
+
+    # ─────────────────────────────────────────────────
+    # Summary
+    # ─────────────────────────────────────────────────
+    - name: Set GPU test result facts
+      ansible.builtin.set_fact:
+        gpu_vm1_ok: >-
+          {{ gpu_check_vm1.rc == 0 }}
+        gpu_vm2_ok: >-
+          {{ gpu_check_vm2.rc == 0 }}
+        xio_vm1_pass: >-
+          {{ xio_vm1_result.rc == 0
+             and xio_vm1_result.stdout
+                 | length > 0 }}
+        xio_vm2_pass: >-
+          {{ xio_vm2_result.rc == 0
+             and xio_vm2_result.stdout
+                 | length > 0 }}
+
+    - name: GPU RDMA test summary
+      ansible.builtin.debug:
+        msg:
+          - "=== GPU RDMA Test Results ==="
+          - "GPU VM1:       {{ 'PASS' if gpu_vm1_ok else 'FAIL' }}"
+          - "GPU VM2:       {{ 'PASS' if gpu_vm2_ok else 'FAIL' }}"
+          - "xio-tester VM1: {{ 'PASS' if xio_vm1_pass else 'FAIL' }}"
+          - "xio-tester VM2: {{ 'PASS' if xio_vm2_pass else 'FAIL' }}"
+
+    - name: Assert GPU RDMA tests passed
+      ansible.builtin.assert:
+        that:
+          - gpu_check_vm1.rc == 0
+          - gpu_check_vm2.rc == 0
+          - xio_vm1_result.rc == 0
+          - xio_vm2_result.rc == 0
+        fail_msg: >-
+          GPU RDMA tests failed. Check the output
+          above for details.

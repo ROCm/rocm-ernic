@@ -45,6 +45,7 @@ Quick Start
    service
    driver
    testing
+   performance
 
 .. toctree::
    :maxdepth: 2

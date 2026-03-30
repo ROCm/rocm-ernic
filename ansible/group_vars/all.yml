@@ -82,11 +82,26 @@ ernic_stress_high_iters: 10000
 ernic_stress_qp_churn_cycles: 50
 ernic_stress_concurrent_duration: 60
 
+# ── GPU passthrough (vfio-pci) ──────────────────
+# Pass a real AMD GPU into each VM via vfio-pci.
+# Requires IOMMU enabled and GPUs unbound from
+# amdgpu on the host (handled by host-setup.yml).
+ernic_gpu_passthrough: false
+ernic_pci_mmio_bridge: true
+ernic_gpu_pci_devices:
+  1: "0000:0a:00.0"
+  2: "0000:0f:00.0"
+
+# ── rocm-xio ───────────────────────────────────
+ernic_rocm_xio_repo: "git@github.com:ROCm/rocm-xio.git"
+ernic_rocm_xio_branch: "main"
+
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false
 ernic_skip_golden_image: false
 ernic_skip_guest_ansible_roles: false
 ernic_skip_tests: false
+ernic_skip_gpu_tests: false
 ernic_force_vm_cleanup: false
 
 # ── rdma_setup role overrides ────────────────────

@@ -20,7 +20,7 @@
 
 SUBSYSTEM=="net", ACTION=="add", \
   ATTR{device/vendor}=="0x1022", \
-  DRIVERS=="rocm_ernic", \
+  DRIVERS=="rocm_ernic_eth", \
   NAME="rocm-ernic%n"
 
 # --- InfiniBand device naming ---
@@ -33,7 +33,7 @@ SUBSYSTEM=="net", ACTION=="add", \
 # device is still settling.
 
 SUBSYSTEM=="infiniband", ACTION=="add", \
-  DRIVERS=="rocm_ernic", \
+  DRIVERS=="rocm_ernic_eth", \
   ATTRS{vendor}=="0x1022", \
   RUN+="/bin/sh -c '(sleep 1; \
     /usr/bin/rdma dev set %k \
