@@ -69,6 +69,7 @@ struct rocm_ernic_create_qp_dv_resp {
  */
 enum rocm_ernic_cq_dv_mask {
     ROCM_ERNIC_CQ_DV_ENABLE = 1 << 0,
+    ROCM_ERNIC_CQ_DV_DMABUF = 1 << 1,
 };
 
 struct rocm_ernic_create_cq_dv {
@@ -78,6 +79,8 @@ struct rocm_ernic_create_cq_dv {
     __aligned_u64 comp_mask;
     __u32 ncqe;
     __u32 cqe_size;
+    __s32 dmabuf_fd;
+    __u32 reserved2;
 };
 
 struct rocm_ernic_create_cq_dv_resp {

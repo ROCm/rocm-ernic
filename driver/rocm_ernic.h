@@ -89,6 +89,7 @@ struct rocm_ernic_cq {
     struct rocm_ernic_page_dir pdir;
     u32 cq_handle;
     bool is_kernel;
+    bool is_dmabuf;
     refcount_t refcnt;
     struct completion free;
 };

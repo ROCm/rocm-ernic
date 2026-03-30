@@ -151,6 +151,10 @@ struct rocm_ernic_alloc_pd_resp {
     __u32 reserved;
 };
 
+enum rocm_ernic_cq_comp_mask {
+    ROCM_ERNIC_CQ_COMP_DMABUF = 1 << 0,
+};
+
 struct rocm_ernic_create_cq {
     __aligned_u64 buf_addr;
     __u32 buf_size;
@@ -158,6 +162,8 @@ struct rocm_ernic_create_cq {
     __aligned_u64 comp_mask;
     __u32 ncqe;
     __u32 cqe_size;
+    __s32 dmabuf_fd;
+    __u32 reserved2;
 };
 
 struct rocm_ernic_create_cq_resp {

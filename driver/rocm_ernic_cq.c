@@ -51,6 +51,10 @@
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
 #include <rdma/uverbs_ioctl.h>
+#if IS_ENABLED(CONFIG_DMA_SHARED_BUFFER)
+#include <linux/dma-buf.h>
+#include <rdma/ib_umem.h>
+#endif
 
 #include "rocm_ernic.h"
 
@@ -78,7 +82,7 @@ int rocm_ernic_req_notify_cq(struct ib_cq *ibcq,
 
     rocm_ernic_write_uar_cq(dev, val);
 
-    if (notify_flags & IB_CQ_REPORT_MISSED_EVENTS) {
+    if ((notify_flags & IB_CQ_REPORT_MISSED_EVENTS) && cq->ring_state) {
         unsigned int head;
 
         has_data = rocm_ernic_idx_ring_has_data(&cq->ring_state->rx,
@@ -98,10 +102,11 @@ int rocm_ernic_req_notify_cq(struct ib_cq *ibcq,
  * @attr: completion queue attributes
  * @attrs: bundle (kernel >= 6.11) or udata
  *
- * Handles both standard and DV paths.  In DV mode the
- * userspace provider sets comp_mask in the extended udata;
- * the kernel still pins the buffer via ib_umem_get() using
- * the address supplied in buf_addr/buf_size.
+ * Handles both standard and DV paths.  When the
+ * userspace provider sets ROCM_ERNIC_CQ_COMP_DMABUF in
+ * comp_mask, the CQ buffer is imported via
+ * ib_umem_dmabuf_get_pinned() for GPU-Direct RDMA;
+ * otherwise ib_umem_get() pins CPU-resident pages.
  *
  * @return: 0 on success
  */
@@ -176,11 +181,42 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
             }
         }
 
-        cq->umem = ib_umem_get(ibdev, ucmd.buf_addr, ucmd.buf_size,
-                               IB_ACCESS_LOCAL_WRITE);
-        if (IS_ERR(cq->umem)) {
-            ret = PTR_ERR(cq->umem);
+        if (ucmd.comp_mask & ROCM_ERNIC_CQ_COMP_DMABUF) {
+#if IS_ENABLED(CONFIG_DMA_SHARED_BUFFER)
+            struct ib_umem_dmabuf *umem_dmabuf;
+
+            if (ucmd.dmabuf_fd < 0) {
+                dev_warn(&dev->pdev->dev, "CQ create: invalid dmabuf fd %d\n",
+                         ucmd.dmabuf_fd);
+                ret = -EBADF;
+                goto err_cq;
+            }
+
+            umem_dmabuf = ib_umem_dmabuf_get_pinned(
+                ibdev, 0, ucmd.buf_size, ucmd.dmabuf_fd, IB_ACCESS_LOCAL_WRITE);
+            if (IS_ERR(umem_dmabuf)) {
+                ret = PTR_ERR(umem_dmabuf);
+                dev_warn(&dev->pdev->dev,
+                         "CQ create: dmabuf umem failed "
+                         "(fd=%d, ret=%d)\n",
+                         ucmd.dmabuf_fd, ret);
+                goto err_cq;
+            }
+            cq->umem = &umem_dmabuf->umem;
+            cq->is_dmabuf = true;
+#else
+            dev_warn(&dev->pdev->dev, "CQ create: DMA-BUF not supported "
+                                      "(CONFIG_DMA_SHARED_BUFFER disabled)\n");
+            ret = -EOPNOTSUPP;
             goto err_cq;
+#endif
+        } else {
+            cq->umem = ib_umem_get(ibdev, ucmd.buf_addr, ucmd.buf_size,
+                                   IB_ACCESS_LOCAL_WRITE);
+            if (IS_ERR(cq->umem)) {
+                ret = PTR_ERR(cq->umem);
+                goto err_cq;
+            }
         }
         npages = ib_umem_num_dma_blocks(cq->umem, PAGE_SIZE);
     } else {
@@ -208,7 +244,15 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
         cq->ring_state = cq->pdir.pages[0];
     } else {
         rocm_ernic_page_dir_insert_umem(&cq->pdir, cq->umem, 0);
-        if (npages > 1) {
+        if (cq->is_dmabuf) {
+            /*
+             * GPU-VRAM pages cannot be kmap'd; DV CQs
+             * are polled from userspace so the kernel
+             * does not need ring_state access.
+             */
+            cq->ring_state = NULL;
+            cq->offset = PAGE_SIZE;
+        } else if (npages > 1) {
             struct scatterlist *sg = cq->umem->sgt_append.sgt.sgl;
             struct page *first_page = sg_page(sg);
 
@@ -261,7 +305,7 @@ int rocm_ernic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
     return 0;
 
 err_page_dir:
-    if (cq->ring_state && !cq->is_kernel) {
+    if (cq->ring_state && !cq->is_kernel && !cq->is_dmabuf) {
         struct scatterlist *sg = cq->umem->sgt_append.sgt.sgl;
         kunmap(sg_page(sg));
         cq->ring_state = NULL;
@@ -281,7 +325,7 @@ static void rocm_ernic_free_cq(struct rocm_ernic_dev *dev,
         complete(&cq->free);
     wait_for_completion(&cq->free);
 
-    if (!cq->is_kernel && cq->ring_state && cq->umem) {
+    if (!cq->is_kernel && !cq->is_dmabuf && cq->ring_state && cq->umem) {
         struct scatterlist *sg = cq->umem->sgt_append.sgt.sgl;
         kunmap(sg_page(sg));
         cq->ring_state = NULL;
@@ -380,6 +424,9 @@ static int rocm_ernic_poll_one(struct rocm_ernic_cq *cq,
     unsigned int head;
     bool tried = false;
     struct rocm_ernic_cqe *cqe;
+
+    if (!cq->ring_state)
+        return -EOPNOTSUPP;
 
 retry:
     has_data =
