@@ -302,5 +302,5 @@
           - -C
           - /tmp
           - rocm-xio
-        creates: /tmp/rocm-xio.tar.gz
+      changed_when: true
       when: ernic_gpu_passthrough | bool

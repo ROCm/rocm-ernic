@@ -123,7 +123,7 @@ Latency (us)
 **Send latency (us):**
 
 =======  ======  =======  ======
-Size     Min     Typical  Max
+Size     Max     Typical  Min
 =======  ======  =======  ======
 4 KB     443     316      311
 64 KB    471     352      337
@@ -135,7 +135,7 @@ Size     Min     Typical  Max
 **Write latency (us):**
 
 =======  ======  =======  ======
-Size     Min     Typical  Max
+Size     Max     Typical  Min
 =======  ======  =======  ======
 4 KB     231     183      184
 64 KB    296     198      199
@@ -147,7 +147,7 @@ Size     Min     Typical  Max
 **Read latency (us):**
 
 =======  ======  =======  ======
-Size     Min     Typical  Max
+Size     Max     Typical  Min
 =======  ======  =======  ======
 4 KB     389     356      354
 64 KB    534     356      355
@@ -201,7 +201,7 @@ Latency (us)
 **Send latency (us):**
 
 =======  ======  =======  ======
-Size     Min     Typical  Max
+Size     Max     Typical  Min
 =======  ======  =======  ======
 4 KB     445     273      297
 64 KB    470     359      335
@@ -213,7 +213,7 @@ Size     Min     Typical  Max
 **Write latency (us):**
 
 =======  ======  =======  ======
-Size     Min     Typical  Max
+Size     Max     Typical  Min
 =======  ======  =======  ======
 4 KB     289     183      183
 64 KB    272     199      200
@@ -225,7 +225,7 @@ Size     Min     Typical  Max
 **Read latency (us):**
 
 =======  ======  =======  ======
-Size     Min     Typical  Max
+Size     Max     Typical  Min
 =======  ======  =======  ======
 4 KB     381     355      354
 64 KB    422     357      357

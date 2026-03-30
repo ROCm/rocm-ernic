@@ -263,12 +263,12 @@
                        '--mem',
                        ernic_vm_mem | string]
                 + ((['--pci-hostdev',
-                     ernic_gpu_pci_devices[item]]
+                     ernic_gpu_pci_devices[item | string]]
                     + (['--pci-mmio-bridge']
                        if ernic_pci_mmio_bridge | bool
                        else []))
                    if (ernic_gpu_passthrough | bool
-                       and ernic_gpu_pci_devices[item]
+                       and ernic_gpu_pci_devices[item | string]
                            | default('') | length > 0)
                    else [])
               })
@@ -328,7 +328,6 @@
           -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o PasswordAuthentication=no
-          -o ForwardAgent=yes
         vm_index: "{{ item }}"
         vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
       loop: "{{ range(1, ernic_instances | int + 1) | list }}"
