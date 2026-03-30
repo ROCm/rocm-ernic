@@ -22,13 +22,17 @@
     vm1_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
-      -o ForwardAgent=yes
+      -o BatchMode=yes
+      -o PasswordAuthentication=no
+      -o ConnectTimeout=30
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
-      -o ForwardAgent=yes
+      -o BatchMode=yes
+      -o PasswordAuthentication=no
+      -o ConnectTimeout=30
       -p {{ ernic_vm_ssh_base_port | int + 1 }}
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
@@ -41,6 +45,17 @@
       when: >-
         not (ernic_gpu_passthrough | bool)
         or (ernic_skip_gpu_tests | bool)
+
+    - name: Assert exactly two instances for GPU tests
+      ansible.builtin.assert:
+        that:
+          - (ernic_instances | int) == 2
+        fail_msg: >-
+          gpu-tests.yml requires exactly two VMs
+          but ernic_instances is
+          {{ ernic_instances }}. Set
+          ernic_instances to 2 or update this
+          playbook for other counts.
 
     # ─────────────────────────────────────────────────
     # Pre-flight checks
