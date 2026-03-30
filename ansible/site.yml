@@ -9,7 +9,8 @@
 #   2. VM creation  -- golden image, launch VMs
 #   3. Guest setup  -- driver, rdma-core, NIC config
 #   4. Sanity tests -- iperf3, perftest
-#   5. Performance tests -- full BW/lat sweeps (optional)
+#   5. GPU tests    -- xio-tester 2-node GPU RDMA
+#   6. Performance tests -- full BW/lat sweeps (optional)
 #
 # Usage:
 #   cd ansible
@@ -21,6 +22,9 @@
 #
 # Run the performance sweep after the sanity tests:
 #   ansible-playbook playbooks/performance-tests.yml
+#
+# Run GPU RDMA tests with real GPU passthrough:
+#   ansible-playbook site.yml -e ernic_gpu_passthrough=true
 #
 # Or run everything including the sweep:
 #   ansible-playbook site.yml -e ernic_run_perf=true
@@ -37,3 +41,6 @@
 
 - name: "Phase 4: Sanity tests"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
+
+- name: "Phase 5: GPU RDMA tests"
+  ansible.builtin.import_playbook: playbooks/gpu-tests.yml

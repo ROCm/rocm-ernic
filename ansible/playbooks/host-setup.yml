@@ -167,3 +167,140 @@
     - name: Display service status
       ansible.builtin.debug:
         var: ernic_status.stdout_lines
+
+    # ── GPU passthrough: bind GPUs to vfio-pci ──────
+    - name: Collect GPU BDF addresses
+      ansible.builtin.set_fact:
+        ernic_gpu_bdfs: >-
+          {{ ernic_gpu_pci_devices.values()
+             | select('ne', '')
+             | list }}
+      when: ernic_gpu_passthrough | bool
+
+    - name: Verify IOMMU is enabled
+      ansible.builtin.shell:
+        cmd: >-
+          ls /sys/kernel/iommu_groups/ 2>/dev/null
+          | head -1 | grep -q .
+          && echo OK || echo MISSING
+      register: iommu_check
+      changed_when: false
+      when: ernic_gpu_passthrough | bool
+
+    - name: Fail if IOMMU is not enabled
+      ansible.builtin.fail:
+        msg: >-
+          IOMMU does not appear to be enabled
+          (no groups in /sys/kernel/iommu_groups/).
+          Add amd_iommu=on (or intel_iommu=on) to
+          the kernel command line and reboot.
+      when:
+        - ernic_gpu_passthrough | bool
+        - "'MISSING' in iommu_check.stdout"
+
+    - name: Load vfio-pci kernel module
+      community.general.modprobe:
+        name: vfio-pci
+        state: present
+      become: true
+      when: ernic_gpu_passthrough | bool
+
+    - name: Get vendor/device IDs for each GPU
+      ansible.builtin.shell:
+        cmd: >-
+          lspci -n -s {{ item }}
+          | awk '{print $3}'
+      register: gpu_dev_ids
+      changed_when: false
+      loop: "{{ ernic_gpu_bdfs }}"
+      when: ernic_gpu_passthrough | bool
+
+    - name: Check current driver for each GPU
+      ansible.builtin.shell:
+        cmd: >-
+          basename "$(readlink -f
+          /sys/bus/pci/devices/{{ item }}/driver
+          2>/dev/null)" 2>/dev/null || echo none
+      register: gpu_current_driver
+      changed_when: false
+      loop: "{{ ernic_gpu_bdfs }}"
+      when: ernic_gpu_passthrough | bool
+
+    - name: Unbind GPUs from current driver
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{{ item.item }}'
+          > /sys/bus/pci/devices/{{ item.item }}/driver/unbind
+      become: true
+      changed_when: true
+      loop: "{{ gpu_current_driver.results }}"
+      when:
+        - ernic_gpu_passthrough | bool
+        - item.stdout != 'none'
+        - item.stdout != 'vfio-pci'
+
+    - name: Register GPU vendor:device with vfio-pci
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{{ item.stdout }}'
+          > /sys/bus/pci/drivers/vfio-pci/new_id
+          2>/dev/null || true
+      become: true
+      changed_when: true
+      loop: "{{ gpu_dev_ids.results }}"
+      when: ernic_gpu_passthrough | bool
+
+    - name: Bind GPUs to vfio-pci
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{{ item }}'
+          > /sys/bus/pci/drivers/vfio-pci/bind
+          2>/dev/null || true
+      become: true
+      changed_when: true
+      loop: "{{ ernic_gpu_bdfs }}"
+      when: ernic_gpu_passthrough | bool
+
+    - name: Verify GPUs are bound to vfio-pci
+      ansible.builtin.shell:
+        cmd: >-
+          lspci -k -s {{ item }}
+          | grep -q 'Kernel driver in use: vfio-pci'
+          && echo OK || echo FAIL
+      register: gpu_vfio_verify
+      changed_when: false
+      loop: "{{ ernic_gpu_bdfs }}"
+      when: ernic_gpu_passthrough | bool
+
+    - name: Assert all GPUs bound to vfio-pci
+      ansible.builtin.assert:
+        that:
+          - item.stdout == 'OK'
+        fail_msg: >-
+          GPU {{ item.item }} is not bound to
+          vfio-pci. Check IOMMU groups and driver
+          binding.
+      loop: "{{ gpu_vfio_verify.results }}"
+      when: ernic_gpu_passthrough | bool
+
+    # ── Prepare rocm-xio tarball for VMs ─────────────
+    - name: Clone rocm-xio on controller
+      ansible.builtin.git:
+        repo: "{{ ernic_rocm_xio_repo }}"
+        dest: /tmp/rocm-xio
+        version: "{{ ernic_rocm_xio_branch }}"
+        accept_hostkey: true
+        force: true
+      when: ernic_gpu_passthrough | bool
+
+    - name: Create rocm-xio tarball
+      ansible.builtin.command:
+        argv:
+          - tar
+          - czf
+          - /tmp/rocm-xio.tar.gz
+          - -C
+          - /tmp
+          - rocm-xio
+        creates: /tmp/rocm-xio.tar.gz
+      when: ernic_gpu_passthrough | bool

@@ -243,22 +243,41 @@
       changed_when: false
       failed_when: false
 
+    - name: Build per-instance vm-launch argv
+      ansible.builtin.set_fact:
+        ernic_vm_launch_argv: >-
+          {{
+            ernic_vm_launch_argv | default({})
+            | combine({
+                item: ['ernicctl', 'vm-launch',
+                       item | string,
+                       '--vm-name',
+                       ernic_vm_name ~ '-' ~ item,
+                       '--ssh-port',
+                       (ernic_vm_ssh_base_port | int
+                        + item - 1) | string,
+                       '--ssh-user',
+                       ernic_vm_ssh_user,
+                       '--vcpus',
+                       ernic_vm_vcpus | string,
+                       '--mem',
+                       ernic_vm_mem | string]
+                + ((['--pci-hostdev',
+                     ernic_gpu_pci_devices[item]]
+                    + (['--pci-mmio-bridge']
+                       if ernic_pci_mmio_bridge | bool
+                       else []))
+                   if (ernic_gpu_passthrough | bool
+                       and ernic_gpu_pci_devices[item]
+                           | default('') | length > 0)
+                   else [])
+              })
+          }}
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
     - name: Launch VMs for each instance
       ansible.builtin.command:
-        argv:
-          - ernicctl
-          - vm-launch
-          - "{{ item }}"
-          - --vm-name
-          - "{{ ernic_vm_name }}-{{ item }}"
-          - --ssh-port
-          - "{{ (ernic_vm_ssh_base_port | int + item - 1) | string }}"
-          - --ssh-user
-          - "{{ ernic_vm_ssh_user }}"
-          - --vcpus
-          - "{{ ernic_vm_vcpus | string }}"
-          - --mem
-          - "{{ ernic_vm_mem | string }}"
+        argv: "{{ ernic_vm_launch_argv[item] }}"
       become: true
       changed_when: true
       loop: "{{ range(1, ernic_instances | int + 1) | list }}"
@@ -309,6 +328,7 @@
           -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o PasswordAuthentication=no
+          -o ForwardAgent=yes
         vm_index: "{{ item }}"
         vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
       loop: "{{ range(1, ernic_instances | int + 1) | list }}"

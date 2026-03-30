@@ -355,6 +355,13 @@ def _get_vm_uptime(inst):
     return format_duration(_get_uptime(vm_pid))
 
 
+def _get_vm_gpu(inst):
+    """Return 'yes' if a GPU is passed into the VM."""
+    if not inst.get("vm") or not inst["vm"]:
+        return "-"
+    return "yes" if inst["vm"].get("gpu") else "no"
+
+
 def _get_byte_cols(stats):
     """Compute IP and RDMA TX/RX strings."""
     if not stats:
@@ -465,18 +472,19 @@ def cmd_status(args):
     fmt = (
         "{:<4} {:<9} {:<7} {:<10} {:<10}"
         " {:<19} {:<30} {:<12} {:<10}"
-        " {:<15} {:<15} {}"
+        " {:<5} {:<15} {:<15} {}"
     )
     print(fmt.format(
         "ID", "ROLE", "PID", "STATE", "UPTIME",
         "MAC", "SOCKET", "VM", "VM_UPTIME",
-        "IP (TX/RX)", "RDMA (TX/RX)", "LOG",
+        "GPU", "IP (TX/RX)", "RDMA (TX/RX)", "LOG",
     ))
     for inst in m["instances"]:
         alive = pid_alive(inst["pid"])
         state = "running" if alive else "dead"
         vm_info = _get_vm_info(inst)
         vm_up = _get_vm_uptime(inst)
+        vm_gpu = _get_vm_gpu(inst)
         st = all_stats.get(inst["id"], {})
         ip_col, rdma_col = _get_byte_cols(st)
         uptime = format_duration(
@@ -496,6 +504,7 @@ def cmd_status(args):
             inst["socket"],
             vm_info,
             vm_up,
+            vm_gpu,
             ip_col,
             rdma_col,
             logfile,
@@ -1079,6 +1088,16 @@ def cmd_vm_launch(args):
     if mcast:
         env["MCAST_GROUP"] = mcast
 
+    pci_hostdev = getattr(args, "pci_hostdev", None)
+    if pci_hostdev:
+        env["PCI_HOSTDEV"] = pci_hostdev
+
+    pci_mmio_bridge = getattr(
+        args, "pci_mmio_bridge", False
+    )
+    if pci_mmio_bridge:
+        env["PCI_MMIO_BRIDGE"] = "true"
+
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
     print(f"  SSH port:    {ssh_port}")
@@ -1086,6 +1105,10 @@ def cmd_vm_launch(args):
     print(f"  QMP socket:  {qmp_sock}")
     if mcast:
         print(f"  MCAST group: {mcast}")
+    if pci_hostdev:
+        print(f"  PCI hostdev: {pci_hostdev}")
+    if pci_mmio_bridge:
+        print("  MMIO bridge: enabled")
 
     logfile = os.path.join(
         LOG_DIR, f"vm-{args.instance}.log"
@@ -1113,6 +1136,7 @@ def cmd_vm_launch(args):
         "vm_pid": proc.pid,
         "vm_name": vm_name,
         "launched_at": time.time(),
+        "gpu": pci_hostdev or "",
     }
     write_manifest(m)
     print(f"VM started (PID {proc.pid}).")
@@ -1341,6 +1365,16 @@ def build_parser():
     sp.add_argument(
         "--mem", type=int, default=None,
         help="VM memory in MB",
+    )
+    sp.add_argument(
+        "--pci-hostdev", default=None,
+        help="PCI BDF address(es) for vfio-pci"
+             " passthrough (comma-separated)",
+    )
+    sp.add_argument(
+        "--pci-mmio-bridge",
+        action="store_true", default=False,
+        help="Enable pci-mmio-bridge device",
     )
 
     sp = sub.add_parser(
