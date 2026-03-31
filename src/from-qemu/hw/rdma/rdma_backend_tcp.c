@@ -3174,6 +3174,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             }
         }
 
+        tcp_update_stats(priv, total_len, wc_opcode);
+
         TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
         if (send_wr) {
             uint64_t wr_id = send_wr->wr_id;
