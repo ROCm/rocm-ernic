@@ -64,12 +64,16 @@ struct rocm_ernic_create_qp_dv_resp {
 };
 
 /*
- * Extended create_cq request for DV.  Carries a
- * comp_mask to distinguish DV from standard path.
+ * Extended create_cq request for DV.  comp_mask bits
+ * must match enum rocm_ernic_cq_comp_mask in the
+ * kernel ABI header (rocm_ernic-abi.h) since they
+ * share the same uverbs field.
+ *
+ * Bit 0: ROCM_ERNIC_CQ_COMP_DMABUF -- CQ buffer is
+ *         DMA-BUF backed (dmabuf_fd valid).
  */
 enum rocm_ernic_cq_dv_mask {
-    ROCM_ERNIC_CQ_DV_ENABLE = 1 << 0,
-    ROCM_ERNIC_CQ_DV_DMABUF = 1 << 1,
+    ROCM_ERNIC_CQ_DV_DMABUF = 1 << 0,
 };
 
 struct rocm_ernic_create_cq_dv {

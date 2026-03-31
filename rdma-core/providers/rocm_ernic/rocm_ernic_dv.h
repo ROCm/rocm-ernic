@@ -97,6 +97,7 @@ struct rocm_ernic_dv_qp_attr {
 	void *uar_ptr;
 	uint32_t uar_qp_offset;
 	uint32_t uar_cq_offset;
+	uint64_t uar_mmap_offset;
 };
 
 /* DV API functions */

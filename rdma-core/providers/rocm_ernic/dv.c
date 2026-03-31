@@ -215,14 +215,18 @@ struct ibv_qp *rocm_ernic_dv_create_qp(struct ibv_pd *pd,
     qp->uar_qp_offset = resp.uar_qp_offset;
     qp->uar_cq_offset = resp.uar_cq_offset;
 
+    qp->uar_mmap_offset = resp.uar_mmap_offset;
+
     if (resp.uar_mmap_offset) {
         long page_size = sysconf(_SC_PAGESIZE);
 
-        qp->uar_ptr = mmap(NULL, page_size, PROT_WRITE,
-                           MAP_SHARED, pd->context->cmd_fd,
-                           resp.uar_mmap_offset);
-        if (qp->uar_ptr == MAP_FAILED)
-            qp->uar_ptr = NULL;
+        if (page_size > 0) {
+            qp->uar_ptr = mmap(NULL, page_size, PROT_WRITE,
+                               MAP_SHARED, pd->context->cmd_fd,
+                               resp.uar_mmap_offset);
+            if (qp->uar_ptr == MAP_FAILED)
+                qp->uar_ptr = NULL;
+        }
     }
 
     return &qp->vqp.qp;
@@ -288,6 +292,7 @@ int rocm_ernic_dv_get_qp_attr(struct ibv_qp *ibqp,
     out->uar_ptr = qp->uar_ptr;
     out->uar_qp_offset = qp->uar_qp_offset;
     out->uar_cq_offset = qp->uar_cq_offset;
+    out->uar_mmap_offset = qp->uar_mmap_offset;
 
     return 0;
 }
