@@ -174,6 +174,7 @@ cqn
 cqs
 ctrl
 ctx
+cz
 deadbeef
 del
 depmod
@@ -182,6 +183,7 @@ dev
 devel
 devinfo
 dir
+distros
 dkms
 dlopen
 dlsym
@@ -384,6 +386,7 @@ systemd
 symlink
 symvers
 sys
+sysctl
 sysfs
 sz
 tbl
@@ -396,6 +399,7 @@ toolchains
 typedef
 ubuntu
 uapi
+ucw
 uint
 uint16
 uint32

@@ -56,7 +56,7 @@ Inside the guest, load the kernel driver and verify:
 .. code-block:: bash
 
    sudo modprobe rocm_ernic
-   lspci | grep 1022:1488
+   lspci | grep 1022:8000
    ibv_devices
 
 Statistics Collection

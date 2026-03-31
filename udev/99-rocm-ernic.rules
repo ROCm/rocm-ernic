@@ -25,16 +25,26 @@ SUBSYSTEM=="net", ACTION=="add", \
 
 # --- InfiniBand device naming ---
 #
-# Renames the RDMA device from the default
-# PCI-topology name (e.g. rocep1s0) to
-# rocm-rdma-ernic0.  The rename is deferred via a
-# backgrounded subshell because rdma-netlink calls
-# from a synchronous udev RUN can fail while the
-# device is still settling.
+# Renames the RDMA device from the PCI-topology
+# name (e.g. rocep2s0) to rocm-rdma-ernic0.
+#
+# The system rule 60-rdma-persistent-naming.rules
+# renames the device from its kernel-registered
+# name (rocm_ernic%d) to a PCI-topology name via
+# rdma_rename before this rule runs, making the
+# %k substitution stale.  Instead of using %k, we
+# look up the current RDMA device name by scanning
+# sysfs for vendor 0x1022.  A 2-second sleep lets
+# rdma_rename and device settling finish first.
 
 SUBSYSTEM=="infiniband", ACTION=="add", \
   DRIVERS=="rocm_ernic_eth", \
   ATTRS{vendor}=="0x1022", \
-  RUN+="/bin/sh -c '(sleep 1; \
-    /usr/bin/rdma dev set %k \
-    name rocm-rdma-ernic%n) &'"
+  RUN+="/bin/sh -c '(sleep 2; \
+    for v in /sys/class/infiniband/*/device/vendor; do \
+      [ -f $v ] || continue; \
+      read vid < $v; \
+      [ $vid = 0x1022 ] || continue; \
+      d=${v%%/device/vendor}; n=${d##*/}; \
+      /usr/bin/rdma dev set $n name rocm-rdma-ernic0; \
+    done) &'"
