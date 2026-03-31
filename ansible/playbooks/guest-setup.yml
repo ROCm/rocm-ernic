@@ -527,38 +527,6 @@
       changed_when: true
       when: ernic_gpu_passthrough | bool
 
-    - name: Copy pci-mmio-bridge ERNIC patch
-      ansible.builtin.copy:
-        src: "{{ ernic_project_root }}/docs/ernic-mmio-bridge.patch"
-        dest: /tmp/ernic-mmio-bridge.patch
-        mode: "0644"
-      when: ernic_gpu_passthrough | bool
-
-    - name: Check if patch is already applied
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -q
-          - use_mmio_bridge
-          - /opt/rocm-xio/src/endpoints/rdma-ep/rocm-ernic/ernic-provider.hpp
-      register: patch_check
-      failed_when: false
-      changed_when: false
-      when: ernic_gpu_passthrough | bool
-
-    - name: Apply pci-mmio-bridge ERNIC patch
-      ansible.builtin.command:
-        argv:
-          - patch
-          - -p1
-          - -d
-          - /opt/rocm-xio
-          - -i
-          - /tmp/ernic-mmio-bridge.patch
-      when:
-        - ernic_gpu_passthrough | bool
-        - patch_check.rc != 0
-
     - name: Build rocm-xio
       ansible.builtin.command:
         argv:

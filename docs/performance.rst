@@ -307,7 +307,7 @@ Changes required to reach this milestone:
 - **Server (TCP backend)**: GID node encoding for all
   modes, loopback routing detection, local loopback
   RDMA shortcut (memcpy to target MR, bypass TCP socket)
-- **rocm-xio patch** (``ernic-mmio-bridge.patch``):
+- **rocm-xio** (pci-mmio-bridge merged upstream):
   pci-mmio-bridge doorbell routing, system memory CQ/SQ
   buffers, SQ header page offset, ring state updates, CQ
   polling via ring_state[1]
