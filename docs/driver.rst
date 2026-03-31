@@ -51,7 +51,7 @@ the InfiniBand device are visible:
 
 .. code-block:: bash
 
-   lspci | grep 1022:1488
+   lspci | grep 1022:8000
    ibv_devices
 
 Sysfs Loopback Mode

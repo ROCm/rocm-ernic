@@ -1,0 +1,9 @@
+# PCI ID fragment for ROCm ERNIC (0x1022:0x8000).
+# Merge under vendor 1022 (AMD) in your system pci.ids so lspci shows
+# "ROCm Emulated RDMA NIC". Typical paths: /usr/share/hwdata/pci.ids or
+# /usr/share/misc/pci.ids. Add the device line below under the existing
+# "1022  AMD" vendor block. Note: running update-pciids will overwrite
+# the system pci.ids and discard this edit; re-apply after each update.
+#
+1022  AMD
+	8000  ROCm Emulated RDMA NIC

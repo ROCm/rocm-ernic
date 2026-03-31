@@ -216,6 +216,44 @@
         cmd: udevadm control --reload-rules
       changed_when: true
 
+    # ── Merge pci.ids fragment for lspci display ─────
+    - name: Find system pci.ids path
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/share/hwdata/pci.ids
+        - /usr/share/misc/pci.ids
+      register: pciids_stat
+
+    - name: Set pci.ids path fact
+      ansible.builtin.set_fact:
+        pciids_path: >-
+          {{ (pciids_stat.results
+              | selectattr('stat.exists')
+              | first
+              | default({})).item | default('') }}
+
+    - name: Check if ROCm ERNIC entry exists in pci.ids
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -q
+          - "8000  ROCm Emulated RDMA NIC"
+          - "{{ pciids_path }}"
+      register: pciids_grep
+      failed_when: false
+      changed_when: false
+      when: pciids_path | length > 0
+
+    - name: Merge ROCm ERNIC device into pci.ids
+      ansible.builtin.replace:
+        path: "{{ pciids_path }}"
+        regexp: '^(1022\s+.*)$'
+        replace: '\1\n\t8000  ROCm Emulated RDMA NIC'
+      when:
+        - pciids_path | length > 0
+        - pciids_grep.rc | default(1) != 0
+
     # ── Load driver modules ──────────────────────────
     - name: Load ib_core module
       community.general.modprobe:

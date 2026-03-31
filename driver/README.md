@@ -64,6 +64,37 @@ dmesg | grep rocm_ernic
 
 4. Verify the device is recognized:
    ```bash
-   lspci | grep 1022:1488
+   lspci | grep 1022:8000
    ibv_devices
    ```
+
+## PCI device name
+
+To have `lspci` show "ROCm Emulated RDMA NIC" for device
+`0x1022:0x8000`, merge the fragment from the project into your
+system pci.ids:
+
+- Fragment: [../scripts/pci.ids.rocm-ernic](../scripts/pci.ids.rocm-ernic)
+- Add the device line `8000  ROCm Emulated RDMA NIC` under vendor
+  `1022` (AMD) in your system pci.ids (e.g.
+  `/usr/share/hwdata/pci.ids` or `/usr/share/misc/pci.ids`). You
+  can merge the fragment or add the line manually.
+- For inclusion in the official PCI ID database, submit
+  `0x1022`/`0x8000` with name "ROCm Emulated RDMA NIC" at
+  <https://admin.pci-ids.ucw.cz/> (see <https://pci-ids.ucw.cz/>
+  for instructions).
+
+## Unprivileged dmesg (optional)
+
+For rocm-ernic testing, you may want any user to run `dmesg`
+without root.
+
+- **Option A (e.g. Ubuntu 24.04):** Allow all users to read the
+  kernel log:
+  - Temporarily: `sudo sysctl -w kernel.dmesg_restrict=0`
+  - Persistently: copy
+    [../scripts/99-rocm-ernic-dmesg.conf](../scripts/99-rocm-ernic-dmesg.conf)
+    to `/etc/sysctl.d/` and reboot or run
+    `sudo sysctl -p /etc/sysctl.d/99-rocm-ernic-dmesg.conf`.
+- **Option B:** On distros where the `adm` group can read kernel
+  logs, add the test user to group `adm` and re-login.
