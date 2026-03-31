@@ -2999,6 +2999,13 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             tqp->remote_node_id = (priv->local_node_id == 0) ? 1 : 0;
         }
 
+        if (dqpn == tqp->qpn) {
+            tqp->remote_node_id = priv->local_node_id;
+            rdma_info_report("TCP: QP %u loopback detected, "
+                             "routing to self (node %u)",
+                             qpn, priv->local_node_id);
+        }
+
         tqp->rq_psn = rq_psn;
         if (qkey_set) {
             tqp->qkey = qkey;
@@ -3126,6 +3133,57 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     g_queue_push_tail(tqp->send_queue, wr);
     seq = priv->next_seq++;
     qemu_mutex_unlock(&priv->lock);
+
+    if (dst_node == priv->local_node_id) {
+        uint32_t total_len = 0;
+        for (uint32_t i = 0; i < num_sge && i < 32; i++)
+            total_len += wr->sge[i].length;
+
+        bool is_write = (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
+                         pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM);
+
+        if (is_write && remote_addr && rkey) {
+            RdmaRmMR *target_mr =
+                rdma_rm_get_mr(priv->backend_dev->rdma_dev_res, rkey);
+            if (target_mr && target_mr->virt &&
+                remote_addr >= target_mr->start &&
+                remote_addr + total_len <=
+                    target_mr->start + target_mr->length) {
+                char *dst =
+                    (char *)target_mr->virt + (remote_addr - target_mr->start);
+                uint32_t off = 0;
+                for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+                    if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
+                        memcpy(dst + off, wr->sge[i].host_addr,
+                               wr->sge[i].length);
+                        off += wr->sge[i].length;
+                    }
+                }
+                if (priv->backend_dev->dev)
+                    pci_dma_sync(priv->backend_dev->dev, remote_addr,
+                                 total_len);
+
+                rdma_info_report("TCP: Local loopback RDMA_WRITE "
+                                 "%u bytes to rkey=0x%x addr=0x%lx",
+                                 total_len, rkey, (unsigned long)remote_addr);
+            } else {
+                rdma_error_report("TCP: Local loopback RDMA_WRITE "
+                                  "MR bounds error rkey=0x%x "
+                                  "addr=0x%lx len=%u",
+                                  rkey, (unsigned long)remote_addr, total_len);
+            }
+        }
+
+        TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
+        if (send_wr) {
+            uint64_t wr_id = send_wr->wr_id;
+            g_free(send_wr);
+            rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0, qpn, wc_opcode,
+                                       (void *)wr_id);
+        }
+        rdma_info_report("TCP: Local loopback complete for QP %u", qpn);
+        return;
+    }
 
     conn = tcp_get_connection(priv, dst_node);
     if ((!conn || !conn->is_connected) && priv->manager_conn &&
@@ -3383,13 +3441,12 @@ static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    /* In worker mode, encode local node ID in GID */
-    if (priv && priv->mode == TCP_MODE_WORKER) {
+    if (priv) {
         memset(gid, 0, sizeof(*gid));
         gid->raw[15] = (uint8_t)priv->local_node_id;
         rdma_info_report("TCP: Added GID with node_id=%u", priv->local_node_id);
     } else {
-        rdma_info_report("TCP: Added GID");
+        rdma_info_report("TCP: Added GID (no priv)");
     }
 
     return 0;

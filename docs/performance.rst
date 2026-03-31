@@ -289,6 +289,120 @@ iperf3 TCP                    N/A             N/A             0.10 Mbit/s
 ============================  ==============  ==============  ==============
 
 
+Milestone 4 -- March 31 (GPU Direct RDMA)
+------------------------------------------
+
+First working GPU-initiated RDMA data path.  The GPU writes
+WQEs, updates shared ring state, rings the doorbell through
+pci-mmio-bridge, and polls completions from the CQ ring --
+all without kernel involvement on the data path.
+
+Changes required to reach this milestone:
+
+- **Kernel driver**: DMA-BUF support for CQ creation
+  (``ib_umem_dmabuf_get_pinned``), UAR mmap in DV
+  ``create_qp``, ring state NULL guards for dmabuf CQs
+- **rdma-core provider**: propagate ``dmabuf_fd`` in CQ
+  creation, expose ``uar_mmap_offset`` via ``get_qp_attr``
+- **Server (TCP backend)**: GID node encoding for all
+  modes, loopback routing detection, local loopback
+  RDMA shortcut (memcpy to target MR, bypass TCP socket)
+- **rocm-xio patch** (``ernic-mmio-bridge.patch``):
+  pci-mmio-bridge doorbell routing, system memory CQ/SQ
+  buffers, SQ header page offset, ring state updates, CQ
+  polling via ring_state[1]
+- **QEMU**: pci-mmio-bridge BDF resolution across PCIe
+  root ports (secondary bus traversal)
+
+GPU DV Loopback -- RDMA Write (per-VM, xio-tester)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Iteration sweep (4 KB transfer size):
+
+=======  ==========  ==========  ==========
+Iters    Min (us)    Avg (us)    Max (us)
+=======  ==========  ==========  ==========
+1        388--838    388--838    388--838
+10       195--678    948--1003   1145--1158
+100      333--809    1020--1026  1169--1178
+=======  ==========  ==========  ==========
+
+Transfer size sweep (10 iterations):
+
+=======  ==========  ==========  ==========
+Size     Min (us)    Avg (us)    Max (us)
+=======  ==========  ==========  ==========
+64 B     465--982    976--1032   1145--1149
+256 B    402--694    970--979    1143--1149
+1 KB     456--617    979--986    1146--1160
+4 KB     187--315    946--948    1142--1166
+16 KB    254--575    960--986    1145--1151
+64 KB    FAIL        FAIL        FAIL
+=======  ==========  ==========  ==========
+
+Ranges show VM1--VM2 spread.  16/18 tests pass.
+
+CPU 2-Node Baseline -- RDMA Write (perftest, 4 KB)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+=============  ===========  ===========  ===========
+Metric         Min          Avg          Max
+=============  ===========  ===========  ===========
+Bandwidth      --           790 MB/s     1019 MB/s
+Latency        175 us       181 us       208 us
+=============  ===========  ===========  ===========
+
+Performance Notes
+^^^^^^^^^^^^^^^^^
+
+- GPU DV loopback latency (~1 ms) is 5.6x higher than CPU
+  2-node write latency (181 us).  The gap is dominated by
+  the pci-mmio-bridge poll interval (1 ms default) and
+  vfio-user DMA mapping overhead per doorbell.
+- GPU DV latency is flat across 64 B to 16 KB, confirming
+  overhead is in the doorbell/completion path, not data
+  copy.
+- Reducing ``poll-interval-ns`` below 1 ms in the QEMU
+  pci-mmio-bridge configuration would proportionally
+  reduce GPU DV latency at the cost of host CPU usage.
+- Real ERNIC hardware eliminates the emulation overhead
+  entirely, targeting sub-microsecond latency.
+
+
+Milestone Comparison
+--------------------
+
+CPU verbs milestones (2-node, perftest):
+
+========================  ==========  ==========  ==========
+Metric                    Mar 25      Mar 28      Mar 29
+========================  ==========  ==========  ==========
+Git SHA                   e479b01     54e931d     261869c
+Verbs passing             1 (Send)    3 (S/W/R)   3 (S/W/R)
+Iterations tested         20          1000+       1000
+Send BW @ 64 KB           N/A         1.04 GB/s   1.03 GB/s
+Write BW @ 256 KB         N/A         1.88 GB/s   1.97 GB/s
+Write lat @ 4 KB (typ)    N/A         183 us      183 us
+Pingpong lat (range)      78,000 us   1.2--1.3ms  1.1--1.2ms
+Bidir write @ 1 MB        N/A         DEADLOCK    2.35 GB/s
+Stress pass rate          N/A         22/24       24/24
+========================  ==========  ==========  ==========
+
+GPU Direct RDMA milestone (loopback, xio-tester):
+
+========================  ==============
+Metric                    Mar 31
+========================  ==============
+Git SHA                   99dab9f
+GPU DV Write              PASS (loopback)
+GPU DV lat avg @ 4 KB     ~1000 us
+GPU DV lat min @ 4 KB     ~195 us
+GPU DV test pass rate     16/18
+CPU Write lat @ 4 KB      181 us
+Overhead vs CPU           5.6x (bridge)
+========================  ==============
+
+
 Known Limitations
 -----------------
 
@@ -305,3 +419,16 @@ Known Limitations
   ``net.core.wmem_max`` and ``net.core.rmem_max`` set to at
   least 16 MB on the host for large-message bidirectional
   traffic.
+
+- **GPU DV 64 KB FAIL:** rocm-xio allocates data buffers at
+  ``2 * transfer_size`` (8 KB for 4 KB transfers).  64 KB
+  transfers exceed the MR registration bounds.
+
+- **GPU CQ/SQ in system memory:** GPU VRAM buffers require
+  vfio-user DMA proxy for GPU BAR regions which is not yet
+  implemented.  System memory buffers work via
+  ``hipHostRegister``.
+
+- **GPU DV loopback only:** 2-node GPU RDMA (VM1 GPU to VM2
+  GPU) requires xio-tester 2-node mode and cross-node MR
+  resolution in the TCP backend.

@@ -263,12 +263,12 @@
                        '--mem',
                        ernic_vm_mem | string]
                 + ((['--pci-hostdev',
-                     ernic_gpu_pci_devices[item | string]]
+                     ernic_gpu_pci_devices[item]]
                     + (['--pci-mmio-bridge']
                        if ernic_pci_mmio_bridge | bool
                        else []))
                    if (ernic_gpu_passthrough | bool
-                       and ernic_gpu_pci_devices[item | string]
+                       and ernic_gpu_pci_devices[item]
                            | default('') | length > 0)
                    else [])
               })
