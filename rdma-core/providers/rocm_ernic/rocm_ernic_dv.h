@@ -90,6 +90,7 @@ struct rocm_ernic_dv_qp_init_attr {
 /* UAR doorbell info returned after QP creation */
 struct rocm_ernic_dv_qp_attr {
 	uint32_t qpn;
+	uint32_t qp_handle; /* RM handle for UAR doorbell */
 	uint32_t sq_depth;
 	uint32_t rq_depth;
 	uint32_t sq_wqe_size;

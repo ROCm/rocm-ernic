@@ -94,10 +94,10 @@ ernic_gpu_pci_devices:
 
 # ── rocm-xio ───────────────────────────────────
 ernic_rocm_xio_repo: "git@github.com:ROCm/rocm-xio.git"
-ernic_rocm_xio_branch: "main"
+ernic_rocm_xio_branch: "dev/stebates/rdma-2-node"
 # Pin to a specific commit SHA for reproducibility.
 # Leave empty to use the branch tip.
-ernic_rocm_xio_commit: "bd0d4577"
+ernic_rocm_xio_commit: ""
 
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false

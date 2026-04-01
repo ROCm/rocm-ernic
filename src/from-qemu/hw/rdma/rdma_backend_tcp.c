@@ -2961,24 +2961,19 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                  * (node 0) or other workers; default
                  * to routing via manager.
                  */
+                /*
+                 * Derive target node from IPv4 last octet.
+                 * VM IPs follow the pattern
+                 *   <subnet>.<(node_id + 1) * 10>
+                 * so last_octet / 10 - 1 = node_id.
+                 * A zero or non-multiples-of-10 last octet
+                 * fall through to the default peer routing.
+                 */
+                uint8_t last = dgid->raw[15];
                 uint32_t resolved = 0xFFFFFFFF;
-                if (priv->is_manager && priv->mesh_nodes) {
-                    GHashTableIter it;
-                    gpointer k, v;
-                    qemu_mutex_lock(&priv->mesh_table_lock);
-                    g_hash_table_iter_init(&it, priv->mesh_nodes);
-                    while (g_hash_table_iter_next(&it, &k, &v)) {
-                        uint32_t nid = GPOINTER_TO_UINT(k);
-                        if (nid == priv->local_node_id)
-                            continue;
-                        TcpConnection *tc = tcp_get_connection(priv, nid);
-                        if (tc && tc->is_connected) {
-                            resolved = nid;
-                            break;
-                        }
-                    }
-                    qemu_mutex_unlock(&priv->mesh_table_lock);
-                }
+
+                if (last >= 10 && (last % 10) == 0)
+                    resolved = (uint32_t)(last / 10) - 1;
 
                 if (resolved != 0xFFFFFFFF) {
                     tqp->remote_node_id = resolved;
@@ -2999,10 +2994,9 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             tqp->remote_node_id = (priv->local_node_id == 0) ? 1 : 0;
         }
 
-        if (dqpn == tqp->qpn) {
-            tqp->remote_node_id = priv->local_node_id;
-            rdma_info_report("TCP: QP %u loopback detected, "
-                             "routing to self (node %u)",
+        if (tqp->remote_node_id == priv->local_node_id) {
+            rdma_info_report("TCP: QP %u routed to local node %u "
+                             "(loopback)",
                              qpn, priv->local_node_id);
         }
 
