@@ -54,12 +54,14 @@ GQueue
 GUID
 IB
 IBV
+IPC
 Incrementing
 InfiniBand
 KDIR
 KVM
 Kconfig
 LSAN
+LTS
 Loopback
 MMIO
 MRs
@@ -131,12 +133,14 @@ VM
 VMM
 VMs
 VMware
+VRAM
 VMware's
 Vtable
 WQE
 WQEs
 Yuval
 abi
+adc
 addr
 alloc
 amd
@@ -227,6 +231,8 @@ gpg
 guid
 hardcode
 hardcoded
+hipHostRegister
+hpe
 hardcodes
 hca
 hostname
@@ -281,8 +287,10 @@ malloc
 marcel
 maxdepth
 md
+memalign
 memfd
 memset
+mmio
 meson
 CMakeLists
 mkdir
@@ -320,6 +328,7 @@ passthrough
 pci
 playbook
 playbooks
+posix
 pdir
 pds
 perf
@@ -416,6 +425,7 @@ utils
 uverbs
 verbs
 vfio
+vCPUs
 vfu
 vhost
 virt
@@ -433,6 +443,7 @@ xFD
 xFE
 xFF
 xdeadbeef
+xio
 xxxx
 yml
 yuval

@@ -89,8 +89,8 @@ ernic_stress_concurrent_duration: 60
 ernic_gpu_passthrough: false
 ernic_pci_mmio_bridge: true
 ernic_gpu_pci_devices:
-  1: "0000:0a:00.0"
-  2: "0000:0f:00.0"
+  1: "0000:50:00.0"
+  2: "0000:90:00.0"
 
 # ── rocm-xio ───────────────────────────────────
 ernic_rocm_xio_repo: "git@github.com:ROCm/rocm-xio.git"

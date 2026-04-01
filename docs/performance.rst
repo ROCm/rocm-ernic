@@ -445,21 +445,21 @@ Stress pass rate          N/A         22/24       24/24
 
 GPU Direct RDMA milestones (xio-tester):
 
-========================  ==============  ==============
-Metric                    Mar 31          Mar 31 (late)
-========================  ==============  ==============
-Git SHA (rocm-ernic)      99dab9f         0df277b
-Git SHA (rocm-xio)        23e7679         f87e39a
-GPU DV Write              PASS (loopback) PASS (2-node)
-GPU DV Ping-Pong          --              PASS (2-node)
-GPU DV LFSR verify        --              100/100
-GPU DV lat avg @ 4 KB     ~1000 us        ~1192 us (2N)
-GPU DV lat avg @ 64 B     --              ~1044 us (2N)
-GPU DV lat avg @ 16 KB    --              ~1057 us (2N)
-GPU DV test pass rate     16/18           5/5 sizes
-CPU Write BW @ 4 KB       790 MB/s        830 MB/s
-CPU Write BW @ 64 KB      --              900 MB/s
-========================  ==============  ==============
+========================  ===============  ===============
+Metric                    Mar 31           Mar 31 (late)
+========================  ===============  ===============
+SHA (rocm-ernic)          99dab9f          0df277b
+SHA (rocm-xio)            23e7679          f87e39a
+GPU DV Write              PASS (loopback)  PASS (2-node)
+GPU DV Ping-Pong          --               PASS (2-node)
+GPU DV LFSR verify        --               100/100
+GPU DV lat avg @ 4 KB     ~1000 us         ~1192 us (2N)
+GPU DV lat avg @ 64 B     --               ~1044 us (2N)
+GPU DV lat avg @ 16 KB    --               ~1057 us (2N)
+GPU DV pass rate          16/18            5/5 sizes
+CPU Write BW @ 4 KB       790 MB/s         830 MB/s
+CPU Write BW @ 64 KB      --               900 MB/s
+========================  ===============  ===============
 
 GPU 2-Node -- Ping-Pong Latency (xio-tester, 100 iters)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -449,34 +449,48 @@ static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
     return (TcpBackendPrivate *)backend_dev->backend_private;
 }
 
-static void tcp_update_stats(TcpBackendPrivate *priv, uint32_t bytes,
-                             enum ibv_wc_opcode opcode)
+static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint32_t bytes,
+                                 enum ibv_wc_opcode opcode)
 {
-    if (!priv || !priv->backend_dev || !priv->backend_dev->dev) {
+    if (!priv || !priv->backend_dev || !priv->backend_dev->dev)
         return;
-    }
     PVRDMADev *dev = (PVRDMADev *)priv->backend_dev->dev;
 
     switch (opcode) {
     case IBV_WC_SEND:
         dev->stats.total_bytes_sent += bytes;
+        break;
+    case IBV_WC_RECV:
+        dev->stats.total_bytes_received += bytes;
+        break;
+    case IBV_WC_RDMA_READ:
+        dev->stats.total_bytes_rdma_read += bytes;
+        break;
+    case IBV_WC_RDMA_WRITE:
+        dev->stats.total_bytes_rdma_write += bytes;
+        break;
+    default:
+        break;
+    }
+}
+
+static void tcp_update_stats(TcpBackendPrivate *priv, uint32_t bytes,
+                             enum ibv_wc_opcode opcode)
+{
+    tcp_update_dev_stats(priv, bytes, opcode);
+    if (!priv)
+        return;
+
+    switch (opcode) {
+    case IBV_WC_SEND:
+    case IBV_WC_RDMA_WRITE:
         priv->tcp_stats.bytes_wire_sent += bytes;
         priv->tcp_stats.msgs_sent++;
         break;
     case IBV_WC_RECV:
-        dev->stats.total_bytes_received += bytes;
-        priv->tcp_stats.bytes_wire_recv += bytes;
-        priv->tcp_stats.msgs_recv++;
-        break;
     case IBV_WC_RDMA_READ:
-        dev->stats.total_bytes_rdma_read += bytes;
         priv->tcp_stats.bytes_wire_recv += bytes;
         priv->tcp_stats.msgs_recv++;
-        break;
-    case IBV_WC_RDMA_WRITE:
-        dev->stats.total_bytes_rdma_write += bytes;
-        priv->tcp_stats.bytes_wire_sent += bytes;
-        priv->tcp_stats.msgs_sent++;
         break;
     default:
         break;
@@ -2948,19 +2962,6 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             if (!is_ipv4_mapped) {
                 tqp->remote_node_id = (uint32_t)dgid->raw[15];
             } else {
-                uint32_t peer_ip = ((uint32_t)dgid->raw[12] << 24) |
-                                   ((uint32_t)dgid->raw[13] << 16) |
-                                   ((uint32_t)dgid->raw[14] << 8) |
-                                   ((uint32_t)dgid->raw[15]);
-
-                /*
-                 * Search mesh topology for a node
-                 * whose IP matches.  For the manager,
-                 * iterate mesh_nodes.  For workers,
-                 * the only peer is the manager
-                 * (node 0) or other workers; default
-                 * to routing via manager.
-                 */
                 /*
                  * Derive target node from IPv4 last octet.
                  * VM IPs follow the pattern
@@ -3168,7 +3169,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             }
         }
 
-        tcp_update_stats(priv, total_len, wc_opcode);
+        tcp_update_dev_stats(priv, total_len, wc_opcode);
 
         TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
         if (send_wr) {
