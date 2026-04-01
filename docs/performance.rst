@@ -369,6 +369,61 @@ Performance Notes
   entirely, targeting sub-microsecond latency.
 
 
+Milestone 5 -- March 31 (GPU 2-Node RDMA)
+------------------------------------------
+
+First working GPU-initiated 2-node RDMA between two VMs.
+VM2's GPU writes data to VM1's buffer via the TCP mesh
+backend, with LFSR data-pattern verification on both
+sides.  This extends Milestone 4's loopback path to
+cross-node operation.
+
+Changes required to reach this milestone:
+
+- **Server (TCP backend)**: IPv4 GID resolution (derive
+  ``node_id`` from IP last octet), fix ``tcp_update_stats``
+  for local loopback path, remove stale
+  ``ernic-mmio-bridge.patch``
+- **rdma-core DV API**: expose ``qp_handle`` in
+  ``rocm_ernic_dv_qp_attr`` for correct GPU doorbell
+  encoding
+- **rocm-xio** (``f87e39a``): 2-node ``--server`` /
+  ``--client`` mode in rdma-ep, doorbell uses ``qp_handle``
+  instead of SQ tail, WQE header padded to 80 bytes to
+  match PVRDMA ABI, ``posix_memalign`` for data buffers
+
+GPU 2-Node -- RDMA Write + Ping-Pong (xio-tester)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+All 5 transfer sizes pass RDMA Write correctness and
+100-iteration LFSR-verified ping-pong:
+
+=======  ==========  ==========  =========
+Size     Lat (us)    LFSR        WRITE
+=======  ==========  ==========  =========
+64       1043.6      PASS        PASS
+256      1045.1      PASS        PASS
+1024     1052.9      PASS        PASS
+4096     1191.8      PASS        PASS
+16384    1056.8      PASS        PASS
+=======  ==========  ==========  =========
+
+Performance Notes (2-Node GPU)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- GPU 2-node ping-pong latency (~1050 us) is comparable
+  to GPU DV loopback (~1000 us).  The extra ~50 us is
+  one TCP round-trip for the cross-node RDMA write and
+  completion.
+- Latency remains flat across 64 B to 16 KB, confirming
+  overhead is in the pci-mmio-bridge poll interval and
+  vfio-user IPC, not data transfer size.
+- LFSR data verification passes on all sizes, confirming
+  end-to-end data integrity through the GPU kernel, WQE
+  posting, pci-mmio-bridge doorbell, TCP mesh transport,
+  remote MR write, and CQ completion delivery.
+
+
 Milestone Comparison
 --------------------
 
@@ -388,19 +443,54 @@ Bidir write @ 1 MB        N/A         DEADLOCK    2.35 GB/s
 Stress pass rate          N/A         22/24       24/24
 ========================  ==========  ==========  ==========
 
-GPU Direct RDMA milestone (loopback, xio-tester):
+GPU Direct RDMA milestones (xio-tester):
 
-========================  ==============
-Metric                    Mar 31
-========================  ==============
-Git SHA                   99dab9f
-GPU DV Write              PASS (loopback)
-GPU DV lat avg @ 4 KB     ~1000 us
-GPU DV lat min @ 4 KB     ~195 us
-GPU DV test pass rate     16/18
-CPU Write lat @ 4 KB      181 us
-Overhead vs CPU           5.6x (bridge)
-========================  ==============
+========================  ==============  ==============
+Metric                    Mar 31          Mar 31 (late)
+========================  ==============  ==============
+Git SHA (rocm-ernic)      99dab9f         0df277b
+Git SHA (rocm-xio)        23e7679         f87e39a
+GPU DV Write              PASS (loopback) PASS (2-node)
+GPU DV Ping-Pong          --              PASS (2-node)
+GPU DV LFSR verify        --              100/100
+GPU DV lat avg @ 4 KB     ~1000 us        ~1192 us (2N)
+GPU DV lat avg @ 64 B     --              ~1044 us (2N)
+GPU DV lat avg @ 16 KB    --              ~1057 us (2N)
+GPU DV test pass rate     16/18           5/5 sizes
+CPU Write BW @ 4 KB       790 MB/s        830 MB/s
+CPU Write BW @ 64 KB      --              900 MB/s
+========================  ==============  ==============
+
+GPU 2-Node -- Ping-Pong Latency (xio-tester, 100 iters)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+=======  ==========  ==========  =========
+Size     Lat (us)    LFSR        WRITE
+=======  ==========  ==========  =========
+64       1043.6      PASS        PASS
+256      1045.1      PASS        PASS
+1024     1052.9      PASS        PASS
+4096     1191.8      PASS        PASS
+16384    1056.8      PASS        PASS
+=======  ==========  ==========  =========
+
+Latency is flat across transfer sizes, confirming
+overhead is in the pci-mmio-bridge poll interval
+(~1 ms) and vfio-user DMA round-trip, not data
+copy.  2-node adds one extra TCP hop vs loopback,
+resulting in ~1050 us average vs ~1000 us for
+loopback.
+
+CPU 2-Node -- RDMA Write Bandwidth (ib_write_bw)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+=======  ==========
+Size     BW (Gbps)
+=======  ==========
+4096     6.64
+16384    3.95
+65536    7.20
+=======  ==========
 
 
 Known Limitations
@@ -411,7 +501,7 @@ Known Limitations
   Does not affect sizes 16 KB and above.
 
 - **iperf3 rate-limited:** the stress test default
-  ``ernic_iperf_bandwidth: 100B/s`` limits the measured
+  ``ernic_iperf_bandwidth: 100MiB/s`` limits the measured
   throughput.  Actual achievable TCP throughput over the
   emulated NIC is approximately 39 Mbit/s.
 
@@ -429,6 +519,7 @@ Known Limitations
   implemented.  System memory buffers work via
   ``hipHostRegister``.
 
-- **GPU DV loopback only:** 2-node GPU RDMA (VM1 GPU to VM2
-  GPU) requires xio-tester 2-node mode and cross-node MR
-  resolution in the TCP backend.
+- **~1 ms latency floor:** dominated by pci-mmio-bridge
+  poll interval (1 ms default).  Reducing
+  ``poll-interval-ns`` in the QEMU command line would
+  lower latency at the cost of CPU usage.
