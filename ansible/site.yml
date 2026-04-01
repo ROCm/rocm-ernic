@@ -50,10 +50,10 @@
 - name: "Phase 5: GPU RDMA tests"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
 
-- name: "Phase 6: Performance tests (CPU RDMA sweeps)"
+- name: "Phase 6: Performance tests"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
   when: ernic_run_perf | default(false) | bool
 
-- name: "Phase 7: Stress tests"
+- name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml
   when: ernic_run_stress | default(false) | bool

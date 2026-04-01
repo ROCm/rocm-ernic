@@ -233,6 +233,185 @@
         - not ernic_backing_stat.stat.exists
         - not ernic_skip_golden_image
 
+    # ── Provision golden image via temp VM ──────────
+    #
+    # Boot the golden backing image as a temporary VM,
+    # run the collection roles (rdma_setup, rocm_setup,
+    # user_setup) to bake packages into the image, then
+    # shut it down.  Subsequent per-instance overlays
+    # inherit these packages without re-downloading.
+    - name: Boot golden image as temp provisioning VM
+      ansible.builtin.command:
+        argv:
+          - "{{ ernic_qemu_path }}/qemu-system-x86_64"
+          - -machine
+          - q35,accel=kvm
+          - -cpu
+          - EPYC
+          - -smp
+          - "cpus={{ ernic_vm_vcpus }}"
+          - -m
+          - "{{ ernic_vm_mem }}"
+          - -display
+          - none
+          - -serial
+          - none
+          - -drive
+          - "if=virtio,format=qcow2,file={{ ernic_vm_backing }}"
+          - -netdev
+          - "user,id=net0,hostfwd=tcp::{{ ernic_golden_ssh_port }}-:22"
+          - -device
+          - virtio-net-pci,netdev=net0
+          - -daemonize
+          - -pidfile
+          - /tmp/ernic-golden-vm.pid
+      become: true
+      changed_when: true
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Wait for golden VM SSH
+      ansible.builtin.wait_for:
+        host: localhost
+        port: "{{ ernic_golden_ssh_port }}"
+        delay: 10
+        timeout: 300
+        state: started
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Wait for golden VM SSH auth ready
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - UserKnownHostsFile=/dev/null
+          - -o
+          - PasswordAuthentication=no
+          - -o
+          - ConnectTimeout=5
+          - -p
+          - "{{ ernic_golden_ssh_port | string }}"
+          - "{{ ernic_vm_ssh_user }}@localhost"
+          - echo
+          - ready
+      register: golden_ssh_check
+      until: golden_ssh_check.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+    - name: Add golden VM to inventory
+      ansible.builtin.add_host:
+        name: ernic_golden_vm
+        groups: ernic_golden
+        ansible_host: localhost
+        ansible_port: "{{ ernic_golden_ssh_port }}"
+        ansible_user: "{{ ernic_vm_ssh_user }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o PasswordAuthentication=no
+      when:
+        - not ernic_backing_stat.stat.exists
+        - not ernic_skip_golden_image
+
+# Provision golden VM with collection roles
+- name: Provision golden image with base packages
+  hosts: ernic_golden
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    - name: Run rdma_setup role
+      block:
+        - name: Install RDMA packages
+          ansible.builtin.include_role:
+            name: sbates130272.batesste.rdma_setup
+      rescue:
+        - name: Note rdma_setup non-fatal failure
+          ansible.builtin.debug:
+            msg: >-
+              rdma_setup role failed (likely rdma-detect
+              on emulated device). Packages were
+              installed; continuing.
+
+    - name: Install additional build and test packages
+      ansible.builtin.apt:
+        name:
+          - iperf3
+          - build-essential
+          - cmake
+          - ninja-build
+          - pkg-config
+          - curl
+          - dkms
+          - libcli11-dev
+        state: present
+        update_cache: true
+      register: golden_apt_result
+      retries: 3
+      delay: 10
+      until: golden_apt_result is success
+
+    - name: Install ROCm via rocm_setup role
+      ansible.builtin.include_role:
+        name: sbates130272.batesste.rocm_setup
+      vars:
+        rocm_setup_skip_reboot: true
+        rocm_setup_run_checks: false
+        rocm_setup_install_metrics_exporter: false
+      when: ernic_gpu_passthrough | bool
+
+    - name: Clean apt cache to shrink image
+      ansible.builtin.apt:
+        autoclean: true
+
+    - name: Shut down golden VM
+      ansible.builtin.command:
+        cmd: shutdown -h now
+      async: 0
+      poll: 0
+      ignore_errors: true
+
+# Resume on localhost for VM launch
+- name: Launch per-instance VMs
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    - name: Wait for golden VM to shut down
+      ansible.builtin.wait_for:
+        path: /tmp/ernic-golden-vm.pid
+        state: absent
+        timeout: 60
+      ignore_errors: true
+
+    - name: Ensure golden VM is stopped
+      ansible.builtin.shell:
+        cmd: |
+          if [ -f /tmp/ernic-golden-vm.pid ]; then
+            kill $(cat /tmp/ernic-golden-vm.pid) 2>/dev/null
+            sleep 3
+            kill -9 $(cat /tmp/ernic-golden-vm.pid) 2>/dev/null
+            rm -f /tmp/ernic-golden-vm.pid
+          fi
+      become: true
+      changed_when: true
+
     # ── Launch VMs via ernicctl ──────────────────────
     - name: Check for existing VM list
       ansible.builtin.command:

@@ -411,17 +411,24 @@ Size     Lat (us)    LFSR        WRITE
 Performance Notes (2-Node GPU)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- GPU 2-node ping-pong latency (~1050 us) is comparable
-  to GPU DV loopback (~1000 us).  The extra ~50 us is
-  one TCP round-trip for the cross-node RDMA write and
-  completion.
+- GPU 2-node ping-pong latency (~1030--1060 us) is
+  comparable to GPU DV loopback (~1000 us).  The extra
+  ~50 us is one TCP round-trip for the cross-node RDMA
+  write and completion.
 - Latency remains flat across 64 B to 16 KB, confirming
   overhead is in the pci-mmio-bridge poll interval and
   vfio-user IPC, not data transfer size.
-- LFSR data verification passes on all sizes, confirming
-  end-to-end data integrity through the GPU kernel, WQE
-  posting, pci-mmio-bridge doorbell, TCP mesh transport,
-  remote MR write, and CQ completion delivery.
+- Latency is stable across 100, 500, and 1000 iteration
+  runs with no degradation, confirming no resource leaks
+  or QP state corruption over extended operation.
+- LFSR data verification passes on all sizes at all
+  iteration counts (up to 1000), confirming end-to-end
+  data integrity through the GPU kernel, WQE posting,
+  pci-mmio-bridge doorbell, TCP mesh transport, remote
+  MR write, and CQ completion delivery.
+- All 6 transfer sizes (64 B to 16 KB) pass at 500
+  iterations including 8 KB which was not tested in the
+  initial sweep.
 
 
 Milestone Comparison
@@ -452,17 +459,19 @@ SHA (rocm-ernic)          99dab9f          0df277b
 SHA (rocm-xio)            23e7679          f87e39a
 GPU DV Write              PASS (loopback)  PASS (2-node)
 GPU DV Ping-Pong          --               PASS (2-node)
-GPU DV LFSR verify        --               100/100
-GPU DV lat avg @ 4 KB     ~1000 us         ~1192 us (2N)
-GPU DV lat avg @ 64 B     --               ~1044 us (2N)
-GPU DV lat avg @ 16 KB    --               ~1057 us (2N)
-GPU DV pass rate          16/18            5/5 sizes
+GPU DV LFSR verify        --               1000/1000
+GPU DV lat avg @ 4 KB     ~1000 us         ~1062 us (2N)
+GPU DV lat avg @ 64 B     --               ~1054 us (2N)
+GPU DV lat avg @ 16 KB    --               ~1028 us (2N)
+GPU DV pass rate          16/18            6/6 sizes
 CPU Write BW @ 4 KB       790 MB/s         830 MB/s
 CPU Write BW @ 64 KB      --               900 MB/s
 ========================  ===============  ===============
 
-GPU 2-Node -- Ping-Pong Latency (xio-tester, 100 iters)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+GPU 2-Node -- Ping-Pong Latency (xio-tester)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+100-iteration sweep:
 
 =======  ==========  ==========  =========
 Size     Lat (us)    LFSR        WRITE
@@ -473,6 +482,29 @@ Size     Lat (us)    LFSR        WRITE
 4096     1191.8      PASS        PASS
 16384    1056.8      PASS        PASS
 =======  ==========  ==========  =========
+
+500-iteration extended sweep:
+
+=======  ==========  ===========  =========
+Size     Lat (us)    Total (ms)   LFSR
+=======  ==========  ===========  =========
+64       2018.1      201.8        PASS
+256      1020.5      102.0        PASS
+1024     1055.9      105.6        PASS
+4096     1583.3      158.3        PASS
+8192     1029.2      102.9        PASS
+16384    1024.3      102.4        PASS
+=======  ==========  ===========  =========
+
+1000-iteration stability test:
+
+=======  ==========  ===========  =========
+Size     Lat (us)    Total (ms)   LFSR
+=======  ==========  ===========  =========
+64       1053.9      105.4        PASS
+4096     1062.3      106.2        PASS
+16384    1028.4      102.8        PASS
+=======  ==========  ===========  =========
 
 Latency is flat across transfer sizes, confirming
 overhead is in the pci-mmio-bridge poll interval

@@ -17,47 +17,12 @@
 
   tasks:
 
-    # ── RDMA packages via collection role ────────────
-    # The rdma_setup role installs perftest, rdma-core,
-    # ibverbs-utils, kernel headers, etc.  Its rdma-detect
-    # script may fail for emulated devices (no link state),
-    # so we allow the role to fail gracefully.
-    - name: Install RDMA packages via rdma_setup role
-      block:
-        - name: Run sbates130272.batesste.rdma_setup
-          ansible.builtin.include_role:
-            name: sbates130272.batesste.rdma_setup
-      rescue:
-        - name: Note rdma_setup non-fatal failure
-          ansible.builtin.debug:
-            msg: >-
-              rdma_setup role failed (likely rdma-detect
-              on emulated device). Packages were
-              installed; continuing.
-      when: not (ernic_skip_guest_ansible_roles | bool)
-
-    - name: Skipping guest Ansible roles
-      ansible.builtin.debug:
-        msg: "ernic_skip_guest_ansible_roles is set"
-      when: ernic_skip_guest_ansible_roles | bool
-
-    # ── Extra packages ───────────────────────────────
-    - name: Install additional build and test packages
-      ansible.builtin.apt:
-        name:
-          - iperf3
-          - build-essential
-          - cmake
-          - ninja-build
-          - pkg-config
-          - curl
-        state: present
-        update_cache: true
-      register: guest_apt_result
-      retries: 3
-      delay: 10
-      until: guest_apt_result is success
-      when: not (ernic_skip_guest_ansible_roles | bool)
+    # ── Base packages are baked into the golden image ─
+    # The rdma_setup, rocm_setup roles and build tools
+    # are installed during vm-create.yml golden image
+    # provisioning.  Only rocm-ernic-specific setup
+    # (driver, rdma-core provider, NIC config, rocm-xio)
+    # runs here.
 
     # ── Copy driver source ───────────────────────────
     - name: Copy driver source to guest
@@ -186,21 +151,19 @@
             cmd: ldconfig
           changed_when: true
 
-    # ── Build and load kernel driver ─────────────────
-    - name: Build the kernel driver
-      community.general.make:
-        chdir: /tmp/driver
-        params:
-          KDIR: "/lib/modules/{{ ansible_kernel }}/build"
+    # ── Build and install kernel driver via DKMS ──────
+    - name: Ensure dkms is installed
+      ansible.builtin.apt:
+        name: dkms
+        state: present
+        update_cache: false
 
-    - name: Verify driver modules were built
-      ansible.builtin.stat:
-        path: "/tmp/driver/{{ item }}"
-      register: driver_ko_stat
-      failed_when: not driver_ko_stat.stat.exists
-      loop:
-        - rocm_ernic_eth.ko
-        - rocm_ernic_rdma.ko
+    - name: Install rocm-ernic driver via DKMS
+      ansible.builtin.command:
+        cmd: bash /tmp/driver/setup-rocm-ernic-dkms.sh
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      changed_when: true
 
     # ── Install udev rules BEFORE loading driver ─────
     - name: Copy rocm-ernic udev rules
@@ -265,28 +228,29 @@
         name: ib_uverbs
         state: present
 
-    - name: Check if rocm_ernic_eth is already loaded
-      ansible.builtin.command:
-        argv:
-          - lsmod
-      register: lsmod_output
-      changed_when: false
+    - name: Enable rocm-ernic modules on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/rocm-ernic.conf
+        content: |
+          rocm_ernic_eth
+          rocm_ernic_rdma
+        mode: "0644"
 
     - name: Load rocm_ernic_eth module
-      ansible.builtin.command:
-        argv:
-          - insmod
-          - /tmp/driver/rocm_ernic_eth.ko
-      when: "'rocm_ernic_eth' not in lsmod_output.stdout"
-      changed_when: true
+      community.general.modprobe:
+        name: rocm_ernic_eth
+        state: present
 
     - name: Load rocm_ernic_rdma module
-      ansible.builtin.command:
-        argv:
-          - insmod
-          - /tmp/driver/rocm_ernic_rdma.ko
-      when: "'rocm_ernic_rdma' not in lsmod_output.stdout"
-      changed_when: true
+      community.general.modprobe:
+        name: rocm_ernic_rdma
+        state: present
+
+    - name: Verify rocm-ernic modules loaded
+      ansible.builtin.shell:
+        cmd: lsmod | grep rocm_ernic
+      register: lsmod_output
+      changed_when: false
 
     # ── Trigger udev for stable device names ─────────
     - name: Trigger udev to apply naming rules
@@ -438,16 +402,9 @@
       ansible.builtin.debug:
         var: nic_config.stdout_lines
 
-    # ── GPU passthrough: ROCm + rocm-xio ────────────
-    - name: Install ROCm via rocm_setup role
-      ansible.builtin.include_role:
-        name: sbates130272.batesste.rocm_setup
-      vars:
-        rocm_setup_skip_reboot: true
-        rocm_setup_run_checks: false
-        rocm_setup_install_metrics_exporter: false
-      when: ernic_gpu_passthrough | bool
-
+    # ── GPU passthrough: rocm-xio ─────────────────────
+    # ROCm and build tools are baked into the golden
+    # image.  Only rocm-xio build/install happens here.
     - name: Install extra packages for rocm-xio build
       ansible.builtin.apt:
         name:
