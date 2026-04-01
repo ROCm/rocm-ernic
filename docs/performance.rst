@@ -429,6 +429,10 @@ Performance Notes (2-Node GPU)
 - All 6 transfer sizes (64 B to 16 KB) pass at 500
   iterations including 8 KB which was not tested in the
   initial sweep.
+- 5000-iteration soak passes for 64 B and 4 KB.  The
+  16 KB soak timed out, suggesting a resource exhaustion
+  or completion delivery issue at high iteration counts
+  with larger transfers.  Under investigation.
 
 
 Milestone Comparison
@@ -504,6 +508,16 @@ Size     Lat (us)    Total (ms)   LFSR
 64       1053.9      105.4        PASS
 4096     1062.3      106.2        PASS
 16384    1028.4      102.8        PASS
+=======  ==========  ===========  =========
+
+5000-iteration soak test:
+
+=======  ==========  ===========  =========
+Size     Lat (us)    Total (ms)   LFSR
+=======  ==========  ===========  =========
+64       1145.9      114.6        PASS
+4096     2007.7      200.8        PASS
+16384    --          --           TIMEOUT
 =======  ==========  ===========  =========
 
 Latency is flat across transfer sizes, confirming
