@@ -26,8 +26,13 @@
 # Run GPU RDMA tests with real GPU passthrough:
 #   ansible-playbook site.yml -e ernic_gpu_passthrough=true
 #
-# Or run everything including the sweep:
-#   ansible-playbook site.yml -e ernic_run_perf=true
+# Or run everything including performance and stress:
+#   ansible-playbook site.yml -e ernic_run_perf=true \
+#       -e ernic_run_stress=true
+#
+# Run the full suite with GPU passthrough:
+#   ansible-playbook site.yml -e ernic_gpu_passthrough=true \
+#       -e ernic_run_perf=true
 
 ---
 - name: "Phase 1: Host setup"
@@ -44,3 +49,11 @@
 
 - name: "Phase 5: GPU RDMA tests"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
+
+- name: "Phase 6: Performance tests"
+  ansible.builtin.import_playbook: playbooks/performance-tests.yml
+  when: ernic_run_perf | default(false) | bool
+
+- name: "Phase 7: TCP/IP and RDMA Stress tests"
+  ansible.builtin.import_playbook: playbooks/stress-tests.yml
+  when: ernic_run_stress | default(false) | bool

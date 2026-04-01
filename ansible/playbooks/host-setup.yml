@@ -288,7 +288,10 @@
       ansible.builtin.git:
         repo: "{{ ernic_rocm_xio_repo }}"
         dest: /tmp/rocm-xio
-        version: "{{ ernic_rocm_xio_branch }}"
+        version: >-
+          {{ ernic_rocm_xio_commit
+             if ernic_rocm_xio_commit | length > 0
+             else ernic_rocm_xio_branch }}
         accept_hostkey: true
         force: true
       when: ernic_gpu_passthrough | bool

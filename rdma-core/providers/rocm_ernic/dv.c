@@ -285,6 +285,7 @@ int rocm_ernic_dv_get_qp_attr(struct ibv_qp *ibqp,
 
     memset(out, 0, sizeof(*out));
     out->qpn = qp->qpn;
+    out->qp_handle = qp->qp_handle;
     out->sq_depth = qp->sq_depth;
     out->rq_depth = qp->rq_depth;
     out->sq_wqe_size = qp->sq_wqe_size;

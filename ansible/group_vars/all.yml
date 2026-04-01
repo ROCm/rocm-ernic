@@ -29,11 +29,12 @@ ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
 ernic_vm_image_dir: /opt/qemu-images
-ernic_vm_name: ernic-test-vm
+ernic_vm_name: rocm-ernic-april1-vm
 ernic_vm_vcpus: 8
 ernic_vm_mem: 16384
 ernic_vm_ssh_user: ubuntu
 ernic_vm_ssh_base_port: 2250
+ernic_golden_ssh_port: 2249
 ernic_vm_release: noble
 ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
 
@@ -56,7 +57,7 @@ ernic_nic_subnet: "192.168.200"
 # Bandwidth uses human-readable format:
 #   100B/s, 1KiB/s, 10MiB/s, 1GiB/s
 # Stripped to iperf3 -b compatible form at runtime.
-ernic_iperf_bandwidth: "100B/s"
+ernic_iperf_bandwidth: "100MiB/s"
 ernic_iperf_duration: 10
 
 # ── Performance sweep defaults ───────────────────
@@ -89,12 +90,25 @@ ernic_stress_concurrent_duration: 60
 ernic_gpu_passthrough: false
 ernic_pci_mmio_bridge: true
 ernic_gpu_pci_devices:
-  1: "0000:0a:00.0"
+  1: "0000:4a:00.0"
   2: "0000:0f:00.0"
 
 # ── rocm-xio ───────────────────────────────────
 ernic_rocm_xio_repo: "git@github.com:ROCm/rocm-xio.git"
 ernic_rocm_xio_branch: "main"
+# Pin to a specific commit SHA for reproducibility.
+# Leave empty to use the branch tip.
+ernic_rocm_xio_commit: ""
+
+# ── GPU 2-node test defaults ─────────────────────
+ernic_gpu_2node_iters: 100
+ernic_gpu_2node_sizes:
+  - 64
+  - 256
+  - 1024
+  - 4096
+  - 16384
+ernic_gpu_2node_timeout: 120
 
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false
@@ -102,8 +116,9 @@ ernic_skip_golden_image: false
 ernic_skip_guest_ansible_roles: false
 ernic_skip_tests: false
 ernic_skip_gpu_tests: false
+ernic_skip_gpu_2node_tests: false
 ernic_force_vm_cleanup: false
 
 # ── rdma_setup role overrides ────────────────────
 rdma_setup_reboot: false
-rdma_setup_motd: false
+rdma_setup_motd: true

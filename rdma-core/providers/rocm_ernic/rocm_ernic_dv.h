@@ -87,9 +87,12 @@ struct rocm_ernic_dv_qp_init_attr {
 	uint64_t comp_mask;
 };
 
-/* UAR doorbell info returned after QP creation */
+/* UAR doorbell info returned after QP creation.
+ * Not ABI-stable: provider and consumers are always
+ * built from the same source tree. */
 struct rocm_ernic_dv_qp_attr {
 	uint32_t qpn;
+	uint32_t qp_handle; /* RM handle for UAR doorbell */
 	uint32_t sq_depth;
 	uint32_t rq_depth;
 	uint32_t sq_wqe_size;
