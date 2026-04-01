@@ -447,3 +447,17 @@ xio
 xxxx
 yml
 yuval
+bugfix
+bugfixing
+changelog
+GLib
+html
+MERCHANTABILITY
+NONINFRINGEMENT
+PRs
+rst
+SPDX
+sublicense
+syscall
+UNRELEASED
+www

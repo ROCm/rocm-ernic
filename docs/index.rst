@@ -53,10 +53,24 @@ Quick Start
 
    api
 
+Acknowledgments
+---------------
+
+The RDMA device logic in ``src/from-qemu/`` is adapted from the
+QEMU PVRDMA implementation. The original authors of that work:
+
+- Yuval Shaia <yuval.shaia@oracle.com> (Oracle)
+- Marcel Apfelbaum <marcel@redhat.com> (Red Hat)
+
 License
 -------
 
-The userspace server and build infrastructure are licensed under
-GPL-2.0-or-later. The kernel driver carries the original VMware
-dual-license (GPL-2.0 / BSD-2-Clause) for files derived from
-the upstream PVRDMA driver.
+The project is licensed under the
+`MIT license <https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md>`_.
+Some files carry different licenses per their SPDX headers:
+
+- Files under ``src/from-qemu/`` are derived from QEMU and are
+  licensed under ``GPL-2.0-or-later``.
+- Files under ``driver/`` are Linux kernel driver sources and
+  carry ``GPL-2.0 / BSD-2-Clause`` dual licenses as indicated
+  by their SPDX headers.
