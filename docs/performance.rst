@@ -411,28 +411,24 @@ Size     Lat (us)    LFSR        WRITE
 Performance Notes (2-Node GPU)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- GPU 2-node ping-pong latency (~1030--1060 us) is
-  comparable to GPU DV loopback (~1000 us).  The extra
-  ~50 us is one TCP round-trip for the cross-node RDMA
-  write and completion.
-- Latency remains flat across 64 B to 16 KB, confirming
-  overhead is in the pci-mmio-bridge poll interval and
-  vfio-user IPC, not data transfer size.
-- Latency is stable across 100, 500, and 1000 iteration
-  runs with no degradation, confirming no resource leaks
-  or QP state corruption over extended operation.
-- LFSR data verification passes on all sizes at all
-  iteration counts (up to 1000), confirming end-to-end
+- GPU 2-node ping-pong latency ranges from ~1000 to
+  ~2100 us per round-trip.  The variation is not
+  correlated with transfer size; it depends on
+  pci-mmio-bridge poll alignment and TCP backend
+  scheduling.  The dominant overhead is the bridge
+  poll interval (~1 ms), not data copy.
+- Latency is comparable to GPU DV loopback (~1000 us).
+  The extra hop through the TCP mesh adds ~50 us on
+  average.
+- Latency is stable across 100, 500, 1000, and 5000
+  iteration runs with no degradation, confirming no
+  resource leaks or QP state corruption over extended
+  operation.
+- LFSR data verification passes on all 6 sizes at all
+  iteration counts (up to 5000), confirming end-to-end
   data integrity through the GPU kernel, WQE posting,
   pci-mmio-bridge doorbell, TCP mesh transport, remote
   MR write, and CQ completion delivery.
-- All 6 transfer sizes (64 B to 16 KB) pass at 500
-  iterations including 8 KB which was not tested in the
-  initial sweep.
-- 5000-iteration soak passes for 64 B and 4 KB.  The
-  16 KB soak timed out, suggesting a resource exhaustion
-  or completion delivery issue at high iteration counts
-  with larger transfers.  Under investigation.
 
 
 Milestone Comparison
@@ -487,38 +483,44 @@ Size     Lat (us)    LFSR        WRITE
 16384    1056.8      PASS        PASS
 =======  ==========  ==========  =========
 
-500-iteration extended sweep:
+500-iteration extended sweep (RDMA Write iters=500,
+ping-pong iters=100):
 
-=======  ==========  ===========  =========
-Size     Lat (us)    Total (ms)   LFSR
-=======  ==========  ===========  =========
-64       2018.1      201.8        PASS
-256      1020.5      102.0        PASS
-1024     1055.9      105.6        PASS
-4096     1583.3      158.3        PASS
-8192     1029.2      102.9        PASS
-16384    1024.3      102.4        PASS
-=======  ==========  ===========  =========
+=======  ===========  =========
+Size     PP Lat (us)  LFSR
+=======  ===========  =========
+64       2018.1       PASS
+256      1020.5       PASS
+1024     1055.9       PASS
+4096     1583.3       PASS
+8192     1029.2       PASS
+16384    1024.3       PASS
+=======  ===========  =========
 
-1000-iteration stability test:
+1000-iteration stability test (RDMA Write iters=1000,
+ping-pong iters=100):
 
-=======  ==========  ===========  =========
-Size     Lat (us)    Total (ms)   LFSR
-=======  ==========  ===========  =========
-64       1053.9      105.4        PASS
-4096     1062.3      106.2        PASS
-16384    1028.4      102.8        PASS
-=======  ==========  ===========  =========
+=======  ===========  =========
+Size     PP Lat (us)  LFSR
+=======  ===========  =========
+64       1053.9       PASS
+4096     1062.3       PASS
+16384    1028.4       PASS
+=======  ===========  =========
 
-5000-iteration soak test:
+5000-iteration soak test (RDMA Write iters=5000,
+ping-pong iters=100):
 
-=======  ==========  ===========  =========
-Size     Lat (us)    Total (ms)   LFSR
-=======  ==========  ===========  =========
-64       1145.9      114.6        PASS
-4096     2007.7      200.8        PASS
-16384    --          --           TIMEOUT
-=======  ==========  ===========  =========
+=======  ===========  =========
+Size     PP Lat (us)  LFSR
+=======  ===========  =========
+64       2023.8       PASS
+256      1940.1       PASS
+1024     2059.2       PASS
+4096     1021.1       PASS
+8192     2017.6       PASS
+16384    1844.3       PASS
+=======  ===========  =========
 
 Latency is flat across transfer sizes, confirming
 overhead is in the pci-mmio-bridge poll interval
