@@ -547,16 +547,41 @@
         - ernic_gpu_passthrough | bool
         - ernic_pci_mmio_bridge | bool
 
-    - name: Load rocm-xio kernel module
-      ansible.builtin.command:
-        argv:
-          - insmod
-          - /opt/rocm-xio/kernel/rocm-xio/rocm-xio.ko
+    - name: Install rocm-xio module for modprobe
+      ansible.builtin.shell:
+        cmd: >-
+          mkdir -p /lib/modules/{{ ansible_kernel }}/extra
+          && cp -f /opt/rocm-xio/kernel/rocm-xio/rocm-xio.ko
+          /lib/modules/{{ ansible_kernel }}/extra/
+          && depmod -a
       when:
         - ernic_gpu_passthrough | bool
         - ernic_pci_mmio_bridge | bool
-        - "'rocm_xio' not in lsmod_output.stdout"
-      changed_when: true
+
+    - name: Enable rocm-xio module on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/rocm-xio.conf
+        content: "rocm-xio\n"
+        mode: "0644"
+      when:
+        - ernic_gpu_passthrough | bool
+        - ernic_pci_mmio_bridge | bool
+
+    - name: Load rocm-xio kernel module
+      community.general.modprobe:
+        name: rocm_xio
+        state: present
+      when:
+        - ernic_gpu_passthrough | bool
+        - ernic_pci_mmio_bridge | bool
+
+    - name: Verify rocm-xio module loaded
+      ansible.builtin.shell:
+        cmd: lsmod | grep -q rocm_xio
+      changed_when: false
+      when:
+        - ernic_gpu_passthrough | bool
+        - ernic_pci_mmio_bridge | bool
 
     - name: Verify /dev/rocm-xio exists
       ansible.builtin.stat:
