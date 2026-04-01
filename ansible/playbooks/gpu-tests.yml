@@ -193,6 +193,86 @@
         var: xio_vm2_result.stdout_lines
 
     # ─────────────────────────────────────────────────
+    # xio-tester: 2-node (server on VM1, client on VM2)
+    # ─────────────────────────────────────────────────
+    - name: Skip 2-node GPU tests if disabled
+      ansible.builtin.set_fact:
+        run_2node: >-
+          {{ not (ernic_skip_gpu_2node_tests | bool) }}
+
+    - name: "GPU 2-Node: size sweep"
+      ansible.builtin.shell:
+        cmd: |
+          SIZE="{{ item }}"
+          ITERS="{{ ernic_gpu_2node_iters }}"
+          TOUT="{{ ernic_gpu_2node_timeout }}"
+          XIO="{{ xio_tester }}"
+          DEV="{{ rdma_dev }}"
+          IP="{{ vm1_ip }}"
+          UNIT="xio-2node-server-${SIZE}"
+
+          # Start server on VM1
+          {{ vm1_ssh }} "
+            sudo pkill -9 xio-tester 2>/dev/null; true;
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c '$XIO --pci-mmio-bridge \
+              rdma-ep --provider ernic --device $DEV \
+              --server -n $ITERS --transfer-size $SIZE \
+              -v >/tmp/xio-2node-server-${SIZE}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 5
+
+          # Run client on VM2
+          RAW=$({{ vm2_ssh }} "
+            sudo timeout $TOUT $XIO --pci-mmio-bridge \
+              rdma-ep --provider ernic --device $DEV \
+              --client --server-host $IP \
+              -n $ITERS --transfer-size $SIZE \
+              -v 2>&1
+          ")
+          CLIENT_RC=$?
+
+          # Collect server result
+          SERVER=$({{ vm1_ssh }} "
+            grep -E 'WRITE PASSED|WRITE FAILED|Ping-pong' \
+              /tmp/xio-2node-server-${SIZE}.log 2>/dev/null
+          ")
+
+          PP=$(echo "$RAW" | grep "round-trips" \
+               | sed 's/.*= //' | sed 's/ us.*//')
+          LFSR=$(echo "$RAW" | grep -c "LFSR PASSED")
+          STATUS=$(echo "$RAW" | grep -c "completed successfully")
+
+          echo "SIZE=${SIZE} LAT=${PP:-TIMEOUT}us/iter"
+          echo "LFSR=${LFSR} STATUS=${STATUS} RC=${CLIENT_RC}"
+          echo "SERVER: ${SERVER}"
+
+          if [ "$CLIENT_RC" -ne 0 ] || [ "$STATUS" -eq 0 ]; then
+            exit 1
+          fi
+      register: gpu_2node_result
+      changed_when: false
+      failed_when: false
+      loop: "{{ ernic_gpu_2node_sizes }}"
+      loop_control:
+        label: "{{ item }} B"
+      when: run_2node | bool
+
+    - name: Display 2-node results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | default(['(skipped)']) }}"
+      loop: "{{ gpu_2node_result.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item | default('?') }} B"
+      when:
+        - run_2node | bool
+        - item.stdout is defined
+
+    # ─────────────────────────────────────────────────
     # Summary
     # ─────────────────────────────────────────────────
     - name: Set GPU test result facts
@@ -209,15 +289,23 @@
           {{ xio_vm2_result.rc == 0
              and xio_vm2_result.stdout
                  | length > 0 }}
+        xio_2node_pass: >-
+          {{ not (run_2node | bool)
+             or (gpu_2node_result.results | default([])
+                 | selectattr('rc', 'defined')
+                 | selectattr('rc', 'equalto', 0)
+                 | list | length
+                 == ernic_gpu_2node_sizes | length) }}
 
     - name: GPU RDMA test summary
       ansible.builtin.debug:
         msg:
           - "=== GPU RDMA Test Results ==="
-          - "GPU VM1:       {{ 'PASS' if gpu_vm1_ok else 'FAIL' }}"
-          - "GPU VM2:       {{ 'PASS' if gpu_vm2_ok else 'FAIL' }}"
-          - "xio-tester VM1: {{ 'PASS' if xio_vm1_pass else 'FAIL' }}"
-          - "xio-tester VM2: {{ 'PASS' if xio_vm2_pass else 'FAIL' }}"
+          - "GPU VM1:        {{ 'PASS' if gpu_vm1_ok else 'FAIL' }}"
+          - "GPU VM2:        {{ 'PASS' if gpu_vm2_ok else 'FAIL' }}"
+          - "Loopback VM1:   {{ 'PASS' if xio_vm1_pass else 'FAIL' }}"
+          - "Loopback VM2:   {{ 'PASS' if xio_vm2_pass else 'FAIL' }}"
+          - "2-Node ({{ ernic_gpu_2node_sizes | length }} sizes): {{ 'PASS' if xio_2node_pass else 'FAIL' }}"
 
     - name: Assert GPU RDMA tests passed
       ansible.builtin.assert:
@@ -226,6 +314,7 @@
           - gpu_check_vm2.rc == 0
           - xio_vm1_result.rc == 0
           - xio_vm2_result.rc == 0
+          - xio_2node_pass | bool
         fail_msg: >-
           GPU RDMA tests failed. Check the output
           above for details.

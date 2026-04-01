@@ -99,12 +99,23 @@ ernic_rocm_xio_branch: "dev/stebates/rdma-2-node"
 # Leave empty to use the branch tip.
 ernic_rocm_xio_commit: ""
 
+# ── GPU 2-node test defaults ─────────────────────
+ernic_gpu_2node_iters: 100
+ernic_gpu_2node_sizes:
+  - 64
+  - 256
+  - 1024
+  - 4096
+  - 16384
+ernic_gpu_2node_timeout: 120
+
 # ── Feature gates ────────────────────────────────
 ernic_skip_build: false
 ernic_skip_golden_image: false
 ernic_skip_guest_ansible_roles: false
 ernic_skip_tests: false
 ernic_skip_gpu_tests: false
+ernic_skip_gpu_2node_tests: false
 ernic_force_vm_cleanup: false
 
 # ── rdma_setup role overrides ────────────────────
