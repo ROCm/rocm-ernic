@@ -52,12 +52,12 @@
 - name: "Phase 5: GPU RDMA tests"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
 
-- name: "Phase 5b: GPU perftest (rocm-xio)"
-  ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
-
 - name: "Phase 6: Performance tests"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
   when: ernic_run_perf | default(false) | bool
+
+- name: "Phase 5b: GPU perftest (rocm-xio)"
+  ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
 
 - name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml

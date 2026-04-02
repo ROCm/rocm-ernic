@@ -602,14 +602,22 @@
       register: perftest_xio_check
       when: ernic_gpu_passthrough | bool
 
-    - name: Clone perftest fork
-      ansible.builtin.git:
-        repo: "{{ ernic_perftest_repo }}"
-        dest: /tmp/perftest-xio
-        version: >-
-          {{ ernic_perftest_commit
-             | default(ernic_perftest_branch, true) }}
-        force: true
+    - name: Copy perftest-xio tarball to guest
+      ansible.builtin.copy:
+        src: /tmp/perftest-xio.tar.gz
+        dest: /tmp/perftest-xio.tar.gz
+        mode: "0644"
+      when:
+        - ernic_gpu_passthrough | bool
+        - not perftest_xio_check.stat.exists
+          | default(false)
+
+    - name: Extract perftest-xio source
+      ansible.builtin.shell:
+        cmd: >-
+          mkdir -p /tmp/perftest-xio &&
+          cd /tmp/perftest-xio &&
+          tar xzf /tmp/perftest-xio.tar.gz
       when:
         - ernic_gpu_passthrough | bool
         - not perftest_xio_check.stat.exists
@@ -632,6 +640,7 @@
           ./configure
           --prefix={{ ernic_perftest_prefix }}
           --enable-rocm-xio
+          --with-rocm-xio=/opt/rocm-xio
           HIPCC=/opt/rocm/bin/hipcc
           CFLAGS="-I/opt/rocm/include"
           LDFLAGS="-L/opt/rocm/lib -Wl,-rpath,/opt/rocm/lib"
@@ -643,11 +652,12 @@
           | default(false)
 
     - name: Build perftest-xio
-      ansible.builtin.command:
-        argv:
-          - make
-          - "-j{{ ansible_processor_vcpus
-                  | default(2) }}"
+      ansible.builtin.shell:
+        cmd: >-
+          export PATH=/opt/rocm/bin:$PATH;
+          make -j{{ ansible_processor_vcpus | default(2) }}
+          ib_write_bw ib_write_lat ib_read_bw ib_read_lat
+          ib_send_bw ib_send_lat ib_atomic_bw ib_atomic_lat
         chdir: /tmp/perftest-xio
       changed_when: true
       when:
@@ -655,9 +665,14 @@
         - not perftest_xio_check.stat.exists
           | default(false)
 
-    - name: Install perftest-xio
-      ansible.builtin.command:
-        cmd: make install
+    - name: Install perftest-xio binaries
+      ansible.builtin.shell:
+        cmd: >-
+          mkdir -p {{ ernic_perftest_prefix }}/bin &&
+          cp -f ib_write_bw ib_write_lat ib_read_bw
+          ib_read_lat ib_send_bw ib_send_lat
+          ib_atomic_bw ib_atomic_lat
+          {{ ernic_perftest_prefix }}/bin/
         chdir: /tmp/perftest-xio
       changed_when: true
       when:

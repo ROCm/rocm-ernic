@@ -131,6 +131,18 @@ void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
     offset = idx * ring->elem_sz;
     page_idx = offset / PAGE_SIZE;
 
+    if (page_idx >= ring->npages) {
+        rdma_error_report("ring %s: page_idx %u >= npages %u",
+                          ring->name, page_idx, ring->npages);
+        return NULL;
+    }
+
+    if (!ring->pages[page_idx]) {
+        rdma_error_report("ring %s: pages[%u] is NULL",
+                          ring->name, page_idx);
+        return NULL;
+    }
+
     rdma_info_report(
         ">>> pvrdma_ring_next_elem_read: idx=%u, offset=%u, page_idx=%u", idx,
         offset, page_idx);
@@ -169,7 +181,21 @@ void *pvrdma_ring_next_elem_write(PvrdmaRing *ring)
 
     idx = tail & (ring->max_elems - 1);
     offset = idx * ring->elem_sz;
-    return ring->pages[offset / PAGE_SIZE] + (offset % PAGE_SIZE);
+    unsigned int page_idx = offset / PAGE_SIZE;
+
+    if (page_idx >= ring->npages) {
+        rdma_error_report("ring %s: write page_idx %u >= npages %u",
+                          ring->name, page_idx, ring->npages);
+        return NULL;
+    }
+
+    if (!ring->pages[page_idx]) {
+        rdma_error_report("ring %s: write pages[%u] is NULL",
+                          ring->name, page_idx);
+        return NULL;
+    }
+
+    return ring->pages[page_idx] + (offset % PAGE_SIZE);
 }
 
 void pvrdma_ring_write_inc(PvrdmaRing *ring)
