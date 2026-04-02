@@ -602,26 +602,41 @@
       register: perftest_xio_check
       when: ernic_gpu_passthrough | bool
 
-    - name: Copy perftest-xio tarball to guest
-      ansible.builtin.copy:
-        src: /tmp/perftest-xio.tar.gz
-        dest: /tmp/perftest-xio.tar.gz
-        mode: "0644"
+    - name: Clone perftest fork from GitHub
+      ansible.builtin.git:
+        repo: "{{ ernic_perftest_repo }}"
+        dest: /tmp/perftest-xio
+        version: >-
+          {{ ernic_perftest_commit
+             | default(ernic_perftest_branch, true) }}
+        force: true
+      register: perftest_clone
+      failed_when: false
       when:
         - ernic_gpu_passthrough | bool
         - not perftest_xio_check.stat.exists
           | default(false)
 
-    - name: Extract perftest-xio source
-      ansible.builtin.shell:
-        cmd: >-
-          mkdir -p /tmp/perftest-xio &&
-          cd /tmp/perftest-xio &&
-          tar xzf /tmp/perftest-xio.tar.gz
+    - name: Fall back to local tarball if clone failed
       when:
         - ernic_gpu_passthrough | bool
         - not perftest_xio_check.stat.exists
           | default(false)
+        - perftest_clone is failed
+          or perftest_clone is skipped
+      block:
+        - name: Copy perftest-xio tarball to guest
+          ansible.builtin.copy:
+            src: /tmp/perftest-xio.tar.gz
+            dest: /tmp/perftest-xio.tar.gz
+            mode: "0644"
+
+        - name: Extract perftest-xio source
+          ansible.builtin.shell:
+            cmd: >-
+              mkdir -p /tmp/perftest-xio &&
+              cd /tmp/perftest-xio &&
+              tar xzf /tmp/perftest-xio.tar.gz
 
     - name: Generate perftest configure script
       ansible.builtin.command:
