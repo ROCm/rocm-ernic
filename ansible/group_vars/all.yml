@@ -100,6 +100,24 @@ ernic_rocm_xio_branch: "main"
 # Leave empty to use the branch tip.
 ernic_rocm_xio_commit: ""
 
+# ── Perftest fork (GPU-initiated via rocm-xio) ──
+# Fork of linux-rdma/perftest with --use_rocm_xio
+# support for GPU-initiated WQE posting.
+ernic_perftest_repo: "git@github.com:ROCm/perftest.git"
+ernic_perftest_branch: "rocm-xio"
+ernic_perftest_commit: ""
+ernic_perftest_prefix: "/opt/perftest-xio"
+
+# ── GPU perftest sweep defaults ──────────────────
+ernic_gpu_perftest_bw_iters: 100
+ernic_gpu_perftest_lat_iters: 50
+ernic_gpu_perftest_sizes:
+  - 4096
+  - 16384
+  - 65536
+ernic_gpu_perftest_timeout: 180
+ernic_skip_gpu_perftest: false
+
 # ── GPU 2-node test defaults ─────────────────────
 ernic_gpu_2node_iters: 100
 ernic_gpu_2node_sizes:

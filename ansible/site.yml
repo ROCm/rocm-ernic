@@ -4,13 +4,15 @@
 #
 # Master playbook for rocm-ernic integration testing.
 #
-# Imports all four plays in order:
-#   1. Host setup   -- build, install, configure service
-#   2. VM creation  -- golden image, launch VMs
-#   3. Guest setup  -- driver, rdma-core, NIC config
-#   4. Sanity tests -- iperf3, perftest
-#   5. GPU tests    -- xio-tester 2-node GPU RDMA
+# Imports all plays in order:
+#   1. Host setup    -- build, install, configure service
+#   2. VM creation   -- golden image, launch VMs
+#   3. Guest setup   -- driver, rdma-core, NIC config
+#   4. Sanity tests  -- iperf3, perftest
+#   5. GPU tests     -- xio-tester 2-node GPU RDMA
+#   5b. GPU perftest -- rocm-xio GPU-initiated perftest
 #   6. Performance tests -- full BW/lat sweeps (optional)
+#   7. Stress tests  -- multi-QP, soak, churn (optional)
 #
 # Usage:
 #   cd ansible
@@ -49,6 +51,9 @@
 
 - name: "Phase 5: GPU RDMA tests"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
+
+- name: "Phase 5b: GPU perftest (rocm-xio)"
+  ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
 
 - name: "Phase 6: Performance tests"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml

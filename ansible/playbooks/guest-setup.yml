@@ -584,6 +584,110 @@
         msg: "xio-tester: {{ xio_tester_path.stdout }}"
       when: ernic_gpu_passthrough | bool
 
+    # ── GPU perftest fork (rocm-xio) ───────────────
+    - name: Install perftest build dependencies
+      ansible.builtin.apt:
+        name:
+          - autoconf
+          - automake
+          - libtool
+          - libibverbs-dev
+        state: present
+        update_cache: false
+      when: ernic_gpu_passthrough | bool
+
+    - name: Check if perftest-xio already built
+      ansible.builtin.stat:
+        path: "{{ ernic_perftest_prefix }}/bin/ib_write_bw"
+      register: perftest_xio_check
+      when: ernic_gpu_passthrough | bool
+
+    - name: Clone perftest fork
+      ansible.builtin.git:
+        repo: "{{ ernic_perftest_repo }}"
+        dest: /tmp/perftest-xio
+        version: >-
+          {{ ernic_perftest_commit
+             | default(ernic_perftest_branch, true) }}
+        force: true
+      when:
+        - ernic_gpu_passthrough | bool
+        - not perftest_xio_check.stat.exists
+          | default(false)
+
+    - name: Generate perftest configure script
+      ansible.builtin.command:
+        cmd: ./autogen.sh
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when:
+        - ernic_gpu_passthrough | bool
+        - not perftest_xio_check.stat.exists
+          | default(false)
+
+    - name: Configure perftest with rocm-xio
+      ansible.builtin.shell:
+        cmd: >-
+          export PATH=/opt/rocm/bin:$PATH;
+          ./configure
+          --prefix={{ ernic_perftest_prefix }}
+          --enable-rocm-xio
+          HIPCC=/opt/rocm/bin/hipcc
+          CFLAGS="-I/opt/rocm/include"
+          LDFLAGS="-L/opt/rocm/lib -Wl,-rpath,/opt/rocm/lib"
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when:
+        - ernic_gpu_passthrough | bool
+        - not perftest_xio_check.stat.exists
+          | default(false)
+
+    - name: Build perftest-xio
+      ansible.builtin.command:
+        argv:
+          - make
+          - "-j{{ ansible_processor_vcpus
+                  | default(2) }}"
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when:
+        - ernic_gpu_passthrough | bool
+        - not perftest_xio_check.stat.exists
+          | default(false)
+
+    - name: Install perftest-xio
+      ansible.builtin.command:
+        cmd: make install
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when:
+        - ernic_gpu_passthrough | bool
+        - not perftest_xio_check.stat.exists
+          | default(false)
+
+    - name: Verify perftest-xio binaries
+      ansible.builtin.stat:
+        path: "{{ ernic_perftest_prefix }}/bin/ib_write_bw"
+      register: perftest_xio_verify
+      when: ernic_gpu_passthrough | bool
+
+    - name: Assert perftest-xio installed
+      ansible.builtin.assert:
+        that:
+          - perftest_xio_verify.stat.exists
+        fail_msg: >-
+          perftest-xio binary not found at
+          {{ ernic_perftest_prefix }}/bin/ib_write_bw
+          after build. Check configure/make output.
+      when: ernic_gpu_passthrough | bool
+
+    - name: Display perftest-xio location
+      ansible.builtin.debug:
+        msg: >-
+          perftest-xio installed at
+          {{ ernic_perftest_prefix }}
+      when: ernic_gpu_passthrough | bool
+
   handlers:
     - name: restart logind
       ansible.builtin.systemd:
