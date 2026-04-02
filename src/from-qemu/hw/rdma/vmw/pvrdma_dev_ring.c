@@ -132,14 +132,13 @@ void *pvrdma_ring_next_elem_read(PvrdmaRing *ring)
     page_idx = offset / PAGE_SIZE;
 
     if (page_idx >= ring->npages) {
-        rdma_error_report("ring %s: page_idx %u >= npages %u",
-                          ring->name, page_idx, ring->npages);
+        rdma_error_report("ring %s: page_idx %u >= npages %u", ring->name,
+                          page_idx, ring->npages);
         return NULL;
     }
 
     if (!ring->pages[page_idx]) {
-        rdma_error_report("ring %s: pages[%u] is NULL",
-                          ring->name, page_idx);
+        rdma_error_report("ring %s: pages[%u] is NULL", ring->name, page_idx);
         return NULL;
     }
 
@@ -190,8 +189,8 @@ void *pvrdma_ring_next_elem_write(PvrdmaRing *ring)
     }
 
     if (!ring->pages[page_idx]) {
-        rdma_error_report("ring %s: write pages[%u] is NULL",
-                          ring->name, page_idx);
+        rdma_error_report("ring %s: write pages[%u] is NULL", ring->name,
+                          page_idx);
         return NULL;
     }
 

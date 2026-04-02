@@ -128,6 +128,15 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
         tbl_idx++;
     }
 
+    rdma_info_report("pvrdma_map_to_pdir: verifying %u pages in host_virt=%p",
+                     nchunks, host_virt);
+    for (int v = 0; v < (int)nchunks; v++) {
+        volatile uint8_t *probe = (volatile uint8_t *)host_virt + PAGE_SIZE * v;
+        uint8_t byte = *probe;
+        rdma_info_report("pvrdma_map_to_pdir: page[%d] at %p readable "
+                         "(first_byte=0x%02x)", v, probe, byte);
+    }
+
     goto out_unmap_tbl;
 
 out_unmap_host_virt:
@@ -140,6 +149,8 @@ out_unmap_tbl:
 out_unmap_dir:
     rdma_pci_dma_unmap(pdev, dir, PAGE_SIZE);
 
+    rdma_info_report("pvrdma_map_to_pdir: EXIT host_virt=%p nchunks=%u "
+                     "length=%zu", host_virt, nchunks, length);
     return host_virt;
 }
 
