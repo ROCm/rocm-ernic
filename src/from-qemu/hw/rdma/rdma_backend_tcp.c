@@ -1720,13 +1720,12 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 }
 
                 void *host_dst = (char *)mr->virt + (raddr - mr->start);
-                rdma_info_report("TCP: RDMA_WRITE pre-memcpy: host_dst=%p "
-                                 "mr->virt=%p offset=%lu dlen=%u "
-                                 "mr->start=0x%lx mr->length=%lu",
-                                 host_dst, mr->virt,
-                                 (unsigned long)(raddr - mr->start),
-                                 dlen, (unsigned long)mr->start,
-                                 (unsigned long)mr->length);
+                rdma_info_report(
+                    "TCP: RDMA_WRITE pre-memcpy: host_dst=%p "
+                    "mr->virt=%p offset=%lu dlen=%u "
+                    "mr->start=0x%lx mr->length=%lu",
+                    host_dst, mr->virt, (unsigned long)(raddr - mr->start),
+                    dlen, (unsigned long)mr->start, (unsigned long)mr->length);
                 memcpy(host_dst, data, dlen);
 
                 if (dlen >= 8) {

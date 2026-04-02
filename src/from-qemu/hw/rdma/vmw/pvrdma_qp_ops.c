@@ -99,23 +99,23 @@ static int pvrdma_post_cqe(PVRDMADev *dev, uint32_t cq_handle,
     PVRDMAQPStats *qp_stats;
 
     if (unlikely(!cq)) {
-        rdma_error_report("pvrdma_post_cqe: CQ handle %u not found",
-                          cq_handle);
+        rdma_error_report("pvrdma_post_cqe: CQ handle %u not found", cq_handle);
         return -EINVAL;
     }
 
     ring = (PvrdmaRing *)cq->opaque;
 
-    uint32_t pre_prod = __atomic_load_n(&ring->ring_state->prod_tail,
-                                        __ATOMIC_ACQUIRE);
-    uint32_t pre_cons = __atomic_load_n(&ring->ring_state->cons_head,
-                                        __ATOMIC_ACQUIRE);
+    uint32_t pre_prod =
+        __atomic_load_n(&ring->ring_state->prod_tail, __ATOMIC_ACQUIRE);
+    uint32_t pre_cons =
+        __atomic_load_n(&ring->ring_state->cons_head, __ATOMIC_ACQUIRE);
 
     /* Step #1: Put CQE on CQ ring */
     cqe1 = pvrdma_ring_next_elem_write(ring);
     if (unlikely(!cqe1)) {
         rdma_error_report("pvrdma_post_cqe: CQ ring full cq=%u "
-                          "prod=%u cons=%u", cq_handle, pre_prod, pre_cons);
+                          "prod=%u cons=%u",
+                          cq_handle, pre_prod, pre_cons);
         return -EINVAL;
     }
 
@@ -131,12 +131,12 @@ static int pvrdma_post_cqe(PVRDMADev *dev, uint32_t cq_handle,
 
     pvrdma_ring_write_inc(ring);
 
-    uint32_t post_prod = __atomic_load_n(&ring->ring_state->prod_tail,
-                                         __ATOMIC_ACQUIRE);
+    uint32_t post_prod =
+        __atomic_load_n(&ring->ring_state->prod_tail, __ATOMIC_ACQUIRE);
     rdma_info_report("pvrdma_post_cqe: cq=%u qp=%u opcode=%d status=%d "
                      "ring prod %u->%u cons=%u",
-                     cq_handle, qp_handle, cqe->opcode, wc->status,
-                     pre_prod, post_prod, pre_cons);
+                     cq_handle, qp_handle, cqe->opcode, wc->status, pre_prod,
+                     post_prod, pre_cons);
 
     /* Track CQE posting */
     qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
@@ -252,18 +252,16 @@ void pvrdma_drain_deferred_completions(void)
 
         rdma_info_report("DRAIN: posting CQE cq=%u qp=%u opcode=%d "
                          "status=%d byte_len=%u wr_id=%lu",
-                         dc->cq_handle,
-                         dc->cqe.qp ? dc->cqe.qp : dc->wc.qp_num,
-                         dc->cqe.opcode, dc->wc.status,
-                         dc->wc.byte_len,
+                         dc->cq_handle, dc->cqe.qp ? dc->cqe.qp : dc->wc.qp_num,
+                         dc->cqe.opcode, dc->wc.status, dc->wc.byte_len,
                          (unsigned long)dc->cqe.wr_id);
 
-        int post_rc = pvrdma_post_cqe(dc->dev, dc->cq_handle,
-                                      &dc->cqe, &dc->wc);
+        int post_rc =
+            pvrdma_post_cqe(dc->dev, dc->cq_handle, &dc->cqe, &dc->wc);
         if (post_rc) {
             rdma_error_report("DRAIN: pvrdma_post_cqe FAILED rc=%d "
-                              "cq=%u qp=%u", post_rc,
-                              dc->cq_handle,
+                              "cq=%u qp=%u",
+                              post_rc, dc->cq_handle,
                               dc->cqe.qp ? dc->cqe.qp : dc->wc.qp_num);
         } else {
             rdma_info_report("DRAIN: CQE posted successfully to cq=%u",

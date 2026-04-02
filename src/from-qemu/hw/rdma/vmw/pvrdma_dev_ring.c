@@ -183,8 +183,8 @@ void *pvrdma_ring_next_elem_write(PvrdmaRing *ring)
     unsigned int page_idx = offset / PAGE_SIZE;
 
     if (page_idx >= ring->npages) {
-        rdma_error_report("ring %s: write page_idx %u >= npages %u",
-                          ring->name, page_idx, ring->npages);
+        rdma_error_report("ring %s: write page_idx %u >= npages %u", ring->name,
+                          page_idx, ring->npages);
         return NULL;
     }
 

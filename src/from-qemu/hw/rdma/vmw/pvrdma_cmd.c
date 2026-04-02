@@ -134,7 +134,8 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
         volatile uint8_t *probe = (volatile uint8_t *)host_virt + PAGE_SIZE * v;
         uint8_t byte = *probe;
         rdma_info_report("pvrdma_map_to_pdir: page[%d] at %p readable "
-                         "(first_byte=0x%02x)", v, probe, byte);
+                         "(first_byte=0x%02x)",
+                         v, probe, byte);
     }
 
     goto out_unmap_tbl;
@@ -150,7 +151,8 @@ out_unmap_dir:
     rdma_pci_dma_unmap(pdev, dir, PAGE_SIZE);
 
     rdma_info_report("pvrdma_map_to_pdir: EXIT host_virt=%p nchunks=%u "
-                     "length=%zu", host_virt, nchunks, length);
+                     "length=%zu",
+                     host_virt, nchunks, length);
     return host_virt;
 }
 
