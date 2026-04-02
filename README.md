@@ -1,183 +1,45 @@
-# ROCm ERNIC: Emulated RDMA NIC for Virtual Machines
+# rocm-ernic
 
-This project contains a userspace implementation of an RDMA (Remote Direct
-Memory Access) device using the [libvfio-user][ref-libvfio] framework.
-It enables RDMA functionality for virtual machines without requiring
-actual RDMA hardware or relying on an in-guest framework like
-[soft RoCE][ref-softroce].
+[![MIT](https://img.shields.io/badge/License-MIT-blue.svg)][license]
+[![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-test.yml/badge.svg)][ci-build]
+[![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
+[![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
+[![Spelling](https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml/badge.svg)][ci-spell]
+[![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 
-## Overview
+> [!CAUTION]
+> This release is an *early-access* software technology preview. Running
+> production workloads is *not* recommended.
 
-This project implements a fully functional RDMA device that can be attached to
-virtual machines (VMs) via the VFIO (Virtual Function I/O) user-space device
-framework. The device provides RDMA (Remote Direct Memory Access) capabilities
-to guest VMs via a number of different backends.
+Userspace emulated RDMA NIC for virtual machines, built on
+[libvfio-user][libvfio]. Provides full RDMA functionality to guest VMs without
+requiring physical RDMA hardware or an in-guest software stack such as
+[Soft-RoCE][softroce]. Backends include loopback (for testing and CI), TCP/IP
+(multi-node without hardware), and native verbs (real InfiniBand HCA
+pass-through).
 
-This project is intended to aid in RDMA-related software development without
-needing actual RDMA hardware. However it can also be used for CI and, possibly,
-in production via the RDMA backend.
+## Installing and Using rocm-ernic
 
-## Key Features
+See [INSTALL.md](INSTALL.md) for dependencies, supported platforms, and build
+instructions.
 
-  - Full PCIe device emulation in userspace
-  - Three memory-mapped BARs
-  - MSI-X interrupt support (command ring, async events, completion queue)
-  - Compatible with the Linux kernel `rocm_ernic` driver which is available in
-    the [driver](./driver) directory.
-  - Comprehensive statistics collection (doorbell rings, WQE processing, CQE
-    posting) with periodic updates to a file
+## Documentation
 
-# Architecture
+Full documentation lives in the [`docs/`](docs/) directory and covers building,
+architecture, usage, the kernel driver, the systemd service, testing, and the
+API reference.
 
-```
-┌──────────────────────────────────────────────┐
-│          Virtual Machine (Guest)             │
-│  ┌────────────────────────────────────┐      │
-│  │   Linux Kernel rocm_ernic Driver   │      │
-│  └─────────────┬──────────────────────┘      │
-│                │ PCI Interface               │
-└────────────────┼─────────────────────────────┘
-                 │ VFIO-User Protocol
-┌────────────────┼─────────────────────────────┐
-│                ▼                             │
-│  ┌──────────────────────────────────────┐    │
-│  │    rocm_ernic Server                 │    │
-│  │  (This Project)                      │    │
-│  │                                      │    │
-│  │  ┌───────────────────────┐           │    │
-│  │  │  RDMA Device Logic    │           │    │
-│  │  │  (adapted from QEMU)  │           │    │
-│  │  └──────────┬────────────┘           │    │
-│  │             │                        │    │
-│  │    ┌────────┴────────┐──────┐        │    │
-│  │    │                 │      │        │    │
-│  │    ▼                 ▼      ▼        │    │
-│  │  ┌──────┐  ┌──────────┐  ┌──────┐    │    │
-│  │  │Loop- │  │ TCP/IP   │  │RDMA/ │    │    │
-│  │  │back  │  │ Backend  │  │Verbs │    │    │
-│  │  │      │  │          │  │      │    │    │
-│  │  │In-   │  │TCP Socket│  │      │    │    │
-│  │  │Memory│  │Protocol  │  │      │    │    │
-│  │  │Emul. │  │          │  │      │    │    │
-│  │  └──────┘  └────┬─────┘  └──┬───┘    │    │
-│  └─────────────────┼───────────┼────────┘    │
-│                    │           │             │
-│     Host (Userspace/Kernel)    │             │
-│                    │           │             │
-│         ┌──────────┘           │             │
-│         │                      │             │
-│         ▼                      ▼             │
-│  ┌──────────────┐    ┌──────────────┐        │
-│  │Another       │    │  libibverbs  │        │
-│  │rocm_ernic    │    └──────┬───────┘        │
-│  │Server        │           │                │
-│  │(Remote VM)   │           ▼                │
-│  └──────────────┘    ┌──────────────┐        │
-│                      │ InfiniBand   │        │
-│                      │ Hardware     │        │
-│                      │              │        │
-│                      └──────────────┘        │
-└──────────────────────────────────────────────┘
-```
+## License
 
-# Building and Installing
+[MIT](LICENSE.md). Some files carry different licenses per their SPDX headers;
+see [LICENSE.md](LICENSE.md) for details.
 
-## Dependencies
+<!-- References -->
 
-```bash
-# Ubuntu/Debian
-sudo apt install cmake meson ninja-build pkg-config \
-  libibverbs-dev librdmacm-dev libglib2.0-dev
-
-# Build and install libvfio-user (if not already installed)
-# Note: libvfio-user uses Meson, not CMake
-cd /path/to/libvfio-user
-meson setup build --prefix=/usr
-ninja -C build
-sudo ninja -C build install
-sudo ldconfig
-```
-
-## Compilation
-
-```bash
-# From the project root directory
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-
-# The executable will be at: build/rocm-ernic
-```
-
-## Installation
-
-```bash
-sudo cmake --install build
-# Installs to /usr/local/bin/rocm-ernic by default
-```
-
-## Build Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `CMAKE_BUILD_TYPE` | `Debug` | Build type |
-| `ERNIC_USE_SANITIZERS` | `OFF` | Enable ASAN/LSAN/UBSAN |
-| `ERNIC_USE_THREAD_SANITIZER` | `OFF` | Enable TSAN |
-| `CMAKE_INSTALL_PREFIX` | `/usr/local` | Install prefix |
-
-# Usage
-
-## Basic Usage
-
-```bash
-# Start the ROCm ERNIC device server with verbs backend
-./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
-                   --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
-                   --verbose
-
-# Start with loopback backend (for testing)
-./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
-                   --backend loopback \
-                   --verbose
-
-# Start with no backend (minimal stubs)
-./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
-                   --backend none
-```
-
-## Statistics Collection
-
-The server can collect detailed statistics about doorbell rings, WQE processing,
-and completion queue entries. Statistics are written to a file approximately
-every second while the server is running.
-
-```bash
-# Start server with statistics collection
-./build/rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
-                   --backend loopback \
-                   --stats-file /tmp/rocm_ernic_stats.txt
-
-# Monitor statistics in real-time
-watch -n 0.5 cat /tmp/rocm_ernic_stats.txt
-```
-
-The statistics file includes:
-- Device-level statistics (commands, register reads/writes, UAR writes,
-  interrupts)
-- Per-QP statistics:
-  - Doorbell rings (send, receive, SRQ)
-  - WQEs processed (total and by opcode type)
-  - CQEs posted
-  - Continuation callbacks scheduled
-
-Statistics are automatically written on server exit (SIGINT/SIGTERM) in
-addition to the periodic updates.
-
-# Acknowledgments
-
-## Original QEMU PVRDMA Implementation
-
-- Yuval Shaia <yuval.shaia@oracle.com> (Oracle)
-- Marcel Apfelbaum <marcel@redhat.com> (Red Hat)
-
-[ref-libvfio]: https://github.com/nutanix/libvfio-user
-[ref-softroce]: https://man7.org/linux/man-pages/man7/rxe.7.html
+[license]: https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md
+[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-test.yml
+[ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
+[ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
+[ci-spell]: https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml
+[libvfio]: https://github.com/nutanix/libvfio-user
+[softroce]: https://man7.org/linux/man-pages/man7/rxe.7.html
