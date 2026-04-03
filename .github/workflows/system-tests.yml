@@ -529,109 +529,50 @@ jobs:
         fi
         EOFVM
     
-    - name: Run loopback backend tests
+    - name: Verify RDMA device with running server
       shell: bash
       run: |
-        echo "=== Running loopback backend tests ==="
+        echo "=== Verifying RDMA device via loopback:mode=preserve backend ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        
-        # Test configurations (bash array syntax)
-          declare -a CONFIGS=(
-            "loopback"
-            "loopback:mode=preserve"
-            "loopback:mode=zeros"
-            "loopback:mode=random"
-            "loopback:md5"
-            "loopback:mode=preserve,md5"
-          )
-          
-          PASSED=0
-          FAILED=0
-          
-          for config in "${CONFIGS[@]}"; do
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "Testing: $config"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            
-          # Stop previous server if running
-          kill "$SERVER_PID" 2>/dev/null || true
-          wait "$SERVER_PID" 2>/dev/null || true
-          rm -f /tmp/vfio-user-rocm-ernic*.sock
-          
-          # Start server with this configuration
-          ./build/rocm-ernic \
-            --socket /tmp/vfio-user-rocm-ernic-test.sock \
-              --backend "$config" \
-            --verbose > /tmp/vfu_server_${config//[:\/=]/_}.log 2>&1 &
-          
-            SERVER_PID=$!
-            
-            # Wait for socket
-            SOCKET_READY=0
-            for i in {1..10}; do
-            if [ -S /tmp/vfio-user-rocm-ernic-test.sock ]; then
-              chmod 666 /tmp/vfio-user-rocm-ernic-test.sock
-                SOCKET_READY=1
-                break
-              fi
-              sleep 0.5
-            done
-            
-          if [ $SOCKET_READY -eq 0 ]; then
-            echo "✗ Server failed to start"
-            tail -20 /tmp/vfu_server_${config//[:\/=]/_}.log
-            FAILED=$((FAILED + 1))
-            continue
-          fi
-          
-          echo "✓ Server started"
-          
-          # Run test_data_transfer in VM
-          # Note: This test requires RDMA device which may not be available if
-          # driver probe failed. In that case, we skip with exit code 77.
-          set +e  # Temporarily disable exit-on-error to capture exit code 77
-          ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" <<-'EOFVM'
-        	# Verify RDMA device is still available
+
+        # The VM was launched against the server started in the
+        # "Start rocm-ernic server" step (loopback:mode=preserve on
+        # /tmp/vfio-user-rocm-ernic.sock).  We must NOT kill that
+        # server or cycle configs -- doing so severs the vfio-user
+        # connection and destabilises the VM.
+        #
+        # Config-cycling (startup-only, no VM) is covered by the
+        # build-test workflow's test_loopback_ci.sh step.
+
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+          echo "✗ ERNIC server (PID $SERVER_PID) is no longer running"
+          tail -30 /tmp/vfu_server.log || true
+          exit 1
+        fi
+        echo "✓ ERNIC server still running (PID $SERVER_PID)"
+
+        set +e
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" <<-'EOFVM'
         	if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
-        	  echo "WARNING: RDMA device not found - driver probe may have failed"
-        	  echo "This is expected in some environments (DSR init timeout)"
-        	  exit 77
+        	  echo "✗ RDMA device not found"
+        	  exit 1
         	fi
-        	
-        	DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
+
+        	DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" \
+        	         | awk '{print $1}' | head -1)
         	echo "✓ RDMA device found: $DEVICE"
         	ibv_devinfo -d "$DEVICE" | head -20 || true
-        	EOFVM
-          TEST_EXIT=$?
-          set -e  # Re-enable exit-on-error
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "✓ Test passed for $config"
-            PASSED=$((PASSED + 1))
-          elif [ $TEST_EXIT -eq 77 ]; then
-            echo "✗ Test skipped for $config (exit code 77) - RDMA device not available"
-            echo "This is a FAILURE - the RDMA device should be available in CI"
-            FAILED=$((FAILED + 1))
-          else
-            echo "✗ Test failed for $config (exit code: $TEST_EXIT)"
-            FAILED=$((FAILED + 1))
-          fi
-          
-          # Stop server
-          kill "$SERVER_PID" 2>/dev/null || true
-          wait "$SERVER_PID" 2>/dev/null || true
-          rm -f /tmp/vfio-user-rocm-ernic-test.sock
-          done
-          
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "Test Summary: Passed: $PASSED/${#CONFIGS[@]}, Failed: $FAILED"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          if [ $FAILED -gt 0 ]; then
-            exit 1
+        EOFVM
+        TEST_EXIT=$?
+        set -e
+
+        if [ $TEST_EXIT -ne 0 ]; then
+          echo "✗ RDMA device verification failed (exit $TEST_EXIT)"
+          exit 1
         fi
+        echo "✓ Loopback backend VM test passed"
     
     - name: Sysfs loopback smoke test
       shell: bash
