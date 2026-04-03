@@ -307,3 +307,17 @@
           - rocm-xio
       changed_when: true
       when: ernic_gpu_passthrough | bool
+
+    # ── Prepare perftest-xio tarball for VMs ─────────
+    - name: Create perftest-xio tarball from local fork
+      ansible.builtin.command:
+        argv:
+          - tar
+          - czf
+          - /tmp/perftest-xio.tar.gz
+          - --exclude=.git
+          - -C
+          - "{{ ernic_perftest_source }}"
+          - .
+      changed_when: true
+      when: ernic_gpu_passthrough | bool

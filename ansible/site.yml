@@ -4,13 +4,15 @@
 #
 # Master playbook for rocm-ernic integration testing.
 #
-# Imports all four plays in order:
-#   1. Host setup   -- build, install, configure service
-#   2. VM creation  -- golden image, launch VMs
-#   3. Guest setup  -- driver, rdma-core, NIC config
-#   4. Sanity tests -- iperf3, perftest
-#   5. GPU tests    -- xio-tester 2-node GPU RDMA
-#   6. Performance tests -- full BW/lat sweeps (optional)
+# Imports all plays in order:
+#   1. Host setup    -- build, install, configure service
+#   2. VM creation   -- golden image, launch VMs
+#   3. Guest setup   -- driver, rdma-core, NIC config
+#   4. Sanity tests  -- iperf3, perftest
+#   5. Performance tests -- full BW/lat sweeps
+#   6a. GPU tests    -- xio-tester 2-node GPU RDMA
+#   6b. GPU perftest -- rocm-xio GPU-initiated perftest
+#   7. Stress tests  -- multi-QP, soak, churn
 #
 # Usage:
 #   cd ansible
@@ -20,15 +22,15 @@
 #   ansible-playbook site.yml -e ernic_instances=4
 #   ansible-playbook site.yml -e ernic_skip_build=true
 #
-# Run the performance sweep after the sanity tests:
-#   ansible-playbook playbooks/performance-tests.yml
+# Skip individual phases:
+#   ansible-playbook site.yml -e ernic_skip_host_setup=true
+#   ansible-playbook site.yml -e ernic_skip_vm_create=true
+#   ansible-playbook site.yml -e ernic_skip_guest_setup=true
+#   ansible-playbook site.yml -e ernic_skip_sanity=true
 #
-# Run GPU RDMA tests with real GPU passthrough:
-#   ansible-playbook site.yml -e ernic_gpu_passthrough=true
-#
-# Or run everything including performance and stress:
-#   ansible-playbook site.yml -e ernic_run_perf=true \
-#       -e ernic_run_stress=true
+# Run optional phases:
+#   ansible-playbook site.yml -e ernic_run_perf=true
+#   ansible-playbook site.yml -e ernic_run_stress=true
 #
 # Run the full suite with GPU passthrough:
 #   ansible-playbook site.yml -e ernic_gpu_passthrough=true \
@@ -37,22 +39,31 @@
 ---
 - name: "Phase 1: Host setup"
   ansible.builtin.import_playbook: playbooks/host-setup.yml
+  when: not (ernic_skip_host_setup | default(false) | bool)
 
 - name: "Phase 2: VM creation"
   ansible.builtin.import_playbook: playbooks/vm-create.yml
+  when: not (ernic_skip_vm_create | default(false) | bool)
 
 - name: "Phase 3: Guest setup"
   ansible.builtin.import_playbook: playbooks/guest-setup.yml
+  when: not (ernic_skip_guest_setup | default(false) | bool)
 
 - name: "Phase 4: Sanity tests"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
+  when: not (ernic_skip_sanity | default(false) | bool)
 
-- name: "Phase 5: GPU RDMA tests"
-  ansible.builtin.import_playbook: playbooks/gpu-tests.yml
-
-- name: "Phase 6: Performance tests"
+- name: "Phase 5: Performance tests"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
   when: ernic_run_perf | default(false) | bool
+
+- name: "Phase 6a: GPU RDMA tests"
+  ansible.builtin.import_playbook: playbooks/gpu-tests.yml
+  when: not (ernic_skip_gpu_tests | default(false) | bool)
+
+- name: "Phase 6b: GPU perftest (rocm-xio)"
+  ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
+  when: not (ernic_skip_gpu_perftest | default(false) | bool)
 
 - name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml
