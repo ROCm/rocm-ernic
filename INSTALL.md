@@ -7,7 +7,7 @@ libraries. On Ubuntu 24.04, install the required packages:
 
 ```
 sudo apt install cmake meson ninja-build pkg-config \
-  libibverbs-dev librdmacm-dev libglib2.0-dev
+  libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev
 ```
 
 Build and install libvfio-user if it is not already available on your system:

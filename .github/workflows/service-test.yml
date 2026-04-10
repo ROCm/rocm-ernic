@@ -146,11 +146,14 @@ jobs:
 
     - name: Clone and build libvfio-user
       run: |
+        # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
+        # This version includes the vfu_setup_device_dma() max_regions
+        # parameter added in f3742ed9 (#835).
         git clone \
           https://github.com/nutanix/libvfio-user.git \
           /tmp/libvfio-user
         cd /tmp/libvfio-user
-        git checkout 082925c6
+        git checkout 20e9803
         meson setup build --prefix=/usr \
           -Dwarning_level=0
         ninja -C build
