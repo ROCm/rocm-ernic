@@ -1249,7 +1249,7 @@ jobs:
         echo "Waiting for server 1 to be ready..."
         SERVER1_READY=0
         for i in $(seq 1 30); do
-          if grep -q "Device realized, waiting for client connection" /tmp/server1.log; then
+          if grep -q "Socket permissions set\|Device realized, waiting for client connection" /tmp/server1.log; then
             echo "✓ Server 1 ready"
             SERVER1_READY=1
             break
@@ -1267,7 +1267,7 @@ jobs:
         echo "Waiting for server 2 to be ready..."
         SERVER2_READY=0
         for i in $(seq 1 30); do
-          if grep -q "Device realized, waiting for client connection" /tmp/server2.log; then
+          if grep -q "Socket permissions set\|Device realized, waiting for client connection" /tmp/server2.log; then
             echo "✓ Server 2 ready"
             SERVER2_READY=1
             break
