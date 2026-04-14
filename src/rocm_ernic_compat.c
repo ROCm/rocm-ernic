@@ -582,12 +582,12 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
         connection_str ? strdup(connection_str) : NULL;
 }
 
-void pvrdma_inc_stats_flr_count(pvrdma_handle_t handle)
+void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
     if (pvrdma) {
-        pvrdma->stats.flr_reset_count++;
+        pvrdma->stats.reset_count++;
     }
 }
 

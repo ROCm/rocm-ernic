@@ -28,7 +28,7 @@
           - -DERNIC_INSTALL_SERVICE=ON
         chdir: "{{ ernic_project_root }}"
         creates: "{{ ernic_build_dir }}/build.ninja"
-      when: not ernic_skip_build
+      when: ernic_build | bool
 
     - name: Build the project
       ansible.builtin.command:
@@ -38,7 +38,7 @@
           - "{{ ernic_build_dir }}"
         chdir: "{{ ernic_project_root }}"
       changed_when: true
-      when: not ernic_skip_build
+      when: ernic_build | bool
 
     # ── Install ──────────────────────────────────────
     - name: Install rocm-ernic (server, ernicctl, systemd units)
@@ -49,7 +49,7 @@
           - "{{ ernic_build_dir }}"
       become: true
       changed_when: true
-      when: not ernic_skip_build
+      when: ernic_build | bool
 
     # ── Env file ─────────────────────────────────────
     - name: Ensure /etc/rocm-ernic directory exists

@@ -111,7 +111,7 @@
       become: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Ensure backing directory exists
       ansible.builtin.file:
@@ -121,7 +121,7 @@
       become: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Create golden backing image via gen-vm
       ansible.builtin.command:
@@ -143,7 +143,7 @@
       changed_when: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     # ── Fix GRUB in golden image ─────────────────────
     - name: Load nbd kernel module
@@ -154,7 +154,7 @@
       become: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Connect backing image via qemu-nbd
       ansible.builtin.command:
@@ -166,7 +166,7 @@
       changed_when: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Wait for nbd partition to appear
       ansible.builtin.wait_for:
@@ -174,7 +174,7 @@
         timeout: 10
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Mount backing image root partition
       ansible.posix.mount:
@@ -185,7 +185,7 @@
       become: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Fix GRUB timeout in golden image
       ansible.builtin.shell:
@@ -203,7 +203,7 @@
       changed_when: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Run update-grub in chroot
       ansible.builtin.shell:
@@ -219,7 +219,7 @@
       changed_when: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Unmount and disconnect backing image
       ansible.builtin.shell:
@@ -231,7 +231,7 @@
       changed_when: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     # ── Provision golden image via temp VM ──────────
     #
@@ -269,7 +269,7 @@
       changed_when: true
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Wait for golden VM SSH
       ansible.builtin.wait_for:
@@ -280,7 +280,7 @@
         state: started
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Wait for golden VM SSH auth ready
       ansible.builtin.command:
@@ -306,7 +306,7 @@
       changed_when: false
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
     - name: Add golden VM to inventory
       ansible.builtin.add_host:
@@ -321,7 +321,7 @@
           -o PasswordAuthentication=no
       when:
         - not ernic_backing_stat.stat.exists
-        - not ernic_skip_golden_image
+        - ernic_golden_image | bool
 
 # Provision golden VM with collection roles
 - name: Provision golden image with base packages

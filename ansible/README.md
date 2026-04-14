@@ -61,13 +61,13 @@ Override any default in `group_vars/all.yml` via `-e`:
 ansible-playbook site.yml -e ernic_instances=4
 
 # Skip the build step (use existing install)
-ansible-playbook site.yml -e ernic_skip_build=true
+ansible-playbook site.yml -e ernic_build=false
 
 # Skip golden image creation (images exist)
-ansible-playbook site.yml -e ernic_skip_golden_image=true
+ansible-playbook site.yml -e ernic_golden_image=false
 
 # Skip sanity tests
-ansible-playbook site.yml -e ernic_skip_tests=true
+ansible-playbook site.yml -e ernic_tests=false
 
 # Run performance sweep with custom parameters
 ansible-playbook playbooks/performance-tests.yml \

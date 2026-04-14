@@ -588,7 +588,8 @@ def _stats_summary_row(iid, stats, sf):
     cmds = stats.get("commands", 0)
     ints = stats.get("interrupts", 0)
     qps = count_qps(sf)
-    flr = stats.get("flr_reset_count", 0)
+    flr = stats.get(
+        "reset_count", stats.get("flr_reset_count", 0))
     return (
         str(iid), conn, ip_col, sr_col,
         rw_col, mmio_col,

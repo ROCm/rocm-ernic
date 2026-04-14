@@ -175,8 +175,8 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
                 dev->stats.uar_writes);
     fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "interrupts",
             dev->stats.interrupts);
-    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "flr_reset_count",
-            dev->stats.flr_reset_count);
+    fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "reset_count",
+            dev->stats.reset_count);
     fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH, "total_bytes_sent",
             dev->stats.total_bytes_sent);
     fprintf(fp, "  %-*s : %" PRIu64 "\n", STATS_LABEL_WIDTH,
