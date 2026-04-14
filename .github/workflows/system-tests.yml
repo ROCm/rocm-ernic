@@ -122,6 +122,7 @@ jobs:
         apt-get install -y \
           build-essential \
           cmake \
+          meson \
           ninja-build \
           pkg-config \
           libibverbs-dev \
@@ -129,6 +130,19 @@ jobs:
           libglib2.0-dev \
           libjson-c-dev \
           libcmocka-dev
+    
+    - name: Upgrade libvfio-user
+      run: |
+        # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
+        # This version includes the vfu_setup_device_dma() max_regions
+        # parameter added in f3742ed9 (#835).
+        git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+        cd /tmp/libvfio-user
+        git checkout 20e9803
+        meson setup build --prefix=/usr/local -Dwarning_level=0
+        ninja -C build
+        ninja -C build install
+        ldconfig
     
     - name: Build rocm-ernic server
       run: |
@@ -354,7 +368,11 @@ jobs:
         
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
-        
+
+        # Stop unattended-upgrades so it doesn't hold the dpkg lock
+        sudo systemctl stop unattended-upgrades 2>/dev/null || true
+        sudo systemctl disable unattended-upgrades 2>/dev/null || true
+
         # Retry apt-get update to handle transient mirror issues
         echo "Updating package lists (with retry)..."
         for i in {1..3}; do
@@ -368,15 +386,22 @@ jobs:
         done
         
         echo "Installing RDMA packages..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          cmake \
-          ninja-build \
-          pkg-config
+        for i in {1..5}; do
+          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            ibverbs-utils \
+            linux-headers-$(uname -r) \
+            linux-modules-extra-$(uname -r) \
+            libibverbs-dev \
+            rdma-core \
+            cmake \
+            ninja-build \
+            pkg-config; then
+            break
+          fi
+          if [ "$i" -eq 5 ]; then echo "✗ apt-get install failed after $i attempts"; exit 1; fi
+          echo "⚠️  apt-get install failed (attempt $i/5), retrying in 10s..."
+          sleep 10
+        done
         echo "✓ Necessary packages installed"
         EOFVM
 
@@ -746,6 +771,7 @@ jobs:
         apt-get install -y \
           build-essential \
           cmake \
+          meson \
           ninja-build \
           pkg-config \
           libibverbs-dev \
@@ -753,6 +779,19 @@ jobs:
           libglib2.0-dev \
           libjson-c-dev \
           libcmocka-dev
+
+    - name: Upgrade libvfio-user
+      run: |
+        # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
+        # This version includes the vfu_setup_device_dma() max_regions
+        # parameter added in f3742ed9 (#835).
+        git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+        cd /tmp/libvfio-user
+        git checkout 20e9803
+        meson setup build --prefix=/usr/local -Dwarning_level=0
+        ninja -C build
+        ninja -C build install
+        ldconfig
 
     - name: Build project
       run: |
@@ -1415,6 +1454,9 @@ jobs:
         echo "[VM 1] Installing packages..."
         ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
         set -e
+        # Stop unattended-upgrades so it doesn't hold the dpkg lock
+        sudo systemctl stop unattended-upgrades 2>/dev/null || true
+        sudo systemctl disable unattended-upgrades 2>/dev/null || true
         # Retry apt-get update to handle transient mirror issues
         for i in {1..3}; do
           if sudo apt-get update -qq 2>&1; then
@@ -1424,16 +1466,23 @@ jobs:
             sleep 5
           fi
         done
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          build-essential \
-          cmake \
-          ninja-build \
-          pkg-config
+        for i in {1..5}; do
+          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            ibverbs-utils \
+            linux-headers-$(uname -r) \
+            linux-modules-extra-$(uname -r) \
+            libibverbs-dev \
+            rdma-core \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config; then
+            break
+          fi
+          if [ "$i" -eq 5 ]; then echo "✗ apt-get install failed after $i attempts"; exit 1; fi
+          echo "⚠️  apt-get install failed (attempt $i/5), retrying in 10s..."
+          sleep 10
+        done
         echo "[VM 1] ✓ Packages installed"
         EOFVM
         
@@ -1441,6 +1490,9 @@ jobs:
         echo "[VM 2] Installing packages..."
         ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
         set -e
+        # Stop unattended-upgrades so it doesn't hold the dpkg lock
+        sudo systemctl stop unattended-upgrades 2>/dev/null || true
+        sudo systemctl disable unattended-upgrades 2>/dev/null || true
         # Retry apt-get update to handle transient mirror issues
         for i in {1..3}; do
           if sudo apt-get update -qq 2>&1; then
@@ -1450,16 +1502,23 @@ jobs:
             sleep 5
           fi
         done
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-          ibverbs-utils \
-          linux-headers-$(uname -r) \
-          linux-modules-extra-$(uname -r) \
-          libibverbs-dev \
-          rdma-core \
-          build-essential \
-          cmake \
-          ninja-build \
-          pkg-config
+        for i in {1..5}; do
+          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            ibverbs-utils \
+            linux-headers-$(uname -r) \
+            linux-modules-extra-$(uname -r) \
+            libibverbs-dev \
+            rdma-core \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config; then
+            break
+          fi
+          if [ "$i" -eq 5 ]; then echo "✗ apt-get install failed after $i attempts"; exit 1; fi
+          echo "⚠️  apt-get install failed (attempt $i/5), retrying in 10s..."
+          sleep 10
+        done
         echo "[VM 2] ✓ Packages installed"
         EOFVM
         
