@@ -372,6 +372,11 @@ jobs:
         # Stop unattended-upgrades so it doesn't hold the dpkg lock
         sudo systemctl stop unattended-upgrades 2>/dev/null || true
         sudo systemctl disable unattended-upgrades 2>/dev/null || true
+        sudo pkill -9 unattended-upgr 2>/dev/null || true
+        for w in {1..30}; do
+          fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+          sleep 5
+        done
 
         # Retry apt-get update to handle transient mirror issues
         echo "Updating package lists (with retry)..."
@@ -1457,6 +1462,11 @@ jobs:
         # Stop unattended-upgrades so it doesn't hold the dpkg lock
         sudo systemctl stop unattended-upgrades 2>/dev/null || true
         sudo systemctl disable unattended-upgrades 2>/dev/null || true
+        sudo pkill -9 unattended-upgr 2>/dev/null || true
+        for w in {1..30}; do
+          fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+          sleep 5
+        done
         # Retry apt-get update to handle transient mirror issues
         for i in {1..3}; do
           if sudo apt-get update -qq 2>&1; then
@@ -1493,6 +1503,11 @@ jobs:
         # Stop unattended-upgrades so it doesn't hold the dpkg lock
         sudo systemctl stop unattended-upgrades 2>/dev/null || true
         sudo systemctl disable unattended-upgrades 2>/dev/null || true
+        sudo pkill -9 unattended-upgr 2>/dev/null || true
+        for w in {1..30}; do
+          fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+          sleep 5
+        done
         # Retry apt-get update to handle transient mirror issues
         for i in {1..3}; do
           if sudo apt-get update -qq 2>&1; then
