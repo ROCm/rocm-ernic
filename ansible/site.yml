@@ -22,49 +22,61 @@
 #   ansible-playbook site.yml -e ernic_instances=4
 #   ansible-playbook site.yml -e ernic_build=false
 #
-# Disable individual phases (all default to true):
-#   ansible-playbook site.yml -e ernic_host_setup=false
-#   ansible-playbook site.yml -e ernic_vm_create=false
-#   ansible-playbook site.yml -e ernic_guest_setup=false
-#   ansible-playbook site.yml -e ernic_sanity=false
-#
-# Enable optional phases (default to false):
-#   ansible-playbook site.yml -e ernic_perf=true
-#   ansible-playbook site.yml -e ernic_stress=true
-#
 # Run the full suite with GPU passthrough:
-#   ansible-playbook site.yml -e ernic_gpu_passthrough=true \
-#       -e ernic_perf=true
+#   ansible-playbook site.yml \
+#       -e ernic_gpu_passthrough=true
+#
+# Select phases by tag (--tags / --skip-tags):
+#   ansible-playbook site.yml --tags perf
+#   ansible-playbook site.yml --tags gpu
+#   ansible-playbook site.yml --tags perf,gpu-perf
+#   ansible-playbook site.yml --tags test
+#   ansible-playbook site.yml --skip-tags stress
+#
+# Available tags:
+#   setup      -- all setup phases (host-setup,
+#                 vm-create, guest-setup)
+#   host-setup -- phase 1 only
+#   vm-create  -- phase 2 only
+#   guest-setup -- phase 3 only
+#   test       -- all test phases (sanity, perf,
+#                 gpu-test, gpu-perf, stress)
+#   sanity     -- phase 4 only
+#   perf       -- phase 5 only
+#   gpu        -- phases 6a + 6b
+#   gpu-test   -- phase 6a only
+#   gpu-perf   -- phase 6b only
+#   stress     -- phase 7 only
 
 ---
 - name: "Phase 1: Host setup"
   ansible.builtin.import_playbook: playbooks/host-setup.yml
-  when: ernic_host_setup | default(true) | bool
+  tags: [setup, host-setup]
 
 - name: "Phase 2: VM creation"
   ansible.builtin.import_playbook: playbooks/vm-create.yml
-  when: ernic_vm_create | default(true) | bool
+  tags: [setup, vm-create]
 
 - name: "Phase 3: Guest setup"
   ansible.builtin.import_playbook: playbooks/guest-setup.yml
-  when: ernic_guest_setup | default(true) | bool
+  tags: [setup, guest-setup]
 
 - name: "Phase 4: Sanity tests"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
-  when: ernic_sanity | default(true) | bool
+  tags: [test, sanity]
 
 - name: "Phase 5: Performance tests"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
-  when: ernic_perf | default(false) | bool
+  tags: [test, perf]
 
 - name: "Phase 6a: GPU RDMA tests"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
-  when: ernic_gpu_tests | default(true) | bool
+  tags: [test, gpu, gpu-test]
 
 - name: "Phase 6b: GPU perftest (rocm-xio)"
   ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
-  when: ernic_gpu_perftest | default(true) | bool
+  tags: [test, gpu, gpu-perf]
 
 - name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml
-  when: ernic_stress | default(false) | bool
+  tags: [test, stress]
