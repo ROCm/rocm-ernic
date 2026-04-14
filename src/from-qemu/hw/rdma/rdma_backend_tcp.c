@@ -1547,31 +1547,41 @@ static void *tcp_recv_thread_per_conn(void *opaque)
             }
 
             case TCP_MSG_HEARTBEAT: {
-                /* Manager receives heartbeat from worker */
                 TcpBackendPrivate *priv = conn->priv;
-                if (!priv || !priv->is_manager) {
+                if (!priv)
                     break;
-                }
 
-                qemu_mutex_lock(&priv->mesh_table_lock);
-                MeshNodeInfo *node = g_hash_table_lookup(
-                    priv->mesh_nodes, GUINT_TO_POINTER(hdr.src_node_id));
-                if (node) {
-                    node->last_heartbeat = time(NULL);
-                    node->is_alive = true;
-                }
-                qemu_mutex_unlock(&priv->mesh_table_lock);
+                if (priv->is_manager) {
+                    /* Manager received heartbeat reply from worker —
+                     * refresh the worker's liveness timestamp. */
+                    qemu_mutex_lock(&priv->mesh_table_lock);
+                    MeshNodeInfo *node = g_hash_table_lookup(
+                        priv->mesh_nodes,
+                        GUINT_TO_POINTER(hdr.src_node_id));
+                    if (node) {
+                        node->last_heartbeat = time(NULL);
+                        node->is_alive = true;
+                    }
+                    qemu_mutex_unlock(&priv->mesh_table_lock);
 
-                /* Send heartbeat response */
-                tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT_RESP, NULL, 0,
-                                 priv->next_seq++, priv->local_node_id,
-                                 hdr.src_node_id, 0, 0);
+                    tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT_RESP,
+                                     NULL, 0, priv->next_seq++,
+                                     priv->local_node_id,
+                                     hdr.src_node_id, 0, 0);
+                } else {
+                    /* Worker received heartbeat probe from manager —
+                     * echo it back so the manager refreshes our
+                     * liveness timestamp. */
+                    tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT,
+                                     NULL, 0, priv->next_seq++,
+                                     priv->local_node_id,
+                                     hdr.src_node_id, 0, 0);
+                }
                 break;
             }
 
             case TCP_MSG_HEARTBEAT_RESP: {
-                /* Worker receives heartbeat response from manager */
-                /* No action needed, just confirms manager is alive */
+                /* Acknowledgement — no action needed. */
                 break;
             }
 
@@ -2179,6 +2189,9 @@ static void *tcp_manager_health_check_thread(void *opaque)
 
         while (g_hash_table_iter_next(&iter, &key, &value)) {
             MeshNodeInfo *node = (MeshNodeInfo *)value;
+
+            if (node->node_id == priv->local_node_id)
+                continue;
 
             /* Send heartbeat request */
             if (node->conn && node->conn->is_connected &&
