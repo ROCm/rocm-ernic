@@ -1556,25 +1556,22 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                      * refresh the worker's liveness timestamp. */
                     qemu_mutex_lock(&priv->mesh_table_lock);
                     MeshNodeInfo *node = g_hash_table_lookup(
-                        priv->mesh_nodes,
-                        GUINT_TO_POINTER(hdr.src_node_id));
+                        priv->mesh_nodes, GUINT_TO_POINTER(hdr.src_node_id));
                     if (node) {
                         node->last_heartbeat = time(NULL);
                         node->is_alive = true;
                     }
                     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-                    tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT_RESP,
-                                     NULL, 0, priv->next_seq++,
-                                     priv->local_node_id,
+                    tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT_RESP, NULL,
+                                     0, priv->next_seq++, priv->local_node_id,
                                      hdr.src_node_id, 0, 0);
                 } else {
                     /* Worker received heartbeat probe from manager —
                      * echo it back so the manager refreshes our
                      * liveness timestamp. */
-                    tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT,
-                                     NULL, 0, priv->next_seq++,
-                                     priv->local_node_id,
+                    tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
+                                     priv->next_seq++, priv->local_node_id,
                                      hdr.src_node_id, 0, 0);
                 }
                 break;
