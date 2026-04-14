@@ -1,0 +1,153 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Single GPU perftest data point (BW or latency).
+#
+# Included by gpu-perftest.yml via include_tasks.
+# Runs on ernic_vm_1 (server) and delegates client
+# commands to ernic_vm_2.
+#
+# Required variables from the caller:
+#   pt_tool   -- perftest binary (e.g. ib_write_bw)
+#   pt_label  -- human label (e.g. write)
+#   pt_size   -- message size in bytes
+#   pt_iters  -- iteration count
+#   pt_unit   -- systemd unit name for the server
+#   pt_csv    -- CSV file path (on localhost)
+#   pt_mode   -- "bw" or "lat"
+#   pt_extra_client_args -- extra args for client
+#   pt_extra_server_args -- extra args for server
+
+---
+- name: "{{ pt_label }} @ {{ pt_size }}B: kill stale on VM1"
+  ansible.builtin.shell:
+    cmd: >-
+      pkill -9 {{ pt_tool }} 2>/dev/null; true
+  changed_when: false
+  failed_when: false
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: kill stale on VM2"
+  ansible.builtin.shell:
+    cmd: >-
+      pkill -9 {{ pt_tool }} 2>/dev/null; true
+  delegate_to: "{{ vm2 }}"
+  changed_when: false
+  failed_when: false
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: wait for cleanup"
+  ansible.builtin.pause:
+    seconds: 2
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: start server"
+  ansible.builtin.shell:
+    cmd: |
+      systemctl stop {{ pt_unit }} 2>/dev/null
+      systemctl reset-failed {{ pt_unit }} 2>/dev/null
+      systemd-run --unit={{ pt_unit }} \
+        bash -c '{{ pt_tool }} \
+          -d {{ rdma_dev }} -x 1 \
+          -s {{ pt_size }} -n {{ pt_iters }} \
+          {{ pt_extra_server_args }} \
+          >/tmp/{{ pt_unit }}.log 2>&1'
+      sleep 1
+  changed_when: true
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: wait for server bind"
+  ansible.builtin.pause:
+    seconds: 3
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: run client"
+  ansible.builtin.shell:
+    cmd: >-
+      timeout {{ test_timeout }}
+      {{ xio_prefix }}/bin/{{ pt_tool }}
+      -d {{ rdma_dev }} -x 1
+      -s {{ pt_size }} -n {{ pt_iters }}
+      --use_rocm_xio=0 --pci_mmio_bridge
+      {{ pt_extra_client_args }}
+      {{ server_ip }} 2>&1
+  delegate_to: "{{ vm2 }}"
+  environment:
+    LD_LIBRARY_PATH: "/opt/rocm/lib:{{ ansible_env.LD_LIBRARY_PATH | default('') }}"
+  register: pt_client
+  changed_when: false
+  failed_when: false
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: parse BW result"
+  when: pt_mode == "bw"
+  block:
+    - name: "{{ pt_label }} @ {{ pt_size }}B: extract BW"
+      ansible.builtin.shell:
+        cmd: |
+          RAW={{ pt_client.stdout | quote }}
+          RC={{ pt_client.rc }}
+
+          if [ "$RC" -ne 0 ]; then
+            echo "{{ pt_label }},{{ pt_size }},FAIL,{{ pt_iters }},FAIL" \
+              >> "{{ pt_csv }}"
+            echo "FAIL rc=$RC"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "{{ pt_label }},{{ pt_size }},NODATA,{{ pt_iters }},NODATA" \
+              >> "{{ pt_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          AVG=$(echo "$LINE" | awk '{print $4}')
+          AVG_GB=$(echo "scale=2; $AVG / 8" \
+                   | bc -l 2>/dev/null || echo "$AVG")
+
+          echo "{{ pt_label }},{{ pt_size }},-,{{ pt_iters }},$AVG_GB" \
+            >> "{{ pt_csv }}"
+          echo "{{ pt_label }} {{ pt_size }}: avg=${AVG_GB} GB/s (GPU-initiated)"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: pt_bw_parsed
+
+    - name: "{{ pt_label }} @ {{ pt_size }}B: show BW"
+      ansible.builtin.debug:
+        msg: "{{ pt_bw_parsed.stdout_lines }}"
+
+- name: "{{ pt_label }} @ {{ pt_size }}B: parse Lat result"
+  when: pt_mode == "lat"
+  block:
+    - name: "{{ pt_label }} @ {{ pt_size }}B: extract Lat"
+      ansible.builtin.shell:
+        cmd: |
+          RAW={{ pt_client.stdout | quote }}
+          RC={{ pt_client.rc }}
+
+          if [ "$RC" -ne 0 ]; then
+            echo "{{ pt_label }},{{ pt_size }},FAIL" \
+              >> "{{ pt_csv }}"
+            echo "FAIL rc=$RC"
+            exit 0
+          fi
+
+          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "{{ pt_label }},{{ pt_size }},NODATA" \
+              >> "{{ pt_csv }}"
+            echo "NODATA"
+            exit 0
+          fi
+
+          TTYP=$(echo "$LINE" | awk '{print $5}')
+
+          echo "{{ pt_label }},{{ pt_size }},$TTYP" \
+            >> "{{ pt_csv }}"
+          echo "{{ pt_label }} {{ pt_size }}: typ=${TTYP} us (GPU-initiated)"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: pt_lat_parsed
+
+    - name: "{{ pt_label }} @ {{ pt_size }}B: show Lat"
+      ansible.builtin.debug:
+        msg: "{{ pt_lat_parsed.stdout_lines }}"

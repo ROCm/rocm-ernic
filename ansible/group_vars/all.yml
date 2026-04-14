@@ -103,9 +103,6 @@ ernic_rocm_xio_commit: ""
 # ── Perftest fork (GPU-initiated via rocm-xio) ──
 # Fork of linux-rdma/perftest with --use_rocm_xio
 # support for GPU-initiated WQE posting.
-# Local source path (tarball'd by host-setup.yml as
-# fallback when git clone is unavailable).
-ernic_perftest_source: "{{ ansible_env.HOME }}/Projects/perftest-xio"
 ernic_perftest_repo: "https://github.com/ROCm/perftest.git"
 ernic_perftest_branch: "feat/rocm-xio"
 ernic_perftest_commit: ""

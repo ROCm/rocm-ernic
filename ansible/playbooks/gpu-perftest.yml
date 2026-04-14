@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Play 5b: GPU-initiated perftest via rocm-xio.
+# Play 6b: GPU-initiated perftest via rocm-xio.
 #
 # Runs ib_{write,read}_{bw,lat} with the client using
 # --use_rocm_xio (GPU-initiated WQE posting) and the
@@ -10,11 +10,13 @@
 # (CPU-posted verbs).
 #
 # This play assumes:
-#   - Exactly two VMs with GPUs visible via rocm-smi
-#   - perftest-xio built by guest-setup.yml at
-#     ernic_perftest_prefix
+#   - Exactly two VMs reachable via SSH
+#   - GPUs visible via rocm-smi on both VMs
 #   - rocm-xio kernel module loaded
 #   - Standard perftest installed (system package)
+#
+# perftest-xio is cloned and built automatically on
+# VM2 (client) if not already present.
 #
 # Usage:
 #   ansible-playbook playbooks/gpu-perftest.yml
@@ -23,32 +25,167 @@
 #   ansible-playbook playbooks/gpu-perftest.yml \
 #     -e ernic_gpu_perftest_bw_iters=200
 
+# ─────────────────────────────────────────────────────
+# Play 1: Register VMs into inventory
+# ─────────────────────────────────────────────────────
 ---
-- name: GPU perftest -- rocm-xio GPU-initiated RDMA
+- name: "GPU perftest -- register VMs"
   hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    - name: Skip if not enabled
+      ansible.builtin.meta: end_play
+      when: >-
+        not (ernic_gpu_passthrough | bool)
+        or not (ernic_gpu_perftest | bool)
+
+    - name: Assert two instances for GPU perftest
+      ansible.builtin.assert:
+        that:
+          - (ernic_instances | int) == 2
+        fail_msg: >-
+          gpu-perftest.yml requires exactly two VMs.
+
+    - name: Add VMs to inventory
+      ansible.builtin.add_host:
+        name: "ernic_vm_{{ item }}"
+        groups: ernic_vms
+        ansible_host: localhost
+        ansible_port: >-
+          {{ ernic_vm_ssh_base_port | int + item - 1 }}
+        ansible_user: "{{ ernic_vm_ssh_user }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o PasswordAuthentication=no
+        vm_index: "{{ item }}"
+        vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
+      loop: [1, 2]
+
+# ─────────────────────────────────────────────────────
+# Play 2: Build perftest-xio on VM2 (client)
+# ─────────────────────────────────────────────────────
+- name: "GPU perftest -- build perftest-xio on VM2"
+  hosts: ernic_vm_2
+  become: true
   gather_facts: true
   vars_files:
     - ../group_vars/all.yml
 
   vars:
-    vm1_ssh: >-
-      ssh -o StrictHostKeyChecking=no
-      -o UserKnownHostsFile=/dev/null
-      -o BatchMode=yes
-      -o PasswordAuthentication=no
-      -o ConnectTimeout=30
-      -p {{ ernic_vm_ssh_base_port | int }}
-      {{ ernic_vm_ssh_user }}@localhost
-    vm2_ssh: >-
-      ssh -o StrictHostKeyChecking=no
-      -o UserKnownHostsFile=/dev/null
-      -o BatchMode=yes
-      -o PasswordAuthentication=no
-      -o ConnectTimeout=30
-      -p {{ ernic_vm_ssh_base_port | int + 1 }}
-      {{ ernic_vm_ssh_user }}@localhost
-    vm1_ip: "{{ ernic_nic_subnet }}.10"
-    vm2_ip: "{{ ernic_nic_subnet }}.20"
+    xio_prefix: "{{ ernic_perftest_prefix }}"
+
+  tasks:
+
+    - name: Skip if not enabled
+      ansible.builtin.meta: end_play
+      when: >-
+        not (ernic_gpu_passthrough | bool)
+        or not (ernic_gpu_perftest | bool)
+
+    - name: Check if perftest-xio already built
+      ansible.builtin.stat:
+        path: "{{ xio_prefix }}/bin/ib_write_bw"
+      register: perftest_xio_stat
+
+    - name: Install perftest build dependencies
+      ansible.builtin.apt:
+        name:
+          - autoconf
+          - automake
+          - libtool
+          - libibverbs-dev
+        state: present
+        update_cache: false
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Clone perftest fork from GitHub
+      ansible.builtin.git:
+        repo: "{{ ernic_perftest_repo }}"
+        dest: /tmp/perftest-xio
+        version: >-
+          {{ ernic_perftest_commit
+             | default(ernic_perftest_branch, true) }}
+        force: true
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Generate perftest configure script
+      ansible.builtin.command:
+        cmd: ./autogen.sh
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Configure perftest with rocm-xio
+      ansible.builtin.shell:
+        cmd: >-
+          export PATH=/opt/rocm/bin:$PATH;
+          ./configure
+          --prefix={{ xio_prefix }}
+          --enable-rocm-xio
+          --with-rocm-xio=/opt/rocm-xio
+          HIPCC=/opt/rocm/bin/hipcc
+          CFLAGS="-I/opt/rocm/include"
+          LDFLAGS="-L/opt/rocm/lib -Wl,-rpath,/opt/rocm/lib"
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Build perftest-xio
+      ansible.builtin.shell:
+        cmd: >-
+          export PATH=/opt/rocm/bin:$PATH;
+          make -j{{ ansible_processor_vcpus | default(2) }}
+          ib_write_bw ib_write_lat ib_read_bw ib_read_lat
+          ib_send_bw ib_send_lat ib_atomic_bw ib_atomic_lat
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Install perftest-xio binaries
+      ansible.builtin.shell:
+        cmd: >-
+          mkdir -p {{ xio_prefix }}/bin &&
+          cp -f ib_write_bw ib_write_lat ib_read_bw
+          ib_read_lat ib_send_bw ib_send_lat
+          ib_atomic_bw ib_atomic_lat
+          {{ xio_prefix }}/bin/
+        chdir: /tmp/perftest-xio
+      changed_when: true
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Verify perftest-xio binary exists
+      ansible.builtin.stat:
+        path: "{{ xio_prefix }}/bin/ib_write_bw"
+      register: perftest_xio_verify
+
+    - name: Assert perftest-xio installed
+      ansible.builtin.assert:
+        that:
+          - perftest_xio_verify.stat.exists
+        fail_msg: >-
+          perftest-xio binary not found at
+          {{ xio_prefix }}/bin/ib_write_bw
+          after build.
+
+# ─────────────────────────────────────────────────────
+# Play 3: Pre-flight, sweeps, summary (from VM1)
+# ─────────────────────────────────────────────────────
+- name: "GPU perftest -- BW and latency sweeps"
+  hosts: ernic_vm_1
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    vm2: ernic_vm_2
+    server_ip: "{{ hostvars['ernic_vm_1'].vm_ip }}"
+    client_ip: "{{ hostvars['ernic_vm_2'].vm_ip }}"
 
     bw_iters: >-
       {{ ernic_gpu_perftest_bw_iters | default(100) }}
@@ -61,13 +198,6 @@
       {{ ernic_gpu_perftest_timeout | default(180) }}
 
     xio_prefix: "{{ ernic_perftest_prefix }}"
-
-    kill_perftest: >-
-      sudo pkill -9 ib_write_bw  2>/dev/null;
-      sudo pkill -9 ib_read_bw   2>/dev/null;
-      sudo pkill -9 ib_write_lat 2>/dev/null;
-      sudo pkill -9 ib_read_lat  2>/dev/null;
-      true
 
     bw_verbs:
       - tool: ib_write_bw
@@ -101,19 +231,26 @@
         not (ernic_gpu_passthrough | bool)
         or not (ernic_gpu_perftest | bool)
 
-    - name: Assert two instances for GPU perftest
+    # ── Pre-flight ─────────────────────────────────
+    - name: "Pre-flight: verify GPU on VM1 (server)"
+      ansible.builtin.command:
+        cmd: rocm-smi --showid
+      register: gpu_check_vm1
+      changed_when: false
+      failed_when: false
+
+    - name: Assert GPU visible on server VM
       ansible.builtin.assert:
         that:
-          - (ernic_instances | int) == 2
+          - gpu_check_vm1.rc == 0
         fail_msg: >-
-          gpu-perftest.yml requires exactly two VMs.
+          rocm-smi failed on VM1. GPU passthrough may
+          not be configured.
 
-    # ── Pre-flight ─────────────────────────────────
     - name: "Pre-flight: verify GPU on VM2 (client)"
-      ansible.builtin.shell:
-        cmd: >-
-          {{ vm2_ssh }}
-          'rocm-smi --showid 2>&1'
+      ansible.builtin.command:
+        cmd: rocm-smi --showid
+      delegate_to: "{{ vm2 }}"
       register: gpu_check_vm2
       changed_when: false
       failed_when: false
@@ -123,33 +260,16 @@
         that:
           - gpu_check_vm2.rc == 0
         fail_msg: >-
-          rocm-smi failed on VM2 (client). GPU
-          passthrough may not be configured.
+          rocm-smi failed on VM2. GPU passthrough may
+          not be configured.
 
-    - name: "Pre-flight: verify perftest-xio on VM2"
+    - name: Detect RDMA device name
       ansible.builtin.shell:
         cmd: >-
-          {{ vm2_ssh }}
-          'test -x {{ xio_prefix }}/bin/ib_write_bw
-          && echo OK || echo MISSING'
-      register: xio_perftest_check
-      changed_when: false
-
-    - name: Assert perftest-xio installed
-      ansible.builtin.assert:
-        that:
-          - "'OK' in xio_perftest_check.stdout"
-        fail_msg: >-
-          perftest-xio not found at
-          {{ xio_prefix }}/bin/ib_write_bw on VM2.
-
-    - name: Detect RDMA device name on VM1
-      ansible.builtin.shell:
-        cmd: >-
-          {{ vm1_ssh }}
-          'ibv_devices
-          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
-          | head -1'
+          ibv_devices
+          | grep -oE
+          "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
+          | head -1
       register: rdma_dev_detect
       changed_when: false
       failed_when: false
@@ -160,11 +280,14 @@
           {{ rdma_dev_detect.stdout | trim
              | default('rocep1s0', true) }}
 
+    # ── Results setup (on host) ────────────────────
     - name: Create results directory
       ansible.builtin.file:
         path: "{{ results_dir }}"
         state: directory
         mode: "0755"
+      delegate_to: localhost
+      become: false
 
     - name: Write CSV headers
       ansible.builtin.copy:
@@ -173,11 +296,11 @@
         mode: "0644"
       loop:
         - path: "{{ gpu_bw_csv }}"
-          header: >-
-            verb,size,elapsed_us,iters,bw_GBs
+          header: "verb,size,elapsed_us,iters,bw_GBs"
         - path: "{{ gpu_lat_csv }}"
-          header: >-
-            verb,size,lat_avg_us
+          header: "verb,size,lat_avg_us"
+      delegate_to: localhost
+      become: false
 
     - name: Display GPU perftest configuration
       ansible.builtin.debug:
@@ -190,173 +313,42 @@
           - "XIO prefix:    {{ xio_prefix }}"
 
     # ── Bandwidth sweep ────────────────────────────
-    # Server (VM1): perftest-xio (CPU-posted verbs)
-    # Client (VM2): perftest-xio --use_rocm_xio
-    - name: "GPU BW: {{ item.0.label }} @ {{ item.1 }} B"
-      ansible.builtin.shell:
-        cmd: |
-          TOOL="{{ item.0.tool }}"
-          DEV="{{ rdma_dev }}"
-          SZ="{{ item.1 }}"
-          N="{{ bw_iters }}"
-          SERVER_IP="{{ vm1_ip }}"
-          UNIT="gpu-perftest-bw-$TOOL-$SZ"
-          XIO="{{ xio_prefix }}/bin"
-
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
-          sleep 2
-
-          # Server: standard perftest (system binary)
-          {{ vm1_ssh }} "
-            sudo systemctl stop $UNIT 2>/dev/null;
-            sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
-                --report_gbits \
-                >/tmp/${UNIT}.log 2>&1';
-            sleep 1
-          "
-
-          sleep 3
-
-          # Client: perftest-xio with GPU-initiated path
-          RAW=$({{ vm2_ssh }} "
-            export LD_LIBRARY_PATH=/opt/rocm/lib:\$LD_LIBRARY_PATH;
-            sudo timeout {{ test_timeout }} \
-              $XIO/$TOOL -d $DEV -x 1 -s $SZ -n $N \
-              --use_rocm_xio=0 --pci_mmio_bridge \
-              --report_gbits $SERVER_IP 2>&1
-          ")
-          RC=$?
-
-          if [ $RC -ne 0 ]; then
-            echo "{{ item.0.label }},$SZ,FAIL,{{ bw_iters }},FAIL" \
-              >> "{{ gpu_bw_csv }}"
-            echo "FAIL rc=$RC"
-            echo "OUTPUT: $RAW"
-            exit 0
-          fi
-
-          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
-          if [ -z "$LINE" ]; then
-            echo "{{ item.0.label }},$SZ,NODATA,{{ bw_iters }},NODATA" \
-              >> "{{ gpu_bw_csv }}"
-            echo "NODATA"
-            echo "OUTPUT: $RAW"
-            exit 0
-          fi
-
-          PEAK=$(echo "$LINE" | awk '{print $3}')
-          AVG=$(echo "$LINE"  | awk '{print $4}')
-
-          PEAK_GB=$(echo "scale=2; $PEAK / 8" \
-                    | bc -l 2>/dev/null || echo "$PEAK")
-          AVG_GB=$(echo "scale=2; $AVG / 8" \
-                   | bc -l 2>/dev/null || echo "$AVG")
-
-          echo "{{ item.0.label }},$SZ,-,{{ bw_iters }},$AVG_GB" \
-            >> "{{ gpu_bw_csv }}"
-          echo "{{ item.0.label }} $SZ: avg=${AVG_GB} GB/s (GPU-initiated)"
-      register: gpu_bw_result
-      changed_when: false
-      failed_when: false
+    - name: "GPU BW sweep"
+      ansible.builtin.include_tasks:
+        file: tasks/gpu-perftest-point.yml
+      vars:
+        pt_tool: "{{ item.0.tool }}"
+        pt_label: "{{ item.0.label }}"
+        pt_size: "{{ item.1 }}"
+        pt_iters: "{{ bw_iters }}"
+        pt_unit: "gpu-perftest-bw-{{ item.0.tool }}-{{ item.1 }}"
+        pt_csv: "{{ gpu_bw_csv }}"
+        pt_mode: bw
+        pt_extra_client_args: "--report_gbits"
+        pt_extra_server_args: "--report_gbits"
       loop: >-
         {{ bw_verbs | product(sweep_sizes) | list }}
       loop_control:
         label: "{{ item.0.label }} @ {{ item.1 }}"
 
-    - name: Display GPU BW results
-      ansible.builtin.debug:
-        msg: >-
-          {{ item.stdout_lines
-             | default(['(no output)']) }}
-      loop: "{{ gpu_bw_result.results }}"
-      loop_control:
-        label: >-
-          {{ item.item.0.label }}
-          @ {{ item.item.1 }}
-      when: item.stdout is defined
-
     # ── Latency sweep ──────────────────────────────
-    - name: "GPU Lat: {{ item.0.label }} @ {{ item.1 }} B"
-      ansible.builtin.shell:
-        cmd: |
-          TOOL="{{ item.0.tool }}"
-          DEV="{{ rdma_dev }}"
-          SZ="{{ item.1 }}"
-          N="{{ lat_iters }}"
-          SERVER_IP="{{ vm1_ip }}"
-          UNIT="gpu-perftest-lat-$TOOL-$SZ"
-          XIO="{{ xio_prefix }}/bin"
-
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
-          sleep 2
-
-          # Server: standard perftest (system binary)
-          {{ vm1_ssh }} "
-            sudo systemctl stop $UNIT 2>/dev/null;
-            sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
-                >/tmp/${UNIT}.log 2>&1';
-            sleep 1
-          "
-
-          sleep 3
-
-          # Client: perftest-xio with GPU-initiated path
-          RAW=$({{ vm2_ssh }} "
-            export LD_LIBRARY_PATH=/opt/rocm/lib:\$LD_LIBRARY_PATH;
-            sudo timeout {{ test_timeout }} \
-              $XIO/$TOOL -d $DEV -x 1 -s $SZ -n $N \
-              --use_rocm_xio=0 --pci_mmio_bridge \
-              $SERVER_IP 2>&1
-          ")
-          RC=$?
-
-          if [ $RC -ne 0 ]; then
-            echo "{{ item.0.label }},$SZ,FAIL" \
-              >> "{{ gpu_lat_csv }}"
-            echo "FAIL rc=$RC"
-            echo "OUTPUT: $RAW"
-            exit 0
-          fi
-
-          LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
-          if [ -z "$LINE" ]; then
-            echo "{{ item.0.label }},$SZ,NODATA" \
-              >> "{{ gpu_lat_csv }}"
-            echo "NODATA"
-            echo "OUTPUT: $RAW"
-            exit 0
-          fi
-
-          TTYP=$(echo "$LINE" | awk '{print $5}')
-
-          echo "{{ item.0.label }},$SZ,$TTYP" \
-            >> "{{ gpu_lat_csv }}"
-          echo "{{ item.0.label }} $SZ: typ=${TTYP} us (GPU-initiated)"
-      register: gpu_lat_result
-      changed_when: false
-      failed_when: false
+    - name: "GPU Lat sweep"
+      ansible.builtin.include_tasks:
+        file: tasks/gpu-perftest-point.yml
+      vars:
+        pt_tool: "{{ item.0.tool }}"
+        pt_label: "{{ item.0.label }}"
+        pt_size: "{{ item.1 }}"
+        pt_iters: "{{ lat_iters }}"
+        pt_unit: "gpu-perftest-lat-{{ item.0.tool }}-{{ item.1 }}"
+        pt_csv: "{{ gpu_lat_csv }}"
+        pt_mode: lat
+        pt_extra_client_args: ""
+        pt_extra_server_args: ""
       loop: >-
         {{ lat_verbs | product(sweep_sizes) | list }}
       loop_control:
         label: "{{ item.0.label }} @ {{ item.1 }}"
-
-    - name: Display GPU Lat results
-      ansible.builtin.debug:
-        msg: >-
-          {{ item.stdout_lines
-             | default(['(no output)']) }}
-      loop: "{{ gpu_lat_result.results }}"
-      loop_control:
-        label: >-
-          {{ item.item.0.label }}
-          @ {{ item.item.1 }}
-      when: item.stdout is defined
 
     # ── Summary ────────────────────────────────────
     - name: Count failures
@@ -368,6 +360,8 @@
           | awk -F: '{s+=$2} END {print s+0}'
       register: gpu_fail_count
       changed_when: false
+      delegate_to: localhost
+      become: false
 
     - name: GPU perftest summary
       ansible.builtin.debug:
@@ -384,6 +378,8 @@
         cmd: "column -t -s, {{ gpu_bw_csv }}"
       register: gpu_bw_table
       changed_when: false
+      delegate_to: localhost
+      become: false
 
     - name: GPU BW results table
       ansible.builtin.debug:
@@ -394,6 +390,8 @@
         cmd: "column -t -s, {{ gpu_lat_csv }}"
       register: gpu_lat_table
       changed_when: false
+      delegate_to: localhost
+      become: false
 
     - name: GPU Lat results table
       ansible.builtin.debug:
