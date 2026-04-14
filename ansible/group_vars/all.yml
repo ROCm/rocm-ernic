@@ -135,7 +135,6 @@ ernic_gpu_2node_timeout: 120
 # ── Feature gates ────────────────────────────────
 ernic_build: true
 ernic_golden_image: true
-ernic_guest_ansible_roles: true
 ernic_tests: true
 ernic_gpu_tests: true
 ernic_gpu_2node_tests: true

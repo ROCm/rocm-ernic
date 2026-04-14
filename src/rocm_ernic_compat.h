@@ -182,10 +182,10 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
                                        const char *connection_str);
 
 /**
- * pvrdma_inc_stats_flr_count - Increment PCI FLR reset count for stats
+ * pvrdma_inc_stats_reset_count - Increment device reset count for stats
  * @handle: Device handle
  */
-void pvrdma_inc_stats_flr_count(pvrdma_handle_t handle);
+void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle);
 
 /**
  * pvrdma_write_stats - Write statistics to file

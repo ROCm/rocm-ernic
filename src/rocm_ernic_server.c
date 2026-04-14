@@ -270,7 +270,7 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         dev->device_active = false;
         conn_str = "connected (device reset)";
         if (dev->pvrdma_handle) {
-            pvrdma_inc_stats_flr_count(dev->pvrdma_handle);
+            pvrdma_inc_stats_reset_count(dev->pvrdma_handle);
         }
         break;
 
@@ -287,7 +287,7 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         dev->device_active = false;
         conn_str = "connected (PCI FLR)";
         if (dev->pvrdma_handle) {
-            pvrdma_inc_stats_flr_count(dev->pvrdma_handle);
+            pvrdma_inc_stats_reset_count(dev->pvrdma_handle);
         }
         break;
     default:

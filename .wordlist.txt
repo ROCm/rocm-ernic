@@ -460,7 +460,11 @@ SPDX
 sublicense
 syscall
 UNRELEASED
+wr
 www
+backgrounding
+conn
+iter
 Backgrounding
 backgrounded
 backend's
