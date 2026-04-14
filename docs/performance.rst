@@ -546,40 +546,40 @@ Milestone 6 -- April 14 (GPU-Initiated Perftest)
 
 First working GPU-initiated perftest (ROCm/perftest fork with
 ``--use_rocm_xio``).  The GPU posts WQEs and polls completions
-entirely from device code via pci-mmio-bridge, while the CPU
-perftest server on VM1 uses standard kernel verbs.
+entirely from device code via pci-mmio-bridge, with both server
+and client using the perftest-xio fork.
 
 Changes required:
 
 - **perftest-xio**: fix NULL deref in latency path
   (``tcompleted`` not allocated for LAT+ITERATIONS mode),
-  switch GPU timing from broken ``clock64()`` /
-  ``hipDeviceAttributeClockRate`` to
+  switch GPU timing from ``clock64()`` to
   ``__builtin_amdgcn_s_memrealtime()`` (25 GHz wall clock),
-  fix BW kernel hang at depth > 1 (``poll_cq_until`` waited
-  for all ``sq_depth`` slots instead of 1), fill per-iteration
-  ``tposted``/``tcompleted`` arrays for BW reporting
+  fix BW kernel hang at depth > 1, round SQ depth to power
+  of 2 for PVRDMA bitmask ring compatibility, add
+  ``--data_validation`` support for ``--use_rocm_xio``
+  (source pattern rotation + tail marker RDMA WRITEs)
 - **rocm-ernic**: fix TCP mesh health-check self-failure
   (manager checked itself and always failed after 15 s),
   fix workers silently dropping heartbeat probes
 
 Test configuration: GPU client on VM2 (MI210, vfio-pci
-passthrough + pci-mmio-bridge), CPU server on VM1 (standard
-perftest).  500 BW iterations, 200 latency iterations per
-data point.
+passthrough + pci-mmio-bridge), perftest-xio server on VM1
+(CPU-posted verbs).  500 BW iterations, 200 latency
+iterations per data point.
 
-GPU-Initiated Write Bandwidth (Gb/s)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+GPU-Initiated Bandwidth (Gb/s)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 =======  ==========  ==========
 Size     Write       Read
 =======  ==========  ==========
-64 B     0.02        0.02
-256 B    0.09        0.09
-1 KB     0.36        0.36
-4 KB     1.46        1.45
-16 KB    5.79        5.82
-64 KB    23.29       23.44
+64 B     0.023       0.023
+256 B    0.091       0.092
+1 KB     0.36        0.37
+4 KB     1.45        1.47
+16 KB    5.72        5.86
+64 KB    23.72       23.58
 =======  ==========  ==========
 
 Message rate is constant at ~44 Kpps across all sizes,
@@ -587,26 +587,50 @@ confirming the bottleneck is per-message overhead (doorbell
 round-trip through pci-mmio-bridge + vfio-user + TCP mesh),
 not data copy.  Bandwidth scales linearly with message size.
 
-GPU-Initiated Write Latency (us)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+GPU-Initiated Latency (us)
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-=======  ============  ============
-Size     Write (typ)   Read (typ)
-=======  ============  ============
-64 B     11.00         22.00
-256 B    11.00         22.00
-1 KB     10.50         22.00
-4 KB     11.00         22.00
-16 KB    11.00         22.00
-64 KB    11.00         22.00
-=======  ============  ============
+=======  ===========  ===========  ===========  ===========
+Size     Write (typ)  Write (avg)  Read (typ)   Read (avg)
+=======  ===========  ===========  ===========  ===========
+64 B     11.00        10.85        22.00        21.69
+256 B    10.50        10.73        21.00        21.08
+1 KB     11.00        10.87        21.00        21.23
+4 KB     11.00        10.93        21.00        21.25
+16 KB    11.00        10.82        21.00        21.48
+64 KB    11.00        10.78        21.00        21.45
+=======  ===========  ===========  ===========  ===========
 
 Write latency is flat at ~11 us across all sizes.  Read
-latency is ~22 us (2x write) because RDMA Read requires a
+latency is ~21 us (2x write) because RDMA Read requires a
 round-trip: the initiator sends a read request, the responder
 fetches data and sends it back.  Latency is dominated by the
 pci-mmio-bridge poll interval and vfio-user IPC, not data
 size.
+
+GPU-Initiated Data Validation (``--data_validation``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The GPU BW kernel rotates source addresses across three
+pre-filled constant-byte pattern regions (0x01, 0x02, 0x03)
+and writes RDMA tail markers at chunk boundaries.  The
+server-side SIMD validator (AVX2) polls the markers and
+verifies every byte of received data against the expected
+pattern.
+
+=======  ========  ===============
+Size     Result    Bytes verified
+=======  ========  ===============
+1 KB     PASSED    102,400
+4 KB     PASSED    409,600
+16 KB    PASSED    1,638,400
+64 KB    PASSED    6,553,600
+=======  ========  ===============
+
+All sizes pass end-to-end data integrity verification,
+confirming correct data placement through the GPU kernel,
+WQE posting, pci-mmio-bridge doorbell, emulated ERNIC,
+TCP mesh transport, and remote MR write path.
 
 GPU vs CPU Comparison (4 KB RDMA Write)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -615,8 +639,8 @@ GPU vs CPU Comparison (4 KB RDMA Write)
 Metric                      GPU (DV)     CPU (verbs)
 ==========================  ===========  ===========
 Write latency (typ)         11.0 us      183 us
-Write BW @ 4 KB             1.46 Gb/s    6.64 Gb/s
-Write BW @ 64 KB            23.29 Gb/s   7.20 Gb/s
+Write BW @ 4 KB             1.45 Gb/s    6.64 Gb/s
+Write BW @ 64 KB            23.72 Gb/s   7.20 Gb/s
 Path                        GPU kernel   CPU thread
 Doorbell                    pci-mmio     BAR2 mmap
 WQE posting                 GPU shader   CPU ibverbs
@@ -629,7 +653,7 @@ detects completions faster than the CPU perftest polling
 path.  However, GPU BW at small sizes is lower because each
 iteration requires a pci-mmio-bridge round-trip for the
 doorbell, limiting throughput to ~44 Kpps.  At 64 KB, GPU
-BW (23 Gb/s) exceeds CPU BW (7 Gb/s) because the GPU
+BW (23.7 Gb/s) exceeds CPU BW (7.2 Gb/s) because the GPU
 kernel amortises the doorbell overhead over a larger payload.
 
 
