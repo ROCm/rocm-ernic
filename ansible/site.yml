@@ -20,51 +20,51 @@
 #
 # Override variables with -e:
 #   ansible-playbook site.yml -e ernic_instances=4
-#   ansible-playbook site.yml -e ernic_skip_build=true
+#   ansible-playbook site.yml -e ernic_build=false
 #
-# Skip individual phases:
-#   ansible-playbook site.yml -e ernic_skip_host_setup=true
-#   ansible-playbook site.yml -e ernic_skip_vm_create=true
-#   ansible-playbook site.yml -e ernic_skip_guest_setup=true
-#   ansible-playbook site.yml -e ernic_skip_sanity=true
+# Disable individual phases (all default to true):
+#   ansible-playbook site.yml -e ernic_host_setup=false
+#   ansible-playbook site.yml -e ernic_vm_create=false
+#   ansible-playbook site.yml -e ernic_guest_setup=false
+#   ansible-playbook site.yml -e ernic_sanity=false
 #
-# Run optional phases:
-#   ansible-playbook site.yml -e ernic_run_perf=true
-#   ansible-playbook site.yml -e ernic_run_stress=true
+# Enable optional phases (default to false):
+#   ansible-playbook site.yml -e ernic_perf=true
+#   ansible-playbook site.yml -e ernic_stress=true
 #
 # Run the full suite with GPU passthrough:
 #   ansible-playbook site.yml -e ernic_gpu_passthrough=true \
-#       -e ernic_run_perf=true
+#       -e ernic_perf=true
 
 ---
 - name: "Phase 1: Host setup"
   ansible.builtin.import_playbook: playbooks/host-setup.yml
-  when: not (ernic_skip_host_setup | default(false) | bool)
+  when: ernic_host_setup | default(true) | bool
 
 - name: "Phase 2: VM creation"
   ansible.builtin.import_playbook: playbooks/vm-create.yml
-  when: not (ernic_skip_vm_create | default(false) | bool)
+  when: ernic_vm_create | default(true) | bool
 
 - name: "Phase 3: Guest setup"
   ansible.builtin.import_playbook: playbooks/guest-setup.yml
-  when: not (ernic_skip_guest_setup | default(false) | bool)
+  when: ernic_guest_setup | default(true) | bool
 
 - name: "Phase 4: Sanity tests"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
-  when: not (ernic_skip_sanity | default(false) | bool)
+  when: ernic_sanity | default(true) | bool
 
 - name: "Phase 5: Performance tests"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
-  when: ernic_run_perf | default(false) | bool
+  when: ernic_perf | default(false) | bool
 
 - name: "Phase 6a: GPU RDMA tests"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
-  when: not (ernic_skip_gpu_tests | default(false) | bool)
+  when: ernic_gpu_tests | default(true) | bool
 
 - name: "Phase 6b: GPU perftest (rocm-xio)"
   ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
-  when: not (ernic_skip_gpu_perftest | default(false) | bool)
+  when: ernic_gpu_perftest | default(true) | bool
 
 - name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml
-  when: ernic_run_stress | default(false) | bool
+  when: ernic_stress | default(false) | bool

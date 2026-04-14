@@ -57,7 +57,7 @@
 
     - name: Skip all tests if requested
       ansible.builtin.meta: end_play
-      when: ernic_skip_tests | bool
+      when: not (ernic_tests | bool)
 
     # ─────────────────────────────────────────────────
     # TCP/IP sanity test (ping)

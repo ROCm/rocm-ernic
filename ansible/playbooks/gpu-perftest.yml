@@ -99,7 +99,7 @@
       ansible.builtin.meta: end_play
       when: >-
         not (ernic_gpu_passthrough | bool)
-        or (ernic_skip_gpu_perftest | bool)
+        or not (ernic_gpu_perftest | bool)
 
     - name: Assert two instances for GPU perftest
       ansible.builtin.assert:
@@ -190,7 +190,7 @@
           - "XIO prefix:    {{ xio_prefix }}"
 
     # ── Bandwidth sweep ────────────────────────────
-    # Server (VM1): standard perftest (CPU-posted)
+    # Server (VM1): perftest-xio (CPU-posted verbs)
     # Client (VM2): perftest-xio --use_rocm_xio
     - name: "GPU BW: {{ item.0.label }} @ {{ item.1 }} B"
       ansible.builtin.shell:

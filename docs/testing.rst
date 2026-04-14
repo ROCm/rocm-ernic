@@ -243,14 +243,14 @@ Override any default from ``group_vars/all.yml`` with
    ansible-playbook site.yml -e ernic_instances=4
 
    # Skip the build (use existing install)
-   ansible-playbook site.yml -e ernic_skip_build=true
+   ansible-playbook site.yml -e ernic_build=false
 
    # Skip golden image creation
    ansible-playbook site.yml \
-     -e ernic_skip_golden_image=true
+     -e ernic_golden_image=false
 
    # Skip sanity tests
-   ansible-playbook site.yml -e ernic_skip_tests=true
+   ansible-playbook site.yml -e ernic_tests=false
 
    # Provide a golden backing image
    ansible-playbook site.yml \

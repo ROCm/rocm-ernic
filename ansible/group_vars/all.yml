@@ -87,7 +87,7 @@ ernic_stress_concurrent_duration: 60
 # Pass a real AMD GPU into each VM via vfio-pci.
 # Requires IOMMU enabled and GPUs unbound from
 # amdgpu on the host (handled by host-setup.yml).
-ernic_gpu_passthrough: false
+ernic_gpu_passthrough: true
 ernic_pci_mmio_bridge: true
 ernic_gpu_pci_devices:
   1: "0000:4a:00.0"
@@ -119,7 +119,7 @@ ernic_gpu_perftest_sizes:
   - 16384
   - 65536
 ernic_gpu_perftest_timeout: 180
-ernic_skip_gpu_perftest: false
+ernic_gpu_perftest: true
 
 # ── GPU 2-node test defaults ─────────────────────
 ernic_gpu_2node_iters: 100
@@ -133,12 +133,12 @@ ernic_gpu_2node_sizes:
 ernic_gpu_2node_timeout: 120
 
 # ── Feature gates ────────────────────────────────
-ernic_skip_build: false
-ernic_skip_golden_image: false
-ernic_skip_guest_ansible_roles: false
-ernic_skip_tests: false
-ernic_skip_gpu_tests: false
-ernic_skip_gpu_2node_tests: false
+ernic_build: true
+ernic_golden_image: true
+ernic_guest_ansible_roles: true
+ernic_tests: true
+ernic_gpu_tests: true
+ernic_gpu_2node_tests: true
 ernic_force_vm_cleanup: false
 
 # ── rdma_setup role overrides ────────────────────

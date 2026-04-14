@@ -99,7 +99,7 @@
 
     - name: Skip if tests disabled
       ansible.builtin.meta: end_play
-      when: ernic_skip_tests | bool
+      when: not (ernic_tests | bool)
 
     # ─────────────────────────────────────────────────
     # Setup

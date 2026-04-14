@@ -44,7 +44,7 @@
       ansible.builtin.meta: end_play
       when: >-
         not (ernic_gpu_passthrough | bool)
-        or (ernic_skip_gpu_tests | bool)
+        or not (ernic_gpu_tests | bool)
 
     - name: Assert exactly two instances for GPU tests
       ansible.builtin.assert:
@@ -198,7 +198,7 @@
     - name: Skip 2-node GPU tests if disabled
       ansible.builtin.set_fact:
         run_2node: >-
-          {{ not (ernic_skip_gpu_2node_tests | bool) }}
+          {{ ernic_gpu_2node_tests | bool }}
 
     - name: "GPU 2-Node: size sweep"
       ansible.builtin.shell:
