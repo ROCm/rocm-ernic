@@ -1,0 +1,25 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# systemd unit for the ernic-exporter Prometheus
+# metrics exporter.
+#
+# Install: /usr/lib/systemd/system/ernic-exporter.service
+
+[Unit]
+Description=ROCm eRNIC Prometheus metrics exporter
+After=rocm-ernic.service
+Wants=rocm-ernic.service
+
+[Service]
+Type=simple
+
+EnvironmentFile=/etc/rocm-ernic/rocm-ernic.env
+
+ExecStart=/usr/local/bin/ernic-exporter
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

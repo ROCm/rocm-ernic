@@ -42,7 +42,7 @@
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
-    rdma_dev: rocep1s0
+    rdma_dev: rocm-rdma-ernic0
 
     multi_qp_counts: >-
       {{ ernic_stress_multi_qp_counts
@@ -71,13 +71,7 @@
       {{ ernic_iperf_duration | default(10) }}
 
     kill_perftest: >-
-      sudo pkill -9 ib_send_bw  2>/dev/null;
-      sudo pkill -9 ib_write_bw 2>/dev/null;
-      sudo pkill -9 ib_read_bw  2>/dev/null;
-      sudo pkill -9 ib_send_lat  2>/dev/null;
-      sudo pkill -9 ib_write_lat 2>/dev/null;
-      sudo pkill -9 ib_read_lat  2>/dev/null;
-      sudo pkill -9 ibv_rc_pingpong 2>/dev/null;
+      sudo /usr/local/bin/free-perftest-port 2>/dev/null;
       sudo pkill -9 iperf3 2>/dev/null;
       true
 
@@ -104,32 +98,42 @@
     # ─────────────────────────────────────────────────
     # Setup
     # ─────────────────────────────────────────────────
-    - name: Kill stale perftest on VM1
+    - name: Copy free-perftest-port to VM1
       ansible.builtin.shell:
         cmd: >-
-          {{ vm1_ssh }}
-          '{{ kill_perftest }}'
+          cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
+          | {{ vm1_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
+          && sudo chmod 755 /usr/local/bin/free-perftest-port'
+      changed_when: false
+
+    - name: Copy free-perftest-port to VM2
+      ansible.builtin.shell:
+        cmd: >-
+          cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
+          | {{ vm2_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
+          && sudo chmod 755 /usr/local/bin/free-perftest-port'
+      changed_when: false
+
+    - name: Free perftest port on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} '{{ kill_perftest }}'
       changed_when: false
       failed_when: false
 
-    - name: Kill stale perftest on VM2
+    - name: Free perftest port on VM2
       ansible.builtin.shell:
         cmd: >-
-          {{ vm2_ssh }}
-          '{{ kill_perftest }}'
+          {{ vm2_ssh }} '{{ kill_perftest }}'
       changed_when: false
       failed_when: false
-
-    - name: Wait for port 18515 to be released
-      ansible.builtin.pause:
-        seconds: 2
 
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
         cmd: >-
           {{ vm1_ssh }}
           'ibv_devices
-          | grep -oE "rocep[0-9]+s[0-9]+"
+          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
           | head -1'
       register: rdma_dev_detect
       changed_when: false
@@ -139,7 +143,7 @@
       ansible.builtin.set_fact:
         rdma_dev: >-
           {{ rdma_dev_detect.stdout | trim
-             | default('rocep1s0', true) }}
+             | default('rocm-rdma-ernic0', true) }}
 
     - name: Create results directory
       ansible.builtin.file:
@@ -251,6 +255,13 @@
         label: >-
           {{ item.item.0.label }} -q {{ item.item.1 }}
       when: item.stdout is defined
+
+    - name: Assert multi-QP tests passed
+      ansible.builtin.assert:
+        that:
+          - mqp_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Multi-QP stress tests failed. Aborting.
 
     # ─────────────────────────────────────────────────
     # 2. Bidirectional bandwidth (--bidirectional)
@@ -893,3 +904,12 @@
     - name: Stress results table
       ansible.builtin.debug:
         msg: "{{ stress_table.stdout_lines }}"
+
+    - name: Assert no test failures
+      ansible.builtin.assert:
+        that:
+          - (stress_fail_count.stdout | default('0') | int) == 0
+        fail_msg: >-
+          {{ stress_fail_count.stdout }} stress test(s)
+          failed or returned no data. Check the CSV
+          file for FAIL/NODATA entries.

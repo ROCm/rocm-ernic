@@ -45,6 +45,30 @@ if(ERNIC_INSTALL_SERVICE)
         DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 
+    # Prometheus exporter
+    install(PROGRAMS
+        ${CMAKE_SOURCE_DIR}/prometheus/ernic-exporter
+        DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+
+    # ernic-exporter systemd unit
+    install(FILES
+        ${CMAKE_SOURCE_DIR}/prometheus/ernic-exporter.service
+        DESTINATION lib/systemd/system
+    )
+
+    # Exporter Python dependencies
+    install(FILES
+        ${CMAKE_SOURCE_DIR}/prometheus/requirements-exporter.txt
+        DESTINATION ${ERNIC_SHARE_DIR}
+    )
+
+    # Grafana dashboard
+    install(FILES
+        ${CMAKE_SOURCE_DIR}/prometheus/grafana/ernic-dashboard.json
+        DESTINATION ${ERNIC_SHARE_DIR}/grafana
+    )
+
     # Default environment file
     install(FILES
         ${CMAKE_SOURCE_DIR}/service/rocm-ernic.env

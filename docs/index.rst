@@ -43,6 +43,7 @@ Quick Start
    architecture
    usage
    service
+   monitoring
    driver
    testing
    performance

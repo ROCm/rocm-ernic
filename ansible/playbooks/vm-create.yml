@@ -129,7 +129,7 @@
           - "{{ ernic_qemu_minimal }}/qemu/gen-vm"
       environment:
         QEMU_PATH: "{{ ernic_qemu_path }}"
-        VM_NAME: "{{ ernic_vm_name }}"
+        VM_NAME: "{{ ernic_vm_name_base }}"
         IMAGES: "{{ ernic_vm_image_dir }}/backing"
         RELEASE: "{{ ernic_vm_release }}"
         SIZE: "64"
@@ -138,7 +138,8 @@
         SSH_PORT: "{{ ernic_vm_ssh_base_port | string }}"
         KVM: enable
         USERNAME: "{{ ernic_vm_ssh_user }}"
-        PASS: password
+        PASS: "{{ ernic_vm_ssh_pass }}"
+        SSH_KEY_FILE: "{{ ernic_vm_ssh_key_file }}"
         PACKAGES: "{{ ernic_vm_packages }}"
       changed_when: true
       when:
@@ -373,6 +374,69 @@
         rocm_setup_install_metrics_exporter: false
       when: ernic_gpu_passthrough | bool
 
+    # ── Static config baked into golden image ───────
+    - name: Disable KillUserProcesses in logind
+      ansible.builtin.copy:
+        dest: /etc/systemd/logind.conf.d/99-kill-user-processes.conf
+        content: |
+          [Login]
+          KillUserProcesses=no
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable rocm-ernic modules on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/rocm-ernic.conf
+        content: |
+          rocm_ernic_eth
+          rocm_ernic_rdma
+        mode: "0644"
+
+    - name: Enable rocm-xio module on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/rocm-xio.conf
+        content: "rocm-xio\n"
+        mode: "0644"
+      when: ernic_gpu_passthrough | bool
+
+    - name: Find system pci.ids path
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/share/hwdata/pci.ids
+        - /usr/share/misc/pci.ids
+      register: pciids_stat
+
+    - name: Set pci.ids path fact
+      ansible.builtin.set_fact:
+        pciids_path: >-
+          {{ (pciids_stat.results
+              | selectattr('stat.exists')
+              | first
+              | default({})).item | default('') }}
+
+    - name: Check if ROCm ERNIC entry exists in pci.ids
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -q
+          - "8000  ROCm Emulated RDMA NIC"
+          - "{{ pciids_path }}"
+      register: pciids_grep
+      failed_when: false
+      changed_when: false
+      when: pciids_path | length > 0
+
+    - name: Merge ROCm ERNIC device into pci.ids
+      ansible.builtin.replace:
+        path: "{{ pciids_path }}"
+        regexp: '^(1022\s+.*)$'
+        replace: '\1\n\t8000  ROCm Emulated RDMA NIC'
+      when:
+        - pciids_path | length > 0
+        - pciids_grep.rc | default(1) != 0
+
     - name: Clean apt cache to shrink image
       ansible.builtin.apt:
         autoclean: true
@@ -431,7 +495,7 @@
                 item: ['ernicctl', 'vm-launch',
                        item | string,
                        '--vm-name',
-                       ernic_vm_name ~ '-' ~ item,
+                       ernic_vm_name_base ~ '-' ~ item,
                        '--ssh-port',
                        (ernic_vm_ssh_base_port | int
                         + item - 1) | string,

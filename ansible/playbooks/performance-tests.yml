@@ -44,7 +44,7 @@
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
-    rdma_dev: rocep1s0
+    rdma_dev: rocm-rdma-ernic0
 
     bw_iters: "{{ ernic_perf_bw_iters | default(100) }}"
     lat_iters: "{{ ernic_perf_lat_iters | default(50) }}"
@@ -56,16 +56,8 @@
 
     perftest_timeout: 120
 
-    # Shell snippet to kill all perftest binaries.
-    # Sourced inside each per-test SSH command.
     kill_perftest: >-
-      sudo pkill -9 ib_send_bw  2>/dev/null;
-      sudo pkill -9 ib_write_bw 2>/dev/null;
-      sudo pkill -9 ib_read_bw  2>/dev/null;
-      sudo pkill -9 ib_send_lat  2>/dev/null;
-      sudo pkill -9 ib_write_lat 2>/dev/null;
-      sudo pkill -9 ib_read_lat  2>/dev/null;
-      sudo pkill -9 ibv_rc_pingpong 2>/dev/null;
+      sudo /usr/local/bin/free-perftest-port 2>/dev/null;
       true
 
     sweep_sizes:
@@ -112,58 +104,42 @@
     # ─────────────────────────────────────────────────
     # Setup
     # ─────────────────────────────────────────────────
-    - name: Kill stale perftest on VM1
+    - name: Copy free-perftest-port to VM1
       ansible.builtin.shell:
         cmd: >-
-          {{ vm1_ssh }}
-          '{{ kill_perftest }}'
+          cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
+          | {{ vm1_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
+          && sudo chmod 755 /usr/local/bin/free-perftest-port'
+      changed_when: false
+
+    - name: Copy free-perftest-port to VM2
+      ansible.builtin.shell:
+        cmd: >-
+          cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
+          | {{ vm2_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
+          && sudo chmod 755 /usr/local/bin/free-perftest-port'
+      changed_when: false
+
+    - name: Free perftest port on VM1
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'sudo /usr/local/bin/free-perftest-port'
       changed_when: false
       failed_when: false
 
-    - name: Kill stale perftest on VM2
+    - name: Free perftest port on VM2
       ansible.builtin.shell:
         cmd: >-
-          {{ vm2_ssh }}
-          '{{ kill_perftest }}'
+          {{ vm2_ssh }} 'sudo /usr/local/bin/free-perftest-port'
       changed_when: false
       failed_when: false
-
-    - name: Wait for port 18515 to be released
-      ansible.builtin.pause:
-        seconds: 2
-
-    - name: Verify port 18515 free on VM1
-      ansible.builtin.shell:
-        cmd: >-
-          {{ vm1_ssh }}
-          'ss -tlnp 2>/dev/null | grep -q ":18515 "
-          && echo "BUSY" || echo "FREE"'
-      register: port_vm1
-      changed_when: false
-      failed_when: false
-
-    - name: Verify port 18515 free on VM2
-      ansible.builtin.shell:
-        cmd: >-
-          {{ vm2_ssh }}
-          'ss -tlnp 2>/dev/null | grep -q ":18515 "
-          && echo "BUSY" || echo "FREE"'
-      register: port_vm2
-      changed_when: false
-      failed_when: false
-
-    - name: Show port check result
-      ansible.builtin.debug:
-        msg:
-          - "VM1 port 18515: {{ port_vm1.stdout | trim }}"
-          - "VM2 port 18515: {{ port_vm2.stdout | trim }}"
 
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
         cmd: >-
           {{ vm1_ssh }}
           'ibv_devices
-          | grep -oE "rocep[0-9]+s[0-9]+"
+          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
           | head -1'
       register: rdma_dev_detect
       changed_when: false
@@ -173,7 +149,7 @@
       ansible.builtin.set_fact:
         rdma_dev: >-
           {{ rdma_dev_detect.stdout | trim
-             | default('rocep1s0', true) }}
+             | default('rocm-rdma-ernic0', true) }}
 
     - name: Create results directory
       ansible.builtin.file:
@@ -287,6 +263,13 @@
         label: "{{ item.item.0.label }} @ {{ item.item.1 }}"
       when: item.stdout is defined
 
+    - name: Assert BW sweep had no failures
+      ansible.builtin.assert:
+        that:
+          - bw_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          BW sweep had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # Latency sweep
     # ─────────────────────────────────────────────────
@@ -361,6 +344,13 @@
         label: "{{ item.item.0.label }} @ {{ item.item.1 }}"
       when: item.stdout is defined
 
+    - name: Assert lat sweep had no failures
+      ansible.builtin.assert:
+        that:
+          - lat_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Latency sweep had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # Reliability tests (multiple runs at fixed size)
     # ─────────────────────────────────────────────────
@@ -433,6 +423,13 @@
       loop_control:
         label: "{{ item.0.label }} run {{ item.1 }}"
 
+    - name: Assert reliability sweep had no failures
+      ansible.builtin.assert:
+        that:
+          - rel_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Reliability sweep had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # ibv_rc_pingpong reliability
     # ─────────────────────────────────────────────────
@@ -504,6 +501,13 @@
       loop_control:
         label: "run {{ item }}"
 
+    - name: Assert pingpong had no failures
+      ansible.builtin.assert:
+        that:
+          - pp_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Pingpong tests had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # Summary
     # ─────────────────────────────────────────────────
@@ -557,3 +561,12 @@
     - name: Reliability results table
       ansible.builtin.debug:
         msg: "{{ rel_table.stdout_lines }}"
+
+    - name: Assert no test failures
+      ansible.builtin.assert:
+        that:
+          - (fail_count.stdout | default('0') | int) == 0
+        fail_msg: >-
+          {{ fail_count.stdout }} test(s) failed or
+          returned no data. Check the CSV files for
+          FAIL/NODATA entries.

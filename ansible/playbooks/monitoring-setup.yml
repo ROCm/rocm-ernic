@@ -1,0 +1,137 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Deploy Prometheus exporter, Prometheus scrape config,
+# and Grafana dashboard for rocm-ernic monitoring.
+#
+# Usage:
+#   ansible-playbook playbooks/monitoring-setup.yml
+#
+# Prerequisites:
+#   - rocm-ernic service already installed
+#     (host-setup.yml or cmake --install)
+#   - Prometheus and Grafana installed on the host
+#     (or reachable targets)
+
+---
+- name: Monitoring setup -- ernic-exporter, Prometheus, Grafana
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    # ── Gate ──────────────────────────────────────────
+    - name: Skip monitoring setup if disabled
+      ansible.builtin.meta: end_play
+      when: not (ernic_monitoring | default(true) | bool)
+
+    # ── Python venv for exporter ──────────────────────
+    - name: Create exporter venv
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -m
+          - venv
+          - "{{ ernic_exporter_venv }}"
+        creates: "{{ ernic_exporter_venv }}/bin/python3"
+      become: true
+
+    - name: Install prometheus_client into venv
+      ansible.builtin.pip:
+        requirements: "{{ ernic_project_root }}/prometheus/requirements-exporter.txt"
+        virtualenv: "{{ ernic_exporter_venv }}"
+      become: true
+
+    # ── Patch systemd unit for venv Python ────────────
+    - name: Create systemd override directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/ernic-exporter.service.d
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Deploy systemd override for venv Python
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/ernic-exporter.service.d/venv.conf
+        mode: "0644"
+        content: |
+          # Managed by Ansible -- do not edit
+          [Service]
+          ExecStart=
+          ExecStart={{ ernic_exporter_venv }}/bin/python3 /usr/local/bin/ernic-exporter
+          Environment=ERNIC_EXPORTER_PORT={{ ernic_exporter_port }}
+      become: true
+      notify: Restart ernic-exporter
+
+    # ── Enable and start exporter ─────────────────────
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+      become: true
+
+    - name: Enable and start ernic-exporter
+      ansible.builtin.systemd:
+        name: ernic-exporter
+        enabled: true
+        state: started
+      become: true
+
+    # ── Prometheus scrape config ──────────────────────
+    - name: Check if Prometheus config directory exists
+      ansible.builtin.stat:
+        path: "{{ ernic_prometheus_config_dir }}"
+      register: prom_dir
+
+    - name: Deploy Prometheus scrape config
+      ansible.builtin.copy:
+        dest: "{{ ernic_prometheus_config_dir }}/ernic.yml"
+        mode: "0644"
+        content: |
+          # Managed by Ansible -- ernic-exporter scrape
+          - job_name: rocm-ernic
+            scrape_interval: {{ ernic_exporter_scrape_interval }}
+            static_configs:
+              - targets:
+                  - "localhost:{{ ernic_exporter_port }}"
+                labels:
+                  host: "{{ ansible_hostname }}"
+      become: true
+      when: prom_dir.stat.exists
+      notify: Reload Prometheus
+
+    # ── Grafana dashboard ─────────────────────────────
+    - name: Check if Grafana provisioning directory exists
+      ansible.builtin.stat:
+        path: "{{ ernic_grafana_dashboard_dir }}"
+      register: grafana_dir
+
+    - name: Deploy Grafana dashboard JSON
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/prometheus/grafana/ernic-dashboard.json"
+        dest: "{{ ernic_grafana_dashboard_dir }}/ernic-dashboard.json"
+        mode: "0644"
+      become: true
+      when: grafana_dir.stat.exists
+      notify: Restart Grafana
+
+  handlers:
+    - name: Restart ernic-exporter
+      ansible.builtin.systemd:
+        name: ernic-exporter
+        state: restarted
+      become: true
+
+    - name: Reload Prometheus
+      ansible.builtin.systemd:
+        name: prometheus
+        state: reloaded
+      become: true
+
+    - name: Restart Grafana
+      ansible.builtin.systemd:
+        name: grafana-server
+        state: restarted
+      become: true

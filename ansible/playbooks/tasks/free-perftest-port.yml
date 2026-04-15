@@ -1,0 +1,34 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Free the perftest data-exchange port on one or more
+# hosts.  Expects the caller to set fpp_hosts (list)
+# or defaults to the play host.
+#
+# Usage:
+#   - ansible.builtin.include_tasks:
+#       file: tasks/free-perftest-port.yml
+#     vars:
+#       fpp_hosts: [ernic_vm_1, ernic_vm_2]
+
+---
+- name: "Copy free-perftest-port script"
+  ansible.builtin.copy:
+    src: files/free-perftest-port.sh
+    dest: /usr/local/bin/free-perftest-port
+    mode: "0755"
+  loop: "{{ fpp_hosts | default([inventory_hostname]) }}"
+  delegate_to: "{{ item }}"
+
+- name: "Free perftest port"
+  ansible.builtin.command:
+    cmd: /usr/local/bin/free-perftest-port
+  loop: "{{ fpp_hosts | default([inventory_hostname]) }}"
+  delegate_to: "{{ item }}"
+  changed_when: false
+  failed_when: false
+
+- name: "Wait for port release"
+  ansible.builtin.pause:
+    seconds: 2

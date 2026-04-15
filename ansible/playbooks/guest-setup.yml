@@ -152,12 +152,6 @@
           changed_when: true
 
     # ── Build and install kernel driver via DKMS ──────
-    - name: Ensure dkms is installed
-      ansible.builtin.apt:
-        name: dkms
-        state: present
-        update_cache: false
-
     - name: Install rocm-ernic driver via DKMS
       ansible.builtin.command:
         cmd: bash /tmp/driver/setup-rocm-ernic-dkms.sh
@@ -179,44 +173,6 @@
         cmd: udevadm control --reload-rules
       changed_when: true
 
-    # ── Merge pci.ids fragment for lspci display ─────
-    - name: Find system pci.ids path
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - /usr/share/hwdata/pci.ids
-        - /usr/share/misc/pci.ids
-      register: pciids_stat
-
-    - name: Set pci.ids path fact
-      ansible.builtin.set_fact:
-        pciids_path: >-
-          {{ (pciids_stat.results
-              | selectattr('stat.exists')
-              | first
-              | default({})).item | default('') }}
-
-    - name: Check if ROCm ERNIC entry exists in pci.ids
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -q
-          - "8000  ROCm Emulated RDMA NIC"
-          - "{{ pciids_path }}"
-      register: pciids_grep
-      failed_when: false
-      changed_when: false
-      when: pciids_path | length > 0
-
-    - name: Merge ROCm ERNIC device into pci.ids
-      ansible.builtin.replace:
-        path: "{{ pciids_path }}"
-        regexp: '^(1022\s+.*)$'
-        replace: '\1\n\t8000  ROCm Emulated RDMA NIC'
-      when:
-        - pciids_path | length > 0
-        - pciids_grep.rc | default(1) != 0
-
     # ── Load driver modules ──────────────────────────
     - name: Load ib_core module
       community.general.modprobe:
@@ -227,14 +183,6 @@
       community.general.modprobe:
         name: ib_uverbs
         state: present
-
-    - name: Enable rocm-ernic modules on boot
-      ansible.builtin.copy:
-        dest: /etc/modules-load.d/rocm-ernic.conf
-        content: |
-          rocm_ernic_eth
-          rocm_ernic_rdma
-        mode: "0644"
 
     - name: Load rocm_ernic_eth module
       community.general.modprobe:
@@ -302,57 +250,32 @@
       ansible.builtin.debug:
         var: ibv_devinfo_output.stdout_lines
 
-    # ── Disable KillUserProcesses ─────────────────────
-    # Perftest server processes (ib_send_bw, etc.) are
-    # launched over SSH. Without this, systemd-logind
-    # kills them when the SSH session ends.
-    - name: Disable KillUserProcesses in logind
-      ansible.builtin.copy:
-        dest: /etc/systemd/logind.conf.d/99-kill-user-processes.conf
-        content: |
-          [Login]
-          KillUserProcesses=no
-        owner: root
-        group: root
-        mode: "0644"
-      notify: restart logind
-
     # ── Set unique hostname per VM ────────────────────
     - name: Set VM hostname
       ansible.builtin.hostname:
-        name: "{{ ernic_vm_name }}-{{ vm_index }}"
+        name: "{{ ernic_vm_name_base }}-{{ vm_index }}"
 
     - name: Update /etc/hosts with new hostname
       ansible.builtin.lineinfile:
         path: /etc/hosts
         regexp: '^127\.0\.1\.1'
-        line: "127.0.1.1 {{ ernic_vm_name }}-{{ vm_index }}"
+        line: "127.0.1.1 {{ ernic_vm_name_base }}-{{ vm_index }}"
 
     # ── Configure emulated NIC IP addresses ──────────
-    - name: Detect emulated NIC name
-      ansible.builtin.shell:
-        cmd: >-
-          if ip -o link show {{ ernic_nic_name }}
-          >/dev/null 2>&1; then
-            echo {{ ernic_nic_name }};
-          else
-            ls /sys/bus/pci/drivers/rocm_ernic_eth/*/net/
-            2>/dev/null | head -1;
-          fi
-      register: detected_nic
+    - name: Assert emulated NIC exists
+      ansible.builtin.command:
+        cmd: "ip -o link show {{ ernic_nic_name }}"
+      register: nic_check
       changed_when: false
+      failed_when: false
 
-    - name: Assert NIC was detected
+    - name: Fail if NIC not found
       ansible.builtin.assert:
         that:
-          - detected_nic.stdout | trim | length > 0
+          - nic_check.rc == 0
         fail_msg: >-
-          Could not find the rocm-ernic NIC.
+          NIC {{ ernic_nic_name }} not found.
           Check udev rules and driver loading.
-
-    - name: Set NIC name fact
-      ansible.builtin.set_fact:
-        nic_name: "{{ detected_nic.stdout | trim }}"
 
     - name: Bring emulated NIC up
       ansible.builtin.command:
@@ -360,7 +283,7 @@
           - ip
           - link
           - set
-          - "{{ nic_name }}"
+          - "{{ ernic_nic_name }}"
           - up
       changed_when: true
 
@@ -371,7 +294,7 @@
           - addr
           - show
           - dev
-          - "{{ nic_name }}"
+          - "{{ ernic_nic_name }}"
       register: nic_addr_check
       changed_when: false
 
@@ -383,7 +306,7 @@
           - add
           - "{{ vm_ip }}/24"
           - dev
-          - "{{ nic_name }}"
+          - "{{ ernic_nic_name }}"
       when: "vm_ip not in nic_addr_check.stdout"
       changed_when: true
 
@@ -394,7 +317,7 @@
           - addr
           - show
           - dev
-          - "{{ nic_name }}"
+          - "{{ ernic_nic_name }}"
       register: nic_config
       changed_when: false
 
@@ -405,12 +328,11 @@
     # ── GPU passthrough: rocm-xio ─────────────────────
     # ROCm and build tools are baked into the golden
     # image.  Only rocm-xio build/install happens here.
-    - name: Install extra packages for rocm-xio build
-      ansible.builtin.apt:
-        name:
-          - libcli11-dev
-        state: present
-        update_cache: false
+    - name: Add VM user to render and video groups
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: render,video
+        append: true
       when: ernic_gpu_passthrough | bool
 
     - name: Load amdgpu kernel module
@@ -515,15 +437,6 @@
         - ernic_gpu_passthrough | bool
         - ernic_pci_mmio_bridge | bool
 
-    - name: Enable rocm-xio module on boot
-      ansible.builtin.copy:
-        dest: /etc/modules-load.d/rocm-xio.conf
-        content: "rocm-xio\n"
-        mode: "0644"
-      when:
-        - ernic_gpu_passthrough | bool
-        - ernic_pci_mmio_bridge | bool
-
     - name: Load rocm-xio kernel module
       community.general.modprobe:
         name: rocm_xio
@@ -583,143 +496,3 @@
       ansible.builtin.debug:
         msg: "xio-tester: {{ xio_tester_path.stdout }}"
       when: ernic_gpu_passthrough | bool
-
-    # ── GPU perftest fork (rocm-xio) ───────────────
-    - name: Install perftest build dependencies
-      ansible.builtin.apt:
-        name:
-          - autoconf
-          - automake
-          - libtool
-          - libibverbs-dev
-        state: present
-        update_cache: false
-      when: ernic_gpu_passthrough | bool
-
-    - name: Check if perftest-xio already built
-      ansible.builtin.stat:
-        path: "{{ ernic_perftest_prefix }}/bin/ib_write_bw"
-      register: perftest_xio_check
-      when: ernic_gpu_passthrough | bool
-
-    - name: Clone perftest fork from GitHub
-      ansible.builtin.git:
-        repo: "{{ ernic_perftest_repo }}"
-        dest: /tmp/perftest-xio
-        version: >-
-          {{ ernic_perftest_commit
-             | default(ernic_perftest_branch, true) }}
-        force: true
-      register: perftest_clone
-      failed_when: false
-      when:
-        - ernic_gpu_passthrough | bool
-        - not perftest_xio_check.stat.exists
-          | default(false)
-
-    - name: Fall back to local tarball if clone failed
-      when:
-        - ernic_gpu_passthrough | bool
-        - not perftest_xio_check.stat.exists
-          | default(false)
-        - perftest_clone is failed
-          or perftest_clone is skipped
-      block:
-        - name: Copy perftest-xio tarball to guest
-          ansible.builtin.copy:
-            src: /tmp/perftest-xio.tar.gz
-            dest: /tmp/perftest-xio.tar.gz
-            mode: "0644"
-
-        - name: Extract perftest-xio source
-          ansible.builtin.shell:
-            cmd: >-
-              mkdir -p /tmp/perftest-xio &&
-              cd /tmp/perftest-xio &&
-              tar xzf /tmp/perftest-xio.tar.gz
-
-    - name: Generate perftest configure script
-      ansible.builtin.command:
-        cmd: ./autogen.sh
-        chdir: /tmp/perftest-xio
-      changed_when: true
-      when:
-        - ernic_gpu_passthrough | bool
-        - not perftest_xio_check.stat.exists
-          | default(false)
-
-    - name: Configure perftest with rocm-xio
-      ansible.builtin.shell:
-        cmd: >-
-          export PATH=/opt/rocm/bin:$PATH;
-          ./configure
-          --prefix={{ ernic_perftest_prefix }}
-          --enable-rocm-xio
-          --with-rocm-xio=/opt/rocm-xio
-          HIPCC=/opt/rocm/bin/hipcc
-          CFLAGS="-I/opt/rocm/include"
-          LDFLAGS="-L/opt/rocm/lib -Wl,-rpath,/opt/rocm/lib"
-        chdir: /tmp/perftest-xio
-      changed_when: true
-      when:
-        - ernic_gpu_passthrough | bool
-        - not perftest_xio_check.stat.exists
-          | default(false)
-
-    - name: Build perftest-xio
-      ansible.builtin.shell:
-        cmd: >-
-          export PATH=/opt/rocm/bin:$PATH;
-          make -j{{ ansible_processor_vcpus | default(2) }}
-          ib_write_bw ib_write_lat ib_read_bw ib_read_lat
-          ib_send_bw ib_send_lat ib_atomic_bw ib_atomic_lat
-        chdir: /tmp/perftest-xio
-      changed_when: true
-      when:
-        - ernic_gpu_passthrough | bool
-        - not perftest_xio_check.stat.exists
-          | default(false)
-
-    - name: Install perftest-xio binaries
-      ansible.builtin.shell:
-        cmd: >-
-          mkdir -p {{ ernic_perftest_prefix }}/bin &&
-          cp -f ib_write_bw ib_write_lat ib_read_bw
-          ib_read_lat ib_send_bw ib_send_lat
-          ib_atomic_bw ib_atomic_lat
-          {{ ernic_perftest_prefix }}/bin/
-        chdir: /tmp/perftest-xio
-      changed_when: true
-      when:
-        - ernic_gpu_passthrough | bool
-        - not perftest_xio_check.stat.exists
-          | default(false)
-
-    - name: Verify perftest-xio binaries
-      ansible.builtin.stat:
-        path: "{{ ernic_perftest_prefix }}/bin/ib_write_bw"
-      register: perftest_xio_verify
-      when: ernic_gpu_passthrough | bool
-
-    - name: Assert perftest-xio installed
-      ansible.builtin.assert:
-        that:
-          - perftest_xio_verify.stat.exists
-        fail_msg: >-
-          perftest-xio binary not found at
-          {{ ernic_perftest_prefix }}/bin/ib_write_bw
-          after build. Check configure/make output.
-      when: ernic_gpu_passthrough | bool
-
-    - name: Display perftest-xio location
-      ansible.builtin.debug:
-        msg: >-
-          perftest-xio installed at
-          {{ ernic_perftest_prefix }}
-      when: ernic_gpu_passthrough | bool
-
-  handlers:
-    - name: restart logind
-      ansible.builtin.systemd:
-        name: systemd-logind
-        state: restarted

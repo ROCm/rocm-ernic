@@ -190,6 +190,7 @@ typedef struct {
     void *host_addr; /* translated host pointer from MR */
     uint32_t length;
     uint32_t lkey;
+    bool dma_mapped; /* host_addr obtained via pci_dma_map */
 } TcpSGE;
 
 typedef struct {
@@ -533,6 +534,7 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
         wr->sge[i].length = sge[i].length;
         wr->sge[i].lkey = sge[i].lkey;
         wr->sge[i].host_addr = NULL;
+        wr->sge[i].dma_mapped = false;
 
         if (sge[i].length == 0) {
             continue;
@@ -547,6 +549,24 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
         }
 
         uint64_t guest_addr = sge[i].addr;
+
+        if (mr->start == 0 && mr->length == 0) {
+            PCIDevice *pci_dev = tqp->backend_dev->dev;
+            dma_addr_t dma_len = sge[i].length;
+            void *host = pci_dma_map(pci_dev, (dma_addr_t)guest_addr, &dma_len,
+                                     DMA_DIRECTION_FROM_DEVICE);
+            if (!host) {
+                rdma_error_report("TCP: DMA MR map failed for SGE %u "
+                                  "addr=0x%lx len=%u",
+                                  i, (unsigned long)guest_addr, sge[i].length);
+                wr->sge[i].length = 0;
+                continue;
+            }
+            wr->sge[i].host_addr = host;
+            wr->sge[i].dma_mapped = true;
+            continue;
+        }
+
         if (guest_addr < mr->start ||
             guest_addr + sge[i].length > mr->start + mr->length) {
             rdma_error_report("TCP: SGE %u out of MR bounds addr=0x%lx len=%u "
@@ -564,9 +584,18 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
 
 static void tcp_wr_unmap_sge(TcpQP *tqp, TcpWR *wr)
 {
-    /* Nothing to do: SGEs use MR host pointers, no explicit unmap needed. */
-    (void)tqp;
-    (void)wr;
+    if (!tqp || !wr || !tqp->backend_dev) {
+        return;
+    }
+    for (uint32_t i = 0; i < wr->num_sge && i < 32; i++) {
+        if (wr->sge[i].dma_mapped && wr->sge[i].host_addr) {
+            pci_dma_unmap(tqp->backend_dev->dev, wr->sge[i].host_addr,
+                          wr->sge[i].length, DMA_DIRECTION_FROM_DEVICE,
+                          wr->sge[i].length);
+            wr->sge[i].host_addr = NULL;
+            wr->sge[i].dma_mapped = false;
+        }
+    }
 }
 
 static void tcp_connection_free(TcpConnection *conn)
@@ -2242,19 +2271,71 @@ static void *tcp_manager_health_check_thread(void *opaque)
                                      node->node_id, node->hostname, node->port);
                     int fd = tcp_connect_to_remote(node->hostname, node->port);
                     if (fd >= 0) {
+                        __atomic_fetch_add(&priv->tcp_stats.reconnect_attempts,
+                                           1, __ATOMIC_RELAXED);
+
+                        TcpConnection *old_conn = node->conn;
+
+                        if (old_conn) {
+                            old_conn->recv_thread_running = false;
+                            qemu_thread_join(&old_conn->recv_thread);
+                            if (old_conn->sockfd >= 0) {
+                                close(old_conn->sockfd);
+                            }
+                            old_conn->sockfd = -1;
+                            old_conn->is_connected = false;
+                        }
+
+                        TcpConnection *new_conn = tcp_connection_new(
+                            node->node_id, node->hostname, node->port);
+                        new_conn->priv = priv;
+                        new_conn->sockfd = fd;
+                        new_conn->is_connected = true;
+
+                        if (tcp_send_handshake(new_conn, priv->local_node_id,
+                                               TCP_MSG_HANDSHAKE) < 0) {
+                            rdma_error_report("TCP: Failed to send handshake "
+                                              "after reconnect to node %u",
+                                              node->node_id);
+                            tcp_connection_free(new_conn);
+                            goto reconnect_done;
+                        }
+
+                        char tname[32];
+                        snprintf(tname, sizeof(tname), "tcp-recv-%u",
+                                 node->node_id);
+                        new_conn->recv_thread_running = true;
+                        qemu_thread_create(&new_conn->recv_thread, tname,
+                                           tcp_recv_thread_per_conn, new_conn,
+                                           QEMU_THREAD_JOINABLE);
+
+                        qemu_mutex_lock(&priv->conn_table_lock);
+                        g_hash_table_replace(priv->connections,
+                                             GUINT_TO_POINTER(node->node_id),
+                                             new_conn);
+                        qemu_mutex_unlock(&priv->conn_table_lock);
+
+                        node->conn = new_conn;
+                        node->is_alive = true;
+                        node->last_heartbeat = now;
+
+                        if (old_conn) {
+                            g_free(old_conn->remote_host);
+                            qemu_mutex_destroy(&old_conn->lock);
+                            g_free(old_conn);
+                        }
+
                         rdma_info_report("TCP: Reconnected to "
                                          "node %u",
                                          node->node_id);
-                        node->is_alive = true;
-                        node->last_heartbeat = now;
-                        if (node->conn) {
-                            node->conn->sockfd = fd;
-                            node->conn->is_connected = true;
-                        }
+                        __atomic_fetch_add(&priv->tcp_stats.reconnect_successes,
+                                           1, __ATOMIC_RELAXED);
+
                         qemu_mutex_unlock(&priv->mesh_table_lock);
                         tcp_broadcast_mesh_topology(priv);
                         qemu_mutex_lock(&priv->mesh_table_lock);
                     }
+                reconnect_done:;
                 }
             }
         }

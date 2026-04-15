@@ -1053,8 +1053,12 @@ int main(int argc, char *argv[])
     }
 
     /* Setup DMA callbacks */
+#ifdef LIBVFIO_USER_MAX_DMA_REGIONS
     ret = vfu_setup_device_dma(vfu_ctx, LIBVFIO_USER_MAX_DMA_REGIONS,
                                dma_register_cb, dma_unregister_cb);
+#else
+    ret = vfu_setup_device_dma(vfu_ctx, dma_register_cb, dma_unregister_cb);
+#endif
     if (ret < 0) {
         err(EXIT_FAILURE, "vfu_setup_device_dma() failed");
     }
