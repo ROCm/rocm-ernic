@@ -1,0 +1,744 @@
+#!/usr/bin/env python3
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# ernic-exporter -- Prometheus metrics exporter for
+# the rocm-ernic systemd service.
+#
+# Reads the same data sources as ernicctl: the
+# instances.json manifest and per-instance *.stats
+# text files under ERNIC_RUN_DIR.  Exposes metrics on
+# an HTTP endpoint for Prometheus scraping.
+#
+# Dependencies: prometheus_client (pip)
+# Install: /usr/local/bin/ernic-exporter
+
+import glob
+import json
+import os
+import pathlib
+import signal
+import sys
+import time
+
+from prometheus_client import (
+    CollectorRegistry,
+    Gauge,
+    generate_latest,
+    Info,
+    CONTENT_TYPE_LATEST,
+)
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ── Configuration ─────────────────────────────────
+
+ENV_FILE = "/etc/rocm-ernic/rocm-ernic.env"
+
+DEFAULTS = {
+    "ERNIC_RUN_DIR": "/run/rocm-ernic",
+    "ERNIC_EXPORTER_PORT": "9840",
+}
+
+
+def load_env():
+    cfg = dict(DEFAULTS)
+    if os.path.isfile(ENV_FILE):
+        with open(ENV_FILE) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                cfg[key.strip()] = val.strip()
+    for key in cfg:
+        if key in os.environ:
+            cfg[key] = os.environ[key]
+    return cfg
+
+
+CFG = load_env()
+RUN_DIR = CFG["ERNIC_RUN_DIR"]
+EXPORTER_PORT = int(CFG["ERNIC_EXPORTER_PORT"])
+MANIFEST = os.path.join(RUN_DIR, "instances.json")
+
+
+# ── Data readers (mirrored from ernicctl) ─────────
+
+def read_manifest():
+    if not os.path.isfile(MANIFEST):
+        return {"instances": []}
+    try:
+        with open(MANIFEST) as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {"instances": []}
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def get_uptime(pid):
+    try:
+        with open("/proc/uptime") as f:
+            sys_up = float(f.read().split()[0])
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(") ", 1)[1]
+            start_ticks = int(fields.split()[19])
+        hz = os.sysconf("SC_CLK_TCK")
+        age = sys_up - (start_ticks / hz)
+        return max(0, age)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def parse_stats_file(path):
+    """Parse a .stats text file into {key: value}.
+
+    Integer values are returned as int; string values
+    (like connection state) are returned as str.
+    """
+    result = {}
+    if not os.path.isfile(path):
+        return result
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if " : " not in line:
+                    continue
+                key, _, val = line.partition(" : ")
+                key = key.strip()
+                val = val.strip()
+                try:
+                    result[key] = int(val)
+                except ValueError:
+                    result[key] = val
+    except OSError:
+        pass
+    return result
+
+
+def parse_stats_file_with_qps(path):
+    """Parse a .stats file returning device stats and
+    per-QP stats.
+
+    Returns (device_stats_dict, {qp_handle: qp_dict}).
+    The device dict uses the same flat key:value format
+    as parse_stats_file.  The QP dict captures per-QP
+    counters from the indented sections.
+    """
+    device = {}
+    qps = {}
+    if not os.path.isfile(path):
+        return device, qps
+    try:
+        with open(path) as fh:
+            current_qp = None
+            in_opcode_section = False
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    in_opcode_section = False
+                    continue
+
+                if stripped.startswith("QP ") \
+                        and stripped.endswith(":"):
+                    try:
+                        qp_handle = stripped[3:-1].strip()
+                        current_qp = qp_handle
+                        qps[current_qp] = {}
+                        in_opcode_section = False
+                    except (ValueError, IndexError):
+                        current_qp = None
+                    continue
+
+                if stripped == "WQEs by opcode:":
+                    in_opcode_section = True
+                    continue
+
+                if " : " not in stripped:
+                    continue
+
+                key, _, val = stripped.partition(" : ")
+                key = key.strip()
+                val = val.strip()
+                try:
+                    int_val = int(val)
+                except ValueError:
+                    int_val = None
+
+                if current_qp is not None:
+                    if in_opcode_section:
+                        if int_val is not None:
+                            qps[current_qp][
+                                f"opcode_{key}"
+                            ] = int_val
+                    else:
+                        qps[current_qp][key] = (
+                            int_val if int_val is not None
+                            else val
+                        )
+                else:
+                    device[key] = (
+                        int_val if int_val is not None
+                        else val
+                    )
+    except OSError:
+        pass
+    return device, qps
+
+
+def read_all_stats_with_qps():
+    """Read stats + QP data for every *.stats file.
+
+    Returns {instance_id_int: (device_dict, qps_dict)}.
+    """
+    result = {}
+    for sf in glob.glob(
+        os.path.join(RUN_DIR, "*.stats")
+    ):
+        name = pathlib.Path(sf).stem
+        try:
+            inst_id = int(name)
+        except ValueError:
+            continue
+        result[inst_id] = parse_stats_file_with_qps(sf)
+    return result
+
+
+# ── Prometheus metrics registry ───────────────────
+
+registry = CollectorRegistry()
+
+# Cluster / instance metrics
+ernic_instances_total = Gauge(
+    "ernic_instances_total",
+    "Total number of rocm-ernic server instances",
+    registry=registry,
+)
+ernic_instance_up = Gauge(
+    "ernic_instance_up",
+    "Whether instance process is alive (1=running, 0=dead)",
+    ["instance", "role", "mac"],
+    registry=registry,
+)
+ernic_instance_uptime_seconds = Gauge(
+    "ernic_instance_uptime_seconds",
+    "Instance process uptime in seconds",
+    ["instance"],
+    registry=registry,
+)
+
+# VM lifecycle metrics
+ernic_vms_total = Gauge(
+    "ernic_vms_total",
+    "Total number of attached VMs",
+    registry=registry,
+)
+ernic_vm_attached = Gauge(
+    "ernic_vm_attached",
+    "Whether a VM is attached to this instance (1=yes, 0=no)",
+    ["instance"],
+    registry=registry,
+)
+ernic_vm_uptime_seconds = Gauge(
+    "ernic_vm_uptime_seconds",
+    "VM uptime in seconds",
+    ["instance"],
+    registry=registry,
+)
+ernic_vm_gpu_passthrough = Gauge(
+    "ernic_vm_gpu_passthrough",
+    "Whether GPU passthrough is enabled (1=yes, 0=no)",
+    ["instance"],
+    registry=registry,
+)
+
+# Network traffic counters (IP)
+ernic_ip_bytes_tx_total = Gauge(
+    "ernic_ip_bytes_tx_total",
+    "Total IP/Ethernet bytes transmitted",
+    ["instance"],
+    registry=registry,
+)
+ernic_ip_bytes_rx_total = Gauge(
+    "ernic_ip_bytes_rx_total",
+    "Total IP/Ethernet bytes received",
+    ["instance"],
+    registry=registry,
+)
+
+# Network traffic counters (RDMA)
+ernic_rdma_bytes_sent_total = Gauge(
+    "ernic_rdma_bytes_sent_total",
+    "Total bytes sent via RDMA SEND operations",
+    ["instance"],
+    registry=registry,
+)
+ernic_rdma_bytes_received_total = Gauge(
+    "ernic_rdma_bytes_received_total",
+    "Total bytes received via RDMA RECV operations",
+    ["instance"],
+    registry=registry,
+)
+ernic_rdma_bytes_read_total = Gauge(
+    "ernic_rdma_bytes_read_total",
+    "Total bytes transferred via RDMA Read",
+    ["instance"],
+    registry=registry,
+)
+ernic_rdma_bytes_write_total = Gauge(
+    "ernic_rdma_bytes_write_total",
+    "Total bytes transferred via RDMA Write",
+    ["instance"],
+    registry=registry,
+)
+
+# Aggregate convenience metrics
+ernic_rdma_bytes_total = Gauge(
+    "ernic_rdma_bytes_total",
+    "Total RDMA bytes (send+recv+read+write)",
+    ["instance"],
+    registry=registry,
+)
+ernic_ip_bytes_total = Gauge(
+    "ernic_ip_bytes_total",
+    "Total IP bytes (tx+rx)",
+    ["instance"],
+    registry=registry,
+)
+
+# FLR and device events
+ernic_flr_reset_total = Gauge(
+    "ernic_flr_reset_total",
+    "Total FLR/device reset count",
+    ["instance"],
+    registry=registry,
+)
+ernic_commands_total = Gauge(
+    "ernic_commands_total",
+    "Total PVRDMA commands processed",
+    ["instance"],
+    registry=registry,
+)
+ernic_interrupts_total = Gauge(
+    "ernic_interrupts_total",
+    "Total interrupts delivered",
+    ["instance"],
+    registry=registry,
+)
+ernic_connection_up = Gauge(
+    "ernic_connection_up",
+    "Connection state (1=connected, 0=other)",
+    ["instance", "state"],
+    registry=registry,
+)
+
+# MMIO
+ernic_mmio_reads_total = Gauge(
+    "ernic_mmio_reads_total",
+    "Total MMIO read operations",
+    ["instance"],
+    registry=registry,
+)
+ernic_mmio_writes_total = Gauge(
+    "ernic_mmio_writes_total",
+    "Total MMIO write operations",
+    ["instance"],
+    registry=registry,
+)
+
+# Per-QP metrics
+ernic_qp_count = Gauge(
+    "ernic_qp_count",
+    "Number of active Queue Pairs",
+    ["instance"],
+    registry=registry,
+)
+ernic_qp_bytes_sent_total = Gauge(
+    "ernic_qp_bytes_sent_total",
+    "Bytes sent via SEND on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_bytes_received_total = Gauge(
+    "ernic_qp_bytes_received_total",
+    "Bytes received via RECV on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_bytes_rdma_read_total = Gauge(
+    "ernic_qp_bytes_rdma_read_total",
+    "Bytes transferred via RDMA Read on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_bytes_rdma_write_total = Gauge(
+    "ernic_qp_bytes_rdma_write_total",
+    "Bytes transferred via RDMA Write on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_wqes_processed_total = Gauge(
+    "ernic_qp_wqes_processed_total",
+    "Total WQEs processed on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_cqes_posted_total = Gauge(
+    "ernic_qp_cqes_posted_total",
+    "Total CQEs posted on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_doorbell_send_total = Gauge(
+    "ernic_qp_doorbell_send_total",
+    "Send doorbell rings on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+ernic_qp_doorbell_recv_total = Gauge(
+    "ernic_qp_doorbell_recv_total",
+    "Receive doorbell rings on this QP",
+    ["instance", "qp"],
+    registry=registry,
+)
+
+# Stats write count (meta)
+ernic_stats_writes_total = Gauge(
+    "ernic_stats_writes_total",
+    "Number of times the server has written stats",
+    ["instance"],
+    registry=registry,
+)
+
+
+# ── Metric collection ────────────────────────────
+
+def collect_metrics():
+    """Read all data sources and update Prometheus
+    gauge values."""
+    manifest = read_manifest()
+    instances = manifest.get("instances", [])
+    all_stats = read_all_stats_with_qps()
+
+    ernic_instances_total.set(len(instances))
+
+    # Clear child metrics so stale instances disappear
+    ernic_instance_up._metrics.clear()
+    ernic_instance_uptime_seconds._metrics.clear()
+    ernic_vm_attached._metrics.clear()
+    ernic_vm_uptime_seconds._metrics.clear()
+    ernic_vm_gpu_passthrough._metrics.clear()
+    ernic_ip_bytes_tx_total._metrics.clear()
+    ernic_ip_bytes_rx_total._metrics.clear()
+    ernic_rdma_bytes_sent_total._metrics.clear()
+    ernic_rdma_bytes_received_total._metrics.clear()
+    ernic_rdma_bytes_read_total._metrics.clear()
+    ernic_rdma_bytes_write_total._metrics.clear()
+    ernic_rdma_bytes_total._metrics.clear()
+    ernic_ip_bytes_total._metrics.clear()
+    ernic_flr_reset_total._metrics.clear()
+    ernic_commands_total._metrics.clear()
+    ernic_interrupts_total._metrics.clear()
+    ernic_connection_up._metrics.clear()
+    ernic_mmio_reads_total._metrics.clear()
+    ernic_mmio_writes_total._metrics.clear()
+    ernic_qp_count._metrics.clear()
+    ernic_qp_bytes_sent_total._metrics.clear()
+    ernic_qp_bytes_received_total._metrics.clear()
+    ernic_qp_bytes_rdma_read_total._metrics.clear()
+    ernic_qp_bytes_rdma_write_total._metrics.clear()
+    ernic_qp_wqes_processed_total._metrics.clear()
+    ernic_qp_cqes_posted_total._metrics.clear()
+    ernic_qp_doorbell_send_total._metrics.clear()
+    ernic_qp_doorbell_recv_total._metrics.clear()
+    ernic_stats_writes_total._metrics.clear()
+
+    vm_count = 0
+
+    for inst in instances:
+        iid = str(inst["id"])
+        role = inst.get("role", "unknown")
+        mac = inst.get("mac", "")
+        alive = pid_alive(inst["pid"])
+
+        ernic_instance_up.labels(
+            instance=iid, role=role, mac=mac,
+        ).set(1 if alive else 0)
+
+        up = get_uptime(inst["pid"]) if alive else None
+        if up is not None:
+            ernic_instance_uptime_seconds.labels(
+                instance=iid,
+            ).set(up)
+
+        # VM lifecycle
+        vm = inst.get("vm")
+        has_vm = (
+            vm is not None
+            and isinstance(vm, dict)
+            and vm.get("attached", False)
+        )
+        ernic_vm_attached.labels(
+            instance=iid,
+        ).set(1 if has_vm else 0)
+
+        if has_vm:
+            vm_count += 1
+            launched = vm.get("launched_at")
+            if launched:
+                vm_up = time.time() - launched
+            else:
+                vm_pid = vm.get("vm_pid")
+                vm_up = (
+                    get_uptime(vm_pid)
+                    if vm_pid else None
+                )
+            if vm_up is not None:
+                ernic_vm_uptime_seconds.labels(
+                    instance=iid,
+                ).set(vm_up)
+            gpu = vm.get("gpu", "")
+            ernic_vm_gpu_passthrough.labels(
+                instance=iid,
+            ).set(1 if gpu else 0)
+
+        # Device stats
+        stats_pair = all_stats.get(inst["id"])
+        if stats_pair is None:
+            continue
+        stats, qps = stats_pair
+
+        ip_tx = stats.get("total_ip_bytes_tx", 0)
+        ip_rx = stats.get("total_ip_bytes_rx", 0)
+        rdma_sent = stats.get("total_bytes_sent", 0)
+        rdma_recv = stats.get("total_bytes_received", 0)
+        rdma_read = stats.get("total_bytes_rdma_read", 0)
+        rdma_write = stats.get(
+            "total_bytes_rdma_write", 0,
+        )
+
+        if not isinstance(ip_tx, int):
+            ip_tx = 0
+        if not isinstance(ip_rx, int):
+            ip_rx = 0
+        if not isinstance(rdma_sent, int):
+            rdma_sent = 0
+        if not isinstance(rdma_recv, int):
+            rdma_recv = 0
+        if not isinstance(rdma_read, int):
+            rdma_read = 0
+        if not isinstance(rdma_write, int):
+            rdma_write = 0
+
+        ernic_ip_bytes_tx_total.labels(
+            instance=iid,
+        ).set(ip_tx)
+        ernic_ip_bytes_rx_total.labels(
+            instance=iid,
+        ).set(ip_rx)
+        ernic_rdma_bytes_sent_total.labels(
+            instance=iid,
+        ).set(rdma_sent)
+        ernic_rdma_bytes_received_total.labels(
+            instance=iid,
+        ).set(rdma_recv)
+        ernic_rdma_bytes_read_total.labels(
+            instance=iid,
+        ).set(rdma_read)
+        ernic_rdma_bytes_write_total.labels(
+            instance=iid,
+        ).set(rdma_write)
+
+        ernic_rdma_bytes_total.labels(
+            instance=iid,
+        ).set(rdma_sent + rdma_recv + rdma_read
+              + rdma_write)
+        ernic_ip_bytes_total.labels(
+            instance=iid,
+        ).set(ip_tx + ip_rx)
+
+        # FLR / events
+        reset_count = stats.get("reset_count", 0)
+        if not isinstance(reset_count, int):
+            reset_count = 0
+        ernic_flr_reset_total.labels(
+            instance=iid,
+        ).set(reset_count)
+
+        cmds = stats.get("commands", 0)
+        if not isinstance(cmds, int):
+            cmds = 0
+        ernic_commands_total.labels(
+            instance=iid,
+        ).set(cmds)
+
+        ints = stats.get("interrupts", 0)
+        if not isinstance(ints, int):
+            ints = 0
+        ernic_interrupts_total.labels(
+            instance=iid,
+        ).set(ints)
+
+        conn = stats.get("connection", "unknown")
+        if not isinstance(conn, str):
+            conn = str(conn)
+        is_connected = 1 if conn.startswith(
+            "connected"
+        ) else 0
+        ernic_connection_up.labels(
+            instance=iid, state=conn,
+        ).set(is_connected)
+
+        # MMIO
+        mmio_r = stats.get("mmio_reads_total", 0)
+        mmio_w = stats.get("mmio_writes_total", 0)
+        if not isinstance(mmio_r, int):
+            mmio_r = 0
+        if not isinstance(mmio_w, int):
+            mmio_w = 0
+        ernic_mmio_reads_total.labels(
+            instance=iid,
+        ).set(mmio_r)
+        ernic_mmio_writes_total.labels(
+            instance=iid,
+        ).set(mmio_w)
+
+        # Stats write count
+        wc = stats.get("Write count", 0)
+        if not isinstance(wc, int):
+            wc = 0
+        ernic_stats_writes_total.labels(
+            instance=iid,
+        ).set(wc)
+
+        # Per-QP metrics
+        ernic_qp_count.labels(
+            instance=iid,
+        ).set(len(qps))
+
+        for qp_handle, qp_stats in qps.items():
+            qp_label = str(qp_handle)
+
+            def _qp_int(key):
+                v = qp_stats.get(key, 0)
+                return v if isinstance(v, int) else 0
+
+            ernic_qp_bytes_sent_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("bytes_sent"))
+            ernic_qp_bytes_received_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("bytes_received"))
+            ernic_qp_bytes_rdma_read_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("bytes_rdma_read"))
+            ernic_qp_bytes_rdma_write_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("bytes_rdma_write"))
+            ernic_qp_wqes_processed_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("wqes_processed"))
+            ernic_qp_cqes_posted_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("cqes_posted"))
+            ernic_qp_doorbell_send_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("doorbell_send"))
+            ernic_qp_doorbell_recv_total.labels(
+                instance=iid, qp=qp_label,
+            ).set(_qp_int("doorbell_recv"))
+
+    ernic_vms_total.set(vm_count)
+
+
+# ── HTTP handler ──────────────────────────────────
+
+class MetricsHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/metrics":
+            collect_metrics()
+            output = generate_latest(registry)
+            self.send_response(200)
+            self.send_header(
+                "Content-Type", CONTENT_TYPE_LATEST,
+            )
+            self.end_headers()
+            self.wfile.write(output)
+        elif self.path == "/":
+            body = (
+                b"<html><body>"
+                b"<h1>ernic-exporter</h1>"
+                b"<p><a href='/metrics'>Metrics</a></p>"
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+    def log_message(self, format, *args):
+        sys.stderr.write(
+            f"[ernic-exporter] {args[0]} "
+            f"{args[1]} {args[2]}\n"
+        )
+
+
+# ── Main ──────────────────────────────────────────
+
+def main():
+    port = EXPORTER_PORT
+    if len(sys.argv) > 1:
+        try:
+            port = int(sys.argv[1])
+        except ValueError:
+            print(
+                f"Usage: {sys.argv[0]} [PORT]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    server = HTTPServer(("", port), MetricsHandler)
+
+    def shutdown_handler(signum, frame):
+        print(
+            "\n[ernic-exporter] Shutting down...",
+            file=sys.stderr,
+        )
+        server.shutdown()
+
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+
+    print(
+        f"[ernic-exporter] Listening on"
+        f" :{port}/metrics",
+        file=sys.stderr,
+    )
+    print(
+        f"[ernic-exporter] Reading stats from"
+        f" {RUN_DIR}",
+        file=sys.stderr,
+    )
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
