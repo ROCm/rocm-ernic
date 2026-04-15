@@ -328,6 +328,13 @@
     # ── GPU passthrough: rocm-xio ─────────────────────
     # ROCm and build tools are baked into the golden
     # image.  Only rocm-xio build/install happens here.
+    - name: Add VM user to render and video groups
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: render,video
+        append: true
+      when: ernic_gpu_passthrough | bool
+
     - name: Load amdgpu kernel module
       community.general.modprobe:
         name: amdgpu
