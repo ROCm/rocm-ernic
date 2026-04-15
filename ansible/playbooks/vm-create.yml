@@ -339,6 +339,8 @@
         - name: Install RDMA packages
           ansible.builtin.include_role:
             name: sbates130272.batesste.rdma_setup
+          vars:
+            rdma_setup_install_rdma_exporter: true
       rescue:
         - name: Note rdma_setup non-fatal failure
           ansible.builtin.debug:
@@ -510,7 +512,11 @@
                        ',hostfwd=tcp::'
                        ~ (ernic_node_exporter_base_port | int
                           + item - 1) | string
-                       ~ '-:9100']
+                       ~ '-:9100'
+                       ~ ',hostfwd=tcp::'
+                       ~ (ernic_rdma_exporter_base_port | int
+                          + item - 1) | string
+                       ~ '-:9879']
                 + ((['--pci-hostdev',
                      ernic_gpu_pci_devices[item]]
                     + (['--pci-mmio-bridge']

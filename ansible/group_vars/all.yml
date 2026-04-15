@@ -139,6 +139,7 @@ ernic_exporter_scrape_interval: 5s
 ernic_prometheus_config_dir: /etc/prometheus/file_sd
 ernic_grafana_dashboard_dir: /var/lib/grafana/dashboards
 ernic_node_exporter_base_port: 9150
+ernic_rdma_exporter_base_port: 9160
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true
