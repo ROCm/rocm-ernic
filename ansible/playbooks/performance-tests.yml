@@ -44,7 +44,7 @@
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
-    rdma_dev: rocep1s0
+    rdma_dev: rocm-rdma-ernic0
 
     bw_iters: "{{ ernic_perf_bw_iters | default(100) }}"
     lat_iters: "{{ ernic_perf_lat_iters | default(50) }}"
@@ -163,7 +163,7 @@
         cmd: >-
           {{ vm1_ssh }}
           'ibv_devices
-          | grep -oE "rocep[0-9]+s[0-9]+"
+          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
           | head -1'
       register: rdma_dev_detect
       changed_when: false
@@ -173,7 +173,7 @@
       ansible.builtin.set_fact:
         rdma_dev: >-
           {{ rdma_dev_detect.stdout | trim
-             | default('rocep1s0', true) }}
+             | default('rocm-rdma-ernic0', true) }}
 
     - name: Create results directory
       ansible.builtin.file:
@@ -287,6 +287,13 @@
         label: "{{ item.item.0.label }} @ {{ item.item.1 }}"
       when: item.stdout is defined
 
+    - name: Assert BW sweep had no failures
+      ansible.builtin.assert:
+        that:
+          - bw_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          BW sweep had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # Latency sweep
     # ─────────────────────────────────────────────────
@@ -361,6 +368,13 @@
         label: "{{ item.item.0.label }} @ {{ item.item.1 }}"
       when: item.stdout is defined
 
+    - name: Assert lat sweep had no failures
+      ansible.builtin.assert:
+        that:
+          - lat_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Latency sweep had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # Reliability tests (multiple runs at fixed size)
     # ─────────────────────────────────────────────────
@@ -433,6 +447,13 @@
       loop_control:
         label: "{{ item.0.label }} run {{ item.1 }}"
 
+    - name: Assert reliability sweep had no failures
+      ansible.builtin.assert:
+        that:
+          - rel_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Reliability sweep had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # ibv_rc_pingpong reliability
     # ─────────────────────────────────────────────────
@@ -504,6 +525,13 @@
       loop_control:
         label: "run {{ item }}"
 
+    - name: Assert pingpong had no failures
+      ansible.builtin.assert:
+        that:
+          - pp_result.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: >-
+          Pingpong tests had failures. Aborting.
+
     # ─────────────────────────────────────────────────
     # Summary
     # ─────────────────────────────────────────────────
@@ -557,3 +585,12 @@
     - name: Reliability results table
       ansible.builtin.debug:
         msg: "{{ rel_table.stdout_lines }}"
+
+    - name: Assert no test failures
+      ansible.builtin.assert:
+        that:
+          - (fail_count.stdout | default('0') | int) == 0
+        fail_msg: >-
+          {{ fail_count.stdout }} test(s) failed or
+          returned no data. Check the CSV files for
+          FAIL/NODATA entries.

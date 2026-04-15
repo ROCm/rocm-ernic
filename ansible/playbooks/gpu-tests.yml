@@ -145,7 +145,7 @@
       ansible.builtin.set_fact:
         rdma_dev: >-
           {{ rdma_dev_detect.stdout | trim
-             | default('rocep1s0', true) }}
+             | default('rocm-rdma-ernic0', true) }}
 
     # ─────────────────────────────────────────────────
     # xio-tester: loopback on each VM

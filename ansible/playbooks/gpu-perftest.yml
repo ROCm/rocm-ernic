@@ -278,7 +278,7 @@
       ansible.builtin.set_fact:
         rdma_dev: >-
           {{ rdma_dev_detect.stdout | trim
-             | default('rocep1s0', true) }}
+             | default('rocm-rdma-ernic0', true) }}
 
     # ── Results setup (on host) ────────────────────
     - name: Create results directory
@@ -396,3 +396,12 @@
     - name: GPU Lat results table
       ansible.builtin.debug:
         msg: "{{ gpu_lat_table.stdout_lines }}"
+
+    - name: Assert no test failures
+      ansible.builtin.assert:
+        that:
+          - (gpu_fail_count.stdout | default('0') | int) == 0
+        fail_msg: >-
+          {{ gpu_fail_count.stdout }} GPU perftest(s)
+          failed or returned no data. Check the CSV
+          files for FAIL/NODATA entries.

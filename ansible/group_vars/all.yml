@@ -29,10 +29,12 @@ ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
 ernic_vm_image_dir: /opt/qemu-images
-ernic_vm_name: rocm-ernic-april1-vm
-ernic_vm_vcpus: 8
-ernic_vm_mem: 16384
+ernic_vm_name_base: rocm-ernic-april-14-vm
+ernic_vm_vcpus: 16
+ernic_vm_mem: 32768
 ernic_vm_ssh_user: ubuntu
+ernic_vm_ssh_pass: password
+ernic_vm_ssh_key_file: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
 ernic_vm_ssh_base_port: 2250
 ernic_golden_ssh_port: 2249
 ernic_vm_release: noble
@@ -41,7 +43,7 @@ ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
 # Golden backing qcow2 for per-VM overlays.
 # Each VM gets its own overlay; BACKING_SHARED=true
 # is set automatically by ernicctl vm-launch.
-ernic_vm_backing: "{{ ernic_vm_image_dir }}/backing/{{ ernic_vm_name }}-backing.qcow2"
+ernic_vm_backing: "{{ ernic_vm_image_dir }}/backing/{{ ernic_vm_name_base }}-backing.qcow2"
 # ernic_vm_mcast_group: "230.0.0.1:1234"
 # ernic_mac_overrides:
 #   1: "aa:bb:cc:dd:ee:01"
@@ -128,6 +130,14 @@ ernic_gpu_2node_sizes:
   - 8192
   - 16384
 ernic_gpu_2node_timeout: 120
+
+# ── Monitoring (ernic-exporter + Grafana) ────────
+ernic_monitoring: true
+ernic_exporter_port: 9840
+ernic_exporter_venv: /opt/ernic-exporter-venv
+ernic_exporter_scrape_interval: 5s
+ernic_prometheus_config_dir: /etc/prometheus/file_sd
+ernic_grafana_dashboard_dir: /var/lib/grafana/dashboards
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true
