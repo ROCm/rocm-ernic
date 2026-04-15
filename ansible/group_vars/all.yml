@@ -29,7 +29,7 @@ ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
 ernic_vm_image_dir: /opt/qemu-images
-ernic_vm_name_base: rocm-ernic-april-14-vm
+ernic_vm_name_base: rocm-ernic-april-15-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
 ernic_vm_ssh_user: ubuntu
@@ -59,8 +59,8 @@ ernic_nic_subnet: "192.168.200"
 # Bandwidth uses human-readable format:
 #   100B/s, 1KiB/s, 10MiB/s, 1GiB/s
 # Stripped to iperf3 -b compatible form at runtime.
-ernic_iperf_bandwidth: "100MiB/s"
-ernic_iperf_duration: 10
+ernic_iperf_bandwidth: "1GiB/s"
+ernic_iperf_duration: 30
 
 # ── Performance sweep defaults ───────────────────
 ernic_perf_bw_iters: 100
@@ -105,9 +105,9 @@ ernic_rocm_xio_commit: ""
 # ── Perftest fork (GPU-initiated via rocm-xio) ──
 # Fork of linux-rdma/perftest with --use_rocm_xio
 # support for GPU-initiated WQE posting.
-ernic_perftest_repo: "https://github.com/ROCm/perftest.git"
-ernic_perftest_branch: "feat/rocm-xio"
-ernic_perftest_commit: ""
+# Source is copied from the host to avoid needing
+# GitHub access inside VMs.
+ernic_perftest_source: "{{ lookup('env', 'HOME') }}/Projects/perftest-xio"
 ernic_perftest_prefix: "/opt/perftest-xio"
 
 # ── GPU perftest sweep defaults ──────────────────
@@ -138,6 +138,7 @@ ernic_exporter_venv: /opt/ernic-exporter-venv
 ernic_exporter_scrape_interval: 5s
 ernic_prometheus_config_dir: /etc/prometheus/file_sd
 ernic_grafana_dashboard_dir: /var/lib/grafana/dashboards
+ernic_node_exporter_base_port: 9150
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true

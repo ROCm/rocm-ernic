@@ -358,6 +358,7 @@
           - curl
           - dkms
           - libcli11-dev
+          - prometheus-node-exporter
         state: present
         update_cache: true
       register: golden_apt_result
@@ -504,7 +505,12 @@
                        '--vcpus',
                        ernic_vm_vcpus | string,
                        '--mem',
-                       ernic_vm_mem | string]
+                       ernic_vm_mem | string,
+                       '--extra-hostfwd',
+                       ',hostfwd=tcp::'
+                       ~ (ernic_node_exporter_base_port | int
+                          + item - 1) | string
+                       ~ '-:9100']
                 + ((['--pci-hostdev',
                      ernic_gpu_pci_devices[item]]
                     + (['--pci-mmio-bridge']
