@@ -23,14 +23,20 @@
 - name: "{{ pt_label }} @ {{ pt_size }}B: kill stale on VM1"
   ansible.builtin.shell:
     cmd: >-
-      pkill -9 {{ pt_tool }} 2>/dev/null; true
+      fuser -k 18515/tcp 2>/dev/null;
+      pkill -9 {{ pt_tool }} 2>/dev/null;
+      pkill -9 -f 'ib_(write|read|send|atomic)_(bw|lat)' 2>/dev/null;
+      true
   changed_when: false
   failed_when: false
 
 - name: "{{ pt_label }} @ {{ pt_size }}B: kill stale on VM2"
   ansible.builtin.shell:
     cmd: >-
-      pkill -9 {{ pt_tool }} 2>/dev/null; true
+      fuser -k 18515/tcp 2>/dev/null;
+      pkill -9 {{ pt_tool }} 2>/dev/null;
+      pkill -9 -f 'ib_(write|read|send|atomic)_(bw|lat)' 2>/dev/null;
+      true
   delegate_to: "{{ vm2 }}"
   changed_when: false
   failed_when: false

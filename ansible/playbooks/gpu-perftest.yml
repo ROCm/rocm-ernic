@@ -232,6 +232,29 @@
         or not (ernic_gpu_perftest | bool)
 
     # ── Pre-flight ─────────────────────────────────
+    - name: "Pre-flight: kill stale perftest on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          fuser -k 18515/tcp 2>/dev/null;
+          pkill -9 -f 'ib_(write|read|send|atomic)_(bw|lat)'
+          2>/dev/null; true
+      changed_when: false
+      failed_when: false
+
+    - name: "Pre-flight: kill stale perftest on VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          fuser -k 18515/tcp 2>/dev/null;
+          pkill -9 -f 'ib_(write|read|send|atomic)_(bw|lat)'
+          2>/dev/null; true
+      delegate_to: "{{ vm2 }}"
+      changed_when: false
+      failed_when: false
+
+    - name: "Pre-flight: wait for port release"
+      ansible.builtin.pause:
+        seconds: 2
+
     - name: "Pre-flight: verify GPU on VM1 (server)"
       ansible.builtin.command:
         cmd: rocm-smi --showid
