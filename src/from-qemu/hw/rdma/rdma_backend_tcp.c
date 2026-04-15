@@ -2271,9 +2271,8 @@ static void *tcp_manager_health_check_thread(void *opaque)
                                      node->node_id, node->hostname, node->port);
                     int fd = tcp_connect_to_remote(node->hostname, node->port);
                     if (fd >= 0) {
-                        __atomic_fetch_add(
-                            &priv->tcp_stats.reconnect_attempts, 1,
-                            __ATOMIC_RELAXED);
+                        __atomic_fetch_add(&priv->tcp_stats.reconnect_attempts,
+                                           1, __ATOMIC_RELAXED);
 
                         TcpConnection *old_conn = node->conn;
 
@@ -2293,13 +2292,11 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         new_conn->sockfd = fd;
                         new_conn->is_connected = true;
 
-                        if (tcp_send_handshake(new_conn,
-                                               priv->local_node_id,
+                        if (tcp_send_handshake(new_conn, priv->local_node_id,
                                                TCP_MSG_HANDSHAKE) < 0) {
-                            rdma_error_report(
-                                "TCP: Failed to send handshake "
-                                "after reconnect to node %u",
-                                node->node_id);
+                            rdma_error_report("TCP: Failed to send handshake "
+                                              "after reconnect to node %u",
+                                              node->node_id);
                             tcp_connection_free(new_conn);
                             goto reconnect_done;
                         }
@@ -2309,14 +2306,13 @@ static void *tcp_manager_health_check_thread(void *opaque)
                                  node->node_id);
                         new_conn->recv_thread_running = true;
                         qemu_thread_create(&new_conn->recv_thread, tname,
-                                           tcp_recv_thread_per_conn,
-                                           new_conn,
+                                           tcp_recv_thread_per_conn, new_conn,
                                            QEMU_THREAD_JOINABLE);
 
                         qemu_mutex_lock(&priv->conn_table_lock);
-                        g_hash_table_replace(
-                            priv->connections,
-                            GUINT_TO_POINTER(node->node_id), new_conn);
+                        g_hash_table_replace(priv->connections,
+                                             GUINT_TO_POINTER(node->node_id),
+                                             new_conn);
                         qemu_mutex_unlock(&priv->conn_table_lock);
 
                         node->conn = new_conn;
@@ -2332,15 +2328,14 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         rdma_info_report("TCP: Reconnected to "
                                          "node %u",
                                          node->node_id);
-                        __atomic_fetch_add(
-                            &priv->tcp_stats.reconnect_successes, 1,
-                            __ATOMIC_RELAXED);
+                        __atomic_fetch_add(&priv->tcp_stats.reconnect_successes,
+                                           1, __ATOMIC_RELAXED);
 
                         qemu_mutex_unlock(&priv->mesh_table_lock);
                         tcp_broadcast_mesh_topology(priv);
                         qemu_mutex_lock(&priv->mesh_table_lock);
                     }
-reconnect_done: ;
+                reconnect_done:;
                 }
             }
         }
