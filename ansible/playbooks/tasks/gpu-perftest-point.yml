@@ -20,30 +20,13 @@
 #   pt_extra_server_args -- extra args for server
 
 ---
-- name: "{{ pt_label }} @ {{ pt_size }}B: kill stale on VM1"
-  ansible.builtin.shell:
-    cmd: >-
-      fuser -k 18515/tcp 2>/dev/null;
-      pkill -9 {{ pt_tool }} 2>/dev/null;
-      pkill -9 -f 'ib_(write|read|send|atomic)_(bw|lat)' 2>/dev/null;
-      true
-  changed_when: false
-  failed_when: false
-
-- name: "{{ pt_label }} @ {{ pt_size }}B: kill stale on VM2"
-  ansible.builtin.shell:
-    cmd: >-
-      fuser -k 18515/tcp 2>/dev/null;
-      pkill -9 {{ pt_tool }} 2>/dev/null;
-      pkill -9 -f 'ib_(write|read|send|atomic)_(bw|lat)' 2>/dev/null;
-      true
-  delegate_to: "{{ vm2 }}"
-  changed_when: false
-  failed_when: false
-
-- name: "{{ pt_label }} @ {{ pt_size }}B: wait for cleanup"
-  ansible.builtin.pause:
-    seconds: 2
+- name: "{{ pt_label }} @ {{ pt_size }}B: free port"
+  ansible.builtin.include_tasks:
+    file: tasks/free-perftest-port.yml
+  vars:
+    fpp_hosts:
+      - "{{ inventory_hostname }}"
+      - "{{ vm2 }}"
 
 - name: "{{ pt_label }} @ {{ pt_size }}B: start server"
   ansible.builtin.shell:
