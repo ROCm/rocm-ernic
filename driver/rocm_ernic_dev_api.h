@@ -353,6 +353,7 @@ enum {
     ROCM_ERNIC_CMD_MODIFY_SRQ,
     ROCM_ERNIC_CMD_QUERY_SRQ,
     ROCM_ERNIC_CMD_DESTROY_SRQ,
+    ROCM_ERNIC_CMD_QUERY_STATS,
     ROCM_ERNIC_CMD_MAX,
 };
 
@@ -379,6 +380,7 @@ enum {
     ROCM_ERNIC_CMD_MODIFY_SRQ_RESP,
     ROCM_ERNIC_CMD_QUERY_SRQ_RESP,
     ROCM_ERNIC_CMD_DESTROY_SRQ_RESP,
+    ROCM_ERNIC_CMD_QUERY_STATS_RESP,
     ROCM_ERNIC_CMD_MAX_RESP,
 };
 
@@ -646,6 +648,22 @@ struct rocm_ernic_cmd_destroy_bind {
     u8 reserved[4];
 };
 
+struct rocm_ernic_cmd_query_stats {
+    struct rocm_ernic_cmd_hdr hdr;
+    u8 port_num;
+    u8 reserved[7];
+};
+
+struct rocm_ernic_cmd_query_stats_resp {
+    struct rocm_ernic_cmd_resp_hdr hdr;
+    u64 port_rcv_data;
+    u64 port_xmit_data;
+    u64 port_rcv_packets;
+    u64 port_xmit_packets;
+    u64 rdma_read_bytes;
+    u64 rdma_write_bytes;
+};
+
 union rocm_ernic_cmd_req {
     struct rocm_ernic_cmd_hdr hdr;
     struct rocm_ernic_cmd_query_port query_port;
@@ -669,6 +687,7 @@ union rocm_ernic_cmd_req {
     struct rocm_ernic_cmd_modify_srq modify_srq;
     struct rocm_ernic_cmd_query_srq query_srq;
     struct rocm_ernic_cmd_destroy_srq destroy_srq;
+    struct rocm_ernic_cmd_query_stats query_stats;
 };
 
 union rocm_ernic_cmd_resp {
@@ -686,6 +705,7 @@ union rocm_ernic_cmd_resp {
     struct rocm_ernic_cmd_destroy_qp_resp destroy_qp_resp;
     struct rocm_ernic_cmd_create_srq_resp create_srq_resp;
     struct rocm_ernic_cmd_query_srq_resp query_srq_resp;
+    struct rocm_ernic_cmd_query_stats_resp query_stats_resp;
 };
 
 #endif /* __ROCM_ERNIC_DEV_API_H__ */

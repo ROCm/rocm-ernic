@@ -352,6 +352,7 @@ enum {
     PVRDMA_CMD_MODIFY_SRQ,
     PVRDMA_CMD_QUERY_SRQ,
     PVRDMA_CMD_DESTROY_SRQ,
+    PVRDMA_CMD_QUERY_STATS,
     PVRDMA_CMD_MAX,
 };
 
@@ -378,6 +379,7 @@ enum {
     PVRDMA_CMD_MODIFY_SRQ_RESP,
     PVRDMA_CMD_QUERY_SRQ_RESP,
     PVRDMA_CMD_DESTROY_SRQ_RESP,
+    PVRDMA_CMD_QUERY_STATS_RESP,
     PVRDMA_CMD_MAX_RESP,
 };
 
@@ -645,6 +647,22 @@ struct pvrdma_cmd_destroy_bind {
     uint8_t reserved[4];
 };
 
+struct pvrdma_cmd_query_stats {
+    struct pvrdma_cmd_hdr hdr;
+    uint8_t port_num;
+    uint8_t reserved[7];
+};
+
+struct pvrdma_cmd_query_stats_resp {
+    struct pvrdma_cmd_resp_hdr hdr;
+    uint64_t port_rcv_data;
+    uint64_t port_xmit_data;
+    uint64_t port_rcv_packets;
+    uint64_t port_xmit_packets;
+    uint64_t rdma_read_bytes;
+    uint64_t rdma_write_bytes;
+};
+
 union pvrdma_cmd_req {
     struct pvrdma_cmd_hdr hdr;
     struct pvrdma_cmd_query_port query_port;
@@ -668,6 +686,7 @@ union pvrdma_cmd_req {
     struct pvrdma_cmd_modify_srq modify_srq;
     struct pvrdma_cmd_query_srq query_srq;
     struct pvrdma_cmd_destroy_srq destroy_srq;
+    struct pvrdma_cmd_query_stats query_stats;
 };
 
 union pvrdma_cmd_resp {
@@ -685,6 +704,7 @@ union pvrdma_cmd_resp {
     struct pvrdma_cmd_destroy_qp_resp destroy_qp_resp;
     struct pvrdma_cmd_create_srq_resp create_srq_resp;
     struct pvrdma_cmd_query_srq_resp query_srq_resp;
+    struct pvrdma_cmd_query_stats_resp query_stats_resp;
 };
 
 #endif /* __PVRDMA_DEV_API_H__ */
