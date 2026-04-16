@@ -250,6 +250,19 @@
       ansible.builtin.debug:
         var: ibv_devinfo_output.stdout_lines
 
+    - name: Symlink RDMA counters for exporter
+      ansible.builtin.shell:
+        cmd: |
+          DEV=$(ibv_devices | grep -oE 'rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+' | head -1)
+          [ -z "$DEV" ] && exit 0
+          for PORT_DIR in /sys/class/infiniband/"$DEV"/ports/*/; do
+            [ -d "$PORT_DIR/hw_counters" ] || continue
+            [ -e "$PORT_DIR/counters" ] && continue
+            ln -s hw_counters "$PORT_DIR/counters"
+          done
+      changed_when: false
+      failed_when: false
+
     # ── Set unique hostname per VM ────────────────────
     - name: Set VM hostname
       ansible.builtin.hostname:

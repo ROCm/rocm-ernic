@@ -98,7 +98,7 @@ directly to the Ethernet attribute only affects the Ethernet
 layer.
 
 Hardware Counters (sysfs)
-------------------------
+-------------------------
 
 The driver exposes RDMA port counters via the kernel's
 ``rdma_hw_stats`` framework. When the driver is loaded and
@@ -123,9 +123,9 @@ The following counters are available:
 +--------------------+-------------------------------------------+
 | port_xmit_packets  | Total transmitted packets (sends posted)  |
 +--------------------+-------------------------------------------+
-| rdma_read_bytes    | Bytes transferred via RDMA Read            |
+| rdma_read_bytes    | Bytes transferred via RDMA Read           |
 +--------------------+-------------------------------------------+
-| rdma_write_bytes   | Bytes transferred via RDMA Write           |
+| rdma_write_bytes   | Bytes transferred via RDMA Write          |
 +--------------------+-------------------------------------------+
 
 Counter values are fetched from the host-side server via

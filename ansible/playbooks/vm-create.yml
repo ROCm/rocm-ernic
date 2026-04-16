@@ -374,7 +374,7 @@
       vars:
         rocm_setup_skip_reboot: true
         rocm_setup_run_checks: false
-        rocm_setup_install_metrics_exporter: false
+        rocm_setup_install_metrics_exporter: true
       when: ernic_gpu_passthrough | bool
 
     # ── Static config baked into golden image ───────
@@ -516,7 +516,11 @@
                        ~ ',hostfwd=tcp::'
                        ~ (ernic_rdma_exporter_base_port | int
                           + item - 1) | string
-                       ~ '-:9879']
+                       ~ '-:9879'
+                       ~ ',hostfwd=tcp::'
+                       ~ (ernic_gpu_exporter_base_port | int
+                          + item - 1) | string
+                       ~ '-:5000']
                 + ((['--pci-hostdev',
                      ernic_gpu_pci_devices[item]]
                     + (['--pci-mmio-bridge']

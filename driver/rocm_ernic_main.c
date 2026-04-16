@@ -53,6 +53,8 @@
 #include <linux/rcupdate.h>
 #include <linux/delay.h>
 #include <rdma/ib_addr.h>
+#include <rdma/ib_mad.h>
+#include <rdma/ib_pma.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
 #include <rdma/ib_cache.h>
@@ -186,24 +188,24 @@ enum rocm_ernic_hw_stats_idx {
 };
 
 static const struct rdma_stat_desc rocm_ernic_port_stats_descs[] = {
-    [ROCM_ERNIC_STAT_PORT_RCV_DATA]     = { .name = "port_rcv_data" },
-    [ROCM_ERNIC_STAT_PORT_XMIT_DATA]    = { .name = "port_xmit_data" },
-    [ROCM_ERNIC_STAT_PORT_RCV_PACKETS]  = { .name = "port_rcv_packets" },
-    [ROCM_ERNIC_STAT_PORT_XMIT_PACKETS] = { .name = "port_xmit_packets" },
-    [ROCM_ERNIC_STAT_RDMA_READ_BYTES]   = { .name = "rdma_read_bytes" },
-    [ROCM_ERNIC_STAT_RDMA_WRITE_BYTES]  = { .name = "rdma_write_bytes" },
+    [ROCM_ERNIC_STAT_PORT_RCV_DATA] = {.name = "port_rcv_data"},
+    [ROCM_ERNIC_STAT_PORT_XMIT_DATA] = {.name = "port_xmit_data"},
+    [ROCM_ERNIC_STAT_PORT_RCV_PACKETS] = {.name = "port_rcv_packets"},
+    [ROCM_ERNIC_STAT_PORT_XMIT_PACKETS] = {.name = "port_xmit_packets"},
+    [ROCM_ERNIC_STAT_RDMA_READ_BYTES] = {.name = "rdma_read_bytes"},
+    [ROCM_ERNIC_STAT_RDMA_WRITE_BYTES] = {.name = "rdma_write_bytes"},
 };
 
 static struct rdma_hw_stats *rocm_ernic_alloc_hw_port_stats(
     struct ib_device *ibdev, u32 port_num)
 {
     return rdma_alloc_hw_stats_struct(rocm_ernic_port_stats_descs,
-                                     ROCM_ERNIC_STAT_COUNT, 1000);
+                                      ROCM_ERNIC_STAT_COUNT, 1000);
 }
 
 static int rocm_ernic_get_hw_stats(struct ib_device *ibdev,
-                                   struct rdma_hw_stats *stats,
-                                   u32 port_num, int index)
+                                   struct rdma_hw_stats *stats, u32 port_num,
+                                   int index)
 {
     struct rocm_ernic_dev *dev = to_vdev(ibdev);
     union rocm_ernic_cmd_req req;
@@ -219,11 +221,9 @@ static int rocm_ernic_get_hw_stats(struct ib_device *ibdev,
     cmd->hdr.cmd = ROCM_ERNIC_CMD_QUERY_STATS;
     cmd->port_num = port_num;
 
-    err = rocm_ernic_cmd_post(dev, &req, &rsp,
-                              ROCM_ERNIC_CMD_QUERY_STATS_RESP);
+    err = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_QUERY_STATS_RESP);
     if (err < 0) {
-        dev_warn(&dev->pdev->dev,
-                 "could not query stats, error: %d\n", err);
+        dev_warn(&dev->pdev->dev, "could not query stats, error: %d\n", err);
         return err;
     }
 
@@ -235,6 +235,93 @@ static int rocm_ernic_get_hw_stats(struct ib_device *ibdev,
     stats->value[ROCM_ERNIC_STAT_RDMA_WRITE_BYTES] = resp->rdma_write_bytes;
 
     return ROCM_ERNIC_STAT_COUNT;
+}
+
+static int rocm_ernic_query_port_stats(
+    struct rocm_ernic_dev *dev, u32 port_num,
+    struct rocm_ernic_cmd_query_stats_resp *out)
+{
+    union rocm_ernic_cmd_req req;
+    union rocm_ernic_cmd_resp rsp;
+    struct rocm_ernic_cmd_query_stats *cmd = &req.query_stats;
+    int err;
+
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->hdr.cmd = ROCM_ERNIC_CMD_QUERY_STATS;
+    cmd->port_num = port_num;
+
+    err = rocm_ernic_cmd_post(dev, &req, &rsp, ROCM_ERNIC_CMD_QUERY_STATS_RESP);
+    if (err < 0)
+        return err;
+
+    *out = rsp.query_stats_resp;
+    return 0;
+}
+
+static int rocm_ernic_process_mad(struct ib_device *ibdev, int flags,
+                                  u32 port_num, const struct ib_wc *in_wc,
+                                  const struct ib_grh *in_grh,
+                                  const struct ib_mad *in, struct ib_mad *out,
+                                  size_t *out_mad_size, u16 *out_mad_pkey_index)
+{
+    struct rocm_ernic_dev *dev = to_vdev(ibdev);
+    struct rocm_ernic_cmd_query_stats_resp st;
+    int err;
+
+    if (in->mad_hdr.mgmt_class != IB_MGMT_CLASS_PERF_MGMT)
+        return IB_MAD_RESULT_SUCCESS;
+
+    memcpy(out, in, sizeof(*out));
+    out->mad_hdr.status = 0;
+
+    err = rocm_ernic_query_port_stats(dev, port_num, &st);
+    if (err)
+        return IB_MAD_RESULT_FAILURE;
+
+    if (in->mad_hdr.attr_id == IB_PMA_PORT_COUNTERS) {
+        struct ib_pma_portcounters *pma =
+            (struct ib_pma_portcounters *)(out->data + 40);
+
+        memset(pma, 0, sizeof(*pma));
+        pma->port_select = port_num;
+
+        pma->port_rcv_data = cpu_to_be32((u32)(st.port_rcv_data & 0xFFFFFFFF));
+        pma->port_xmit_data =
+            cpu_to_be32((u32)(st.port_xmit_data & 0xFFFFFFFF));
+        pma->port_rcv_packets =
+            cpu_to_be32((u32)(st.port_rcv_packets & 0xFFFFFFFF));
+        pma->port_xmit_packets =
+            cpu_to_be32((u32)(st.port_xmit_packets & 0xFFFFFFFF));
+
+        return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
+    }
+
+    if (in->mad_hdr.attr_id == IB_PMA_PORT_COUNTERS_EXT) {
+        struct ib_pma_portcounters_ext *pma =
+            (struct ib_pma_portcounters_ext *)(out->data + 40);
+
+        memset(pma, 0, sizeof(*pma));
+        pma->port_select = port_num;
+
+        pma->port_rcv_data = cpu_to_be64(st.port_rcv_data);
+        pma->port_xmit_data = cpu_to_be64(st.port_xmit_data);
+        pma->port_rcv_packets = cpu_to_be64(st.port_rcv_packets);
+        pma->port_xmit_packets = cpu_to_be64(st.port_xmit_packets);
+
+        return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
+    }
+
+    if (in->mad_hdr.attr_id == IB_PMA_CLASS_PORT_INFO) {
+        struct ib_class_port_info *cpi =
+            (struct ib_class_port_info *)(out->data + 40);
+
+        memset(cpi, 0, sizeof(*cpi));
+        cpi->capability_mask = cpu_to_be16(IB_PMA_CLASS_CAP_EXT_WIDTH);
+
+        return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
+    }
+
+    return IB_MAD_RESULT_SUCCESS;
 }
 
 static void rocm_ernic_get_fw_ver_str(struct ib_device *device, char *str)
@@ -302,7 +389,9 @@ static const struct ib_device_ops rocm_ernic_dev_ops = {
     .add_gid = rocm_ernic_add_gid,
     .alloc_mr = rocm_ernic_alloc_mr,
     .alloc_pd = rocm_ernic_alloc_pd,
-    .alloc_hw_port_stats = rocm_ernic_alloc_hw_port_stats,
+    /* hw_port_stats removed: counters/ is now populated via
+     * process_mad PMA support, which the rdma_exporter reads.
+     * Keeping both would create duplicate metrics. */
     .alloc_ucontext = rocm_ernic_alloc_ucontext,
     .create_ah = rocm_ernic_create_ah,
     .create_cq = rocm_ernic_create_cq,
@@ -317,7 +406,6 @@ static const struct ib_device_ops rocm_ernic_dev_ops = {
     .device_group = &rocm_ernic_attr_group,
     .get_dev_fw_str = rocm_ernic_get_fw_ver_str,
     .get_dma_mr = rocm_ernic_get_dma_mr,
-    .get_hw_stats = rocm_ernic_get_hw_stats,
     .get_link_layer = rocm_ernic_port_link_layer,
     .get_port_immutable = rocm_ernic_port_immutable,
     .map_mr_sg = rocm_ernic_map_mr_sg,
@@ -327,6 +415,7 @@ static const struct ib_device_ops rocm_ernic_dev_ops = {
     .poll_cq = rocm_ernic_poll_cq,
     .post_recv = rocm_ernic_post_recv,
     .post_send = rocm_ernic_post_send,
+    .process_mad = rocm_ernic_process_mad,
     .query_device = rocm_ernic_query_device,
     .query_gid = rocm_ernic_query_gid,
     .query_pkey = rocm_ernic_query_pkey,

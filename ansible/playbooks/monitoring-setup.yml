@@ -127,6 +127,17 @@
                 labels:
                   vm: "rocm-ernic-vm-{{ i }}"
           {% endfor %}
+
+          - job_name: ernic-vm-gpu
+            scrape_interval: 5s
+            metrics_path: /metrics
+            static_configs:
+          {% for i in range(1, ernic_instances | int + 1) %}
+              - targets:
+                  - "localhost:{{ ernic_gpu_exporter_base_port | int + i - 1 }}"
+                labels:
+                  vm: "rocm-ernic-vm-{{ i }}"
+          {% endfor %}
       become: true
       when: prom_dir.stat.exists
       notify: Reload Prometheus
