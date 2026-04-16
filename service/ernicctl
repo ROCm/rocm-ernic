@@ -1103,6 +1103,10 @@ def cmd_vm_launch(args):
     if extra_hostfwd:
         env["EXTRA_HOSTFWD"] = extra_hostfwd
 
+    nvme = getattr(args, "nvme", 0)
+    if nvme > 0:
+        env["NVME"] = str(nvme)
+
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
     print(f"  SSH port:    {ssh_port}")
@@ -1116,6 +1120,8 @@ def cmd_vm_launch(args):
         print("  MMIO bridge: enabled")
     if extra_hostfwd:
         print(f"  Extra fwd:   {extra_hostfwd}")
+    if nvme > 0:
+        print(f"  NVMe SSDs:   {nvme}")
 
     logfile = os.path.join(
         LOG_DIR, f"vm-{args.instance}.log"
@@ -1388,6 +1394,10 @@ def build_parser():
         help="Extra QEMU hostfwd rules appended to"
              " the user netdev (e.g."
              " ,hostfwd=tcp::9150-:9100)",
+    )
+    sp.add_argument(
+        "--nvme", type=int, default=0,
+        help="Number of emulated NVMe SSDs (0=none)",
     )
 
     sp = sub.add_parser(

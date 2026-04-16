@@ -2110,8 +2110,8 @@
           "mode": "multi"
         }
       },
-      "title": "VM Disk I/O Rate (vda)",
-      "description": "Disk read and write byte rate for the virtio root disk (vda) inside each VM. Sourced from node-exporter.",
+      "title": "VM Disk I/O Rate",
+      "description": "Disk read and write byte rate per block device inside each VM. Use the Disk Device dropdown to filter by device (vda, nvme0n1, etc.).",
       "type": "timeseries",
       "targets": [
         {
@@ -2119,8 +2119,8 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "rate(node_disk_read_bytes_total{job=\"ernic-vm-node\",device=\"vda\"}[$__rate_interval])",
-          "legendFormat": "{{vm}} read",
+          "expr": "rate(node_disk_read_bytes_total{job=\"ernic-vm-node\",device=~\"$disk_device\"}[$__rate_interval])",
+          "legendFormat": "{{vm}} {{device}} read",
           "refId": "A"
         },
         {
@@ -2128,8 +2128,8 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "rate(node_disk_written_bytes_total{job=\"ernic-vm-node\",device=\"vda\"}[$__rate_interval])",
-          "legendFormat": "{{vm}} write",
+          "expr": "rate(node_disk_written_bytes_total{job=\"ernic-vm-node\",device=~\"$disk_device\"}[$__rate_interval])",
+          "legendFormat": "{{vm}} {{device}} write",
           "refId": "B"
         }
       ]
@@ -2448,6 +2448,33 @@
         },
         "refresh": 2,
         "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
+        "definition": "label_values(node_disk_read_bytes_total{job=\"ernic-vm-node\"}, device)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "disk_device",
+        "label": "Disk Device",
+        "options": [],
+        "query": {
+          "query": "label_values(node_disk_read_bytes_total{job=\"ernic-vm-node\"}, device)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "/^(?!sr|loop)/",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
