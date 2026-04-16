@@ -926,6 +926,37 @@ static int destroy_srq(PVRDMADev *dev, union pvrdma_cmd_req *req,
     return 0;
 }
 
+static int query_stats(PVRDMADev *dev, union pvrdma_cmd_req *req,
+                       union pvrdma_cmd_resp *rsp)
+{
+    struct pvrdma_cmd_query_stats_resp *resp = &rsp->query_stats_resp;
+    GHashTableIter iter;
+    gpointer key, value;
+    uint64_t total_rcv_packets = 0;
+    uint64_t total_xmit_packets = 0;
+
+    memset(resp, 0, sizeof(*resp));
+
+    resp->port_rcv_data = dev->stats.total_bytes_received / 4;
+    resp->port_xmit_data = dev->stats.total_bytes_sent / 4;
+
+    if (dev->stats.qp_stats) {
+        g_hash_table_iter_init(&iter, dev->stats.qp_stats);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            PVRDMAQPStats *qp = (PVRDMAQPStats *)value;
+            total_rcv_packets += qp->wqes_processed;
+            total_xmit_packets += qp->doorbell_send;
+        }
+    }
+
+    resp->port_rcv_packets = total_rcv_packets;
+    resp->port_xmit_packets = total_xmit_packets;
+    resp->rdma_read_bytes = dev->stats.total_bytes_rdma_read;
+    resp->rdma_write_bytes = dev->stats.total_bytes_rdma_write;
+
+    return 0;
+}
+
 struct cmd_handler {
     uint32_t cmd;
     uint32_t ack;
@@ -955,6 +986,7 @@ static struct cmd_handler cmd_handlers[] = {
     {PVRDMA_CMD_QUERY_SRQ, PVRDMA_CMD_QUERY_SRQ_RESP, query_srq},
     {PVRDMA_CMD_MODIFY_SRQ, PVRDMA_CMD_MODIFY_SRQ_RESP, modify_srq},
     {PVRDMA_CMD_DESTROY_SRQ, PVRDMA_CMD_DESTROY_SRQ_RESP, destroy_srq},
+    {PVRDMA_CMD_QUERY_STATS, PVRDMA_CMD_QUERY_STATS_RESP, query_stats},
 };
 
 int pvrdma_exec_cmd(PVRDMADev *dev)

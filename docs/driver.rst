@@ -97,6 +97,47 @@ it automatically propagates to the Ethernet module. Writing
 directly to the Ethernet attribute only affects the Ethernet
 layer.
 
+Hardware Counters (sysfs)
+-------------------------
+
+The driver exposes RDMA port counters via the kernel's
+``rdma_hw_stats`` framework. When the driver is loaded and
+the device is active, counters appear under
+``/sys/class/infiniband/rocm_ernic0/ports/1/hw_counters/``:
+
+.. code-block:: bash
+
+   ls /sys/class/infiniband/rocm_ernic0/ports/1/hw_counters/
+   cat /sys/class/infiniband/rocm_ernic0/ports/1/hw_counters/port_rcv_data
+
+The following counters are available:
+
++--------------------+-------------------------------------------+
+| Counter            | Description                               |
++====================+===========================================+
+| port_rcv_data      | Received data in 4-byte words             |
++--------------------+-------------------------------------------+
+| port_xmit_data     | Transmitted data in 4-byte words          |
++--------------------+-------------------------------------------+
+| port_rcv_packets   | Total received packets (WQEs processed)   |
++--------------------+-------------------------------------------+
+| port_xmit_packets  | Total transmitted packets (sends posted)  |
++--------------------+-------------------------------------------+
+| rdma_read_bytes    | Bytes transferred via RDMA Read           |
++--------------------+-------------------------------------------+
+| rdma_write_bytes   | Bytes transferred via RDMA Write          |
++--------------------+-------------------------------------------+
+
+Counter values are fetched from the host-side server via
+the ``QUERY_STATS`` device command. The IB core caches
+values for one second to avoid excessive command traffic.
+
+These counters are consumed by the VM-side ``rdma_exporter``
+Prometheus exporter, which feeds the Grafana dashboard
+panels **VM RDMA Port Data Rate** and
+**VM RDMA Packet Rate**. See :doc:`monitoring` for the
+full dashboard layout.
+
 Kernel Compatibility
 --------------------
 

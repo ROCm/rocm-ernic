@@ -49,6 +49,7 @@ GID
 GIDs
 GPG
 GPL
+Grafana
 GPLv
 GQueue
 GUID
