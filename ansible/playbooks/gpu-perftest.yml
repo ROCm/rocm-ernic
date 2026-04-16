@@ -92,6 +92,26 @@
         path: "{{ xio_prefix }}/bin/ib_write_bw"
       register: perftest_xio_stat
 
+    - name: Create perftest-xio tarball on host
+      ansible.builtin.command:
+        argv:
+          - tar
+          - czf
+          - /tmp/perftest-xio.tar.gz
+          - -C
+          - "{{ ernic_perftest_source | dirname }}"
+          - "{{ ernic_perftest_source | basename }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      when: not perftest_xio_stat.stat.exists
+
+    - name: Copy and extract perftest-xio source
+      ansible.builtin.unarchive:
+        src: /tmp/perftest-xio.tar.gz
+        dest: /tmp
+      when: not perftest_xio_stat.stat.exists
+
     - name: Install perftest build dependencies
       ansible.builtin.apt:
         name:
@@ -99,18 +119,9 @@
           - automake
           - libtool
           - libibverbs-dev
+          - libpci-dev
         state: present
         update_cache: false
-      when: not perftest_xio_stat.stat.exists
-
-    - name: Clone perftest fork from GitHub
-      ansible.builtin.git:
-        repo: "{{ ernic_perftest_repo }}"
-        dest: /tmp/perftest-xio
-        version: >-
-          {{ ernic_perftest_commit
-             | default(ernic_perftest_branch, true) }}
-        force: true
       when: not perftest_xio_stat.stat.exists
 
     - name: Generate perftest configure script

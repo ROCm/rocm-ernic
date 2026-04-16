@@ -1099,6 +1099,10 @@ def cmd_vm_launch(args):
     if pci_mmio_bridge:
         env["PCI_MMIO_BRIDGE"] = "true"
 
+    extra_hostfwd = getattr(args, "extra_hostfwd", None)
+    if extra_hostfwd:
+        env["EXTRA_HOSTFWD"] = extra_hostfwd
+
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
     print(f"  SSH port:    {ssh_port}")
@@ -1110,6 +1114,8 @@ def cmd_vm_launch(args):
         print(f"  PCI hostdev: {pci_hostdev}")
     if pci_mmio_bridge:
         print("  MMIO bridge: enabled")
+    if extra_hostfwd:
+        print(f"  Extra fwd:   {extra_hostfwd}")
 
     logfile = os.path.join(
         LOG_DIR, f"vm-{args.instance}.log"
@@ -1376,6 +1382,12 @@ def build_parser():
         "--pci-mmio-bridge",
         action="store_true", default=False,
         help="Enable pci-mmio-bridge device",
+    )
+    sp.add_argument(
+        "--extra-hostfwd", default=None,
+        help="Extra QEMU hostfwd rules appended to"
+             " the user netdev (e.g."
+             " ,hostfwd=tcp::9150-:9100)",
     )
 
     sp = sub.add_parser(

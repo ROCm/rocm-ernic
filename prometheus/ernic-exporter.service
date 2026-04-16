@@ -17,9 +17,9 @@ Type=simple
 
 EnvironmentFile=/etc/rocm-ernic/rocm-ernic.env
 
-ExecStart=/usr/local/bin/ernic-exporter
-Restart=on-failure
-RestartSec=5
+ExecStart=/opt/ernic-exporter-venv/bin/python3 /usr/local/bin/ernic-exporter
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

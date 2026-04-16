@@ -102,6 +102,35 @@
       when: prom_dir.stat.exists
       notify: Reload Prometheus
 
+    - name: Deploy VM node-exporter scrape config
+      ansible.builtin.copy:
+        dest: "{{ ernic_prometheus_config_dir }}/ernic-vms.yml"
+        mode: "0644"
+        content: |
+          # Managed by Ansible -- VM node-exporter scrape
+          - job_name: ernic-vm-node
+            scrape_interval: 15s
+            static_configs:
+          {% for i in range(1, ernic_instances | int + 1) %}
+              - targets:
+                  - "localhost:{{ ernic_node_exporter_base_port | int + i - 1 }}"
+                labels:
+                  vm: "rocm-ernic-vm-{{ i }}"
+          {% endfor %}
+
+          - job_name: ernic-vm-rdma
+            scrape_interval: 5s
+            static_configs:
+          {% for i in range(1, ernic_instances | int + 1) %}
+              - targets:
+                  - "localhost:{{ ernic_rdma_exporter_base_port | int + i - 1 }}"
+                labels:
+                  vm: "rocm-ernic-vm-{{ i }}"
+          {% endfor %}
+      become: true
+      when: prom_dir.stat.exists
+      notify: Reload Prometheus
+
     # ── Grafana dashboard ─────────────────────────────
     - name: Check if Grafana provisioning directory exists
       ansible.builtin.stat:
@@ -112,6 +141,15 @@
       ansible.builtin.copy:
         src: "{{ ernic_project_root }}/prometheus/grafana/ernic-dashboard.json"
         dest: "{{ ernic_grafana_dashboard_dir }}/ernic-dashboard.json"
+        mode: "0644"
+      become: true
+      when: grafana_dir.stat.exists
+      notify: Restart Grafana
+
+    - name: Deploy Node Exporter Full dashboard
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/prometheus/grafana/node-exporter-full.json"
+        dest: "{{ ernic_grafana_dashboard_dir }}/node-exporter-full.json"
         mode: "0644"
       become: true
       when: grafana_dir.stat.exists
