@@ -531,7 +531,9 @@
                            | default('') | length > 0)
                    else [])
                 + (['--nvme',
-                    ernic_vm_nvme | string]
+                    ernic_vm_nvme | string,
+                    '--qemu-aio',
+                    ernic_vm_qemu_aio]
                    if (ernic_vm_nvme | int) > 0
                    else [])
               })

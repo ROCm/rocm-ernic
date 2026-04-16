@@ -39,7 +39,8 @@ ernic_vm_ssh_base_port: 2250
 ernic_golden_ssh_port: 2249
 ernic_vm_release: noble
 ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
-ernic_vm_nvme: 0
+ernic_vm_nvme: 1
+ernic_vm_qemu_aio: threads
 
 # Golden backing qcow2 for per-VM overlays.
 # Each VM gets its own overlay; BACKING_SHARED=true
@@ -141,6 +142,7 @@ ernic_prometheus_config_dir: /etc/prometheus/file_sd
 ernic_grafana_dashboard_dir: /var/lib/grafana/dashboards
 ernic_node_exporter_base_port: 9150
 ernic_rdma_exporter_base_port: 9160
+ernic_gpu_exporter_base_port: 9170
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true

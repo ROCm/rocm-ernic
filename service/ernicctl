@@ -1107,6 +1107,10 @@ def cmd_vm_launch(args):
     if nvme > 0:
         env["NVME"] = str(nvme)
 
+    qemu_aio = getattr(args, "qemu_aio", None)
+    if qemu_aio:
+        env["QEMU_AIO"] = qemu_aio
+
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
     print(f"  SSH port:    {ssh_port}")
@@ -1398,6 +1402,10 @@ def build_parser():
     sp.add_argument(
         "--nvme", type=int, default=0,
         help="Number of emulated NVMe SSDs (0=none)",
+    )
+    sp.add_argument(
+        "--qemu-aio", default=None,
+        help="Override QEMU AIO backend (native/threads/io_uring)",
     )
 
     sp = sub.add_parser(
