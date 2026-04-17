@@ -36,7 +36,10 @@
       systemd-run --unit={{ pt_unit }} \
         bash -c '{{ pt_tool }} \
           -d {{ rdma_dev }} -x 1 \
-          -s {{ pt_size }} -n {{ pt_iters }} \
+          -s {{ pt_size }} \
+          {{ "--duration " ~ pt_duration
+             if pt_duration is defined
+             else "-n " ~ pt_iters }} \
           {{ pt_extra_server_args }} \
           >/tmp/{{ pt_unit }}.log 2>&1'
       sleep 1
@@ -52,7 +55,10 @@
       timeout {{ test_timeout }}
       {{ xio_prefix }}/bin/{{ pt_tool }}
       -d {{ rdma_dev }} -x 1
-      -s {{ pt_size }} -n {{ pt_iters }}
+      -s {{ pt_size }}
+      {{ "--duration " ~ pt_duration
+         if pt_duration is defined
+         else "-n " ~ pt_iters }}
       --use_rocm_xio=0 --pci_mmio_bridge
       {{ pt_extra_client_args }}
       {{ server_ip }} 2>&1
@@ -73,7 +79,7 @@
           RC={{ pt_client.rc }}
 
           if [ "$RC" -ne 0 ]; then
-            echo "{{ pt_label }},{{ pt_size }},FAIL,{{ pt_iters }},FAIL" \
+            echo "{{ pt_label }},{{ pt_size }},FAIL,0,FAIL" \
               >> "{{ pt_csv }}"
             echo "FAIL rc=$RC"
             exit 0
@@ -81,19 +87,20 @@
 
           LINE=$(echo "$RAW" | grep -E '^\s+[0-9]' | tail -1)
           if [ -z "$LINE" ]; then
-            echo "{{ pt_label }},{{ pt_size }},NODATA,{{ pt_iters }},NODATA" \
+            echo "{{ pt_label }},{{ pt_size }},NODATA,0,NODATA" \
               >> "{{ pt_csv }}"
             echo "NODATA"
             exit 0
           fi
 
+          ITERS=$(echo "$LINE" | awk '{print $2}')
           AVG=$(echo "$LINE" | awk '{print $4}')
           AVG_GB=$(echo "scale=2; $AVG / 8" \
                    | bc -l 2>/dev/null || echo "$AVG")
 
-          echo "{{ pt_label }},{{ pt_size }},-,{{ pt_iters }},$AVG_GB" \
+          echo "{{ pt_label }},{{ pt_size }},-,$ITERS,$AVG_GB" \
             >> "{{ pt_csv }}"
-          echo "{{ pt_label }} {{ pt_size }}: avg=${AVG_GB} GB/s (GPU-initiated)"
+          echo "{{ pt_label }} {{ pt_size }}: avg=${AVG_GB} GB/s iters=$ITERS (GPU-initiated)"
       delegate_to: localhost
       become: false
       changed_when: false

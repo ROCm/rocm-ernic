@@ -113,12 +113,13 @@ ernic_perftest_source: "{{ lookup('env', 'HOME') }}/Projects/perftest-xio"
 ernic_perftest_prefix: "/opt/perftest-xio"
 
 # ── GPU perftest sweep defaults ──────────────────
-ernic_gpu_perftest_bw_iters: 100
-ernic_gpu_perftest_lat_iters: 50
+ernic_gpu_perftest_bw_duration: 60
+ernic_gpu_perftest_lat_iters: 5000
 ernic_gpu_perftest_sizes:
   - 4096
   - 16384
   - 65536
+  - 1048576
 ernic_gpu_perftest_timeout: 180
 ernic_gpu_perftest: true
 
