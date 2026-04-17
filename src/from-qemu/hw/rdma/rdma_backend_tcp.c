@@ -3423,13 +3423,12 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     } else {
         ret = -1;
     }
+    tcp_wr_unmap_sge(tqp, wr);
     qemu_mutex_unlock(&conn->lock);
 
     if (ret < 0) {
         goto fail;
     }
-
-    tcp_wr_unmap_sge(tqp, wr);
 
     rdma_info_report("TCP: Posted send QP %u -> node %u, "
                      "%u SGEs, opcode=%u",
@@ -3440,7 +3439,6 @@ fail:
     qemu_mutex_lock(&priv->lock);
     g_queue_remove(tqp->send_queue, wr);
     qemu_mutex_unlock(&priv->lock);
-    tcp_wr_unmap_sge(tqp, wr);
     g_free(wr);
     rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND, 0,
                                qpn, wc_opcode, ctx);
