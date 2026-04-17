@@ -37,9 +37,7 @@
         bash -c '{{ pt_tool }} \
           -d {{ rdma_dev }} -x 1 \
           -s {{ pt_size }} \
-          {{ "--duration " ~ pt_duration
-             if pt_duration is defined
-             else "-n " ~ pt_iters }} \
+          {{ "--duration " ~ pt_duration if pt_duration is defined else "-n " ~ pt_iters }} \
           {{ pt_extra_server_args }} \
           >/tmp/{{ pt_unit }}.log 2>&1'
       sleep 1
@@ -56,9 +54,7 @@
       {{ xio_prefix }}/bin/{{ pt_tool }}
       -d {{ rdma_dev }} -x 1
       -s {{ pt_size }}
-      {{ "--duration " ~ pt_duration
-         if pt_duration is defined
-         else "-n " ~ pt_iters }}
+      {{ "--duration " ~ pt_duration if pt_duration is defined else "-n " ~ pt_iters }}
       --use_rocm_xio=0 --pci_mmio_bridge
       {{ pt_extra_client_args }}
       {{ server_ip }} 2>&1
