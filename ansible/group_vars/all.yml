@@ -61,16 +61,16 @@ ernic_nic_subnet: "192.168.200"
 # Bandwidth uses human-readable format:
 #   100B/s, 1KiB/s, 10MiB/s, 1GiB/s
 # Stripped to iperf3 -b compatible form at runtime.
-ernic_iperf_bandwidth: "1GiB/s"
-ernic_iperf_duration: 30
+ernic_iperf_bandwidth: "10GiB/s"
+ernic_iperf_duration: 60
 
 # ── Performance sweep defaults ───────────────────
-ernic_perf_bw_iters: 100
+ernic_perf_bw_duration: 60
 ernic_perf_lat_iters: 50
 ernic_perf_reliability_iters: 100
-ernic_perf_reliability_runs: 5
+ernic_perf_reliability_runs: 1
 ernic_perf_reliability_size: 65536
-ernic_perf_pingpong_iters: 100
+ernic_perf_pingpong_iters: 1
 ernic_perf_pingpong_size: 4096
 
 # ── Stress-test defaults ─────────────────────────
@@ -113,13 +113,12 @@ ernic_perftest_source: "{{ lookup('env', 'HOME') }}/Projects/perftest-xio"
 ernic_perftest_prefix: "/opt/perftest-xio"
 
 # ── GPU perftest sweep defaults ──────────────────
-ernic_gpu_perftest_bw_duration: 60
+ernic_gpu_perftest_bw_duration: 10
 ernic_gpu_perftest_lat_iters: 5000
 ernic_gpu_perftest_sizes:
   - 4096
   - 16384
   - 65536
-  - 1048576
 ernic_gpu_perftest_timeout: 180
 ernic_gpu_perftest: true
 

@@ -1324,6 +1324,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                         uint32_t send_bytes = 0;
                         for (uint32_t si = 0; si < send_wr->num_sge; si++)
                             send_bytes += send_wr->sge[si].length;
+                        tcp_wr_unmap_sge(tqp, send_wr);
                         g_free(send_wr);
 
                         qemu_mutex_unlock(&priv->lock);
@@ -2318,12 +2319,6 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         node->conn = new_conn;
                         node->is_alive = true;
                         node->last_heartbeat = now;
-
-                        if (old_conn) {
-                            g_free(old_conn->remote_host);
-                            qemu_mutex_destroy(&old_conn->lock);
-                            g_free(old_conn);
-                        }
 
                         rdma_info_report("TCP: Reconnected to "
                                          "node %u",
@@ -3423,7 +3418,6 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     } else {
         ret = -1;
     }
-    tcp_wr_unmap_sge(tqp, wr);
     qemu_mutex_unlock(&conn->lock);
 
     if (ret < 0) {
@@ -3439,6 +3433,7 @@ fail:
     qemu_mutex_lock(&priv->lock);
     g_queue_remove(tqp->send_queue, wr);
     qemu_mutex_unlock(&priv->lock);
+    tcp_wr_unmap_sge(tqp, wr);
     g_free(wr);
     rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND, 0,
                                qpn, wc_opcode, ctx);

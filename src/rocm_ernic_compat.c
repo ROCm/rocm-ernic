@@ -82,8 +82,8 @@ static void dma_mapping_free(gpointer data)
 static void dma_map_table_init(void)
 {
     if (!dma_map_table) {
-        dma_map_table = g_hash_table_new_full(
-            g_direct_hash, g_direct_equal, NULL, dma_mapping_free);
+        dma_map_table = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+                                              NULL, dma_mapping_free);
         dma_map_count = 0;
     }
 }
@@ -908,8 +908,8 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
 
     if (g_hash_table_remove(dma_map_table, buffer)) {
         dma_map_count = g_hash_table_size(dma_map_table);
-        rdma_info_report(
-            "DMA unmap: Released mapping (remaining=%d)", dma_map_count);
+        rdma_info_report("DMA unmap: Released mapping (remaining=%d)",
+                         dma_map_count);
     } else {
         rdma_debug_report(
             "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
