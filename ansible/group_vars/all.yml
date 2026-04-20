@@ -65,7 +65,7 @@ ernic_iperf_bandwidth: "10GiB/s"
 ernic_iperf_duration: 60
 
 # ── Performance sweep defaults ───────────────────
-ernic_perf_bw_duration: 60
+ernic_perf_bw_iters: 1000
 ernic_perf_lat_iters: 50
 ernic_perf_reliability_iters: 100
 ernic_perf_reliability_runs: 1

@@ -20,7 +20,7 @@
 #
 # Override sweep parameters:
 #   ansible-playbook playbooks/performance-tests.yml \
-#     -e ernic_perf_bw_duration=60 \
+#     -e ernic_perf_bw_iters=2000 \
 #     -e ernic_perf_lat_iters=100 \
 #     -e ernic_perf_reliability_runs=10
 
@@ -46,7 +46,7 @@
     vm2_ip: "{{ ernic_nic_subnet }}.20"
     rdma_dev: rocm-rdma-ernic0
 
-    bw_duration: "{{ ernic_perf_bw_duration | default(30) }}"
+    bw_iters: "{{ ernic_perf_bw_iters | default(1000) }}"
     lat_iters: "{{ ernic_perf_lat_iters | default(50) }}"
     rel_iters: "{{ ernic_perf_reliability_iters | default(100) }}"
     rel_runs: "{{ ernic_perf_reliability_runs | default(5) }}"
@@ -178,7 +178,7 @@
         msg:
           - "=== Performance Sweep Config ==="
           - "Device:          {{ rdma_dev }}"
-          - "BW duration:     {{ bw_duration }}s"
+          - "BW iterations:   {{ bw_iters }}"
           - "Lat iterations:  {{ lat_iters }}"
           - "Sizes:           {{ sweep_sizes | length }} (4 KB - 8 MB)"
           - "Reliability:     {{ rel_runs }} runs x {{ rel_iters }} iters @ {{ rel_size }} B"
@@ -193,7 +193,7 @@
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
-          DUR="{{ bw_duration }}"
+          N="{{ bw_iters }}"
           SERVER_IP="{{ vm1_ip }}"
           UNIT="perftest-bw-$TOOL-$SZ"
 
@@ -206,7 +206,7 @@
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
             sudo systemd-run --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x 1 -s $SZ --duration $DUR \
+              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
                 --report_gbits \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
@@ -216,7 +216,7 @@
 
           RAW=$({{ vm2_ssh }} "
             timeout {{ perftest_timeout }} \
-              $TOOL -d $DEV -x 1 -s $SZ --duration $DUR \
+              $TOOL -d $DEV -x 1 -s $SZ -n $N \
               --report_gbits $SERVER_IP 2>&1
           ")
           RC=$?
@@ -507,81 +507,6 @@
           - pp_result.results | selectattr('rc', 'ne', 0) | list | length == 0
         fail_msg: >-
           Pingpong tests had failures. Aborting.
-
-    # ─────────────────────────────────────────────────
-    # iperf3 TCP baseline
-    # ─────────────────────────────────────────────────
-    - name: "iperf3: TCP baseline over emulated NIC"
-      ansible.builtin.shell:
-        cmd: |
-          SERVER_IP="{{ vm1_ip }}"
-          DUR="{{ ernic_iperf_duration | default(30) }}"
-          BW="{{ ernic_iperf_bandwidth
-                 | default('10GiB/s')
-                 | regex_replace('(?i)iB/s$', '')
-                 | regex_replace('(?i)B/s$', '') }}"
-          UNIT="perf-iperf3"
-
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
-          sleep 1
-
-          {{ vm1_ssh }} "
-            sudo systemctl stop $UNIT 2>/dev/null;
-            sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
-              bash -c 'iperf3 -s -1 \
-                --bind $SERVER_IP \
-                >/tmp/${UNIT}.log 2>&1';
-            sleep 1
-          "
-
-          sleep 3
-
-          RAW=$({{ vm2_ssh }} "
-            timeout $(( DUR * 4 + 30 )) \
-              iperf3 -c $SERVER_IP -t $DUR \
-              -b ${BW} --json 2>&1
-          ")
-          RC=$?
-
-          if [ $RC -ne 0 ]; then
-            echo "iperf3 FAIL rc=$RC"
-            exit 0
-          fi
-
-          BPS_SEND=$(echo "$RAW" \
-            | python3 -c "
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              bps = d['end']['sum_sent']['bits_per_second']
-              print(f'{bps/1e6:.2f}')
-          except Exception:
-              print('N/A')
-          " 2>/dev/null)
-
-          BPS_RECV=$(echo "$RAW" \
-            | python3 -c "
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              bps = d['end']['sum_received']['bits_per_second']
-              print(f'{bps/1e6:.2f}')
-          except Exception:
-              print('N/A')
-          " 2>/dev/null)
-
-          echo "iperf3 TCP: send=${BPS_SEND} recv=${BPS_RECV} Mbit/s (${DUR}s)"
-      register: iperf_result
-      changed_when: false
-      failed_when: false
-
-    - name: Display iperf3 results
-      ansible.builtin.debug:
-        msg: >-
-          {{ iperf_result.stdout_lines
-             | default(['(no output)']) }}
 
     # ─────────────────────────────────────────────────
     # Summary
