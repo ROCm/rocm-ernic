@@ -33,6 +33,16 @@ ernic_vm_name_base: rocm-ernic-april-16-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
 ernic_vm_ssh_user: ubuntu
+ernic_vm_ssh_host: local-vm
+# Optional: ssh/scp -F path so sudo ernicctl resolves Host aliases
+# (e.g. /home/youruser/.ssh/config).  Root's /root/.ssh is not used by
+# ernicctl for VM ssh; use this path or ERNIC_VM_SSH_IDENTITY in env.
+ernic_vm_ssh_config: "{{ ansible_env.HOME }}/.ssh/config"
+# Private key on the target host for ERNIC_VM_SSH_IDENTITY (ernicctl VM_LOAD
+# SSH fallback, guest_ssh, etc.). Omit ``ernic_vm_ssh_identity`` entirely in
+# inventory to skip this line in ``rocm-ernic.env`` and let ernicctl pick the
+# first readable key under SUDO_USER's ``.ssh`` (id_rsa, id_ed25519, id_ecdsa).
+ernic_vm_ssh_identity: "{{ ansible_env.HOME }}/.ssh/id_rsa"
 ernic_vm_ssh_pass: password
 ernic_vm_ssh_key_file: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
 ernic_vm_ssh_base_port: 2250
@@ -146,6 +156,13 @@ ernic_gpu_exporter_base_port: 9170
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true
+# When true, /etc/rocm-ernic/rocm-ernic.env sets ERNIC_DEBUG_MESH=1 so
+# rocm-ernic logs rate-limited mesh Ethernet diagnostics (EAGAIN drops,
+# inject failures, etc.).  Set false on production hosts to cut log noise.
+ernic_debug_mesh: true
+# When true, each pci_dma_map logs a line (very noisy under load).  Use only
+# for short-lived pointer / mapping debugging.
+ernic_debug_dma_map: false
 ernic_golden_image: true
 ernic_tests: true
 ernic_gpu_tests: true

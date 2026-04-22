@@ -66,21 +66,21 @@
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [test, sanity]
 
-- name: "Phase 5a: TCP/IP performance tests"
+- name: "Phase 5a: TCP/IP performance tests (iperf3)"
   ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
   tags: [test, tcp-perf]
 
-- name: "Phase 5b: RDMA performance tests"
+- name: "Phase 5b: CPU-based RDMA performance tests (perftest)"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
-  tags: [test, perf]
+  tags: [test, cpu-rdma-perf]
 
-- name: "Phase 6a: GPU RDMA tests"
+- name: "Phase 6a: GPU RDMA tests (xio-tester)"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
-  tags: [test, gpu, gpu-test]
+  tags: [test, gpu, gpu-xio-tester]
 
-- name: "Phase 6b: GPU perftest (rocm-xio)"
+- name: "Phase 6b: GPU perftest (perftest-xio via rocm-xio)"
   ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
-  tags: [test, gpu, gpu-perf]
+  tags: [test, gpu, gpu-perftest-xio]
 
 - name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml

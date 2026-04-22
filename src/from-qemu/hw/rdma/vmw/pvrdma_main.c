@@ -787,16 +787,6 @@ uint64_t pvrdma_regs_read_impl(void *opaque, hwaddr addr, unsigned size)
         return -EINVAL;
     }
 
-    /* Log error register reads specially */
-    if (addr == PVRDMA_REG_ERR) {
-        rdma_info_report(
-            ">>> ERROR REGISTER READ: offset=0x%lx (PVRDMA_REG_ERR) value=%#x",
-            addr, val);
-    } else {
-        rdma_info_report("BAR1 READ: offset=%#lx size=%u value=%#x", addr, size,
-                         val);
-    }
-
     return val;
 }
 
@@ -805,9 +795,6 @@ void pvrdma_regs_write_impl(void *opaque, hwaddr addr, uint64_t val,
                             unsigned size)
 {
     PVRDMADev *dev = opaque;
-
-    rdma_info_report("BAR1 WRITE: offset=%#lx size=%u value=%#lx", addr, size,
-                     val);
 
     dev->stats.regs_writes++;
 

@@ -168,9 +168,31 @@ VM and QEMU settings
    * - ``ERNIC_VM_SSH_USER``
      - ``ubuntu``
      - SSH user for guest access
+   * - ``ERNIC_VM_SSH_HOST``
+     - ``localhost``
+     - SSH destination host for guest commands (use an
+       ``ssh_config`` Host alias when you do not use
+       ``localhost``).
+   * - ``ERNIC_VM_SSH_CONFIG``
+     - (unset)
+     - Path passed to ``ssh``/``scp`` as ``-F``.  When unset
+       and ``ernicctl`` runs as ``root`` under ``sudo``, the
+       invoking user's ``~/.ssh/config`` (``SUDO_USER``) is used
+       if that file exists.  ``/root/.ssh`` is never read for this
+       implicit default; set ``ERNIC_VM_SSH_CONFIG`` when there is
+       no ``SUDO_USER`` (e.g. a systemd unit or bare ``su -``).
    * - ``ERNIC_VM_SSH_BASE_PORT``
      - ``2222``
      - Base SSH port (instance N uses base + N - 1)
+   * - ``ERNIC_VM_SSH_IDENTITY``
+     - (unset)
+     - SSH private key path for the VM_LOAD column (SSH
+       fallback).  When unset and ``ernicctl`` runs as
+       ``root`` under ``sudo``, a recent ``ernicctl`` may use
+       ``SUDO_USER``'s default ``~/.ssh/id_rsa`` (or
+       ``id_ed25519`` / ``id_ecdsa``) automatically.  ``/root/.ssh``
+       keys are not auto-discovered.  Otherwise set this for
+       ``ERNIC_VM_SSH_USER@ERNIC_VM_SSH_HOST``.
    * - ``ERNIC_VM_BACKING``
      - (unset)
      - Golden backing qcow2. When set and a
@@ -258,6 +280,7 @@ Service lifecycle
    ernicctl reload                   # re-read env
    ernicctl status [--json]          # instance table
    ernicctl status --rate 5          # 5s byte deltas
+   ernicctl status --debug-vm-load   # VM_LOAD QMP/SSH trace
    ernicctl logs [N]                 # tail logs
    ernicctl stats [N]                # raw stats dump
    ernicctl stats --summary          # one-row summary

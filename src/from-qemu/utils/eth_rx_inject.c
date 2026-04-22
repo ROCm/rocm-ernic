@@ -11,9 +11,11 @@
 #include "from-qemu/hw/rdma/rdma_utils.h"
 #include "hw/rdma/rdma.h"
 #include "hw/pci/pci.h"
+#include "qemu/thread.h"
 #include <string.h>
 #include <inttypes.h>
 #include <glib.h>
+#include <pthread.h>
 
 typedef struct {
     PVRDMADev *dev;
@@ -21,13 +23,36 @@ typedef struct {
     size_t len;
 } DeferredEthRx;
 
-static int eth_rx_inject_frame_impl(PVRDMADev *dev, const void *frame_data,
-                                    size_t len);
+static int eth_rx_inject_frame_impl_nolock(PVRDMADev *dev,
+                                           const void *frame_data, size_t len);
+
+static QemuMutex eth_inject_lock;
+static pthread_once_t eth_inject_lock_once = PTHREAD_ONCE_INIT;
+
+static void eth_inject_lock_init_fn(void)
+{
+    qemu_mutex_init(&eth_inject_lock);
+}
+
+static void eth_inject_lock_ensure(void)
+{
+    pthread_once(&eth_inject_lock_once, eth_inject_lock_init_fn);
+}
+
+static int eth_rx_inject_frame_impl_locked(PVRDMADev *dev,
+                                           const void *frame_data, size_t len)
+{
+    eth_inject_lock_ensure();
+    qemu_mutex_lock(&eth_inject_lock);
+    int r = eth_rx_inject_frame_impl_nolock(dev, frame_data, len);
+    qemu_mutex_unlock(&eth_inject_lock);
+    return r;
+}
 
 static gboolean eth_rx_deferred_cb(gpointer user_data)
 {
     DeferredEthRx *rx = user_data;
-    eth_rx_inject_frame_impl(rx->dev, rx->data, rx->len);
+    eth_rx_inject_frame_impl_locked(rx->dev, rx->data, rx->len);
     g_free(rx->data);
     g_free(rx);
     return G_SOURCE_REMOVE;
@@ -43,8 +68,25 @@ int eth_rx_inject_frame(PVRDMADev *dev, const void *frame_data, size_t len)
     return 0;
 }
 
-static int eth_rx_inject_frame_impl(PVRDMADev *dev, const void *frame_data,
-                                    size_t len)
+int eth_rx_inject_frame_mesh_blocking(PVRDMADev *dev, const void *frame_data,
+                                      size_t len)
+{
+    eth_inject_lock_ensure();
+
+    for (;;) {
+        qemu_mutex_lock(&eth_inject_lock);
+        int r = eth_rx_inject_frame_impl_nolock(dev, frame_data, len);
+        qemu_mutex_unlock(&eth_inject_lock);
+        if (r != -ENOSPC) {
+            return r;
+        }
+        /* Ring full: yield so guest RX and other inject paths can run. */
+        g_usleep(50);
+    }
+}
+
+static int eth_rx_inject_frame_impl_nolock(PVRDMADev *dev,
+                                           const void *frame_data, size_t len)
 {
     PVRDMAEthState *eth = get_eth_state(dev);
 
@@ -65,7 +107,6 @@ static int eth_rx_inject_frame_impl(PVRDMADev *dev, const void *frame_data,
     /* Find next available RX descriptor */
     uint32_t next_tail = (eth->rx_tail + 1) % eth->rx_len;
     if (next_tail == eth->rx_head) {
-        rdma_warn_report("RX descriptor ring full");
         return -ENOSPC;
     }
 
@@ -91,7 +132,7 @@ static int eth_rx_inject_frame_impl(PVRDMADev *dev, const void *frame_data,
         rdma_error_report("RX descriptor buffer too small (%u < %zu)",
                           desc.length, len);
         rdma_pci_dma_unmap(pci_dev, desc_vaddr, sizeof(desc));
-        return -ENOSPC;
+        return -EMSGSIZE;
     }
 
     /* Map packet buffer */
