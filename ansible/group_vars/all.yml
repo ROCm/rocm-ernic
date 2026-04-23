@@ -67,11 +67,9 @@ ernic_rdma_core_version: "62.0"
 # ── Guest NIC configuration ─────────────────────
 ernic_nic_name: rocm-ernic0
 ernic_nic_subnet: "192.168.200"
-# iperf3 rate limit and duration.
-# Bandwidth uses human-readable format:
-#   100B/s, 1KiB/s, 10MiB/s, 1GiB/s
-# Stripped to iperf3 -b compatible form at runtime.
-ernic_iperf_bandwidth: "10GiB/s"
+# iperf3 rate limit and duration.  Bandwidth is passed to iperf3 -b verbatim
+# (e.g. 100M, 1G, 8M); see iperf3(1) for accepted forms.
+ernic_iperf_bandwidth: "8M"
 ernic_iperf_duration: 60
 
 # ── Performance sweep defaults ───────────────────

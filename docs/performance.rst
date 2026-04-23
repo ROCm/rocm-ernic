@@ -714,8 +714,9 @@ Known Limitations
   before the client connects at very small message sizes.
   Does not affect sizes 16 KB and above.
 
-- **iperf3:** the Ansible **stress** default ``ernic_iperf_bandwidth`` caps
-  the reported TCP row at **~0.10 Mbit/s**.  Unthrottled ``iperf3`` over
+- **iperf3:** the Ansible **stress** default ``ernic_iperf_bandwidth`` (passed
+  to ``iperf3 -b`` as given) caps the reported TCP row at **~0.10 Mbit/s**.
+  Unthrottled ``iperf3`` over
   ``rocm_ernic_eth`` (Apr 2026, **1.0.6.0-k** / NAPI path) routinely lands
   in the **~34--56 Mbit/s** range depending on duration, ``timeout(1)``
   client wrap, and scheduling; see `ernic-iperf3-apr2026`_.

@@ -32,11 +32,7 @@
 
     iperf_dur: >-
       {{ ernic_iperf_duration | default(30) }}
-    iperf_bw: >-
-      {{ ernic_iperf_bandwidth
-         | default('10GiB/s')
-         | regex_replace('(?i)iB/s$', '')
-         | regex_replace('(?i)B/s$', '') }}
+    iperf_bw: "{{ ernic_iperf_bandwidth | default('10G') }}"
 
     kill_perftest: >-
       sudo /usr/local/bin/free-perftest-port 2>/dev/null;
