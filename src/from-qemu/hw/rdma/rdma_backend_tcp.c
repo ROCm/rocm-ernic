@@ -98,7 +98,7 @@ static int tcp_mesh_debug(void)
 }
 
 static void tcp_mesh_warn_rate_limited(const char *msg, uint64_t *counter,
-                                        uint64_t every)
+                                       uint64_t every)
 {
     uint64_t n = (uint64_t)__sync_add_and_fetch(counter, 1);
 
@@ -1832,9 +1832,9 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                             qemu_mutex_lock(&fwd_targets[fi].conn->lock);
                             fwd_rc = tcp_send_eth_frame_nonblock(
-                                fwd_targets[fi].conn->sockfd,
-                                payload, hdr.msg_len,
-                                hdr.src_node_id, fwd_targets[fi].node_id);
+                                fwd_targets[fi].conn->sockfd, payload,
+                                hdr.msg_len, hdr.src_node_id,
+                                fwd_targets[fi].node_id);
                             qemu_mutex_unlock(&fwd_targets[fi].conn->lock);
                             if (fwd_rc != 0 && tcp_mesh_debug()) {
                                 tcp_mesh_warn_rate_limited(
@@ -3885,9 +3885,9 @@ int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
 
         for (int i = 0; i < ntargets; i++) {
             qemu_mutex_lock(&targets[i].conn->lock);
-            int rc = tcp_send_eth_frame_nonblock(
-                targets[i].conn->sockfd, frame, len,
-                priv->local_node_id, targets[i].node_id);
+            int rc = tcp_send_eth_frame_nonblock(targets[i].conn->sockfd, frame,
+                                                 len, priv->local_node_id,
+                                                 targets[i].node_id);
             qemu_mutex_unlock(&targets[i].conn->lock);
             if (rc == 0)
                 sent++;
@@ -3895,9 +3895,8 @@ int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
     } else if (priv->manager_conn && priv->manager_conn->is_connected &&
                priv->manager_conn->sockfd >= 0) {
         qemu_mutex_lock(&priv->manager_conn->lock);
-        int rc = tcp_send_eth_frame_nonblock(
-            priv->manager_conn->sockfd, frame, len,
-            priv->local_node_id, 0);
+        int rc = tcp_send_eth_frame_nonblock(priv->manager_conn->sockfd, frame,
+                                             len, priv->local_node_id, 0);
         qemu_mutex_unlock(&priv->manager_conn->lock);
         if (rc == 0)
             sent++;

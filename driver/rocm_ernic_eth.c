@@ -60,7 +60,7 @@
 #define ROCM_ERNIC_ETH_ICR_RX_ERROR    (1 << 3) /* Receive Error */
 
 /* NAPI poll weight (max packets per poll). */
-#define ROCM_ERNIC_ETH_NAPI_WEIGHT     64
+#define ROCM_ERNIC_ETH_NAPI_WEIGHT 64
 
 /* Descriptor status/command bits */
 #define ROCM_ERNIC_ETH_DESC_STATUS_DD (1 << 0)
@@ -501,8 +501,7 @@ static int rocm_ernic_eth_poll(struct napi_struct *napi, int budget)
          * ifdown is racing napi_disable() so we never re-arm after disable.
          */
         if (likely(netif_running(eth_dev->netdev)) &&
-            !napi_disable_pending(napi) &&
-            rocm_ernic_eth_rx_pending(eth_dev))
+            !napi_disable_pending(napi) && rocm_ernic_eth_rx_pending(eth_dev))
             napi_schedule(napi);
     }
     return work_done;
