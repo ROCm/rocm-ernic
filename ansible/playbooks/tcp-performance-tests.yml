@@ -1,0 +1,151 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Phase 5a: TCP/IP performance tests over the emulated
+# Ethernet NICs.  Runs iperf3 between VMs to measure
+# TCP throughput through the emulated NIC path.
+#
+# Usage:
+#   ansible-playbook site.yml --tags tcp-perf
+
+---
+- name: TCP/IP performance tests -- iperf3
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    vm1_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm2_ssh: >-
+      ssh -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -p {{ ernic_vm_ssh_base_port | int + 1 }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm1_ip: "{{ ernic_nic_subnet }}.10"
+    vm2_ip: "{{ ernic_nic_subnet }}.20"
+
+    iperf_dur: >-
+      {{ ernic_iperf_duration | default(30) }}
+    iperf_bw: "{{ ernic_iperf_bandwidth | default('10G') }}"
+
+    kill_perftest: >-
+      sudo /usr/local/bin/free-perftest-port 2>/dev/null;
+      sudo pkill -9 iperf3 2>/dev/null;
+      true
+
+  tasks:
+
+    - name: Skip if tests disabled
+      ansible.builtin.meta: end_play
+      when: not (ernic_tests | bool)
+
+    - name: Display iperf3 configuration
+      ansible.builtin.debug:
+        msg:
+          - "=== TCP/IP Performance Config ==="
+          - "Duration:    {{ iperf_dur }}s"
+          - "Bandwidth:   {{ iperf_bw }}"
+          - "VM1 IP:      {{ vm1_ip }}"
+          - "VM2 IP:      {{ vm2_ip }}"
+
+    - name: "Verify TCP/IP connectivity"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'ping -c 3 -W 2 {{ vm2_ip }} 2>&1'
+      register: tcp_ping
+      changed_when: false
+      failed_when: false
+
+    - name: Display ping result
+      ansible.builtin.debug:
+        msg: "{{ tcp_ping.stdout_lines }}"
+
+    - name: Assert TCP/IP connectivity
+      ansible.builtin.assert:
+        that:
+          - tcp_ping.rc == 0
+        fail_msg: >-
+          Ping failed between VMs. Emulated NIC may
+          not be working.
+
+    - name: "iperf3: TCP throughput (VM2 → VM1)"
+      ansible.builtin.shell:
+        cmd: |
+          SERVER_IP="{{ vm1_ip }}"
+          DUR="{{ iperf_dur }}"
+          BW="{{ iperf_bw }}"
+          UNIT="tcp-perf-iperf3"
+
+          {{ vm1_ssh }} 'sudo pkill -9 iperf3 2>/dev/null; true'
+          {{ vm2_ssh }} 'sudo pkill -9 iperf3 2>/dev/null; true'
+          sleep 1
+
+          {{ vm1_ssh }} "
+            sudo systemctl stop $UNIT 2>/dev/null;
+            sudo systemctl reset-failed $UNIT 2>/dev/null;
+            sudo systemd-run --unit=$UNIT \
+              bash -c 'iperf3 -s -1 \
+                --bind $SERVER_IP \
+                >/tmp/${UNIT}.log 2>&1';
+            sleep 1
+          "
+
+          sleep 3
+
+          RAW=$({{ vm2_ssh }} "
+            timeout $(( DUR * 4 + 30 )) \
+              iperf3 -c $SERVER_IP -t $DUR \
+              -b ${BW} --json 2>&1
+          ")
+          RC=$?
+
+          if [ $RC -ne 0 ]; then
+            echo "iperf3 FAIL rc=$RC"
+            echo "$RAW"
+            exit 1
+          fi
+
+          BPS_SEND=$(echo "$RAW" \
+            | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              bps = d['end']['sum_sent']['bits_per_second']
+              print(f'{bps/1e6:.2f}')
+          except Exception:
+              print('N/A')
+          " 2>/dev/null)
+
+          BPS_RECV=$(echo "$RAW" \
+            | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              bps = d['end']['sum_received']['bits_per_second']
+              print(f'{bps/1e6:.2f}')
+          except Exception:
+              print('N/A')
+          " 2>/dev/null)
+
+          echo "iperf3 TCP: send=${BPS_SEND} recv=${BPS_RECV} Mbit/s (${DUR}s)"
+      register: iperf_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display iperf3 results
+      ansible.builtin.debug:
+        msg: "{{ iperf_result.stdout_lines }}"
+
+    - name: Assert iperf3 passed
+      ansible.builtin.assert:
+        that:
+          - iperf_result.rc == 0
+        fail_msg: >-
+          iperf3 TCP throughput test failed.

@@ -5,7 +5,9 @@
 # Play 3: Provision guest VMs with RDMA packages, the
 # rocm-ernic kernel driver, and the custom rdma-core
 # provider.  Configure IP addresses on the emulated
-# NICs for inter-VM connectivity.
+# NICs for inter-VM connectivity.  Installs
+# qemu-guest-agent so the host can query guest load
+# via QMP (guest-get-load) from ernicctl status.
 
 ---
 - name: Guest setup -- driver, rdma-core, NIC config
@@ -14,15 +16,52 @@
   gather_facts: true
   vars_files:
     - ../group_vars/all.yml
+  # Fresh DKMS id each play so setup-rocm-ernic-dkms.sh cannot short-circuit on
+  # "already installed" while /tmp/driver sources were updated (see script skip
+  # when PKG_VERSION matches an installed row).
+  vars:
+    rocm_ernic_dkms_pkg_version: >-
+      0.2.0-p{{ lookup('pipe', 'date +%s') }}
 
   tasks:
 
     # ── Base packages are baked into the golden image ─
     # The rdma_setup, rocm_setup roles and build tools
     # are installed during vm-create.yml golden image
-    # provisioning.  Only rocm-ernic-specific setup
-    # (driver, rdma-core provider, NIC config, rocm-xio)
-    # runs here.
+    # provisioning.  This play adds qemu-guest-agent
+    # plus rocm-ernic-specific setup (driver, rdma-core
+    # provider, NIC config, rocm-xio).
+
+    # ── QEMU guest agent (QMP guest-get-load, etc.) ──
+    - name: Install qemu-guest-agent for QMP guest metrics
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+
+    # The agent unit pulls in a systemd device unit for this path.  If QEMU
+    # was started without a virtio-serial org.qemu.guest_agent.0 channel
+    # (common until run-vm exposes it), start would fail the whole play.
+    - name: Check for QEMU guest-agent virtio port in the guest
+      ansible.builtin.stat:
+        path: /dev/virtio-ports/org.qemu.guest_agent.0
+      register: qga_virtio_port
+
+    - name: Enable and start qemu-guest-agent when virtio port exists
+      ansible.builtin.systemd:
+        name: qemu-guest-agent.service
+        enabled: true
+        state: started
+      when: qga_virtio_port.stat.exists
+
+    - name: Report when guest-agent channel is missing from QEMU
+      ansible.builtin.debug:
+        msg: >-
+          qemu-guest-agent is installed but the virtio-serial channel
+          org.qemu.guest_agent.0 is not present.  Add it in run-vm / QEMU
+          (then re-run this task or: systemctl enable --now
+          qemu-guest-agent).  Until then, ernicctl status VM_LOAD falls
+          back to SSH.
+      when: not qga_virtio_port.stat.exists
 
     # ── Copy driver source ───────────────────────────
     - name: Copy driver source to guest
@@ -154,7 +193,11 @@
     # ── Build and install kernel driver via DKMS ──────
     - name: Install rocm-ernic driver via DKMS
       ansible.builtin.command:
-        cmd: bash /tmp/driver/setup-rocm-ernic-dkms.sh
+        argv:
+          - bash
+          - /tmp/driver/setup-rocm-ernic-dkms.sh
+          - --version
+          - "{{ rocm_ernic_dkms_pkg_version | trim }}"
       environment:
         DEBIAN_FRONTEND: noninteractive
       changed_when: true

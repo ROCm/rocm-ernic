@@ -584,9 +584,8 @@ static irqreturn_t rocm_ernic_intr0_handler(int irq, void *dev_id)
         eth_icr = ioread32(regs + ROCM_ERNIC_ETH_ICR);
         dev_dbg(&dev->pdev->dev, "Ethernet ICR: 0x%08x\n", eth_icr);
         if (eth_icr & ROCM_ERNIC_ETH_ICR_RX_PACKET) {
-            dev_info(&dev->pdev->dev,
-                     "Ethernet RX interrupt detected, processing RX packets\n");
-            /* Process RX packets */
+            dev_dbg(&dev->pdev->dev,
+                    "Ethernet RX interrupt, scheduling RX processing\n");
             rocm_ernic_eth_handle_rx_interrupt(dev->pdev);
             /* ICR is read-to-clear, so reading it already cleared the bits
              */

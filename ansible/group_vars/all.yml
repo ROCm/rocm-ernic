@@ -33,12 +33,24 @@ ernic_vm_name_base: rocm-ernic-april-16-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
 ernic_vm_ssh_user: ubuntu
+ernic_vm_ssh_host: local-vm
+# Optional: ssh/scp -F path so sudo ernicctl resolves Host aliases
+# (e.g. /home/youruser/.ssh/config).  Root's /root/.ssh is not used by
+# ernicctl for VM ssh; use this path or ERNIC_VM_SSH_IDENTITY in env.
+ernic_vm_ssh_config: "{{ ansible_env.HOME }}/.ssh/config"
+# Private key on the target host for ERNIC_VM_SSH_IDENTITY (ernicctl VM_LOAD
+# SSH fallback, guest_ssh, etc.). Omit ``ernic_vm_ssh_identity`` entirely in
+# inventory to skip this line in ``rocm-ernic.env`` and let ernicctl pick the
+# first readable key under SUDO_USER's ``.ssh`` (id_rsa, id_ed25519, id_ecdsa).
+ernic_vm_ssh_identity: "{{ ansible_env.HOME }}/.ssh/id_rsa"
 ernic_vm_ssh_pass: password
 ernic_vm_ssh_key_file: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
 ernic_vm_ssh_base_port: 2250
 ernic_golden_ssh_port: 2249
 ernic_vm_release: noble
 ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
+ernic_vm_nvme: 1
+ernic_vm_qemu_aio: threads
 
 # Golden backing qcow2 for per-VM overlays.
 # Each VM gets its own overlay; BACKING_SHARED=true
@@ -55,20 +67,18 @@ ernic_rdma_core_version: "62.0"
 # ── Guest NIC configuration ─────────────────────
 ernic_nic_name: rocm-ernic0
 ernic_nic_subnet: "192.168.200"
-# iperf3 rate limit and duration.
-# Bandwidth uses human-readable format:
-#   100B/s, 1KiB/s, 10MiB/s, 1GiB/s
-# Stripped to iperf3 -b compatible form at runtime.
-ernic_iperf_bandwidth: "1GiB/s"
-ernic_iperf_duration: 30
+# iperf3 rate limit and duration.  Bandwidth is passed to iperf3 -b verbatim
+# (e.g. 100M, 1G, 8M); see iperf3(1) for accepted forms.
+ernic_iperf_bandwidth: "8M"
+ernic_iperf_duration: 60
 
 # ── Performance sweep defaults ───────────────────
-ernic_perf_bw_iters: 100
+ernic_perf_bw_iters: 1000
 ernic_perf_lat_iters: 50
 ernic_perf_reliability_iters: 100
-ernic_perf_reliability_runs: 5
+ernic_perf_reliability_runs: 1
 ernic_perf_reliability_size: 65536
-ernic_perf_pingpong_iters: 100
+ernic_perf_pingpong_iters: 1
 ernic_perf_pingpong_size: 4096
 
 # ── Stress-test defaults ─────────────────────────
@@ -111,8 +121,8 @@ ernic_perftest_source: "{{ lookup('env', 'HOME') }}/Projects/perftest-xio"
 ernic_perftest_prefix: "/opt/perftest-xio"
 
 # ── GPU perftest sweep defaults ──────────────────
-ernic_gpu_perftest_bw_iters: 100
-ernic_gpu_perftest_lat_iters: 50
+ernic_gpu_perftest_bw_duration: 10
+ernic_gpu_perftest_lat_iters: 5000
 ernic_gpu_perftest_sizes:
   - 4096
   - 16384
@@ -140,9 +150,17 @@ ernic_prometheus_config_dir: /etc/prometheus/file_sd
 ernic_grafana_dashboard_dir: /var/lib/grafana/dashboards
 ernic_node_exporter_base_port: 9150
 ernic_rdma_exporter_base_port: 9160
+ernic_gpu_exporter_base_port: 9170
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true
+# When true, /etc/rocm-ernic/rocm-ernic.env sets ERNIC_DEBUG_MESH=1 so
+# rocm-ernic logs rate-limited mesh Ethernet diagnostics (EAGAIN drops,
+# inject failures, etc.).  Set false on production hosts to cut log noise.
+ernic_debug_mesh: true
+# When true, each pci_dma_map logs a line (very noisy under load).  Use only
+# for short-lived pointer / mapping debugging.
+ernic_debug_dma_map: false
 ernic_golden_image: true
 ernic_tests: true
 ernic_gpu_tests: true

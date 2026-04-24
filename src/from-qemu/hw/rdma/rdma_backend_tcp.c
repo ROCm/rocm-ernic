@@ -34,6 +34,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <time.h>
+#include <inttypes.h>
 
 /*
  * TCP Backend Protocol (Multi-Node Extension)
@@ -72,6 +73,45 @@ static int tcp_env_int(const char *name, int fallback)
     }
     return fallback;
 }
+
+/*
+ * Verbose mesh Ethernet diagnostics.  Set ERNIC_DEBUG_MESH=1 before
+ * starting rocm-ernic to log rate-limited EAGAIN drops, inject failures,
+ * and zero-forward cases.  Heavy iperf3 can fill socket buffers; those
+ * paths are otherwise silent.
+ */
+static int tcp_mesh_debug(void)
+{
+    static int cached = -1;
+
+    if (cached >= 0) {
+        return cached;
+    }
+    const char *v = getenv("ERNIC_DEBUG_MESH");
+
+    if (v && v[0] != '\0' && v[0] != '0') {
+        cached = 1;
+    } else {
+        cached = 0;
+    }
+    return cached;
+}
+
+static void tcp_mesh_warn_rate_limited(const char *msg, uint64_t *counter,
+                                       uint64_t every)
+{
+    uint64_t n = (uint64_t)__sync_add_and_fetch(counter, 1);
+
+    if (n == 1 || (every > 0 && (n % every) == 0)) {
+        rdma_warn_report("%s (count=%" PRIu64 ")", msg, n);
+    }
+}
+
+static uint64_t mesh_eth_eagain_events;
+static uint64_t mesh_eth_truncated_sends;
+static uint64_t mesh_eth_zero_forward;
+static uint64_t mesh_eth_inject_fail;
+static uint64_t mesh_eth_manager_relay_eagain;
 
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,
@@ -941,10 +981,6 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
     size_t sent = 0;
 
     while (sent < total) {
-        /*
-         * Advance the iov past already-sent bytes so
-         * partial writes resume correctly.
-         */
         struct iovec cur[2];
         int cur_cnt = 0;
         size_t skip = sent;
@@ -974,6 +1010,70 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
         sent += (size_t)ret;
     }
 
+    return 0;
+}
+
+/*
+ * Non-blocking ETH frame send.  Builds header + payload into a single
+ * contiguous buffer and attempts one send(MSG_DONTWAIT).  If the socket
+ * buffer is full the frame is silently dropped -- the guest TCP/IP stack
+ * will retransmit.  This prevents the main loop from ever blocking on
+ * Ethernet forwarding.
+ */
+static int tcp_send_eth_frame_nonblock(int sockfd, const void *payload,
+                                       size_t payload_len, uint32_t src_node,
+                                       uint32_t dst_node)
+{
+    uint8_t buf[sizeof(TcpMsgHeader) + TCP_MAX_ETH_FRAME_LEN];
+    TcpMsgHeader *hdr = (TcpMsgHeader *)buf;
+    size_t total = sizeof(*hdr) + payload_len;
+
+    hdr->magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr->msg_type = htonl(TCP_MSG_ETH_FRAME);
+    hdr->msg_len = htonl(payload_len);
+    hdr->seq = 0;
+    hdr->src_node_id = htonl(src_node);
+    hdr->dst_node_id = htonl(dst_node);
+    hdr->src_qpn = 0;
+    hdr->dst_qpn = 0;
+
+    memcpy(buf + sizeof(*hdr), payload, payload_len);
+
+    ssize_t ret = send(sockfd, buf, total, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (ret < 0) {
+        if (tcp_mesh_debug()) {
+            tcp_mesh_warn_rate_limited(
+                "TCP mesh: ETH frame send() EAGAIN or error "
+                "(socket buffer likely full under load)",
+                &mesh_eth_eagain_events, 512);
+        }
+        return -EAGAIN;
+    }
+    if ((size_t)ret < total) {
+        /*
+         * Partial write on a non-blocking socket.  Must drain the
+         * remainder to keep the stream in sync.
+         */
+        size_t sent = (size_t)ret;
+        while (sent < total) {
+            struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
+            if (poll(&pfd, 1, 100) <= 0)
+                break;
+            ret = send(sockfd, buf + sent, total - sent,
+                       MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (ret <= 0)
+                break;
+            sent += (size_t)ret;
+        }
+        if (sent < total) {
+            if (tcp_mesh_debug()) {
+                tcp_mesh_warn_rate_limited(
+                    "TCP mesh: truncated ETH frame over TCP "
+                    "(protocol stream may be corrupted)",
+                    &mesh_eth_truncated_sends, 64);
+            }
+        }
+    }
     return 0;
 }
 
@@ -1324,6 +1424,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                         uint32_t send_bytes = 0;
                         for (uint32_t si = 0; si < send_wr->num_sge; si++)
                             send_bytes += send_wr->sge[si].length;
+                        tcp_wr_unmap_sge(tqp, send_wr);
                         g_free(send_wr);
 
                         qemu_mutex_unlock(&priv->lock);
@@ -1690,13 +1791,26 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     PVRDMADev *pvrdma_dev =
                         (PVRDMADev *)((char *)priv->backend_dev -
                                       offsetof(PVRDMADev, backend_dev));
-                    eth_rx_inject_frame(pvrdma_dev, payload, hdr.msg_len);
+                    int inj = eth_rx_inject_frame_mesh_blocking(
+                        pvrdma_dev, payload, hdr.msg_len);
+                    if (inj != 0 && tcp_mesh_debug()) {
+                        tcp_mesh_warn_rate_limited(
+                            "TCP mesh: eth_rx_inject_frame_mesh_blocking "
+                            "failed (RX disabled, map error, or frame too "
+                            "large for descriptor)",
+                            &mesh_eth_inject_fail, 128);
+                    }
 
                     if (priv->is_manager) {
-                        GHashTableIter fwd_iter;
-                        gpointer fk, fv;
+                        struct {
+                            TcpConnection *conn;
+                            uint32_t node_id;
+                        } fwd_targets[64];
+                        int nfwd = 0;
 
                         qemu_mutex_lock(&priv->mesh_table_lock);
+                        GHashTableIter fwd_iter;
+                        gpointer fk, fv;
                         g_hash_table_iter_init(&fwd_iter, priv->mesh_nodes);
                         while (g_hash_table_iter_next(&fwd_iter, &fk, &fv)) {
                             uint32_t nid = GPOINTER_TO_UINT(fk);
@@ -1705,16 +1819,30 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                             TcpConnection *fwd_conn =
                                 tcp_get_connection(priv, nid);
                             if (fwd_conn && fwd_conn->is_connected &&
-                                fwd_conn->sockfd >= 0) {
-                                qemu_mutex_lock(&fwd_conn->lock);
-                                tcp_send_message(fwd_conn->sockfd,
-                                                 TCP_MSG_ETH_FRAME, payload,
-                                                 hdr.msg_len, 0,
-                                                 hdr.src_node_id, nid, 0, 0);
-                                qemu_mutex_unlock(&fwd_conn->lock);
+                                fwd_conn->sockfd >= 0 && nfwd < 64) {
+                                fwd_targets[nfwd].conn = fwd_conn;
+                                fwd_targets[nfwd].node_id = nid;
+                                nfwd++;
                             }
                         }
                         qemu_mutex_unlock(&priv->mesh_table_lock);
+
+                        for (int fi = 0; fi < nfwd; fi++) {
+                            int fwd_rc;
+
+                            qemu_mutex_lock(&fwd_targets[fi].conn->lock);
+                            fwd_rc = tcp_send_eth_frame_nonblock(
+                                fwd_targets[fi].conn->sockfd, payload,
+                                hdr.msg_len, hdr.src_node_id,
+                                fwd_targets[fi].node_id);
+                            qemu_mutex_unlock(&fwd_targets[fi].conn->lock);
+                            if (fwd_rc != 0 && tcp_mesh_debug()) {
+                                tcp_mesh_warn_rate_limited(
+                                    "TCP mesh: manager ETH relay send "
+                                    "failed (likely EAGAIN)",
+                                    &mesh_eth_manager_relay_eagain, 512);
+                            }
+                        }
                     }
                 }
                 break;
@@ -2318,12 +2446,6 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         node->conn = new_conn;
                         node->is_alive = true;
                         node->last_heartbeat = now;
-
-                        if (old_conn) {
-                            g_free(old_conn->remote_host);
-                            qemu_mutex_destroy(&old_conn->lock);
-                            g_free(old_conn);
-                        }
 
                         rdma_info_report("TCP: Reconnected to "
                                          "node %u",
@@ -3429,8 +3551,6 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         goto fail;
     }
 
-    tcp_wr_unmap_sge(tqp, wr);
-
     rdma_info_report("TCP: Posted send QP %u -> node %u, "
                      "%u SGEs, opcode=%u",
                      qpn, dst_node, num_sge, pvrdma_opcode);
@@ -3734,30 +3854,59 @@ int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
         return -1;
 
     if (priv->is_manager) {
-        GHashTableIter iter;
-        gpointer key, value;
+        /*
+         * Snapshot connection targets under mesh_table_lock, then release
+         * the lock before calling tcp_send_message.  This prevents a
+         * deadlock where the TX thread holds mesh_table_lock while blocked
+         * on a full socket buffer, starving the RX thread that also needs
+         * mesh_table_lock to process incoming frames.
+         */
+        struct {
+            TcpConnection *conn;
+            uint32_t node_id;
+        } targets[64];
+        int ntargets = 0;
 
         qemu_mutex_lock(&priv->mesh_table_lock);
+        GHashTableIter iter;
+        gpointer key, value;
         g_hash_table_iter_init(&iter, priv->mesh_nodes);
         while (g_hash_table_iter_next(&iter, &key, &value)) {
             uint32_t node_id = GPOINTER_TO_UINT(key);
             TcpConnection *conn = tcp_get_connection(priv, node_id);
-            if (conn && conn->is_connected && conn->sockfd >= 0) {
-                qemu_mutex_lock(&conn->lock);
-                tcp_send_message(conn->sockfd, TCP_MSG_ETH_FRAME, frame, len, 0,
-                                 priv->local_node_id, node_id, 0, 0);
-                qemu_mutex_unlock(&conn->lock);
-                sent++;
+            if (conn && conn->is_connected && conn->sockfd >= 0 &&
+                ntargets < 64) {
+                targets[ntargets].conn = conn;
+                targets[ntargets].node_id = node_id;
+                ntargets++;
             }
         }
         qemu_mutex_unlock(&priv->mesh_table_lock);
+
+        for (int i = 0; i < ntargets; i++) {
+            qemu_mutex_lock(&targets[i].conn->lock);
+            int rc = tcp_send_eth_frame_nonblock(targets[i].conn->sockfd, frame,
+                                                 len, priv->local_node_id,
+                                                 targets[i].node_id);
+            qemu_mutex_unlock(&targets[i].conn->lock);
+            if (rc == 0)
+                sent++;
+        }
     } else if (priv->manager_conn && priv->manager_conn->is_connected &&
                priv->manager_conn->sockfd >= 0) {
         qemu_mutex_lock(&priv->manager_conn->lock);
-        tcp_send_message(priv->manager_conn->sockfd, TCP_MSG_ETH_FRAME, frame,
-                         len, 0, priv->local_node_id, 0, 0, 0);
+        int rc = tcp_send_eth_frame_nonblock(priv->manager_conn->sockfd, frame,
+                                             len, priv->local_node_id, 0);
         qemu_mutex_unlock(&priv->manager_conn->lock);
-        sent++;
+        if (rc == 0)
+            sent++;
+    }
+
+    if (sent == 0 && len > 0 && tcp_mesh_debug()) {
+        tcp_mesh_warn_rate_limited(
+            "TCP mesh: ETH frame not forwarded to any peer "
+            "(all sends EAGAIN or no connections)",
+            &mesh_eth_zero_forward, 256);
     }
 
     return sent;

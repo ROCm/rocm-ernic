@@ -13,6 +13,7 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
+#include <pthread.h>
 #include <inttypes.h>  /* For PRId64, PRIx64 */
 #include <sys/mman.h>  /* For PROT_READ, PROT_WRITE */
 #include <arpa/inet.h> /* For inet_addr */
@@ -52,7 +53,10 @@ void pvrdma_dsr_flush(void *handle);
 
 /*
  * DMA Mapping Tracking
- * We must track SGL/iovec pairs to properly call vfu_sgl_put()
+ * We must track SGL/iovec pairs to properly call vfu_sgl_put().
+ * Uses a GHashTable keyed by host_addr for O(1) lookup and
+ * unlimited capacity (the old 256-entry fixed array overflowed
+ * after sustained QP churn and caused heap corruption).
  */
 typedef struct dma_mapping {
     dma_addr_t guest_addr;
@@ -63,9 +67,50 @@ typedef struct dma_mapping {
     vfu_ctx_t *vfu_ctx;
 } dma_mapping_t;
 
-#define MAX_DMA_MAPPINGS 256
-static dma_mapping_t dma_mappings[MAX_DMA_MAPPINGS];
-static int num_dma_mappings = 0;
+static void dma_mapping_free(gpointer data);
+
+static GHashTable *dma_map_table;
+static unsigned int dma_map_count;
+
+/*
+ * Protects dma_map_table and dma_map_count.  Recursive so that
+ * g_hash_table_remove/replace value destructors and vfu_sgl_* paths
+ * cannot deadlock if they re-enter map/sync/unmap on the same thread.
+ */
+static pthread_mutex_t dma_map_lock;
+static pthread_once_t dma_map_once = PTHREAD_ONCE_INIT;
+
+static void dma_map_global_init(void)
+{
+    pthread_mutexattr_t attr;
+
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&dma_map_lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+
+    dma_map_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                          dma_mapping_free);
+    dma_map_count = 0;
+}
+
+static void dma_map_ensure(void)
+{
+    pthread_once(&dma_map_once, dma_map_global_init);
+}
+
+#define DMA_MAP_LOCK()   pthread_mutex_lock(&dma_map_lock)
+#define DMA_MAP_UNLOCK() pthread_mutex_unlock(&dma_map_lock)
+
+static void dma_mapping_free(gpointer data)
+{
+    dma_mapping_t *m = (dma_mapping_t *)data;
+    if (m->vfu_ctx && m->sg) {
+        vfu_sgl_put(m->vfu_ctx, m->sg, &m->iov, 1);
+    }
+    free(m->sg);
+    g_free(m);
+}
 
 /*
  * Device Management
@@ -442,19 +487,13 @@ void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
-    rdma_info_report(">>> WRAPPER: pvrdma_uar_write called: handle=%p "
-                     "offset=0x%lx val=0x%x size=%u",
-                     handle, (unsigned long)offset, value, size);
-
     if (!pvrdma) {
         rdma_error_report(">>> WRAPPER: pvrdma handle is NULL!");
         return;
     }
 
-    rdma_info_report(">>> WRAPPER: Forwarding to pvrdma_uar_write_impl");
     /* Forward to QEMU UAR write implementation */
     pvrdma_uar_write_impl(pvrdma, offset, value, size);
-    rdma_info_report(">>> WRAPPER: pvrdma_uar_write_impl returned");
 }
 
 uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
@@ -632,10 +671,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     int ret;
     size_t sg_size;
 
-    rdma_info_report("=== DMA MAP CALLED ===");
-    rdma_info_report("  guest_addr=%#lx requested_len=%zu dir=%d", addr,
-                     plen ? (size_t)*plen : 0, dir);
-
     /* Check for obviously invalid addresses */
     if (addr == 0) {
         rdma_error_report("DMA map: guest address is NULL!");
@@ -650,8 +685,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
             *plen = 0;
         return NULL;
     }
-
-    rdma_info_report("  dev=%p", dev);
 
     if (!dev->vfu_ctx) {
         rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)", dev);
@@ -668,13 +701,11 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     }
 
     vfu_ctx = dev->vfu_ctx;
-    rdma_info_report("  vfu_ctx=%p", vfu_ctx);
 
     (void)dir; /* Direction not used with vfio-user */
 
     /* Get SG size */
     sg_size = dma_sg_size();
-    rdma_info_report("  Allocating SG of size %zu", sg_size);
 
     /* Allocate scatter-gather entry */
     sg = malloc(sg_size);
@@ -684,10 +715,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
         *plen = 0;
         return NULL;
     }
-
-    rdma_info_report("  Calling vfu_addr_to_sgl(ctx=%p, addr=%#lx, len=%zu, "
-                     "sg=%p, cnt=1, prot=RW)",
-                     vfu_ctx, addr, (size_t)*plen, sg);
 
     /* Convert guest physical address to scatter-gather list */
     ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)addr, *plen, sg,
@@ -703,11 +730,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
         return NULL;
     }
 
-    rdma_info_report("  vfu_addr_to_sgl returned %d (success)", ret);
-
-    rdma_info_report("  Calling vfu_sgl_get(ctx=%p, sg=%p, iov=%p, cnt=1)",
-                     vfu_ctx, sg, &iov);
-
     /* Get host virtual address */
     ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
     if (ret < 0) {
@@ -721,13 +743,8 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
         return NULL;
     }
 
-    rdma_info_report("  vfu_sgl_get returned %d (success)", ret);
-
     host_addr = iov.iov_base;
     *plen = iov.iov_len; /* Update with actual mapped length */
-
-    rdma_info_report("  iov.iov_base=%p iov.iov_len=%zu", host_addr,
-                     iov.iov_len);
 
     if (!host_addr) {
         rdma_error_report(
@@ -738,30 +755,19 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
         return NULL;
     }
 
-    rdma_info_report("=== DMA MAP SUCCESS: guest=%#lx -> host=%p len=%zu ===",
-                     addr, host_addr, (size_t)*plen);
+    dma_mapping_t *m = g_new0(dma_mapping_t, 1);
+    m->guest_addr = addr;
+    m->len = *plen;
+    m->sg = sg;
+    m->iov = iov;
+    m->host_addr = host_addr;
+    m->vfu_ctx = vfu_ctx;
 
-    /*
-     * Store the SGL and iovec for later vfu_sgl_put().
-     * This is CRITICAL for memory coherency - writes won't be visible to the
-     * guest until we call vfu_sgl_put() on the same SGL/iovec pair.
-     */
-    if (num_dma_mappings >= MAX_DMA_MAPPINGS) {
-        rdma_error_report("DMA map: Mapping table full (%d entries)",
-                          MAX_DMA_MAPPINGS);
-        /* Still return the pointer, but we won't be able to properly release it
-         */
-    } else {
-        dma_mappings[num_dma_mappings].guest_addr = addr;
-        dma_mappings[num_dma_mappings].len = *plen;
-        dma_mappings[num_dma_mappings].sg = sg;
-        dma_mappings[num_dma_mappings].iov = iov;
-        dma_mappings[num_dma_mappings].host_addr = host_addr;
-        dma_mappings[num_dma_mappings].vfu_ctx = vfu_ctx;
-        num_dma_mappings++;
-        rdma_info_report("DMA map: Stored mapping #%d (guest=%#lx)",
-                         num_dma_mappings, addr);
-    }
+    dma_map_ensure();
+    DMA_MAP_LOCK();
+    g_hash_table_replace(dma_map_table, host_addr, m);
+    dma_map_count = g_hash_table_size(dma_map_table);
+    DMA_MAP_UNLOCK();
 
     return host_addr;
 }
@@ -775,52 +781,31 @@ void pvrdma_dsr_flush(void *handle)
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     dma_addr_t dsr_guest_addr = pvrdma->dsr_info.dma;
 
-    rdma_info_report(">>> pvrdma_dsr_flush: START - Flushing DSR at guest=%#lx",
-                     dsr_guest_addr);
+    dma_map_ensure();
+    DMA_MAP_LOCK();
 
-    /* Find the DSR mapping */
-    for (int i = 0; i < num_dma_mappings; i++) {
-        dma_mapping_t *mapping = &dma_mappings[i];
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, dma_map_table);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        dma_mapping_t *mapping = (dma_mapping_t *)value;
 
         if (mapping->guest_addr == dsr_guest_addr) {
-            rdma_info_report("  Found DSR mapping #%d at host=%p", i,
-                             mapping->host_addr);
-
-            /* Verify current values BEFORE flush */
-            struct pvrdma_device_shared_region *dsr =
-                (struct pvrdma_device_shared_region *)mapping->host_addr;
-            rdma_info_report("  BEFORE flush: mode=%d gid_types=0x%x",
-                             dsr->caps.mode, dsr->caps.gid_types);
-
-            /* Per libvfio-user samples/server.c pattern:
-             * Call vfu_sgl_put() to release and mark dirty.
-             * DO NOT immediately re-acquire - only get when needed for next
-             * access.
-             *
-             * From server.c:
-             *   vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-             *   memcpy(iov.iov_base, &buf[i * size], size);
-             *   vfu_sgl_put(vfu_ctx, sg, &iov, 1);  // <-- Release immediately!
-             */
-            rdma_info_report(
-                "  Calling vfu_sgl_put() to flush and RELEASE mapping...");
             if (mapping->vfu_ctx && mapping->sg) {
                 vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
             }
 
-            /* Mark mapping as released */
             mapping->host_addr = NULL;
             mapping->iov.iov_base = NULL;
             mapping->iov.iov_len = 0;
 
-            rdma_info_report(
-                "  vfu_sgl_put() complete - DSR released and marked dirty");
-            rdma_info_report(
-                "<<< pvrdma_dsr_flush: COMPLETE - DSR mapping RELEASED");
+            DMA_MAP_UNLOCK();
             return;
         }
     }
 
+    DMA_MAP_UNLOCK();
     rdma_error_report("pvrdma_dsr_flush: ERROR - DSR mapping not found!");
 }
 
@@ -832,32 +817,26 @@ int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
 {
     (void)dev;
 
-    rdma_info_report(
-        "=== DMA SYNC: Searching for mapping at guest=%#lx len=%zu ===",
-        guest_addr, (size_t)len);
+    dma_map_ensure();
+    DMA_MAP_LOCK();
 
-    /* Find the mapping that contains this address */
-    for (int i = 0; i < num_dma_mappings; i++) {
-        dma_mapping_t *mapping = &dma_mappings[i];
+    GHashTableIter sync_iter;
+    gpointer skey, svalue;
+    g_hash_table_iter_init(&sync_iter, dma_map_table);
+
+    while (g_hash_table_iter_next(&sync_iter, &skey, &svalue)) {
+        dma_mapping_t *mapping = (dma_mapping_t *)svalue;
 
         /* Check if this address is within the mapped region */
         if (guest_addr >= mapping->guest_addr &&
             guest_addr + len <= mapping->guest_addr + mapping->len) {
-            rdma_info_report(
-                "DMA sync: Found mapping #%d: guest=%#lx len=%zu sg=%p", i,
-                mapping->guest_addr, mapping->len, mapping->sg);
-
             /* Call vfu_sgl_put() to sync writes back to guest */
             if (!mapping->vfu_ctx || !mapping->sg) {
-                rdma_error_report("DMA sync: NULL vfu_ctx or sg "
-                                  "for mapping #%d",
-                                  i);
+                rdma_error_report("DMA sync: NULL vfu_ctx or sg");
+                DMA_MAP_UNLOCK();
                 return -EINVAL;
             }
             vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-
-            rdma_info_report("DMA sync: vfu_sgl_put() called - "
-                             "writes should now be visible");
 
             /* Re-acquire the mapping for future use */
             int ret =
@@ -865,28 +844,16 @@ int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
             if (ret < 0) {
                 rdma_error_report("DMA sync: Failed to re-acquire mapping: %s",
                                   strerror(errno));
+                DMA_MAP_UNLOCK();
                 return -1;
             }
 
-            rdma_info_report("DMA sync: Mapping re-acquired successfully");
-
-            /* Verify the write by reading back from the iovec */
-            if (len >= 4 && mapping->iov.iov_base) {
-                uint32_t *data =
-                    (uint32_t *)((char *)mapping->iov.iov_base +
-                                 (guest_addr - mapping->guest_addr));
-                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at "
-                                 "offset 0: 0x%08x",
-                                 data[0]);
-                rdma_info_report("DMA sync: VERIFICATION - First 4 bytes at "
-                                 "offset 4: 0x%08x",
-                                 data[1]);
-            }
-
+            DMA_MAP_UNLOCK();
             return 0;
         }
     }
 
+    DMA_MAP_UNLOCK();
     rdma_error_report("DMA sync: No mapping found for guest=%#lx", guest_addr);
     return -1;
 }
@@ -900,43 +867,18 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
     (void)dir;
     (void)access_len;
 
-    rdma_info_report("=== DMA UNMAP: buffer=%p ===", buffer);
+    dma_map_ensure();
+    DMA_MAP_LOCK();
 
-    /* Find and release the mapping */
-    for (int i = 0; i < num_dma_mappings; i++) {
-        if (dma_mappings[i].host_addr == buffer) {
-            rdma_info_report("DMA unmap: Found mapping #%d (guest=%#lx)", i,
-                             dma_mappings[i].guest_addr);
-
-            /* Release the SGL mapping */
-            if (dma_mappings[i].vfu_ctx && dma_mappings[i].sg) {
-                vfu_sgl_put(dma_mappings[i].vfu_ctx, dma_mappings[i].sg,
-                            &dma_mappings[i].iov, 1);
-            }
-
-            /* Free the SG structure */
-            free(dma_mappings[i].sg);
-            dma_mappings[i].sg = NULL; /* Prevent double-free */
-
-            /* Remove from table by shifting remaining entries */
-            for (int j = i; j < num_dma_mappings - 1; j++) {
-                dma_mappings[j] = dma_mappings[j + 1];
-            }
-            num_dma_mappings--;
-
-            /* Clear the last entry (now unused) */
-            memset(&dma_mappings[num_dma_mappings], 0, sizeof(dma_mappings[0]));
-
-            rdma_info_report(
-                "DMA unmap: Released and removed mapping (now %d mappings)",
-                num_dma_mappings);
-            return;
-        }
+    if (g_hash_table_remove(dma_map_table, buffer)) {
+        dma_map_count = g_hash_table_size(dma_map_table);
+    } else {
+        rdma_debug_report(
+            "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
+            buffer);
     }
 
-    rdma_debug_report(
-        "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
-        buffer);
+    DMA_MAP_UNLOCK();
 }
 
 /*

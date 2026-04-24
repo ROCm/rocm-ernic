@@ -16,6 +16,8 @@ import argparse
 import json
 import os
 import pathlib
+import pwd
+import shlex
 import signal
 import subprocess
 import sys
@@ -44,6 +46,9 @@ DEFAULTS = {
     "ERNIC_VM_VCPUS": "4",
     "ERNIC_VM_MEM": "8192",
     "ERNIC_VM_SSH_USER": "ubuntu",
+    "ERNIC_VM_SSH_HOST": "localhost",
+    "ERNIC_VM_SSH_CONFIG": "",
+    "ERNIC_VM_SSH_IDENTITY": "",
     "ERNIC_VM_SSH_BASE_PORT": "2222",
     "ERNIC_VM_BACKING": "",
     "ERNIC_VM_MCAST_GROUP": "",
@@ -81,6 +86,73 @@ MANIFEST = os.path.join(RUN_DIR, "instances.json")
 LAUNCHER = (
     "/usr/local/libexec/rocm-ernic/rocm-ernic-launcher"
 )
+
+
+def _cfg_vm_ssh_host():
+    """SSH destination host for QEMU user-net guests (e.g. ssh_config alias)."""
+    h = (CFG.get("ERNIC_VM_SSH_HOST") or "").strip()
+    return h if h else "localhost"
+
+
+def _ssh_vm_target(user):
+    return f"{user}@{_cfg_vm_ssh_host()}"
+
+
+def _ssh_config_prefix():
+    """``-F`` for ssh/scp: explicit path, else ``SUDO_USER``'s ``~/.ssh/config``.
+
+    ``/root/.ssh/config`` is never implied; bare root must set
+    ``ERNIC_VM_SSH_CONFIG``.
+    """
+    p = (CFG.get("ERNIC_VM_SSH_CONFIG") or "").strip()
+    if p and os.path.isfile(p):
+        return ["-F", p]
+    su = (os.environ.get("SUDO_USER") or "").strip()
+    if su and (os.environ.get("USER") or "") == "root":
+        try:
+            home = pwd.getpwnam(su).pw_dir
+        except KeyError:
+            return []
+        alt = os.path.join(home, ".ssh", "config")
+        if os.path.isfile(alt):
+            return ["-F", alt]
+    return []
+
+
+def _ssh_vm_host_key_opts():
+    """Non-interactive VM ssh/scp: no strict host key prompts or known_hosts writes."""
+    return [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "CheckHostIP=no",
+        "-o", "LogLevel=ERROR",
+    ]
+
+
+def _effective_vm_ssh_identity():
+    """Private key for VM ssh from env or ``SUDO_USER``'s ``.ssh``.
+
+    If ``ERNIC_VM_SSH_IDENTITY`` is set but missing or not readable
+    (e.g. stale path in ``/etc/rocm-ernic/rocm-ernic.env``), it is
+    ignored.  If still unset and ``sudo`` left ``USER=root`` with
+    ``SUDO_USER``, use the first readable key among ``id_rsa``,
+    ``id_ed25519``, ``id_ecdsa`` under that user's ``.ssh``.
+    """
+    p = (CFG.get("ERNIC_VM_SSH_IDENTITY") or "").strip()
+    if p and os.path.isfile(p) and os.access(p, os.R_OK):
+        return p
+    su = (os.environ.get("SUDO_USER") or "").strip()
+    if not su or (os.environ.get("USER") or "") != "root":
+        return ""
+    try:
+        hd = pwd.getpwnam(su).pw_dir
+    except KeyError:
+        return ""
+    for name in ("id_rsa", "id_ed25519", "id_ecdsa"):
+        cand = os.path.join(hd, ".ssh", name)
+        if os.path.isfile(cand) and os.access(cand, os.R_OK):
+            return cand
+    return ""
 
 
 # ── Manifest helpers ─────────────────────────────
@@ -204,6 +276,27 @@ def read_all_stats():
 
 # ── QMP helpers ──────────────────────────────────
 
+def _qmp_socat_raw(qmp_socket, payload, timeout=10):
+    """Run one QMP session (payload may include multiple lines).
+
+    Returns stdout text, or None if socat is missing or an OS-level
+    error occurs.  Does not print or exit.
+    """
+    try:
+        result = subprocess.run(
+            ["socat", "-", f"UNIX-CONNECT:{qmp_socket}"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.stdout
+    except FileNotFoundError:
+        return None
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+
+
 def qmp_send(qmp_socket, command):
     """Send a QMP command via socat and return the
     raw response string."""
@@ -212,28 +305,198 @@ def qmp_send(qmp_socket, command):
         + command
         + "\n"
     )
-    try:
-        result = subprocess.run(
-            ["socat", "-", f"UNIX-CONNECT:{qmp_socket}"],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return result.stdout
-    except FileNotFoundError:
+    out = _qmp_socat_raw(qmp_socket, payload, timeout=10)
+    if out is None:
         print(
             "ERROR: socat is required for QMP."
             "  Install: sudo apt install socat",
             file=sys.stderr,
         )
         sys.exit(1)
-    except subprocess.TimeoutExpired:
+    if out == "":
         print(
             f"ERROR: QMP timeout on {qmp_socket}",
             file=sys.stderr,
         )
         return ""
+    return out
+
+
+def _parse_qmp_stdout(stdout):
+    """Split QMP output into JSON objects (one per line)."""
+    objs = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            objs.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return objs
+
+
+def _load1m_from_monitor_return_string(text):
+    """Parse load1m from ``human-monitor-command`` return (JSON text)."""
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    try:
+        j = json.loads(t)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(j, dict):
+        return None
+    if "load1m" in j:
+        try:
+            return float(j["load1m"])
+        except (TypeError, ValueError):
+            return None
+    inner = j.get("return")
+    if isinstance(inner, dict) and "load1m" in inner:
+        try:
+            return float(inner["load1m"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _guest_load_from_qmp(qmp_socket, debug=False):
+    """Load factor (1m load / vCPU) via QMP + guest agent.
+
+    Tries JSON ``guest-get-load`` first, then ``human-monitor-command``
+    with ``guest-get-load`` (same as the interactive ``(QEMU)``
+    monitor) when the direct QMP command is missing.  Pairs with
+    ``query-cpus-fast`` for vCPU count.  Requires ``qemu-guest-agent``
+    in the guest.
+    """
+    if not qmp_socket or not os.path.exists(qmp_socket):
+        if debug:
+            print(
+                "[ernicctl VM_LOAD qmp] skip: no socket path or"
+                f" missing file ({qmp_socket!r})",
+                file=sys.stderr,
+            )
+        return None
+    payload = (
+        '{"execute":"qmp_capabilities"}\n'
+        '{"execute":"query-cpus-fast"}\n'
+        '{"execute":"guest-get-load","arguments":{}}\n'
+    )
+    out = _qmp_socat_raw(qmp_socket, payload, timeout=8)
+    out2 = None
+    if out is None or out == "":
+        if debug:
+            print(
+                "[ernicctl VM_LOAD qmp] empty reply (socat missing,"
+                " timeout, or permission on unix socket)",
+                file=sys.stderr,
+            )
+        return None
+    ncpu = None
+    load1m = None
+    guest_qmp_missing = False
+    for obj in _parse_qmp_stdout(out):
+        if not isinstance(obj, dict):
+            continue
+        if "error" in obj:
+            err = obj.get("error") or {}
+            desc = (err.get("desc") or "").lower()
+            if "guest-get-load" in desc and "not been found" in desc:
+                guest_qmp_missing = True
+            if debug:
+                print(
+                    f"[ernicctl VM_LOAD qmp] error object: {obj!r}",
+                    file=sys.stderr,
+                )
+                if guest_qmp_missing:
+                    print(
+                        "[ernicctl VM_LOAD qmp] hint: direct QMP"
+                        " ``guest-get-load`` missing; trying"
+                        " ``human-monitor-command`` (same as interactive"
+                        " monitor).",
+                        file=sys.stderr,
+                    )
+            continue
+        ret = obj.get("return")
+        if isinstance(ret, list) and ret and isinstance(ret[0], dict):
+            if "cpu-index" in ret[0] or "thread-id" in ret[0]:
+                ncpu = len(ret)
+        elif isinstance(ret, dict) and "load1m" in ret:
+            try:
+                load1m = float(ret["load1m"])
+            except (TypeError, ValueError):
+                pass
+    if load1m is None and guest_qmp_missing:
+        hmp = json.dumps({
+            "execute": "human-monitor-command",
+            "arguments": {"command-line": "guest-get-load"},
+        })
+        payload2 = (
+            '{"execute":"qmp_capabilities"}\n'
+            '{"execute":"query-cpus-fast"}\n'
+            + hmp
+            + "\n"
+        )
+        if debug:
+            print(
+                "[ernicctl VM_LOAD qmp] sending human-monitor-command"
+                " guest-get-load fallback",
+                file=sys.stderr,
+            )
+        out2 = _qmp_socat_raw(qmp_socket, payload2, timeout=8)
+        if out2:
+            for obj in _parse_qmp_stdout(out2):
+                if not isinstance(obj, dict) or "error" in obj:
+                    if debug and isinstance(obj, dict) and "error" in obj:
+                        print(
+                            f"[ernicctl VM_LOAD qmp] hmp fallback error:"
+                            f" {obj!r}",
+                            file=sys.stderr,
+                        )
+                    continue
+                ret = obj.get("return")
+                if isinstance(ret, list) and ret and isinstance(
+                        ret[0], dict):
+                    if "cpu-index" in ret[0] or "thread-id" in ret[0]:
+                        ncpu = len(ret)
+                elif isinstance(ret, str):
+                    if debug and "unknown command" in ret.lower():
+                        print(
+                            "[ernicctl VM_LOAD qmp] human-monitor-command"
+                            " returned HMP text (guest agent not exposed on"
+                            " this QMP socket); use SSH VM_LOAD or a monitor"
+                            " where ``guest-get-load`` is wired.",
+                            file=sys.stderr,
+                        )
+                    parsed = _load1m_from_monitor_return_string(ret)
+                    if parsed is not None:
+                        load1m = parsed
+                elif isinstance(ret, dict) and "load1m" in ret:
+                    try:
+                        load1m = float(ret["load1m"])
+                    except (TypeError, ValueError):
+                        pass
+    if load1m is None:
+        if debug:
+            if out2:
+                snippet = (out2 or "")[:800].replace("\n", "\\n")
+                tag = "after human-monitor-command fallback"
+            else:
+                snippet = (out or "")[:800].replace("\n", "\\n")
+                tag = "first QMP batch only"
+            print(
+                "[ernicctl VM_LOAD qmp] no load1m in QMP output"
+                f" ({tag}); first 800 chars: {snippet!r}",
+                file=sys.stderr,
+            )
+        return None
+    if not ncpu or ncpu < 1:
+        ncpu = 1
+    factor = load1m / ncpu
+    if factor < 0 or factor > 999:
+        return None
+    return f"{factor:.2f}"
 
 
 def qmp_device_add(qmp_socket, device_id, root_port,
@@ -278,19 +541,181 @@ def qmp_quit(qmp_socket):
 # ── SSH helper ───────────────────────────────────
 
 def guest_ssh(ssh_user, ssh_port, command):
+    ident = _effective_vm_ssh_identity()
+    ssh_cmd = [
+        "ssh",
+        *_ssh_config_prefix(),
+        *_ssh_vm_host_key_opts(),
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=5",
+    ]
+    if ident:
+        ssh_cmd += [
+            "-o", "IdentitiesOnly=yes",
+            "-i", ident,
+        ]
+    ssh_cmd += [
+        "-p", str(ssh_port),
+        _ssh_vm_target(ssh_user),
+        command,
+    ]
     return subprocess.run(
-        [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ConnectTimeout=5",
-            "-p", str(ssh_port),
-            f"{ssh_user}@localhost",
-            command,
-        ],
+        ssh_cmd,
         capture_output=True,
         text=True,
         timeout=30,
     )
+
+
+def _first_float_line(text):
+    """First line that parses as a finite float (guest shell noise)."""
+    for line in (text or "").splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        try:
+            x = float(t)
+        except ValueError:
+            continue
+        if not (x == x):  # NaN
+            continue
+        if x < 0 or x > 999:
+            continue
+        return x
+    return None
+
+
+def _get_vm_guest_load_ssh(vm, user, port, debug=False, label=""):
+    """Load factor from guest /proc/loadavg over SSH (fallback)."""
+    cmd = (
+        'n=$(nproc); [ "$n" -lt 1 ] && n=1; '
+        "awk -v n=\"$n\" 'NR==1{printf \"%.2f\\n\", $1/n}' /proc/loadavg"
+    )
+    ident = _effective_vm_ssh_identity()
+    primary = _cfg_vm_ssh_host()
+    hosts = [primary]
+    if primary != "localhost":
+        hosts.append("localhost")
+
+    for hi, thost in enumerate(hosts):
+        target = f"{user}@{thost}"
+        ssh_base = [
+            "ssh",
+            *_ssh_config_prefix(),
+            *_ssh_vm_host_key_opts(),
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=4",
+        ]
+        if ident:
+            ssh_base += [
+                "-o", "IdentitiesOnly=yes",
+                "-i", ident,
+            ]
+        ssh_base += [
+            "-p", str(port),
+            target,
+            cmd,
+        ]
+        try:
+            result = subprocess.run(
+                ssh_base,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        err_blob = (result.stderr or "") + (result.stdout or "")
+        unresolvable = (
+            "Could not resolve hostname" in err_blob
+            or "Name or service not known" in err_blob
+            or "Temporary failure in name resolution" in err_blob
+        )
+        if result.returncode != 0:
+            if (
+                hi == 0
+                and unresolvable
+                and len(hosts) > 1
+            ):
+                if debug:
+                    print(
+                        f"[ernicctl VM_LOAD ssh{label}] retrying"
+                        f" {user}@localhost (was {target!r})",
+                        file=sys.stderr,
+                    )
+                continue
+            if debug:
+                print(
+                    f"[ernicctl VM_LOAD ssh{label}] exit"
+                    f" {result.returncode}:"
+                    f"\n  {shlex.join(ssh_base)}"
+                    f"\n  stderr: {(result.stderr or '').strip()!r}"
+                    f"\n  stdout: {(result.stdout or '').strip()!r}",
+                    file=sys.stderr,
+                )
+            return None
+        x = _first_float_line(result.stdout)
+        if x is None:
+            if debug:
+                print(
+                    f"[ernicctl VM_LOAD ssh{label}] no float line in stdout:"
+                    f"\n  {shlex.join(ssh_base)}"
+                    f"\n  stdout: {(result.stdout or '').strip()!r}",
+                    file=sys.stderr,
+                )
+            return None
+        return f"{x:.2f}"
+    return None
+
+
+def _get_vm_guest_load(inst, debug=False):
+    """Guest CPU load factor: 1-min load / logical CPUs.
+
+    Order: (1) QMP ``guest-get-load`` + ``query-cpus-fast`` when the
+    manifest has a ``qmp_socket`` and the running QEMU exposes that
+    QMP command (upstream guest agent since 10.0); (2) otherwise SSH +
+    ``/proc/loadavg``.  QMP is attempted first whenever a socket path
+    is recorded.
+
+    Returns a short string, or '-' / '?'.
+    """
+    if not inst.get("vm") or not inst["vm"]:
+        return "-"
+    vm = inst["vm"]
+    if not vm.get("attached"):
+        return "-"
+
+    qmp = vm.get("qmp_socket")
+    if qmp:
+        qf = _guest_load_from_qmp(qmp, debug=debug)
+        if qf is not None:
+            return qf
+
+    port = vm.get("ssh_port")
+    if not port:
+        return "-"
+    user = vm.get("ssh_user") or CFG.get(
+        "ERNIC_VM_SSH_USER", "ubuntu"
+    )
+    label = f" inst={inst.get('id')}"
+    sf = _get_vm_guest_load_ssh(
+        vm, user, port, debug=debug, label=label,
+    )
+    if sf is not None:
+        return sf
+    if debug:
+        print(
+            f"[ernicctl VM_LOAD]{label} QMP and SSH both failed; check"
+            " ERNIC_VM_SSH_HOST / ERNIC_VM_SSH_CONFIG, keys for"
+            " ``ubuntu@localhost:PORT``, ERNIC_VM_SSH_IDENTITY (or"
+            " install an up-to-date ernicctl: root+SUDO_USER auto-picks"
+            " ``~/.ssh/id_rsa`` / ``id_ed25519``), qemu-guest-agent, and"
+            " socat.  With ``sudo``, ``~/.ssh/config`` of SUDO_USER is"
+            " used when ERNIC_VM_SSH_CONFIG is unset.  ``/root/.ssh`` is"
+            " not consulted for guest VM ssh.",
+            file=sys.stderr,
+        )
+    return "?"
 
 
 # ── Subcommands: service lifecycle ───────────────
@@ -406,6 +831,7 @@ def _delta_stats(s1, s2):
 def cmd_status(args):
     m = read_manifest()
     rate = getattr(args, "rate", None)
+    dbg = getattr(args, "debug_vm_load", False)
 
     all_stats = read_all_stats()
 
@@ -461,6 +887,19 @@ def cmd_status(args):
                 st.get("total_bytes_received", 0)
                 + st.get("total_bytes_rdma_read", 0)
             )
+            vm_j = inst.get("vm")
+            if vm_j and vm_j.get("attached") and vm_j.get(
+                    "ssh_port"):
+                lf_s = _get_vm_guest_load(inst, debug=dbg)
+                try:
+                    inst["vm_guest_load"] = (
+                        float(lf_s) if lf_s not in ("-", "?")
+                        else None
+                    )
+                except ValueError:
+                    inst["vm_guest_load"] = None
+            else:
+                inst["vm_guest_load"] = None
         print(json.dumps(m, indent=2))
         return
 
@@ -472,18 +911,19 @@ def cmd_status(args):
     fmt = (
         "{:<4} {:<9} {:<7} {:<10} {:<10}"
         " {:<19} {:<30} {:<12} {:<10}"
-        " {:<5} {:<15} {:<15} {}"
+        " {:<8} {:<5} {:<15} {:<15} {}"
     )
     print(fmt.format(
         "ID", "ROLE", "PID", "STATE", "UPTIME",
         "MAC", "SOCKET", "VM", "VM_UPTIME",
-        "GPU", "IP (TX/RX)", "RDMA (TX/RX)", "LOG",
+        "VM_LOAD", "GPU", "IP (TX/RX)", "RDMA (TX/RX)", "LOG",
     ))
     for inst in m["instances"]:
         alive = pid_alive(inst["pid"])
         state = "running" if alive else "dead"
         vm_info = _get_vm_info(inst)
         vm_up = _get_vm_uptime(inst)
+        vm_load = _get_vm_guest_load(inst, debug=dbg)
         vm_gpu = _get_vm_gpu(inst)
         st = all_stats.get(inst["id"], {})
         ip_col, rdma_col = _get_byte_cols(st)
@@ -504,6 +944,7 @@ def cmd_status(args):
             inst["socket"],
             vm_info,
             vm_up,
+            vm_load,
             vm_gpu,
             ip_col,
             rdma_col,
@@ -898,10 +1339,11 @@ def cmd_hot_reload(args):
             )
             subprocess.run([
                 "scp",
-                "-o", "StrictHostKeyChecking=no",
+                *_ssh_config_prefix(),
+                *_ssh_vm_host_key_opts(),
                 "-P", str(ssh_port),
                 tarball,
-                f"{ssh_user}@localhost:/tmp/",
+                f"{ssh_user}@{_cfg_vm_ssh_host()}:/tmp/",
             ])
             guest_ssh(
                 ssh_user,
@@ -958,7 +1400,8 @@ def cmd_driver_push(args):
     print(f"Copying {tarball} to {target}:/tmp/ ...")
     subprocess.run([
         "scp",
-        "-o", "StrictHostKeyChecking=no",
+        *_ssh_config_prefix(),
+        *_ssh_vm_host_key_opts(),
         "-P", port,
         tarball,
         f"{target}:/tmp/",
@@ -1103,6 +1546,14 @@ def cmd_vm_launch(args):
     if extra_hostfwd:
         env["EXTRA_HOSTFWD"] = extra_hostfwd
 
+    nvme = getattr(args, "nvme", 0)
+    if nvme > 0:
+        env["NVME"] = str(nvme)
+
+    qemu_aio = getattr(args, "qemu_aio", None)
+    if qemu_aio:
+        env["QEMU_AIO"] = qemu_aio
+
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
     print(f"  SSH port:    {ssh_port}")
@@ -1116,6 +1567,8 @@ def cmd_vm_launch(args):
         print("  MMIO bridge: enabled")
     if extra_hostfwd:
         print(f"  Extra fwd:   {extra_hostfwd}")
+    if nvme > 0:
+        print(f"  NVMe SSDs:   {nvme}")
 
     logfile = os.path.join(
         LOG_DIR, f"vm-{args.instance}.log"
@@ -1149,7 +1602,7 @@ def cmd_vm_launch(args):
     print(f"VM started (PID {proc.pid}).")
     print(f"Log: {logfile}")
     print(f"SSH: ssh -p {ssh_port}"
-          f" {inst['vm']['ssh_user']}@localhost")
+          f" {_ssh_vm_target(inst['vm']['ssh_user'])}")
 
 
 def cmd_vm_stop(args):
@@ -1238,6 +1691,11 @@ def build_parser():
         "--rate", type=int, default=None,
         metavar="SECS",
         help="Show byte deltas over SECS seconds",
+    )
+    sp.add_argument(
+        "--debug-vm-load",
+        action="store_true",
+        help="Print VM_LOAD diagnostics (QMP/SSH) to stderr",
     )
 
     sub.add_parser("start", help="Start the service")
@@ -1388,6 +1846,14 @@ def build_parser():
         help="Extra QEMU hostfwd rules appended to"
              " the user netdev (e.g."
              " ,hostfwd=tcp::9150-:9100)",
+    )
+    sp.add_argument(
+        "--nvme", type=int, default=0,
+        help="Number of emulated NVMe SSDs (0=none)",
+    )
+    sp.add_argument(
+        "--qemu-aio", default=None,
+        help="Override QEMU AIO backend (native/threads/io_uring)",
     )
 
     sp = sub.add_parser(

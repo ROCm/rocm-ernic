@@ -61,6 +61,8 @@ struct rocm_ernic_eth_dev {
     struct rocm_ernic_eth_rx_ring rx_ring;
     /* Sysfs-controlled loopback: TX packets are reflected as RX */
     bool loopback_mode;
+    /* RX NAPI (hardirq only schedules this). */
+    struct napi_struct napi;
     /* Private data for Ethernet driver */
     void *priv;
 };

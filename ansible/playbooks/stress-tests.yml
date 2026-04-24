@@ -63,10 +63,7 @@
       {{ ernic_stress_concurrent_duration
          | default(60) | int }}
 
-    iperf_bw: >-
-      {{ ernic_iperf_bandwidth
-         | regex_replace('(?i)iB/s$', '')
-         | regex_replace('(?i)B/s$', '') }}
+    iperf_bw: "{{ ernic_iperf_bandwidth }}"
     iperf_dur: >-
       {{ ernic_iperf_duration | default(10) }}
 

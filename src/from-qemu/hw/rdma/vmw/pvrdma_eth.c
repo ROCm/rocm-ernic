@@ -204,10 +204,6 @@ void pvrdma_eth_process_tx(PVRDMADev *dev)
         desc_addr =
             eth->tx_base + (desc_idx * sizeof(struct rocm_ernic_eth_desc));
 
-        rdma_info_report(
-            "TX: Processing descriptor %u (head=%u tail=%u) at 0x%" PRIx64,
-            desc_idx, eth->tx_head, eth->tx_tail, desc_addr);
-
         /* Map descriptor from guest memory */
         desc_vaddr = rdma_pci_dma_map(pci_dev, desc_addr, desc_len);
         if (!desc_vaddr) {
@@ -450,8 +446,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
 
     uint16_t ethertype = ntohs(eth_hdr->ethertype);
 
-    rdma_info_report("RX: Received Ethernet frame: ethertype=0x%04x len=%zu",
-                     ethertype, len);
+    /* Hot path -- no logging */
 
     /* Handle ARP packets */
     if (ethertype == ETH_ETHERTYPE_ARP) {

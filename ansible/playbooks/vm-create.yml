@@ -530,6 +530,12 @@
                        and ernic_gpu_pci_devices[item]
                            | default('') | length > 0)
                    else [])
+                + (['--nvme',
+                    ernic_vm_nvme | string,
+                    '--qemu-aio',
+                    ernic_vm_qemu_aio]
+                   if (ernic_vm_nvme | int) > 0
+                   else [])
               })
           }}
       loop: "{{ range(1, ernic_instances | int + 1) | list }}"

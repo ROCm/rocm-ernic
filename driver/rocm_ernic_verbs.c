@@ -156,8 +156,8 @@ int rocm_ernic_query_port(struct ib_device *ibdev, u32 port,
     props->port_cap_flags |= IB_PORT_CM_SUP;
     props->ip_gids = true;
 
-    dev_info(&dev->pdev->dev, "query_port: state=%d gid_tbl_len=%d\n",
-             props->state, props->gid_tbl_len);
+    dev_dbg(&dev->pdev->dev, "query_port: state=%d gid_tbl_len=%d\n",
+            props->state, props->gid_tbl_len);
     props->max_msg_sz = resp->attrs.max_msg_sz;
     props->bad_pkey_cntr = resp->attrs.bad_pkey_cntr;
     props->qkey_viol_cntr = resp->attrs.qkey_viol_cntr;

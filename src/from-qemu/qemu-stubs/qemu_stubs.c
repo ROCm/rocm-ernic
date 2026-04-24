@@ -7,6 +7,7 @@
  */
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -325,16 +326,37 @@ extern void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *plen,
 extern void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
                           uint64_t access_len);
 
+/* When ERNIC_DEBUG_DMA_MAP is truthy in the environment, log each map. */
+static int rdma_pci_dma_map_debug(void)
+{
+    static int cached = -1;
+
+    if (cached >= 0) {
+        return cached;
+    }
+    const char *v = getenv("ERNIC_DEBUG_DMA_MAP");
+
+    if (v && v[0] != '\0' && v[0] != '0') {
+        cached = 1;
+    } else {
+        cached = 0;
+    }
+    return cached;
+}
+
 void *rdma_pci_dma_map(void *dev, uint64_t addr, uint64_t len)
 {
     uint64_t plen = len;
     void *result = pci_dma_map((PCIDevice *)dev, addr, &plen, 0);
 
-    /* Debug: Check if pointer is being truncated */
-    uint64_t result_as_int = (uint64_t)(uintptr_t)result;
-    printf("rdma_pci_dma_map: pci_dma_map returned %p (as uint64=%#lx)\n",
-           result, result_as_int);
-    fflush(stdout);
+    if (rdma_pci_dma_map_debug()) {
+        uint64_t result_as_int = (uint64_t)(uintptr_t)result;
+
+        printf("rdma_pci_dma_map: dev=%p guest=%#" PRIx64 " len=%#" PRIx64
+               " host=%p (as uint64=%#" PRIx64 ")\n",
+               dev, (uint64_t)addr, (uint64_t)len, result, result_as_int);
+        fflush(stdout);
+    }
 
     return result;
 }

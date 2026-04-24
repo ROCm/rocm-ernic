@@ -198,8 +198,8 @@
     server_ip: "{{ hostvars['ernic_vm_1'].vm_ip }}"
     client_ip: "{{ hostvars['ernic_vm_2'].vm_ip }}"
 
-    bw_iters: >-
-      {{ ernic_gpu_perftest_bw_iters | default(100) }}
+    bw_duration: >-
+      {{ ernic_gpu_perftest_bw_duration | default(30) }}
     lat_iters: >-
       {{ ernic_gpu_perftest_lat_iters | default(50) }}
     sweep_sizes: >-
@@ -326,7 +326,7 @@
         msg:
           - "=== GPU Perftest Config ==="
           - "Device:        {{ rdma_dev }}"
-          - "BW iterations: {{ bw_iters }}"
+          - "BW duration:   {{ bw_duration }}s"
           - "Lat iterations:{{ lat_iters }}"
           - "Sizes:         {{ sweep_sizes }}"
           - "XIO prefix:    {{ xio_prefix }}"
@@ -339,7 +339,7 @@
         pt_tool: "{{ item.0.tool }}"
         pt_label: "{{ item.0.label }}"
         pt_size: "{{ item.1 }}"
-        pt_iters: "{{ bw_iters }}"
+        pt_duration: "{{ bw_duration }}"
         pt_unit: "gpu-perftest-bw-{{ item.0.tool }}-{{ item.1 }}"
         pt_csv: "{{ gpu_bw_csv }}"
         pt_mode: bw

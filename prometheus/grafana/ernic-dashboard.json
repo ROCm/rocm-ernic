@@ -1184,7 +1184,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 12,
         "x": 0,
         "y": 41
@@ -1249,7 +1249,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 12,
         "x": 12,
         "y": 41
@@ -1301,17 +1301,118 @@
         "defaults": {
           "custom": {
             "filterable": true,
-            "align": "auto"
+            "align": "center"
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Instance"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ernic_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Role"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "role"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "QP"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "qp"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "WQEs"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 53
       },
       "id": 22,
       "options": {
@@ -1331,40 +1432,11 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "ernic_qp_bytes_sent_total{ernic_id=~\"$instance\",role=~\"$role\"}",
+          "expr": "ernic_qp_bytes_sent_total{ernic_id=~\"$instance\",role=~\"$role\"} + ernic_qp_bytes_received_total{ernic_id=~\"$instance\",role=~\"$role\"} + ernic_qp_bytes_rdma_read_total{ernic_id=~\"$instance\",role=~\"$role\"} + ernic_qp_bytes_rdma_write_total{ernic_id=~\"$instance\",role=~\"$role\"}",
           "format": "table",
           "instant": true,
+          "legendFormat": "",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "expr": "ernic_qp_bytes_received_total{ernic_id=~\"$instance\",role=~\"$role\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "expr": "ernic_qp_bytes_rdma_read_total{ernic_id=~\"$instance\",role=~\"$role\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "expr": "ernic_qp_bytes_rdma_write_total{ernic_id=~\"$instance\",role=~\"$role\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "D"
         },
         {
           "datasource": {
@@ -1374,14 +1446,59 @@
           "expr": "ernic_qp_wqes_processed_total{ernic_id=~\"$instance\",role=~\"$role\"}",
           "format": "table",
           "instant": true,
+          "legendFormat": "",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "ernic_qp_bytes_sent_total{ernic_id=~\"$instance\",role=~\"$role\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "ernic_qp_bytes_received_total{ernic_id=~\"$instance\",role=~\"$role\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "ernic_qp_bytes_rdma_read_total{ernic_id=~\"$instance\",role=~\"$role\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "ernic_qp_bytes_rdma_write_total{ernic_id=~\"$instance\",role=~\"$role\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "F"
         }
       ],
       "transformations": [
         {
           "id": "seriesToColumns",
           "options": {
-            "byField": "ernic_id"
+            "byField": "qp"
           }
         },
         {
@@ -1393,6 +1510,8 @@
               "Time 3": true,
               "Time 4": true,
               "Time 5": true,
+              "Time 6": true,
+              "__name__": true,
               "__name__ 1": true,
               "__name__ 2": true,
               "__name__ 3": true,
@@ -1402,26 +1521,65 @@
               "role 2": true,
               "role 3": true,
               "role 4": true,
+              "role 5": true,
+              "ernic_id 1": true,
+              "ernic_id 2": true,
+              "ernic_id 3": true,
+              "ernic_id 4": true,
+              "ernic_id 5": true,
               "job": true,
               "job 1": true,
               "job 2": true,
               "job 3": true,
               "job 4": true,
+              "job 5": true,
               "instance": true,
               "instance 1": true,
               "instance 2": true,
               "instance 3": true,
-              "instance 4": true
+              "instance 4": true,
+              "instance 5": true
             },
             "renameByName": {
               "ernic_id": "Instance",
+              "role": "Role",
               "qp": "QP",
-              "Value #A": "Sent",
-              "Value #B": "Received",
-              "Value #C": "RDMA Read",
-              "Value #D": "RDMA Write",
-              "Value #E": "WQEs"
+              "Value #A": "Total Bytes",
+              "Value #B": "WQEs",
+              "Value #C": "Send",
+              "Value #D": "Recv",
+              "Value #E": "Read",
+              "Value #F": "Write"
+            },
+            "indexByName": {
+              "ernic_id": 0,
+              "role": 1,
+              "qp": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #E": 6,
+              "Value #F": 7,
+              "Value #A": 8
             }
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "Value #A",
+                "config": {
+                  "id": "greater",
+                  "options": {
+                    "value": 0
+                  }
+                }
+              }
+            ],
+            "type": "include",
+            "match": "any"
           }
         }
       ],
@@ -1433,7 +1591,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 61
       },
       "id": 400,
       "title": "Server Health",
@@ -1465,13 +1623,18 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 58
+        "y": 62
       },
       "id": 30,
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi"
@@ -1517,13 +1680,18 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 58
+        "y": 62
       },
       "id": 31,
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi"
@@ -1569,13 +1737,18 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 58
+        "y": 62
       },
       "id": 32,
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi"
@@ -1621,13 +1794,18 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 70
       },
       "id": 33,
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi"
@@ -1682,13 +1860,18 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 70
       },
       "id": 34,
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi"
@@ -1715,10 +1898,10 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 95
       },
       "id": 600,
-      "title": "VM System Metrics",
+      "title": "VM Metrics",
       "type": "row"
     },
     {
@@ -1742,7 +1925,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 92
+        "y": 96
       },
       "id": 50,
       "options": {
@@ -1793,7 +1976,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 92
+        "y": 96
       },
       "id": 51,
       "options": {
@@ -1853,7 +2036,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 102
+        "y": 106
       },
       "id": 52,
       "options": {
@@ -1913,7 +2096,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 102
+        "y": 106
       },
       "id": 53,
       "options": {
@@ -1973,7 +2156,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 116
       },
       "id": 54,
       "options": {
@@ -2033,7 +2216,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 116
       },
       "id": 55,
       "options": {
@@ -2093,7 +2276,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 126
       },
       "id": 56,
       "options": {
@@ -2110,8 +2293,8 @@
           "mode": "multi"
         }
       },
-      "title": "VM Disk I/O Rate (vda)",
-      "description": "Disk read and write byte rate for the virtio root disk (vda) inside each VM. Sourced from node-exporter.",
+      "title": "VM Disk I/O Rate",
+      "description": "Disk read and write byte rate per block device inside each VM. Use the Disk Device dropdown to filter by device (vda, nvme0n1, etc.).",
       "type": "timeseries",
       "targets": [
         {
@@ -2119,8 +2302,8 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "rate(node_disk_read_bytes_total{job=\"ernic-vm-node\",device=\"vda\"}[$__rate_interval])",
-          "legendFormat": "{{vm}} read",
+          "expr": "rate(node_disk_read_bytes_total{job=\"ernic-vm-node\",device=~\"$disk_device\"}[$__rate_interval])",
+          "legendFormat": "{{vm}} {{device}} read",
           "refId": "A"
         },
         {
@@ -2128,23 +2311,11 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "rate(node_disk_written_bytes_total{job=\"ernic-vm-node\",device=\"vda\"}[$__rate_interval])",
-          "legendFormat": "{{vm}} write",
+          "expr": "rate(node_disk_written_bytes_total{job=\"ernic-vm-node\",device=~\"$disk_device\"}[$__rate_interval])",
+          "legendFormat": "{{vm}} {{device}} write",
           "refId": "B"
         }
       ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 132
-      },
-      "id": 700,
-      "title": "VM GPU Metrics",
-      "type": "row"
     },
     {
       "datasource": {
@@ -2165,7 +2336,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 136
       },
       "id": 60,
       "options": {
@@ -2191,7 +2362,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "GPU_EDGE_TEMPERATURE{job=\"ernic-vm-gpu\"}",
+          "expr": "max by (vm) (gpu_edge_temperature{job=\"ernic-vm-gpu\"})",
           "legendFormat": "{{vm}} edge",
           "refId": "A"
         },
@@ -2200,9 +2371,18 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "GPU_MEMORY_TEMPERATURE{job=\"ernic-vm-gpu\"}",
+          "expr": "max by (vm) (gpu_memory_temperature{job=\"ernic-vm-gpu\"})",
           "legendFormat": "{{vm}} memory",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "max by (vm) (gpu_junction_temperature{job=\"ernic-vm-gpu\"})",
+          "legendFormat": "{{vm}} junction",
+          "refId": "C"
         }
       ]
     },
@@ -2227,7 +2407,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 133
+        "y": 136
       },
       "id": 61,
       "options": {
@@ -2253,7 +2433,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "GPU_GFX_ACTIVITY{job=\"ernic-vm-gpu\"}",
+          "expr": "max by (vm) (gpu_gfx_activity{job=\"ernic-vm-gpu\"})",
           "legendFormat": "{{vm}} GFX",
           "refId": "A"
         },
@@ -2262,7 +2442,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "GPU_UMC_ACTIVITY{job=\"ernic-vm-gpu\"}",
+          "expr": "max by (vm) (gpu_umc_activity{job=\"ernic-vm-gpu\"})",
           "legendFormat": "{{vm}} memory ctrl",
           "refId": "B"
         }
@@ -2287,7 +2467,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 143
+        "y": 146
       },
       "id": 62,
       "options": {
@@ -2313,18 +2493,9 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "GPU_POWER_USAGE{job=\"ernic-vm-gpu\"}",
-          "legendFormat": "{{vm}} power",
+          "expr": "max by (vm) (gpu_average_package_power{job=\"ernic-vm-gpu\"})",
+          "legendFormat": "{{vm}} avg power",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "expr": "GPU_AVERAGE_PACKAGE_POWER{job=\"ernic-vm-gpu\"}",
-          "legendFormat": "{{vm}} avg package",
-          "refId": "B"
         }
       ]
     },
@@ -2346,8 +2517,8 @@
       "gridPos": {
         "h": 10,
         "w": 12,
-        "x": 12,
-        "y": 143
+        "x": 0,
+        "y": 146
       },
       "id": 63,
       "options": {
@@ -2364,8 +2535,8 @@
           "mode": "multi"
         }
       },
-      "title": "GPU Clock & PCIe Bandwidth",
-      "description": "GPU clock speed (MHz) and PCIe bandwidth (Mb/s) from the AMD Device Metrics Exporter.",
+      "title": "GPU Clock",
+      "description": "GPU system clock speed in MHz from the AMD Device Metrics Exporter.",
       "type": "timeseries",
       "targets": [
         {
@@ -2373,8 +2544,8 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "GPU_CLOCK{job=\"ernic-vm-gpu\"}",
-          "legendFormat": "{{vm}} clock",
+          "expr": "max by (vm) (gpu_clock{job=\"ernic-vm-gpu\",clock_type=\"system\"})",
+          "legendFormat": "{{vm}} system clock",
           "refId": "A"
         },
         {
@@ -2382,8 +2553,68 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "PCIE_BANDWIDTH{job=\"ernic-vm-gpu\"}",
-          "legendFormat": "{{vm}} PCIe BW (Mb/s)",
+          "expr": "max by (vm) (gpu_clock{job=\"ernic-vm-gpu\",clock_type=\"memory\"})",
+          "legendFormat": "{{vm}} memory clock",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MBs",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 146
+      },
+      "id": 64,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "GPU PCIe Bandwidth",
+      "description": "PCIe TX and RX instantaneous bandwidth in MB/s from the AMD Device Metrics Exporter.",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "max by (vm) (pcie_tx{job=\"ernic-vm-gpu\"})",
+          "legendFormat": "{{vm}} TX",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "max by (vm) (pcie_rx{job=\"ernic-vm-gpu\"})",
+          "legendFormat": "{{vm}} RX",
           "refId": "B"
         }
       ]
@@ -2448,6 +2679,33 @@
         },
         "refresh": 2,
         "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
+        "definition": "label_values(node_disk_read_bytes_total{job=\"ernic-vm-node\"}, device)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "disk_device",
+        "label": "Disk Device",
+        "options": [],
+        "query": {
+          "query": "label_values(node_disk_read_bytes_total{job=\"ernic-vm-node\"}, device)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "/^(?!sr|loop)/",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"

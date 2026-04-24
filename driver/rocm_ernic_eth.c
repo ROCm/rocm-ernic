@@ -27,7 +27,7 @@
 #include "rocm_ernic_pci_ids.h"
 
 #define DRV_NAME_ETH "rocm_ernic_eth"
-#define DRV_VERSION  "1.0.1.0-k"
+#define DRV_VERSION  "1.0.6.0-k"
 
 /* Ethernet register offsets (from rocm_ernic_eth.h) */
 #define ROCM_ERNIC_ETH_CTL     0x28
@@ -58,6 +58,9 @@
 #define ROCM_ERNIC_ETH_ICR_RX_PACKET   (1 << 1) /* Receive Packet */
 #define ROCM_ERNIC_ETH_ICR_TX_ERROR    (1 << 2) /* Transmit Error */
 #define ROCM_ERNIC_ETH_ICR_RX_ERROR    (1 << 3) /* Receive Error */
+
+/* NAPI poll weight (max packets per poll). */
+#define ROCM_ERNIC_ETH_NAPI_WEIGHT 64
 
 /* Descriptor status/command bits */
 #define ROCM_ERNIC_ETH_DESC_STATUS_DD (1 << 0)
@@ -284,6 +287,7 @@ static int rocm_ernic_eth_open(struct net_device *ndev)
     status = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_STATUS);
     netif_carrier_on(ndev);
     netif_start_queue(ndev);
+    napi_enable(&eth_dev->napi);
     if (status & ROCM_ERNIC_ETH_STATUS_LINK_UP) {
         dev_info(&eth_dev->pdev->dev, "Ethernet link up on %s\n", ndev->name);
     } else {
@@ -305,14 +309,15 @@ static int rocm_ernic_eth_stop(struct net_device *ndev)
         return -ENODEV;
     }
 
-    /* Disable Ethernet RX/TX */
+    if (eth_dev->rx_ring.desc)
+        napi_disable(&eth_dev->napi);
+
+    /* Mask Ethernet IRQs and stop DMA before freeing rings. */
+    iowrite32(0, eth_dev->regs + ROCM_ERNIC_ETH_IMR);
     ctl = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_CTL);
     ctl &= ~(ROCM_ERNIC_ETH_CTL_ENABLE | ROCM_ERNIC_ETH_CTL_RX_ENABLE |
              ROCM_ERNIC_ETH_CTL_TX_ENABLE);
     iowrite32(ctl, eth_dev->regs + ROCM_ERNIC_ETH_CTL);
-
-    /* Disable interrupts in IMR */
-    iowrite32(0, eth_dev->regs + ROCM_ERNIC_ETH_IMR);
 
     /* Free TX and RX rings */
     rocm_ernic_eth_free_tx_ring(eth_dev);
@@ -368,8 +373,12 @@ static void rocm_ernic_eth_process_tx_completions(
     ring->head = tail;
 }
 
-/* Process received packets from RX descriptor ring */
-static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
+/*
+ * Drain up to @budget completed RX descriptors.  Returns the number of
+ * descriptors consumed (stack deliveries plus skipped error slots).
+ */
+static int rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev,
+                                     int budget)
 {
     struct rocm_ernic_eth_rx_ring *ring = &eth_dev->rx_ring;
     u32 head, tail;
@@ -378,14 +387,15 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
     void *buf;
     dma_addr_t dma_addr;
     u16 pkt_len;
+    int work_done = 0;
 
-    if (!ring->desc)
-        return;
+    if (!ring->desc || budget <= 0)
+        return 0;
 
     tail = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_RX_TAIL);
     head = ring->head;
 
-    while (head != tail) {
+    while (head != tail && work_done < budget) {
         desc = &ring->desc[head];
 
         if (!(desc->status & ROCM_ERNIC_ETH_DESC_STATUS_DD)) {
@@ -397,6 +407,7 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
             desc->status = 0;
             desc->length = ROCM_ERNIC_ETH_RX_BUFFER_SIZE;
             head = (head + 1) % ring->size;
+            work_done++;
             continue;
         }
 
@@ -407,8 +418,10 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
             dev_warn_ratelimited(&eth_dev->pdev->dev,
                                  "RX: Invalid buffer at descriptor %u\n", head);
             desc->status = 0;
+            desc->length = ROCM_ERNIC_ETH_RX_BUFFER_SIZE;
             head = (head + 1) % ring->size;
-            break;
+            work_done++;
+            continue;
         }
 
         skb = netdev_alloc_skb_ip_align(eth_dev->netdev, pkt_len);
@@ -431,12 +444,67 @@ static void rocm_ernic_eth_process_rx(struct rocm_ernic_eth_dev *eth_dev)
         desc->status = 0;
         desc->length = ROCM_ERNIC_ETH_RX_BUFFER_SIZE;
         head = (head + 1) % ring->size;
+        work_done++;
     }
 
     if (head != ring->head) {
         ring->head = head;
         iowrite32(head, eth_dev->regs + ROCM_ERNIC_ETH_RX_HEAD);
     }
+
+    return work_done;
+}
+
+/*
+ * True if process_rx() can make immediate progress: same condition as the
+ * inner loop in rocm_ernic_eth_process_rx() (head != tail and DD at head).
+ * Scanning the whole [head, tail) for DD was wrong: if a later slot has DD
+ * but head does not, process_rx breaks with work_done == 0 while this would
+ * return true, causing napi_schedule -> softirq tight loop / soft lockup.
+ */
+static bool rocm_ernic_eth_rx_pending(struct rocm_ernic_eth_dev *eth_dev)
+{
+    struct rocm_ernic_eth_rx_ring *ring = &eth_dev->rx_ring;
+    u32 head, tail;
+    struct rocm_ernic_eth_desc *desc;
+
+    if (!ring->desc || !eth_dev->regs)
+        return false;
+
+    tail = ioread32(eth_dev->regs + ROCM_ERNIC_ETH_RX_TAIL);
+    head = ring->head;
+    if (head == tail)
+        return false;
+    desc = &ring->desc[head];
+    return !!(desc->status & ROCM_ERNIC_ETH_DESC_STATUS_DD);
+}
+
+static int rocm_ernic_eth_poll(struct napi_struct *napi, int budget)
+{
+    struct rocm_ernic_eth_dev *eth_dev =
+        container_of(napi, struct rocm_ernic_eth_dev, napi);
+    int work_done;
+
+    work_done = rocm_ernic_eth_process_rx(eth_dev, budget);
+    if (work_done < budget) {
+        /*
+         * napi_complete() is napi_complete_done(napi, 0).  Always passing
+         * work_done==0 breaks deferred-hardirq / GRO bookkeeping for polls
+         * that did process frames, and can leave NAPI / IRQ timing wrong
+         * across repeated traffic (e.g. a second iperf run).
+         */
+        napi_complete_done(napi, work_done);
+        /*
+         * Packets can land after the last process_rx pass but before
+         * napi_complete_done().  Reschedule so a follow-up poll drains them
+         * without waiting for another hardware interrupt.  Skip while
+         * ifdown is racing napi_disable() so we never re-arm after disable.
+         */
+        if (likely(netif_running(eth_dev->netdev)) &&
+            !napi_disable_pending(napi) && rocm_ernic_eth_rx_pending(eth_dev))
+            napi_schedule(napi);
+    }
+    return work_done;
 }
 
 /* Transmit handler - queue packet in TX descriptor ring */
@@ -495,7 +563,7 @@ static netdev_tx_t rocm_ernic_eth_xmit(struct sk_buff *skb,
         return NETDEV_TX_OK;
     }
 
-    /* Process completed TX descriptors only - RX is handled by interrupt */
+    /* Process completed TX descriptors only; RX uses NAPI from irq. */
     rocm_ernic_eth_process_tx_completions(eth_dev);
 
     /* Check if ring has space */
@@ -618,10 +686,14 @@ static struct net_device *rocm_ernic_eth_create_netdev(
     ndev->priv_flags |= IFF_NO_QUEUE;
     ndev->priv_flags |= IFF_DISABLE_NETPOLL;
 
+    netif_napi_add_weight(ndev, &eth_dev->napi, rocm_ernic_eth_poll,
+                          ROCM_ERNIC_ETH_NAPI_WEIGHT);
+
     /* Register the device */
     ret = register_netdev(ndev);
     if (ret) {
         dev_warn(&eth_dev->pdev->dev, "register_netdev failed (%d)\n", ret);
+        netif_napi_del(&eth_dev->napi);
         free_netdev(ndev);
         return NULL;
     }
@@ -663,6 +735,7 @@ static void rocm_ernic_eth_release_netdev(struct rocm_ernic_eth_dev *eth_dev)
     netif_carrier_off(eth_dev->netdev);
     rtnl_unlock();
 
+    netif_napi_del(&eth_dev->napi);
     unregister_netdev(eth_dev->netdev);
     free_netdev(eth_dev->netdev);
     eth_dev->netdev = NULL;
@@ -690,9 +763,9 @@ EXPORT_SYMBOL(rocm_ernic_eth_get_dev);
 void rocm_ernic_eth_handle_rx_interrupt(struct pci_dev *pdev)
 {
     struct rocm_ernic_eth_dev *eth_dev = rocm_ernic_eth_get_dev(pdev);
+
     if (eth_dev) {
-        dev_info(&pdev->dev, "Processing RX packets from interrupt handler\n");
-        rocm_ernic_eth_process_rx(eth_dev);
+        napi_schedule(&eth_dev->napi);
     } else {
         dev_warn(&pdev->dev, "Ethernet device not found for RX interrupt\n");
     }

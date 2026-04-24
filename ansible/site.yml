@@ -5,14 +5,15 @@
 # Master playbook for rocm-ernic integration testing.
 #
 # Imports all plays in order:
-#   1. Host setup    -- build, install, configure service
-#   2. VM creation   -- golden image, launch VMs
-#   3. Guest setup   -- driver, rdma-core, NIC config
-#   4. Sanity tests  -- iperf3, perftest
-#   5. Performance tests -- full BW/lat sweeps
-#   6a. GPU tests    -- xio-tester 2-node GPU RDMA
-#   6b. GPU perftest -- rocm-xio GPU-initiated perftest
-#   7. Stress tests  -- multi-QP, soak, churn
+#   1.  Host setup    -- build, install, configure service
+#   2.  VM creation   -- golden image, launch VMs
+#   3.  Guest setup   -- driver, rdma-core, NIC config
+#   4.  Sanity tests  -- ping, netcat, perftest
+#   5a. TCP/IP perf   -- iperf3 throughput
+#   5b. RDMA perf     -- BW/lat sweeps, reliability
+#   6a. GPU tests     -- xio-tester 2-node GPU RDMA
+#   6b. GPU perftest  -- rocm-xio GPU-initiated perftest
+#   7.  Stress tests  -- multi-QP, soak, churn
 #
 # Usage:
 #   cd ansible
@@ -39,10 +40,10 @@
 #   host-setup -- phase 1 only
 #   vm-create  -- phase 2 only
 #   guest-setup -- phase 3 only
-#   test       -- all test phases (sanity, perf,
-#                 gpu-test, gpu-perf, stress)
+#   test       -- all test phases
 #   sanity     -- phase 4 only
-#   perf       -- phase 5 only
+#   tcp-perf   -- phase 5a only (iperf3)
+#   perf       -- phase 5b only (RDMA perftest)
 #   gpu        -- phases 6a + 6b
 #   gpu-test   -- phase 6a only
 #   gpu-perf   -- phase 6b only
@@ -65,17 +66,21 @@
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [test, sanity]
 
-- name: "Phase 5: Performance tests"
+- name: "Phase 5a: TCP/IP performance tests (iperf3)"
+  ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
+  tags: [test, tcp-perf]
+
+- name: "Phase 5b: CPU-based RDMA performance tests (perftest)"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
-  tags: [test, perf]
+  tags: [test, cpu-rdma-perf]
 
-- name: "Phase 6a: GPU RDMA tests"
+- name: "Phase 6a: GPU RDMA tests (xio-tester)"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
-  tags: [test, gpu, gpu-test]
+  tags: [test, gpu, gpu-xio-tester]
 
-- name: "Phase 6b: GPU perftest (rocm-xio)"
+- name: "Phase 6b: GPU perftest (perftest-xio via rocm-xio)"
   ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
-  tags: [test, gpu, gpu-perf]
+  tags: [test, gpu, gpu-perftest-xio]
 
 - name: "Phase 7: TCP/IP and RDMA Stress tests"
   ansible.builtin.import_playbook: playbooks/stress-tests.yml

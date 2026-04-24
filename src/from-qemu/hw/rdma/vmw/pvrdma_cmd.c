@@ -994,21 +994,14 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
     int err = 0xFFFF;
     DSRInfo *dsr_info;
 
-    rdma_info_report(">>> pvrdma_exec_cmd: ENTRY");
-
     dsr_info = &dev->dsr_info;
 
-    rdma_info_report(">>> pvrdma_exec_cmd: dsr=%p req=%p rsp=%p", dsr_info->dsr,
-                     dsr_info->req, dsr_info->rsp);
     if (!dsr_info->dsr) {
         /* Buggy or malicious guest driver */
         rdma_error_report("Exec command without dsr, req or rsp buffers");
         rdma_error_report("  dsr_info->dsr = %p", dsr_info->dsr);
         goto out;
     }
-
-    rdma_info_report(">>> pvrdma_exec_cmd: DSR is valid, req command = %u",
-                     dsr_info->req->hdr.cmd);
 
     if (dsr_info->req->hdr.cmd >=
         sizeof(cmd_handlers) / sizeof(struct cmd_handler)) {
@@ -1021,30 +1014,18 @@ int pvrdma_exec_cmd(PVRDMADev *dev)
         goto out;
     }
 
-    rdma_info_report(">>> pvrdma_exec_cmd: Executing command handler...");
     err = cmd_handlers[dsr_info->req->hdr.cmd].exec(dev, dsr_info->req,
                                                     dsr_info->rsp);
-    rdma_info_report(
-        ">>> pvrdma_exec_cmd: Command handler returned err = %d (0x%x)", err,
-        err);
 
     dsr_info->rsp->hdr.response = dsr_info->req->hdr.response;
     dsr_info->rsp->hdr.ack = cmd_handlers[dsr_info->req->hdr.cmd].ack;
     dsr_info->rsp->hdr.err = err < 0 ? -err : 0;
-    rdma_info_report(
-        ">>> pvrdma_exec_cmd: RESP prepared response=0x%x ack=0x%x err=%u",
-        dsr_info->rsp->hdr.response, dsr_info->rsp->hdr.ack,
-        dsr_info->rsp->hdr.err);
-
 
     dev->stats.commands++;
 
 out:
-    rdma_info_report(">>> pvrdma_exec_cmd: Setting PVRDMA_REG_ERR = 0x%x", err);
     set_reg_val(dev, PVRDMA_REG_ERR, err);
     post_interrupt(dev, INTR_VEC_CMD_RING);
 
-    rdma_info_report(">>> pvrdma_exec_cmd: EXIT (returning %d)",
-                     (err == 0) ? 0 : -EINVAL);
     return (err == 0) ? 0 : -EINVAL;
 }

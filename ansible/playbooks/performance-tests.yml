@@ -20,7 +20,7 @@
 #
 # Override sweep parameters:
 #   ansible-playbook playbooks/performance-tests.yml \
-#     -e ernic_perf_bw_iters=200 \
+#     -e ernic_perf_bw_iters=2000 \
 #     -e ernic_perf_lat_iters=100 \
 #     -e ernic_perf_reliability_runs=10
 
@@ -46,7 +46,7 @@
     vm2_ip: "{{ ernic_nic_subnet }}.20"
     rdma_dev: rocm-rdma-ernic0
 
-    bw_iters: "{{ ernic_perf_bw_iters | default(100) }}"
+    bw_iters: "{{ ernic_perf_bw_iters | default(1000) }}"
     lat_iters: "{{ ernic_perf_lat_iters | default(50) }}"
     rel_iters: "{{ ernic_perf_reliability_iters | default(100) }}"
     rel_runs: "{{ ernic_perf_reliability_runs | default(5) }}"

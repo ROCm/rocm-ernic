@@ -31,10 +31,7 @@
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
-    iperf_bw: >-
-      {{ ernic_iperf_bandwidth
-         | regex_replace('(?i)iB/s$', '')
-         | regex_replace('(?i)B/s$', '') }}
+    iperf_bw: "{{ ernic_iperf_bandwidth }}"
     rdma_dev: rocm-rdma-ernic0
 
   tasks:

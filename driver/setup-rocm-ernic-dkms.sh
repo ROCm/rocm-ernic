@@ -119,6 +119,29 @@ check_prereqs() {
 check_prereqs
 
 # ---------------------------------------------------
+# DKMS registration helpers
+#
+# dkms status output format varies by release (slashes vs commas).
+# Always scan the full table so we remove stale rows before dkms add.
+# ---------------------------------------------------
+
+dkms_entry_lines() {
+  dkms status 2>/dev/null \
+    | grep -F "${PKG_NAME}" \
+    | grep -F "${PKG_VERSION}" || true
+}
+
+remove_dkms_registration_if_present() {
+  if [ -n "$(dkms_entry_lines)" ]; then
+    echo "Removing existing DKMS registration" \
+      "${PKG_NAME}/${PKG_VERSION}..."
+    sudo dkms remove \
+      "${PKG_NAME}/${PKG_VERSION}" \
+      --all 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------
 # Print status
 # ---------------------------------------------------
 
@@ -136,9 +159,7 @@ echo ""
 # ---------------------------------------------------
 
 if ! $BUILD_ONLY && \
-    dkms status \
-    "${PKG_NAME}/${PKG_VERSION}" \
-    2>/dev/null | grep -q "installed"; then
+    dkms_entry_lines | grep -q "installed"; then
   echo "${PKG_NAME}/${PKG_VERSION}" \
     "already installed."
   echo "Use --uninstall to remove first."
@@ -196,17 +217,27 @@ populate_dkms
 build_dkms() {
   echo ""
 
-  if dkms status \
-      "${PKG_NAME}/${PKG_VERSION}" \
-      2>/dev/null | grep -q .; then
-    echo "Removing stale DKMS registration..."
-    sudo dkms remove \
-      "${PKG_NAME}/${PKG_VERSION}" \
-      --all 2>/dev/null || true
-  fi
+  remove_dkms_registration_if_present
 
   echo "Registering with DKMS..."
-  sudo dkms add "${PKG_NAME}/${PKG_VERSION}"
+  _dkms_add_out="$(sudo dkms add \
+    "${PKG_NAME}/${PKG_VERSION}" 2>&1)" \
+    || _dkms_add_rc=$?
+  if [ -n "${_dkms_add_out:-}" ]; then
+    echo "${_dkms_add_out}"
+  fi
+  if [ "${_dkms_add_rc:-0}" -ne 0 ]; then
+    if echo "${_dkms_add_out}" | grep -qi 'already contains'; then
+      echo "DKMS database still had ${PKG_NAME}/${PKG_VERSION};" \
+        "removing and retrying dkms add..."
+      remove_dkms_registration_if_present
+      unset _dkms_add_rc
+      sudo dkms add "${PKG_NAME}/${PKG_VERSION}"
+    else
+      exit "${_dkms_add_rc}"
+    fi
+  fi
+  unset _dkms_add_out _dkms_add_rc
 
   local kver
   kver="$(uname -r)"

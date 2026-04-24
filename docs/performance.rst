@@ -262,7 +262,53 @@ Stress Tests (24/24 PASS):
 - High iteration (1000): Write 1M peaks at 1.91 GB/s
 - QP churn: 10/10 cycles
 - Resource limits: 64/64 QPs
-- iperf3 TCP: 0.10 Mbit/s (rate-limited; ~39 Mbit/s ad hoc)
+- iperf3 TCP: Ansible stress still rate-limited at 0.10 Mbit/s; unthrottled
+  TCP over ``rocm_ernic_eth`` is summarised under `ernic-iperf3-apr2026`_.
+
+
+.. _ernic-iperf3-apr2026:
+
+ERNIC Ethernet TCP (iperf3) -- April 2026
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Smoke tests on the same two-guest loopback layout (``hpe-rack-15`` class
+host, Ubuntu 24.04 guests, TCP mesh backend, data plane
+``192.168.200.10`` / ``192.168.200.20`` on netdev ``rocm-ernic0``).
+``rocm_ernic_eth`` **1.0.6.0-k** DKMS builds include the NAPI receive path
+(budgeted ``process_rx``, ``napi_complete_done`` with correct
+``work_done``, ``rocm_ernic_eth_rx_pending`` guard, and ``napi_enable`` /
+``napi_disable`` in ``open`` / ``stop``).  Earlier **1.0.1.0-k** builds
+showed **watchdog soft lockups** during ``iperf3``; those signatures
+disappeared in these runs.
+
+Representative **unthrottled** ``iperf3`` results (VM2 client to VM1
+server, TCP, default window unless noted):
+
+- **``ansible/run-iperf3.sh``** (default ``-t 10``): **~55--56 Mbit/s**
+  end-to-end in captured runs, **0** retransmits, ``iperf Done.`` exit.
+
+- **Interactive** ``iperf3 -c 192.168.200.10 -t 30`` against VM1
+  ``iperf3 -s -B 192.168.200.10``: server rows steady at **~31--47
+  Mbit/s** per second; the client often shows **multi-second ``0.00
+  Bytes``** intervals while the server stays smooth (TCP send
+  **backpressure** and ``iperf3`` interval accounting, not two different
+  wire rates).
+
+- **Longer** tests with a large ``timeout(1)`` wrap on the client: some
+  **~30--35 s** windows averaged **~34 Mbit/s** with long idle intervals
+  then completion; other runs logged **control socket** errors when the
+  server tore down first.  Guests stayed **SSH-reachable**.
+
+- **Very low** ``-b`` on TCP (e.g. ``10K``): **not recommended**; intervals
+  round to zero and TCP can stall.  Use **Mbit/s** scale (``-b 5M``) or
+  **UDP** (``-u``) for a clean cap.
+
+**Automation:** ``ansible/run-iperf3-softlock-trace.sh`` enables
+``kernel.softlockup_all_cpu_backtrace`` on both guests before invoking
+``run-iperf3.sh`` so a future guest lockup should emit **Call Trace**
+blocks on the QEMU serial log (``vm-2.log``).  ``guest-setup`` passes an
+explicit DKMS ``--version`` stamp so driver rebuilds are not skipped by the
+``setup-rocm-ernic-dkms.sh`` "already installed" guard.
 
 
 Milestone Comparison
@@ -285,8 +331,12 @@ Bidir send @ 1 MB             N/A             DEADLOCK        2.27 GB/s
 Bidir write @ 1 MB            N/A             DEADLOCK        2.35 GB/s
 Stress pass rate              N/A             22/24           24/24
 max_qp_wr                     N/A             ~500            1024
-iperf3 TCP                    N/A             N/A             0.10 Mbit/s
+iperf3 TCP                    N/A             N/A             0.10 [#iperf]_
 ============================  ==============  ==============  ==============
+
+.. [#iperf] Mar 29 column is the Ansible **stress** default (rate cap).
+   Unthrottled ``iperf3`` over ``rocm_ernic_eth`` reached **~34--56
+   Mbit/s** in Apr 2026 smoke tests; see `ernic-iperf3-apr2026`_.
 
 
 Milestone 4 -- March 31 (GPU Direct RDMA)
@@ -664,10 +714,12 @@ Known Limitations
   before the client connects at very small message sizes.
   Does not affect sizes 16 KB and above.
 
-- **iperf3 rate-limited:** the stress test default
-  ``ernic_iperf_bandwidth: 100MiB/s`` limits the measured
-  throughput.  Actual achievable TCP throughput over the
-  emulated NIC is approximately 39 Mbit/s.
+- **iperf3:** the Ansible **stress** default ``ernic_iperf_bandwidth`` (passed
+  to ``iperf3 -b`` as given) caps the reported TCP row at **~0.10 Mbit/s**.
+  Unthrottled ``iperf3`` over
+  ``rocm_ernic_eth`` (Apr 2026, **1.0.6.0-k** / NAPI path) routinely lands
+  in the **~34--56 Mbit/s** range depending on duration, ``timeout(1)``
+  client wrap, and scheduling; see `ernic-iperf3-apr2026`_.
 
 - **Host sysctl required:** TCP socket buffer increase needs
   ``net.core.wmem_max`` and ``net.core.rmem_max`` set to at
