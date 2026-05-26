@@ -617,8 +617,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                     resp_len = dhcp_proxy_forward_request(
                         (DhcpProxy *)dev->dhcp_proxy, dhcp_req,
                         len - dhcp_offset, &dhcp_resp, sizeof(dhcp_resp));
-                } else if (dev->backend_dev.backend_type ==
-                           RDMA_BACKEND_TYPE_TCP) {
+                } else if (RDMA_BACKEND_IS_TCP_MESH(dev->backend_dev.backend_type)) {
                     /* TCP worker mode: try to initialize proxy if manager
                      * connection is ready */
                     /* Forward declare TcpBackendPrivate structure */
@@ -631,9 +630,10 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                         (TcpBackendPrivateStub *)
                             dev->backend_dev.backend_private;
 
-                    /* Access manager_conn->sockfd */
+                    /* Layout must match TcpConnection (sockfd, ofi, …) */
                     typedef struct {
                         int sockfd;
+                        void *ofi;
                     } TcpConnectionStub;
 
                     if (tcp_priv && tcp_priv->manager_conn) {
@@ -651,6 +651,16 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                                     (DhcpProxy *)dev->dhcp_proxy, dhcp_req,
                                     len - dhcp_offset, &dhcp_resp,
                                     sizeof(dhcp_resp));
+                            }
+                        } else if (manager_conn->ofi != NULL) {
+                            static int ofi_dhcp_warned;
+
+                            if (!ofi_dhcp_warned) {
+                                ofi_dhcp_warned = 1;
+                                rdma_warn_report(
+                                    "DHCP over ofi-tcp is not supported yet "
+                                    "(dhcp_proxy needs a socket); use "
+                                    "tcp:worker for DHCP relay.");
                             }
                         }
                     }
@@ -899,7 +909,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
 
             /* Handle rdma_cm protocol on port 18515 */
             if (dst_port == TCP_PORT_RDMA_CM || src_port == TCP_PORT_RDMA_CM) {
-                if (dev->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP) {
+                if (RDMA_BACKEND_IS_TCP_MESH(dev->backend_dev.backend_type)) {
                     /*
                      * Multi-VM mesh: forward CM frames to
                      * the peer via tcp_backend_send_eth_frame
@@ -921,7 +931,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
     }
 
     /* Default: forward frame to all mesh peers */
-    if (dev->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
+    if (RDMA_BACKEND_IS_TCP_MESH(dev->backend_dev.backend_type) &&
         dev->backend_dev.backend_private) {
         tcp_backend_send_eth_frame(&dev->backend_dev, frame_data, len);
     }

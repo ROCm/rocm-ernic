@@ -10,7 +10,7 @@ ansible-playbook site.yml \
 
 PASS=0
 while ansible-playbook site.yml \
-    --tags sanity,tcp-perf \
+    --tags tcp-perf,gpu-perftest-xio \
     --skip-tags stress,gpu-test; do
   PASS=$((PASS + 1))
   echo "=== Pass $PASS completed at $(date), restarting ==="

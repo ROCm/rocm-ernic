@@ -109,6 +109,8 @@ struct RdmaBackendOps {
                           uint32_t num_sge, void *ctx);
 };
 
+extern const RdmaBackendOps rdma_backend_ops_ofi_tcp;
+
 /* Backend registration and management */
 const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);
 RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str);

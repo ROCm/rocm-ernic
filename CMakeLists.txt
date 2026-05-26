@@ -129,6 +129,20 @@ if(NOT IBVERBS_FOUND)
     )
 endif()
 
+# -- libfabric (optional; enables ofi-tcp mesh backend) ----------
+pkg_check_modules(LIBFABRIC libfabric)
+if(LIBFABRIC_FOUND)
+  message(STATUS
+    "Found libfabric via pkg-config: ${LIBFABRIC_VERSION} "
+    "(ofi-tcp backend enabled)")
+  set(ERNIC_HAVE_LIBFABRIC 1)
+else()
+  message(STATUS
+    "libfabric not found — ofi-tcp backend will fail at runtime if selected; "
+    "install libfabric-dev to enable.")
+  set(ERNIC_HAVE_LIBFABRIC 0)
+endif()
+
 # ---------------------------------------------------------------
 # Source file groups
 # ---------------------------------------------------------------
@@ -140,6 +154,7 @@ set(RDMA_BACKEND_SOURCES
     src/from-qemu/hw/rdma/rdma_backend_core.c
     src/from-qemu/hw/rdma/rdma_backend_none.c
     src/from-qemu/hw/rdma/rdma_backend_loopback.c
+    src/from-qemu/hw/rdma/ernic_ofi_wire.c
     src/from-qemu/hw/rdma/rdma_backend_tcp.c
     src/from-qemu/hw/rdma/rdma_utils.c
     src/from-qemu/hw/rdma/rdma_rm.c
@@ -202,9 +217,14 @@ target_include_directories(rocm-ernic PRIVATE
     ${IBVERBS_INCLUDE_DIRS}
 )
 
+if(LIBFABRIC_FOUND)
+  target_include_directories(rocm-ernic PRIVATE ${LIBFABRIC_INCLUDE_DIRS})
+endif()
+
 target_compile_definitions(rocm-ernic PRIVATE
     GIT_SHA_FULL="${GIT_SHA_FULL}"
     GIT_SHA_SHORT="${GIT_SHA_SHORT}"
+    ERNIC_HAVE_LIBFABRIC=${ERNIC_HAVE_LIBFABRIC}
     _GNU_SOURCE
     TARGET_PAGE_SIZE=4096
 )
@@ -236,11 +256,19 @@ target_link_directories(rocm-ernic PRIVATE
     ${IBVERBS_LIBRARY_DIRS}
 )
 
+if(LIBFABRIC_FOUND)
+  target_link_directories(rocm-ernic PRIVATE ${LIBFABRIC_LIBRARY_DIRS})
+endif()
+
 target_link_libraries(rocm-ernic PRIVATE
     ${VFIO_USER_LINK_LIBRARIES}
     ${GLIB2_LIBRARIES}
     ${IBVERBS_LIBRARIES}
 )
+
+if(LIBFABRIC_FOUND)
+  target_link_libraries(rocm-ernic PRIVATE ${LIBFABRIC_LIBRARIES})
+endif()
 
 ernic_set_compiler_flags(rocm-ernic)
 

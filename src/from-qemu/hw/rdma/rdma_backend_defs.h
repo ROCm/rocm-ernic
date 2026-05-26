@@ -34,9 +34,14 @@ typedef enum {
     RDMA_BACKEND_TYPE_NONE,     /* No backend - minimal stubs */
     RDMA_BACKEND_TYPE_LOOPBACK, /* Internal loopback emulation */
     RDMA_BACKEND_TYPE_VERBS,    /* libibverbs hardware backend */
-    RDMA_BACKEND_TYPE_TCP,      /* TCP/IP network backend */
+    RDMA_BACKEND_TYPE_TCP,      /* TCP/IP network backend (BSD sockets) */
+    RDMA_BACKEND_TYPE_OFI_TCP,  /* Same mesh protocol over libfabric tcp */
     RDMA_BACKEND_TYPE_MAX
 } RdmaBackendType;
+
+/* Manager-style multi-node backends using the TCP mesh protocol */
+#define RDMA_BACKEND_IS_TCP_MESH(bt)                                           \
+    ((bt) == RDMA_BACKEND_TYPE_TCP || (bt) == RDMA_BACKEND_TYPE_OFI_TCP)
 
 /* Stub for rdmacm-mux types (MAD handling not used) */
 /* Forward declarations */

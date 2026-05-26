@@ -36,6 +36,7 @@ jobs:
             ninja-build \
             pkg-config \
             libibverbs-dev \
+            libfabric-dev \
             librdmacm-dev \
             libglib2.0-dev \
             libjson-c-dev \
@@ -63,7 +64,12 @@ jobs:
       
       - name: Build project
         run: cmake --build build
-      
+
+      - name: Verify libfabric tcp provider (ofi-tcp mesh)
+        run: |
+          FI_PROVIDER=tcp fi_info -p tcp -c FI_EP_MSG | head -30
+          echo "ofi-tcp mesh uses the libfabric tcp provider; set FI_PROVIDER=tcp at runtime if needed."
+
       - name: Verify rdma_cm protocol symbols
         run: |
           echo "=== Verifying rdma_cm_proto.c symbols ==="

@@ -364,7 +364,7 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
             return -ENOMEM;
         }
         rdma_info_report("DHCP server initialized for loopback mode");
-    } else if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
+    } else if (RDMA_BACKEND_IS_TCP_MESH(pvrdma->backend_dev.backend_type) &&
                backend_config && strstr(backend_config, "manager:")) {
         /* TCP manager mode: Initialize DHCP server for allocating addresses
          * to netdev devices in VMs on connecting worker servers */

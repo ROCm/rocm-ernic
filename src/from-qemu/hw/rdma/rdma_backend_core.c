@@ -19,6 +19,7 @@
 extern const RdmaBackendOps rdma_backend_ops_none;
 extern const RdmaBackendOps rdma_backend_ops_loopback;
 extern const RdmaBackendOps rdma_backend_ops_tcp;
+extern const RdmaBackendOps rdma_backend_ops_ofi_tcp;
 /* extern const RdmaBackendOps rdma_backend_ops_verbs; */ /* TODO */
 
 /**
@@ -32,6 +33,7 @@ static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
     [RDMA_BACKEND_TYPE_LOOPBACK] = &rdma_backend_ops_loopback,
     [RDMA_BACKEND_TYPE_VERBS] = NULL, /* TODO: &rdma_backend_ops_verbs */
     [RDMA_BACKEND_TYPE_TCP] = &rdma_backend_ops_tcp,
+    [RDMA_BACKEND_TYPE_OFI_TCP] = &rdma_backend_ops_ofi_tcp,
 };
 
 /**
@@ -80,6 +82,11 @@ RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str)
         return RDMA_BACKEND_TYPE_TCP;
     }
 
+    if (!strncmp(backend_str, "ofi-tcp:", 8) ||
+        !strcmp(backend_str, "ofi-tcp")) {
+        return RDMA_BACKEND_TYPE_OFI_TCP;
+    }
+
     rdma_warn_report("Unknown backend '%s', using 'none'", backend_str);
     return RDMA_BACKEND_TYPE_NONE;
 }
@@ -101,6 +108,8 @@ const char *rdma_backend_type_to_string(RdmaBackendType type)
         return "verbs";
     case RDMA_BACKEND_TYPE_TCP:
         return "tcp";
+    case RDMA_BACKEND_TYPE_OFI_TCP:
+        return "ofi-tcp";
     default:
         return "unknown";
     }
