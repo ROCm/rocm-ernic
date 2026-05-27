@@ -24,7 +24,10 @@
 #include <rdma/fi_eq.h>
 #include <rdma/fi_errno.h>
 
-#define ERNIC_OFI_CQ_SZ 4096u
+#define ERNIC_OFI_CQ_SZ           4096u
+/* Single fi_send per mesh message up to this size (header + payload). */
+#define ERNIC_OFI_FRAMED_MAX      (64u * 1024u)
+#define ERNIC_OFI_FRAMED_STACK    4096u
 
 struct ErnicOfiListener {
     struct fid_fabric *fabric;
@@ -38,10 +41,82 @@ struct ErnicOfiWire {
     struct fid_fabric *fabric;
     struct fid_domain *domain;
     struct fid_ep *ep;
-    struct fid_cq *cq;
+    struct fid_cq *tx_cq;
+    struct fid_cq *rx_cq;
     struct fid_eq *eq;
+    QemuMutex lock;
+    bool lock_inited;
     bool owns_fabric;
 };
+
+static void ofi_wire_lock_init(ErnicOfiWire *w)
+{
+    if (!w || w->lock_inited) {
+        return;
+    }
+    qemu_mutex_init(&w->lock);
+    w->lock_inited = true;
+}
+
+static void ofi_wire_lock_fini(ErnicOfiWire *w)
+{
+    if (!w || !w->lock_inited) {
+        return;
+    }
+    qemu_mutex_destroy(&w->lock);
+    w->lock_inited = false;
+}
+
+static int ofi_open_cqs(struct fid_domain *dom, struct fid_cq **tx_cq,
+                        struct fid_cq **rx_cq)
+{
+    struct fi_cq_attr cq_attr = {
+        .size = ERNIC_OFI_CQ_SZ,
+        .format = FI_CQ_FORMAT_MSG,
+    };
+    int ret;
+
+    ret = fi_cq_open(dom, &cq_attr, tx_cq, NULL);
+    if (ret) {
+        return ret;
+    }
+    ret = fi_cq_open(dom, &cq_attr, rx_cq, NULL);
+    if (ret) {
+        fi_close(&(*tx_cq)->fid);
+        *tx_cq = NULL;
+    }
+    return ret;
+}
+
+static int ofi_bind_ep(struct fid_ep *ep, struct fid_cq *tx_cq,
+                       struct fid_cq *rx_cq, struct fid_eq *eq)
+{
+    int ret;
+
+    ret = fi_ep_bind(ep, &tx_cq->fid, FI_TRANSMIT);
+    if (ret) {
+        return ret;
+    }
+    ret = fi_ep_bind(ep, &rx_cq->fid, FI_RECV);
+    if (ret) {
+        return ret;
+    }
+    return fi_ep_bind(ep, &eq->fid, 0);
+}
+
+static int cq_drain_err(struct fid_cq *cq, const char *which)
+{
+    struct fi_cq_err_entry err;
+    ssize_t er;
+
+    er = fi_cq_readerr(cq, &err, 0);
+    if (er != 1) {
+        return -EIO;
+    }
+    rdma_warn_report("OFI: %s CQ error prov=%d %s", which, err.prov_errno,
+                     fi_strerror(err.err));
+    return 0;
+}
 
 static int cq_wait_tx(struct ErnicOfiWire *w, void *ctx, int timeout_us)
 {
@@ -49,16 +124,21 @@ static int cq_wait_tx(struct ErnicOfiWire *w, void *ctx, int timeout_us)
 
     for (;;) {
         int tw = timeout_us < 0 ? -1 : (timeout_us > 100000 ? 100000 : timeout_us);
-        ssize_t n = fi_cq_sread(w->cq, &entry, 1, NULL, tw);
+        ssize_t n = fi_cq_sread(w->tx_cq, &entry, 1, NULL, tw);
         if (n == 1) {
             if (entry.op_context == ctx) {
                 return 0;
             }
-            rdma_error_report("OFI: unexpected TX CQ context");
-            return -EIO;
+            continue;
         }
         if (n == -FI_EAGAIN) {
             return -EAGAIN;
+        }
+        if (n == -FI_EAVAIL) {
+            if (cq_drain_err(w->tx_cq, "TX") == 0) {
+                continue;
+            }
+            return -EIO;
         }
         if (n == -FI_ETIMEDOUT) {
             if (timeout_us >= 0) {
@@ -77,20 +157,54 @@ static int cq_wait_tx(struct ErnicOfiWire *w, void *ctx, int timeout_us)
     }
 }
 
-static int cq_wait_rx(struct ErnicOfiWire *w, void *ctx, size_t expect_len,
-                      int timeout_us)
+static void cq_drain_one(struct fid_cq *cq)
+{
+    struct fi_cq_msg_entry entry;
+    ssize_t n;
+
+    if (!cq) {
+        return;
+    }
+    for (;;) {
+        n = fi_cq_read(cq, &entry, 1);
+        if (n == 1) {
+            continue;
+        }
+        if (n == -FI_EAGAIN) {
+            return;
+        }
+        if (n < 0) {
+            rdma_info_report("OFI: cq_drain: %zd %s", n, fi_strerror((int)-n));
+            return;
+        }
+    }
+}
+
+static void cq_drain(struct ErnicOfiWire *w)
+{
+    if (!w) {
+        return;
+    }
+    cq_drain_one(w->tx_cq);
+    cq_drain_one(w->rx_cq);
+}
+
+static int cq_wait_rx_len(struct ErnicOfiWire *w, void *ctx, size_t *out_len,
+                          size_t expect_len, int timeout_us)
 {
     struct fi_cq_msg_entry entry;
 
     for (;;) {
         int tw = timeout_us < 0 ? -1 : (timeout_us > 100000 ? 100000 : timeout_us);
-        ssize_t n = fi_cq_sread(w->cq, &entry, 1, NULL, tw);
+        ssize_t n = fi_cq_sread(w->rx_cq, &entry, 1, NULL, tw);
         if (n == 1) {
             if (entry.op_context != ctx) {
-                rdma_error_report("OFI: unexpected RX CQ context");
-                return -EIO;
+                continue;
             }
-            if ((size_t)entry.len != expect_len) {
+            if (out_len) {
+                *out_len = entry.len;
+            }
+            if (expect_len > 0 && (size_t)entry.len != expect_len) {
                 rdma_error_report("OFI: RX len %zu want %zu", (size_t)entry.len,
                                   expect_len);
                 return -EIO;
@@ -99,6 +213,12 @@ static int cq_wait_rx(struct ErnicOfiWire *w, void *ctx, size_t expect_len,
         }
         if (n == -FI_EAGAIN) {
             return -EAGAIN;
+        }
+        if (n == -FI_EAVAIL) {
+            if (cq_drain_err(w->rx_cq, "RX") == 0) {
+                continue;
+            }
+            return -EIO;
         }
         if (n == -FI_ETIMEDOUT) {
             if (timeout_us >= 0) {
@@ -117,10 +237,30 @@ static int cq_wait_rx(struct ErnicOfiWire *w, void *ctx, size_t expect_len,
     }
 }
 
+static int cq_wait_rx(struct ErnicOfiWire *w, void *ctx, size_t expect_len,
+                      int timeout_us)
+{
+    size_t got = 0;
+
+    return cq_wait_rx_len(w, ctx, expect_len > 0 ? &got : NULL, expect_len,
+                          timeout_us);
+}
+
 static int eq_wait(struct fid_eq *eq, uint32_t *event, void *buf, size_t blen,
                    int timeout_us)
 {
-    ssize_t n = fi_eq_sread(eq, event, buf, blen, timeout_us);
+    int timeout_ms;
+
+    if (timeout_us < 0) {
+        timeout_ms = -1;
+    } else {
+        timeout_ms = timeout_us / 1000;
+        if (timeout_ms == 0 && timeout_us > 0) {
+            timeout_ms = 1;
+        }
+    }
+
+    ssize_t n = fi_eq_sread(eq, event, buf, blen, timeout_ms, 0);
     if (n < 0) {
         if (n == -FI_EAGAIN || n == -FI_ETIMEDOUT) {
             return -EAGAIN;
@@ -131,15 +271,11 @@ static int eq_wait(struct fid_eq *eq, uint32_t *event, void *buf, size_t blen,
     return 0;
 }
 
-int ernic_ofi_wire_send_exact(ErnicOfiWire *w, const void *buf, size_t len)
+static int ofi_wire_send_exact_nl(ErnicOfiWire *w, const void *buf, size_t len)
 {
     void *ctx;
     int ret;
     int to_us = len > (1u << 20) ? 120000000 : 12000000;
-
-    if (!w || !buf) {
-        return -EINVAL;
-    }
 
     ctx = (void *)((uintptr_t)buf ^ (uintptr_t)len);
     ret = fi_send(w->ep, buf, len, NULL, 0, ctx);
@@ -147,18 +283,14 @@ int ernic_ofi_wire_send_exact(ErnicOfiWire *w, const void *buf, size_t len)
         rdma_error_report("OFI: fi_send %d %s", ret, fi_strerror(-ret));
         return -ret;
     }
-    ret = cq_wait_tx(w, ctx, to_us);
-    return ret;
+    return cq_wait_tx(w, ctx, to_us);
 }
 
-int ernic_ofi_wire_recv_exact(ErnicOfiWire *w, void *buf, size_t len, int timeout_us)
+static int ofi_wire_recv_exact_nl(ErnicOfiWire *w, void *buf, size_t len,
+                                  int timeout_us)
 {
     void *ctx;
     int ret;
-
-    if (!w || !buf) {
-        return -EINVAL;
-    }
 
     ctx = (void *)((uintptr_t)buf ^ ((uintptr_t)len << 1u));
     ret = fi_recv(w->ep, buf, len, NULL, 0, ctx);
@@ -166,12 +298,65 @@ int ernic_ofi_wire_recv_exact(ErnicOfiWire *w, void *buf, size_t len, int timeou
         rdma_error_report("OFI: fi_recv %d %s", ret, fi_strerror(-ret));
         return -ret;
     }
-    ret = cq_wait_rx(w, ctx, len, timeout_us);
+    ret = cq_wait_rx_len(w, ctx, NULL, len, timeout_us);
     if (ret == -ETIMEDOUT) {
         fi_cancel(&w->ep->fid, ctx);
         struct fi_cq_err_entry err;
-        (void)fi_cq_readerr(w->cq, &err, 0);
+        (void)fi_cq_readerr(w->rx_cq, &err, 0);
     }
+    return ret;
+}
+
+static int ofi_wire_recv_chunk_nl(ErnicOfiWire *w, void *buf, size_t buf_len,
+                                  size_t *got_len, int timeout_us)
+{
+    void *ctx;
+    int ret;
+
+    if (!got_len || buf_len == 0) {
+        return -EINVAL;
+    }
+
+    ctx = (void *)((uintptr_t)buf ^ ((uintptr_t)buf_len << 2u));
+    ret = fi_recv(w->ep, buf, buf_len, NULL, 0, ctx);
+    if (ret) {
+        rdma_error_report("OFI: fi_recv %d %s", ret, fi_strerror(-ret));
+        return -ret;
+    }
+    ret = cq_wait_rx_len(w, ctx, got_len, 0, timeout_us);
+    if (ret == -ETIMEDOUT) {
+        fi_cancel(&w->ep->fid, ctx);
+        struct fi_cq_err_entry err;
+        (void)fi_cq_readerr(w->rx_cq, &err, 0);
+    }
+    return ret;
+}
+
+int ernic_ofi_wire_send_exact(ErnicOfiWire *w, const void *buf, size_t len)
+{
+    int ret;
+
+    if (!w || !buf) {
+        return -EINVAL;
+    }
+
+    qemu_mutex_lock(&w->lock);
+    ret = ofi_wire_send_exact_nl(w, buf, len);
+    qemu_mutex_unlock(&w->lock);
+    return ret;
+}
+
+int ernic_ofi_wire_recv_exact(ErnicOfiWire *w, void *buf, size_t len, int timeout_us)
+{
+    int ret;
+
+    if (!w || !buf) {
+        return -EINVAL;
+    }
+
+    qemu_mutex_lock(&w->lock);
+    ret = ofi_wire_recv_exact_nl(w, buf, len, timeout_us);
+    qemu_mutex_unlock(&w->lock);
     return ret;
 }
 
@@ -179,7 +364,7 @@ ErnicOfiListener *ernic_ofi_listener_open(uint16_t port)
 {
     struct fi_info *hints = fi_allocinfo();
     struct fi_info *fi = NULL;
-    ErnicOfiListener *lst;
+    ErnicOfiListener *lst = NULL;
     char svc[32];
     int ret;
 
@@ -190,9 +375,12 @@ ErnicOfiListener *ernic_ofi_listener_open(uint16_t port)
     hints->ep_attr->type = FI_EP_MSG;
     hints->caps = FI_MSG;
     hints->addr_format = FI_SOCKADDR_IN;
+    /* Provider comes from FI_PROVIDER env (e.g. tcp); do not set prov_name
+     * to a string literal — fi_freeinfo(hints) would corrupt the heap. */
 
     snprintf(svc, sizeof(svc), "%u", port);
-    ret = fi_getinfo(fi_version(), NULL, svc, FI_SOURCE, hints, &fi);
+    ret = fi_getinfo(fi_version(), NULL, svc, FI_SOURCE | FI_SOCKADDR, hints,
+                     &fi);
     fi_freeinfo(hints);
     if (ret) {
         rdma_error_report("OFI: fi_getinfo(listen %u): %d %s", port, ret,
@@ -211,10 +399,6 @@ ErnicOfiListener *ernic_ofi_listener_open(uint16_t port)
     if (ret) {
         goto fail;
     }
-    ret = fi_domain(lst->fabric, fi, &lst->domain, NULL);
-    if (ret) {
-        goto fail;
-    }
 
     struct fi_eq_attr eq_attr = { .size = 256 };
     ret = fi_eq_open(lst->fabric, &eq_attr, &lst->eq, NULL);
@@ -222,7 +406,8 @@ ErnicOfiListener *ernic_ofi_listener_open(uint16_t port)
         goto fail;
     }
 
-    ret = fi_passive_ep(lst->domain, fi, &lst->pep, NULL);
+    /* Passive EP is bound to the fabric, not the domain (fi_setup). */
+    ret = fi_passive_ep(lst->fabric, fi, &lst->pep, NULL);
     if (ret) {
         goto fail;
     }
@@ -230,30 +415,43 @@ ErnicOfiListener *ernic_ofi_listener_open(uint16_t port)
     if (ret) {
         goto fail;
     }
+    if (fi->src_addr && fi->src_addrlen > 0) {
+        ret = fi_setname(&lst->pep->fid, fi->src_addr, fi->src_addrlen);
+        if (ret) {
+            goto fail;
+        }
+    }
     ret = fi_listen(lst->pep);
     if (ret) {
         goto fail;
     }
 
+    /* Domain is created per accepted connection from cm_entry.info. */
     rdma_info_report("OFI: listening on port %u", port);
     return lst;
 
 fail:
     rdma_error_report("OFI: listener failed: %d %s", ret, fi_strerror(-ret));
-    if (lst->pep) {
-        fi_close(&lst->pep->fid);
+    if (lst) {
+        if (lst->pep) {
+            fi_close(&lst->pep->fid);
+        }
+        if (lst->eq) {
+            fi_close(&lst->eq->fid);
+        }
+        if (lst->domain) {
+            fi_close(&lst->domain->fid);
+        }
+        if (lst->fabric) {
+            fi_close(&lst->fabric->fid);
+        }
+        if (lst->pep_info) {
+            fi_freeinfo(lst->pep_info);
+        }
+        free(lst);
+    } else if (fi) {
+        fi_freeinfo(fi);
     }
-    if (lst->eq) {
-        fi_close(&lst->eq->fid);
-    }
-    if (lst->domain) {
-        fi_close(&lst->domain->fid);
-    }
-    if (lst->fabric) {
-        fi_close(&lst->fabric->fid);
-    }
-    fi_freeinfo(fi);
-    free(lst);
     return NULL;
 }
 
@@ -286,7 +484,6 @@ ErnicOfiWire *ernic_ofi_listener_accept(ErnicOfiListener *lst, int timeout_us)
     struct fi_eq_cm_entry cm_entry;
     ErnicOfiWire *w = NULL;
     struct fid_ep *ep = NULL;
-    struct fid_cq *cq = NULL;
     int ret;
 
     if (!lst) {
@@ -305,32 +502,41 @@ ErnicOfiWire *ernic_ofi_listener_accept(ErnicOfiListener *lst, int timeout_us)
 
     w = calloc(1, sizeof(*w));
     if (!w) {
+        if (cm_entry.info) {
+            fi_freeinfo(cm_entry.info);
+        }
         return NULL;
     }
     w->fabric = lst->fabric;
-    w->domain = lst->domain;
     w->eq = lst->eq;
     w->owns_fabric = false;
 
-    ret = fi_endpoint(lst->domain, cm_entry.info, &ep, NULL);
+    ret = fi_domain(lst->fabric, cm_entry.info, &w->domain, NULL);
     if (ret) {
         free(w);
+        if (cm_entry.info) {
+            fi_freeinfo(cm_entry.info);
+        }
+        return NULL;
+    }
+
+    ret = fi_endpoint(w->domain, cm_entry.info, &ep, NULL);
+    if (ret) {
+        fi_close(&w->domain->fid);
+        free(w);
+        if (cm_entry.info) {
+            fi_freeinfo(cm_entry.info);
+        }
         return NULL;
     }
     w->ep = ep;
 
-    struct fi_cq_attr cq_attr = { .size = ERNIC_OFI_CQ_SZ };
-    ret = fi_cq_open(lst->domain, &cq_attr, &cq, NULL);
+    ret = ofi_open_cqs(w->domain, &w->tx_cq, &w->rx_cq);
     if (ret) {
         goto fail_ep;
     }
-    w->cq = cq;
 
-    ret = fi_ep_bind(ep, &cq->fid, FI_TRANSMIT | FI_RECV);
-    if (ret) {
-        goto fail;
-    }
-    ret = fi_ep_bind(ep, &lst->eq->fid, 0);
+    ret = ofi_bind_ep(ep, w->tx_cq, w->rx_cq, lst->eq);
     if (ret) {
         goto fail;
     }
@@ -350,17 +556,38 @@ ErnicOfiWire *ernic_ofi_listener_accept(ErnicOfiListener *lst, int timeout_us)
         goto fail;
     }
 
+    if (cm_entry.info) {
+        fi_freeinfo(cm_entry.info);
+    }
+
+    cq_drain(w);
+    ofi_wire_lock_init(w);
+
     rdma_info_report("OFI: accepted connection");
     return w;
 
 fail:
     rdma_error_report("OFI: accept failed: %d %s", ret, fi_strerror(-ret));
+    if (cm_entry.info) {
+        fi_freeinfo(cm_entry.info);
+    }
 fail_ep:
-    if (cq) {
-        fi_close(&cq->fid);
+    if (w) {
+        if (w->tx_cq) {
+            fi_close(&w->tx_cq->fid);
+            w->tx_cq = NULL;
+        }
+        if (w->rx_cq) {
+            fi_close(&w->rx_cq->fid);
+            w->rx_cq = NULL;
+        }
     }
     if (ep) {
         fi_close(&ep->fid);
+    }
+    if (w && w->domain) {
+        fi_close(&w->domain->fid);
+        w->domain = NULL;
     }
     free(w);
     return NULL;
@@ -383,7 +610,7 @@ ErnicOfiWire *ernic_ofi_wire_connect(const char *host, uint16_t port)
     hints->addr_format = FI_SOCKADDR_IN;
 
     snprintf(svc, sizeof(svc), "%u", port);
-    ret = fi_getinfo(fi_version(), host, svc, 0, hints, &fi);
+    ret = fi_getinfo(fi_version(), host, svc, FI_SOCKADDR, hints, &fi);
     fi_freeinfo(hints);
     if (ret) {
         rdma_error_report("OFI: fi_getinfo(%s:%u): %d %s", host, port, ret,
@@ -418,17 +645,12 @@ ErnicOfiWire *ernic_ofi_wire_connect(const char *host, uint16_t port)
         goto fail;
     }
 
-    struct fi_cq_attr cq_attr = { .size = ERNIC_OFI_CQ_SZ };
-    ret = fi_cq_open(w->domain, &cq_attr, &w->cq, NULL);
+    ret = ofi_open_cqs(w->domain, &w->tx_cq, &w->rx_cq);
     if (ret) {
         goto fail;
     }
 
-    ret = fi_ep_bind(w->ep, &w->cq->fid, FI_TRANSMIT | FI_RECV);
-    if (ret) {
-        goto fail;
-    }
-    ret = fi_ep_bind(w->ep, &w->eq->fid, 0);
+    ret = ofi_bind_ep(w->ep, w->tx_cq, w->rx_cq, w->eq);
     if (ret) {
         goto fail;
     }
@@ -451,9 +673,11 @@ ErnicOfiWire *ernic_ofi_wire_connect(const char *host, uint16_t port)
         goto fail;
     }
 
-    fi_freeinfo(fi);
-    fi = NULL;
+    cq_drain(w);
+    ofi_wire_lock_init(w);
+
     rdma_info_report("OFI: connected to %s:%u", host, port);
+    fi_freeinfo(fi);
     return w;
 
 fail:
@@ -469,13 +693,18 @@ void ernic_ofi_wire_close(ErnicOfiWire *w)
     if (!w) {
         return;
     }
+    ofi_wire_lock_fini(w);
     if (w->ep) {
         fi_close(&w->ep->fid);
         w->ep = NULL;
     }
-    if (w->cq) {
-        fi_close(&w->cq->fid);
-        w->cq = NULL;
+    if (w->tx_cq) {
+        fi_close(&w->tx_cq->fid);
+        w->tx_cq = NULL;
+    }
+    if (w->rx_cq) {
+        fi_close(&w->rx_cq->fid);
+        w->rx_cq = NULL;
     }
     if (w->eq && w->owns_fabric) {
         fi_close(&w->eq->fid);
@@ -501,39 +730,89 @@ int ernic_ofi_wire_send_framed(ErnicOfiWire *w, const TcpMsgHeader *hdr_net,
         return -EINVAL;
     }
 
-    ret = ernic_ofi_wire_send_exact(w, hdr_net, sizeof(*hdr_net));
-    if (ret) {
-        return ret;
+    /*
+     * FI_MSG delivers one fi_send as one fi_recv.  The mesh protocol
+     * uses a fixed header recv then payload recv; hold the wire lock
+     * across both sends so no other message interleaves on this EP.
+     */
+    qemu_mutex_lock(&w->lock);
+    ret = ofi_wire_send_exact_nl(w, hdr_net, sizeof(*hdr_net));
+    if (!ret && payload_len > 0 && payload) {
+        ret = ofi_wire_send_exact_nl(w, payload, payload_len);
     }
-    if (payload_len > 0 && payload) {
-        ret = ernic_ofi_wire_send_exact(w, payload, payload_len);
-    }
+    qemu_mutex_unlock(&w->lock);
     return ret;
+}
+
+int ernic_ofi_wire_recv_framed(ErnicOfiWire *w, TcpMsgHeader *hdr_net,
+                               void **payload_out, int hdr_timeout_us)
+{
+    uint8_t buf[ERNIC_OFI_FRAMED_MAX];
+    uint32_t plen;
+    size_t got;
+    size_t hdr_sz = sizeof(*hdr_net);
+    size_t in_chunk;
+    int ret;
+
+    if (!w || !hdr_net || !payload_out) {
+        return -EINVAL;
+    }
+    *payload_out = NULL;
+
+    qemu_mutex_lock(&w->lock);
+    ret = ofi_wire_recv_chunk_nl(w, buf, sizeof(buf), &got, hdr_timeout_us);
+    if (ret) {
+        qemu_mutex_unlock(&w->lock);
+        return ret == -ETIMEDOUT ? -EAGAIN : ret;
+    }
+    if (got < hdr_sz) {
+        qemu_mutex_unlock(&w->lock);
+        rdma_error_report("OFI: short mesh read %zu < %zu", got, hdr_sz);
+        return -EIO;
+    }
+
+    memcpy(hdr_net, buf, hdr_sz);
+    plen = ntohl(hdr_net->msg_len);
+    in_chunk = got > hdr_sz ? got - hdr_sz : 0;
+
+    if (plen > 0) {
+        void *payload = malloc(plen);
+        if (!payload) {
+            qemu_mutex_unlock(&w->lock);
+            return -ENOMEM;
+        }
+        if (in_chunk >= plen) {
+            memcpy(payload, buf + hdr_sz, plen);
+        } else {
+            if (in_chunk > 0) {
+                memcpy(payload, buf + hdr_sz, in_chunk);
+            }
+            ret = ofi_wire_recv_exact_nl(w, (char *)payload + in_chunk,
+                                         plen - in_chunk, 600000000);
+            if (ret) {
+                free(payload);
+                qemu_mutex_unlock(&w->lock);
+                return ret == -ETIMEDOUT ? -EAGAIN : ret;
+            }
+        }
+        *payload_out = payload;
+    } else if (in_chunk > 0) {
+        rdma_warn_report("OFI: %zu trailing bytes after zero-length msg",
+                         in_chunk);
+    }
+    qemu_mutex_unlock(&w->lock);
+    return 0;
+}
+
+void ernic_ofi_wire_free_framed_payload(void *payload)
+{
+    free(payload);
 }
 
 int ernic_ofi_wire_send_eth_nonblock(ErnicOfiWire *w, const TcpMsgHeader *hdr_net,
                                      const void *payload, size_t payload_len)
 {
-    uint8_t buf[sizeof(TcpMsgHeader) + 2048];
-    void *ctx = (void *)((uintptr_t)buf ^ 0xfeedu);
-    int ret;
-
-    if (!w || !hdr_net || payload_len > 2048u) {
-        return -EINVAL;
-    }
-
-    memcpy(buf, hdr_net, sizeof(TcpMsgHeader));
-    memcpy(buf + sizeof(TcpMsgHeader), payload, payload_len);
-
-    ret = fi_send(w->ep, buf, sizeof(TcpMsgHeader) + payload_len, NULL, 0, ctx);
-    if (ret == -FI_EAGAIN) {
-        return -EAGAIN;
-    }
-    if (ret) {
-        return -ret;
-    }
-    ret = cq_wait_tx(w, ctx, 2000);
-    return ret ? -EAGAIN : 0;
+    return ernic_ofi_wire_send_framed(w, hdr_net, payload, payload_len);
 }
 
 #else /* !ERNIC_HAVE_LIBFABRIC */
@@ -600,6 +879,21 @@ int ernic_ofi_wire_send_framed(ErnicOfiWire *w, const TcpMsgHeader *hdr_net,
     (void)payload;
     (void)payload_len;
     return -ENOSYS;
+}
+
+int ernic_ofi_wire_recv_framed(ErnicOfiWire *w, TcpMsgHeader *hdr_net,
+                               void **payload_out, int hdr_timeout_us)
+{
+    (void)w;
+    (void)hdr_net;
+    (void)payload_out;
+    (void)hdr_timeout_us;
+    return -ENOSYS;
+}
+
+void ernic_ofi_wire_free_framed_payload(void *payload)
+{
+    free(payload);
 }
 
 int ernic_ofi_wire_send_eth_nonblock(ErnicOfiWire *w, const TcpMsgHeader *hdr_net,

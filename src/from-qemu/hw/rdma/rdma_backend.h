@@ -68,6 +68,11 @@ void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
 int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
                                size_t len);
 
+/* Worker DHCP relay to manager (tcp and ofi-tcp mesh) */
+size_t tcp_backend_dhcp_forward(RdmaBackendDev *backend_dev,
+                                const void *request, size_t request_len,
+                                void *response, size_t max_response_len);
+
 /* Legacy verbs backend init (for compatibility) */
 int rdma_backend_init(RdmaBackendDev *backend_dev, PCIDevice *pdev,
                       RdmaDeviceResources *rdma_dev_res,

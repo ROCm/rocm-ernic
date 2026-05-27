@@ -32,6 +32,7 @@ DEFAULTS = {
     "ERNIC_RUN_DIR": "/run/rocm-ernic",
     "ERNIC_LOG_DIR": "/var/log/rocm-ernic",
     "ERNIC_INSTANCES": "4",
+    "ERNIC_MESH_BACKEND": "tcp",
     "ERNIC_TCP_PORT": "6320",
     "ERNIC_MANAGER_IP": "127.0.0.1",
     "ERNIC_VERBOSE": "false",
@@ -53,6 +54,18 @@ DEFAULTS = {
     "ERNIC_VM_BACKING": "",
     "ERNIC_VM_MCAST_GROUP": "",
 }
+
+
+def mesh_backend_uri(role, cfg=None):
+    """Build --backend URI for manager or worker mesh role."""
+    c = cfg if cfg is not None else CFG
+    mesh = (c.get("ERNIC_MESH_BACKEND") or "tcp").strip()
+    if role == "manager":
+        return f"{mesh}:manager:listen:{c['ERNIC_TCP_PORT']}"
+    return (
+        f"{mesh}:worker:{c['ERNIC_MANAGER_IP']}:"
+        f"{c['ERNIC_TCP_PORT']}"
+    )
 
 
 def load_env():
@@ -1269,13 +1282,7 @@ def cmd_hot_reload(args):
     if CFG["ERNIC_VERBOSE"] == "true":
         verbose_flag = "--verbose"
 
-    backend = (
-        f"tcp:manager:listen:{CFG['ERNIC_TCP_PORT']}"
-        if inst["role"] == "manager"
-        else f"tcp:worker:"
-             f"{CFG['ERNIC_MANAGER_IP']}:"
-             f"{CFG['ERNIC_TCP_PORT']}"
-    )
+    backend = mesh_backend_uri(inst["role"])
 
     stats = os.path.join(RUN_DIR, f"{inst['id']}.stats")
     logfile = os.path.join(

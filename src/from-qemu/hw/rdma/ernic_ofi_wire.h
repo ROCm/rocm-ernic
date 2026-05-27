@@ -30,6 +30,11 @@ int ernic_ofi_wire_recv_exact(ErnicOfiWire *w, void *buf, size_t len, int timeou
 int ernic_ofi_wire_send_framed(ErnicOfiWire *w, const TcpMsgHeader *hdr_net,
                                const void *payload, size_t payload_len);
 
+int ernic_ofi_wire_recv_framed(ErnicOfiWire *w, TcpMsgHeader *hdr_net,
+                               void **payload_out, int hdr_timeout_us);
+
+void ernic_ofi_wire_free_framed_payload(void *payload);
+
 int ernic_ofi_wire_send_eth_nonblock(ErnicOfiWire *w,
                                      const TcpMsgHeader *hdr_net,
                                      const void *payload, size_t payload_len);

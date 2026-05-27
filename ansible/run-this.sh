@@ -4,9 +4,16 @@
 # SPDX-License-Identifier: MIT
 #
 
-ansible-playbook site.yml \
+# Ansible fails if LANG points at an ungenerated locale (e.g. en_US.UTF-8).
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+
+if ! ansible-playbook site.yml \
     --tags host-setup,vm-create,guest-setup \
-    -e ernic_force_vm_cleanup=true
+    -e ernic_force_vm_cleanup=true; then
+  echo "=== Setup failed; fix errors above before running perf loop ==="
+  exit 1
+fi
 
 PASS=0
 while ansible-playbook site.yml \

@@ -131,9 +131,8 @@ bytes with libfabric ``FI_EP_MSG`` over the ``tcp`` provider instead
 of BSD ``send``/``recv``.  Build with ``libfabric-dev`` present so
 CMake defines ``ERNIC_HAVE_LIBFABRIC``; use ``FI_PROVIDER=tcp`` and
 ``fi_info -p tcp`` to confirm the provider on a host.  Worker DHCP relay
-via ``dhcp_proxy`` still requires the BSD ``tcp`` backend (socket fd); on
-``ofi-tcp`` a one-time warning is logged until the proxy is wired to the
-mesh protocol.
+uses ``tcp_backend_dhcp_forward()`` on the manager mesh connection for
+both ``tcp`` and ``ofi-tcp``.
 
 Userspace Data Path
 """""""""""""""""""

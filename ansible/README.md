@@ -10,6 +10,8 @@ perftest sanity tests.
 
 - Ubuntu 24.04 or 26.04 host
 - Ansible 2.16+ (`sudo apt install ansible`)
+- `libfabric-dev` when using the default `ofi-tcp` mesh backend
+  (installed automatically by `host-setup.yml`)
 - QEMU 10.1+ installed (default `/opt/qemu-v10.1.2/`)
 - The [qemu-minimal](https://github.com/sbates130272/qemu-minimal)
   checkout at `~/Projects/qemu-minimal`
@@ -57,6 +59,9 @@ ansible-playbook playbooks/stress-tests.yml
 Override any default in `group_vars/all.yml` via `-e`:
 
 ```bash
+# BSD socket mesh instead of libfabric ofi-tcp
+ansible-playbook site.yml -e ernic_mesh_backend=tcp
+
 # Use 4 instances instead of 2
 ansible-playbook site.yml -e ernic_instances=4
 

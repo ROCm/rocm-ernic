@@ -27,6 +27,7 @@ ERNIC_BIN="${ERNIC_BIN:-/usr/local/bin/rocm-ernic}"
 ERNIC_RUN_DIR="${ERNIC_RUN_DIR:-/run/rocm-ernic}"
 ERNIC_LOG_DIR="${ERNIC_LOG_DIR:-/var/log/rocm-ernic}"
 ERNIC_INSTANCES="${ERNIC_INSTANCES:-4}"
+ERNIC_MESH_BACKEND="${ERNIC_MESH_BACKEND:-tcp}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6320}"
 ERNIC_MANAGER_IP="${ERNIC_MANAGER_IP:-127.0.0.1}"
 ERNIC_VERBOSE="${ERNIC_VERBOSE:-false}"
@@ -170,11 +171,12 @@ start_instance() {
         verbose_flag="--verbose"
     fi
 
+    local mesh="${ERNIC_MESH_BACKEND}"
     local backend
     if [ "${role}" = "manager" ]; then
-        backend="tcp:manager:listen:${ERNIC_TCP_PORT}"
+        backend="${mesh}:manager:listen:${ERNIC_TCP_PORT}"
     else
-        backend="tcp:worker:${ERNIC_MANAGER_IP}:${ERNIC_TCP_PORT}"
+        backend="${mesh}:worker:${ERNIC_MANAGER_IP}:${ERNIC_TCP_PORT}"
     fi
 
     rm -f "${sock}"

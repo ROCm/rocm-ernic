@@ -612,58 +612,17 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
                         len - dhcp_offset, &dhcp_resp, sizeof(dhcp_resp));
                     rdma_info_report("DHCP: Server response: len=%zu",
                                      resp_len);
+                } else if (RDMA_BACKEND_IS_TCP_MESH(
+                               dev->backend_dev.backend_type)) {
+                    /* Worker mesh (tcp or ofi-tcp): relay via manager */
+                    resp_len = tcp_backend_dhcp_forward(
+                        &dev->backend_dev, dhcp_req, len - dhcp_offset,
+                        &dhcp_resp, sizeof(dhcp_resp));
                 } else if (dev->dhcp_proxy) {
-                    /* TCP worker mode: forward to manager via proxy */
+                    /* Legacy socket-based proxy */
                     resp_len = dhcp_proxy_forward_request(
                         (DhcpProxy *)dev->dhcp_proxy, dhcp_req,
                         len - dhcp_offset, &dhcp_resp, sizeof(dhcp_resp));
-                } else if (RDMA_BACKEND_IS_TCP_MESH(dev->backend_dev.backend_type)) {
-                    /* TCP worker mode: try to initialize proxy if manager
-                     * connection is ready */
-                    /* Forward declare TcpBackendPrivate structure */
-                    typedef struct {
-                        void *backend_dev;
-                        void *manager_conn;
-                    } TcpBackendPrivateStub;
-
-                    TcpBackendPrivateStub *tcp_priv =
-                        (TcpBackendPrivateStub *)
-                            dev->backend_dev.backend_private;
-
-                    /* Layout must match TcpConnection (sockfd, ofi, …) */
-                    typedef struct {
-                        int sockfd;
-                        void *ofi;
-                    } TcpConnectionStub;
-
-                    if (tcp_priv && tcp_priv->manager_conn) {
-                        TcpConnectionStub *manager_conn =
-                            (TcpConnectionStub *)tcp_priv->manager_conn;
-                        if (manager_conn->sockfd >= 0) {
-                            uint32_t server_ip = inet_addr("192.168.100.1");
-                            dev->dhcp_proxy = dhcp_proxy_create(
-                                manager_conn->sockfd, server_ip);
-                            if (dev->dhcp_proxy) {
-                                rdma_info_report(
-                                    "DHCP proxy initialized for TCP worker "
-                                    "mode");
-                                resp_len = dhcp_proxy_forward_request(
-                                    (DhcpProxy *)dev->dhcp_proxy, dhcp_req,
-                                    len - dhcp_offset, &dhcp_resp,
-                                    sizeof(dhcp_resp));
-                            }
-                        } else if (manager_conn->ofi != NULL) {
-                            static int ofi_dhcp_warned;
-
-                            if (!ofi_dhcp_warned) {
-                                ofi_dhcp_warned = 1;
-                                rdma_warn_report(
-                                    "DHCP over ofi-tcp is not supported yet "
-                                    "(dhcp_proxy needs a socket); use "
-                                    "tcp:worker for DHCP relay.");
-                            }
-                        }
-                    }
                 }
 
                 if (resp_len > 0) {

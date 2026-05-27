@@ -21,6 +21,13 @@ ernic_tcp_port: 6320
 ernic_manager_ip: 127.0.0.1
 ernic_verbose: "false"
 
+# Mesh transport for manager/worker instances: tcp (BSD sockets) or
+# ofi-tcp (libfabric FI_EP_MSG / tcp provider).  Requires libfabric-dev
+# at build time when ofi-tcp; see host-setup.yml.
+ernic_mesh_backend: ofi-tcp
+# FI_PROVIDER for rocm-ernic when ernic_mesh_backend is ofi-tcp.
+ernic_fi_provider: tcp
+
 # ── Driver distribution ─────────────────────────
 ernic_driver_source: /usr/share/rocm-ernic/driver
 ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
@@ -29,7 +36,7 @@ ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
 ernic_vm_image_dir: /opt/qemu-images
-ernic_vm_name_base: rocm-ernic-april-16-vm
+ernic_vm_name_base: rocm-ernic-may-26-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
 ernic_vm_ssh_user: ubuntu

@@ -14,6 +14,34 @@
 
   tasks:
 
+    # ── ofi-tcp build/runtime deps ───────────────────
+    - name: Install libfabric dev package for ofi-tcp mesh
+      ansible.builtin.apt:
+        name: libfabric-dev
+        state: present
+        update_cache: true
+      become: true
+      when: (ernic_mesh_backend | default('tcp')) == 'ofi-tcp'
+
+    - name: Verify libfabric pkg-config for ofi-tcp
+      ansible.builtin.command:
+        argv:
+          - pkg-config
+          - --exists
+          - libfabric
+      register: libfabric_pkg
+      changed_when: false
+      when: (ernic_mesh_backend | default('tcp')) == 'ofi-tcp'
+
+    - name: Fail when libfabric is missing for ofi-tcp
+      ansible.builtin.fail:
+        msg: >-
+          ernic_mesh_backend is ofi-tcp but libfabric was not found.
+          Install libfabric-dev (apt) and re-run host-setup.
+      when:
+        - (ernic_mesh_backend | default('tcp')) == 'ofi-tcp'
+        - libfabric_pkg.rc | default(1) != 0
+
     # ── Build ────────────────────────────────────────
     - name: Configure the CMake build
       ansible.builtin.command:
@@ -29,6 +57,30 @@
         chdir: "{{ ernic_project_root }}"
         creates: "{{ ernic_build_dir }}/build.ninja"
       when: ernic_build | bool
+
+    - name: Stat existing CMake build
+      ansible.builtin.stat:
+        path: "{{ ernic_build_dir }}/build.ninja"
+      register: ernic_cmake_build
+      when: ernic_build | bool
+
+    - name: Reconfigure CMake for ofi-tcp (enable libfabric)
+      ansible.builtin.command:
+        argv:
+          - cmake
+          - -B
+          - "{{ ernic_build_dir }}"
+          - -G
+          - Ninja
+          - "-DCMAKE_BUILD_TYPE={{ ernic_build_type }}"
+          - -DCMAKE_INSTALL_PREFIX=/usr/local
+          - -DERNIC_INSTALL_SERVICE=ON
+        chdir: "{{ ernic_project_root }}"
+      changed_when: true
+      when:
+        - ernic_build | bool
+        - (ernic_mesh_backend | default('tcp')) == 'ofi-tcp'
+        - ernic_cmake_build.stat.exists | default(false)
 
     - name: Build the project
       ansible.builtin.command:
@@ -167,6 +219,18 @@
     - name: Display service status
       ansible.builtin.debug:
         var: ernic_status.stdout_lines
+
+    - name: Verify ofi-tcp backend in manager log
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -q
+          - "Backend: ofi-tcp:manager:listen:{{ ernic_tcp_port }}"
+          - "{{ ernic_log_dir }}/1.log"
+      register: ofi_tcp_log_check
+      changed_when: false
+      failed_when: ofi_tcp_log_check.rc != 0
+      when: (ernic_mesh_backend | default('tcp')) == 'ofi-tcp'
 
     # ── GPU passthrough: bind GPUs to vfio-pci ──────
     - name: Collect GPU BDF addresses
