@@ -12,7 +12,7 @@
 #
 # Included from the top-level CMakeLists.txt.
 
-set(RDMA_CORE_VERSION "62.0" CACHE STRING
+set(RDMA_CORE_VERSION "64.0" CACHE STRING
     "Upstream rdma-core version to download")
 
 option(ERNIC_RDMA_CORE_BUILD

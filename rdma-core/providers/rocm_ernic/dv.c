@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Direct Verbs API for the rocm_ernic rdma-core provider.
- * Written against rdma-core v62.0 APIs.
+ * Written against rdma-core v64.0 APIs.
  */
 
 #include <stdio.h>

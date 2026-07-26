@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Standard verbs for the rocm_ernic provider.
- * Written against rdma-core v62.0 APIs.
+ * Written against rdma-core v64.0 APIs.
  */
 
 #include <stdio.h>
