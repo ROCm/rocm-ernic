@@ -15,7 +15,7 @@
 #
 # Environment:
 #   RDMA_CORE_VERSION - upstream version
-#                       (default 62.0)
+#                       (default 64.0)
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ if [ "${4:-}" = "--build-only" ]; then
   BUILD_ONLY=true
 fi
 
-VERSION="${RDMA_CORE_VERSION:-62.0}"
+VERSION="${RDMA_CORE_VERSION:-64.0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"

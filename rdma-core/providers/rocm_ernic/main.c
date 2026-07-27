@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * rdma-core provider entry point for rocm_ernic.
- * Compatible with rdma-core v50+ and v62+ APIs.
+ * Compatible with rdma-core v50+ and v64+ APIs.
  */
 
 #include <stdio.h>
