@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 name: Performance Benchmark
 
 on:
@@ -14,6 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
+      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: >-
         sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
 
@@ -71,6 +73,7 @@ jobs:
       run: |
         SIZES="4096 8192 16384 32768 65536 131072"
         SIZES="$SIZES 262144 524288 1048576 2097152"
+        # rocep1s0 is the RDMA device name as seen inside the CI container image
         echo "size,send_bw,write_bw,read_bw" > bw.csv
         for sz in $SIZES; do
           sbw=$(ib_send_bw -s $sz -n 100 \

@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: MIT
 name: System Tests
 
 on:
   pull_request:
-    branches: [ main, dev/stephen/tcp-ip-backend ]
+    branches: [ main ]
   workflow_dispatch:
 
 # Container image with QEMU and libvfio-user pre-built
@@ -15,12 +16,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
+      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Display environment
       run: |
         echo "=== Environment ==="
@@ -57,14 +59,14 @@ jobs:
         
         # Extract values using jq or python
         if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
           VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
           SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
           SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
           SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
         else
           # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'batesste'))")
+          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
           VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
           SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
           SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
@@ -757,8 +759,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
+      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -830,14 +833,14 @@ jobs:
         
         # Extract values using jq or python
         if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
           VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
           SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
           SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
           SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
         else
           # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'batesste'))")
+          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
           VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
           SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
           SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
@@ -897,7 +900,7 @@ jobs:
         VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
         
         # Create second VM disk name by inserting .2 before .qcow2 extension
-        # e.g., /output/batesste-ci-vm.qcow2 -> /output/batesste-ci-vm.2.qcow2
+        # e.g., /output/ci-vm.qcow2 -> /output/ci-vm.2.qcow2
         VM_DISK_DIR=$(dirname "$VM_DISK_1")
         VM_DISK_BASENAME=$(basename "$VM_DISK_1")
         VM_DISK_NAME="${VM_DISK_BASENAME%.qcow2}"
