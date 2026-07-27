@@ -389,6 +389,27 @@ jobs:
         }
         echo "✓ Driver source copied to VM"
     
+    - name: Install kernel-version-specific packages in VM
+      shell: bash
+      run: |
+        echo "=== Installing kernel headers and modules-extra in VM ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        set -e
+        KVER=$(uname -r)
+        for i in 1 2 3; do
+          sudo apt-get update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+        done
+        for i in 1 2 3 4 5; do
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+          [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
+          echo "apt-get install retry $i/5"; sleep 10
+        done
+        echo "✓ Kernel packages installed for ${KVER}"
+        EOFVM
+
     - name: Copy rdma-core provider to VM
       shell: bash
       run: |
@@ -1482,6 +1503,17 @@ jobs:
         cat > /tmp/vm-setup.sh << 'SCRIPT'
         #!/bin/bash
         set -e
+        KVER=$(uname -r)
+        for i in 1 2 3; do
+          sudo apt-get update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+        done
+        for i in 1 2 3 4 5; do
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+          [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
+          echo "apt-get install retry $i/5"; sleep 10
+        done
+        echo "Kernel packages installed for ${KVER}"
         BUILD_DIR="/tmp/rdma-core-build"
         SRC_DIR="${BUILD_DIR}/rdma-core-62.0"
         mkdir -p "${BUILD_DIR}"
