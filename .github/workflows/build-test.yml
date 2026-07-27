@@ -27,6 +27,13 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
       
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ matrix.os }}-build-test-${{ hashFiles('.github/workflows/build-test.yml') }}
+          restore-keys: apt-${{ matrix.os }}-build-test-
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -41,8 +48,19 @@ jobs:
             libglib2.0-dev \
             libjson-c-dev \
             libcmocka-dev
-      
+
+      - name: Cache libvfio-user build
+        id: cache-libvfio-user
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/lib/x86_64-linux-gnu/libvfio-user*
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+            /usr/include/vfio-user
+          key: libvfio-user-20e9803-${{ matrix.os }}
+
       - name: Clone and build libvfio-user
+        if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
           # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
           # This version includes the vfu_setup_device_dma() max_regions
@@ -54,6 +72,10 @@ jobs:
           ninja -C build
           sudo ninja -C build install
           sudo ldconfig
+
+      - name: Reload ldconfig after cache restore
+        if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+        run: sudo ldconfig
       
       - name: Configure project with CMake
         run: |
