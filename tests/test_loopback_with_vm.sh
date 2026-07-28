@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # Loopback backend testing with VM from Docker image
 # This script runs loopback backend tests using a VM extracted from a Docker image
 #

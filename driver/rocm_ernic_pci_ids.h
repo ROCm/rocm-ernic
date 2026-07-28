@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * PCI IDs for ROCm ERNIC. Must match src/rocm_ernic_server.c
  * (vfu_pci_set_id). AMD vendor ID; device ID 0x8000 for ROCm ERNIC.

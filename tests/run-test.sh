@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 #
 # Test runner for rocm-ernic
 #

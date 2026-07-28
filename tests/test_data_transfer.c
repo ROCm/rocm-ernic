@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /**
  * Comprehensive Data Transfer Test
  *
@@ -70,14 +71,29 @@ static int setup_resources(struct test_context *ctx)
         return -2;                      /* Special code to indicate skip */
     }
 
-    /* Open first device */
-    ctx->context = ibv_open_device(dev_list[0]);
+    /* Find a rocm_ernic device; skip if none present */
+    struct ibv_device *target = NULL;
+    for (int i = 0; i < num_devices; i++) {
+        const char *name = ibv_get_device_name(dev_list[i]);
+        if (name && (strncmp(name, "rocm_ernic", 10) == 0 ||
+                     strncmp(name, "rocep", 5) == 0)) {
+            target = dev_list[i];
+            break;
+        }
+    }
+    if (!target) {
+        fprintf(stderr, "No rocm_ernic device found - skipping test\n");
+        ibv_free_device_list(dev_list);
+        return -2;
+    }
+
+    ctx->context = ibv_open_device(target);
     if (!ctx->context) {
         fprintf(stderr, "Failed to open device\n");
         ibv_free_device_list(dev_list);
         return -1;
     }
-    printf("✓ Opened device: %s\n", ibv_get_device_name(dev_list[0]));
+    printf("✓ Opened device: %s\n", ibv_get_device_name(target));
     ibv_free_device_list(dev_list);
 
     /* Allocate PD */

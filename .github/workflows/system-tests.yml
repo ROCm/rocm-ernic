@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: MIT
 name: System Tests
 
 on:
   pull_request:
-    branches: [ main, dev/stephen/tcp-ip-backend ]
+    branches: [ main ]
   workflow_dispatch:
 
 # Container image with QEMU and libvfio-user pre-built
@@ -15,12 +16,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
+      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Display environment
       run: |
         echo "=== Environment ==="
@@ -57,14 +59,14 @@ jobs:
         
         # Extract values using jq or python
         if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
           VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
           SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
           SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
           SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
         else
           # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'batesste'))")
+          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
           VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
           SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
           SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
@@ -130,8 +132,19 @@ jobs:
           libglib2.0-dev \
           libjson-c-dev \
           libcmocka-dev
-    
+
+    - name: Cache libvfio-user build
+      id: cache-libvfio-user
+      uses: actions/cache@v4
+      with:
+        path: |
+          /usr/local/lib/x86_64-linux-gnu/libvfio-user*
+          /usr/local/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+          /usr/local/include/vfio-user
+        key: libvfio-user-20e9803-ubuntu-24.04-container
+
     - name: Upgrade libvfio-user
+      if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
       run: |
         # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
         # This version includes the vfu_setup_device_dma() max_regions
@@ -143,7 +156,24 @@ jobs:
         ninja -C build
         ninja -C build install
         ldconfig
-    
+
+    - name: Reload ldconfig after cache restore
+      if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+      run: ldconfig
+
+    - name: Cache rdma-core tarball
+      uses: actions/cache@v4
+      with:
+        path: /tmp/rdma-core-62.0.tar.gz
+        key: rdma-core-tarball-62.0
+
+    - name: Download rdma-core tarball
+      run: |
+        if [ ! -f /tmp/rdma-core-62.0.tar.gz ]; then
+          wget -q -O /tmp/rdma-core-62.0.tar.gz \
+            https://github.com/linux-rdma/rdma-core/releases/download/v62.0/rdma-core-62.0.tar.gz
+        fi
+
     - name: Build rocm-ernic server
       run: |
         echo "=== Building rocm-ernic server ==="
@@ -359,60 +389,25 @@ jobs:
         }
         echo "✓ Driver source copied to VM"
     
-    - name: Install necessary packages inside VM
+    - name: Install kernel-version-specific packages in VM
       shell: bash
       run: |
-        echo "=== Installing necessary packages inside the VM ==="
+        echo "=== Installing kernel headers and modules-extra in VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
-
-        # Stop unattended-upgrades so it doesn't hold the dpkg lock
-        sudo systemctl stop unattended-upgrades 2>/dev/null || true
-        sudo systemctl disable unattended-upgrades 2>/dev/null || true
-        sudo pkill -9 -f unattended-upgr 2>/dev/null || true
-        echo "Waiting for dpkg lock to be released..."
-        for w in {1..60}; do
-          if ! sudo lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
-             ! sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-            break
-          fi
-          echo "  dpkg lock held, waiting... ($w/60)"
-          sleep 5
+        KVER=$(uname -r)
+        for i in 1 2 3; do
+          sudo apt-get update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
-
-        # Retry apt-get update to handle transient mirror issues
-        echo "Updating package lists (with retry)..."
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            echo "✓ Package lists updated"
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
+        for i in 1 2 3 4 5; do
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+          [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
+          echo "apt-get install retry $i/5"; sleep 10
         done
-        
-        echo "Installing RDMA packages..."
-        for i in {1..5}; do
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            ibverbs-utils \
-            linux-headers-$(uname -r) \
-            linux-modules-extra-$(uname -r) \
-            libibverbs-dev \
-            rdma-core \
-            cmake \
-            ninja-build \
-            pkg-config; then
-            break
-          fi
-          if [ "$i" -eq 5 ]; then echo "✗ apt-get install failed after $i attempts"; exit 1; fi
-          echo "⚠️  apt-get install failed (attempt $i/5), retrying in 10s..."
-          sleep 10
-        done
-        echo "✓ Necessary packages installed"
+        echo "✓ Kernel packages installed for ${KVER}"
         EOFVM
 
     - name: Copy rdma-core provider to VM
@@ -428,6 +423,18 @@ jobs:
           "${VM_USER}@localhost:/tmp/rdma-core-provider/"
         echo "✓ Provider source copied to VM"
 
+    - name: Copy rdma-core tarball to VM
+      shell: bash
+      run: |
+        echo "=== Copying rdma-core tarball to VM ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-build"
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+          /tmp/rdma-core-62.0.tar.gz \
+          "${VM_USER}@localhost:/tmp/rdma-core-build/rdma-core-62.0.tar.gz"
+        echo "✓ rdma-core tarball copied to VM"
+
     - name: Build custom rdma-core provider in VM
       shell: bash
       run: |
@@ -440,10 +447,8 @@ jobs:
         BUILD_DIR="/tmp/rdma-core-build"
         SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
         TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
-        URL="https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VER}/rdma-core-${RDMA_CORE_VER}.tar.gz"
         mkdir -p "${BUILD_DIR}"
-        echo "Downloading rdma-core v${RDMA_CORE_VER}..."
-        curl -fsSL -o "${TARBALL}" "${URL}"
+        echo "Extracting rdma-core v${RDMA_CORE_VER}..."
         tar xf "${TARBALL}" -C "${BUILD_DIR}"
         echo "Injecting rocm_ernic provider..."
         cp -r /tmp/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
@@ -757,8 +762,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
+      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -790,7 +796,18 @@ jobs:
           libjson-c-dev \
           libcmocka-dev
 
+    - name: Cache libvfio-user build
+      id: cache-libvfio-user
+      uses: actions/cache@v4
+      with:
+        path: |
+          /usr/local/lib/x86_64-linux-gnu/libvfio-user*
+          /usr/local/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+          /usr/local/include/vfio-user
+        key: libvfio-user-20e9803-ubuntu-24.04-container
+
     - name: Upgrade libvfio-user
+      if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
       run: |
         # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
         # This version includes the vfu_setup_device_dma() max_regions
@@ -802,6 +819,23 @@ jobs:
         ninja -C build
         ninja -C build install
         ldconfig
+
+    - name: Reload ldconfig after cache restore
+      if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+      run: ldconfig
+
+    - name: Cache rdma-core tarball
+      uses: actions/cache@v4
+      with:
+        path: /tmp/rdma-core-62.0.tar.gz
+        key: rdma-core-tarball-62.0
+
+    - name: Download rdma-core tarball
+      run: |
+        if [ ! -f /tmp/rdma-core-62.0.tar.gz ]; then
+          wget -q -O /tmp/rdma-core-62.0.tar.gz \
+            https://github.com/linux-rdma/rdma-core/releases/download/v62.0/rdma-core-62.0.tar.gz
+        fi
 
     - name: Build project
       run: |
@@ -830,14 +864,14 @@ jobs:
         
         # Extract values using jq or python
         if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "batesste"' /output/vm-info.json)
+          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
           VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
           SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
           SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
           SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
         else
           # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'batesste'))")
+          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
           VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
           SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
           SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
@@ -897,7 +931,7 @@ jobs:
         VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
         
         # Create second VM disk name by inserting .2 before .qcow2 extension
-        # e.g., /output/batesste-ci-vm.qcow2 -> /output/batesste-ci-vm.2.qcow2
+        # e.g., /output/ci-vm.qcow2 -> /output/ci-vm.2.qcow2
         VM_DISK_DIR=$(dirname "$VM_DISK_1")
         VM_DISK_BASENAME=$(basename "$VM_DISK_1")
         VM_DISK_NAME="${VM_DISK_BASENAME%.qcow2}"
@@ -1422,233 +1456,112 @@ jobs:
           sleep 10
         done
 
-    - name: Copy driver source to VMs
+    - name: Copy files to VMs (parallel)
       shell: bash
       run: |
-        echo "=== Copying driver source to VMs ==="
+        echo "=== Copying driver source, rdma-core provider, and tarball to both VMs in parallel ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Copy to VM 1
-        scp -o StrictHostKeyChecking=no -P 2222 -r driver "${VM_USER}@localhost:~/" || {
-          echo "✗ Failed to copy driver to VM 1"
-          exit 1
-        }
-
-        # Copy to VM 2
-        scp -o StrictHostKeyChecking=no -P 2223 -r driver "${VM_USER}@localhost:~/" || {
-          echo "✗ Failed to copy driver to VM 2"
-          exit 1
-        }
-
-        # Copy rdma-core provider to both VMs
-        for PORT in 2222 2223; do
-          ssh -o StrictHostKeyChecking=no -p "$PORT" \
-            "${VM_USER}@localhost" "mkdir -p ~/rdma-core-provider"
+        _copy_to_vm() {
+          local PORT="$1"
+          scp -o StrictHostKeyChecking=no -P "$PORT" -r driver "${VM_USER}@localhost:~/" || {
+            echo "✗ Failed to copy driver to VM (port $PORT)"
+            return 1
+          }
+          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" "mkdir -p ~/rdma-core-provider"
           scp -o StrictHostKeyChecking=no -P "$PORT" -r \
             rdma-core/providers rdma-core/rocm-ernic-dv \
             "${VM_USER}@localhost:~/rdma-core-provider/" || {
             echo "✗ Failed to copy rdma-core provider to VM (port $PORT)"
-            exit 1
+            return 1
           }
-        done
+          # Copy pre-downloaded tarball to avoid in-VM network download
+          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-build"
+          scp -o StrictHostKeyChecking=no -P "$PORT" \
+            /tmp/rdma-core-62.0.tar.gz \
+            "${VM_USER}@localhost:/tmp/rdma-core-build/rdma-core-62.0.tar.gz" || {
+            echo "✗ Failed to copy rdma-core tarball to VM (port $PORT)"
+            return 1
+          }
+          echo "✓ Files copied to VM on port $PORT"
+        }
 
-        echo "✓ Driver source and provider copied"
+        _copy_to_vm 2222 > /tmp/copy-vm1.log 2>&1 &
+        PID1=$!
+        _copy_to_vm 2223 > /tmp/copy-vm2.log 2>&1 &
+        PID2=$!
 
-    - name: Install necessary packages in VMs
+        FAILED=0
+        wait "$PID1" || { echo "✗ Copy to VM 1 failed"; cat /tmp/copy-vm1.log; FAILED=1; }
+        wait "$PID2" || { echo "✗ Copy to VM 2 failed"; cat /tmp/copy-vm2.log; FAILED=1; }
+        [ $FAILED -eq 0 ] && echo "✓ All files copied to both VMs"
+        exit $FAILED
+
+    - name: Write VM setup script
       shell: bash
       run: |
-        echo "=== Installing necessary packages in both VMs ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        
-        # Install in VM 1
-        echo "[VM 1] Installing packages..."
-        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
+        cat > /tmp/vm-setup.sh << 'SCRIPT'
+        #!/bin/bash
         set -e
-        # Stop unattended-upgrades so it doesn't hold the dpkg lock
-        sudo systemctl stop unattended-upgrades 2>/dev/null || true
-        sudo systemctl disable unattended-upgrades 2>/dev/null || true
-        sudo pkill -9 -f unattended-upgr 2>/dev/null || true
-        echo "Waiting for dpkg lock to be released..."
-        for w in {1..60}; do
-          if ! sudo lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
-             ! sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-            break
-          fi
-          echo "  dpkg lock held, waiting... ($w/60)"
-          sleep 5
+        KVER=$(uname -r)
+        for i in 1 2 3; do
+          sudo apt-get update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
-        # Retry apt-get update to handle transient mirror issues
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
+        for i in 1 2 3 4 5; do
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+          [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
+          echo "apt-get install retry $i/5"; sleep 10
         done
-        for i in {1..5}; do
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            ibverbs-utils \
-            linux-headers-$(uname -r) \
-            linux-modules-extra-$(uname -r) \
-            libibverbs-dev \
-            rdma-core \
-            build-essential \
-            cmake \
-            ninja-build \
-            pkg-config; then
-            break
-          fi
-          if [ "$i" -eq 5 ]; then echo "✗ apt-get install failed after $i attempts"; exit 1; fi
-          echo "⚠️  apt-get install failed (attempt $i/5), retrying in 10s..."
-          sleep 10
-        done
-        echo "[VM 1] ✓ Packages installed"
-        EOFVM
-        
-        # Install in VM 2
-        echo "[VM 2] Installing packages..."
-        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        # Stop unattended-upgrades so it doesn't hold the dpkg lock
-        sudo systemctl stop unattended-upgrades 2>/dev/null || true
-        sudo systemctl disable unattended-upgrades 2>/dev/null || true
-        sudo pkill -9 -f unattended-upgr 2>/dev/null || true
-        echo "Waiting for dpkg lock to be released..."
-        for w in {1..60}; do
-          if ! sudo lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
-             ! sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-            break
-          fi
-          echo "  dpkg lock held, waiting... ($w/60)"
-          sleep 5
-        done
-        # Retry apt-get update to handle transient mirror issues
-        for i in {1..3}; do
-          if sudo apt-get update -qq 2>&1; then
-            break
-          else
-            echo "⚠️  apt-get update failed (attempt $i/3), retrying..."
-            sleep 5
-          fi
-        done
-        for i in {1..5}; do
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            ibverbs-utils \
-            linux-headers-$(uname -r) \
-            linux-modules-extra-$(uname -r) \
-            libibverbs-dev \
-            rdma-core \
-            build-essential \
-            cmake \
-            ninja-build \
-            pkg-config; then
-            break
-          fi
-          if [ "$i" -eq 5 ]; then echo "✗ apt-get install failed after $i attempts"; exit 1; fi
-          echo "⚠️  apt-get install failed (attempt $i/5), retrying in 10s..."
-          sleep 10
-        done
-        echo "[VM 2] ✓ Packages installed"
-        EOFVM
-        
-        echo "✓ Both VMs have packages installed"
-
-    - name: Build custom rdma-core provider in VM 1
-      shell: bash
-      run: |
-        echo "[VM 1] Building custom rdma-core provider..."
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        RDMA_CORE_VER="62.0"
+        echo "Kernel packages installed for ${KVER}"
         BUILD_DIR="/tmp/rdma-core-build"
-        SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
-        TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
-        URL="https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VER}/rdma-core-${RDMA_CORE_VER}.tar.gz"
+        SRC_DIR="${BUILD_DIR}/rdma-core-62.0"
         mkdir -p "${BUILD_DIR}"
-        curl -fsSL -o "${TARBALL}" "${URL}"
-        tar xf "${TARBALL}" -C "${BUILD_DIR}"
+        tar xf "${BUILD_DIR}/rdma-core-62.0.tar.gz" -C "${BUILD_DIR}"
         cp -r ~/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
-        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
+        grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt" || \
           echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
-        fi
-        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
+        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja \
+          -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+          -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
         cmake --build "${BUILD_DIR}/build" -j$(nproc)
         sudo cmake --install "${BUILD_DIR}/build"
         sudo ldconfig
-        echo "✓ Custom rdma-core provider installed"
-        EOFVM
+        echo "rdma-core provider installed"
+        cd ~/driver
+        make KDIR=/lib/modules/$(uname -r)/build
+        sudo modprobe ib_core
+        sudo modprobe ib_uverbs
+        sudo insmod rocm_ernic_eth.ko
+        sudo insmod rocm_ernic_rdma.ko
+        sleep 2
+        ibv_devinfo || echo "No RDMA devices yet"
+        echo "Driver loaded"
+        SCRIPT
+        chmod +x /tmp/vm-setup.sh
 
-    - name: Build custom rdma-core provider in VM 2
+    - name: Build rdma-core provider and driver in VMs (parallel)
       shell: bash
       run: |
-        echo "[VM 2] Building custom rdma-core provider..."
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        RDMA_CORE_VER="62.0"
-        BUILD_DIR="/tmp/rdma-core-build"
-        SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
-        TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
-        URL="https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VER}/rdma-core-${RDMA_CORE_VER}.tar.gz"
-        mkdir -p "${BUILD_DIR}"
-        curl -fsSL -o "${TARBALL}" "${URL}"
-        tar xf "${TARBALL}" -C "${BUILD_DIR}"
-        cp -r ~/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
-        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
-          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
-        fi
-        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
-        cmake --build "${BUILD_DIR}/build" -j$(nproc)
-        sudo cmake --install "${BUILD_DIR}/build"
-        sudo ldconfig
-        echo "✓ Custom rdma-core provider installed"
-        EOFVM
-
-    - name: Build and load driver in VM 1
-      shell: bash
-      run: |
-        echo "=== Building driver in VM 1 ==="
+        echo "=== Running per-VM setup in parallel ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" <<'EOF'
-          cd ~/driver
-          make KDIR=/lib/modules/$(uname -r)/build
+        _setup_vm() {
+          local PORT="$1"
+          scp -o StrictHostKeyChecking=no -P "$PORT" /tmp/vm-setup.sh "${VM_USER}@localhost:/tmp/vm-setup.sh"
+          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-setup.sh
+        }
 
-          sudo modprobe ib_core
-          sudo modprobe ib_uverbs
-          sudo insmod rocm_ernic_eth.ko
-          sudo insmod rocm_ernic_rdma.ko
+        _setup_vm 2222 > /tmp/setup-vm1.log 2>&1 &
+        PID1=$!
+        _setup_vm 2223 > /tmp/setup-vm2.log 2>&1 &
+        PID2=$!
 
-          sleep 2
-
-          ibv_devinfo || echo "No RDMA devices yet"
-        EOF
-
-        echo "✓ Driver loaded in VM 1"
-
-    - name: Build and load driver in VM 2
-      shell: bash
-      run: |
-        echo "=== Building driver in VM 2 ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-
-        ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" <<'EOF'
-          cd ~/driver
-          make KDIR=/lib/modules/$(uname -r)/build
-
-          sudo modprobe ib_core
-          sudo modprobe ib_uverbs
-          sudo insmod rocm_ernic_eth.ko
-          sudo insmod rocm_ernic_rdma.ko
-
-          sleep 2
-
-          ibv_devinfo || echo "No RDMA devices yet"
-        EOF
-
-        echo "✓ Driver loaded in VM 2"
+        FAILED=0
+        wait "$PID1" || { echo "✗ VM 1 setup failed"; cat /tmp/setup-vm1.log; FAILED=1; }
+        wait "$PID2" || { echo "✗ VM 2 setup failed"; cat /tmp/setup-vm2.log; FAILED=1; }
+        [ $FAILED -eq 0 ] && echo "✓ Both VMs set up successfully"
+        exit $FAILED
 
     - name: Verify RDMA devices in VMs
       shell: bash

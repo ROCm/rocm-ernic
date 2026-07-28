@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # Test script for running multiple TCP servers locally
 
 set -e

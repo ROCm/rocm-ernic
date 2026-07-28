@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # Test multiple loopback backend configurations.
 # Uses TEST_BIN for client test (default: test_rdma_cm). CI may set
 # TEST_BIN=$BUILD_DIR/tests/test_data_transfer. Override SERVER_BIN/BUILD_DIR as needed.
