@@ -613,7 +613,56 @@ jobs:
           exit 1
         fi
         echo "✓ Loopback backend VM test passed"
-    
+
+    - name: DC guest smoke (build and run test_dc_loopback)
+      shell: bash
+      run: |
+        echo "=== DC guest smoke (SRQ + DCT + DCI create) ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/dc-smoke"
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+          tests/test_dc_loopback.c \
+          rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
+          "${VM_USER}@localhost:/tmp/dc-smoke/"
+        set +e
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" <<'EOFVM'
+        set -e
+        cd /tmp/dc-smoke
+        ROCM_LIBDIR=""
+        for d in /usr/lib/x86_64-linux-gnu/libibverbs /usr/lib/libibverbs; do
+          if [ -d "$d" ] && ls "$d"/librocm_ernic*.so >/dev/null 2>&1; then
+            ROCM_LIBDIR="$d"
+            break
+          fi
+        done
+        if [ -z "$ROCM_LIBDIR" ]; then
+          echo "librocm_ernic not found; skipping DC smoke"
+          exit 0
+        fi
+        gcc -O2 -Wall -Wextra -I. \
+          -o test_dc_loopback test_dc_loopback.c \
+          $(pkg-config --cflags --libs libibverbs) \
+          -L"$ROCM_LIBDIR" -lrocm_ernic -Wl,-rpath,"$ROCM_LIBDIR"
+        set +e
+        ./test_dc_loopback
+        DC_EXIT=$?
+        set -e
+        if [ "$DC_EXIT" -eq 77 ]; then
+          echo "No rocm_ernic device found; skipping DC smoke"
+          exit 0
+        fi
+        exit $DC_EXIT
+        EOFVM
+        DC_EXIT=$?
+        set -e
+        if [ "$DC_EXIT" -ne 0 ]; then
+          echo "✗ DC guest smoke failed (exit $DC_EXIT)"
+          exit 1
+        fi
+        echo "✓ DC guest smoke passed or skipped cleanly"
+
     - name: Sysfs loopback smoke test
       shell: bash
       run: |

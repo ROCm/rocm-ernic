@@ -34,6 +34,8 @@
 #define VENDOR_ERR_INV_MAD_BUFF  0x209
 #define VENDOR_ERR_INV_GID_IDX   0x210
 #define VENDOR_ERR_INV_QP_TYPE   0x211
+#define VENDOR_ERR_INV_DCT       0x212
+#define VENDOR_ERR_DC_KEY        0x213
 
 /* Add definition for QP0 and QP1 as there is no userspace enums for them */
 enum ibv_special_qp_type {

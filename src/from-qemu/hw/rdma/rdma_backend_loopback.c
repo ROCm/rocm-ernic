@@ -19,6 +19,8 @@
 #include "hw/pci/pci.h"      /* For PCIDevice and pci_dma_sync */
 #include "hw/pci/pci_regs.h" /* For PVRDMA_DEV */
 #include "vmw/pvrdma.h"      /* For PVRDMADev and stats */
+#include "vmw/pvrdma_comp_ctx.h"
+#include "vmw/pvrdma_qp_ops.h"
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
@@ -83,6 +85,15 @@ typedef struct {
     uint32_t num_sge;
     LoopbackSGE sge[32]; /* Max SGEs */
 } LoopbackWR;
+
+typedef struct {
+    uint32_t max_wr;
+    uint32_t max_sge;
+    uint32_t srq_limit;
+    uint32_t pd_handle;
+    GQueue *recv_queue;
+    QemuMutex lock;
+} LoopbackSRQ;
 
 typedef struct {
     uint32_t qpn;
@@ -827,6 +838,9 @@ static int loopback_query_device(RdmaBackendDev *backend_dev,
     attr->max_pd = 1024;
     attr->max_mr_size = 0xFFFFFFFF;
     attr->atomic_cap = IBV_ATOMIC_HCA;
+    attr->max_srq = MAX_SRQ;
+    attr->max_srq_wr = 1024;
+    attr->max_srq_sge = 32;
     return 0;
 }
 
@@ -1081,9 +1095,17 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                  uint32_t rq_psn, uint32_t qkey, bool qkey_set)
 {
     (void)backend_dev;
-    (void)qp_type;
     (void)sgid_idx;
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+
+    /* DCT reaches RTR as its penultimate arming step; no remote QPN needed. */
+    if (qp_type == IBV_QPT_DRIVER) {
+        if (lqp) {
+            lqp->state = IBV_QPS_RTR;
+            rdma_info_report("Loopback: DCT QP %u -> RTR (armed)", lqp->qpn);
+        }
+        return 0;
+    }
 
     if (lqp) {
         lqp->state = IBV_QPS_RTR;
@@ -1240,7 +1262,6 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
 static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
                                  uint32_t sq_psn, uint32_t qkey, bool qkey_set)
 {
-    (void)qp_type;
     (void)qkey;
     (void)qkey_set;
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
@@ -1252,6 +1273,13 @@ static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
 
     lqp->state = IBV_QPS_RTS;
     lqp->sq_psn = sq_psn;
+
+    /* DC QPs use per-send destination addressing; no connection pairing. */
+    if (qp_type == IBV_QPT_DRIVER) {
+        rdma_info_report("Loopback: DC QP %u -> RTS (sq_psn=%u, no pairing)",
+                         lqp->qpn, sq_psn);
+        return 0;
+    }
 
     rdma_info_report("Loopback: QP %u -> RTS (sq_psn=%u)", lqp->qpn, sq_psn);
 
@@ -1337,6 +1365,107 @@ static int loopback_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
 }
 
 /*
+ * Shared Receive Queue (software path for DC targets and SRQ verbs).
+ */
+static int loopback_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
+                               uint32_t max_wr, uint32_t max_sge,
+                               uint32_t srq_limit)
+{
+    LoopbackSRQ *lsrq = g_new0(LoopbackSRQ, 1);
+    uint32_t pd_handle = (uint32_t)(uintptr_t)pd->ibpd;
+
+    lsrq->max_wr = max_wr;
+    lsrq->max_sge = max_sge;
+    lsrq->srq_limit = srq_limit;
+    lsrq->pd_handle = pd_handle;
+    lsrq->recv_queue = g_queue_new();
+    qemu_mutex_init(&lsrq->lock);
+    srq->ibsrq = (struct ibv_srq *)(uintptr_t)lsrq;
+    rdma_info_report("Loopback: Created SRQ (max_wr=%u max_sge=%u)", max_wr,
+                     max_sge);
+    return 0;
+}
+
+static void loopback_destroy_srq(RdmaBackendSRQ *srq)
+{
+    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+
+    if (!lsrq) {
+        return;
+    }
+    qemu_mutex_lock(&lsrq->lock);
+    while (!g_queue_is_empty(lsrq->recv_queue)) {
+        LoopbackWR *wr = g_queue_pop_head(lsrq->recv_queue);
+
+        if (wr->wr_id) {
+            g_free((PvrdmaCompHandlerCtx *)(uintptr_t)wr->wr_id);
+        }
+        g_free(wr);
+    }
+    g_queue_free(lsrq->recv_queue);
+    qemu_mutex_unlock(&lsrq->lock);
+    qemu_mutex_destroy(&lsrq->lock);
+    g_free(lsrq);
+    srq->ibsrq = NULL;
+    rdma_info_report("Loopback: Destroyed SRQ");
+}
+
+static int loopback_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr)
+{
+    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+
+    if (!lsrq || !attr) {
+        return -EINVAL;
+    }
+    attr->max_wr = lsrq->max_wr;
+    attr->max_sge = lsrq->max_sge;
+    attr->srq_limit = lsrq->srq_limit;
+    return 0;
+}
+
+static int loopback_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
+                               int mask)
+{
+    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+
+    if (!lsrq || !attr) {
+        return -EINVAL;
+    }
+    if (mask & IBV_SRQ_LIMIT) {
+        lsrq->srq_limit = attr->srq_limit;
+    }
+    return 0;
+}
+
+static void loopback_post_srq_recv(RdmaBackendSRQ *srq, struct ibv_sge *sge,
+                                   uint32_t num_sge, void *ctx)
+{
+    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+    LoopbackWR *recv_wr;
+
+    if (!lsrq) {
+        rdma_error_report("Loopback: post_srq_recv on unknown SRQ");
+        return;
+    }
+
+    recv_wr = g_new0(LoopbackWR, 1);
+    recv_wr->wr_id = (uint64_t)(uintptr_t)ctx;
+    recv_wr->num_sge = (num_sge < 32) ? num_sge : 32;
+
+    for (uint32_t i = 0; i < recv_wr->num_sge; i++) {
+        recv_wr->sge[i].addr = (void *)sge[i].addr;
+        recv_wr->sge[i].length = sge[i].length;
+        recv_wr->sge[i].lkey = sge[i].lkey;
+    }
+
+    qemu_mutex_lock(&lsrq->lock);
+    g_queue_push_tail(lsrq->recv_queue, recv_wr);
+    qemu_mutex_unlock(&lsrq->lock);
+
+    rdma_info_report("Loopback: Posted SRQ recv (%u SGEs)", recv_wr->num_sge);
+}
+
+/*
  * Data Path Operations
  */
 
@@ -1374,16 +1503,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                      lqp->qpn, lqp->state);
 
     /* Extract opcode and RDMA parameters from context if available */
-    /* CompHandlerCtx is defined in pvrdma_qp_ops.c */
-    typedef struct {
-        void *dev;
-        uint32_t cq_handle;
-        struct pvrdma_cqe cqe;
-        uint32_t opcode;
-        uint64_t remote_addr;
-        uint32_t rkey;
-    } CompHandlerCtx;
-    CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
+    PvrdmaCompHandlerCtx *comp_ctx = (PvrdmaCompHandlerCtx *)ctx;
     uint32_t pvrdma_qp_handle = 0; /* PVRDMA QP handle for stats */
     if (comp_ctx) {
         pvrdma_opcode = comp_ctx->opcode;
@@ -1415,6 +1535,70 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     rdma_info_report(
         ">>> Loopback: post_send: pci_dev=%p, total_len=%u, pvrdma_opcode=%u",
         pci_dev, total_len, pvrdma_opcode);
+
+    if (comp_ctx && pvrdma_opcode == PVRDMA_WR_SEND_DC &&
+        comp_ctx->dc_target_srq) {
+        PVRDMADev *pdev = PVRDMA_DEV(pci_dev);
+        LoopbackSRQ *lsrq =
+            (LoopbackSRQ *)(uintptr_t)comp_ctx->dc_target_srq->ibsrq;
+        uint32_t recv_byte_len;
+
+        recv_wr = NULL;
+        if (lsrq) {
+            qemu_mutex_lock(&lsrq->lock);
+            recv_wr = g_queue_pop_head(lsrq->recv_queue);
+            qemu_mutex_unlock(&lsrq->lock);
+        }
+        if (!recv_wr) {
+            recv_wr = g_new0(LoopbackWR, 1);
+            recv_wr->wr_id = 0;
+            recv_wr->num_sge = 1;
+            recv_wr->sge[0].addr = (void *)0x1000000;
+            recv_wr->sge[0].length = total_len;
+            recv_wr->sge[0].lkey = 0xffffffff;
+        }
+
+        transferred = total_len;
+        if (recv_wr->wr_id != 0) {
+            PvrdmaCompHandlerCtx *rctx =
+                (PvrdmaCompHandlerCtx *)(uintptr_t)recv_wr->wr_id;
+            struct ibv_sge recv_sge[32];
+            int copy_result;
+
+            for (uint32_t i = 0; i < recv_wr->num_sge && i < 32; i++) {
+                recv_sge[i].addr = (uint64_t)(uintptr_t)recv_wr->sge[i].addr;
+                recv_sge[i].length = recv_wr->sge[i].length;
+                recv_sge[i].lkey = recv_wr->sge[i].lkey;
+            }
+            copy_result =
+                loopback_copy_sge_data(pci_dev, sge, num_sge, recv_sge,
+                                       recv_wr->num_sge, priv->data_pattern);
+            if (copy_result >= 0) {
+                transferred = (uint32_t)copy_result;
+            } else {
+                transferred = 0;
+            }
+            recv_byte_len = (transferred > 0) ? transferred : total_len;
+            pvrdma_queue_recv_work_completion(pdev, comp_ctx->dc_recv_cq_handle,
+                                              rctx->cqe.wr_id, recv_byte_len,
+                                              comp_ctx->dc_src_qp);
+            if (recv_byte_len > 0 && pvrdma_qp_handle > 0) {
+                loopback_update_byte_stats(backend_dev, pvrdma_qp_handle,
+                                           recv_byte_len, IBV_WC_RECV);
+            }
+            g_free(rctx);
+        }
+        g_free(recv_wr);
+        recv_wr = NULL;
+        wc_opcode = IBV_WC_SEND;
+        if (pvrdma_qp_handle > 0) {
+            uint32_t stats_bytes = (transferred > 0) ? transferred : total_len;
+
+            loopback_update_byte_stats(backend_dev, pvrdma_qp_handle,
+                                       stats_bytes, IBV_WC_SEND);
+        }
+        goto post_send_finalize;
+    }
 
     /* Handle RDMA Read operations */
     if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
@@ -1564,7 +1748,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         }
 
         /* Try to match with a recv on remote/local QP */
-        if (remote_qp && !g_queue_is_empty(remote_qp->recv_queue)) {
+        if (remote_qp) {
             qemu_mutex_lock(&remote_qp->lock);
             recv_wr = g_queue_pop_head(remote_qp->recv_queue);
             qemu_mutex_unlock(&remote_qp->lock);
@@ -1636,14 +1820,18 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                  * otherwise use total_len. */
                 uint32_t recv_byte_len =
                     (transferred > 0) ? transferred : total_len;
+                PvrdmaCompHandlerCtx *rctx =
+                    (PvrdmaCompHandlerCtx *)(uintptr_t)recv_wr->wr_id;
+
                 rdma_info_report(">>> Loopback: Posting RECV completion: "
                                  "wr_id=%lu, transferred=%u, total_len=%u, "
                                  "recv_byte_len=%u",
-                                 recv_wr->wr_id, transferred, total_len,
-                                 recv_byte_len);
-                rdma_backend_complete_work(IBV_WC_SUCCESS, 0, recv_byte_len,
-                                           remote_qp->qpn, IBV_WC_RECV,
-                                           (void *)recv_wr->wr_id);
+                                 (unsigned long)rctx->cqe.wr_id, transferred,
+                                 total_len, recv_byte_len);
+                pvrdma_queue_recv_work_completion(
+                    PVRDMA_DEV(pci_dev), rctx->cq_handle, rctx->cqe.wr_id,
+                    recv_byte_len, lqp->qpn);
+                g_free(rctx);
 
                 /* Update byte statistics for receive */
                 /* Use pvrdma_qp_handle from context, or fallback to
@@ -1682,6 +1870,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         }
     }
 
+post_send_finalize:
     /* Post send completion directly to PVRDMA layer */
     /* Use total_len if transferred is 0 (no data copied or error) */
     uint32_t byte_len = (transferred > 0) ? transferred : total_len;
@@ -1808,10 +1997,9 @@ const RdmaBackendOps rdma_backend_ops_loopback = {
     .del_gid = loopback_del_gid,
     .get_backend_gid_index = loopback_get_backend_gid_index,
 
-    /* SRQ not implemented yet */
-    .create_srq = NULL,
-    .destroy_srq = NULL,
-    .query_srq = NULL,
-    .modify_srq = NULL,
-    .post_srq_recv = NULL,
+    .create_srq = loopback_create_srq,
+    .destroy_srq = loopback_destroy_srq,
+    .query_srq = loopback_query_srq,
+    .modify_srq = loopback_modify_srq,
+    .post_srq_recv = loopback_post_srq_recv,
 };

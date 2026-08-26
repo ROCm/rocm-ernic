@@ -15,6 +15,9 @@
 #define ROCM_ERNIC_DEVICE_ID          0x8000
 #define ROCM_ERNIC_UVERBS_ABI_VERSION 3
 
+#define ROCM_ERNIC_CREATE_QP_EX_DC        1U
+#define ROCM_ERNIC_CREATE_QP_RESP_EX_DC   1U
+
 struct rocm_ernic_cqe {
     uint64_t wr_id;
     uint64_t qp;
@@ -71,6 +74,13 @@ struct rocm_ernic_create_cq_resp_ex {
     __u32 reserved;
 };
 
+struct rocm_ernic_create_srq_cmd {
+    struct ibv_create_srq ibv_cmd;
+    __aligned_u64 buf_addr;
+    __u32 buf_size;
+    __u32 reserved;
+};
+
 struct rocm_ernic_create_qp_cmd {
     struct ibv_create_qp ibv_cmd;
     __aligned_u64 rbuf_addr;
@@ -83,6 +93,12 @@ struct rocm_ernic_create_qp_cmd {
     __u32 sq_depth;
     __u32 rq_wqe_size;
     __u32 rq_depth;
+    __u32 ex_mask;
+    __u8 dc_role;
+    __u8 dc_port_num;
+    __u8 reserved_dc8;
+    __u8 reserved_dc9;
+    __aligned_u64 dct_access_key;
 };
 
 struct rocm_ernic_create_qp_resp_ex {
@@ -96,7 +112,34 @@ struct rocm_ernic_create_qp_resp_ex {
     __aligned_u64 uar_mmap_offset;
     __u32 uar_qp_offset;
     __u32 uar_cq_offset;
+    __u32 resp_ex_mask;
+    __u32 dctn;
 };
+
+struct rocm_ernic_create_srq_resp_ex {
+    struct ib_uverbs_create_srq_resp ibv_resp;
+    uint32_t srqn;
+    uint32_t reserved;
+    uint64_t uar_mmap_offset;
+};
+
+struct rocm_ernic_srq {
+    struct verbs_srq vsrq;
+    uint32_t srq_handle;
+    uint32_t rq_wqe_size;
+    uint32_t rq_depth;
+    void *buf;
+    size_t buf_len;
+    struct rocm_ernic_ring *rq_ring;
+    size_t rq_offset;
+    void *uar_ptr;
+    uint64_t uar_mmap_offset;
+};
+
+static inline struct rocm_ernic_srq *to_rocm_ernic_srq(struct ibv_srq *ibsrq)
+{
+    return container_of(ibsrq, struct rocm_ernic_srq, vsrq.srq);
+}
 
 struct rocm_ernic_device {
     struct verbs_device vdev;
@@ -146,6 +189,7 @@ struct rocm_ernic_qp {
     struct rocm_ernic_ring *rq_ring;
     size_t sq_offset;
     size_t rq_offset;
+    uint32_t dctn;
 };
 
 static inline struct rocm_ernic_device *to_rocm_ernic_dev(
@@ -206,5 +250,11 @@ int rocm_ernic_post_send_v(struct ibv_qp *qp, struct ibv_send_wr *wr,
                            struct ibv_send_wr **bad_wr);
 int rocm_ernic_post_recv_v(struct ibv_qp *qp, struct ibv_recv_wr *wr,
                            struct ibv_recv_wr **bad_wr);
+
+struct ibv_srq *rocm_ernic_create_srq_v(struct ibv_pd *pd,
+                                         struct ibv_srq_init_attr *attr);
+int rocm_ernic_destroy_srq_v(struct ibv_srq *srq);
+int rocm_ernic_post_srq_recv_v(struct ibv_srq *srq, struct ibv_recv_wr *wr,
+                                 struct ibv_recv_wr **bad_wr);
 
 #endif /* __ROCM_ERNIC_PROVIDER_H__ */

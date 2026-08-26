@@ -1,0 +1,94 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Focused CI for Dynamic Connection (DC) UAPI and provider-adjacent code.
+
+name: DC Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'tests/**'
+      - 'src/**'
+      - 'driver/**'
+      - 'rdma-core/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/dc-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  dc-build-and-ctest:
+    name: DC unit tests (cmocka)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            meson \
+            ninja-build \
+            pkg-config \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev \
+            libjson-c-dev \
+            libcmocka-dev
+
+      - name: Clone and build libvfio-user
+        run: |
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout 20e9803
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: Configure and build
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DERNIC_WERROR=ON
+          cmake --build build
+
+      - name: Run DC UAPI cmocka tests
+        run: |
+          ctest --test-dir build --output-on-failure -R '^ernic_dc'
+
+  dc-loopback-smoke:
+    name: Loopback server smoke (startup only)
+    runs-on: ubuntu-24.04
+    needs: dc-build-and-ctest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (server only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake meson ninja-build pkg-config \
+            libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev libcmocka-dev
+
+      - name: Clone and build libvfio-user
+        run: |
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user && git checkout 20e9803
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build && sudo ninja -C build install && sudo ldconfig
+
+      - name: Configure and build rocm-ernic
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DERNIC_WERROR=ON
+          cmake --build build
+
+      - name: Loopback startup script
+        run: |
+          SERVER_BIN=build/rocm-ernic tests/test_loopback_ci.sh

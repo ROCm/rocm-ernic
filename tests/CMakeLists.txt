@@ -4,6 +4,9 @@
 
 # Tests build configuration
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CMOCKA cmocka)
+
 # -- test_pci_client (no extra dependencies) ---------------------
 add_executable(test_pci_client
     test_pci_client.c
@@ -89,6 +92,58 @@ target_link_directories(test_rdma_backend_query_port PRIVATE
 target_link_libraries(test_rdma_backend_query_port PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# -- test_dc_loopback (requires libibverbs + installed rocm_ernic provider) -
+# Only built when ERNIC_RDMA_CORE_BUILD=ON so that librocm_ernic and its
+# installed headers (including infiniband/rocm_ernic_dc.h) are available.
+if(ERNIC_RDMA_CORE_BUILD)
+    add_executable(test_dc_loopback
+        test_dc_loopback.c
+    )
+    target_compile_definitions(test_dc_loopback PRIVATE
+        _POSIX_C_SOURCE=200809L
+    )
+    target_include_directories(test_dc_loopback PRIVATE
+        ${IBVERBS_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/rdma-core/providers/rocm_ernic
+        ${RDMA_CORE_INCLUDE_DIR}
+    )
+    target_link_directories(test_dc_loopback PRIVATE
+        ${IBVERBS_LIBRARY_DIRS}
+        ${RDMA_CORE_LIB_DIR}
+    )
+    target_link_libraries(test_dc_loopback PRIVATE
+        ${IBVERBS_LIBRARIES}
+        rocm_ernic
+    )
+
+    add_test(
+        NAME dc-loopback-test
+        COMMAND $<TARGET_FILE:test_dc_loopback>
+    )
+    set_tests_properties(dc-loopback-test PROPERTIES
+        TIMEOUT 60
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+endif()
+
+# -- test_ernic_dc_uapi (cmocka + driver ABI header) --------------
+if(CMOCKA_FOUND)
+    add_executable(test_ernic_dc_uapi
+        test_ernic_dc_uapi.c
+    )
+    target_include_directories(test_ernic_dc_uapi PRIVATE
+        ${CMAKE_SOURCE_DIR}/driver
+        ${CMOCKA_INCLUDE_DIRS}
+    )
+    target_link_directories(test_ernic_dc_uapi PRIVATE
+        ${CMOCKA_LIBRARY_DIRS}
+    )
+    target_link_libraries(test_ernic_dc_uapi PRIVATE
+        ${CMOCKA_LIBRARIES}
+    )
+endif()
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -134,3 +189,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_rdma_backend_query_port>
 )
 set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+if(CMOCKA_FOUND)
+    add_test(
+        NAME ernic_dc_uapi
+        COMMAND $<TARGET_FILE:test_ernic_dc_uapi>
+    )
+    set_tests_properties(ernic_dc_uapi PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+    )
+endif()

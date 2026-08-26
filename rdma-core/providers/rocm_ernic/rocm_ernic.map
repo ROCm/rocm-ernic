@@ -9,6 +9,10 @@ ROCM_ERNIC_1.0 {
 		rocm_ernic_dv_create_qp;
 		rocm_ernic_dv_destroy_qp;
 		rocm_ernic_dv_modify_qp;
+		rocm_ernic_dc_create_dct;
+		rocm_ernic_dc_create_dci;
+		rocm_ernic_dc_post_send;
+		rocm_ernic_dc_get_dctn;
 		rocm_ernic_dv_get_cq_id;
 		rocm_ernic_dv_get_qp_attr;
 	local: *;

@@ -1,0 +1,23 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Optional host-only mlx5 DC reference (perftest / libmlx5).  Not wired to
+# rocm_ernic wire compatibility; use for manual behavior comparison only.
+
+name: DC mlx5 reference (optional)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mlx5-dc-reference:
+    name: Host mlx5 DC reference (manual)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Document self-hosted override
+        run: |
+          echo "For real mlx5 DC traffic, change runs-on to your self-hosted"
+          echo "pool (e.g. [ self-hosted, mlx5 ]) and install perftest or a"
+          echo "pinned libmlx5 DC sample.  This stub keeps workflow_dispatch"
+          echo "valid on github-hosted runners without ConnectX hardware."

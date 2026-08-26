@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <endian.h>
 
 #include <infiniband/driver.h>
 #include <infiniband/verbs.h>
@@ -29,14 +30,12 @@
 #define ROCM_ERNIC_UAR_QP_SEND   (1U << 30)
 #define ROCM_ERNIC_UAR_QP_RECV   (1U << 31)
 
+#define ROCM_ERNIC_UAR_SRQ_OFFSET 8
+#define ROCM_ERNIC_UAR_SRQ_RECV   (1U << 30)
+
 struct rocm_ernic_ring {
     _Atomic uint32_t prod_tail;
     _Atomic uint32_t cons_head;
-};
-
-struct rocm_ernic_ring_state {
-    struct rocm_ernic_ring tx;
-    struct rocm_ernic_ring rx;
 };
 
 struct rocm_ernic_sge {
@@ -76,16 +75,12 @@ struct rocm_ernic_sq_wqe_hdr {
             uint32_t reserved;
         } atomic;
         struct {
-            uint64_t iova_start;
-            uint64_t pl_pdir_dma;
-            uint32_t page_shift;
-            uint32_t page_list_len;
-            uint32_t length;
-            uint32_t access_flags;
-            uint32_t rkey;
-            uint32_t reserved;
-        } fast_reg;
-        uint8_t _pad[48];
+            uint32_t remote_dctn;
+            uint32_t dc_access_key;
+            uint32_t ah_id;
+            uint32_t reserved_dc;
+            uint8_t __pad[32];
+        } dc;
     } wr;
 };
 
@@ -561,6 +556,10 @@ struct ibv_qp *rocm_ernic_create_qp_v(struct ibv_pd *pd,
     qp->uar_qp_offset = resp.uar_qp_offset;
     qp->uar_cq_offset = resp.uar_cq_offset;
 
+    if (resp.resp_ex_mask & ROCM_ERNIC_CREATE_QP_RESP_EX_DC) {
+        qp->dctn = resp.dctn;
+    }
+
     qp->sq_buf = sq_buf;
     qp->sq_buf_size = sq_size;
     qp->rq_buf = rq_buf;
@@ -635,6 +634,16 @@ static inline void uar_write32(struct rocm_ernic_qp *qp, uint32_t val)
     }
 }
 
+static inline void uar_write32_srq(struct rocm_ernic_srq *srq, uint32_t val)
+{
+    if (srq->uar_ptr) {
+        volatile uint32_t *db =
+            (volatile uint32_t *)((char *)srq->uar_ptr +
+                                  ROCM_ERNIC_UAR_SRQ_OFFSET);
+        *db = htole32(val);
+    }
+}
+
 int rocm_ernic_post_send_v(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
                            struct ibv_send_wr **bad_wr)
 {
@@ -656,6 +665,20 @@ int rocm_ernic_post_send_v(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
         if (sq_status <= 0) {
             *bad_wr = wr;
             ret = (sq_status < 0) ? EINVAL : ENOMEM;
+            break;
+        }
+
+        if (wr->num_sge < 0) {
+            *bad_wr = wr;
+            ret = EINVAL;
+            break;
+        }
+        if (qp->sq_wqe_size <= ROCM_ERNIC_SQ_WQE_HDR_SIZE ||
+            (uint32_t)wr->num_sge >
+                (qp->sq_wqe_size - ROCM_ERNIC_SQ_WQE_HDR_SIZE) /
+                    ROCM_ERNIC_SGE_SIZE) {
+            *bad_wr = wr;
+            ret = EINVAL;
             break;
         }
 
@@ -721,6 +744,20 @@ int rocm_ernic_post_recv_v(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
             break;
         }
 
+        if (wr->num_sge < 0) {
+            *bad_wr = wr;
+            ret = EINVAL;
+            break;
+        }
+        if (qp->rq_wqe_size <= ROCM_ERNIC_RQ_WQE_HDR_SIZE ||
+            (uint32_t)wr->num_sge >
+                (qp->rq_wqe_size - ROCM_ERNIC_RQ_WQE_HDR_SIZE) /
+                    ROCM_ERNIC_SGE_SIZE) {
+            *bad_wr = wr;
+            ret = EINVAL;
+            break;
+        }
+
         wqe = (struct rocm_ernic_rq_wqe_hdr *)((char *)qp->rq_buf +
                                                qp->rq_offset +
                                                (size_t)tail * qp->rq_wqe_size);
@@ -744,6 +781,163 @@ int rocm_ernic_post_recv_v(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
 
     __sync_synchronize();
     uar_write32(qp, ROCM_ERNIC_UAR_QP_RECV | qp->qp_handle);
+
+    return ret;
+}
+
+struct ibv_srq *rocm_ernic_create_srq_v(struct ibv_pd *pd,
+                                        struct ibv_srq_init_attr *attr)
+{
+    struct rocm_ernic_srq *srq;
+    struct rocm_ernic_create_srq_cmd cmd = {};
+    struct rocm_ernic_create_srq_resp_ex resp = {};
+    size_t buf_size;
+    uint32_t rq_wqe_size;
+    uint32_t rq_depth;
+    void *buf = NULL;
+    long page_size;
+    int ret;
+
+    srq = calloc(1, sizeof(*srq));
+    if (!srq)
+        return NULL;
+
+    page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        free(srq);
+        return NULL;
+    }
+
+    rq_depth = attr->attr.max_wr ? (uint32_t)attr->attr.max_wr : 1;
+    {
+        uint32_t max_recv_sge =
+            attr->attr.max_sge ? (uint32_t)attr->attr.max_sge : 1;
+
+        rq_wqe_size = (uint32_t)next_pow2(ROCM_ERNIC_RQ_WQE_HDR_SIZE +
+                                          ROCM_ERNIC_SGE_SIZE * max_recv_sge);
+    }
+    rq_depth = (uint32_t)next_pow2(rq_depth);
+    buf_size = (size_t)page_size + (size_t)rq_depth * (size_t)rq_wqe_size;
+
+    buf = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+               -1, 0);
+    if (buf == MAP_FAILED) {
+        free(srq);
+        return NULL;
+    }
+
+    cmd.buf_addr = (uintptr_t)buf;
+    cmd.buf_size = (uint32_t)buf_size;
+    cmd.reserved = 0;
+
+    ret = ibv_cmd_create_srq(pd, &srq->vsrq.srq, attr, &cmd.ibv_cmd, sizeof(cmd),
+                             &resp.ibv_resp, sizeof(resp));
+    if (ret) {
+        munmap(buf, buf_size);
+        free(srq);
+        errno = ret > 0 ? ret : -ret;
+        return NULL;
+    }
+
+    srq->srq_handle = resp.srqn;
+    srq->rq_wqe_size = rq_wqe_size;
+    srq->rq_depth = rq_depth;
+    srq->buf = buf;
+    srq->buf_len = buf_size;
+    srq->rq_ring = (struct rocm_ernic_ring *)((char *)buf + 8);
+    srq->rq_offset = (size_t)page_size;
+    srq->uar_mmap_offset = resp.uar_mmap_offset;
+
+    if (resp.uar_mmap_offset) {
+        srq->uar_ptr = mmap(NULL, page_size, PROT_WRITE, MAP_SHARED,
+                            pd->context->cmd_fd, (off_t)resp.uar_mmap_offset);
+        if (srq->uar_ptr == MAP_FAILED)
+            srq->uar_ptr = NULL;
+    }
+
+    memset(srq->rq_ring, 0, sizeof(*srq->rq_ring));
+
+    return &srq->vsrq.srq;
+}
+
+int rocm_ernic_destroy_srq_v(struct ibv_srq *ibsrq)
+{
+    struct rocm_ernic_srq *srq = to_rocm_ernic_srq(ibsrq);
+    long ps = sysconf(_SC_PAGESIZE);
+    int ret;
+
+    ret = ibv_cmd_destroy_srq(ibsrq);
+    if (ret)
+        return ret;
+
+    if (srq->uar_ptr && ps > 0)
+        munmap(srq->uar_ptr, ps);
+    if (srq->buf && srq->buf_len)
+        munmap(srq->buf, srq->buf_len);
+    free(srq);
+    return 0;
+}
+
+int rocm_ernic_post_srq_recv_v(struct ibv_srq *ibsrq, struct ibv_recv_wr *wr,
+                                 struct ibv_recv_wr **bad_wr)
+{
+    struct rocm_ernic_srq *srq = to_rocm_ernic_srq(ibsrq);
+    int ret = 0;
+
+    if (!srq->buf || !srq->rq_ring) {
+        *bad_wr = wr;
+        return EINVAL;
+    }
+
+    while (wr) {
+        uint32_t tail = 0;
+        struct rocm_ernic_rq_wqe_hdr *wqe;
+        struct rocm_ernic_sge *sge;
+        int i;
+
+        int rq_status = ring_has_space(srq->rq_ring, srq->rq_depth, &tail);
+        if (rq_status <= 0) {
+            *bad_wr = wr;
+            ret = (rq_status < 0) ? EINVAL : ENOMEM;
+            break;
+        }
+
+        if (wr->num_sge < 0) {
+            *bad_wr = wr;
+            ret = EINVAL;
+            break;
+        }
+        if (srq->rq_wqe_size <= ROCM_ERNIC_RQ_WQE_HDR_SIZE ||
+            (uint32_t)wr->num_sge >
+                (srq->rq_wqe_size - ROCM_ERNIC_RQ_WQE_HDR_SIZE) /
+                    ROCM_ERNIC_SGE_SIZE) {
+            *bad_wr = wr;
+            ret = EINVAL;
+            break;
+        }
+
+        wqe = (struct rocm_ernic_rq_wqe_hdr *)((char *)srq->buf + srq->rq_offset +
+                                               (size_t)tail * srq->rq_wqe_size);
+
+        wqe->wr_id = wr->wr_id;
+        wqe->num_sge = wr->num_sge;
+        wqe->total_len = 0;
+
+        sge = (struct rocm_ernic_sge *)(wqe + 1);
+        for (i = 0; i < wr->num_sge; i++) {
+            sge->addr = wr->sg_list[i].addr;
+            sge->length = wr->sg_list[i].length;
+            sge->lkey = wr->sg_list[i].lkey;
+            sge++;
+        }
+
+        __sync_synchronize();
+        ring_inc(&srq->rq_ring->prod_tail, srq->rq_depth);
+        wr = wr->next;
+    }
+
+    __sync_synchronize();
+    uar_write32_srq(srq, ROCM_ERNIC_UAR_SRQ_RECV | srq->srq_handle);
 
     return ret;
 }

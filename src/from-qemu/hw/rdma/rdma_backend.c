@@ -787,6 +787,20 @@ void rdma_backend_post_srq_recv(RdmaBackendDev *backend_dev,
     int rc;
     struct ibv_recv_wr wr = {}, *bad_wr;
 
+    if (srq->backend_ops && srq->backend_ops->post_srq_recv) {
+        rc =
+            build_host_sge_array(backend_dev->rdma_dev_res, sge, num_sge,
+                                 &backend_dev->rdma_dev_res->stats.rx_bufs_len);
+        if (rc) {
+            complete_work(IBV_WC_GENERAL_ERR, rc, ctx);
+            return;
+        }
+
+        srq->backend_ops->post_srq_recv(srq, sge, num_sge, ctx);
+        backend_dev->rdma_dev_res->stats.rx_srq++;
+        return;
+    }
+
     bctx = g_malloc0(sizeof(*bctx));
     bctx->up_ctx = ctx;
     bctx->backend_srq = srq;
@@ -1106,6 +1120,18 @@ int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
 {
     struct ibv_srq_init_attr srq_init_attr = {};
 
+    if (pd->backend_ops && pd->backend_ops->create_srq) {
+        int rc =
+            pd->backend_ops->create_srq(srq, pd, max_wr, max_sge, srq_limit);
+
+        if (rc) {
+            return rc;
+        }
+        srq->backend_ops = pd->backend_ops;
+        rdma_protected_gslist_init(&srq->cqe_ctx_list);
+        return 0;
+    }
+
     srq_init_attr.attr.max_wr = max_wr;
     srq_init_attr.attr.max_sge = max_sge;
     srq_init_attr.attr.srq_limit = srq_limit;
@@ -1123,6 +1149,10 @@ int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
 
 int rdma_backend_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr)
 {
+    if (srq->backend_ops && srq->backend_ops->query_srq) {
+        return srq->backend_ops->query_srq(srq, srq_attr);
+    }
+
     if (!srq->ibsrq) {
         return -EINVAL;
     }
@@ -1133,6 +1163,10 @@ int rdma_backend_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr)
 int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
                             int srq_attr_mask)
 {
+    if (srq->backend_ops && srq->backend_ops->modify_srq) {
+        return srq->backend_ops->modify_srq(srq, srq_attr, srq_attr_mask);
+    }
+
     if (!srq->ibsrq) {
         return -EINVAL;
     }
@@ -1142,6 +1176,14 @@ int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
 
 void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
 {
+    if (srq->backend_ops && srq->backend_ops->destroy_srq) {
+        srq->backend_ops->destroy_srq(srq);
+        g_slist_foreach(srq->cqe_ctx_list.list, free_cqe_ctx, dev_res);
+        rdma_protected_gslist_destroy(&srq->cqe_ctx_list);
+        srq->backend_ops = NULL;
+        return;
+    }
+
     if (srq->ibsrq) {
         ibv_destroy_srq(srq->ibsrq);
     }

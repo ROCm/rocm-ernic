@@ -30,7 +30,10 @@
 
 #include "pvrdma.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
+#include "pvrdma_comp_ctx.h"
 #include "pvrdma_qp_ops.h"
+
+typedef PvrdmaCompHandlerCtx CompHandlerCtx;
 
 /* Number of WQEs to process per batch before yielding to event loop */
 #define WQE_BATCH_SIZE 16
@@ -44,17 +47,6 @@
  * TCP socket buffer (net.core.wmem_max).
  */
 #define MAX_SEND_IN_FLIGHT 4
-
-typedef struct CompHandlerCtx {
-    PVRDMADev *dev;
-    uint32_t cq_handle;
-    uint32_t qp_handle;
-    struct pvrdma_cqe cqe;
-    /* RDMA operation parameters */
-    uint32_t opcode;      /* PVRDMA_WR_* opcode */
-    uint64_t remote_addr; /* For RDMA Read/Write */
-    uint32_t rkey;        /* For RDMA Read/Write */
-} CompHandlerCtx;
 
 /*
  * Deferred completion -- queued by background threads,
@@ -227,6 +219,40 @@ int pvrdma_qp_ops_init(void)
     return 0;
 }
 
+void pvrdma_queue_recv_work_completion(PVRDMADev *dev, uint32_t recv_cq_handle,
+                                       uint64_t recv_guest_wr_id,
+                                       uint32_t byte_len, uint32_t src_qp_num)
+{
+    DeferredCompletion *d;
+
+    if (!g_deferred_completions) {
+        return;
+    }
+
+    d = g_new(DeferredCompletion, 1);
+    d->dev = dev;
+    d->cq_handle = recv_cq_handle;
+    d->qp_handle = 0;
+    memset(&d->cqe, 0, sizeof(d->cqe));
+    d->cqe.wr_id = recv_guest_wr_id;
+    d->cqe.qp = src_qp_num;
+    d->cqe.opcode = IBV_WC_RECV;
+
+    memset(&d->wc, 0, sizeof(d->wc));
+    d->wc.status = IBV_WC_SUCCESS;
+    d->wc.byte_len = byte_len;
+    d->wc.qp_num = src_qp_num;
+    d->wc.opcode = IBV_WC_RECV;
+    d->wc.wr_id = recv_guest_wr_id;
+    d->wc.src_qp = src_qp_num;
+
+    qemu_mutex_lock(&g_deferred_lock);
+    g_queue_push_tail(g_deferred_completions, d);
+    qemu_mutex_unlock(&g_deferred_lock);
+
+    __atomic_store_n(&dev->pending_cq_interrupt, 1, __ATOMIC_RELEASE);
+}
+
 void pvrdma_drain_deferred_completions(void)
 {
     if (!g_deferred_completions) {
@@ -278,6 +304,7 @@ static enum ibv_wc_opcode pvrdma_to_ibv_wc_opcode(uint32_t pvrdma_opcode)
     case PVRDMA_WR_SEND:
     case PVRDMA_WR_SEND_WITH_IMM:
     case PVRDMA_WR_SEND_WITH_INV:
+    case PVRDMA_WR_SEND_DC:
         return IBV_WC_SEND;
     case PVRDMA_WR_RDMA_WRITE:
     case PVRDMA_WR_RDMA_WRITE_WITH_IMM:
@@ -334,7 +361,7 @@ static gboolean continue_qp_recv_processing(gpointer user_data)
     while (wqe && qp->wqe_state.recv_wqes_processed < WQE_BATCH_SIZE) {
         CompHandlerCtx *comp_ctx;
 
-        comp_ctx = g_new(CompHandlerCtx, 1);
+        comp_ctx = g_new0(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->recv_cq_handle;
         comp_ctx->qp_handle = 0;
@@ -442,7 +469,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             break;
         }
 
-        comp_ctx = g_new(CompHandlerCtx, 1);
+        comp_ctx = g_new0(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
         comp_ctx->qp_handle = qp_handle;
@@ -492,6 +519,66 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
             }
 
+            sgid_idx = 0;
+            sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
+            dgid = NULL;
+            dqpn = 0;
+            dqkey = 0;
+        } else if (qp->qp_type == ROCM_ERNIC_PVRDMA_QPT_DCI ||
+                   qp->dc_role == ROCM_ERNIC_DC_ROLE_DCI) {
+            if (pvrdma_opcode == PVRDMA_WR_SEND_DC) {
+                RdmaRmQP *dct = rdma_rm_lookup_dct(&dev->rdma_dev_res,
+                                                   wqe->hdr.wr.dc.remote_dctn);
+                uint64_t wire_key = (uint64_t)wqe->hdr.wr.dc.dc_access_key;
+
+                if (!dct) {
+                    complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                if (dct->dct_access_key != wire_key) {
+                    complete_with_error(VENDOR_ERR_DC_KEY, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                if (!dct->is_srq) {
+                    complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                RdmaRmSRQ *srq_rm =
+                    rdma_rm_get_srq(&dev->rdma_dev_res, dct->bound_srq_handle);
+                if (!srq_rm) {
+                    complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                comp_ctx->dc_target_srq = &srq_rm->backend_srq;
+                comp_ctx->dc_recv_cq_handle = srq_rm->recv_cq_handle;
+                comp_ctx->dc_src_qp = qp->qpn;
+            } else if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
+                       pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
+                       pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM ||
+                       pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV) {
+                comp_ctx->remote_addr = wqe->hdr.wr.rdma.remote_addr;
+                comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
+            } else {
+                rdma_error_report("Unsupported opcode %u on DCI QP",
+                                  pvrdma_opcode);
+                complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
+                pvrdma_ring_read_inc(ring);
+                wqe = pvrdma_ring_next_elem_read(ring);
+                qp->wqe_state.send_wqes_processed++;
+                continue;
+            }
             sgid_idx = 0;
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
             dgid = NULL;
@@ -592,7 +679,7 @@ static gboolean continue_srq_recv_processing(gpointer user_data)
         CompHandlerCtx *comp_ctx;
 
         /* Prepare CQE */
-        comp_ctx = g_new(CompHandlerCtx, 1);
+        comp_ctx = g_new0(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = srq->recv_cq_handle;
         comp_ctx->qp_handle = 0;
@@ -702,7 +789,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             break;
         }
 
-        comp_ctx = g_new(CompHandlerCtx, 1);
+        comp_ctx = g_new0(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
         comp_ctx->qp_handle = qp_handle;
@@ -757,6 +844,66 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             dgid = NULL;
             dqpn = 0;
             dqkey = 0;
+        } else if (qp->qp_type == ROCM_ERNIC_PVRDMA_QPT_DCI ||
+                   qp->dc_role == ROCM_ERNIC_DC_ROLE_DCI) {
+            if (pvrdma_opcode == PVRDMA_WR_SEND_DC) {
+                RdmaRmQP *dct = rdma_rm_lookup_dct(&dev->rdma_dev_res,
+                                                   wqe->hdr.wr.dc.remote_dctn);
+                uint64_t wire_key = (uint64_t)wqe->hdr.wr.dc.dc_access_key;
+
+                if (!dct) {
+                    complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                if (dct->dct_access_key != wire_key) {
+                    complete_with_error(VENDOR_ERR_DC_KEY, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                if (!dct->is_srq) {
+                    complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                RdmaRmSRQ *srq_rm =
+                    rdma_rm_get_srq(&dev->rdma_dev_res, dct->bound_srq_handle);
+                if (!srq_rm) {
+                    complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
+                    pvrdma_ring_read_inc(ring);
+                    wqe = pvrdma_ring_next_elem_read(ring);
+                    qp->wqe_state.send_wqes_processed++;
+                    continue;
+                }
+                comp_ctx->dc_target_srq = &srq_rm->backend_srq;
+                comp_ctx->dc_recv_cq_handle = srq_rm->recv_cq_handle;
+                comp_ctx->dc_src_qp = qp->qpn;
+            } else if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
+                       pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
+                       pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM ||
+                       pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV) {
+                comp_ctx->remote_addr = wqe->hdr.wr.rdma.remote_addr;
+                comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
+            } else {
+                rdma_error_report("Unsupported opcode %u on DCI QP",
+                                  pvrdma_opcode);
+                complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
+                pvrdma_ring_read_inc(ring);
+                wqe = pvrdma_ring_next_elem_read(ring);
+                qp->wqe_state.send_wqes_processed++;
+                continue;
+            }
+            sgid_idx = 0;
+            sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
+            dgid = NULL;
+            dqpn = 0;
+            dqkey = 0;
         } else {
             rdma_error_report("Unsupported QP type %d for send", qp->qp_type);
             complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
@@ -786,7 +933,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             PVRDMAQPStats *qp_stats = pvrdma_get_qp_stats(dev, qp_handle);
             if (qp_stats) {
                 qp_stats->wqes_processed++;
-                if (pvrdma_opcode < 16) {
+                if (pvrdma_opcode < 18) {
                     qp_stats->wqes_by_opcode[pvrdma_opcode]++;
                 }
             }
@@ -845,7 +992,7 @@ void pvrdma_qp_recv(PVRDMADev *dev, uint32_t qp_handle)
     while (wqe && qp->wqe_state.recv_wqes_processed < WQE_BATCH_SIZE) {
         CompHandlerCtx *comp_ctx;
 
-        comp_ctx = g_new(CompHandlerCtx, 1);
+        comp_ctx = g_new0(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->recv_cq_handle;
         comp_ctx->qp_handle = 0;
@@ -917,7 +1064,7 @@ void pvrdma_srq_recv(PVRDMADev *dev, uint32_t srq_handle)
         CompHandlerCtx *comp_ctx;
 
         /* Prepare CQE */
-        comp_ctx = g_new(CompHandlerCtx, 1);
+        comp_ctx = g_new0(CompHandlerCtx, 1);
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = srq->recv_cq_handle;
         comp_ctx->qp_handle = 0;

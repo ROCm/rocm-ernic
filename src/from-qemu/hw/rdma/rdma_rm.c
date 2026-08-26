@@ -483,7 +483,9 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
                      uint32_t max_send_sge, uint32_t send_cq_handle,
                      uint32_t max_recv_wr, uint32_t max_recv_sge,
                      uint32_t recv_cq_handle, void *opaque, uint32_t *qpn,
-                     uint8_t is_srq, uint32_t srq_handle)
+                     uint8_t is_srq, uint32_t srq_handle, uint8_t dc_role,
+                     uint64_t dct_access_key, uint32_t *dctn_out,
+                     RdmaRmQP **out_qp)
 {
     int rc;
     RdmaRmQP *qp;
@@ -531,21 +533,12 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     qp->qp_type = qp_type;
     qp->send_cq_handle = send_cq_handle;
     qp->recv_cq_handle = recv_cq_handle;
-    rdma_info_report(
-        ">>> rdma_rm_alloc_qp: sizeof(RdmaRmQP)=%zu, sizeof(RdmaBackendQP)=%zu",
-        sizeof(RdmaRmQP), sizeof(RdmaBackendQP));
-    rdma_info_report(">>> rdma_rm_alloc_qp: Setting qp=%p, &qp->backend_qp=%p, "
-                     "&qp->opaque=%p",
-                     qp, &qp->backend_qp, &qp->opaque);
-    rdma_info_report(">>> rdma_rm_alloc_qp: Offset of opaque: %zu",
-                     (size_t)((char *)&qp->opaque - (char *)qp));
-    rdma_info_report(">>> rdma_rm_alloc_qp: Passed opaque=%p", opaque);
-    rdma_info_report(">>> rdma_rm_alloc_qp: BEFORE: qp->opaque = %p",
-                     qp->opaque);
     qp->opaque = opaque;
-    rdma_info_report(">>> rdma_rm_alloc_qp: AFTER:  qp->opaque = %p",
-                     qp->opaque);
     qp->is_srq = is_srq;
+    qp->bound_srq_handle = is_srq ? srq_handle : 0;
+    qp->dc_role = dc_role;
+    qp->dct_access_key = dct_access_key;
+    qp->dctn = 0;
 
     /* Create backend QP using vtable dispatch */
     if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_qp) {
@@ -580,7 +573,30 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         *qpn = rm_qpn; /* Use local QPN */
     }
 
+    if (dc_role == 1) {
+        uint32_t dn;
+
+        if (!dctn_out || !dev_res->dct_hash) {
+            rc = -EINVAL;
+            goto out_dealloc_qp;
+        }
+        qemu_mutex_lock(&dev_res->dc_lock);
+        dn = dev_res->next_dctn++;
+        if (dn == 0) {
+            dn = dev_res->next_dctn++;
+        }
+        qp->dctn = dn;
+        g_hash_table_insert(dev_res->dct_hash, GUINT_TO_POINTER((uintptr_t)dn),
+                            qp);
+        qemu_mutex_unlock(&dev_res->dc_lock);
+        *dctn_out = dn;
+    }
+
     g_hash_table_insert(dev_res->qp_hash, g_bytes_new(qpn, sizeof(*qpn)), qp);
+
+    if (out_qp) {
+        *out_qp = qp;
+    }
 
     return 0;
 
@@ -588,6 +604,20 @@ out_dealloc_qp:
     rdma_res_tbl_dealloc(&dev_res->qp_tbl, qp->qpn);
 
     return rc;
+}
+
+RdmaRmQP *rdma_rm_lookup_dct(RdmaDeviceResources *dev_res, uint32_t dctn)
+{
+    RdmaRmQP *qp;
+
+    if (!dev_res->dct_hash || dctn == 0) {
+        return NULL;
+    }
+    qemu_mutex_lock(&dev_res->dc_lock);
+    qp = g_hash_table_lookup(dev_res->dct_hash,
+                             GUINT_TO_POINTER((uintptr_t)dctn));
+    qemu_mutex_unlock(&dev_res->dc_lock);
+    return qp;
 }
 
 int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
@@ -729,6 +759,13 @@ void rdma_rm_dealloc_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle)
 
     if (!qp) {
         return;
+    }
+
+    if (qp->dctn != 0 && dev_res->dct_hash) {
+        qemu_mutex_lock(&dev_res->dc_lock);
+        g_hash_table_remove(dev_res->dct_hash,
+                            GUINT_TO_POINTER((uintptr_t)qp->dctn));
+        qemu_mutex_unlock(&dev_res->dc_lock);
     }
 
     /* Dispatch destroy through vtable if backend exists */
@@ -951,6 +988,15 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
         return -ENOMEM;
     }
 
+    dev_res->dct_hash = g_hash_table_new(g_direct_hash, g_direct_equal);
+    if (!dev_res->dct_hash) {
+        g_hash_table_destroy(dev_res->qp_hash);
+        dev_res->qp_hash = NULL;
+        return -ENOMEM;
+    }
+    dev_res->next_dctn = 1;
+    qemu_mutex_init(&dev_res->dc_lock);
+
     res_tbl_init("PD", &dev_res->pd_tbl, dev_attr->max_pd, sizeof(RdmaRmPD));
     res_tbl_init("CQ", &dev_res->cq_tbl, dev_attr->max_cq, sizeof(RdmaRmCQ));
     res_tbl_init("MR", &dev_res->mr_tbl, dev_attr->max_mr, sizeof(RdmaRmMR));
@@ -987,6 +1033,12 @@ void rdma_rm_fini(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     res_tbl_free(&dev_res->mr_tbl);
     res_tbl_free(&dev_res->cq_tbl);
     res_tbl_free(&dev_res->pd_tbl);
+
+    if (dev_res->dct_hash) {
+        g_hash_table_destroy(dev_res->dct_hash);
+        dev_res->dct_hash = NULL;
+    }
+    qemu_mutex_destroy(&dev_res->dc_lock);
 
     if (dev_res->qp_hash) {
         g_hash_table_destroy(dev_res->qp_hash);
