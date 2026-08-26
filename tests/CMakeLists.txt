@@ -143,6 +143,39 @@ if(CMOCKA_FOUND)
         ${CMOCKA_LIBRARIES}
     )
 endif()
+# -- DHCP server lifecycle / leak test ---------------------------
+# Built with AddressSanitizer + LeakSanitizer + UBSan (unless the project
+# is built with ThreadSanitizer, which is incompatible) so a leak in the
+# DHCP server's create/destroy path fails the test. Flag set matches
+# cmake/ErnicSanitizers.cmake; -fno-omit-frame-pointer is compile-only.
+set(ERNIC_LEAK_TEST_SAN)
+set(ERNIC_LEAK_TEST_SAN_LINK)
+if(NOT ERNIC_USE_THREAD_SANITIZER)
+    set(ERNIC_LEAK_TEST_SAN
+        -fsanitize=address,undefined,leak -fno-omit-frame-pointer)
+    set(ERNIC_LEAK_TEST_SAN_LINK -fsanitize=address,undefined,leak)
+endif()
+
+add_executable(test_dhcp_server_lifecycle
+    test_dhcp_server_lifecycle.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+)
+target_include_directories(test_dhcp_server_lifecycle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_dhcp_server_lifecycle PRIVATE _GNU_SOURCE)
+# QEMU-ported sources are compiled -w here, matching the main build.
+target_compile_options(test_dhcp_server_lifecycle PRIVATE
+    -w ${ERNIC_LEAK_TEST_SAN})
+target_link_options(test_dhcp_server_lifecycle PRIVATE ${ERNIC_LEAK_TEST_SAN_LINK})
+target_link_directories(test_dhcp_server_lifecycle PRIVATE
+    ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_dhcp_server_lifecycle PRIVATE ${GLIB2_LIBRARIES})
 
 # ---------------------------------------------------------------
 # Register tests with CTest
@@ -200,3 +233,9 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+# DHCP server lifecycle / leak test (table-driven, ASan+LSan)
+add_test(
+    NAME dhcp-server-lifecycle-unit
+    COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
+)
+set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
