@@ -51,6 +51,10 @@ target_link_libraries(test_rdma_cm PRIVATE
 # is already built with ThreadSanitizer, which is incompatible). Flag set
 # matches cmake/ErnicSanitizers.cmake; -fno-omit-frame-pointer is
 # compile-only.
+# is already built with ThreadSanitizer, which is incompatible) so a NULL
+# deref, leak, or out-of-bounds read fails the test even when the rest of
+# the project is built without sanitizers. Flag set matches
+# cmake/ErnicSanitizers.cmake; -fno-omit-frame-pointer is compile-only.
 set(ERNIC_UNIT_TEST_SAN)
 set(ERNIC_UNIT_TEST_SAN_LINK)
 if(NOT ERNIC_USE_THREAD_SANITIZER)
@@ -143,6 +147,15 @@ if(CMOCKA_FOUND)
         ${CMOCKA_LIBRARIES}
     )
 endif()
+# net_headers.h checksum helpers are header-only and self-contained. The
+# ported header is a SYSTEM include so its warnings stay quiet while the
+# test source itself is still warning-checked.
+add_executable(test_net_checksum test_net_checksum.c)
+target_include_directories(test_net_checksum SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+)
+target_compile_options(test_net_checksum PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_net_checksum PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
 # ---------------------------------------------------------------
 # Register tests with CTest
@@ -200,3 +213,9 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+# TCP/UDP checksum helper unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME net-checksum-unit
+    COMMAND $<TARGET_FILE:test_net_checksum>
+)
+set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
