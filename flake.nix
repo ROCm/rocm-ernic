@@ -64,12 +64,36 @@
         devshell = import ./nix/devshell.nix {
           inherit pkgs packages;
         };
+
+        # Static-analysis framework (Phase B). See nix/analysis/default.nix.
+        analysis = import ./nix/analysis {
+          inherit pkgs lib;
+          libvfio-user = libvfioUser;
+          src = ./.;
+        };
       in
       {
         packages = {
           inherit rocm-ernic;
           libvfio-user = libvfioUser;
           default = rocm-ernic;
+
+          # Compilation database (consumed by clang-tidy / cppcheck).
+          compile-db = analysis.compileDb;
+
+          # Aggregate analysis levels.
+          analysis-quick = analysis.quick;
+          analysis-standard = analysis.standard;
+          analysis-deep = analysis.deep;
+
+          # Per-tool analysis targets.
+          analysis-clang-tidy = analysis.clang-tidy;
+          analysis-cppcheck = analysis.cppcheck;
+          analysis-flawfinder = analysis.flawfinder;
+          analysis-semgrep = analysis.semgrep;
+          analysis-clang-analyzer = analysis.clang-analyzer;
+          analysis-gcc-warnings = analysis.gcc-warnings;
+          analysis-gcc-analyzer = analysis.gcc-analyzer;
         };
 
         devShells.default = devshell;
