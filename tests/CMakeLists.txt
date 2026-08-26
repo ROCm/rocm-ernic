@@ -143,6 +143,15 @@ if(CMOCKA_FOUND)
         ${CMOCKA_LIBRARIES}
     )
 endif()
+# Strict integer parser (parse_int.h) unit test (header-only). The ported
+# header dir is a SYSTEM include so its warnings stay quiet while the test
+# source itself is still warning-checked.
+add_executable(test_parse_int test_parse_int.c)
+target_include_directories(test_parse_int SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+)
+target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
 # ---------------------------------------------------------------
 # Register tests with CTest
@@ -200,3 +209,9 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+# Strict integer/port parser unit test
+add_test(
+    NAME parse-int-unit
+    COMMAND $<TARGET_FILE:test_parse_int>
+)
+set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
