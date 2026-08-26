@@ -347,6 +347,10 @@ int rdma_backend_query_port(RdmaBackendDev *backend_dev,
 {
     int rc;
 
+    if (!backend_dev) {
+        return -EINVAL;
+    }
+
     /* Prefer backend-specific implementation (e.g., TCP/loopback) */
     if (backend_dev && backend_dev->backend_ops &&
         backend_dev->backend_ops->query_port) {
