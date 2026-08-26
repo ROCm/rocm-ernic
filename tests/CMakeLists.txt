@@ -144,6 +144,13 @@ if(CMOCKA_FOUND)
     )
 endif()
 
+# ROCM_ERNIC_ETH_CTL_RESET bit-definition test (header-only, project header
+# so warnings stay enabled).
+add_executable(test_eth_ctl_reset test_eth_ctl_reset.c)
+target_include_directories(test_eth_ctl_reset PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -200,3 +207,10 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+
+# Ethernet control reset-bit definition unit test
+add_test(
+    NAME eth-ctl-reset-unit
+    COMMAND $<TARGET_FILE:test_eth_ctl_reset>
+)
+set_tests_properties(eth-ctl-reset-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
