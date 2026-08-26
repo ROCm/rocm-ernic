@@ -59,6 +59,9 @@ let
   sanitizerTargets = import ./sanitizers.nix { inherit lib pkgs src libvfio-user; };
   valgrind = import ./valgrind.nix { inherit lib pkgs src libvfio-user; };
 
+  # ── Fuzzing (Phase D) ───────────────────────────────────────────
+  fuzzTargets = import ./fuzz.nix { inherit lib pkgs src libvfio-user; };
+
   # ── Triage ──────────────────────────────────────────────────────
   triagePath = ./triage;
 
@@ -121,4 +124,5 @@ in
     valgrind;
   inherit (gccTargets) gcc-warnings gcc-analyzer;
   inherit (sanitizerTargets) sanitizers thread-sanitizer;
+  inherit (fuzzTargets) fuzzers fuzz-run;
 }

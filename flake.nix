@@ -99,6 +99,10 @@
           analysis-sanitizers = analysis.sanitizers;
           analysis-tsan = analysis.thread-sanitizer;
           analysis-valgrind = analysis.valgrind;
+
+          # Fuzzing (Phase D).
+          fuzz = analysis.fuzzers;       # build harnesses + corpora
+          fuzz-run = analysis.fuzz-run;  # bounded run, collect crashes
         };
 
         devShells.default = devshell;
