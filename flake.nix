@@ -94,6 +94,11 @@
           analysis-clang-analyzer = analysis.clang-analyzer;
           analysis-gcc-warnings = analysis.gcc-warnings;
           analysis-gcc-analyzer = analysis.gcc-analyzer;
+
+          # Dynamic analysis (Phase C): build + exercise on loopback.
+          analysis-sanitizers = analysis.sanitizers;
+          analysis-tsan = analysis.thread-sanitizer;
+          analysis-valgrind = analysis.valgrind;
         };
 
         devShells.default = devshell;

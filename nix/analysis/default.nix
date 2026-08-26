@@ -53,6 +53,12 @@ let
   gccTargets = import ./gcc.nix { inherit lib pkgs src libvfio-user; };
   clang-analyzer = import ./clang-analyzer.nix { inherit lib pkgs src libvfio-user; };
 
+  # ── Dynamic analysis (Phase C) ──────────────────────────────────
+  # These build + run the server on the loopback backend; they are not
+  # part of the static triage aggregates.
+  sanitizerTargets = import ./sanitizers.nix { inherit lib pkgs src libvfio-user; };
+  valgrind = import ./valgrind.nix { inherit lib pkgs src libvfio-user; };
+
   # ── Triage ──────────────────────────────────────────────────────
   triagePath = ./triage;
 
@@ -111,6 +117,8 @@ in
   inherit
     compileDb
     clang-tidy cppcheck flawfinder semgrep clang-analyzer
-    quick standard deep;
+    quick standard deep
+    valgrind;
   inherit (gccTargets) gcc-warnings gcc-analyzer;
+  inherit (sanitizerTargets) sanitizers thread-sanitizer;
 }
