@@ -220,10 +220,16 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     }
 
     if (init_attr->qp_type != IB_QPT_RC && init_attr->qp_type != IB_QPT_UD &&
-        init_attr->qp_type != IB_QPT_GSI) {
+        init_attr->qp_type != IB_QPT_GSI &&
+        init_attr->qp_type != IB_QPT_DRIVER) {
         dev_warn(&dev->pdev->dev, "queuepair type %d not supported\n",
                  init_attr->qp_type);
         return -EOPNOTSUPP;
+    }
+
+    if (init_attr->qp_type == IB_QPT_DRIVER && !udata) {
+        dev_warn(&dev->pdev->dev, "IB_QPT_DRIVER requires userspace create\n");
+        return -EINVAL;
     }
 
     if (is_srq && !dev->dsr->caps.max_srq) {
@@ -235,6 +241,32 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         return -ENOMEM;
 
     switch (init_attr->qp_type) {
+    case IB_QPT_DRIVER: {
+        if (ib_copy_from_udata(&ucmd, udata, min(udata->inlen, sizeof(ucmd)))) {
+            ret = -EFAULT;
+            goto err_qp;
+        }
+        if (!(ucmd.ex_mask & ROCM_ERNIC_CREATE_QP_EX_DC)) {
+            dev_warn(&dev->pdev->dev, "IB_QPT_DRIVER missing DC ex_mask\n");
+            ret = -EINVAL;
+            goto err_qp;
+        }
+        if (ucmd.dc_role != ROCM_ERNIC_DC_ROLE_DCT &&
+            ucmd.dc_role != ROCM_ERNIC_DC_ROLE_DCI) {
+            ret = -EINVAL;
+            goto err_qp;
+        }
+        if (ucmd.dc_role == ROCM_ERNIC_DC_ROLE_DCT &&
+            (!is_srq || ucmd.dct_access_key == 0)) {
+            ret = -EINVAL;
+            goto err_qp;
+        }
+        if (ucmd.dc_role == ROCM_ERNIC_DC_ROLE_DCI && is_srq) {
+            ret = -EINVAL;
+            goto err_qp;
+        }
+    }
+        goto qp_create_body;
     case IB_QPT_GSI:
         if (init_attr->port_num == 0 ||
             init_attr->port_num > ibqp->device->phys_port_cnt) {
@@ -245,6 +277,7 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         fallthrough;
     case IB_QPT_RC:
     case IB_QPT_UD:
+    qp_create_body:
         spin_lock_init(&qp->sq.lock);
         spin_lock_init(&qp->rq.lock);
         mutex_init(&qp->mutex);
@@ -257,18 +290,22 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         if (!qp->is_kernel) {
             dev_dbg(&dev->pdev->dev, "create queuepair from user space\n");
 
-            if (ib_copy_from_udata(&ucmd, udata,
-                                   min(udata->inlen, sizeof(ucmd)))) {
-                ret = -EFAULT;
-                goto err_qp;
+            if (init_attr->qp_type != IB_QPT_DRIVER) {
+                if (ib_copy_from_udata(&ucmd, udata,
+                                       min(udata->inlen, sizeof(ucmd)))) {
+                    ret = -EFAULT;
+                    goto err_qp;
+                }
             }
 
             dv_mode = !!(ucmd.comp_mask & ROCM_ERNIC_QP_DV_ENABLE);
 
             if (dev->dsr_version >= ROCM_ERNIC_QPHANDLE_VERSION &&
                 udata->outlen < sizeof(qp_resp)) {
-                dev_warn(&dev->pdev->dev, "create queuepair: "
-                                          "outlen too small\n");
+                dev_warn(&dev->pdev->dev,
+                         "create queuepair: "
+                         "outlen %u need %zu\n",
+                         udata->outlen, sizeof(qp_resp));
                 ret = -EOPNOTSUPP;
                 goto err_qp;
             }
@@ -435,7 +472,19 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     cmd->max_recv_sge = init_attr->cap.max_recv_sge;
     cmd->max_inline_data = init_attr->cap.max_inline_data;
     cmd->sq_sig_all = (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR) ? 1 : 0;
-    cmd->qp_type = ib_qp_type_to_rocm_ernic(init_attr->qp_type);
+    if (init_attr->qp_type == IB_QPT_DRIVER) {
+        cmd->qp_type = (ucmd.dc_role == ROCM_ERNIC_DC_ROLE_DCT)
+                           ? ROCM_ERNIC_QPT_DCT
+                           : ROCM_ERNIC_QPT_DCI;
+        cmd->dc_role = ucmd.dc_role;
+        cmd->dc_port_num = ucmd.dc_port_num ? ucmd.dc_port_num : 1;
+        cmd->dct_access_key = ucmd.dct_access_key;
+    } else {
+        cmd->qp_type = ib_qp_type_to_rocm_ernic(init_attr->qp_type);
+        cmd->dc_role = 0;
+        cmd->dc_port_num = 0;
+        cmd->dct_access_key = 0;
+    }
     cmd->is_srq = is_srq;
     cmd->lkey = 0;
     cmd->access_flags = IB_ACCESS_LOCAL_WRITE;
@@ -457,6 +506,10 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
     }
 
     qp->port = init_attr->port_num;
+    if (init_attr->qp_type == IB_QPT_DRIVER) {
+        qp->port = ucmd.dc_port_num ? ucmd.dc_port_num : 1;
+        qp->dc_role = ucmd.dc_role;
+    }
 
     if (dev->dsr_version >= ROCM_ERNIC_QPHANDLE_VERSION) {
         qp->ibqp.qp_num = resp_v2->qpn;
@@ -481,6 +534,14 @@ int rocm_ernic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
         qp_resp.uar_cq_offset = ROCM_ERNIC_UAR_CQ_OFFSET;
         if (context)
             qp_resp.uar_mmap_offset = (u64)context->uar.pfn << PAGE_SHIFT;
+
+        qp_resp.resp_ex_mask = 0;
+        qp_resp.dctn = 0;
+        if (init_attr->qp_type == IB_QPT_DRIVER &&
+            ucmd.dc_role == ROCM_ERNIC_DC_ROLE_DCT) {
+            qp_resp.resp_ex_mask = ROCM_ERNIC_CREATE_QP_RESP_EX_DC;
+            qp_resp.dctn = resp_v2->dctn;
+        }
 
         if (ib_copy_to_udata(udata, &qp_resp,
                              min(udata->outlen, sizeof(qp_resp)))) {
@@ -587,6 +648,52 @@ static void __rocm_ernic_destroy_qp(struct rocm_ernic_dev *dev,
     _rocm_ernic_free_qp(qp);
 }
 
+/*
+ * DC QP state machine validation.
+ *
+ * DCT:  RESET→INIT→RTR→RTS   (armed on RTS; accepts sends via SRQ)
+ * DCI:  RESET→INIT→RTS        (no RTR — DCI uses per-send destination)
+ *
+ * Any→RESET and Any→ERR are always legal.
+ */
+static int rocm_ernic_dc_modify_qp_is_ok(const struct rocm_ernic_qp *qp,
+                                         enum ib_qp_state cur,
+                                         enum ib_qp_state next, int mask)
+{
+    if (next == IB_QPS_RESET || next == IB_QPS_ERR)
+        return 0;
+
+    if (!(mask & IB_QP_STATE))
+        return -EINVAL;
+
+    switch (cur) {
+    case IB_QPS_RESET:
+        if (next != IB_QPS_INIT)
+            return -EINVAL;
+        if (!(mask & (IB_QP_PORT | IB_QP_PKEY_INDEX | IB_QP_ACCESS_FLAGS)))
+            return -EINVAL;
+        return 0;
+
+    case IB_QPS_INIT:
+        if (qp->dc_role == ROCM_ERNIC_DC_ROLE_DCI) {
+            if (next != IB_QPS_RTS)
+                return -EINVAL;
+        } else {
+            if (next != IB_QPS_RTR)
+                return -EINVAL;
+        }
+        return 0;
+
+    case IB_QPS_RTR:
+        if (next != IB_QPS_RTS)
+            return -EINVAL;
+        return 0;
+
+    default:
+        return -EINVAL;
+    }
+}
+
 /**
  * rocm_ernic_modify_qp - modify queue pair attributes
  * @ibqp: the queue pair
@@ -615,7 +722,15 @@ int rocm_ernic_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
     cur_state = (attr_mask & IB_QP_CUR_STATE) ? attr->cur_qp_state : qp->state;
     next_state = (attr_mask & IB_QP_STATE) ? attr->qp_state : cur_state;
 
-    if (!ib_modify_qp_is_ok(cur_state, next_state, ibqp->qp_type, attr_mask)) {
+    if (ibqp->qp_type == IB_QPT_DRIVER) {
+        ret =
+            rocm_ernic_dc_modify_qp_is_ok(qp, cur_state, next_state, attr_mask);
+        if (ret) {
+            ret = -EINVAL;
+            goto out;
+        }
+    } else if (!ib_modify_qp_is_ok(cur_state, next_state, ibqp->qp_type,
+                                   attr_mask)) {
         ret = -EINVAL;
         goto out;
     }
@@ -797,7 +912,7 @@ int rocm_ernic_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
          *
          */
         if (qp->ibqp.qp_type != IB_QPT_UD && qp->ibqp.qp_type != IB_QPT_RC &&
-            wr->opcode != IB_WR_SEND) {
+            qp->ibqp.qp_type != IB_QPT_DRIVER && wr->opcode != IB_WR_SEND) {
             dev_warn_ratelimited(&dev->pdev->dev,
                                  "unsupported queuepair type\n");
             *bad_wr = wr;
@@ -852,6 +967,7 @@ int rocm_ernic_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 
             break;
         case IB_QPT_RC:
+        case IB_QPT_DRIVER:
             switch (wr->opcode) {
             case IB_WR_RDMA_READ:
             case IB_WR_RDMA_WRITE:

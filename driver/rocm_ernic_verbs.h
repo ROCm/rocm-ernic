@@ -238,6 +238,8 @@ enum rocm_ernic_qp_type {
     ROCM_ERNIC_QPT_XRC_INI = 9,
     ROCM_ERNIC_QPT_XRC_TGT,
     ROCM_ERNIC_QPT_MAX,
+    ROCM_ERNIC_QPT_DCT = 240,
+    ROCM_ERNIC_QPT_DCI,
 };
 
 enum rocm_ernic_qp_create_flags {
@@ -417,6 +419,8 @@ int rocm_ernic_destroy_ah(struct ib_ah *ah, u32 flags);
 int rocm_ernic_create_srq(struct ib_srq *srq,
                           struct ib_srq_init_attr *init_attr,
                           struct ib_udata *udata);
+int rocm_ernic_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
+                             const struct ib_recv_wr **bad_wr);
 int rocm_ernic_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
                           enum ib_srq_attr_mask attr_mask,
                           struct ib_udata *udata);

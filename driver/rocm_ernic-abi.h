@@ -80,6 +80,7 @@ enum rocm_ernic_wr_opcode {
     ROCM_ERNIC_WR_BIND_MW,
     ROCM_ERNIC_WR_REG_SIG_MR,
     ROCM_ERNIC_WR_ERROR,
+    ROCM_ERNIC_WR_SEND_DC,
 };
 
 enum rocm_ernic_wc_status {
@@ -188,6 +189,11 @@ struct rocm_ernic_create_srq {
 struct rocm_ernic_create_srq_resp {
     __u32 srqn;
     __u32 reserved;
+    /*
+     * Same encoding as create_qp_resp: pfn-based mmap offset for the
+     * shared UAR page (guest userspace doorbells).
+     */
+    __aligned_u64 uar_mmap_offset;
 };
 
 struct rocm_ernic_create_qp {
@@ -201,6 +207,25 @@ struct rocm_ernic_create_qp {
     __u32 sq_depth;
     __u32 rq_wqe_size;
     __u32 rq_depth;
+    /*
+     * Optional Dynamic Connection (DC) extension.  Valid when
+     * ex_mask has ROCM_ERNIC_CREATE_QP_EX_DC.  inlen must be at
+     * least offsetofend(struct rocm_ernic_create_qp, dct_access_key).
+     */
+    __u32 ex_mask;
+    __u8 dc_role; /* ROCM_ERNIC_DC_ROLE_* */
+    __u8 dc_port_num;
+    __u8 reserved_dc8;
+    __u8 reserved_dc9;
+    __aligned_u64 dct_access_key;
+};
+
+#define ROCM_ERNIC_CREATE_QP_EX_DC 1U
+
+enum rocm_ernic_dc_role {
+    ROCM_ERNIC_DC_ROLE_NONE = 0,
+    ROCM_ERNIC_DC_ROLE_DCT = 1,
+    ROCM_ERNIC_DC_ROLE_DCI = 2,
 };
 
 struct rocm_ernic_create_qp_resp {
@@ -213,7 +238,16 @@ struct rocm_ernic_create_qp_resp {
     __aligned_u64 uar_mmap_offset;
     __u32 uar_qp_offset;
     __u32 uar_cq_offset;
+    /*
+     * When resp_ex_mask has ROCM_ERNIC_CREATE_QP_RESP_EX_DC, dctn is
+     * the target number for a newly created DCT.  outlen must cover
+     * offsetofend(struct rocm_ernic_create_qp_resp, dctn).
+     */
+    __u32 resp_ex_mask;
+    __u32 dctn;
 };
+
+#define ROCM_ERNIC_CREATE_QP_RESP_EX_DC 1U
 
 /* ROCM_ERNIC masked atomic compare and swap */
 struct rocm_ernic_ex_cmp_swap {
@@ -306,6 +340,12 @@ struct rocm_ernic_sq_wqe_hdr {
             __u32 remote_qkey;
             struct rocm_ernic_av av;
         } ud;
+        struct {
+            __u32 remote_dctn;
+            __u32 dc_access_key;
+            __u32 ah_id;
+            __u32 reserved;
+        } dc;
     } wr;
 };
 /* Use rocm_ernic_sge (ib_sge) for send queue s/g array elements. */

@@ -578,7 +578,11 @@ struct rocm_ernic_cmd_create_qp {
     u8 sq_sig_all;
     u8 qp_type;
     u8 is_srq;
-    u8 reserved[3];
+    u8 dc_role;
+    u8 dc_port_num;
+    u8 reserved_dc8;
+    u8 reserved_dc9;
+    u64 dct_access_key;
 };
 
 struct rocm_ernic_cmd_create_qp_resp {
@@ -600,6 +604,8 @@ struct rocm_ernic_cmd_create_qp_resp_v2 {
     u32 max_send_sge;
     u32 max_recv_sge;
     u32 max_inline_data;
+    u32 dctn;
+    u32 reserved_dc;
 };
 
 struct rocm_ernic_cmd_modify_qp {

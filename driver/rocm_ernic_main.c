@@ -437,6 +437,7 @@ static const struct ib_device_ops rocm_ernic_dev_ops = {
 
 static const struct ib_device_ops rocm_ernic_dev_srq_ops = {
     .create_srq = rocm_ernic_create_srq,
+    .post_srq_recv = rocm_ernic_post_srq_recv,
     .destroy_srq = rocm_ernic_destroy_srq,
     .modify_srq = rocm_ernic_modify_srq,
     .query_srq = rocm_ernic_query_srq,

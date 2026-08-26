@@ -46,12 +46,92 @@
 
 #include <asm/page.h>
 #include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/log2.h>
 #include <linux/wait.h>
 #include <rdma/ib_addr.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
+#include <rdma/uverbs_ioctl.h>
 
 #include "rocm_ernic.h"
+
+static inline void *get_srq_wqe(struct rocm_ernic_srq *srq, unsigned int n)
+{
+    return rocm_ernic_page_dir_get_ptr(
+        &srq->pdir, (u64)srq->offset + (u64)n * (u32)srq->wqe_size);
+}
+
+/**
+ * rocm_ernic_post_srq_recv - post receive WRs to a shared receive queue
+ * @ibsrq: SRQ
+ * @wr: work request list
+ * @bad_wr: first failing WR
+ *
+ * Mirrors rocm_ernic_post_recv queue layout expected by the pvrdma
+ * device server (ring prod/cons at byte offset 8 of the first page).
+ */
+int rocm_ernic_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
+                             const struct ib_recv_wr **bad_wr)
+{
+    struct rocm_ernic_dev *dev = to_vdev(ibsrq->device);
+    struct rocm_ernic_srq *srq = to_vsrq(ibsrq);
+    unsigned long flags;
+    struct rocm_ernic_rq_wqe_hdr *wqe_hdr;
+    struct rocm_ernic_sge *sge;
+    int ret = 0;
+    int i;
+
+    if (!srq->rq_ring || !srq->umem) {
+        *bad_wr = wr;
+        return -EINVAL;
+    }
+
+    spin_lock_irqsave(&srq->lock, flags);
+
+    while (wr) {
+        unsigned int tail = 0;
+
+        if (unlikely(wr->num_sge > srq->max_gs || wr->num_sge < 0)) {
+            ret = -EINVAL;
+            *bad_wr = wr;
+            goto out;
+        }
+
+        if (unlikely(rocm_ernic_idx_ring_has_space(srq->rq_ring, srq->wqe_cnt,
+                                                   &tail) <= 0)) {
+            ret = -ENOMEM;
+            *bad_wr = wr;
+            goto out;
+        }
+
+        wqe_hdr = (struct rocm_ernic_rq_wqe_hdr *)get_srq_wqe(srq, tail);
+        wqe_hdr->wr_id = wr->wr_id;
+        wqe_hdr->num_sge = wr->num_sge;
+        wqe_hdr->total_len = 0;
+
+        sge = (struct rocm_ernic_sge *)(wqe_hdr + 1);
+        for (i = 0; i < wr->num_sge; i++) {
+            sge->addr = wr->sg_list[i].addr;
+            sge->length = wr->sg_list[i].length;
+            sge->lkey = wr->sg_list[i].lkey;
+            sge++;
+        }
+
+        smp_wmb();
+        rocm_ernic_idx_ring_inc(&srq->rq_ring->prod_tail, srq->wqe_cnt);
+        wr = wr->next;
+    }
+
+out:
+    spin_unlock_irqrestore(&srq->lock, flags);
+
+    if (!ret)
+        rocm_ernic_write_uar_srq(dev,
+                                 ROCM_ERNIC_UAR_SRQ_RECV | srq->srq_handle);
+
+    return ret;
+}
 
 /**
  * rocm_ernic_query_srq - query shared receive queue
@@ -108,7 +188,11 @@ int rocm_ernic_create_srq(struct ib_srq *ibsrq,
     struct rocm_ernic_cmd_create_srq_resp *resp = &rsp.create_srq_resp;
     struct rocm_ernic_create_srq_resp srq_resp = {};
     struct rocm_ernic_create_srq ucmd;
+    struct rocm_ernic_ucontext *uctx;
     unsigned long flags;
+    u32 wqe_sz;
+    u32 wqe_cnt;
+    size_t need;
     int ret;
 
     if (!udata) {
@@ -125,7 +209,8 @@ int rocm_ernic_create_srq(struct ib_srq *ibsrq,
         return -EOPNOTSUPP;
     }
 
-    if (init_attr->attr.max_wr > dev->dsr->caps.max_srq_wr ||
+    if (init_attr->attr.max_wr < 1 || init_attr->attr.max_sge < 1 ||
+        init_attr->attr.max_wr > dev->dsr->caps.max_srq_wr ||
         init_attr->attr.max_sge > dev->dsr->caps.max_srq_sge) {
         dev_warn(&dev->pdev->dev, "shared receive queue size invalid\n");
         return -EINVAL;
@@ -167,6 +252,27 @@ int rocm_ernic_create_srq(struct ib_srq *ibsrq,
 
     rocm_ernic_page_dir_insert_umem(&srq->pdir, srq->umem, 0);
 
+    wqe_sz = roundup_pow_of_two(sizeof(struct rocm_ernic_rq_wqe_hdr) +
+                                (size_t)init_attr->attr.max_sge *
+                                    sizeof(struct rocm_ernic_sge));
+    wqe_cnt = roundup_pow_of_two(init_attr->attr.max_wr);
+    need = (size_t)PAGE_SIZE + (size_t)wqe_cnt * (size_t)wqe_sz;
+
+    if (ucmd.buf_size < need) {
+        dev_warn(&dev->pdev->dev,
+                 "SRQ user buffer too small (need %zu have %u)\n", need,
+                 ucmd.buf_size);
+        ret = -EINVAL;
+        goto err_page_dir;
+    }
+
+    srq->wqe_size = (int)wqe_sz;
+    srq->wqe_cnt = (int)wqe_cnt;
+    srq->max_gs = (int)init_attr->attr.max_sge;
+    srq->offset = PAGE_SIZE;
+    srq->rq_ring = rocm_ernic_page_dir_get_ptr(&srq->pdir, 8);
+    memset(srq->rq_ring, 0, sizeof(*srq->rq_ring));
+
     memset(cmd, 0, sizeof(*cmd));
     cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_SRQ;
     cmd->srq_type = init_attr->srq_type;
@@ -186,6 +292,10 @@ int rocm_ernic_create_srq(struct ib_srq *ibsrq,
 
     srq->srq_handle = resp->srqn;
     srq_resp.srqn = resp->srqn;
+    uctx = rdma_udata_to_drv_context(udata, struct rocm_ernic_ucontext,
+                                     ibucontext);
+    srq_resp.uar_mmap_offset = (u64)uctx->uar.pfn << PAGE_SHIFT;
+
     spin_lock_irqsave(&dev->srq_tbl_lock, flags);
     dev->srq_tbl[srq->srq_handle % dev->dsr->caps.max_srq] = srq;
     spin_unlock_irqrestore(&dev->srq_tbl_lock, flags);
@@ -216,7 +326,7 @@ static void rocm_ernic_free_srq(struct rocm_ernic_dev *dev,
     unsigned long flags;
 
     spin_lock_irqsave(&dev->srq_tbl_lock, flags);
-    dev->srq_tbl[srq->srq_handle] = NULL;
+    dev->srq_tbl[srq->srq_handle % dev->dsr->caps.max_srq] = NULL;
     spin_unlock_irqrestore(&dev->srq_tbl_lock, flags);
 
     if (refcount_dec_and_test(&srq->refcnt))

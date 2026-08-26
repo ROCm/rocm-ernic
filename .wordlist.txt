@@ -490,3 +490,8 @@ writev
 Write's
 Xfer
 jitter
+DCI
+DCT
+ConnectX
+cmocka
+librocm

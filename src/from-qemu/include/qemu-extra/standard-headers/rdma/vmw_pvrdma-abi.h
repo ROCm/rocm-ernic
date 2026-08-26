@@ -80,6 +80,7 @@ enum pvrdma_wr_opcode {
     PVRDMA_WR_BIND_MW,
     PVRDMA_WR_REG_SIG_MR,
     PVRDMA_WR_ERROR,
+    PVRDMA_WR_SEND_DC,
 };
 
 enum pvrdma_wc_status {
@@ -283,6 +284,12 @@ struct pvrdma_sq_wqe_hdr {
             uint32_t remote_qkey;
             struct pvrdma_av av;
         } ud;
+        struct {
+            uint32_t remote_dctn;
+            uint32_t dc_access_key;
+            uint32_t ah_id;
+            uint32_t reserved;
+        } dc;
     } wr;
 };
 /* Use pvrdma_sge (ib_sge) for send queue s/g array elements. */

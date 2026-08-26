@@ -3319,7 +3319,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     /*
      * Layout of the completion context passed from
-     * pvrdma_qp_ops.c.  Must match CompHandlerCtx.
+     * pvrdma_qp_ops.c.  Must match PvrdmaCompHandlerCtx layout.
      */
     typedef struct {
         void *dev;

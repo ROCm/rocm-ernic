@@ -168,7 +168,7 @@ struct rocm_ernic_srq {
     int wqe_size;
     int max_gs;
     struct ib_umem *umem;
-    struct rocm_ernic_ring_state *ring;
+    struct rocm_ernic_ring *rq_ring;
     struct rocm_ernic_page_dir pdir;
     u32 srq_handle;
     int npages;
@@ -192,6 +192,7 @@ struct rocm_ernic_qp {
     u32 flags;
     u8 port;
     u8 state;
+    u8 dc_role; /* ROCM_ERNIC_DC_ROLE_* - 0 for non-DC QPs */
     bool is_kernel;
     struct mutex mutex; /* QP state mutex. */
     refcount_t refcnt;
@@ -323,6 +324,11 @@ static inline void rocm_ernic_write_uar_cq(struct rocm_ernic_dev *dev, u32 val)
 static inline void rocm_ernic_write_uar_qp(struct rocm_ernic_dev *dev, u32 val)
 {
     writel(cpu_to_le32(val), dev->driver_uar.map + ROCM_ERNIC_UAR_QP_OFFSET);
+}
+
+static inline void rocm_ernic_write_uar_srq(struct rocm_ernic_dev *dev, u32 val)
+{
+    writel(cpu_to_le32(val), dev->driver_uar.map + ROCM_ERNIC_UAR_SRQ_OFFSET);
 }
 
 static inline void *rocm_ernic_page_dir_get_ptr(

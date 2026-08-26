@@ -38,6 +38,13 @@
 #define MAX_AH              64
 #define MAX_SRQ             512
 
+/* Paravirt queue pair types for rocm_ernic Dynamic Connection (software DC) */
+#define ROCM_ERNIC_PVRDMA_QPT_DCT 240U
+#define ROCM_ERNIC_PVRDMA_QPT_DCI 241U
+#define ROCM_ERNIC_DC_ROLE_NONE   0U
+#define ROCM_ERNIC_DC_ROLE_DCT    1U
+#define ROCM_ERNIC_DC_ROLE_DCI    2U
+
 /*
  * Number of page-table pages backing each WQ/CQ ring.
  * Upstream PVRDMA uses 1; we double it so that bidirectional
@@ -110,6 +117,11 @@ typedef struct RdmaRmQP {
     uint8_t is_srq;
     RdmaRmQPWqeProcessingState wqe_state;
     _Atomic uint32_t send_in_flight;
+    uint8_t dc_role;
+    uint8_t dc_pad[3];
+    uint32_t dctn;
+    uint64_t dct_access_key;
+    uint32_t bound_srq_handle;
 } RdmaRmQP;
 
 /* WQE processing state for SRQ incremental batch processing */
@@ -166,7 +178,10 @@ struct RdmaDeviceResources {
     RdmaRmResTbl cq_tbl;
     RdmaRmResTbl cqe_ctx_tbl;
     RdmaRmResTbl srq_tbl;
-    GHashTable *qp_hash; /* Keeps mapping between real and emulated */
+    GHashTable *qp_hash;  /* Keeps mapping between real and emulated */
+    GHashTable *dct_hash; /* DCT number -> RdmaRmQP (DC targets) */
+    uint32_t next_dctn;
+    QemuMutex dc_lock;
     QemuMutex lock;
     RdmaRmStats stats;
 };

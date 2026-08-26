@@ -26,4 +26,8 @@ void pvrdma_srq_recv(PVRDMADev *dev, uint32_t srq_handle);
 void pvrdma_cq_poll(RdmaDeviceResources *dev_res, uint32_t cq_handle);
 void pvrdma_drain_deferred_completions(void);
 
+void pvrdma_queue_recv_work_completion(PVRDMADev *dev, uint32_t recv_cq_handle,
+                                       uint64_t recv_guest_wr_id,
+                                       uint32_t byte_len, uint32_t src_qp_num);
+
 #endif

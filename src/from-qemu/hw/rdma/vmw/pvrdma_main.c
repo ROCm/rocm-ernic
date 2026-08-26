@@ -118,7 +118,8 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
                                   "MASKED_ATOMIC_FETCH",
                                   "BIND_MW",
                                   "REG_SIG_MR",
-                                  "ERROR"};
+                                  "ERROR",
+                                  "SEND_DC"};
 
     if (!dev->stats.stats_file) {
         return;
@@ -224,7 +225,7 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
                     qp_stats->bytes_rdma_write);
 
             fprintf(fp, "    WQEs by opcode:\n");
-            for (i = 0; i < 16 && i < (int)G_N_ELEMENTS(opcode_names); i++) {
+            for (i = 0; i < 18 && i < (int)G_N_ELEMENTS(opcode_names); i++) {
                 if (qp_stats->wqes_by_opcode[i] > 0) {
                     fprintf(fp, "      %-20s: %" PRIu64 "\n", opcode_names[i],
                             qp_stats->wqes_by_opcode[i]);

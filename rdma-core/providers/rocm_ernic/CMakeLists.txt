@@ -17,6 +17,7 @@ rdma_shared_provider(rocm_ernic rocm_ernic.map
 	main.c
 	verbs.c
 	dv.c
+	dc.c
 )
 
 if(HAVE_IBV_FD_ARR)
@@ -26,6 +27,7 @@ endif()
 
 publish_headers(infiniband
 	rocm_ernic_dv.h
+	rocm_ernic_dc.h
 )
 
 rdma_pkg_config("rocm_ernic" "libibverbs"

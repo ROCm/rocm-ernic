@@ -576,7 +576,11 @@ struct pvrdma_cmd_create_qp {
     uint8_t sq_sig_all;
     uint8_t qp_type;
     uint8_t is_srq;
-    uint8_t reserved[3];
+    uint8_t dc_role;
+    uint8_t dc_port_num;
+    uint8_t reserved_dc8;
+    uint8_t reserved_dc9;
+    uint64_t dct_access_key;
 };
 
 struct pvrdma_cmd_create_qp_resp {
@@ -598,6 +602,8 @@ struct pvrdma_cmd_create_qp_resp_v2 {
     uint32_t max_send_sge;
     uint32_t max_recv_sge;
     uint32_t max_inline_data;
+    uint32_t dctn;
+    uint32_t reserved_dc;
 };
 
 struct pvrdma_cmd_modify_qp {

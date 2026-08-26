@@ -614,11 +614,31 @@ static int create_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
                      union pvrdma_cmd_resp *rsp)
 {
     struct pvrdma_cmd_create_qp *cmd = &req->create_qp;
-    struct pvrdma_cmd_create_qp_resp *resp = &rsp->create_qp_resp;
     PvrdmaRing *rings = NULL;
     int rc;
+    uint8_t dc_role = ROCM_ERNIC_DC_ROLE_NONE;
+    uint64_t dct_key = 0;
+    uint32_t dctn_alloc = 0;
+    uint32_t *dctn_ptr = NULL;
+    RdmaRmQP *rm_qp = NULL;
+    bool is_dc = (cmd->qp_type == ROCM_ERNIC_PVRDMA_QPT_DCT ||
+                  cmd->qp_type == ROCM_ERNIC_PVRDMA_QPT_DCI);
 
-    memset(resp, 0, sizeof(*resp));
+    memset(rsp, 0, sizeof(*rsp));
+
+    if (cmd->qp_type == ROCM_ERNIC_PVRDMA_QPT_DCT) {
+        dc_role = ROCM_ERNIC_DC_ROLE_DCT;
+        dct_key = cmd->dct_access_key;
+        if (!cmd->is_srq) {
+            return -EINVAL;
+        }
+        if (dct_key == 0) {
+            return -EINVAL;
+        }
+        dctn_ptr = &dctn_alloc;
+    } else if (cmd->qp_type == ROCM_ERNIC_PVRDMA_QPT_DCI) {
+        dc_role = ROCM_ERNIC_DC_ROLE_DCI;
+    }
 
     rc = create_qp_rings(PCI_DEVICE(dev), cmd->pdir_dma, &rings,
                          cmd->max_send_wr, cmd->max_send_sge, cmd->send_chunks,
@@ -628,21 +648,51 @@ static int create_qp(PVRDMADev *dev, union pvrdma_cmd_req *req,
         return rc;
     }
 
-    rc = rdma_rm_alloc_qp(&dev->rdma_dev_res, cmd->pd_handle, cmd->qp_type,
-                          cmd->max_send_wr, cmd->max_send_sge,
-                          cmd->send_cq_handle, cmd->max_recv_wr,
-                          cmd->max_recv_sge, cmd->recv_cq_handle, rings,
-                          &resp->qpn, cmd->is_srq, cmd->srq_handle);
-    if (rc) {
-        destroy_qp_rings(rings, cmd->is_srq);
-        return rc;
+    if (is_dc) {
+        struct pvrdma_cmd_create_qp_resp_v2 *resp2 = &rsp->create_qp_resp_v2;
+
+        rc = rdma_rm_alloc_qp(
+            &dev->rdma_dev_res, cmd->pd_handle, cmd->qp_type, cmd->max_send_wr,
+            cmd->max_send_sge, cmd->send_cq_handle, cmd->max_recv_wr,
+            cmd->max_recv_sge, cmd->recv_cq_handle, rings, &resp2->qpn,
+            cmd->is_srq, cmd->srq_handle, dc_role, dct_key, dctn_ptr, &rm_qp);
+        if (rc) {
+            destroy_qp_rings(rings, cmd->is_srq);
+            return rc;
+        }
+
+        resp2->hdr.err = 0;
+        resp2->max_send_wr = cmd->max_send_wr;
+        resp2->max_recv_wr = cmd->max_recv_wr;
+        resp2->max_send_sge = cmd->max_send_sge;
+        resp2->max_recv_sge = cmd->max_recv_sge;
+        resp2->max_inline_data = cmd->max_inline_data;
+        resp2->dctn = (dc_role == ROCM_ERNIC_DC_ROLE_DCT) ? dctn_alloc : 0;
+        resp2->reserved_dc = 0;
+        resp2->qp_handle = rm_qp ? rm_qp->qpn : resp2->qpn;
+        return 0;
     }
 
-    resp->max_send_wr = cmd->max_send_wr;
-    resp->max_recv_wr = cmd->max_recv_wr;
-    resp->max_send_sge = cmd->max_send_sge;
-    resp->max_recv_sge = cmd->max_recv_sge;
-    resp->max_inline_data = cmd->max_inline_data;
+    {
+        struct pvrdma_cmd_create_qp_resp *resp = &rsp->create_qp_resp;
+
+        rc = rdma_rm_alloc_qp(&dev->rdma_dev_res, cmd->pd_handle, cmd->qp_type,
+                              cmd->max_send_wr, cmd->max_send_sge,
+                              cmd->send_cq_handle, cmd->max_recv_wr,
+                              cmd->max_recv_sge, cmd->recv_cq_handle, rings,
+                              &resp->qpn, cmd->is_srq, cmd->srq_handle,
+                              ROCM_ERNIC_DC_ROLE_NONE, 0, NULL, NULL);
+        if (rc) {
+            destroy_qp_rings(rings, cmd->is_srq);
+            return rc;
+        }
+
+        resp->max_send_wr = cmd->max_send_wr;
+        resp->max_recv_wr = cmd->max_recv_wr;
+        resp->max_send_sge = cmd->max_send_sge;
+        resp->max_recv_sge = cmd->max_recv_sge;
+        resp->max_inline_data = cmd->max_inline_data;
+    }
 
     return 0;
 }
