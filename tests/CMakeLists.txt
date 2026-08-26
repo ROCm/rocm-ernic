@@ -43,6 +43,52 @@ target_link_libraries(test_rdma_cm PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
+# -- Unit tests --------------------------------------------------
+# Built with AddressSanitizer + LeakSanitizer + UBSan (unless the project
+# is already built with ThreadSanitizer, which is incompatible). Flag set
+# matches cmake/ErnicSanitizers.cmake; -fno-omit-frame-pointer is
+# compile-only.
+set(ERNIC_UNIT_TEST_SAN)
+set(ERNIC_UNIT_TEST_SAN_LINK)
+if(NOT ERNIC_USE_THREAD_SANITIZER)
+    set(ERNIC_UNIT_TEST_SAN
+        -fsanitize=address,undefined,leak -fno-omit-frame-pointer)
+    set(ERNIC_UNIT_TEST_SAN_LINK -fsanitize=address,undefined,leak)
+endif()
+
+# rdma_backend_query_port test. Links the backend TU plus the utility /
+# resource-manager / qemu-stub sources it depends on; the query_port paths
+# under test never reach libibverbs or the DMA layer.
+add_executable(test_rdma_backend_query_port
+    test_rdma_backend_query_port.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_backend.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_utils.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_rm.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_stubs.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_type_stubs.c
+)
+target_include_directories(test_rdma_backend_query_port PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+    ${IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_rdma_backend_query_port PRIVATE
+    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+# -w: this test links the ported RDMA-backend translation units, so warnings
+# would come from that ported C rather than the test itself; suppress them
+# to match how the ported sources are compiled in the main build.
+target_compile_options(test_rdma_backend_query_port PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_rdma_backend_query_port PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_rdma_backend_query_port PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_rdma_backend_query_port PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -81,3 +127,10 @@ set_tests_properties(rdma-cm-test PROPERTIES
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
 )
+
+# rdma_backend_query_port NULL-guard / dispatch unit test
+add_test(
+    NAME rdma-backend-query-port-unit
+    COMMAND $<TARGET_FILE:test_rdma_backend_query_port>
+)
+set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
