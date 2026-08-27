@@ -81,23 +81,38 @@ if(ERNIC_INSTALL_SERVICE)
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
-    # Driver source for the tarball builder
+    # Legacy custom driver source (deprecated; kept for reference until the
+    # ionic migration is fully validated and driver/ is deleted).
+    # New installations should use the ionic driver path (--ionic flag).
+    if(EXISTS ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_main.c)
+        install(DIRECTORY
+            ${CMAKE_SOURCE_DIR}/driver/
+            DESTINATION ${ERNIC_SHARE_DIR}/driver-legacy
+            FILES_MATCHING
+                PATTERN "*.c"
+                PATTERN "*.h"
+                PATTERN "Makefile"
+                PATTERN "dkms.conf"
+                PATTERN "Kconfig"
+                PATTERN "setup-rocm-ernic-dkms.sh"
+                PATTERN ".*.cmd" EXCLUDE
+                PATTERN "*.ko" EXCLUDE
+                PATTERN "*.o" EXCLUDE
+                PATTERN "*.mod" EXCLUDE
+                PATTERN "*.mod.c" EXCLUDE
+                PATTERN "Module.symvers" EXCLUDE
+                PATTERN "modules.order" EXCLUDE
+        )
+    endif()
+
+    # ionic driver patch and DKMS script (new path)
     install(DIRECTORY
-        ${CMAKE_SOURCE_DIR}/driver/
-        DESTINATION ${ERNIC_SHARE_DIR}/driver
-        FILES_MATCHING
-            PATTERN "*.c"
-            PATTERN "*.h"
-            PATTERN "Makefile"
-            PATTERN "dkms.conf"
-            PATTERN "Kconfig"
-            PATTERN "setup-rocm-ernic-dkms.sh"
-            PATTERN ".*.cmd" EXCLUDE
-            PATTERN "*.ko" EXCLUDE
-            PATTERN "*.o" EXCLUDE
-            PATTERN "*.mod" EXCLUDE
-            PATTERN "*.mod.c" EXCLUDE
-            PATTERN "Module.symvers" EXCLUDE
-            PATTERN "modules.order" EXCLUDE
+        ${CMAKE_SOURCE_DIR}/patches/
+        DESTINATION ${ERNIC_SHARE_DIR}/patches
+        FILES_MATCHING PATTERN "*.patch"
+    )
+    install(PROGRAMS
+        ${CMAKE_SOURCE_DIR}/scripts/setup-ionic-dkms.sh
+        DESTINATION ${ERNIC_SHARE_DIR}
     )
 endif()

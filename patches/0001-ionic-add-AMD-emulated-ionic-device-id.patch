@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: Wed, 26 Aug 2026 08:00:00 +0000
+Subject: [PATCH] ionic: add AMD emulated ionic device ID for rocm-ernic
+
+Add a new PCI device ID (AMD VID 0x1022, DID 0x8001) to the ionic
+driver so that it binds to the rocm-ernic vfio-user device server.
+rocm-ernic emulates an ionic-protocol RDMA NIC inside a VM using
+libvfio-user; it uses a unique AMD device ID to avoid collisions with
+real Pensando hardware.
+
+Signed-off-by: Stephen Bates <stephen.bates@amd.com>
+---
+ drivers/net/ethernet/pensando/ionic/ionic.h         | 3 +++
+ drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c | 1 +
+ 2 files changed, 4 insertions(+)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic.h b/drivers/net/ethernet/pensando/ionic/ionic.h
+index 85198e6a806e6..b282dc49a0e8c 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic.h
+@@ -18,6 +18,9 @@ struct ionic_lif;
+ #define PCI_DEVICE_ID_PENSANDO_IONIC_ETH_PF	0x1002
+ #define PCI_DEVICE_ID_PENSANDO_IONIC_ETH_VF	0x1003
+ 
++/* AMD emulated ionic NIC (rocm-ernic vfio-user device server) */
++#define PCI_DEVICE_ID_AMD_IONIC_ERNIC_PF	0x8001
++
+ #define DEVCMD_TIMEOUT			5
+ #define IONIC_ADMINQ_TIME_SLICE		msecs_to_jiffies(100)
+ 
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c b/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c
+index 70d86c5f52fbb..f80b4fdbdc0ac 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c
+@@ -16,6 +16,7 @@
+ static const struct pci_device_id ionic_id_table[] = {
+ 	{ PCI_VDEVICE(PENSANDO, PCI_DEVICE_ID_PENSANDO_IONIC_ETH_PF) },
+ 	{ PCI_VDEVICE(PENSANDO, PCI_DEVICE_ID_PENSANDO_IONIC_ETH_VF) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_IONIC_ERNIC_PF) },
+ 	{ 0, }	/* end of table */
+ };
+ MODULE_DEVICE_TABLE(pci, ionic_id_table);
+-- 
+2.43.0
+

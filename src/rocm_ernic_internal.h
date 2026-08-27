@@ -16,13 +16,18 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "rocm_ernic_compat.h"
+#include "ionic_eth_emu.h"
+#include "ionic_rdma_devcmd.h"
+#include "ionic_datapath.h"
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 
-/* BARs - from RDMA device definitions */
-/* BAR sizes - Note: Also defined in pvrdma.h, so we use guards to avoid
- * redefinition warnings */
+/* ---------------------------------------------------------------------------
+ * Legacy PVRDMA BAR layout (kept for reference during ionic migration).
+ * These are used by the PVRDMA emulation layer in src/from-qemu/hw/rdma/vmw/.
+ * ---------------------------------------------------------------------------
+ */
 #ifndef RDMA_BAR0_MSIX_SIZE
 #define RDMA_BAR0_MSIX_SIZE (16 * 1024) /* 16 KB for MSI-X */
 #endif
@@ -33,15 +38,40 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 #define MAX_UCS 512 /* Maximum number of user contexts */
 #endif
 #ifndef RDMA_BAR2_UAR_SIZE
-/* Size in bytes (0x1000 * MAX_UCS) */
 #define RDMA_BAR2_UAR_SIZE (0x1000 * MAX_UCS) /* Each UC gets 4KB page */
 #endif
 
-/* MSI-X interrupt vectors */
+/* Legacy PVRDMA MSI-X interrupt vectors */
 #define RDMA_MAX_INTRS            3
 #define INTR_VEC_CMD_RING         0
 #define INTR_VEC_CMD_ASYNC_EVENTS 1
 #define INTR_VEC_CMD_COMPLETION_Q 2
+
+/* ---------------------------------------------------------------------------
+ * ionic BAR layout (target layout after ionic migration).
+ *
+ * Real Pensando DSC BAR map (from ionic_if.h / ionic driver probe):
+ *   BAR0 (64-bit): device registers + admin queue doorbell region (~4 MB)
+ *   BAR2 (no BAR1): doorbell BAR — per-LIF doorbell pages for SQ/RQ/CQ/EQ
+ *   BAR4:           device info page (read-only)
+ *
+ * For the emulated device we simplify to:
+ *   BAR0: 4 MB — devcmd registers + MSI-X table/PBA
+ *   BAR2: 4 MB — doorbell pages (per-LIF: kernel page at index kern_pid,
+ *                user pages at higher indices via mmap)
+ *
+ * The ionic driver discovers these sizes from the identify response.
+ * ---------------------------------------------------------------------------
+ */
+#define IONIC_BAR0_REGS_SIZE    (4 * 1024 * 1024)  /* 4 MB: regs + MSI-X   */
+#define IONIC_BAR2_DB_SIZE      (4 * 1024 * 1024)  /* 4 MB: doorbell pages  */
+#define IONIC_DB_PAGE_SIZE      4096                /* one 4K page per LIF   */
+#define IONIC_KERN_PID          0                   /* kernel doorbell page  */
+
+/* ionic MSI-X vectors: EQ per vector (driver requests eq_count vectors).
+ * We start with a fixed count matching IONIC_EQ_COUNT_MIN = 4. */
+#define IONIC_MSIX_MIN_VECTORS  4
+#define IONIC_MSIX_MAX_VECTORS  32
 
 /**
  * rocm_ernic_dev - Main device structure
@@ -54,13 +84,19 @@ struct rocm_ernic_dev {
     /* libvfio-user context */
     vfu_ctx_t *vfu_ctx;
 
-    /* Opaque handle to RDMA device */
+    /* Opaque handle to legacy PVRDMA device (used during ionic migration) */
     pvrdma_handle_t pvrdma_handle;
 
+    /* ionic emulation layer (replaces PVRDMA when ionic_mode is true) */
+    struct ionic_eth_emu           *ionic_emu;
+    struct ionic_rdma_devcmd_state *ionic_rdma;
+    struct ionic_datapath          *ionic_dp;
+    bool                            ionic_mode; /* true = use ionic path */
+
     /* BAR memory backing stores */
-    void *bar0_mem; /* MSI-X table/PBA */
-    void *bar1_mem; /* Registers */
-    void *bar2_mem; /* UAR (User Access Region) */
+    void *bar0_mem; /* MSI-X table/PBA (legacy) or ionic BAR0 shadow */
+    void *bar1_mem; /* Registers (legacy PVRDMA only) */
+    void *bar2_mem; /* UAR (legacy) or ionic doorbell pages */
 
     /* Backend device configuration */
     char *backend_type_str;    /* Backend type: none, loopback, verbs:device */
