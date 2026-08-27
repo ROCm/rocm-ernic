@@ -1,0 +1,334 @@
+# SPDX-License-Identifier: MIT
+#
+# Slash-command dispatcher for the self-hosted CI.
+#
+# Comment on any pull request or issue:
+#
+#   /ci                 tier=functional, accel=kvm
+#   /ci build           build + ctest + loopback only
+#   /ci functional      ... plus 2-VM RDMA tests
+#   /ci full            ... plus performance sweeps
+#   /ci full tcg        run VMs under emulation
+#   /ci help            print usage
+#
+# SECURITY
+# --------
+# rocm-ernic is a public repository, so anyone can leave
+# a comment.  Three properties keep the lab node safe:
+#
+#   1. This dispatcher runs on ubuntu-latest, never on
+#      the self-hosted runner.  Untrusted comment text is
+#      never processed on the lab node.
+#   2. The commenter must have write access or above,
+#      checked against the API at trigger time.
+#   3. Only refs in this repository can be dispatched.
+#      Comments on fork pull requests are refused, so
+#      fork code cannot reach the lab node.
+#
+# issue_comment always runs the workflow file from the
+# default branch, so this gate cannot be edited by a
+# pull request to weaken it.
+
+name: CI Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  # One dispatch per comment; re-runs supersede.
+  group: ci-command-${{ github.event.comment.id }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    name: Dispatch
+    # Cheap pre-filter so the job does not spin up for
+    # every comment in the repository.
+    if: startsWith(github.event.comment.body, '/ci')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Parse command
+        id: parse
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          # Only the first line is the command; anything
+          # after it is treated as prose.
+          line="$(printf '%s' "${BODY}" | head -1 | tr -d '\r')"
+          # shellcheck disable=SC2206
+          read -r -a words <<<"${line}"
+
+          # The workflow-level startsWith() filter is a
+          # prefix match, so it also lets through /cirrus,
+          # /cico and friends.  Require the first word to
+          # be exactly /ci before acting on anything.
+          if [ "${words[0]:-}" != "/ci" ]; then
+            echo "not a /ci command: ${words[0]:-<empty>}"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tier=""
+          accel="kvm"
+          help="false"
+
+          for w in "${words[@]:1}"; do
+            case "${w,,}" in
+              build|functional|full) tier="${w,,}" ;;
+              kvm|tcg)               accel="${w,,}" ;;
+              help|-h|--help)        help="true" ;;
+              "") ;;
+              *)
+                echo "unknown=${w}" >> "$GITHUB_OUTPUT"
+                echo "bad=true"     >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          done
+
+          # Bare "/ci" is the common case: a middle-tier
+          # run that exercises real RDMA without paying
+          # for the full performance sweep.
+          [ -n "${tier}" ] || tier="functional"
+
+          {
+            echo "tier=${tier}"
+            echo "accel=${accel}"
+            echo "help=${help}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Acknowledge
+        if: steps.parse.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --silent -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=eyes || true
+
+      - name: Show usage
+        if: >-
+          steps.parse.outputs.skip != 'true' &&
+          (steps.parse.outputs.help == 'true' ||
+           steps.parse.outputs.bad == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UNKNOWN: ${{ steps.parse.outputs.unknown }}
+        run: |
+          {
+            if [ -n "${UNKNOWN:-}" ]; then
+              echo "Unrecognised argument \`${UNKNOWN}\`."
+              echo
+            fi
+            echo "**Self-hosted CI**"
+            echo
+            echo '| Command | Runs |'
+            echo '|---|---|'
+            echo '| `/ci` | build + loopback + 2-VM RDMA functional |'
+            echo '| `/ci build` | build + ctest + loopback only |'
+            echo '| `/ci functional` | same as bare `/ci` |'
+            echo '| `/ci full` | functional + performance sweeps |'
+            echo '| `/ci full tcg` | run VMs under emulation (no valid perf) |'
+            echo
+            echo 'Requires write access. Fork pull requests are not eligible.'
+          } > body.md
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            -F body=@body.md --silent
+          echo "usage posted"
+
+      - name: Check commenter permission
+        id: perm
+        if: >-
+          steps.parse.outputs.skip != 'true' &&
+          steps.parse.outputs.help != 'true' &&
+          steps.parse.outputs.bad != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          # role_name distinguishes maintain/triage, which
+          # the coarser .permission field collapses.
+          role="$(gh api \
+            "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+            --jq '.role_name // .permission' 2>/dev/null || echo none)"
+          echo "role=${role}"
+          case "${role}" in
+            admin|maintain|write) echo "allowed=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                    echo "allowed=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "role=${role}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse unauthorised commenter
+        if: steps.perm.outcome == 'success' && steps.perm.outputs.allowed == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          ROLE: ${{ steps.perm.outputs.role }}
+        run: |
+          gh api --silent -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=-1 || true
+          echo "::error::@${ACTOR} has role '${ROLE}'; write access or above is required."
+          exit 1
+
+      - name: Resolve target ref
+        id: ref
+        if: steps.perm.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${{ github.event.issue.pull_request.url || '' }}" ]; then
+            # Plain issue: nothing to check out but the
+            # default branch.
+            echo "ref=${{ github.event.repository.default_branch }}" >> "$GITHUB_OUTPUT"
+            echo "target=default branch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pr="${{ github.event.issue.number }}"
+          head_repo="$(gh api \
+            "repos/${{ github.repository }}/pulls/${pr}" \
+            --jq '.head.repo.full_name')"
+          head_ref="$(gh api \
+            "repos/${{ github.repository }}/pulls/${pr}" \
+            --jq '.head.ref')"
+
+          # workflow_dispatch can only target a ref in this
+          # repository, so a fork head is not dispatchable
+          # anyway.  Refusing explicitly makes the reason
+          # visible instead of surfacing an opaque API error.
+          if [ "${head_repo}" != "${{ github.repository }}" ]; then
+            echo "fork=true" >> "$GITHUB_OUTPUT"
+            echo "head_repo=${head_repo}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "ref=${head_ref}" >> "$GITHUB_OUTPUT"
+          echo "target=PR #${pr} (${head_ref})" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse fork pull request
+        if: steps.ref.outputs.fork == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REPO: ${{ steps.ref.outputs.head_repo }}
+        run: |
+          {
+            echo "Self-hosted CI cannot run against a fork."
+            echo
+            echo "This pull request's head is in \`${HEAD_REPO}\`."
+            echo "Running it on the lab node would execute"
+            echo "unreviewed code there, so it is refused by design."
+            echo
+            echo "Push the branch to this repository and re-run,"
+            echo "or dispatch the workflow manually against a"
+            echo "trusted ref."
+          } > body.md
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            -F body=@body.md --silent
+          gh api --silent -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=-1 || true
+          echo "::error::Refused: fork pull request (${HEAD_REPO})."
+          exit 1
+
+      - name: Dispatch workflow
+        id: run
+        if: steps.perm.outputs.allowed == 'true' && steps.ref.outputs.fork != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.ref.outputs.ref }}
+          TIER: ${{ steps.parse.outputs.tier }}
+          ACCEL: ${{ steps.parse.outputs.accel }}
+        run: |
+          set -euo pipefail
+
+          gh workflow run self-hosted-ci.yml \
+            --ref "${REF}" \
+            -f tier="${TIER}" \
+            -f accel="${ACCEL}"
+
+          # gh does not return the run id, so poll briefly
+          # for the run this dispatch created.
+          url=""
+          for _ in $(seq 1 10); do
+            sleep 3
+            url="$(gh run list \
+              --workflow=self-hosted-ci.yml \
+              --event=workflow_dispatch \
+              --branch "${REF}" \
+              --limit 1 --json url --jq '.[0].url' 2>/dev/null || true)"
+            [ -n "${url}" ] && break
+          done
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "dispatched ${TIER}/${ACCEL} on ${REF}: ${url:-<pending>}"
+
+      - name: Report back
+        if: steps.run.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ steps.run.outputs.url }}
+          TIER: ${{ steps.parse.outputs.tier }}
+          ACCEL: ${{ steps.parse.outputs.accel }}
+          TARGET: ${{ steps.ref.outputs.target }}
+        run: |
+          {
+            echo "Self-hosted CI started."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tier | \`${TIER}\` |"
+            echo "| Accelerator | \`${ACCEL}\` |"
+            echo "| Target | ${TARGET} |"
+            if [ -n "${URL}" ]; then
+              echo "| Run | ${URL} |"
+            fi
+            echo
+            if [ "${ACCEL}" = "tcg" ]; then
+              echo "> Running under emulation."
+              echo "> Performance sweeps are skipped;"
+              echo "> emulated numbers are not recorded."
+              echo
+            fi
+            echo "The functional and performance report is"
+            echo "attached to the run as the \`ci-report\` artifact"
+            echo "and mirrored into its job summary."
+          } > body.md
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            -F body=@body.md --silent
+
+          gh api --silent -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=rocket || true
+
+      - name: Report dispatch failure
+        if: failure() && steps.run.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Failed to dispatch the self-hosted CI workflow."
+            echo
+            echo "Most often this means \`self-hosted-ci.yml\` is not"
+            echo "yet on the default branch. \`workflow_dispatch\`"
+            echo "only resolves workflows present there."
+            echo
+            echo "See the [dispatcher run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          } > body.md
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            -F body=@body.md --silent
