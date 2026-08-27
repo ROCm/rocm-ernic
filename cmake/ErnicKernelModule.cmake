@@ -92,6 +92,7 @@ if(ERNIC_BUILD_KMOD)
 
     add_custom_target(fetch-ionic-sources
         DEPENDS "${IONIC_FETCH_SENTINEL}"
+        COMMENT "ionic sources fetched and patches applied"
     )
 
     # -- build-ionic-dkms ----------------------------------------------------
