@@ -18,6 +18,7 @@
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "vmw/pvrdma.h"
+#include "hw/pci/pci.h" /* For pci_dma_map/unmap/sync */
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
 #include <errno.h>
