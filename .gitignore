@@ -137,3 +137,6 @@ ansible/changelogs/.plugin-cache.yaml
 /result
 /result-*
 .direnv/
+
+# Working notes, not part of the tree
+overnight.md
