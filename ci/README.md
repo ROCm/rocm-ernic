@@ -1,0 +1,243 @@
+# Self-hosted CI
+
+This directory holds the harness that turns a lab node
+into a GitHub Actions runner for rocm-ernic, capable of
+booting real VMs over the emulated RDMA NIC and
+producing functional and performance reports.
+
+The GitHub-hosted workflows in `.github/workflows/` can
+only build and unit-test. Everything that needs KVM, a
+golden VM image or two guests talking RDMA to each other
+runs here instead.
+
+## Design
+
+Everything runs **unprivileged**. There is no `sudo`, no
+`systemctl`, and nothing is written to `/run`,
+`/var/log` or `/usr/local`. This works because the
+rocm-ernic launcher and `ernicctl` are entirely
+environment-driven, so the whole control plane can be
+redirected under a workspace the CI user owns:
+
+| Normal path | CI path |
+|---|---|
+| `/run/rocm-ernic` | `$CI_WORK/run` |
+| `/var/log/rocm-ernic` | `$CI_WORK/log` |
+| `/usr/local/bin/rocm-ernic` | `$CI_WORK/build/rocm-ernic` |
+| `systemctl start rocm-ernic` | `service/rocm-ernic-launcher` |
+
+`$CI_WORK` defaults to `/var/tmp/ernic-ci-work`, which
+is on local disk. Home directories on the lab nodes are
+NFS, where qcow2 and build traffic is markedly slower.
+
+The CI runs the checked-out copies of
+`service/rocm-ernic-launcher` and `service/ernicctl`
+rather than whatever is installed system-wide, so a run
+always tests the tree it was handed.
+
+### Reusing the Ansible harness
+
+The test logic is not duplicated here. `ansible/` already
+implements guest provisioning, the sanity suite and the
+performance sweeps, and the CI drives those plays
+directly through `ansible/ci-site.yml`.
+
+`site.yml` is the developer entry point and needs root:
+it installs to `/usr/local`, drives systemd, and builds
+the golden image over `qemu-nbd`. `ci-site.yml` skips
+all of that. It assumes `ci/jobs/vm-up.sh` has already
+brought VMs up unprivileged, and supplies only the
+inventory registration those plays need, via
+`ansible/playbooks/ci-vm-register.yml`.
+
+The golden backing image is treated as a **prebuilt
+input**, not something CI regenerates. Creating one
+needs `qemu-nbd` and root; see
+`ansible/playbooks/vm-create.yml`.
+
+## Tiers
+
+| Tier | Job | Needs KVM |
+|---|---|---|
+| 1 | build, ctest, loopback backend | no |
+| 2 | two-VM RDMA functional | yes |
+| 3 | performance sweeps | yes |
+
+Tier 1 is fully self-contained and is the gate for
+everything else. Tiers 2 and 3 are scheduled onto
+runners carrying the `kvm` label, so a node that loses
+KVM access stops attracting those jobs rather than
+failing them.
+
+Performance jobs refuse to run under emulation.
+Software-emulated numbers are one to two orders of
+magnitude off and would poison the regression baseline,
+so `ci/jobs/perf.sh` exits rather than record them.
+
+## Setting up a node
+
+Check what the node can do:
+
+```bash
+ci/doctor.sh
+```
+
+It reports per-tier readiness and exits `0` for the full
+matrix, `1` if only tier 1 can run, and `2` if the node
+cannot run CI at all.
+
+Stage the runner (downloads and unpacks it, writes a
+systemd user unit, enables lingering so it survives
+reboot):
+
+```bash
+ci/runner/install-runner.sh
+```
+
+This deliberately stops short of registering. Mint a
+registration token at
+`https://github.com/ROCm/rocm-ernic/settings/actions/runners/new`
+and then:
+
+```bash
+ci/runner/register-runner.sh --token <TOKEN>
+```
+
+Registration tokens expire after one hour. The script
+applies the `kvm` label only when `/dev/kvm` is actually
+usable; re-run it with `--replace` after fixing KVM to
+refresh the labels.
+
+Manage the runner with:
+
+```bash
+systemctl --user status rocm-ernic-runner
+journalctl --user -u rocm-ernic-runner -f
+```
+
+## Security
+
+`ROCm/rocm-ernic` is a public repository. A self-hosted
+runner attached to a public repository will execute
+whatever a pull request contains, so
+`.github/workflows/self-hosted-ci.yml` **never triggers
+on `pull_request`**. It runs only on `workflow_dispatch`,
+a nightly schedule, and pushes to branches in the main
+repository.
+
+If fork PR coverage is ever added, gate it behind a
+GitHub Environment with required reviewers, and confirm
+that *Settings, Actions, General, Require approval for
+all external contributors* is enabled.
+
+The workflow also takes a `concurrency` lock. Two
+simultaneous runs would collide on VM ssh ports, the
+instance manifest and the qcow2 overlays.
+
+## Triggering from a comment
+
+`.github/workflows/ci-command.yml` adds a slash command
+usable from any pull request or issue:
+
+| Command | Runs |
+|---|---|
+| `/ci` | build, loopback and two-VM RDMA functional |
+| `/ci build` | build, ctest and loopback only |
+| `/ci functional` | same as bare `/ci` |
+| `/ci full` | functional plus performance sweeps |
+| `/ci full tcg` | VMs under emulation, no valid perf |
+| `/ci help` | print usage |
+
+Arguments are order-insensitive and case-insensitive, so
+`/ci tcg full` and `/ci FULL TCG` both work.
+
+The dispatcher reacts to the comment, dispatches the
+workflow against the right ref, and replies with a link
+to the run.
+
+Three properties keep this safe on a public repository:
+
+1. The dispatcher runs on `ubuntu-latest`, never on the
+   self-hosted runner, so untrusted comment text is
+   never processed on the lab node.
+2. The commenter must have write access or above,
+   checked against the API at trigger time.
+3. Only refs in this repository can be dispatched.
+   Comments on fork pull requests are refused, so fork
+   code cannot reach the lab node.
+
+`issue_comment` always runs the workflow file from the
+default branch, so this gate cannot be weakened by a
+pull request.
+
+Note that `workflow_dispatch` only resolves workflows
+present on the default branch. Both
+`self-hosted-ci.yml` and `ci-command.yml` must be merged
+to `main` before the command works, even when targeting
+a topic branch.
+
+## Running jobs by hand
+
+Each job is a standalone script and can be run outside
+Actions:
+
+```bash
+bash ci/jobs/build.sh          # configure, build, ctest
+bash ci/jobs/loopback.sh       # loopback backend suite
+bash ci/jobs/vm-up.sh          # boot the CI VMs
+bash ci/jobs/vm-functional.sh  # RDMA functional tests
+bash ci/jobs/perf.sh           # performance sweeps
+bash ci/jobs/vm-down.sh        # tear down
+```
+
+Useful overrides:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CI_WORK` | `/var/tmp/ernic-ci-work` | workspace root |
+| `CI_BUILD_TYPE` | `Release` | CMake build type |
+| `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
+| `ERNIC_INSTANCES` | `2` | number of VMs |
+| `CI_VM_SSH_BASE_PORT` | `2350` | first guest ssh port |
+| `CI_KEEP_OVERLAYS` | `false` | keep qcow2 after teardown |
+
+VM names and ports are deliberately distinct from the
+interactive defaults in `/etc/rocm-ernic/rocm-ernic.env`
+so a CI run can never disturb a developer's VMs on the
+same box. Teardown only ever matches VMs it launched.
+
+## Reports
+
+`ci/report/gen-report.py` merges three sources into one
+report:
+
+- `$CI_WORK/results/*.jsonl` — shell-level check results
+- `$CI_WORK/results/junit/*.xml` — Ansible task results,
+  captured via the `junit` callback plugin
+- `$CI_WORK/results/perf-csv/*.csv` — perftest and
+  iperf3 sweeps
+
+It writes `report.md` and `summary.json`, and appends
+the report to the GitHub step summary. Failed
+measurements are shown as an incomplete sample count
+rather than dropped, so a run that silently stopped
+measuring is visible.
+
+Regression checking compares medians against a stored
+baseline:
+
+```bash
+python3 ci/report/gen-report.py \
+    --results "$CI_WORK/results" \
+    --out "$CI_WORK/report" \
+    --baseline "$CI_WORK/baseline/summary.json" \
+    --threshold 15
+```
+
+Latency metrics are inverted so that "worse" is always
+negative. The script exits non-zero on any functional
+failure or regression, which is what gates the workflow.
+
+Only a clean tier-3 run on `main` updates the baseline,
+so a failing or partial run can never quietly lower the
+bar.

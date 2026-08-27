@@ -1,0 +1,85 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Register already-running CI VMs into the ernic_vms
+# inventory group.
+#
+# vm-create.yml normally does this via add_host at the
+# end of its run, but it also builds the golden image
+# and launches VMs -- both of which need root.  The
+# self-hosted CI brings VMs up unprivileged in
+# ci/jobs/vm-up.sh, so this play supplies just the
+# inventory registration that the downstream test plays
+# (guest-setup, sanity, performance) depend on.
+#
+# The host vars below intentionally mirror vm-create.yml
+# exactly; if that play's add_host contract changes,
+# change it here too.
+
+---
+- name: "CI: register running VMs in inventory"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    - name: Read the instance manifest
+      ansible.builtin.slurp:
+        src: "{{ ernic_run_dir }}/instances.json"
+      register: ernic_manifest_raw
+
+    - name: Parse the instance manifest
+      ansible.builtin.set_fact:
+        ernic_manifest: >-
+          {{ ernic_manifest_raw.content
+             | b64decode | from_json }}
+
+    - name: Fail if no instances are running
+      ansible.builtin.assert:
+        that:
+          - ernic_manifest.instances | length > 0
+        fail_msg: >-
+          No rocm-ernic instances in
+          {{ ernic_run_dir }}/instances.json.
+          Run ci/jobs/vm-up.sh first.
+
+    - name: Fail if any instance has no VM attached
+      ansible.builtin.assert:
+        that:
+          - item.vm is defined
+          - item.vm is not none
+        fail_msg: >-
+          Instance {{ item.id }} has no VM attached.
+      loop: "{{ ernic_manifest.instances }}"
+      loop_control:
+        label: "instance {{ item.id }}"
+
+    - name: Add CI VMs to the ernic_vms inventory group
+      ansible.builtin.add_host:
+        name: "ernic_vm_{{ item.id }}"
+        groups: ernic_vms
+        ansible_host: localhost
+        ansible_port: "{{ item.vm.ssh_port }}"
+        ansible_user: "{{ item.vm.ssh_user }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o PasswordAuthentication=no
+        vm_index: "{{ item.id }}"
+        vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item.id }}"
+      loop: "{{ ernic_manifest.instances }}"
+      loop_control:
+        label: >-
+          ernic_vm_{{ item.id }}
+          (port {{ item.vm.ssh_port }})
+
+    - name: Display registered VMs
+      ansible.builtin.debug:
+        msg: >-
+          Registered {{ ernic_manifest.instances | length }}
+          CI VM(s):
+          {{ ernic_manifest.instances
+             | map(attribute='vm.vm_name') | join(', ') }}
