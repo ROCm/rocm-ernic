@@ -13,7 +13,7 @@
 This was the Linux kernel driver for the AMD ROCm ERNIC (Emulated RDMA NIC),
 designed for use with the libvfio-user based userspace device server
 (`rocm-ernic`). The driver enabled RDMA functionality in virtual machines
-using a PVRDMA-derived protocol (VID:DID 0x1022:0x8000).
+using a PVRDMA-derived protocol (`VID:DID 0x1022:0x8000`).
 
 ## Building the Driver
 
