@@ -224,7 +224,7 @@ void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle);
  * @cq_handle: output: allocated CQ handle
  */
 int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe,
-                       uint32_t *cq_handle);
+                      uint32_t *cq_handle);
 
 /**
  * ionic_rm_dealloc_cq - Free a completion queue
@@ -253,9 +253,9 @@ void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle);
  * @qpn:           output: QP number assigned
  */
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint8_t qp_type, uint32_t max_send_wr,
-                       uint32_t max_recv_wr, uint32_t send_cq_handle,
-                       uint32_t recv_cq_handle, uint32_t *qpn);
+                      uint8_t qp_type, uint32_t max_send_wr,
+                      uint32_t max_recv_wr, uint32_t send_cq_handle,
+                      uint32_t recv_cq_handle, uint32_t *qpn);
 
 /**
  * ionic_rm_dealloc_qp - Free a queue pair
@@ -269,7 +269,7 @@ void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn);
  * @mr_handle:     output handle
  */
 int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint32_t access_flags, uint32_t *mr_handle);
+                      uint32_t access_flags, uint32_t *mr_handle);
 
 /**
  * ionic_rm_dealloc_mr - Free a memory region
@@ -289,9 +289,9 @@ void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle);
  * Returns 0 on success, -errno on failure.
  */
 int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
-                             const uint64_t *sge_va, const uint32_t *sge_len,
-                             const uint32_t *sge_lkey, uint32_t num_sge,
-                             uint8_t opcode);
+                            const uint64_t *sge_va, const uint32_t *sge_len,
+                            const uint32_t *sge_lkey, uint32_t num_sge,
+                            uint8_t opcode);
 
 /**
  * ionic_rm_modify_qp - Modify a queue pair's state
@@ -303,10 +303,8 @@ int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
  * @qkey:       Q-Key / destination QPN (combined le32)
  * @dest_gid:   16-byte destination GID (raw bytes, zeroed if not RC)
  */
-int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
-                        uint32_t attr_mask, uint8_t type_state,
-                        uint32_t sq_psn, uint32_t rq_psn,
-                        uint32_t qkey_dest_qpn,
-                        const uint8_t *dest_gid_16bytes);
+int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
+                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
+                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes);
 
 #endif /* ROCM_ERNIC_COMPAT_H */

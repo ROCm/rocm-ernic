@@ -929,14 +929,13 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
  * -------------------------------------------------------------------------
  */
 
-int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe,
-                       uint32_t *cq_handle)
+int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
-    return rdma_rm_alloc_cq(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                             cqe, cq_handle, NULL);
+    return rdma_rm_alloc_cq(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, cqe,
+                            cq_handle, NULL);
 }
 
 void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
@@ -953,7 +952,7 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_pd(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                             pd_handle, 0);
+                            pd_handle, 0);
 }
 
 void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
@@ -965,20 +964,18 @@ void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
 }
 
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint8_t qp_type, uint32_t max_send_wr,
-                       uint32_t max_recv_wr, uint32_t send_cq_handle,
-                       uint32_t recv_cq_handle, uint32_t *qpn)
+                      uint8_t qp_type, uint32_t max_send_wr,
+                      uint32_t max_recv_wr, uint32_t send_cq_handle,
+                      uint32_t recv_cq_handle, uint32_t *qpn)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     RdmaRmQP *out_qp = NULL;
-    return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, pd_handle,
-                             qp_type,
-                             max_send_wr, 16, send_cq_handle,
-                             max_recv_wr, 16, recv_cq_handle,
-                             NULL, qpn,
-                             0, 0, 0, 0, NULL, &out_qp);
+    return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, pd_handle, qp_type,
+                            max_send_wr, 16, send_cq_handle, max_recv_wr, 16,
+                            recv_cq_handle, NULL, qpn, 0, 0, 0, 0, NULL,
+                            &out_qp);
 }
 
 void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
@@ -990,15 +987,14 @@ void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
 }
 
 int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint32_t access_flags, uint32_t *mr_handle)
+                      uint32_t access_flags, uint32_t *mr_handle)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     uint32_t lkey = 0, rkey = 0;
-    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle,
-                             0, 0, NULL, (int)access_flags,
-                             mr_handle, &lkey, &rkey);
+    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, 0, 0, NULL,
+                            (int)access_flags, mr_handle, &lkey, &rkey);
 }
 
 void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
@@ -1010,9 +1006,9 @@ void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
 }
 
 int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
-                             const uint64_t *sge_va, const uint32_t *sge_len,
-                             const uint32_t *sge_lkey, uint32_t num_sge,
-                             uint8_t opcode)
+                            const uint64_t *sge_va, const uint32_t *sge_len,
+                            const uint32_t *sge_lkey, uint32_t num_sge,
+                            uint8_t opcode)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
@@ -1027,9 +1023,9 @@ int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
     /* Translate ionic SGEs (big-endian guest VA/len/lkey) to ibv_sge. */
     struct ibv_sge sge[32];
     for (uint32_t i = 0; i < num_sge; i++) {
-        sge[i].addr   = sge_va[i];
+        sge[i].addr = sge_va[i];
         sge[i].length = sge_len[i];
-        sge[i].lkey   = sge_lkey[i];
+        sge[i].lkey = sge_lkey[i];
     }
 
     (void)opcode;
@@ -1042,21 +1038,15 @@ int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
         return 0;
 
     union ibv_gid zero_gid = {};
-    rdma_backend_post_send(&pvrdma->backend_dev,
-                           &rm_qp->backend_qp,
-                           (uint8_t)rm_qp->qp_type,
-                           sge, num_sge,
-                           0, &zero_gid, &zero_gid,
-                           0, 0,
-                           NULL);
+    rdma_backend_post_send(&pvrdma->backend_dev, &rm_qp->backend_qp,
+                           (uint8_t)rm_qp->qp_type, sge, num_sge, 0, &zero_gid,
+                           &zero_gid, 0, 0, NULL);
     return 0;
 }
 
-int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
-                        uint32_t attr_mask, uint8_t type_state,
-                        uint32_t sq_psn, uint32_t rq_psn,
-                        uint32_t qkey_dest_qpn,
-                        const uint8_t *dest_gid_16bytes)
+int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
+                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
+                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
@@ -1079,12 +1069,9 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
     uint32_t dqpn = qkey_dest_qpn & 0x00ffffffu;
     uint32_t qkey = qkey_dest_qpn >> 24;
 
-    return rdma_rm_modify_qp(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                              qpn, attr_mask,
-                              0,          /* sgid_idx: use default GID */
-                              &dgid, dqpn,
-                              to_state, qkey,
-                              rq_psn, sq_psn);
+    return rdma_rm_modify_qp(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn,
+                             attr_mask, 0, /* sgid_idx: use default GID */
+                             &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
 }
 
 /* pvrdma_get_dev_resources and pvrdma_get_backend_dev are retained in the

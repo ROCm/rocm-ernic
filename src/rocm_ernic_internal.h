@@ -63,15 +63,15 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
  * The ionic driver discovers these sizes from the identify response.
  * ---------------------------------------------------------------------------
  */
-#define IONIC_BAR0_REGS_SIZE    (4 * 1024 * 1024)  /* 4 MB: regs + MSI-X   */
-#define IONIC_BAR2_DB_SIZE      (4 * 1024 * 1024)  /* 4 MB: doorbell pages  */
-#define IONIC_DB_PAGE_SIZE      4096                /* one 4K page per LIF   */
-#define IONIC_KERN_PID          0                   /* kernel doorbell page  */
+#define IONIC_BAR0_REGS_SIZE (4 * 1024 * 1024) /* 4 MB: regs + MSI-X   */
+#define IONIC_BAR2_DB_SIZE   (4 * 1024 * 1024) /* 4 MB: doorbell pages  */
+#define IONIC_DB_PAGE_SIZE   4096              /* one 4K page per LIF   */
+#define IONIC_KERN_PID       0                 /* kernel doorbell page  */
 
 /* ionic MSI-X vectors: EQ per vector (driver requests eq_count vectors).
  * We start with a fixed count matching IONIC_EQ_COUNT_MIN = 4. */
-#define IONIC_MSIX_MIN_VECTORS  4
-#define IONIC_MSIX_MAX_VECTORS  32
+#define IONIC_MSIX_MIN_VECTORS 4
+#define IONIC_MSIX_MAX_VECTORS 32
 
 /**
  * rocm_ernic_dev - Main device structure
@@ -88,10 +88,10 @@ struct rocm_ernic_dev {
     pvrdma_handle_t pvrdma_handle;
 
     /* ionic emulation layer (replaces PVRDMA when ionic_mode is true) */
-    struct ionic_eth_emu           *ionic_emu;
+    struct ionic_eth_emu *ionic_emu;
     struct ionic_rdma_devcmd_state *ionic_rdma;
-    struct ionic_datapath          *ionic_dp;
-    bool                            ionic_mode; /* true = use ionic path */
+    struct ionic_datapath *ionic_dp;
+    bool ionic_mode; /* true = use ionic path */
 
     /* BAR memory backing stores */
     void *bar0_mem; /* MSI-X table/PBA (legacy) or ionic BAR0 shadow */

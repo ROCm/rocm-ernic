@@ -23,7 +23,7 @@
 #include <errno.h>
 #include <syslog.h>
 #include <endian.h>
-#include <sys/mman.h>  /* PROT_READ, PROT_WRITE */
+#include <sys/mman.h> /* PROT_READ, PROT_WRITE */
 
 #include <vfio-user/libvfio-user.h>
 
@@ -37,29 +37,29 @@
 
 /* Admin WQE stride and header length */
 #define ADMIN_WQE_STRIDE  64
-#define ADMIN_WQE_HDR_LEN  4
+#define ADMIN_WQE_HDR_LEN 4
 
 /* Admin opcodes (enum ionic_v1_admin_op) */
 enum ionic_v1_admin_op {
-    IONIC_V1_ADMIN_NOOP           = 0,
-    IONIC_V1_ADMIN_CREATE_CQ      = 1,
-    IONIC_V1_ADMIN_CREATE_QP      = 2,
-    IONIC_V1_ADMIN_CREATE_MR      = 3,
-    IONIC_V1_ADMIN_STATS_HDRS     = 4,
-    IONIC_V1_ADMIN_STATS_VALS     = 5,
-    IONIC_V1_ADMIN_DESTROY_MR     = 6,
+    IONIC_V1_ADMIN_NOOP = 0,
+    IONIC_V1_ADMIN_CREATE_CQ = 1,
+    IONIC_V1_ADMIN_CREATE_QP = 2,
+    IONIC_V1_ADMIN_CREATE_MR = 3,
+    IONIC_V1_ADMIN_STATS_HDRS = 4,
+    IONIC_V1_ADMIN_STATS_VALS = 5,
+    IONIC_V1_ADMIN_DESTROY_MR = 6,
     /* 7 reserved */
-    IONIC_V1_ADMIN_DESTROY_CQ     = 8,
-    IONIC_V1_ADMIN_MODIFY_QP      = 9,
-    IONIC_V1_ADMIN_QUERY_QP       = 10,
-    IONIC_V1_ADMIN_DESTROY_QP     = 11,
-    IONIC_V1_ADMIN_DEBUG          = 12,
-    IONIC_V1_ADMIN_CREATE_AH      = 13,
-    IONIC_V1_ADMIN_QUERY_AH       = 14,
-    IONIC_V1_ADMIN_MODIFY_DCQCN   = 15,
-    IONIC_V1_ADMIN_DESTROY_AH     = 16,
-    IONIC_V1_ADMIN_QP_STATS_HDRS  = 17,
-    IONIC_V1_ADMIN_QP_STATS_VALS  = 18,
+    IONIC_V1_ADMIN_DESTROY_CQ = 8,
+    IONIC_V1_ADMIN_MODIFY_QP = 9,
+    IONIC_V1_ADMIN_QUERY_QP = 10,
+    IONIC_V1_ADMIN_DESTROY_QP = 11,
+    IONIC_V1_ADMIN_DEBUG = 12,
+    IONIC_V1_ADMIN_CREATE_AH = 13,
+    IONIC_V1_ADMIN_QUERY_AH = 14,
+    IONIC_V1_ADMIN_MODIFY_DCQCN = 15,
+    IONIC_V1_ADMIN_DESTROY_AH = 16,
+    IONIC_V1_ADMIN_QP_STATS_HDRS = 17,
+    IONIC_V1_ADMIN_QP_STATS_VALS = 18,
 };
 
 /*
@@ -89,8 +89,8 @@ enum ionic_v1_admin_op {
 #define CQE_SIZE 32
 
 /* Color bit in qid_type_flags (big-endian byte [3] bit 0). */
-#define CQE_COLOR_BIT   0x01u
-#define CQE_ERROR_BIT   0x02u
+#define CQE_COLOR_BIT 0x01u
+#define CQE_ERROR_BIT 0x02u
 /* Type field bits[7:5] = 0 means admin CQE; we always write 0 there. */
 
 /* -------------------------------------------------------------------------
@@ -100,28 +100,28 @@ enum ionic_v1_admin_op {
 #define MAX_AQ 4
 
 struct ionic_aq_ring {
-    bool     valid;
+    bool valid;
 
     /* AQ WQE ring */
-    uint64_t aq_dma;           /* guest PA of WQE ring */
-    uint32_t aq_depth;         /* number of entries (2^depth_log2) */
-    uint32_t aq_cons;          /* our consumer index (next WQE to read) */
-    uint32_t aq_prod;          /* last producer index from doorbell write */
+    uint64_t aq_dma;   /* guest PA of WQE ring */
+    uint32_t aq_depth; /* number of entries (2^depth_log2) */
+    uint32_t aq_cons;  /* our consumer index (next WQE to read) */
+    uint32_t aq_prod;  /* last producer index from doorbell write */
 
     /* Admin CQ ring */
-    uint64_t cq_dma;           /* guest PA of CQE ring */
-    uint32_t cq_depth;         /* number of entries */
-    uint32_t cq_prod;          /* our producer index */
-    bool     cq_color;         /* current color (flips on ring wrap) */
+    uint64_t cq_dma;   /* guest PA of CQE ring */
+    uint32_t cq_depth; /* number of entries */
+    uint32_t cq_prod;  /* our producer index */
+    bool cq_color;     /* current color (flips on ring wrap) */
 };
 
 struct ionic_adminq_ctx {
-    vfu_ctx_t            *vfu_ctx;
-    struct ionic_aq_ring  aq[MAX_AQ];
-    int                   aq_count;
+    vfu_ctx_t *vfu_ctx;
+    struct ionic_aq_ring aq[MAX_AQ];
+    int aq_count;
 
     /* pvrdma handle for calling ionic_rm_* compat wrappers. */
-    pvrdma_handle_t       pvrdma_handle;
+    pvrdma_handle_t pvrdma_handle;
 };
 
 /* -------------------------------------------------------------------------
@@ -143,24 +143,23 @@ void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx)
     free(ctx);
 }
 
-void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx,
-                                  int aq_idx,
-                                  uint64_t aq_dma, uint8_t aq_depth_log2,
-                                  uint64_t cq_dma, uint8_t cq_depth_log2)
+void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
+                                 uint64_t aq_dma, uint8_t aq_depth_log2,
+                                 uint64_t cq_dma, uint8_t cq_depth_log2)
 {
     if (!ctx || aq_idx < 0 || aq_idx >= MAX_AQ)
         return;
 
     struct ionic_aq_ring *r = &ctx->aq[aq_idx];
-    r->valid     = true;
-    r->aq_dma    = aq_dma;
-    r->aq_depth  = 1u << aq_depth_log2;
-    r->aq_cons   = 0;
-    r->aq_prod   = 0;
-    r->cq_dma    = cq_dma;
-    r->cq_depth  = 1u << cq_depth_log2;
-    r->cq_prod   = 0;
-    r->cq_color  = true;  /* ionic: initial color = true */
+    r->valid = true;
+    r->aq_dma = aq_dma;
+    r->aq_depth = 1u << aq_depth_log2;
+    r->aq_cons = 0;
+    r->aq_prod = 0;
+    r->cq_dma = cq_dma;
+    r->cq_depth = 1u << cq_depth_log2;
+    r->cq_prod = 0;
+    r->cq_color = true; /* ionic: initial color = true */
 
     if (aq_idx >= ctx->aq_count)
         ctx->aq_count = aq_idx + 1;
@@ -171,12 +170,13 @@ void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx,
             aq_idx, aq_dma, r->aq_depth, cq_dma, r->cq_depth);
 }
 
-void ionic_adminq_set_resources(struct ionic_adminq_ctx *ctx,
-                                 void *dev_res, void *backend_dev)
+void ionic_adminq_set_resources(struct ionic_adminq_ctx *ctx, void *dev_res,
+                                void *backend_dev)
 {
     /* dev_res and backend_dev are not stored directly — we use the
      * ionic_rm_* compat wrappers via pvrdma_handle instead. */
-    (void)dev_res; (void)backend_dev;
+    (void)dev_res;
+    (void)backend_dev;
     /* pvrdma_handle must be set separately via ionic_adminq_set_pvrdma. */
 }
 
@@ -186,8 +186,8 @@ void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx, void *handle)
         ctx->pvrdma_handle = (pvrdma_handle_t)handle;
 }
 
-void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx,
-                               int aq_idx, uint16_t p_index)
+void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
+                              uint16_t p_index)
 {
     if (!ctx || aq_idx < 0 || aq_idx >= ctx->aq_count)
         return;
@@ -210,8 +210,8 @@ static int dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
     if (!sg)
         return -ENOMEM;
 
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len,
-                          sg, 1, PROT_READ);
+    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
+                          PROT_READ);
     if (ret < 0) {
         free(sg);
         return ret;
@@ -229,8 +229,8 @@ static int dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
     return 0;
 }
 
-static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa,
-                     const void *buf, size_t len)
+static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
+                     size_t len)
 {
     dma_sg_t *sg = malloc(dma_sg_size());
     struct iovec iov;
@@ -239,8 +239,8 @@ static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa,
     if (!sg)
         return -ENOMEM;
 
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len,
-                          sg, 1, PROT_WRITE);
+    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
+                          PROT_WRITE);
     if (ret < 0) {
         free(sg);
         return ret;
@@ -265,9 +265,8 @@ static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa,
  */
 
 static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
-                            struct ionic_aq_ring *r,
-                            uint16_t cmd_idx, uint8_t cmd_op,
-                            uint8_t status)
+                           struct ionic_aq_ring *r, uint16_t cmd_idx,
+                           uint8_t cmd_op, uint8_t status)
 {
     /* ionic_v1_cqe layout for admin completions (32 bytes, see ionic_fw.h):
      *   [0:1]  le16 cmd_idx   — AQ consumer index this completes
@@ -281,7 +280,7 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
     memset(cqe, 0, CQE_SIZE);
 
     uint16_t ci = htole16(cmd_idx);
-    memcpy(cqe + 0, &ci, 2);    /* cmd_idx le16  */
+    memcpy(cqe + 0, &ci, 2); /* cmd_idx le16  */
     cqe[2] = cmd_op;
 
     /* status_length at byte 20 (be32) */
@@ -296,8 +295,8 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
     memcpy(cqe + 24, &qtf, 4);
 
     /* Write CQE to guest memory */
-    uint64_t cqe_gpa = r->cq_dma +
-                       (uint64_t)(r->cq_prod % r->cq_depth) * CQE_SIZE;
+    uint64_t cqe_gpa =
+        r->cq_dma + (uint64_t)(r->cq_prod % r->cq_depth) * CQE_SIZE;
     if (dma_write(ctx->vfu_ctx, cqe_gpa, cqe, CQE_SIZE) < 0) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq: failed to write CQE to %#lx", cqe_gpa);
@@ -306,7 +305,7 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
 
     r->cq_prod++;
     if (r->cq_prod % r->cq_depth == 0)
-        r->cq_color = !r->cq_color;  /* color flips on ring wrap */
+        r->cq_color = !r->cq_color; /* color flips on ring wrap */
 }
 
 /* -------------------------------------------------------------------------
@@ -330,7 +329,7 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
  * -------------------------------------------------------------------------
  */
 static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
-                                    const uint8_t *body, uint16_t len)
+                                   const uint8_t *body, uint16_t len)
 {
     if (!ctx->pvrdma_handle) {
         vfu_log(ctx->vfu_ctx, LOG_WARNING,
@@ -350,8 +349,8 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
 
     uint32_t cq_handle;
     int ret = ionic_rm_alloc_cq(ctx->pvrdma_handle,
-                                 1u << body[4],  /* cqe count = 2^depth */
-                                 &cq_handle);
+                                1u << body[4], /* cqe count = 2^depth */
+                                &cq_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_CQ %u: rdma_rm_alloc_cq failed (%d)",
@@ -360,8 +359,8 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
     }
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
-            "ionic_adminq CREATE_CQ cq_id=%u handle=%u depth=2^%u",
-            cq_id, cq_handle, body[4]);
+            "ionic_adminq CREATE_CQ cq_id=%u handle=%u depth=2^%u", cq_id,
+            cq_handle, body[4]);
     return 0;
 }
 
@@ -379,7 +378,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
  * -------------------------------------------------------------------------
  */
 static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
-                                    const uint8_t *body, uint16_t len)
+                                   const uint8_t *body, uint16_t len)
 {
     if (!ctx->pvrdma_handle) {
         vfu_log(ctx->vfu_ctx, LOG_WARNING,
@@ -406,18 +405,17 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     uint32_t qp_id = id_ver & 0x00ffffffu;
 
     uint8_t type_state = body[58];
-    uint8_t qp_type    = type_state & 0x0fu;
-    uint8_t qp_state   = (type_state >> 4) & 0x0fu;
+    uint8_t qp_type = type_state & 0x0fu;
+    uint8_t qp_state = (type_state >> 4) & 0x0fu;
     (void)qp_state;
 
     uint32_t qpn;
-    int ret = ionic_rm_alloc_qp(ctx->pvrdma_handle, pd_id,
-                                 qp_type,
-                                 (uint32_t)(1u << body[12]),  /* max_send_wr */
-                                 (uint32_t)(1u << body[16]),  /* max_recv_wr */
-                                 sq_cq_id,                    /* send_cq_handle */
-                                 sq_cq_id,                    /* recv_cq_handle */
-                                 &qpn);
+    int ret = ionic_rm_alloc_qp(ctx->pvrdma_handle, pd_id, qp_type,
+                                (uint32_t)(1u << body[12]), /* max_send_wr */
+                                (uint32_t)(1u << body[16]), /* max_recv_wr */
+                                sq_cq_id,                   /* send_cq_handle */
+                                sq_cq_id,                   /* recv_cq_handle */
+                                &qpn);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_QP %u: rdma_rm_alloc_qp failed (%d)",
@@ -426,8 +424,8 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
-            "ionic_adminq CREATE_QP qp_id=%u qpn=%u type=%u pd=%u",
-            qp_id, qpn, qp_type, pd_id);
+            "ionic_adminq CREATE_QP qp_id=%u qpn=%u type=%u pd=%u", qp_id, qpn,
+            qp_type, pd_id);
     return 0;
 }
 
@@ -436,11 +434,10 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
  * -------------------------------------------------------------------------
  */
 
-static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx,
-                             uint8_t op, const uint8_t *body, uint16_t len)
+static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
+                            const uint8_t *body, uint16_t len)
 {
-    vfu_log(ctx->vfu_ctx, LOG_INFO,
-            "ionic_adminq: WQE op=%u len=%u", op, len);
+    vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq: WQE op=%u len=%u", op, len);
 
     switch (op) {
     case IONIC_V1_ADMIN_NOOP:
@@ -453,46 +450,60 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx,
         return handle_create_qp_op(ctx, body, len);
 
     case IONIC_V1_ADMIN_CREATE_MR: {
-        if (len < 45 || !ctx->pvrdma_handle) { return 0; }
+        if (len < 45 || !ctx->pvrdma_handle) {
+            return 0;
+        }
         uint32_t pd_id, id_ver;
-        memcpy(&pd_id,  body + 8,  4);  pd_id  = le32toh(pd_id);
-        memcpy(&id_ver, body + 16, 4);  id_ver = le32toh(id_ver);
+        memcpy(&pd_id, body + 8, 4);
+        pd_id = le32toh(pd_id);
+        memcpy(&id_ver, body + 16, 4);
+        id_ver = le32toh(id_ver);
         uint16_t flags;
-        memcpy(&flags,  body + 40, 2);  flags  = le16toh(flags);
+        memcpy(&flags, body + 40, 2);
+        flags = le16toh(flags);
         uint32_t mr_handle;
-        int ret = ionic_rm_alloc_mr(ctx->pvrdma_handle, pd_id,
-                                     (uint32_t)flags, &mr_handle);
+        int ret = ionic_rm_alloc_mr(ctx->pvrdma_handle, pd_id, (uint32_t)flags,
+                                    &mr_handle);
         if (ret) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq CREATE_MR: failed (%d)", ret);
             return 1;
         }
         vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq CREATE_MR mr_id=%u handle=%u",
-                id_ver & 0xffffffu, mr_handle);
+                "ionic_adminq CREATE_MR mr_id=%u handle=%u", id_ver & 0xffffffu,
+                mr_handle);
         return 0;
     }
 
     case IONIC_V1_ADMIN_DESTROY_MR: {
-        if (len < 4 || !ctx->pvrdma_handle) { return 0; }
+        if (len < 4 || !ctx->pvrdma_handle) {
+            return 0;
+        }
         uint32_t mr_handle;
-        memcpy(&mr_handle, body, 4);  mr_handle = le32toh(mr_handle);
+        memcpy(&mr_handle, body, 4);
+        mr_handle = le32toh(mr_handle);
         ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
         return 0;
     }
 
     case IONIC_V1_ADMIN_DESTROY_CQ: {
-        if (len < 4 || !ctx->pvrdma_handle) { return 0; }
+        if (len < 4 || !ctx->pvrdma_handle) {
+            return 0;
+        }
         uint32_t cq_handle;
-        memcpy(&cq_handle, body, 4);  cq_handle = le32toh(cq_handle);
+        memcpy(&cq_handle, body, 4);
+        cq_handle = le32toh(cq_handle);
         ionic_rm_dealloc_cq(ctx->pvrdma_handle, cq_handle);
         return 0;
     }
 
     case IONIC_V1_ADMIN_DESTROY_QP: {
-        if (len < 4 || !ctx->pvrdma_handle) { return 0; }
+        if (len < 4 || !ctx->pvrdma_handle) {
+            return 0;
+        }
         uint32_t qpn;
-        memcpy(&qpn, body, 4);  qpn = le32toh(qpn);
+        memcpy(&qpn, body, 4);
+        qpn = le32toh(qpn);
         ionic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);
         return 0;
     }
@@ -524,39 +535,43 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx,
          *   le64 dma_addr     [48:55]  (AH DMA if ah_id_len != 0)
          *   le32 id_ver       [56:59]  (qpn | ver<<24)
          */
-        if (len < 60 || !ctx->pvrdma_handle) { return 0; }
+        if (len < 60 || !ctx->pvrdma_handle) {
+            return 0;
+        }
 
         uint32_t attr_mask_be;
         memcpy(&attr_mask_be, body + 0, 4);
         uint32_t attr_mask = be32toh(attr_mask_be);
 
         uint32_t rq_psn, sq_psn, qkey_dest_qpn, id_ver;
-        memcpy(&rq_psn,        body + 8,  4);  rq_psn        = le32toh(rq_psn);
-        memcpy(&sq_psn,        body + 12, 4);  sq_psn        = le32toh(sq_psn);
-        memcpy(&qkey_dest_qpn, body + 16, 4);  qkey_dest_qpn = le32toh(qkey_dest_qpn);
-        memcpy(&id_ver,        body + 56, 4);  id_ver        = le32toh(id_ver);
+        memcpy(&rq_psn, body + 8, 4);
+        rq_psn = le32toh(rq_psn);
+        memcpy(&sq_psn, body + 12, 4);
+        sq_psn = le32toh(sq_psn);
+        memcpy(&qkey_dest_qpn, body + 16, 4);
+        qkey_dest_qpn = le32toh(qkey_dest_qpn);
+        memcpy(&id_ver, body + 56, 4);
+        id_ver = le32toh(id_ver);
 
-        uint8_t  type_state = body[39];
-        uint32_t qpn        = id_ver & 0x00ffffffu;
+        uint8_t type_state = body[39];
+        uint32_t qpn = id_ver & 0x00ffffffu;
 
         /* AH DMA address carries the destination GID in some transitions.
          * We read 16 bytes from the ah_id_len field area as a proxy for
          * dgid; a full implementation would DMA-read from dma_addr. */
         uint8_t dgid_zeros[16] = {0};
 
-        int ret = ionic_rm_modify_qp(ctx->pvrdma_handle, qpn,
-                                      attr_mask, type_state,
-                                      sq_psn, rq_psn,
-                                      qkey_dest_qpn,
-                                      dgid_zeros);
+        int ret =
+            ionic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
+                               sq_psn, rq_psn, qkey_dest_qpn, dgid_zeros);
         if (ret) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq MODIFY_QP %u: failed (%d)", qpn, ret);
             return 1;
         }
         vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq MODIFY_QP qpn=%u type_state=%#x attr=%#x",
-                qpn, type_state, attr_mask);
+                "ionic_adminq MODIFY_QP qpn=%u type_state=%#x attr=%#x", qpn,
+                type_state, attr_mask);
         return 0;
     }
 
@@ -565,7 +580,8 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx,
     case IONIC_V1_ADMIN_QUERY_AH:
     case IONIC_V1_ADMIN_DESTROY_AH:
         /* Remaining opcodes: stub */
-        (void)body; (void)len;
+        (void)body;
+        (void)len;
         vfu_log(ctx->vfu_ctx, LOG_WARNING,
                 "ionic_adminq: op=%u stub (succeeds)", op);
         return 0;
@@ -576,12 +592,11 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx,
     case IONIC_V1_ADMIN_QP_STATS_VALS:
     case IONIC_V1_ADMIN_MODIFY_DCQCN:
     case IONIC_V1_ADMIN_DEBUG:
-        return 0;  /* benign stub */
+        return 0; /* benign stub */
 
     default:
-        vfu_log(ctx->vfu_ctx, LOG_WARNING,
-                "ionic_adminq: unknown op=%u", op);
-        return 1;  /* IONIC_RC_ENOSUPP */
+        vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: unknown op=%u", op);
+        return 1; /* IONIC_RC_ENOSUPP */
     }
 }
 
@@ -618,7 +633,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
 
         uint32_t processed = 0;
         while (processed < pending && processed < r->aq_depth) {
-            uint32_t slot    = r->aq_cons % r->aq_depth;
+            uint32_t slot = r->aq_cons % r->aq_depth;
             uint64_t wqe_gpa = r->aq_dma + (uint64_t)slot * ADMIN_WQE_STRIDE;
 
             /* Single full-stride read (64 bytes covers all current admin ops).
@@ -642,8 +657,8 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             /* Read additional strides for large WQEs (e.g. CREATE_QP = 64 bytes
              * body + 4 header = 68 bytes = 2 strides). */
             uint32_t total_bytes = ADMIN_WQE_HDR_LEN + (uint32_t)len;
-            uint32_t strides = (total_bytes + ADMIN_WQE_STRIDE - 1u) /
-                               ADMIN_WQE_STRIDE;
+            uint32_t strides =
+                (total_bytes + ADMIN_WQE_STRIDE - 1u) / ADMIN_WQE_STRIDE;
             if (strides > 4)
                 strides = 4;
             if (strides > 1) {
@@ -653,13 +668,13 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             }
 
             uint16_t cmd_idx = (uint16_t)slot;
-            uint8_t  status  = dispatch_wqe(ctx, op,
-                                            wqe_buf + ADMIN_WQE_HDR_LEN,
-                                            len);
+            uint8_t status =
+                dispatch_wqe(ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
             post_admin_cqe(ctx, r, cmd_idx, op, status);
 
             /* Never write back to guest WQE memory — the driver owns the ring.
-             * Use producer-index tracking to avoid re-processing stale entries. */
+             * Use producer-index tracking to avoid re-processing stale entries.
+             */
             r->aq_cons = (r->aq_cons + 1u) % r->aq_depth;
             processed++;
         }

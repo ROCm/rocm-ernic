@@ -49,63 +49,63 @@
 /* WQE base header: 16 bytes (wqe_id[8], op[1], num_sge[1], flags[2], imm[4]) */
 
 /* WQE opcodes (from ionic_fw.h enum ionic_v1_op; only used ones defined) */
-#define IONIC_V1_OP_SEND      2
-#define IONIC_V1_OP_SEND_IMM  3
+#define IONIC_V1_OP_SEND     2
+#define IONIC_V1_OP_SEND_IMM 3
 
 /* WQE flags (big-endian be16 at byte 14; only SIG used currently) */
-#define IONIC_V1_FLAG_SIG    0x0008u
+#define IONIC_V1_FLAG_SIG 0x0008u
 
 /* ionic_v1_cqe layout (32 bytes, big-endian):
  *   union { recv { wqe_id[8], src_qpn_op[4], ... }; send { ... } } [0:23]
  *   be32 status_length  [24:27]
  *   be32 qid_type_flags [28:31]
  */
-#define CQE_COLOR_BIT   0x01u
-#define CQE_ERROR_BIT   0x02u
-#define CQE_TYPE_RECV   (1u << 5)
-#define CQE_TYPE_SEND   (2u << 5)
+#define CQE_COLOR_BIT 0x01u
+#define CQE_ERROR_BIT 0x02u
+#define CQE_TYPE_RECV (1u << 5)
+#define CQE_TYPE_SEND (2u << 5)
 
 /* -------------------------------------------------------------------------
  * Per-QP ring state
  * -------------------------------------------------------------------------
  */
 
-#define MAX_QP  (1u << 15)
-#define MAX_CQ  (1u << 16)
+#define MAX_QP (1u << 15)
+#define MAX_CQ (1u << 16)
 
 struct ionic_qp_ring {
-    bool     valid;
-    uint64_t sq_dma;        /* guest PA of SQ WQE ring */
-    uint64_t rq_dma;        /* guest PA of RQ WQE ring */
-    uint32_t sq_depth;      /* entries = 2^depth_log2  */
+    bool valid;
+    uint64_t sq_dma;   /* guest PA of SQ WQE ring */
+    uint64_t rq_dma;   /* guest PA of RQ WQE ring */
+    uint32_t sq_depth; /* entries = 2^depth_log2  */
     uint32_t rq_depth;
-    uint8_t  sq_stride_log2;
-    uint8_t  rq_stride_log2;
+    uint8_t sq_stride_log2;
+    uint8_t rq_stride_log2;
     uint32_t sq_cq_id;
     uint32_t rq_cq_id;
-    uint32_t sq_prod;       /* guest producer index (last seen) */
+    uint32_t sq_prod; /* guest producer index (last seen) */
     uint32_t rq_prod;
-    uint32_t sq_cons;       /* our consumer index              */
+    uint32_t sq_cons; /* our consumer index              */
     uint32_t rq_cons;
 };
 
 struct ionic_cq_ring {
-    bool     valid;
+    bool valid;
     uint64_t dma;
     uint32_t depth;
     uint32_t prod;
-    bool     color;    /* current expected color (flips on ring wrap) */
-    bool     armed;    /* driver has armed this CQ for notification   */
-    uint32_t eq_id;    /* EQ to fire when CQ has completions          */
+    bool color;     /* current expected color (flips on ring wrap) */
+    bool armed;     /* driver has armed this CQ for notification   */
+    uint32_t eq_id; /* EQ to fire when CQ has completions          */
 };
 
 struct ionic_datapath {
-    vfu_ctx_t            *vfu_ctx;
-    struct ionic_eth_emu *eth_emu;       /* for triggering EQ interrupts */
-    pvrdma_handle_t       pvrdma_handle; /* for posting to RDMA backend  */
+    vfu_ctx_t *vfu_ctx;
+    struct ionic_eth_emu *eth_emu; /* for triggering EQ interrupts */
+    pvrdma_handle_t pvrdma_handle; /* for posting to RDMA backend  */
 
-    struct ionic_qp_ring *qp;        /* indexed by qid   */
-    struct ionic_cq_ring *cq;        /* indexed by cq_id */
+    struct ionic_qp_ring *qp; /* indexed by qid   */
+    struct ionic_cq_ring *cq; /* indexed by cq_id */
 
     uint32_t qp_count;
     uint32_t cq_count;
@@ -117,14 +117,14 @@ struct ionic_datapath {
  */
 
 struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
-                                              struct ionic_eth_emu *eth_emu)
+                                             struct ionic_eth_emu *eth_emu)
 {
     struct ionic_datapath *dp = calloc(1, sizeof(*dp));
     if (!dp)
         return NULL;
 
-    dp->vfu_ctx  = vfu_ctx;
-    dp->eth_emu  = eth_emu;
+    dp->vfu_ctx = vfu_ctx;
+    dp->eth_emu = eth_emu;
 
     dp->qp = calloc(MAX_QP, sizeof(*dp->qp));
     dp->cq = calloc(MAX_CQ, sizeof(*dp->cq));
@@ -160,40 +160,40 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
  */
 
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qid,
-                                 uint64_t sq_dma, uint8_t sq_depth_log2,
-                                 uint8_t sq_stride_log2, uint32_t sq_cq_id,
-                                 uint64_t rq_dma, uint8_t rq_depth_log2,
-                                 uint8_t rq_stride_log2, uint32_t rq_cq_id)
+                                uint64_t sq_dma, uint8_t sq_depth_log2,
+                                uint8_t sq_stride_log2, uint32_t sq_cq_id,
+                                uint64_t rq_dma, uint8_t rq_depth_log2,
+                                uint8_t rq_stride_log2, uint32_t rq_cq_id)
 {
     if (!dp || qid >= dp->qp_count)
         return;
     struct ionic_qp_ring *q = &dp->qp[qid];
-    q->valid          = true;
-    q->sq_dma         = sq_dma;
-    q->rq_dma         = rq_dma;
-    q->sq_depth       = 1u << sq_depth_log2;
-    q->rq_depth       = 1u << rq_depth_log2;
+    q->valid = true;
+    q->sq_dma = sq_dma;
+    q->rq_dma = rq_dma;
+    q->sq_depth = 1u << sq_depth_log2;
+    q->rq_depth = 1u << rq_depth_log2;
     q->sq_stride_log2 = sq_stride_log2;
     q->rq_stride_log2 = rq_stride_log2;
-    q->sq_cq_id       = sq_cq_id;
-    q->rq_cq_id       = rq_cq_id;
+    q->sq_cq_id = sq_cq_id;
+    q->rq_cq_id = rq_cq_id;
     q->sq_prod = q->sq_cons = 0;
     q->rq_prod = q->rq_cons = 0;
 }
 
 void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
-                                 uint64_t dma, uint32_t depth, uint32_t eq_id)
+                                uint64_t dma, uint32_t depth, uint32_t eq_id)
 {
     if (!dp || cq_id >= dp->cq_count)
         return;
     struct ionic_cq_ring *c = &dp->cq[cq_id];
-    c->valid  = true;
-    c->dma    = dma;
-    c->depth  = depth;
-    c->prod   = 0;
-    c->color  = true;  /* initial color = true per ionic convention */
-    c->armed  = false;
-    c->eq_id  = eq_id;
+    c->valid = true;
+    c->dma = dma;
+    c->depth = depth;
+    c->prod = 0;
+    c->color = true; /* initial color = true per ionic convention */
+    c->armed = false;
+    c->eq_id = eq_id;
 }
 
 /* -------------------------------------------------------------------------
@@ -209,19 +209,25 @@ static int dp_dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
 
     if (!sg)
         return -ENOMEM;
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len,
-                          sg, 1, PROT_READ);
-    if (ret < 0) { free(sg); return ret; }
+    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
+                          PROT_READ);
+    if (ret < 0) {
+        free(sg);
+        return ret;
+    }
     ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) { free(sg); return ret; }
+    if (ret < 0) {
+        free(sg);
+        return ret;
+    }
     memcpy(buf, iov.iov_base, len);
     vfu_sgl_put(vfu_ctx, sg, &iov, 1);
     free(sg);
     return 0;
 }
 
-static int dp_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa,
-                        const void *buf, size_t len)
+static int dp_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
+                        size_t len)
 {
     dma_sg_t *sg = malloc(dma_sg_size());
     struct iovec iov;
@@ -229,11 +235,17 @@ static int dp_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa,
 
     if (!sg)
         return -ENOMEM;
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len,
-                          sg, 1, PROT_WRITE);
-    if (ret < 0) { free(sg); return ret; }
+    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
+                          PROT_WRITE);
+    if (ret < 0) {
+        free(sg);
+        return ret;
+    }
     ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) { free(sg); return ret; }
+    if (ret < 0) {
+        free(sg);
+        return ret;
+    }
     memcpy(iov.iov_base, buf, len);
     vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
     vfu_sgl_put(vfu_ctx, sg, &iov, 1);
@@ -246,10 +258,9 @@ static int dp_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa,
  * -------------------------------------------------------------------------
  */
 
-static void post_data_cqe(struct ionic_datapath *dp,
-                           uint32_t cq_id, uint32_t qid,
-                           uint64_t wqe_id, uint8_t op, uint8_t status,
-                           uint32_t byte_len, bool is_recv)
+static void post_data_cqe(struct ionic_datapath *dp, uint32_t cq_id,
+                          uint32_t qid, uint64_t wqe_id, uint8_t op,
+                          uint8_t status, uint32_t byte_len, bool is_recv)
 {
     if (cq_id >= dp->cq_count || !dp->cq[cq_id].valid)
         return;
@@ -273,16 +284,14 @@ static void post_data_cqe(struct ionic_datapath *dp,
     }
 
     /* status_length at byte 24 (be32) */
-    uint32_t sl = status ?
-        htobe32((uint32_t)status << 24) : htobe32(byte_len);
+    uint32_t sl = status ? htobe32((uint32_t)status << 24) : htobe32(byte_len);
     memcpy(cqe + 24, &sl, 4);
 
     /* qid_type_flags at byte 28 (be32):
      *   bit 0: color, bit 1: error, bits[7:5]: type, bits[31:8]: qid */
     uint32_t type = is_recv ? CQE_TYPE_RECV : CQE_TYPE_SEND;
     uint32_t qtf = (uint32_t)(c->color ? CQE_COLOR_BIT : 0) |
-                   (status ? CQE_ERROR_BIT : 0) |
-                   type |
+                   (status ? CQE_ERROR_BIT : 0) | type |
                    ((qid & 0xffffffu) << 8);
     qtf = htobe32(qtf);
     memcpy(cqe + 28, &qtf, 4);
@@ -347,12 +356,13 @@ static int parse_sge(const uint8_t *data, uint8_t num_sge, uint32_t stride,
 {
     /* SGEs start at WQE byte 28 */
     const uint8_t *p = data + 28;
-    uint32_t avail   = stride > 28 ? stride - 28 : 0;
+    uint32_t avail = stride > 28 ? stride - 28 : 0;
     uint32_t max_sge = avail / 16;
     if (max_sge > MAX_SGE_PER_WQE)
         max_sge = MAX_SGE_PER_WQE;
     /* Clamp to num_sge from WQE header — this is the authoritative count.
-     * Do not use null-termination: SGEs can legitimately have len=0 or lkey=0. */
+     * Do not use null-termination: SGEs can legitimately have len=0 or lkey=0.
+     */
     if ((uint32_t)num_sge < max_sge)
         max_sge = (uint32_t)num_sge;
 
@@ -360,24 +370,23 @@ static int parse_sge(const uint8_t *data, uint8_t num_sge, uint32_t stride,
     for (uint32_t i = 0; i < max_sge; i++) {
         uint64_t va;
         uint32_t len, lkey;
-        memcpy(&va,   p + i * 16 + 0, 8);
-        memcpy(&len,  p + i * 16 + 8, 4);
+        memcpy(&va, p + i * 16 + 0, 8);
+        memcpy(&len, p + i * 16 + 8, 4);
         memcpy(&lkey, p + i * 16 + 12, 4);
-        va   = be64toh(va);
-        len  = be32toh(len);
+        va = be64toh(va);
+        len = be32toh(len);
         lkey = be32toh(lkey);
         /* No null-termination sentinel — process all num_sge entries */
-        va_out[n]   = va;
-        len_out[n]  = len;
+        va_out[n] = va;
+        len_out[n] = len;
         lkey_out[n] = lkey;
         n++;
     }
     return (int)n;
 }
 
-static void process_sq_wqe(struct ionic_datapath *dp,
-                             struct ionic_qp_ring *q, uint32_t qid,
-                             uint32_t slot)
+static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                           uint32_t qid, uint32_t slot)
 {
     uint32_t stride = 1u << q->sq_stride_log2;
     uint64_t wqe_gpa = q->sq_dma + (uint64_t)slot * stride;
@@ -392,8 +401,8 @@ static void process_sq_wqe(struct ionic_datapath *dp,
     memcpy(&wqe_id, wqe + 0, 8);
     wqe_id = be64toh(wqe_id);
 
-    uint8_t  op      = wqe[8];
-    uint8_t  num_sge_hdr = wqe[9];  /* num_sge from ionic_v1_base_hdr */
+    uint8_t op = wqe[8];
+    uint8_t num_sge_hdr = wqe[9]; /* num_sge from ionic_v1_base_hdr */
     uint16_t flags;
     memcpy(&flags, wqe + 10, 2);
     flags = be16toh(flags);
@@ -402,7 +411,8 @@ static void process_sq_wqe(struct ionic_datapath *dp,
     uint64_t sge_va[MAX_SGE_PER_WQE];
     uint32_t sge_len[MAX_SGE_PER_WQE];
     uint32_t sge_lkey[MAX_SGE_PER_WQE];
-    int num_sge = parse_sge(wqe, num_sge_hdr, stride, sge_va, sge_len, sge_lkey);
+    int num_sge =
+        parse_sge(wqe, num_sge_hdr, stride, sge_va, sge_len, sge_lkey);
     if (num_sge < 0)
         num_sge = 0;
 
@@ -414,9 +424,8 @@ static void process_sq_wqe(struct ionic_datapath *dp,
     if (op == IONIC_V1_OP_SEND || op == IONIC_V1_OP_SEND_IMM) {
         /* Post via backend if available; fallback to loopback-only CQE. */
         if (dp->pvrdma_handle && num_sge > 0) {
-            ionic_backend_post_send(dp->pvrdma_handle, qid,
-                                    sge_va, sge_len, sge_lkey,
-                                    (uint32_t)num_sge, op);
+            ionic_backend_post_send(dp->pvrdma_handle, qid, sge_va, sge_len,
+                                    sge_lkey, (uint32_t)num_sge, op);
         }
         /* Post recv CQE on the peer RQ CQ (loopback: same QP). */
         post_data_cqe(dp, q->rq_cq_id, qid, wqe_id, op, 0, byte_len, true);
@@ -442,13 +451,13 @@ static void process_sq_wqe(struct ionic_datapath *dp,
  * -------------------------------------------------------------------------
  */
 
-void ionic_datapath_doorbell(struct ionic_datapath *dp,
-                              int qtype, uint64_t doorbell_val)
+void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
+                             uint64_t doorbell_val)
 {
     uint16_t p_index = (uint16_t)(doorbell_val & 0xffffu);
-    uint8_t  ring    = (uint8_t)((doorbell_val >> 16) & 0xffu);
-    uint32_t qid     = (uint32_t)(((doorbell_val >> 24) & 0xffu) |
-                                   (((doorbell_val >> 32) & 0xffffu) << 8));
+    uint8_t ring = (uint8_t)((doorbell_val >> 16) & 0xffu);
+    uint32_t qid = (uint32_t)(((doorbell_val >> 24) & 0xffu) |
+                              (((doorbell_val >> 32) & 0xffffu) << 8));
 
     vfu_log(dp->vfu_ctx, LOG_DEBUG,
             "ionic_datapath: doorbell qtype=%d qid=%u ring=%u p_index=%u",

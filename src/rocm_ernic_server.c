@@ -115,8 +115,8 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
     if (dev->ionic_mode && dev->ionic_emu)
-        return ionic_eth_emu_bar0_access(dev->ionic_emu,
-                                         buf, count, offset, is_write);
+        return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
+                                         is_write);
 
     if ((size_t)offset + count > RDMA_BAR0_MSIX_SIZE) {
         vfu_log(vfu_ctx, LOG_ERR,
@@ -219,8 +219,8 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
     if (dev->ionic_mode && dev->ionic_emu)
-        return ionic_eth_emu_bar2_access(dev->ionic_emu,
-                                         buf, count, offset, is_write);
+        return ionic_eth_emu_bar2_access(dev->ionic_emu, buf, count, offset,
+                                         is_write);
 
     uint32_t val;
     if ((size_t)offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
@@ -369,15 +369,14 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         return -1;
     }
 
-    ionic_eth_emu_register_rdma_handler(dev->ionic_emu,
-                                        ionic_rdma_devcmd_dispatch,
-                                        dev->ionic_rdma);
+    ionic_eth_emu_register_rdma_handler(
+        dev->ionic_emu, ionic_rdma_devcmd_dispatch, dev->ionic_rdma);
 
     dev->ionic_dp = ionic_datapath_create(dev->vfu_ctx, dev->ionic_emu);
     if (!dev->ionic_dp) {
         ionic_rdma_devcmd_destroy(dev->ionic_rdma);
         ionic_eth_emu_destroy(dev->ionic_emu);
-        dev->ionic_emu  = NULL;
+        dev->ionic_emu = NULL;
         dev->ionic_rdma = NULL;
         fprintf(stderr, "ionic_device_init: failed to create datapath\n");
         return -1;
@@ -386,7 +385,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
     /* Wire the datapath into the eth emulator's BAR2 handler */
     ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
 
-    dev->ionic_mode       = true;
+    dev->ionic_mode = true;
     dev->device_initialized = true;
 
     printf("ionic emulation initialized (VID:DID %#x:%#x)\n",
@@ -410,11 +409,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     }
 
     /* Set vendor/device IDs matching the ionic driver patch. */
-    vfu_pci_set_id(vfu_ctx,
-                   PCI_VENDOR_ID_AMD,             /* Vendor ID   */
-                   PCI_DEVICE_ID_AMD_IONIC_ERNIC, /* Device ID   */
-                   PCI_VENDOR_ID_AMD,             /* Subsys VID  */
-                   PCI_DEVICE_ID_AMD_IONIC_ERNIC);/* Subsys ID   */
+    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD,     /* Vendor ID   */
+                   PCI_DEVICE_ID_AMD_IONIC_ERNIC,  /* Device ID   */
+                   PCI_VENDOR_ID_AMD,              /* Subsys VID  */
+                   PCI_DEVICE_ID_AMD_IONIC_ERNIC); /* Subsys ID   */
 
     /* Set PCI class code: Network Controller - Ethernet (RoCEv2) */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
@@ -449,21 +447,20 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         /* ionic BAR0: 32 KB device registers (callback handles shadow buf) */
         ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
                                IONIC_BAR0_REGS_SIZE, bar0_access,
-                               VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM,
-                               NULL, 0, -1, 0);
+                               VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL,
+                               0, -1, 0);
         if (ret < 0)
             err(EXIT_FAILURE, "ionic: Failed to setup BAR0");
 
         /* ionic BAR2: 4 MB doorbell pages (BAR1 is skipped per ionic spec) */
         ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX,
                                IONIC_BAR2_DB_SIZE, bar2_access,
-                               VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM,
-                               NULL, 0, -1, 0);
+                               VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL,
+                               0, -1, 0);
         if (ret < 0)
             err(EXIT_FAILURE, "ionic: Failed to setup BAR2");
 
-        vfu_log(vfu_ctx, LOG_INFO,
-                "ionic BARs: BAR0=%zu BAR2=%zu",
+        vfu_log(vfu_ctx, LOG_INFO, "ionic BARs: BAR0=%zu BAR2=%zu",
                 (size_t)IONIC_BAR0_REGS_SIZE, (size_t)IONIC_BAR2_DB_SIZE);
         return 0;
     }
@@ -475,24 +472,23 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem)
         err(EXIT_FAILURE, "Failed to allocate BAR memory");
 
-    ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
-                           RDMA_BAR0_MSIX_SIZE, bar0_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM,
-                           NULL, 0, -1, 0);
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, RDMA_BAR0_MSIX_SIZE, bar0_access,
+        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0)
         err(EXIT_FAILURE, "Failed to setup BAR0");
 
     ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR1_REGION_IDX,
                            RDMA_BAR1_REGS_SIZE * sizeof(uint32_t), bar1_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM,
-                           NULL, 0, -1, 0);
+                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
+                           -1, 0);
     if (ret < 0)
         err(EXIT_FAILURE, "Failed to setup BAR1");
 
     ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX,
                            RDMA_BAR2_UAR_SIZE * sizeof(uint32_t), bar2_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM,
-                           NULL, 0, -1, 0);
+                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
+                           -1, 0);
     if (ret < 0)
         err(EXIT_FAILURE, "Failed to setup BAR2");
 
@@ -548,7 +544,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
     /* ionic mode needs at least IONIC_MSIX_MIN_VECTORS (4) EQ vectors;
      * the legacy PVRDMA path uses RDMA_MAX_INTRS (3). */
-    uint32_t nr_intrs = dev->ionic_mode ? IONIC_MSIX_MIN_VECTORS : RDMA_MAX_INTRS;
+    uint32_t nr_intrs =
+        dev->ionic_mode ? IONIC_MSIX_MIN_VECTORS : RDMA_MAX_INTRS;
 
     /* Message Control: bits [10:0] = Table Size-1 */
     msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
@@ -617,9 +614,13 @@ static void usage(const char *progname)
             "  -m, --mac ADDRESS    MAC address (format: XX:XX:XX:XX:XX:XX)\n");
     fprintf(stderr, "                       (default: 72:6f:63:6d:2d:6e, "
                     "rocm-nic)\n");
-    fprintf(stderr, "  -I, --ionic          Use ionic emulation path (VID:DID 0x1022:0x8001)\n");
-    fprintf(stderr, "                       Guest must use patched ionic.ko + ionic_rdma.ko\n");
-    fprintf(stderr, "                       See: patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch\n");
+    fprintf(stderr, "  -I, --ionic          Use ionic emulation path (VID:DID "
+                    "0x1022:0x8001)\n");
+    fprintf(stderr, "                       Guest must use patched ionic.ko + "
+                    "ionic_rdma.ko\n");
+    fprintf(stderr,
+            "                       See: "
+            "patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1239,7 +1240,7 @@ int main(int argc, char *argv[])
             if (dev->pvrdma_handle)
                 pvrdma_drain_pending_interrupts(dev->pvrdma_handle);
 
-                    /* ionic: poll admin queue rings for new WQEs */
+            /* ionic: poll admin queue rings for new WQEs */
             if (dev->ionic_mode && dev->ionic_rdma) {
                 struct ionic_adminq_ctx *aqctx =
                     ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
