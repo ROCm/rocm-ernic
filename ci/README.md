@@ -94,6 +94,22 @@ reboot):
 ci/runner/install-runner.sh
 ```
 
+The runner is installed to `/local/$USER/`, not `$HOME`.
+Home is NFS on the lab node, and a long-lived runner
+daemon does not belong on a shared filer: every job would
+pay filer latency, an outage would take the runner down,
+and its `.credentials` would sit on shared storage.
+`/local` is the node's per-user local-disk area, on the
+same ext4 volume as the work directory. On a fresh node
+that directory has to be created once:
+
+```bash
+sudo install -d -o "$USER" -g "$(id -gn)" -m 0755 /local/"$USER"
+```
+
+Override with `--root` or `CI_RUNNER_ROOT` if your node
+lays out local storage differently.
+
 This deliberately stops short of registering. Mint a
 registration token at
 `https://github.com/ROCm/rocm-ernic/settings/actions/runners/new`

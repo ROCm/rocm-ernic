@@ -33,7 +33,13 @@
 
 set -euo pipefail
 
-RUNNER_ROOT="${RUNNER_ROOT:-${HOME}/actions-runner-rocm-ernic}"
+# $HOME is NFS on this node (the shared /home_mkm filer).
+# A long-lived runner daemon does not belong there: every
+# job would pay filer latency, an outage would take the
+# runner down, and .credentials would sit on shared
+# storage.  /local is this node's per-user local-disk
+# area, on the same ext4 volume as CI_WORK.
+RUNNER_ROOT="${RUNNER_ROOT:-${CI_RUNNER_ROOT:-/local/${USER}/actions-runner-rocm-ernic}}"
 RUNNER_WORK="${RUNNER_WORK:-/var/tmp/ernic-ci-work/runner-work}"
 RUNNER_URL="${RUNNER_URL:-https://github.com/ROCm/rocm-ernic}"
 RUNNER_NAME="${RUNNER_NAME:-$(hostname -s)}"

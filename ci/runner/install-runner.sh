@@ -24,7 +24,13 @@
 set -euo pipefail
 
 RUNNER_VERSION="${RUNNER_VERSION:-2.337.0}"
-RUNNER_ROOT="${RUNNER_ROOT:-${HOME}/actions-runner-rocm-ernic}"
+# $HOME is NFS on this node (the shared /home_mkm filer).
+# A long-lived runner daemon does not belong there: every
+# job would pay filer latency, an outage would take the
+# runner down, and .credentials would sit on shared
+# storage.  /local is this node's per-user local-disk
+# area, on the same ext4 volume as CI_WORK.
+RUNNER_ROOT="${RUNNER_ROOT:-${CI_RUNNER_ROOT:-/local/${USER}/actions-runner-rocm-ernic}}"
 # Work dir goes on local disk: $HOME is NFS on this node
 # and checkouts/builds there are markedly slower.
 RUNNER_WORK="${RUNNER_WORK:-/var/tmp/ernic-ci-work/runner-work}"
@@ -44,6 +50,17 @@ URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${TA
 log() { echo "install-runner: $*"; }
 
 # ── Unpack ────────────────────────────────────────
+
+# /local is root-owned, so the per-user directory has to
+# exist before an unprivileged install can proceed.  Say
+# so plainly rather than failing inside mkdir.
+parent="$(dirname "${RUNNER_ROOT}")"
+if [ ! -d "${parent}" ] && [ ! -w "$(dirname "${parent}")" ]; then
+    echo "ERROR: ${parent} does not exist and cannot be created." >&2
+    echo "Create it once with:" >&2
+    echo "  sudo install -d -o ${USER} -g \"$(id -gn)\" -m 0755 ${parent}" >&2
+    exit 1
+fi
 
 mkdir -p "${RUNNER_ROOT}" "${RUNNER_WORK}"
 

@@ -134,12 +134,17 @@ echo
 # ── Runner ────────────────────────────────────────
 
 echo "Runner"
-RUNNER_ROOT="${RUNNER_ROOT:-${HOME}/actions-runner-rocm-ernic}"
+RUNNER_ROOT="${RUNNER_ROOT:-${CI_RUNNER_ROOT:-/local/${USER}/actions-runner-rocm-ernic}}"
 if [ -x "${RUNNER_ROOT}/config.sh" ]; then
     ok "runner staged at ${RUNNER_ROOT}"
     if [ -f "${RUNNER_ROOT}/.runner" ]; then
+        # The runner writes .runner with a UTF-8 BOM, which
+        # plain utf-8 decoding rejects; without encoding=
+        # this silently reported '?' for a healthy runner.
         ok "runner registered: $(python3 -c "
-import json;print(json.load(open('${RUNNER_ROOT}/.runner')).get('gitHubUrl','?'))" 2>/dev/null || echo '?')"
+import json
+with open('${RUNNER_ROOT}/.runner', encoding='utf-8-sig') as fh:
+    print(json.load(fh).get('gitHubUrl', '?'))" 2>/dev/null || echo '?')"
     else
         warn "runner staged but not registered -- see ci/runner/register-runner.sh"
     fi
