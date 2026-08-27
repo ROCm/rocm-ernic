@@ -40,13 +40,14 @@
 #include "rocm_ernic_compat.h"
 #include "ionic_adminq.h"
 
-/* AMD ionic emulated device IDs (for vfio-user).
- * VID 0x1022 = AMD.  DID 0x8001 = AMD emulated ionic NIC (rocm-ernic).
- * The ionic driver is patched to recognise this DID via
- * patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch.
- * Using a unique DID avoids collisions with real Pensando hardware (0x1dd8). */
+/* AMD device IDs (for vfio-user).
+ * DID 0x8000 = legacy PVRDMA-derived NIC (rocm_ernic_{eth,rdma}.ko driver).
+ * DID 0x8001 = ionic-protocol NIC (upstream ionic.ko + ionic_rdma.ko, patched
+ *              via patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch).
+ *              Unique DID avoids collisions with Pensando hardware (0x1dd8). */
 #define PCI_VENDOR_ID_AMD             0x1022
-#define PCI_DEVICE_ID_AMD_IONIC_ERNIC 0x8001
+#define PCI_DEVICE_ID_ROCM_ERNIC      0x8000 /* legacy PVRDMA */
+#define PCI_DEVICE_ID_AMD_IONIC_ERNIC 0x8001 /* ionic path */
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -408,21 +409,20 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         err(EXIT_FAILURE, "vfu_pci_init() failed");
     }
 
-    /* Set vendor/device IDs matching the ionic driver patch. */
-    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD,     /* Vendor ID   */
-                   PCI_DEVICE_ID_AMD_IONIC_ERNIC,  /* Device ID   */
-                   PCI_VENDOR_ID_AMD,              /* Subsys VID  */
-                   PCI_DEVICE_ID_AMD_IONIC_ERNIC); /* Subsys ID   */
+    /* DID depends on emulation mode:
+     *   ionic mode  → 0x8001 (ionic.ko + ionic_rdma.ko recognise this)
+     *   legacy mode → 0x8000 (rocm_ernic_eth.ko + rocm_ernic_rdma.ko) */
+    uint16_t did = dev->ionic_mode ? PCI_DEVICE_ID_AMD_IONIC_ERNIC
+                                   : PCI_DEVICE_ID_ROCM_ERNIC;
+    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD, did, PCI_VENDOR_ID_AMD, did);
 
     /* Set PCI class code: Network Controller - Ethernet (RoCEv2) */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
                       0x00,  /* Subclass: Ethernet Controller */
                       0x00); /* Prog-if */
 
-
     vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
-            (unsigned)PCI_VENDOR_ID_AMD,
-            (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+            (unsigned)PCI_VENDOR_ID_AMD, (unsigned)did);
 
     return 0;
 }
@@ -1117,7 +1117,8 @@ int main(int argc, char *argv[])
         pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
                                        dev->backend_type_str);
         pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_AMD,
-                                 PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+                                 dev->ionic_mode ? PCI_DEVICE_ID_AMD_IONIC_ERNIC
+                                                 : PCI_DEVICE_ID_ROCM_ERNIC);
         printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
                "second)\n",
                dev->stats_file_path);
