@@ -24,6 +24,7 @@ typedef struct PvrdmaCompHandlerCtx {
     uint32_t opcode;
     uint64_t remote_addr;
     uint32_t rkey;
+    uint32_t imm_data; /* valid for WRITE_WITH_IMM / SEND_WITH_IMM */
     RdmaBackendSRQ *dc_target_srq;
     uint32_t dc_recv_cq_handle;
     uint32_t dc_src_qp;

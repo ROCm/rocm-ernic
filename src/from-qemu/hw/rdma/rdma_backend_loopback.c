@@ -1494,6 +1494,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t pvrdma_opcode = 0;
     uint64_t remote_addr = 0;
     uint32_t rkey = 0;
+    bool write_failed = false;
 
     if (!lqp) {
         rdma_error_report("Loopback: post_send on unknown QP");
@@ -1693,6 +1694,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 rdma_error_report("Loopback: RDMA WRITE copy failed, QP %u",
                                   lqp->qpn);
                 transferred = 0;
+                write_failed = true;
             } else {
                 transferred = (uint32_t)copy_result;
             }
@@ -1700,13 +1702,14 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             rdma_warn_report(
                 "Loopback: RDMA WRITE with zero remote_addr, QP %u", lqp->qpn);
             transferred = 0;
+            write_failed = true;
         }
 
         wc_opcode = IBV_WC_RDMA_WRITE;
 
         /* Update byte statistics */
         /* Use transferred if > 0, otherwise use total_len */
-        if (pvrdma_qp_handle > 0) {
+        if (pvrdma_qp_handle > 0 && !write_failed) {
             uint32_t stats_bytes = (transferred > 0) ? transferred : total_len;
             rdma_info_report(">>> Loopback: Calling loopback_update_byte_stats "
                              "for RDMA_WRITE: "
@@ -1716,7 +1719,68 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                        stats_bytes, IBV_WC_RDMA_WRITE);
         } else {
             rdma_warn_report(">>> Loopback: Skipping stats update for "
-                             "RDMA_WRITE: pvrdma_qp_handle=0");
+                             "RDMA_WRITE: handle=%u failed=%d",
+                             pvrdma_qp_handle, write_failed);
+        }
+
+        /* WRITE_WITH_IMM consumes a receive on the responder, exactly
+         * like SEND does on a real HCA: the immediate is delivered to
+         * the responder's receive CQ with opcode RECV_RDMA_WITH_IMM
+         * and the IBV_WC_WITH_IMM flag. Without this, the responder
+         * side never observes the write. Only the QP's own receive
+         * queue is consulted on this path; an SRQ-backed responder
+         * is not handled for WRITE_WITH_IMM. */
+        if (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM && !write_failed) {
+            LoopbackQP *imm_remote = NULL;
+
+            if (lqp->remote_qpn) {
+                imm_remote = g_hash_table_lookup(
+                    priv->qps, GUINT_TO_POINTER(lqp->remote_qpn));
+            } else {
+                imm_remote = lqp; /* self-loopback */
+            }
+
+            if (imm_remote) {
+                qemu_mutex_lock(&imm_remote->lock);
+                LoopbackWR *imm_recv = g_queue_pop_head(imm_remote->recv_queue);
+                qemu_mutex_unlock(&imm_remote->lock);
+
+                if (imm_recv) {
+                    PvrdmaCompHandlerCtx *imm_rctx =
+                        (PvrdmaCompHandlerCtx *)(uintptr_t)imm_recv->wr_id;
+                    PVRDMADev *pdev = PVRDMA_DEV(pci_dev);
+
+                    if (imm_rctx) {
+                        uint32_t imm_len =
+                            (transferred > 0) ? transferred : total_len;
+                        pvrdma_queue_recv_imm_work_completion(
+                            pdev, imm_rctx->cq_handle, imm_rctx->cqe.qp,
+                            imm_rctx->cqe.wr_id, imm_len, lqp->qpn,
+                            comp_ctx ? comp_ctx->imm_data : 0);
+                        rdma_info_report(
+                            "Loopback: WRITE_WITH_IMM QP %u -> recv "
+                            "QP %u (imm=0x%x, %u bytes)",
+                            lqp->qpn, imm_remote->qpn,
+                            comp_ctx ? comp_ctx->imm_data : 0, imm_len);
+                        if (imm_rctx->cqe.qp > 0 && imm_len > 0) {
+                            loopback_update_byte_stats(backend_dev,
+                                                       imm_rctx->cqe.qp,
+                                                       imm_len, IBV_WC_RECV);
+                        }
+                        g_free(imm_rctx);
+                    }
+                    g_free(imm_recv);
+                } else {
+                    rdma_warn_report(
+                        "Loopback: WRITE_WITH_IMM QP %u: no posted "
+                        "recv on QP %u, immediate dropped",
+                        lqp->qpn, imm_remote->qpn);
+                }
+            } else {
+                rdma_warn_report("Loopback: WRITE_WITH_IMM QP %u: remote QP %u "
+                                 "not found, immediate dropped",
+                                 lqp->qpn, lqp->remote_qpn);
+            }
         }
     } else {
         /* SEND operations: need matching recv */
@@ -1874,11 +1938,17 @@ post_send_finalize:
     /* Post send completion directly to PVRDMA layer */
     /* Use total_len if transferred is 0 (no data copied or error) */
     uint32_t byte_len = (transferred > 0) ? transferred : total_len;
+    enum ibv_wc_status final_status = IBV_WC_SUCCESS;
+    if (write_failed) {
+        final_status = IBV_WC_LOC_PROT_ERR;
+        byte_len = 0;
+    }
     rdma_info_report(
         ">>> Loopback: post_send: About to post completion, "
-        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%d, qpn=%u",
-        transferred, total_len, byte_len, wc_opcode, lqp->qpn);
-    rdma_backend_complete_work(IBV_WC_SUCCESS, 0, byte_len, lqp->qpn, wc_opcode,
+        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%d, qpn=%u, "
+        "status=%d",
+        transferred, total_len, byte_len, wc_opcode, lqp->qpn, final_status);
+    rdma_backend_complete_work(final_status, 0, byte_len, lqp->qpn, wc_opcode,
                                ctx);
     rdma_info_report(">>> Loopback: post_send: Completion posted");
 }
