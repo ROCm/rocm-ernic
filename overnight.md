@@ -318,3 +318,14 @@ Modified files:
 **Also changed outside this repo:**
 - ~/.batesste-dotfiles/git/.config/git/hooks/pre-commit
   Added SECRET_SCAN_ALLOWLIST for patches/ directory.
+
+### COMMITTED — 2026-08-27
+
+Commit `64eacf4` on branch `rocm-ernic-dc-mode`.
+
+Final bug found and fixed before commit:
+- **BAR2 doorbell qtype decoding** was `offset / PAGE_SIZE` (always 0 for
+  kernel LIF). Corrected to `(offset % PAGE_SIZE) / 8` based on
+  `ionic_dbell_ring(&db_page[qtype])` which writes at byte offset `qtype*8`.
+
+All 26 files committed. 7/7 CTest pass.
