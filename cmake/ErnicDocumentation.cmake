@@ -62,14 +62,21 @@ if(ERNIC_BUILD_DOCS)
     set(ERNIC_DOXYFILE_INPUT
       "${CMAKE_SOURCE_DIR}/src/rocm_ernic_internal.h \
        ${CMAKE_SOURCE_DIR}/src/rocm_ernic_compat.h \
-       ${CMAKE_SOURCE_DIR}/src/rocm_ernic_eth.h \
-       ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_dev_api.h \
-       ${CMAKE_SOURCE_DIR}/driver/rocm_ernic-abi.h \
-       ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_verbs.h \
-       ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_pci_ids.h \
-       ${CMAKE_SOURCE_DIR}/driver/rocm_ernic.h \
-       ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_ring.h"
+       ${CMAKE_SOURCE_DIR}/src/ionic_eth_emu.h \
+       ${CMAKE_SOURCE_DIR}/src/ionic_rdma_devcmd.h \
+       ${CMAKE_SOURCE_DIR}/src/ionic_adminq.h \
+       ${CMAKE_SOURCE_DIR}/src/ionic_datapath.h"
     )
+    # Legacy driver headers (only included if driver/ still exists)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_dev_api.h)
+        string(APPEND ERNIC_DOXYFILE_INPUT
+          " ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_dev_api.h \
+            ${CMAKE_SOURCE_DIR}/driver/rocm_ernic-abi.h \
+            ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_verbs.h \
+            ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_pci_ids.h \
+            ${CMAKE_SOURCE_DIR}/driver/rocm_ernic.h \
+            ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_ring.h")
+    endif()
 
     # Configure Doxyfile (substitutes @VARIABLES@)
     configure_file(
