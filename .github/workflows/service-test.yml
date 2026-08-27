@@ -118,7 +118,8 @@ jobs:
         sudo apt-get install -y \
           cmake ninja-build pkg-config \
           libibverbs-dev librdmacm-dev \
-          libglib2.0-dev libjson-c-dev meson
+          libglib2.0-dev libjson-c-dev meson \
+          libcmocka-dev
 
     - name: Clone and build libvfio-user
       run: |
