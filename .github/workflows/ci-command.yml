@@ -256,7 +256,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # --repo is required: this job deliberately does not
+          # check the repository out, so gh has no git remote to
+          # infer the target from and would fail with
+          # "not a git repository".
           gh workflow run self-hosted-ci.yml \
+            --repo "${{ github.repository }}" \
             --ref "${REF}" \
             -f tier="${TIER}" \
             -f accel="${ACCEL}"
@@ -267,6 +272,7 @@ jobs:
           for _ in $(seq 1 10); do
             sleep 3
             url="$(gh run list \
+              --repo "${{ github.repository }}" \
               --workflow=self-hosted-ci.yml \
               --event=workflow_dispatch \
               --branch "${REF}" \
@@ -323,9 +329,11 @@ jobs:
           {
             echo "Failed to dispatch the self-hosted CI workflow."
             echo
-            echo "Most often this means \`self-hosted-ci.yml\` is not"
-            echo "yet on the default branch. \`workflow_dispatch\`"
-            echo "only resolves workflows present there."
+            echo "Common causes:"
+            echo "- \`self-hosted-ci.yml\` is not on the default"
+            echo "  branch; \`workflow_dispatch\` only resolves"
+            echo "  workflows present there."
+            echo "- the target ref no longer exists."
             echo
             echo "See the [dispatcher run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           } > body.md
