@@ -133,18 +133,35 @@ journalctl --user -u rocm-ernic-runner -f
 
 ## Security
 
-`ROCm/rocm-ernic` is a public repository. A self-hosted
-runner attached to a public repository will execute
-whatever a pull request contains, so
-`.github/workflows/self-hosted-ci.yml` **never triggers
-on `pull_request`**. It runs only on `workflow_dispatch`,
-a nightly schedule, and pushes to branches in the main
-repository.
+`ROCm/rocm-ernic` is a public repository, and a
+self-hosted runner will execute whatever a pull request
+contains. `.github/workflows/self-hosted-ci.yml` runs on
+pull requests targeting `main`, on `workflow_dispatch`,
+and on a nightly schedule. It does not run on push.
 
-If fork PR coverage is ever added, gate it behind a
-GitHub Environment with required reviewers, and confirm
-that *Settings, Actions, General, Require approval for
-all external contributors* is enabled.
+Because pull requests are in scope, **every job requires
+the pull request to come from a branch in this
+repository**:
+
+```yaml
+if: >-
+  github.event_name != 'pull_request' ||
+  github.event.pull_request.head.repo.full_name == github.repository
+```
+
+A fork pull request resolves that to false and no job
+starts, so fork code never reaches the lab node.
+Schedule and dispatch runs are unaffected.
+
+Keep *Settings, Actions, General, Require approval for
+all external contributors* enabled as a second layer, so
+a fork run cannot even be queued without a maintainer
+releasing it.
+
+Pull requests run the `functional` tier: build, loopback
+and the two-VM RDMA tests. The nightly runs `full` and
+adds the performance sweeps, which take too long to sit
+in front of a review.
 
 The workflow also takes a `concurrency` lock. Two
 simultaneous runs would collide on VM ssh ports, the
@@ -257,3 +274,32 @@ failure or regression, which is what gates the workflow.
 Only a clean tier-3 run on `main` updates the baseline,
 so a failing or partial run can never quietly lower the
 bar.
+
+### What is gated, and why not everything
+
+Only latency is gated by default. Two back-to-back clean
+sweeps on the same host and build differ far more by
+metric than you might expect:
+
+| Metric | median | worst |
+|---|---:|---:|
+| `lat_max_us` | 1.0% | 11.9% |
+| `lat_typical_us` | 1.0% | 28.6% |
+| `bw_peak_GBs` | 7.4% | 69.0% |
+| `bw_avg_GBs` | 7.0% | 153.6% |
+| `msg_rate_mpps` | 7.1% | 152.8% |
+
+Averaged bandwidth and message rate swing too wide on an
+emulated two-VM setup to gate on. At any threshold tight
+enough to catch a real regression they fire on noise, and
+a gate that cries wolf nightly gets ignored. They are
+still measured and reported, just not failed on. Add
+others with `--gate-metric` if a workload proves stable
+enough to warrant it.
+
+Build the baseline from the median of at least two clean
+sweeps rather than a single run; one run bakes in
+whichever way the noise happened to fall. The baseline
+lives under `$CI_WORK`, not in git, because it describes
+one host: numbers from this node are not meaningful on
+another. Rebuilding a node means recapturing it.
