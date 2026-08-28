@@ -225,8 +225,29 @@ def _size_key(size):
 
 # ── Regression comparison ─────────────────────────
 
-def compare(current, baseline, threshold):
-    """Flag metrics that moved beyond threshold percent."""
+# Metrics stable enough to gate a build on.
+#
+# Measured over two back-to-back clean sweeps on the same
+# host and build, the run-to-run spread differs sharply by
+# metric:
+#
+#   lat_max_us      median 1.0%   max  11.9%
+#   lat_typical_us  median 1.0%   max  28.6%
+#   bw_peak_GBs     median 7.4%   max  69.0%
+#   bw_avg_GBs      median 7.0%   max 153.6%
+#   msg_rate_mpps   median 7.1%   max 152.8%
+#
+# Averaged bandwidth and message rate swing far too wide on
+# an emulated two-VM setup to gate on: at any threshold tight
+# enough to catch a real regression they fire on noise, and a
+# gate that cries wolf nightly gets ignored. They are still
+# reported, just not failed on. Override with --gate-metric.
+DEFAULT_GATE_METRICS = ("lat_typical_us", "lat_max_us")
+
+
+def compare(current, baseline, threshold, gate_metrics=None):
+    """Flag gated metrics that moved beyond threshold percent."""
+    gate = set(gate_metrics or DEFAULT_GATE_METRICS)
     regressions = []
     base_index = {}
     for kind, rows in baseline.get("perf", {}).items():
@@ -243,8 +264,10 @@ def compare(current, baseline, threshold):
             cur = row.get("median")
             if base is None or cur is None or base == 0:
                 continue
-            delta_pct = (cur - base) / abs(base) * 100.0
             metric = row["metric"]
+            if metric not in gate:
+                continue
+            delta_pct = (cur - base) / abs(base) * 100.0
             # Normalise so negative always means "worse".
             signed = (-delta_pct if metric in LOWER_IS_BETTER
                       else delta_pct)
@@ -388,6 +411,11 @@ def main():
                     help="summary.json from a previous run")
     ap.add_argument("--threshold", type=float, default=15.0,
                     help="regression threshold in percent")
+    ap.add_argument("--gate-metric", action="append",
+                    dest="gate_metrics", metavar="NAME",
+                    help="metric to gate regressions on; repeatable. "
+                         "Defaults to "
+                         + ", ".join(DEFAULT_GATE_METRICS))
     ap.add_argument("--no-fail", action="store_true",
                     help="always exit 0")
     args = ap.parse_args()
@@ -403,7 +431,8 @@ def main():
     if args.baseline and os.path.isfile(args.baseline):
         with open(args.baseline) as fh:
             baseline = json.load(fh)
-        regressions = compare(perf, baseline, args.threshold)
+        regressions = compare(perf, baseline, args.threshold,
+                              args.gate_metrics)
 
     meta = {
         "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
