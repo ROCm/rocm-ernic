@@ -4,12 +4,12 @@
 #
 # Comment on any pull request or issue:
 #
-#   /ci                 tier=functional, accel=kvm
-#   /ci build           build + ctest + loopback only
-#   /ci functional      ... plus 2-VM RDMA tests
-#   /ci full            ... plus performance sweeps
-#   /ci full tcg        run VMs under emulation
-#   /ci help            print usage
+#   /run-ci                 tier=functional, accel=kvm
+#   /run-ci build           build + ctest + loopback only
+#   /run-ci functional      ... plus 2-VM RDMA tests
+#   /run-ci full            ... plus performance sweeps
+#   /run-ci full tcg        run VMs under emulation
+#   /run-ci help            print usage
 #
 # SECURITY
 # --------
@@ -51,7 +51,7 @@ jobs:
     name: Dispatch
     # Cheap pre-filter so the job does not spin up for
     # every comment in the repository.
-    if: startsWith(github.event.comment.body, '/ci')
+    if: startsWith(github.event.comment.body, '/run-ci')
     runs-on: ubuntu-latest
 
     steps:
@@ -69,11 +69,11 @@ jobs:
           read -r -a words <<<"${line}"
 
           # The workflow-level startsWith() filter is a
-          # prefix match, so it also lets through /cirrus,
-          # /cico and friends.  Require the first word to
-          # be exactly /ci before acting on anything.
-          if [ "${words[0]:-}" != "/ci" ]; then
-            echo "not a /ci command: ${words[0]:-<empty>}"
+          # prefix match, so it also lets through /run-cix,
+          # /run-ci-nightly and friends.  Require the first
+          # word to be exactly /run-ci before acting.
+          if [ "${words[0]:-}" != "/run-ci" ]; then
+            echo "not a /run-ci command: ${words[0]:-<empty>}"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -95,7 +95,7 @@ jobs:
             esac
           done
 
-          # Bare "/ci" is the common case: a middle-tier
+          # Bare "/run-ci" is the common case: a middle-tier
           # run that exercises real RDMA without paying
           # for the full performance sweep.
           [ -n "${tier}" ] || tier="functional"
@@ -133,11 +133,11 @@ jobs:
             echo
             echo '| Command | Runs |'
             echo '|---|---|'
-            echo '| `/ci` | build + loopback + 2-VM RDMA functional |'
-            echo '| `/ci build` | build + ctest + loopback only |'
-            echo '| `/ci functional` | same as bare `/ci` |'
-            echo '| `/ci full` | functional + performance sweeps |'
-            echo '| `/ci full tcg` | run VMs under emulation (no valid perf) |'
+            echo '| `/run-ci` | build + loopback + 2-VM RDMA functional |'
+            echo '| `/run-ci build` | build + ctest + loopback only |'
+            echo '| `/run-ci functional` | same as bare `/run-ci` |'
+            echo '| `/run-ci full` | functional + performance sweeps |'
+            echo '| `/run-ci full tcg` | run VMs under emulation (no valid perf) |'
             echo
             echo 'Requires write access. Fork pull requests are not eligible.'
           } > body.md

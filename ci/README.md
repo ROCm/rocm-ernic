@@ -157,15 +157,15 @@ usable from any pull request or issue:
 
 | Command | Runs |
 |---|---|
-| `/ci` | build, loopback and two-VM RDMA functional |
-| `/ci build` | build, ctest and loopback only |
-| `/ci functional` | same as bare `/ci` |
-| `/ci full` | functional plus performance sweeps |
-| `/ci full tcg` | VMs under emulation, no valid perf |
-| `/ci help` | print usage |
+| `/run-ci` | build, loopback and two-VM RDMA functional |
+| `/run-ci build` | build, ctest and loopback only |
+| `/run-ci functional` | same as bare `/run-ci` |
+| `/run-ci full` | functional plus performance sweeps |
+| `/run-ci full tcg` | VMs under emulation, no valid perf |
+| `/run-ci help` | print usage |
 
 Arguments are order-insensitive and case-insensitive, so
-`/ci tcg full` and `/ci FULL TCG` both work.
+`/run-ci tcg full` and `/run-ci FULL TCG` both work.
 
 The dispatcher reacts to the comment, dispatches the
 workflow against the right ref, and replies with a link
