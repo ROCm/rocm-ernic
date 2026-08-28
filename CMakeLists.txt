@@ -175,6 +175,14 @@ set(BRIDGE_SOURCES
     src/rocm_ernic_compat.c
 )
 
+# ionic emulation layer (replaces PVRDMA for the ionic migration path)
+set(IONIC_EMU_SOURCES
+    src/ionic_eth_emu.c
+    src/ionic_rdma_devcmd.c
+    src/ionic_adminq.c
+    src/ionic_datapath.c
+)
+
 # Main server implementation
 set(SERVER_SOURCES
     src/rocm_ernic_server.c
@@ -183,6 +191,7 @@ set(SERVER_SOURCES
 set(ALL_SOURCES
     ${SERVER_SOURCES}
     ${BRIDGE_SOURCES}
+    ${IONIC_EMU_SOURCES}
     ${RDMA_BACKEND_SOURCES}
     ${PVRDMA_DEVICE_SOURCES}
     ${UTILITY_SOURCES}
@@ -194,12 +203,22 @@ set(ALL_SOURCES
 # ---------------------------------------------------------------
 add_executable(rocm-ernic ${ALL_SOURCES})
 
+# Resolve actual ibverbs include directory.
+# pkg-config sometimes reports /usr/include as IBVERBS_INCLUDE_DIRS even
+# when the actual headers live elsewhere (e.g. a local rdma-core build).
+# Use IBVERBS_INCLUDEDIR (the canonical prefix) when it differs.
+if(IBVERBS_INCLUDEDIR AND NOT "${IBVERBS_INCLUDEDIR}" STREQUAL "/usr/include")
+    set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDEDIR}")
+else()
+    set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDE_DIRS}")
+endif()
+
 target_include_directories(rocm-ernic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 
 target_compile_definitions(rocm-ernic PRIVATE

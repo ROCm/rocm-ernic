@@ -918,3 +918,162 @@ void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
 
     pvrdma->stats.interrupts++;
 }
+
+/* -------------------------------------------------------------------------
+ * Resource accessors for the ionic migration path (ionic_adminq.c).
+ * -------------------------------------------------------------------------
+ */
+
+/* -------------------------------------------------------------------------
+ * Thin wrappers for ionic_adminq.c (cannot include rdma_rm.h directly).
+ * -------------------------------------------------------------------------
+ */
+
+int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    return rdma_rm_alloc_cq(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, cqe,
+                            cq_handle, NULL);
+}
+
+void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_cq(&pvrdma->rdma_dev_res, cq_handle);
+}
+
+int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    return rdma_rm_alloc_pd(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
+                            pd_handle, 0);
+}
+
+void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
+}
+
+int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
+                      uint8_t qp_type, uint32_t max_send_wr,
+                      uint32_t max_recv_wr, uint32_t send_cq_handle,
+                      uint32_t recv_cq_handle, uint32_t *qpn)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    RdmaRmQP *out_qp = NULL;
+    return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, pd_handle, qp_type,
+                            max_send_wr, 16, send_cq_handle, max_recv_wr, 16,
+                            recv_cq_handle, NULL, qpn, 0, 0, 0, 0, NULL,
+                            &out_qp);
+}
+
+void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_qp(&pvrdma->rdma_dev_res, qpn);
+}
+
+int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
+                      uint32_t access_flags, uint32_t *mr_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    uint32_t lkey = 0, rkey = 0;
+    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, 0, 0, NULL,
+                            (int)access_flags, mr_handle, &lkey, &rkey);
+}
+
+void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_mr(&pvrdma->rdma_dev_res, mr_handle);
+}
+
+int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
+                            const uint64_t *sge_va, const uint32_t *sge_len,
+                            const uint32_t *sge_lkey, uint32_t num_sge,
+                            uint8_t opcode)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    if (num_sge == 0 || num_sge > 32)
+        return -EINVAL;
+
+    RdmaRmQP *rm_qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
+    if (!rm_qp)
+        return -ENOENT;
+
+    /* Translate ionic SGEs (big-endian guest VA/len/lkey) to ibv_sge. */
+    struct ibv_sge sge[32];
+    for (uint32_t i = 0; i < num_sge; i++) {
+        sge[i].addr = sge_va[i];
+        sge[i].length = sge_len[i];
+        sge[i].lkey = sge_lkey[i];
+    }
+
+    (void)opcode;
+
+    /* The loopback backend's completion handler (pvrdma_qp_ops_comp_handler)
+     * unconditionally dereferences ctx — passing NULL crashes the process.
+     * The ionic datapath posts its own CQEs directly via post_data_cqe(), so
+     * we skip the backend post_send entirely for the loopback case. */
+    if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_LOOPBACK)
+        return 0;
+
+    union ibv_gid zero_gid = {};
+    rdma_backend_post_send(&pvrdma->backend_dev, &rm_qp->backend_qp,
+                           (uint8_t)rm_qp->qp_type, sge, num_sge, 0, &zero_gid,
+                           &zero_gid, 0, 0, NULL);
+    return 0;
+}
+
+int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
+                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
+                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+
+    /* Decode ionic type_state: bits[3:0]=to_state, bits[7:4]=from_state.
+     * Map ionic QP state values to ibv_qp_state.  ionic uses the same
+     * numeric encoding as IB (RESET=0, INIT=1, RTR=2, RTS=3, SQD=4,
+     * SQE=5, ERROR=6) so a direct cast is safe for the common path. */
+    enum ibv_qp_state to_state = (enum ibv_qp_state)(type_state & 0x0fu);
+
+    /* Build a minimal dgid from the raw bytes provided by the caller. */
+    union ibv_gid dgid;
+    if (dest_gid_16bytes)
+        memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
+    else
+        memset(&dgid, 0, sizeof(dgid));
+
+    /* dest QPN sits in the lower 24 bits of qkey_dest_qpn when sending UD. */
+    uint32_t dqpn = qkey_dest_qpn & 0x00ffffffu;
+    uint32_t qkey = qkey_dest_qpn >> 24;
+
+    return rdma_rm_modify_qp(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn,
+                             attr_mask, 0, /* sgid_idx: use default GID */
+                             &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
+}
+
+/* pvrdma_get_dev_resources and pvrdma_get_backend_dev are retained in the
+ * header for potential future use but are currently unused — the ionic path
+ * uses the ionic_rm_* wrappers above instead. */

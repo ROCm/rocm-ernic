@@ -31,7 +31,10 @@ static struct ibv_device *find_rocm_ernic(struct ibv_device **list, int n)
         if (!list[i])
             continue;
         name = ibv_get_device_name(list[i]);
-        if (strstr(name, "rocm_ernic") || strstr(name, "rocep"))
+        /* Accept rocm_ernic (legacy driver), rocep (PVRDMA device name),
+         * or ionic_* (upstream ionic driver with AMD emulated DID patch). */
+        if (strstr(name, "rocm_ernic") || strstr(name, "rocep") ||
+            strstr(name, "ionic_"))
             return list[i];
     }
     return NULL;

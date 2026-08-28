@@ -1,10 +1,19 @@
-# AMD ROCm ERNIC Driver (rocm_ernic)
+# AMD ROCm ERNIC Driver (rocm_ernic) — DEPRECATED
 
-## Overview
+> **This driver is deprecated.**  New deployments should use the upstream
+> **ionic** driver with the AMD emulated-device patch instead.  See
+> `patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch` and
+> `scripts/setup-ionic-dkms.sh`.  Start the server with `--ionic` (`-I`).
+>
+> This directory is retained for reference and backwards compatibility.
+> It will be removed once the ionic migration path is validated end-to-end.
 
-This is the Linux kernel driver for the AMD ROCm ERNIC (Emulated RDMA NIC),
+## Overview (historical)
+
+This was the Linux kernel driver for the AMD ROCm ERNIC (Emulated RDMA NIC),
 designed for use with the libvfio-user based userspace device server
-(`rocm-ernic`). The driver enables RDMA functionality in virtual machines.
+(`rocm-ernic`). The driver enabled RDMA functionality in virtual machines
+using a PVRDMA-derived protocol (`VID:DID 0x1022:0x8000`).
 
 ## Building the Driver
 

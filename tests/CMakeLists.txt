@@ -23,7 +23,7 @@ target_compile_definitions(test_data_transfer PRIVATE
     _GNU_SOURCE
 )
 target_include_directories(test_data_transfer PRIVATE
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_data_transfer PRIVATE
     ${IBVERBS_LIBRARY_DIRS}
@@ -37,7 +37,7 @@ add_executable(test_rdma_cm
     test_rdma_cm.c
 )
 target_include_directories(test_rdma_cm PRIVATE
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_rdma_cm PRIVATE
     ${IBVERBS_LIBRARY_DIRS}
@@ -77,7 +77,7 @@ target_include_directories(test_rdma_backend_query_port PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${GLIB2_INCLUDE_DIRS}
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_backend_query_port PRIVATE
     _GNU_SOURCE TARGET_PAGE_SIZE=4096)
@@ -103,7 +103,7 @@ if(ERNIC_RDMA_CORE_BUILD)
         _POSIX_C_SOURCE=200809L
     )
     target_include_directories(test_dc_loopback PRIVATE
-        ${IBVERBS_INCLUDE_DIRS}
+        ${ERNIC_IBVERBS_INCLUDE_DIRS}
         ${CMAKE_SOURCE_DIR}/rdma-core/providers/rocm_ernic
         ${RDMA_CORE_INCLUDE_DIR}
     )
@@ -200,3 +200,31 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+
+# ionic server smoke test: start server in --ionic mode, verify socket and banner.
+# Tests that the ionic emulation layer initialises without crashing.
+add_test(
+    NAME ionic-server-smoke
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_server_start.sh
+        $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ionic-server-smoke PROPERTIES
+    TIMEOUT 15
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+)
+
+# ionic CI test suite: comprehensive checks on the ionic emulation path
+# (VID:DID, BAR layout, MSI-X vectors, multi-backend startup, clean shutdown).
+# Does not require a VM or RDMA hardware.
+add_test(
+    NAME ionic-ci
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_ci.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_tests_properties(ionic-ci PROPERTIES
+    TIMEOUT 60
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
