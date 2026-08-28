@@ -8,11 +8,16 @@
 # real VMs over the emulated RDMA NIC and produce
 # functional and performance reports.
 #
-# SECURITY: rocm-ernic is a public repository, so this
-# workflow deliberately never triggers on pull_request.
-# A fork PR must never execute on the lab node.  Adding
-# a pull_request trigger here requires gating it behind
-# an environment with required reviewers.
+# SECURITY: rocm-ernic is a public repository, so a
+# pull_request trigger would let a fork's code run on the
+# lab node.  Every job therefore requires the pull request
+# to originate from a branch in this repository; a fork PR
+# resolves the condition to false and no job starts.
+#
+# Belt and braces: keep *Settings, Actions, General,
+# Require approval for all external contributors* enabled,
+# so a fork run cannot even be queued without a maintainer
+# releasing it.
 
 name: Self-Hosted CI
 
@@ -40,10 +45,8 @@ on:
     # 02:30 UTC nightly.  Off the hour to avoid the
     # thundering herd of every cron job on the fleet.
     - cron: '37 2 * * *'
-  push:
-    branches:
-      - main
-      - 'dev/**'
+  pull_request:
+    branches: [main]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -60,6 +63,9 @@ on:
 # run is never silently dropped.
 concurrency:
   group: rocm-ernic-self-hosted
+  # Queue rather than cancel so a nightly run is never
+  # silently dropped.  The node can only service one run at
+  # a time, so pull requests serialise behind each other.
   cancel-in-progress: false
 
 env:
@@ -70,6 +76,10 @@ jobs:
 
   preflight:
     name: Preflight
+    # Refuse fork pull requests: their code must never run
+    # on the lab node.  Non-PR events are unaffected.
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
@@ -120,6 +130,10 @@ jobs:
 
   build:
     name: Build and unit tests
+    # Refuse fork pull requests: their code must never run
+    # on the lab node.  Non-PR events are unaffected.
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: preflight
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     strategy:
@@ -147,6 +161,10 @@ jobs:
 
   loopback:
     name: Loopback functional
+    # Refuse fork pull requests: their code must never run
+    # on the lab node.  Non-PR events are unaffected.
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
@@ -160,7 +178,11 @@ jobs:
   vm-functional:
     name: 2-VM RDMA functional
     needs: [preflight, loopback]
-    if: needs.preflight.outputs.tier != 'build'
+    # Refuse fork pull requests: their code must never run
+    # on the lab node.  Non-PR events are unaffected.
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      needs.preflight.outputs.tier != 'build'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
     timeout-minutes: 90
     env:
@@ -189,7 +211,11 @@ jobs:
   perf:
     name: Performance sweeps
     needs: [preflight, vm-functional]
-    if: needs.preflight.outputs.tier == 'full'
+    # Refuse fork pull requests: their code must never run
+    # on the lab node.  Non-PR events are unaffected.
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      needs.preflight.outputs.tier == 'full'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
     timeout-minutes: 180
     env:
@@ -230,8 +256,10 @@ jobs:
     name: Report
     needs: [preflight, build, loopback, vm-functional, perf]
     # Report on whatever actually ran, including when an
-    # upstream tier was skipped or failed.
-    if: always()
+    # upstream tier was skipped or failed.  Still refuses
+    # fork pull requests.
+    if: >-
+      always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
       - uses: actions/checkout@v4
