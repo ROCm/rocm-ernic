@@ -173,6 +173,9 @@ struct rocm_ernic_qp {
     struct verbs_qp vqp;
     uint32_t qpn;
     uint32_t qp_handle;
+    /* QP was created with sq_sig_all, so every WR
+     * completes regardless of per-WR send_flags. */
+    int sq_sig_all;
     uint32_t sq_depth;
     uint32_t rq_depth;
     uint32_t sq_wqe_size;
