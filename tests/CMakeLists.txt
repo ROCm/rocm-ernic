@@ -125,6 +125,36 @@ if(ERNIC_RDMA_CORE_BUILD)
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
     )
+
+    add_executable(test_dc_error_paths
+        test_dc_error_paths.c
+    )
+    target_compile_definitions(test_dc_error_paths PRIVATE
+        _POSIX_C_SOURCE=200809L
+    )
+    target_include_directories(test_dc_error_paths PRIVATE
+        ${IBVERBS_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/rdma-core/providers/rocm_ernic
+        ${RDMA_CORE_INCLUDE_DIR}
+    )
+    target_link_directories(test_dc_error_paths PRIVATE
+        ${IBVERBS_LIBRARY_DIRS}
+        ${RDMA_CORE_LIB_DIR}
+    )
+    target_link_libraries(test_dc_error_paths PRIVATE
+        ${IBVERBS_LIBRARIES}
+        rocm_ernic
+    )
+
+    add_test(
+        NAME dc-error-paths-test
+        COMMAND $<TARGET_FILE:test_dc_error_paths>
+    )
+    set_tests_properties(dc-error-paths-test PROPERTIES
+        TIMEOUT 60
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
 endif()
 
 # -- test_ernic_dc_uapi (cmocka + driver ABI header) --------------
