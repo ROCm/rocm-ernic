@@ -663,6 +663,49 @@ jobs:
         fi
         echo "✓ DC guest smoke passed or skipped cleanly"
 
+    - name: WRITE_WITH_IMM guest smoke (build and run test_write_imm)
+      shell: bash
+      run: |
+        echo "=== WRITE_WITH_IMM guest smoke (loopback responder delivery) ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+          tests/test_write_imm.c \
+          "${VM_USER}@localhost:/tmp/write-imm-smoke/"
+        set +e
+        # Run via 'bash -s' for the same reason as the DC guest smoke step:
+        # a login shell would source ~/.bash_logout on exit and its failure
+        # could override the test exit status.
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        set -e
+        cd /tmp/write-imm-smoke
+        if ! ibv_devices 2>/dev/null | grep -qE "rocm_ernic|rocep|rocm-rdma-ernic"; then
+          echo "No rocm_ernic device found; skipping WRITE_WITH_IMM smoke"
+          exit 0
+        fi
+        gcc -O2 -Wall -Wextra \
+          -o test_write_imm test_write_imm.c \
+          $(pkg-config --cflags --libs libibverbs)
+        set +e
+        timeout 30s ./test_write_imm
+        WIMM_EXIT=$?
+        set -e
+        if [ "$WIMM_EXIT" -eq 77 ]; then
+          echo "No rocm_ernic device found; skipping WRITE_WITH_IMM smoke"
+          exit 0
+        fi
+        exit $WIMM_EXIT
+        EOFVM
+        WIMM_EXIT=$?
+        set -e
+        if [ "$WIMM_EXIT" -ne 0 ]; then
+          echo "✗ WRITE_WITH_IMM guest smoke failed (exit $WIMM_EXIT)"
+          exit 1
+        fi
+        echo "✓ WRITE_WITH_IMM guest smoke passed or skipped cleanly"
+
     - name: Sysfs loopback smoke test
       shell: bash
       run: |
