@@ -46,7 +46,7 @@ let
         export OUT_LOG="$NIX_BUILD_TOP/server.log"
         export CLIENT_LOG="$NIX_BUILD_TOP/client.log"
 
-        bash ${driver} \
+        ${driver}/bin/run-loopback-exercise \
           "$srcTop/build/rocm-ernic" \
           "$srcTop/build/tests/test_pci_client" || true
 

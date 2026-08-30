@@ -28,12 +28,16 @@ let
   # compiler interception. $1 = source root. (This keeps its own cmake line
   # rather than the shared ctx.configureCmake: scan-build invokes it with a
   # positional source-root arg, not the $srcTop the other builds use.)
-  analyzeScript = pkgs.writeShellScript "analyze-build" ''
-    set -e
-    cmake -S "$1" -B "$1/build" -G Ninja \
-      -DCMAKE_BUILD_TYPE=Debug -DERNIC_WERROR=OFF
-    cmake --build "$1/build"
-  '';
+  # writeShellApplication so it is shellcheck-checked and strict.
+  analyzeScript = pkgs.writeShellApplication {
+    name = "analyze-build";
+    runtimeInputs = [ pkgs.cmake pkgs.ninja ];
+    text = ''
+      cmake -S "$1" -B "$1/build" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Debug -DERNIC_WERROR=OFF
+      cmake --build "$1/build"
+    '';
+  };
 in
 mkAnalysisDrv {
   name = "clang-analyzer";
@@ -54,7 +58,7 @@ mkAnalysisDrv {
       --use-analyzer=${pkgs.clang}/bin/clang \
       ${scanBuildCheckers} \
       -o "$NIX_BUILD_TOP/scan-results" \
-      bash ${analyzeScript} "$srcTop" \
+      ${analyzeScript}/bin/analyze-build "$srcTop" \
       2>&1 | tee "$NIX_BUILD_TOP/scan-build.log" || true
 
     runHook postBuild

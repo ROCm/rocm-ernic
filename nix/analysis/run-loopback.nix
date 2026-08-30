@@ -14,8 +14,15 @@
 #   CLIENT_LOG      client stdout+stderr log path
 { pkgs }:
 
-pkgs.writeShellScript "run-loopback-exercise" ''
-  set -u
+# writeShellApplication (not writeShellScript): runs shellcheck at build time
+# and adds a strict prologue. bashOptions is limited to nounset (`set -u`) to
+# preserve this driver's "collect, never abort" behaviour — it guards the
+# fallible steps itself and always exits 0.
+pkgs.writeShellApplication {
+  name = "run-loopback-exercise";
+  runtimeInputs = [ pkgs.coreutils ];
+  bashOptions = [ "nounset" ];
+  text = ''
   server="$1"
   client="$2"
   sock="$TMPDIR/ernic-$$.sock"
@@ -51,4 +58,5 @@ pkgs.writeShellScript "run-loopback-exercise" ''
   wait "$spid" 2>/dev/null || true
   rm -f "$sock"
   exit 0
-''
+  '';
+}

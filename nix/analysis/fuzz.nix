@@ -64,11 +64,17 @@ let
     printf '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0' > "out/corpus/${h.name}/seed0"
   '') harnesses;
 
-  runFuzzers = pkgs.writeShellScript "run-fuzzers" ''
+  # writeShellApplication so it is shellcheck-checked and self-contained
+  # (coreutils/findutils on PATH). bashOptions is limited to nounset so the
+  # "run each harness, never fail on a crash" behaviour is preserved.
+  runFuzzers = pkgs.writeShellApplication {
+    name = "run-fuzzers";
+    runtimeInputs = [ pkgs.coreutils pkgs.findutils ];
+    bashOptions = [ "nounset" ];
+    text = ''
     # Run each fuzzer for FUZZ_TIME seconds (default 60). Crash inputs and
     # per-harness logs land in FUZZ_WORKDIR (default: a temp dir). Never
     # fails on a crash — the caller inspects the workdir.
-    set -u
     root="$(cd "$(dirname "$0")/.." && pwd)"
     time="''${FUZZ_TIME:-60}"
     workdir="''${FUZZ_WORKDIR:-$(mktemp -d)}"
@@ -90,7 +96,8 @@ let
       echo "  crashes: $crashes (log: $workdir/$name.log)"
     done
     echo "$workdir"
-  '';
+    '';
+  };
 
   fuzzers = pkgs.stdenv.mkDerivation {
     pname = "rocm-ernic-fuzzers";
@@ -108,7 +115,7 @@ let
       mkdir -p out/bin out/corpus
       ${compileLines}
 
-      install -m755 ${runFuzzers} out/bin/run-fuzzers
+      install -m755 ${lib.getExe runFuzzers} out/bin/run-fuzzers
       runHook postBuild
     '';
 
