@@ -22,8 +22,12 @@
     nix build .#rocm-ernic        Build the server binary
     nix develop                   Enter this shell
 
-  Analysis targets are added in later phases; run `nix flake show`
-  to list everything currently available.
+  Analysis targets (see nix/README.md; `nix flake show` lists everything):
+    nix build .#analysis-quick    clang-tidy + cppcheck + triage
+    nix build .#analysis-standard + flawfinder, clang-analyzer, gcc-warnings
+    nix build .#analysis-deep     + gcc-analyzer, semgrep
+    nix build .#analysis-sanitizers | .#analysis-tsan | .#analysis-valgrind
+    nix build .#fuzz | .#fuzz-run libFuzzer harnesses for the wire parsers
 EOF
   }
 ''

@@ -19,13 +19,14 @@ let
   buildFns = import ./shell-functions/build.nix { };
   cleanFns = import ./shell-functions/clean.nix { };
   helpFns = import ./shell-functions/help.nix { };
+  asciiArt = import ./shell-functions/ascii-art.nix { };
 
   colored-prompt = ''
     export PS1="\[\033[0;32m\][rocm-ernic] \[\033[01;34m\][\u@\h:\w]\$ \[\033[0m\]"
   '';
 
   welcome = ''
-    echo "=== rocm-ernic dev shell ==="
+    ${asciiArt}
     echo "  cmake $(cmake --version | head -1 | awk '{print $3}'), $(gcc --version | head -1)"
     echo "  Debugging: gdb, valgrind, strace, ltrace"
     echo "  Analysis:  cppcheck, clang-tidy, flawfinder, semgrep, scan-build"

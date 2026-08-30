@@ -2,8 +2,49 @@
 
 This flake provides a reproducible development environment, a hermetic
 build of rocm-ernic, and a suite of static, dynamic, and fuzz analysis
-targets. The design is modular: a slim top-level `flake.nix` wires together
-small single-purpose modules under `nix/`.
+targets — the same toolchain and checks the maintainers use, pinned so you
+get identical results. The design is modular: a slim top-level `flake.nix`
+wires together small single-purpose modules under `nix/`.
+
+## New to Nix?
+
+[Nix](https://nixos.org) is a package manager that builds software in
+isolation from pinned inputs. In practice that means `nix develop` drops you
+into a shell with the exact compilers and tools this project needs — nothing
+installed system-wide, nothing to conflict with your distro — and `nix build`
+produces the identical binary on any machine.
+
+**Install Nix** (multi-user, recommended):
+
+```
+sh <(curl -L https://nixos.org/nix/install) --daemon
+```
+
+Single-user (no root, e.g. in a container): use `--no-daemon` instead. Full
+instructions: <https://nix.dev/install-nix>.
+
+**Enable flakes** (once). Either add this line to `/etc/nix/nix.conf` (or
+`~/.config/nix/nix.conf`):
+
+```
+experimental-features = nix-command flakes
+```
+
+…or prefix each command with
+`--extra-experimental-features 'nix-command flakes'`.
+
+**Two commands to get started**, from the repo root:
+
+```
+nix develop                 # enter the dev shell; type 'ernic-help'
+nix build .#rocm-ernic      # build the server -> ./result/bin/rocm-ernic
+```
+
+Video walkthroughs of the install:
+[Ubuntu](https://youtu.be/cb7BBZLhuUY) ·
+[Fedora](https://youtu.be/RvaTxMa4IiY). Handy references: the
+[flakes wiki](https://nixos.wiki/wiki/flakes) and
+[search.nixos.org](https://search.nixos.org) to find any package.
 
 > Flakes only see git-tracked files. After adding or editing files under
 > `nix/`, `git add` them before `nix build` / `nix develop`.
@@ -76,6 +117,7 @@ for the DMA-path targets deferred to a future device-fixture harness.
 | Path | Purpose |
 |---|---|
 | `flake.nix` | inputs + per-system outputs |
+| `nix/lib.nix` | shared build context (packages, compat, version, analysis helpers) threaded into the modules |
 | `nix/libvfio-user.nix` | from-source libvfio-user (+ synthesized `.pc`) |
 | `nix/packages.nix` | dependency / tool sets |
 | `nix/derivation.nix` | CMake build of rocm-ernic |
