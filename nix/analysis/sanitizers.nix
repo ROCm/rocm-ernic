@@ -15,31 +15,20 @@
 # leak list. ASan/UBSan (the memory-safety and UB checks that fire during
 # the run) are unaffected, and valgrind.nix provides a ptrace-free leak
 # detector as a second opinion.
-{ lib, pkgs, src, libvfio-user }:
+{ ctx, src }:
 
 let
-  packages = import ../packages.nix { inherit pkgs libvfio-user; };
-  compatCflags = import ../compat-cflags.nix { };
+  inherit (ctx) pkgs mkAnalysisDrv configureCmake scrubStore;
   driver = import ./run-loopback.nix { inherit pkgs; };
 
   mkSanBuild = { name, cmakeFlag, markerGrep, description }:
-    pkgs.stdenv.mkDerivation {
-      pname = "rocm-ernic-analysis-${name}";
-      version = "0.2.0";
-      inherit src;
-
-      inherit (packages) nativeBuildInputs buildInputs;
-
-      dontUseCmakeConfigure = true;
-      env.NIX_CFLAGS_COMPILE = compatCflags.string;
+    mkAnalysisDrv {
+      inherit name src;
 
       buildPhase = ''
         runHook preBuild
         srcTop="$PWD"
-        cmake -S "$srcTop" -B "$srcTop/build" -G Ninja \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DERNIC_WERROR=OFF \
-          ${cmakeFlag}
+        ${configureCmake cmakeFlag}
         cmake --build "$srcTop/build"
         runHook postBuild
       '';
@@ -73,7 +62,7 @@ let
         touch "$server_log"
 
         # Strip store prefixes so any file paths in the report are readable.
-        sed 's|/nix/store/[a-z0-9]\{32\}-[^/]*/||g' "$server_log" > $out/report.txt
+        ${scrubStore} "$server_log" > $out/report.txt
 
         violations=$(grep -cE '${markerGrep}' "$server_log" || true)
         [ -z "$violations" ] && violations=0
@@ -95,8 +84,6 @@ let
         } > $out/summary.txt
         cat $out/summary.txt
       '';
-
-      dontFixup = true;
     };
 in
 {

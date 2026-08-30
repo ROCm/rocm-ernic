@@ -19,11 +19,10 @@
 # than a byte buffer. Reaching them meaningfully is a device-emulation
 # harness, tracked as future work; see nix/analysis/fuzz/README.md.
 
-{ lib, pkgs, src, libvfio-user }:
+{ ctx, src }:
 
 let
-  packages = import ../packages.nix { inherit pkgs libvfio-user; };
-  compat = import ../compat-cflags.nix { };
+  inherit (ctx) pkgs lib compat version;
 
   includeFlags = lib.concatStringsSep " " [
     "-Isrc"
@@ -95,8 +94,7 @@ let
 
   fuzzers = pkgs.stdenv.mkDerivation {
     pname = "rocm-ernic-fuzzers";
-    version = "0.2.0";
-    inherit src;
+    inherit version src;
 
     nativeBuildInputs = [ pkgs.clang pkgs.pkg-config ];
     buildInputs = [ pkgs.glib ];
@@ -128,7 +126,7 @@ let
 
   fuzz-run = pkgs.stdenv.mkDerivation {
     pname = "rocm-ernic-fuzz-run";
-    version = "0.2.0";
+    inherit version;
     dontUnpack = true;
     dontConfigure = true;
 

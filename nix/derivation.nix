@@ -12,13 +12,11 @@
 # targets all default OFF, so a plain configure builds only the userspace
 # binary — no kernel headers or network fetches needed in the sandbox.
 #
-# Parameterised so later phases (sanitizers) can reuse the exact build:
-#   import ./nix/derivation.nix { inherit pkgs lib libvfio-user; }
-#   import ./nix/derivation.nix { ...; enableSanitizers = true; }
+# Parameterised so the sanitizer builds can reuse the exact build:
+#   import ./nix/derivation.nix { inherit ctx; }
+#   import ./nix/derivation.nix { inherit ctx; enableSanitizers = true; }
 
-{ pkgs
-, lib
-, libvfio-user
+{ ctx
 , src ? ../.
 , buildType ? "Debug"
 , enableSanitizers ? false
@@ -28,12 +26,11 @@
 }:
 
 let
-  packages = import ./packages.nix { inherit pkgs libvfio-user; };
-  compatCflags = import ./compat-cflags.nix { };
+  inherit (ctx) pkgs lib packages compat version;
 in
 pkgs.stdenv.mkDerivation {
   pname = "rocm-ernic";
-  version = "0.2.0";
+  inherit version;
 
   inherit src;
 
@@ -54,7 +51,7 @@ pkgs.stdenv.mkDerivation {
 
   # Downgrade gcc-15's default-on C99 errors to warnings so the QEMU-ported
   # sources build on the modern toolchain (see nix/compat-cflags.nix).
-  env.NIX_CFLAGS_COMPILE = compatCflags.string;
+  env.NIX_CFLAGS_COMPILE = compat.string;
 
   doCheck = false;
 

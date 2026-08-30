@@ -8,30 +8,22 @@
 # valgrind complements the sanitizers: it needs no ptrace for leak
 # detection (works where LSan may not) and catches uninitialised-value and
 # invalid-access errors the sanitizer build might miss.
-{ lib, pkgs, src, libvfio-user }:
+{ ctx, src }:
 
 let
-  packages = import ../packages.nix { inherit pkgs libvfio-user; };
-  compatCflags = import ../compat-cflags.nix { };
+  inherit (ctx) pkgs mkAnalysisDrv configureCmake scrubStore;
   driver = import ./run-loopback.nix { inherit pkgs; };
 in
-pkgs.stdenv.mkDerivation {
-  pname = "rocm-ernic-analysis-valgrind";
-  version = "0.2.0";
+mkAnalysisDrv {
+  name = "valgrind";
   inherit src;
 
-  nativeBuildInputs = packages.nativeBuildInputs ++ [ pkgs.valgrind ];
-  inherit (packages) buildInputs;
-
-  dontUseCmakeConfigure = true;
-  env.NIX_CFLAGS_COMPILE = compatCflags.string;
+  extraNativeBuildInputs = [ pkgs.valgrind ];
 
   buildPhase = ''
     runHook preBuild
     srcTop="$PWD"
-    cmake -S "$srcTop" -B "$srcTop/build" -G Ninja \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DERNIC_WERROR=OFF
+    ${configureCmake ""}
     cmake --build "$srcTop/build"
     runHook postBuild
   '';
@@ -72,7 +64,7 @@ pkgs.stdenv.mkDerivation {
     touch "$valgrind_log"
 
     # Strip store prefixes for readability.
-    sed 's|/nix/store/[a-z0-9]\{32\}-[^/]*/||g' "$valgrind_log" > $out/report.txt
+    ${scrubStore} "$valgrind_log" > $out/report.txt
 
     # "definitely lost: N bytes in M blocks" — report M (blocks) as the count.
     leaks=$(grep -oP 'definitely lost: [\d,]+ bytes in \K[\d,]+' "$valgrind_log" \
@@ -98,6 +90,4 @@ pkgs.stdenv.mkDerivation {
     } > $out/summary.txt
     cat $out/summary.txt
   '';
-
-  dontFixup = true;
 }

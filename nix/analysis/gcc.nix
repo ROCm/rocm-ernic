@@ -8,11 +8,10 @@
 # per-file to the QEMU-ported sources (CMakeLists.txt:229), so these extra
 # warnings land on our own src/rocm_ernic_*.c — cppcheck / clang-tidy /
 # flawfinder / semgrep cover the ported parsers instead.
-{ lib, pkgs, src, libvfio-user }:
+{ ctx, src }:
 
 let
-  packages = import ../packages.nix { inherit pkgs libvfio-user; };
-  compatCflags = import ../compat-cflags.nix { };
+  inherit (ctx) lib mkAnalysisDrv configureCmake;
 
   gccWarningFlags = [
     "-Wall" "-Wextra" "-Wpedantic"
@@ -28,23 +27,13 @@ let
   ];
 
   mkGccAnalysisBuild = name: extraFlags:
-    pkgs.stdenv.mkDerivation {
-      pname = "rocm-ernic-analysis-${name}";
-      version = "0.2.0";
-      inherit src;
-
-      inherit (packages) nativeBuildInputs buildInputs;
-
-      dontUseCmakeConfigure = true;
-      env.NIX_CFLAGS_COMPILE = compatCflags.string;
+    mkAnalysisDrv {
+      inherit name src;
 
       buildPhase = ''
         runHook preBuild
         srcTop="$PWD"
-        cmake -S "$srcTop" -B "$srcTop/build" -G Ninja \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DERNIC_WERROR=OFF \
-          -DCMAKE_C_FLAGS="${lib.concatStringsSep " " extraFlags}"
+        ${configureCmake ''-DCMAKE_C_FLAGS="${lib.concatStringsSep " " extraFlags}"''}
         cmake --build "$srcTop/build" 2>&1 \
           | tee "$NIX_BUILD_TOP/build-output.log" || true
         runHook postBuild
@@ -73,9 +62,6 @@ let
           echo "Findings: $findings warnings/errors"
         } > $out/summary.txt
       '';
-
-      dontFixup = true;
-      doCheck = false;
     };
 in
 {

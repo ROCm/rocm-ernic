@@ -8,16 +8,17 @@
 # machinery.
 #
 # Usage:
-#   devshell = import ./nix/devshell.nix { inherit pkgs packages; };
+#   devshell = import ./nix/devshell.nix { inherit ctx; };
 #   devShells.default = devshell;
 
-{ pkgs, packages }:
+{ ctx }:
 
 let
+  inherit (ctx) pkgs packages compat;
+
   buildFns = import ./shell-functions/build.nix { };
   cleanFns = import ./shell-functions/clean.nix { };
   helpFns = import ./shell-functions/help.nix { };
-  compatCflags = import ./compat-cflags.nix { };
 
   colored-prompt = ''
     export PS1="\[\033[0;32m\][rocm-ernic] \[\033[01;34m\][\u@\h:\w]\$ \[\033[0m\]"
@@ -38,7 +39,7 @@ pkgs.mkShell {
   # `ernic-build` compiles the QEMU-ported sources too. See
   # nix/compat-cflags.nix. Appended so it does not clobber any value the
   # developer set before entering the shell.
-  NIX_CFLAGS_COMPILE = compatCflags.string;
+  NIX_CFLAGS_COMPILE = compat.string;
 
   shellHook = ''
     ${buildFns}

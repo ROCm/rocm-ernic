@@ -10,7 +10,7 @@
 
 { pkgs, libvfio-user }:
 
-{
+rec {
   # Build-time tools (run on the build host).
   nativeBuildInputs = [
     pkgs.cmake
@@ -40,7 +40,7 @@
   ];
 
   # Development-only tools (not needed to build, only for the dev workflow
-  # and the analysis framework added in later phases).
+  # and the analysis framework).
   devTools = [
     # Debugging / dynamic analysis
     pkgs.gdb
@@ -68,8 +68,7 @@
     pkgs.jq
   ];
 
-  # Combined list for the dev shell.
-  allPackages =
-    let self = import ./packages.nix { inherit pkgs libvfio-user; };
-    in self.nativeBuildInputs ++ self.buildInputs ++ self.devTools;
+  # Combined list for the dev shell (rec lets us reference the sets above
+  # directly instead of re-importing this file).
+  allPackages = nativeBuildInputs ++ buildInputs ++ devTools;
 }

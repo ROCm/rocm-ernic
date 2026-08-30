@@ -4,11 +4,10 @@
 # both the configure and build steps so cmake picks up its ccc-analyzer as
 # the compiler ($CC) and every translation unit is analysed. C-specific
 # checkers only.
-{ lib, pkgs, src, libvfio-user }:
+{ ctx, src }:
 
 let
-  packages = import ../packages.nix { inherit pkgs libvfio-user; };
-  compatCflags = import ../compat-cflags.nix { };
+  inherit (ctx) pkgs lib mkAnalysisDrv;
 
   scanBuildCheckers = lib.concatStringsSep " " [
     "-enable-checker core.NullDereference"
@@ -26,7 +25,9 @@ let
   ];
 
   # Configure + build in one script so both run under scan-build's
-  # compiler interception. $1 = source root.
+  # compiler interception. $1 = source root. (This keeps its own cmake line
+  # rather than the shared ctx.configureCmake: scan-build invokes it with a
+  # positional source-root arg, not the $srcTop the other builds use.)
   analyzeScript = pkgs.writeShellScript "analyze-build" ''
     set -e
     cmake -S "$1" -B "$1/build" -G Ninja \
@@ -34,19 +35,11 @@ let
     cmake --build "$1/build"
   '';
 in
-pkgs.stdenv.mkDerivation {
-  pname = "rocm-ernic-analysis-clang-analyzer";
-  version = "0.2.0";
+mkAnalysisDrv {
+  name = "clang-analyzer";
   inherit src;
 
-  nativeBuildInputs = packages.nativeBuildInputs ++ [
-    pkgs.clang
-    pkgs.clang-analyzer
-  ];
-  inherit (packages) buildInputs;
-
-  dontUseCmakeConfigure = true;
-  env.NIX_CFLAGS_COMPILE = compatCflags.string;
+  extraNativeBuildInputs = [ pkgs.clang pkgs.clang-analyzer ];
 
   buildPhase = ''
     runHook preBuild
@@ -93,7 +86,4 @@ pkgs.stdenv.mkDerivation {
       echo "Findings: $findings"
     } > $out/summary.txt
   '';
-
-  dontFixup = true;
-  doCheck = false;
 }

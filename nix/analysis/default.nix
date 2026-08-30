@@ -18,13 +18,14 @@
 #   nix build .#analysis-quick | .#analysis-standard | .#analysis-deep
 #   nix build .#analysis-cppcheck   (etc. per-tool)
 
-{ pkgs, lib, libvfio-user, src }:
+{ ctx, src }:
 
 let
+  inherit (ctx) pkgs lib;
   python = pkgs.python3;
 
   # ── Compilation database ────────────────────────────────────────
-  compileDb = import ./compile-db.nix { inherit pkgs lib libvfio-user; };
+  compileDb = import ./compile-db.nix { inherit ctx src; };
 
   # ── Helpers ─────────────────────────────────────────────────────
   # Tools that consume the compilation DB: script args = (compileDb, out).
@@ -50,17 +51,17 @@ let
   cppcheck = import ./cppcheck.nix { inherit pkgs mkCompileDbReport; };
   flawfinder = import ./flawfinder.nix { inherit pkgs mkSourceReport; };
   semgrep = import ./semgrep.nix { inherit pkgs mkSourceReport; };
-  gccTargets = import ./gcc.nix { inherit lib pkgs src libvfio-user; };
-  clang-analyzer = import ./clang-analyzer.nix { inherit lib pkgs src libvfio-user; };
+  gccTargets = import ./gcc.nix { inherit ctx src; };
+  clang-analyzer = import ./clang-analyzer.nix { inherit ctx src; };
 
-  # ── Dynamic analysis (Phase C) ──────────────────────────────────
+  # ── Dynamic analysis ────────────────────────────────────────────
   # These build + run the server on the loopback backend; they are not
   # part of the static triage aggregates.
-  sanitizerTargets = import ./sanitizers.nix { inherit lib pkgs src libvfio-user; };
-  valgrind = import ./valgrind.nix { inherit lib pkgs src libvfio-user; };
+  sanitizerTargets = import ./sanitizers.nix { inherit ctx src; };
+  valgrind = import ./valgrind.nix { inherit ctx src; };
 
-  # ── Fuzzing (Phase D) ───────────────────────────────────────────
-  fuzzTargets = import ./fuzz.nix { inherit lib pkgs src libvfio-user; };
+  # ── Fuzzing ─────────────────────────────────────────────────────
+  fuzzTargets = import ./fuzz.nix { inherit ctx src; };
 
   # ── Triage ──────────────────────────────────────────────────────
   triagePath = ./triage;

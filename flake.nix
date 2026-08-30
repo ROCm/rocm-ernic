@@ -1,10 +1,10 @@
 #
 # flake.nix for rocm-ernic
 #
-# Provides a reproducible development environment and build for the
-# userspace emulated RDMA NIC. The design follows the modular xdp2 flake:
-# a slim flake.nix wiring together small single-purpose modules under
-# nix/.
+# A reproducible development environment, a hermetic build, and a suite of
+# static, dynamic, and fuzz analysis targets for the userspace emulated RDMA
+# NIC. The design is modular: this slim flake.nix wires together small
+# single-purpose modules under nix/ (see nix/README.md).
 #
 # Enter the development shell:
 #   nix develop
@@ -12,15 +12,15 @@
 # Build the server binary:
 #   nix build .#rocm-ernic      # -> ./result/bin/rocm-ernic
 #
+# Run the analysis (nix/README.md lists every target):
+#   nix build .#analysis-deep && cat result/summary.txt
+#
 # If flakes are not enabled, prefix commands with:
 #   nix --extra-experimental-features 'nix-command flakes' <cmd>
 #
 # NOTE: flakes only see git-tracked files. After adding or editing files
 # under nix/ (or this flake), `git add` them before `nix build`/`nix
 # develop`, or the changes are invisible to the evaluation.
-#
-# Static-analysis, sanitizer, memory-leak and fuzzing targets are added
-# in later phases; run `nix flake show` to list what is available.
 #
 {
   description = "rocm-ernic — userspace emulated RDMA NIC for virtual machines";
@@ -37,8 +37,12 @@
     };
   };
 
+  # Linux-only: the build and analysis depend on libvfio-user, rdma-core and
+  # ptrace-based tools, none of which work on Darwin. eachSystem (not
+  # eachDefaultSystem) keeps the flake from generating darwin attributes that
+  # could only fail to evaluate/build.
   outputs = { self, nixpkgs, flake-utils, libvfio-user }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
         lib = nixpkgs.lib;
@@ -50,25 +54,23 @@
           src = libvfio-user;
         };
 
-        packages = import ./nix/packages.nix {
-          inherit pkgs;
+        # Shared build context: dependency sets, compat cflags, version, and
+        # the helpers the analysis builds reuse. Built once, threaded below.
+        ctx = import ./nix/lib.nix {
+          inherit pkgs lib;
           libvfio-user = libvfioUser;
         };
 
         rocm-ernic = import ./nix/derivation.nix {
-          inherit pkgs lib;
-          libvfio-user = libvfioUser;
+          inherit ctx;
           src = ./.;
         };
 
-        devshell = import ./nix/devshell.nix {
-          inherit pkgs packages;
-        };
+        devshell = import ./nix/devshell.nix { inherit ctx; };
 
-        # Static-analysis framework (Phase B). See nix/analysis/default.nix.
+        # Static, dynamic, and fuzz analysis. See nix/analysis/default.nix.
         analysis = import ./nix/analysis {
-          inherit pkgs lib;
-          libvfio-user = libvfioUser;
+          inherit ctx;
           src = ./.;
         };
       in
@@ -95,12 +97,12 @@
           analysis-gcc-warnings = analysis.gcc-warnings;
           analysis-gcc-analyzer = analysis.gcc-analyzer;
 
-          # Dynamic analysis (Phase C): build + exercise on loopback.
+          # Dynamic analysis: build + exercise on loopback.
           analysis-sanitizers = analysis.sanitizers;
           analysis-tsan = analysis.thread-sanitizer;
           analysis-valgrind = analysis.valgrind;
 
-          # Fuzzing (Phase D).
+          # Fuzzing.
           fuzz = analysis.fuzzers;       # build harnesses + corpora
           fuzz-run = analysis.fuzz-run;  # bounded run, collect crashes
         };

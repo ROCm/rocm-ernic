@@ -18,32 +18,26 @@
 # normalize_path — which strips /nix/store/<hash>-<name>/ — yields repo-
 # relative paths like src/rocm_ernic_compat.c, which its filters expect.
 
-{ pkgs, lib, libvfio-user }:
+{ ctx, src }:
 
 let
-  packages = import ../packages.nix { inherit pkgs libvfio-user; };
-  compatCflags = import ../compat-cflags.nix { };
+  inherit (ctx) pkgs packages compat version configureCmake;
 in
 pkgs.stdenv.mkDerivation {
   pname = "rocm-ernic-compile-db";
-  version = "0.2.0";
-
-  src = ../../.;
+  inherit version src;
 
   inherit (packages) nativeBuildInputs buildInputs;
 
   # Let us drive cmake by hand (configure only) instead of the setup hook.
   dontUseCmakeConfigure = true;
 
-  env.NIX_CFLAGS_COMPILE = compatCflags.string;
+  env.NIX_CFLAGS_COMPILE = compat.string;
 
   buildPhase = ''
     runHook preBuild
     srcTop="$PWD"
-    cmake -S "$srcTop" -B "$srcTop/build" -G Ninja \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-      -DERNIC_WERROR=OFF
+    ${configureCmake "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"}
     runHook postBuild
   '';
 
