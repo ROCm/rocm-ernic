@@ -236,6 +236,51 @@ present on the default branch. Both
 to `main` before the command works, even when targeting
 a topic branch.
 
+## Reporting back
+
+When a run is started with a `pr` number, the report job
+comments the outcome on that pull request when it finishes:
+a per-stage table, the check and regression counts, and a
+link to the run. It posts under `always()`, so a failed or
+half-skipped run still reports rather than going quiet.
+
+Runs without a `pr` (the nightly) do not comment anywhere;
+their outcome is the run's own status and the job summary.
+
+## Publishing performance trends
+
+The nightly publishes its medians to the docs site at
+<https://rocm.github.io/rocm-ernic/>, under *Performance
+trends*.
+
+`ci/report/publish-perf.py` appends one record per run to
+`docs/perf-history/history.jsonl`, regenerates
+`docs/perf-trends.rst`, and commits both to `main`. The
+existing `docs-deploy` workflow triggers on `docs/**` and
+rebuilds Pages, so no second Pages deployment is involved --
+a repository only gets one, and it already belongs to the
+Sphinx docs.
+
+Only a clean full-tier nightly on `main` publishes.
+Pull request runs are excluded by the same condition that
+guards the baseline: with the `pr` input `github.ref` still
+says `main`, so `inputs.pr == ''` is what actually
+distinguishes them. A pull request's numbers describe the
+pull request, not `main`.
+
+Charts are inline SVG with no JavaScript and no extra build
+dependency. Each message size gets its own panel and its own
+scale: 4 KiB bandwidth is around 0.15 GB/s against roughly 7
+at 1 MiB, and on a shared axis the small sizes flatten onto
+the baseline, hiding exactly the movement a regression would
+show. Every chart is also rendered as a table, which is both
+the accessible reading and the relief required for the one
+palette colour that sits below 3:1 on the light surface.
+
+Publishing never fails a run. If `main` moved underneath the
+job and the commit cannot be rebased on, it warns and leaves
+the run's real result alone.
+
 ## Running jobs by hand
 
 Each job is a standalone script and can be run outside
