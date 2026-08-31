@@ -72,7 +72,7 @@ _ci_ansible_run() {
         -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
-        "$@"
+        "$@" </dev/null
 }
 
 cd "${ANSIBLE_DIR}"

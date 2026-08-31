@@ -133,35 +133,58 @@ journalctl --user -u rocm-ernic-runner -f
 
 ## Security
 
-`ROCm/rocm-ernic` is a public repository, and a
-self-hosted runner will execute whatever a pull request
-contains. `.github/workflows/self-hosted-ci.yml` runs on
-pull requests targeting `main`, on `workflow_dispatch`,
-and on a nightly schedule. It does not run on push.
+`ROCm/rocm-ernic` is public, and this workflow runs on a
+lab machine rather than a throwaway GitHub runner. Nothing
+reaches the node unless someone asks for it:
+`.github/workflows/self-hosted-ci.yml` has **no
+`pull_request` trigger and no `push` trigger**. The only
+ways in are `workflow_dispatch` and the nightly schedule.
 
-Because pull requests are in scope, **every job requires
-the pull request to come from a branch in this
-repository**:
+That is a deliberate trade. Pull requests get no automatic
+lab-node coverage; a maintainer runs `/run-ci` when they
+want it. The GitHub-hosted workflows still run on every
+pull request as usual, so contributors are not left
+without feedback.
 
-```yaml
-if: >-
-  github.event_name != 'pull_request' ||
-  github.event.pull_request.head.repo.full_name == github.repository
+### Testing fork pull requests
+
+Fork pull requests **are** runnable, via the `pr` input:
+
+```bash
+gh workflow run self-hosted-ci.yml --ref main -f pr=123
 ```
 
-A fork pull request resolves that to false and no job
-starts, so fork code never reaches the lab node.
-Schedule and dispatch runs are unaffected.
+or just `/run-ci` on the pull request.
 
-Keep *Settings, Actions, General, Require approval for
-all external contributors* enabled as a second layer, so
-a fork run cannot even be queued without a maintainer
-releasing it.
+What makes that acceptable is the split between the
+workflow and the code it tests. The dispatch targets the
+workflow file on the **default branch**, and passes only a
+pull request number. Each job then checks out
+`refs/pull/<pr>/head`, which resolves for forks. So a fork
+supplies code to compile and run, but cannot change what
+the workflow does with it, and cannot start a run at all:
+`workflow_dispatch` requires write access.
 
-Pull requests run the `functional` tier: build, loopback
-and the two-VM RDMA tests. The nightly runs `full` and
-adds the performance sweeps, which take too long to sit
-in front of a review.
+### What this does not protect
+
+The node itself. Fork code runs as the runner's user, with
+whatever that user can do. **Treat the ability to dispatch
+a fork pull request as equivalent to shell access on the
+lab node.**
+
+On the current node the runner user also has passwordless
+`sudo`, so that is equivalent to root. Outstanding
+hardening, in rough priority order:
+
+1. Run the runner as a dedicated account with no `sudo`.
+2. Give that account its own `/local/<user>` workspace and
+   `/opt/qemu-images` group access, rather than reusing a
+   developer's.
+3. Consider an ephemeral runner, so each job starts from a
+   clean machine state.
+
+Until those land, only dispatch fork pull requests whose
+diff you have actually read.
 
 The workflow also takes a `concurrency` lock. Two
 simultaneous runs would collide on VM ssh ports, the
@@ -188,16 +211,20 @@ The dispatcher reacts to the comment, dispatches the
 workflow against the right ref, and replies with a link
 to the run.
 
-Three properties keep this safe on a public repository:
+Three properties keep this honest on a public repository:
 
 1. The dispatcher runs on `ubuntu-latest`, never on the
    self-hosted runner, so untrusted comment text is
    never processed on the lab node.
 2. The commenter must have write access or above,
    checked against the API at trigger time.
-3. Only refs in this repository can be dispatched.
-   Comments on fork pull requests are refused, so fork
-   code cannot reach the lab node.
+3. The dispatch always targets the workflow file on the
+   default branch and passes the pull request number as an
+   input, so a fork supplies the code under test but not
+   the workflow that runs it.
+
+Fork pull requests are eligible. See *What this does not
+protect* above before running one.
 
 `issue_comment` always runs the workflow file from the
 default branch, so this gate cannot be weakened by a
