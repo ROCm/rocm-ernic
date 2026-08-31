@@ -8,18 +8,36 @@
 # real VMs over the emulated RDMA NIC and produce
 # functional and performance reports.
 #
-# SECURITY: rocm-ernic is a public repository, so a
-# pull_request trigger would let a fork's code run on the
-# lab node.  Every job therefore requires the pull request
-# to originate from a branch in this repository; a fork PR
-# resolves the condition to false and no job starts.
+# SECURITY
+# --------
+# rocm-ernic is public, and this workflow runs on a lab
+# machine rather than a throwaway GitHub runner, so nothing
+# reaches the node without a maintainer asking for it.
+# There is no pull_request trigger: the only ways in are a
+# manual dispatch and the nightly schedule.
 #
-# Belt and braces: keep *Settings, Actions, General,
-# Require approval for all external contributors* enabled,
-# so a fork run cannot even be queued without a maintainer
-# releasing it.
+# Fork pull requests ARE testable, via the pr input.  The
+# split that makes this safe is that dispatch runs the
+# workflow file from the branch given to --ref (normally
+# main) while checking out refs/pull/<pr>/head as the code
+# under test.  A fork therefore supplies code to compile
+# and run, but cannot alter what this workflow does, and
+# cannot start a run at all: workflow_dispatch requires
+# write access.
+#
+# What that does NOT protect is the node itself.  Fork code
+# runs as the runner's user, so anyone who can dispatch a
+# fork PR can execute arbitrary code there.  Treat the
+# ability to dispatch as equivalent to shell access on the
+# lab node, and see ci/README.md for the hardening that is
+# still outstanding.
 
 name: Self-Hosted CI
+
+run-name: >-
+  Self-Hosted CI
+  ${{ inputs.pr && format('- PR #{0}', inputs.pr) || '' }}
+  ${{ inputs.tier && format('({0})', inputs.tier) || '' }}
 
 on:
   workflow_dispatch:
@@ -41,21 +59,17 @@ on:
         options:
           - kvm
           - tcg            # emulation; functional only
+      pr:
+        description: >-
+          Pull request number to test. Works for forks:
+          refs/pull/<pr>/head is checked out as the code
+          under test. Leave empty to run the dispatched ref.
+        required: false
+        type: string
   schedule:
     # 02:30 UTC nightly.  Off the hour to avoid the
     # thundering herd of every cron job on the fleet.
     - cron: '37 2 * * *'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'service/**'
-      - 'ansible/**'
-      - 'ci/**'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - '.github/workflows/self-hosted-ci.yml'
 
 # One run at a time on the node: concurrent runs would
 # collide on VM ssh ports, the instance manifest and the
@@ -71,21 +85,26 @@ concurrency:
 env:
   CI_WORK: /var/tmp/ernic-ci-work
   CI_VM_ACCEL: ${{ inputs.accel || 'kvm' }}
+  # The code under test.  refs/pull/<n>/head resolves for
+  # fork pull requests too, which is what makes them
+  # testable without granting the fork any other reach.
+  CI_CHECKOUT_REF: >-
+    ${{ inputs.pr
+        && format('refs/pull/{0}/head', inputs.pr)
+        || github.ref }}
 
 jobs:
 
   preflight:
     name: Preflight
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
       kvm: ${{ steps.plan.outputs.kvm }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Reset workspace results
         run: |
@@ -130,10 +149,6 @@ jobs:
 
   build:
     name: Build and unit tests
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: preflight
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     strategy:
@@ -142,6 +157,8 @@ jobs:
         build_type: [Release, Debug]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Build and test (${{ matrix.build_type }})
         env:
@@ -161,14 +178,12 @@ jobs:
 
   loopback:
     name: Loopback functional
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Loopback backend tests
         env:
@@ -178,10 +193,7 @@ jobs:
   vm-functional:
     name: 2-VM RDMA functional
     needs: [preflight, loopback]
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
     if: >-
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.preflight.outputs.tier != 'build'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
     timeout-minutes: 90
@@ -189,6 +201,8 @@ jobs:
       CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Bring up VMs
         run: bash ci/jobs/vm-up.sh
@@ -211,10 +225,7 @@ jobs:
   perf:
     name: Performance sweeps
     needs: [preflight, vm-functional]
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
     if: >-
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.preflight.outputs.tier == 'full'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
     timeout-minutes: 180
@@ -222,6 +233,8 @@ jobs:
       CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Bring up VMs
         run: bash ci/jobs/vm-up.sh
@@ -258,11 +271,12 @@ jobs:
     # Report on whatever actually ran, including when an
     # upstream tier was skipped or failed.  Still refuses
     # fork pull requests.
-    if: >-
-      always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: always()
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Generate functional and performance report
         id: report

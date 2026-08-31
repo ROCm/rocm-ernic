@@ -52,6 +52,9 @@ ci_ansible() {
     return "${rc}"
 }
 
+# stdin is redirected from /dev/null: ansible refuses to
+# start if it inherits a non-blocking stdin, which happens
+# whenever this script is driven from a background shell.
 _ci_ansible_run() {
     ansible-playbook ci-site.yml \
         -e "ernic_project_root=${PROJECT_ROOT}" \
@@ -64,10 +67,25 @@ _ci_ansible_run() {
         -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
-        "$@"
+        "$@" </dev/null
 }
 
 cd "${ANSIBLE_DIR}"
+
+# The perf job brings up its own VMs, and vm-down.sh deleted
+# the overlays the functional job left behind, so these guests
+# are freshly cloned from the golden image: no driver loaded
+# and no address on the emulated NIC.  Without this the very
+# first check fails with "Ping failed between VMs" and every
+# subsequent measurement records FAIL.
+group_start "Guest setup (driver + rdma-core)"
+run_check perf "guest-setup" ci_ansible --tags guest-setup
+group_end
+
+# Measuring against unprovisioned guests produces a wall of
+# FAIL rows that looks like a device regression, so stop here
+# instead.
+require_guests_ready || die "guest provisioning failed; not measuring"
 
 group_start "TCP/IP throughput (iperf3)"
 run_check perf "tcp-perf" ci_ansible --tags tcp-perf
@@ -92,3 +110,18 @@ run_check perf "csv-produced" test "${csv_count}" -gt 0
 group_end
 
 log_info "perf job complete; results in ${CI_RESULTS}/perf.jsonl"
+
+# run_check records failures without aborting, so that every
+# check still runs.  Without this the job exited 0 even when
+# every sweep failed, and only the report job noticed.
+failed=$(python3 -c "
+import json,sys
+try:
+    print(sum(1 for l in open('${CI_RESULTS}/perf.jsonl')
+              if json.loads(l).get('status') == 'fail'))
+except OSError:
+    print(0)")
+if [ "${failed}" -gt 0 ]; then
+    log_error "${failed} perf check(s) failed"
+    exit 1
+fi
