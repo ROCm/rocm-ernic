@@ -33,6 +33,26 @@
     # provider, NIC config, rocm-xio).
 
     # ── QEMU guest agent (QMP guest-get-load, etc.) ──
+    # A freshly booted guest runs unattended-upgrades, which
+    # holds the dpkg lock for the first minute or so.  Ansible's
+    # apt tasks race it and fail with "Could not get lock
+    # /var/lib/dpkg/lock-frontend".  In CI the guests are cloned
+    # and booted seconds before this play runs, so the race is
+    # hit routinely -- and only on whichever VM loses it, which
+    # makes it look like a random one-guest failure.
+    - name: Wait for unattended-upgrades to release the dpkg lock
+      ansible.builtin.shell: |
+        for _ in $(seq 1 60); do
+          fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || exit 0
+          sleep 5
+        done
+        echo "dpkg lock still held after 300s" >&2
+        fuser -v /var/lib/dpkg/lock-frontend >&2 || true
+        exit 1
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: Install qemu-guest-agent for QMP guest metrics
       ansible.builtin.apt:
         name: qemu-guest-agent
