@@ -110,19 +110,69 @@
         mode: "0755"
 
     # ── Build custom rdma-core with provider ─────────
-    - name: Check if custom rdma-core is already installed
-      ansible.builtin.stat:
-        path: /usr/lib/libibverbs/librocm_ernic.so
-      register: ernic_provider_check
+    #
+    # Rebuild whenever the provider source or the rdma-core
+    # version differs from what is installed, and skip
+    # otherwise.  The build takes about seven minutes per
+    # guest, so this is worth getting right.
+    #
+    # This used to stat /usr/lib/libibverbs/librocm_ernic.so.
+    # With CMAKE_INSTALL_PREFIX=/usr the provider actually
+    # lands in /usr/lib/<multiarch>/libibverbs/ under its
+    # ABI-versioned name, so that path never existed and the
+    # build always ran.  Harmless, but it never once skipped,
+    # and correcting the path alone would have been worse: a
+    # guest whose golden image already carried a provider
+    # would then silently skip rebuilding it, and provider
+    # changes would stop being tested at all.  Key on the
+    # source instead, so "already built" means "built from
+    # this source".
+    - name: Hash the provider source
+      ansible.builtin.shell: |
+        set -o pipefail
+        find "{{ ernic_project_root }}/rdma-core/providers/rocm_ernic" \
+             "{{ ernic_project_root }}/rdma-core/rocm-ernic-dv" \
+             -type f -print0 \
+          | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      register: ernic_provider_src_hash
+
+    - name: Read the installed provider stamp
+      ansible.builtin.slurp:
+        src: /usr/local/share/rocm-ernic/provider.stamp
+      register: ernic_provider_stamp
+      failed_when: false
+
+    - name: Decide whether rdma-core needs rebuilding
+      ansible.builtin.set_fact:
+        ernic_provider_want: >-
+          {{ ernic_rdma_core_version }}:{{
+             ernic_provider_src_hash.stdout | trim }}
+        ernic_provider_have: >-
+          {{ (ernic_provider_stamp.content | b64decode | trim)
+             if (ernic_provider_stamp.content is defined)
+             else '' }}
 
     - name: Set rdma-core path facts
       ansible.builtin.set_fact:
         rc_ver: "{{ ernic_rdma_core_version }}"
         rc_base: /tmp/rdma-core-build
-      when: not ernic_provider_check.stat.exists
+      when: ernic_provider_want != ernic_provider_have
+
+    - name: Report that the installed provider is current
+      ansible.builtin.debug:
+        msg: >-
+          rdma-core {{ ernic_rdma_core_version }} already built
+          from this provider source; skipping rebuild.
+      when: ernic_provider_want == ernic_provider_have
 
     - name: Build and install custom rdma-core
-      when: not ernic_provider_check.stat.exists
+      when: ernic_provider_want != ernic_provider_have
       vars:
         rc_src: "{{ rc_base }}/rdma-core-{{ rc_ver }}"
         rc_tar: "{{ rc_base }}/rdma-core-{{ rc_ver }}.tar.gz"
@@ -209,6 +259,20 @@
           ansible.builtin.command:
             cmd: ldconfig
           changed_when: true
+
+        - name: Ensure the stamp directory exists
+          ansible.builtin.file:
+            path: /usr/local/share/rocm-ernic
+            state: directory
+            mode: "0755"
+
+        # Written last, so an interrupted build is not
+        # mistaken for a complete one on the next run.
+        - name: Record what the provider was built from
+          ansible.builtin.copy:
+            content: "{{ ernic_provider_want }}\n"
+            dest: /usr/local/share/rocm-ernic/provider.stamp
+            mode: "0644"
 
     # ── Build and install kernel driver via DKMS ──────
     - name: Install rocm-ernic driver via DKMS
