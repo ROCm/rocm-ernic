@@ -10,13 +10,20 @@
 
 { pkgs, libvfio-user }:
 
+let
+  # True when building for a different platform than the build host. The
+  # cross stdenv already provides the target `cc`; adding a standalone
+  # `pkgs.gcc` here would splice to the *native* build->build gcc and put a
+  # plain `gcc`/`cc` on PATH that shadows the cross compiler CMake must use.
+  # So the explicit gcc is native-only; under cross we rely on stdenv.cc.
+  isCross = pkgs.stdenv.buildPlatform != pkgs.stdenv.hostPlatform;
+in
 rec {
   # Build-time tools (run on the build host).
   nativeBuildInputs = [
     pkgs.cmake
     pkgs.ninja
     pkgs.pkg-config
-    pkgs.gcc
     pkgs.git
 
     # Core utilities used during build / helper scripts.
@@ -24,7 +31,9 @@ rec {
     pkgs.coreutils
     pkgs.gnused
     pkgs.gnugrep
-  ];
+  ]
+  # Native builds pin gcc explicitly (matching CI); cross uses stdenv.cc.
+  ++ pkgs.lib.optional (!isCross) pkgs.gcc;
 
   # Libraries required to compile and link rocm-ernic.
   #   vfio-user   -> libvfio-user (from source, see libvfio-user.nix)

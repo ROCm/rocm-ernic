@@ -23,6 +23,7 @@
 , enableThreadSanitizer ? false
 , werror ? false
 , extraCmakeFlags ? [ ]
+, installTests ? false
 }:
 
 let
@@ -35,6 +36,20 @@ pkgs.stdenv.mkDerivation {
   inherit src;
 
   inherit (packages) nativeBuildInputs buildInputs;
+
+  # The CMake install rule ships only the server (cmake/ErnicInstall.cmake).
+  # The microvm run layer also needs the standalone PCI-config test client
+  # to exercise the server on the loopback backend inside the guest; it is
+  # built by the default target (tests/CMakeLists.txt), so just copy it in.
+  postInstall = lib.optionalString installTests ''
+    testbin=$(find . -name test_pci_client -type f -perm -u+x | head -1)
+    if [ -n "$testbin" ]; then
+      install -Dm755 "$testbin" "$out/bin/test_pci_client"
+    else
+      echo "installTests: test_pci_client not found under build tree" >&2
+      exit 1
+    fi
+  '';
 
   cmakeFlags = [
     "-DCMAKE_BUILD_TYPE=${buildType}"

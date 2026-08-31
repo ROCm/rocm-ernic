@@ -28,6 +28,15 @@
     nix build .#analysis-deep     + gcc-analyzer, semgrep
     nix build .#analysis-sanitizers | .#analysis-tsan | .#analysis-valgrind
     nix build .#fuzz | .#fuzz-run libFuzzer harnesses for the wire parsers
+
+  Cross-compile + emulated run (from an x86_64-linux host):
+    nix build .#rocm-ernic-aarch64   also: -riscv64, -armv7l, -ppc64le
+    nix run   .#run-aarch64-tests    aarch64/riscv64: boot a QEMU microvm + self-test
+    nix run   .#run-armv7l-tests     armv7l/ppc64le: qemu-user smoke of the cross binary
+
+  OCI container images (dockerTools; ./result | docker load):
+    nix build .#oci-image            minimal amd64 image (also: -debug)
+    nix build .#oci-image-aarch64    minimal arm64 image (also: -riscv64, -debug)
 EOF
   }
 ''
