@@ -20,6 +20,8 @@
 #include "rocm_ernic.h"
 
 #define ROCM_ERNIC_WR_SEND_DC        17U
+/* Must match the enum of the same name in verbs.c. */
+#define ROCM_ERNIC_WR_FLAG_SIGNALED  1U
 #define ROCM_ERNIC_QP_HEADER_PAGES   1
 #define ROCM_ERNIC_SQ_WQE_HDR_SIZE   80
 #define ROCM_ERNIC_RQ_WQE_HDR_SIZE   16
@@ -379,6 +381,13 @@ int rocm_ernic_dc_post_send(struct ibv_qp *ibqp, uint64_t wr_id,
     wqe->wr_id = wr_id;
     wqe->num_sge = (uint32_t)num_sge;
     wqe->opcode = ROCM_ERNIC_WR_SEND_DC;
+    /*
+     * The device only raises a completion for a WR carrying
+     * the SIGNALED flag.  This entry point takes a wr_id but
+     * no flags argument, so its callers are entitled to reap
+     * a completion for every post; mark them all signalled.
+     */
+    wqe->send_flags = ROCM_ERNIC_WR_FLAG_SIGNALED;
     wqe->wr.dc.remote_dctn = remote_dctn;
     wqe->wr.dc.dc_access_key = dc_access_key;
     wqe->wr.dc.ah_id = ah_id;

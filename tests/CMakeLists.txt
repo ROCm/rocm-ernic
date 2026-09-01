@@ -144,15 +144,35 @@ if(CMOCKA_FOUND)
     )
 endif()
 # -- Parser unit tests -------------------------------------------
-# Link the QEMU-ported parser directly and build with AddressSanitizer +
-# UBSan (unless the project is already built with ThreadSanitizer, which is
-# incompatible), so an out-of-bounds read fails the test even when the rest
-# of the project is built without sanitizers.
+# These link the QEMU-ported wire parsers directly and are built with
+# AddressSanitizer + UBSan (unless the project is already built with
+# ThreadSanitizer, which is incompatible), so an out-of-bounds read fails
+# the test even when the rest of the project is built without sanitizers.
 set(ERNIC_PARSER_TEST_SAN "")
 if(NOT ERNIC_USE_THREAD_SANITIZER)
     set(ERNIC_PARSER_TEST_SAN
         -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
+
+add_executable(test_rdma_cm_proto
+    test_rdma_cm_proto.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/rdma_cm_proto.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+)
+target_include_directories(test_rdma_cm_proto PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
+# QEMU-ported sources are compiled -w here, matching the main build.
+target_compile_options(test_rdma_cm_proto PRIVATE
+    -w ${ERNIC_PARSER_TEST_SAN})
+target_link_options(test_rdma_cm_proto PRIVATE ${ERNIC_PARSER_TEST_SAN})
+target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
 
 add_executable(test_dhcp_server_process
     test_dhcp_server_process.c
@@ -230,6 +250,13 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+# rdma_cm protocol parser unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME rdma-cm-proto-unit
+    COMMAND $<TARGET_FILE:test_rdma_cm_proto>
+)
+set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
+
 # DHCP server packet parser unit test (table-driven, ASan-instrumented)
 add_test(
     NAME dhcp-server-process-unit
