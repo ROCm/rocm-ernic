@@ -233,6 +233,38 @@ PY
     return 0
 }
 
+# Verify each guest is actually provisioned: RDMA device
+# present, port active, and an address on the emulated NIC.
+#
+# The perf job clones fresh guests from the golden image, so
+# skipping guest-setup leaves them with no driver and no
+# address.  Every measurement then records FAIL, which reads
+# like a device regression rather than a setup mistake.
+require_guests_ready() {
+    local i ok=0
+    for i in $(seq 1 "${ERNIC_INSTANCES}"); do
+        if ! vm_ssh "${i}" 'ibv_devices' 2>/dev/null \
+                | grep -qE 'rocm-rdma-ernic|rocep'; then
+            log_error "guest ${i}: no RDMA device"
+            ok=1
+            continue
+        fi
+        if ! vm_ssh "${i}" 'ibv_devinfo' 2>/dev/null \
+                | grep -q 'PORT_ACTIVE'; then
+            log_error "guest ${i}: port not active"
+            ok=1
+            continue
+        fi
+        if ! vm_ssh "${i}" \
+                'ip -4 -br addr show rocm-ernic0' 2>/dev/null \
+                | grep -qE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; then
+            log_error "guest ${i}: no address on rocm-ernic0"
+            ok=1
+        fi
+    done
+    return "${ok}"
+}
+
 require_kvm() {
     if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
         log_error "/dev/kvm is not accessible to $(id -un)."

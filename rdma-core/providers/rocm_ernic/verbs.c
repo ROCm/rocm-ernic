@@ -496,6 +496,7 @@ struct ibv_qp *rocm_ernic_create_qp_v(struct ibv_pd *pd,
     if (!qp)
         return NULL;
 
+    qp->sq_sig_all = attr->sq_sig_all;
     sq_depth = attr->cap.max_send_wr ? attr->cap.max_send_wr : 1;
     rq_depth = attr->cap.max_recv_wr ? attr->cap.max_recv_wr : 1;
 
@@ -690,7 +691,15 @@ int rocm_ernic_post_send_v(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
         wqe->wr_id = wr->wr_id;
         wqe->num_sge = wr->num_sge;
         wqe->opcode = ib_to_rocm_opcode(wr->opcode);
+        /*
+         * The device only raises a completion for a WR
+         * carrying the SIGNALED flag, so fold the QP-wide
+         * sq_sig_all policy in here: the caller is entitled
+         * to omit IBV_SEND_SIGNALED on such a QP.
+         */
         wqe->send_flags = ib_to_rocm_send_flags(wr->send_flags);
+        if (qp->sq_sig_all)
+            wqe->send_flags |= ROCM_ERNIC_WR_FLAG_SIGNALED;
 
         if (wr->opcode == IBV_WR_SEND_WITH_IMM ||
             wr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM)

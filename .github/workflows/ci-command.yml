@@ -14,20 +14,27 @@
 # SECURITY
 # --------
 # rocm-ernic is a public repository, so anyone can leave
-# a comment.  Three properties keep the lab node safe:
+# a comment.  Three properties keep this honest:
 #
 #   1. This dispatcher runs on ubuntu-latest, never on
 #      the self-hosted runner.  Untrusted comment text is
 #      never processed on the lab node.
 #   2. The commenter must have write access or above,
 #      checked against the API at trigger time.
-#   3. Only refs in this repository can be dispatched.
-#      Comments on fork pull requests are refused, so
-#      fork code cannot reach the lab node.
+#   3. The dispatch always targets the workflow file on the
+#      default branch, passing the pull request number as an
+#      input.  A fork supplies the code under test but cannot
+#      change what the workflow does with it.
 #
 # issue_comment always runs the workflow file from the
 # default branch, so this gate cannot be edited by a
 # pull request to weaken it.
+#
+# Fork pull requests ARE runnable, deliberately: a
+# maintainer asking for it is the gate.  Note that fork code
+# then executes as the runner's user on the lab node, so
+# treat "can run /run-ci on a fork PR" as equivalent to
+# shell access there.
 
 name: CI Command
 
@@ -139,7 +146,7 @@ jobs:
             echo '| `/run-ci full` | functional + performance sweeps |'
             echo '| `/run-ci full tcg` | run VMs under emulation (no valid perf) |'
             echo
-            echo 'Requires write access. Fork pull requests are not eligible.'
+            echo 'Requires write access. Fork pull requests are eligible: the run tests the fork'"'"'s code but always uses this repository'"'"'s workflow definition.'
           } > body.md
           gh api -X POST \
             "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
@@ -182,7 +189,7 @@ jobs:
           echo "::error::@${ACTOR} has role '${ROLE}'; write access or above is required."
           exit 1
 
-      - name: Resolve target ref
+      - name: Resolve target
         id: ref
         if: steps.perm.outputs.allowed == 'true'
         env:
@@ -191,75 +198,52 @@ jobs:
           set -euo pipefail
 
           if [ -z "${{ github.event.issue.pull_request.url || '' }}" ]; then
-            # Plain issue: nothing to check out but the
-            # default branch.
-            echo "ref=${{ github.event.repository.default_branch }}" >> "$GITHUB_OUTPUT"
+            # A plain issue has no code to test; run the
+            # default branch as-is.
             echo "target=default branch" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
+          # Pass the pull request number rather than a branch.
+          # The workflow checks out refs/pull/<n>/head, which
+          # resolves for forks too, while the workflow file
+          # itself still comes from the default branch.
           pr="${{ github.event.issue.number }}"
           head_repo="$(gh api \
             "repos/${{ github.repository }}/pulls/${pr}" \
             --jq '.head.repo.full_name')"
-          head_ref="$(gh api \
-            "repos/${{ github.repository }}/pulls/${pr}" \
-            --jq '.head.ref')"
 
-          # workflow_dispatch can only target a ref in this
-          # repository, so a fork head is not dispatchable
-          # anyway.  Refusing explicitly makes the reason
-          # visible instead of surfacing an opaque API error.
+          echo "pr=${pr}" >> "$GITHUB_OUTPUT"
           if [ "${head_repo}" != "${{ github.repository }}" ]; then
+            echo "target=PR #${pr} (fork: \`${head_repo}\`)" >> "$GITHUB_OUTPUT"
             echo "fork=true" >> "$GITHUB_OUTPUT"
-            echo "head_repo=${head_repo}" >> "$GITHUB_OUTPUT"
-            exit 0
+          else
+            echo "target=PR #${pr}" >> "$GITHUB_OUTPUT"
           fi
-
-          echo "ref=${head_ref}" >> "$GITHUB_OUTPUT"
-          echo "target=PR #${pr} (${head_ref})" >> "$GITHUB_OUTPUT"
-
-      - name: Refuse fork pull request
-        if: steps.ref.outputs.fork == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_REPO: ${{ steps.ref.outputs.head_repo }}
-        run: |
-          {
-            echo "Self-hosted CI cannot run against a fork."
-            echo
-            echo "This pull request's head is in \`${HEAD_REPO}\`."
-            echo "Running it on the lab node would execute"
-            echo "unreviewed code there, so it is refused by design."
-            echo
-            echo "Push the branch to this repository and re-run,"
-            echo "or dispatch the workflow manually against a"
-            echo "trusted ref."
-          } > body.md
-          gh api -X POST \
-            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
-            -F body=@body.md --silent
-          gh api --silent -X POST \
-            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
-            -f content=-1 || true
-          echo "::error::Refused: fork pull request (${HEAD_REPO})."
-          exit 1
 
       - name: Dispatch workflow
         id: run
-        if: steps.perm.outputs.allowed == 'true' && steps.ref.outputs.fork != 'true'
+        if: steps.perm.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF: ${{ steps.ref.outputs.ref }}
+          PR: ${{ steps.ref.outputs.pr }}
           TIER: ${{ steps.parse.outputs.tier }}
           ACCEL: ${{ steps.parse.outputs.accel }}
         run: |
           set -euo pipefail
 
-          gh workflow run self-hosted-ci.yml \
-            --ref "${REF}" \
-            -f tier="${TIER}" \
-            -f accel="${ACCEL}"
+          # --repo is required: this job deliberately does not
+          # check the repository out, so gh has no git remote to
+          # infer the target from and would fail with
+          # "not a git repository".
+          # --ref is the default branch on purpose: the
+          # workflow definition must come from trusted code
+          # even when the code under test is a fork's.
+          args=(--repo "${{ github.repository }}"
+                --ref "${{ github.event.repository.default_branch }}"
+                -f tier="${TIER}" -f accel="${ACCEL}")
+          [ -n "${PR}" ] && args+=(-f pr="${PR}")
+          gh workflow run self-hosted-ci.yml "${args[@]}"
 
           # gh does not return the run id, so poll briefly
           # for the run this dispatch created.
@@ -267,14 +251,14 @@ jobs:
           for _ in $(seq 1 10); do
             sleep 3
             url="$(gh run list \
+              --repo "${{ github.repository }}" \
               --workflow=self-hosted-ci.yml \
               --event=workflow_dispatch \
-              --branch "${REF}" \
               --limit 1 --json url --jq '.[0].url' 2>/dev/null || true)"
             [ -n "${url}" ] && break
           done
           echo "url=${url}" >> "$GITHUB_OUTPUT"
-          echo "dispatched ${TIER}/${ACCEL} on ${REF}: ${url:-<pending>}"
+          echo "dispatched ${TIER}/${ACCEL} pr=${PR:-none}: ${url:-<pending>}"
 
       - name: Report back
         if: steps.run.outcome == 'success'
@@ -323,9 +307,11 @@ jobs:
           {
             echo "Failed to dispatch the self-hosted CI workflow."
             echo
-            echo "Most often this means \`self-hosted-ci.yml\` is not"
-            echo "yet on the default branch. \`workflow_dispatch\`"
-            echo "only resolves workflows present there."
+            echo "Common causes:"
+            echo "- \`self-hosted-ci.yml\` is not on the default"
+            echo "  branch; \`workflow_dispatch\` only resolves"
+            echo "  workflows present there."
+            echo "- the target ref no longer exists."
             echo
             echo "See the [dispatcher run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           } > body.md

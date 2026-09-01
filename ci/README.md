@@ -133,18 +133,58 @@ journalctl --user -u rocm-ernic-runner -f
 
 ## Security
 
-`ROCm/rocm-ernic` is a public repository. A self-hosted
-runner attached to a public repository will execute
-whatever a pull request contains, so
-`.github/workflows/self-hosted-ci.yml` **never triggers
-on `pull_request`**. It runs only on `workflow_dispatch`,
-a nightly schedule, and pushes to branches in the main
-repository.
+`ROCm/rocm-ernic` is public, and this workflow runs on a
+lab machine rather than a throwaway GitHub runner. Nothing
+reaches the node unless someone asks for it:
+`.github/workflows/self-hosted-ci.yml` has **no
+`pull_request` trigger and no `push` trigger**. The only
+ways in are `workflow_dispatch` and the nightly schedule.
 
-If fork PR coverage is ever added, gate it behind a
-GitHub Environment with required reviewers, and confirm
-that *Settings, Actions, General, Require approval for
-all external contributors* is enabled.
+That is a deliberate trade. Pull requests get no automatic
+lab-node coverage; a maintainer runs `/run-ci` when they
+want it. The GitHub-hosted workflows still run on every
+pull request as usual, so contributors are not left
+without feedback.
+
+### Testing fork pull requests
+
+Fork pull requests **are** runnable, via the `pr` input:
+
+```bash
+gh workflow run self-hosted-ci.yml --ref main -f pr=123
+```
+
+or just `/run-ci` on the pull request.
+
+What makes that acceptable is the split between the
+workflow and the code it tests. The dispatch targets the
+workflow file on the **default branch**, and passes only a
+pull request number. Each job then checks out
+`refs/pull/<pr>/head`, which resolves for forks. So a fork
+supplies code to compile and run, but cannot change what
+the workflow does with it, and cannot start a run at all:
+`workflow_dispatch` requires write access.
+
+### What this does not protect
+
+The node itself. Fork code runs as the runner's user, with
+whatever that user can do. **Treat the ability to dispatch
+a fork pull request as equivalent to shell access on the
+lab node.**
+
+On the current node the runner user also has passwordless
+`sudo`, so that is equivalent to root. Outstanding
+hardening, in rough priority order:
+
+1. Run the runner as a dedicated account with no `sudo`.
+2. Give that account its own `/local/<user>` workspace and
+   `/opt/qemu-images` group access, rather than reusing a
+   developer's.
+3. Consider an ephemeral runner, so each job starts from a
+   clean machine state.
+
+Until those land, only dispatch fork pull requests whose
+diff you have actually read.
 
 The workflow also takes a `concurrency` lock. Two
 simultaneous runs would collide on VM ssh ports, the
@@ -171,16 +211,20 @@ The dispatcher reacts to the comment, dispatches the
 workflow against the right ref, and replies with a link
 to the run.
 
-Three properties keep this safe on a public repository:
+Three properties keep this honest on a public repository:
 
 1. The dispatcher runs on `ubuntu-latest`, never on the
    self-hosted runner, so untrusted comment text is
    never processed on the lab node.
 2. The commenter must have write access or above,
    checked against the API at trigger time.
-3. Only refs in this repository can be dispatched.
-   Comments on fork pull requests are refused, so fork
-   code cannot reach the lab node.
+3. The dispatch always targets the workflow file on the
+   default branch and passes the pull request number as an
+   input, so a fork supplies the code under test but not
+   the workflow that runs it.
+
+Fork pull requests are eligible. See *What this does not
+protect* above before running one.
 
 `issue_comment` always runs the workflow file from the
 default branch, so this gate cannot be weakened by a
@@ -257,3 +301,32 @@ failure or regression, which is what gates the workflow.
 Only a clean tier-3 run on `main` updates the baseline,
 so a failing or partial run can never quietly lower the
 bar.
+
+### What is gated, and why not everything
+
+Only latency is gated by default. Two back-to-back clean
+sweeps on the same host and build differ far more by
+metric than you might expect:
+
+| Metric | median | worst |
+|---|---:|---:|
+| `lat_max_us` | 1.0% | 11.9% |
+| `lat_typical_us` | 1.0% | 28.6% |
+| `bw_peak_GBs` | 7.4% | 69.0% |
+| `bw_avg_GBs` | 7.0% | 153.6% |
+| `msg_rate_mpps` | 7.1% | 152.8% |
+
+Averaged bandwidth and message rate swing too wide on an
+emulated two-VM setup to gate on. At any threshold tight
+enough to catch a real regression they fire on noise, and
+a gate that cries wolf nightly gets ignored. They are
+still measured and reported, just not failed on. Add
+others with `--gate-metric` if a workload proves stable
+enough to warrant it.
+
+Build the baseline from the median of at least two clean
+sweeps rather than a single run; one run bakes in
+whichever way the noise happened to fall. The baseline
+lives under `$CI_WORK`, not in git, because it describes
+one host: numbers from this node are not meaningful on
+another. Rebuilding a node means recapturing it.
