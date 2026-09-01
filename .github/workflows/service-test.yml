@@ -23,32 +23,7 @@ jobs:
     - name: Verify stdlib-only imports
       run: |
         echo "=== Checking for non-stdlib imports ==="
-        python3 -c "
-        import ast, sys, importlib
-
-        STDLIB = set(sys.stdlib_module_names)
-
-        with open('service/ernicctl') as f:
-            tree = ast.parse(f.read())
-
-        bad = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    top = alias.name.split('.')[0]
-                    if top not in STDLIB:
-                        bad.append(top)
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    top = node.module.split('.')[0]
-                    if top not in STDLIB:
-                        bad.append(top)
-
-        if bad:
-            print(f'Non-stdlib imports: {bad}')
-            sys.exit(1)
-        print('All imports are stdlib.')
-        "
+        python3 scripts/check-stdlib-imports.py service/ernicctl
 
     - name: Verify --help works
       run: python3 service/ernicctl --help
@@ -143,7 +118,8 @@ jobs:
         sudo apt-get install -y \
           cmake ninja-build pkg-config \
           libibverbs-dev librdmacm-dev \
-          libglib2.0-dev libjson-c-dev meson
+          libglib2.0-dev libjson-c-dev meson \
+          libcmocka-dev
 
     - name: Clone and build libvfio-user
       run: |
@@ -302,11 +278,6 @@ jobs:
         python3 service/ernicctl status --json \
           > /tmp/ernicctl-json.out 2>&1
         cat /tmp/ernicctl-json.out
-        python3 -c "
-import json, sys
-with open('/tmp/ernicctl-json.out') as f:
-    data = json.load(f)
-assert data['instances'] == [], \
-    'Expected empty instances list'
-print('OK: JSON output is valid and empty.')
-"
+        python3 -c "import json; d=json.load(open('/tmp/ernicctl-json.out')); \
+          assert d['instances'] == [], 'Expected empty instances list'; \
+          print('OK: JSON output is valid and empty.')"

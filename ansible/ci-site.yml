@@ -1,0 +1,45 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Master playbook for the self-hosted CI.
+#
+# site.yml is the developer-facing entry point: it
+# builds, installs, creates the golden image and
+# launches VMs, all of which need root.  ci-site.yml
+# assumes ci/jobs/vm-up.sh has already brought VMs up
+# unprivileged, and runs only the test phases.
+#
+# Usage (normally via ci/jobs/vm-functional.sh and
+# ci/jobs/perf.sh, not by hand):
+#
+#   ansible-playbook ci-site.yml \
+#       -e ernic_run_dir=/var/tmp/ernic-ci-work/run \
+#       -e ernic_vm_ssh_base_port=2350 \
+#       -e ernic_instances=2 \
+#       --tags functional
+#
+# Tags:
+#   functional -- guest setup + sanity tests
+#   perf       -- iperf3 + RDMA perftest sweeps
+
+---
+- name: "CI: register running VMs"
+  ansible.builtin.import_playbook: playbooks/ci-vm-register.yml
+  tags: [always]
+
+- name: "CI: guest setup (driver, rdma-core, NIC config)"
+  ansible.builtin.import_playbook: playbooks/guest-setup.yml
+  tags: [functional, guest-setup]
+
+- name: "CI: sanity tests (ping, iperf3, perftest)"
+  ansible.builtin.import_playbook: playbooks/sanity-tests.yml
+  tags: [functional, sanity]
+
+- name: "CI: TCP/IP performance (iperf3)"
+  ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
+  tags: [perf, tcp-perf]
+
+- name: "CI: RDMA performance sweeps (perftest)"
+  ansible.builtin.import_playbook: playbooks/performance-tests.yml
+  tags: [perf, rdma-perf]

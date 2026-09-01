@@ -260,6 +260,62 @@ See ``ansible/group_vars/all.yml`` for the full list of
 tunable variables and ``ansible/README.md`` for additional
 usage notes.
 
+Self-Hosted CI
+--------------
+
+The GitHub-hosted workflows can only build and unit-test.
+Anything needing KVM, a golden VM image, or two guests
+exchanging RDMA traffic runs on a self-hosted runner
+instead, driven by the harness in ``ci/``.
+
+It runs in three tiers:
+
+============  ===============================  =========
+Tier          Scope                            Needs KVM
+============  ===============================  =========
+1             build, ctest, loopback backend   no
+2             two-VM RDMA functional           yes
+3             performance sweeps               yes
+============  ===============================  =========
+
+Tiers 2 and 3 are scheduled onto runners carrying the
+``kvm`` label, so a node without KVM access stops
+attracting those jobs rather than failing them.
+
+The harness runs entirely unprivileged. The launcher and
+``ernicctl`` are environment-driven, so the control plane
+is redirected under a workspace the CI user owns rather
+than ``/run``, ``/var/log`` and ``/usr/local``.
+
+Test logic is not duplicated: ``ansible/ci-site.yml``
+drives the same guest-setup, sanity and performance plays
+described above, supplying only the inventory
+registration that ``site.yml`` would normally provide.
+
+Check whether a node is ready:
+
+.. code-block:: bash
+
+   ci/doctor.sh
+
+Run any tier by hand:
+
+.. code-block:: bash
+
+   bash ci/jobs/build.sh
+   bash ci/jobs/loopback.sh
+   bash ci/jobs/vm-up.sh
+   bash ci/jobs/vm-functional.sh
+   bash ci/jobs/perf.sh
+   bash ci/jobs/vm-down.sh
+
+Results are merged into a functional and performance
+report by ``ci/report/gen-report.py``, which also checks
+medians against a stored baseline and exits non-zero on
+regressions. See ``ci/README.md`` for node setup,
+registration and the security notes that apply because
+this is a public repository.
+
 Adding New Tests
 ----------------
 
