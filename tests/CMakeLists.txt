@@ -236,6 +236,16 @@ target_include_directories(test_eth_ctl_reset PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# Strict integer parser (parse_int.h) unit test (header-only). The ported
+# header dir is a SYSTEM include so its warnings stay quiet while the test
+# source itself is still warning-checked.
+add_executable(test_parse_int test_parse_int.c)
+target_include_directories(test_parse_int SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+)
+target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -326,3 +336,10 @@ add_test(
     COMMAND $<TARGET_FILE:test_eth_ctl_reset>
 )
 set_tests_properties(eth-ctl-reset-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# Strict integer parser unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME parse-int-unit
+    COMMAND $<TARGET_FILE:test_parse_int>
+)
+set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
