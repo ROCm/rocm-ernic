@@ -97,7 +97,7 @@ make KDIR="${KDIR}"
 if [ ! -f rocm_ernic_eth.ko ] \
     || [ ! -f rocm_ernic_rdma.ko ]; then
     log_error "Build produced no .ko files."
-    ls -lh *.ko 2>/dev/null || true
+    ls -lh ./*.ko 2>/dev/null || true
     exit 1
 fi
 

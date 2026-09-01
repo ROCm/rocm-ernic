@@ -1,0 +1,324 @@
+# SPDX-License-Identifier: MIT
+#
+# Self-hosted CI for rocm-ernic.
+#
+# Runs on the lab node registered by
+# ci/runner/install-runner.sh.  Unlike the ubuntu-hosted
+# workflows in this directory, this one can bring up
+# real VMs over the emulated RDMA NIC and produce
+# functional and performance reports.
+#
+# SECURITY
+# --------
+# rocm-ernic is public, and this workflow runs on a lab
+# machine rather than a throwaway GitHub runner, so nothing
+# reaches the node without a maintainer asking for it.
+# There is no pull_request trigger: the only ways in are a
+# manual dispatch and the nightly schedule.
+#
+# Fork pull requests ARE testable, via the pr input.  The
+# split that makes this safe is that dispatch runs the
+# workflow file from the branch given to --ref (normally
+# main) while checking out refs/pull/<pr>/head as the code
+# under test.  A fork therefore supplies code to compile
+# and run, but cannot alter what this workflow does, and
+# cannot start a run at all: workflow_dispatch requires
+# write access.
+#
+# What that does NOT protect is the node itself.  Fork code
+# runs as the runner's user, so anyone who can dispatch a
+# fork PR can execute arbitrary code there.  Treat the
+# ability to dispatch as equivalent to shell access on the
+# lab node, and see ci/README.md for the hardening that is
+# still outstanding.
+
+name: Self-Hosted CI
+
+run-name: >-
+  Self-Hosted CI
+  ${{ inputs.pr && format('- PR #{0}', inputs.pr) || '' }}
+  ${{ inputs.tier && format('({0})', inputs.tier) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'How much to run'
+        required: true
+        default: 'functional'
+        type: choice
+        options:
+          - build          # build + ctest + loopback
+          - functional     # ... plus 2-VM RDMA tests
+          - full           # ... plus performance sweeps
+      accel:
+        description: 'VM accelerator'
+        required: true
+        default: 'kvm'
+        type: choice
+        options:
+          - kvm
+          - tcg            # emulation; functional only
+      pr:
+        description: >-
+          Pull request number to test. Works for forks:
+          refs/pull/<pr>/head is checked out as the code
+          under test. Leave empty to run the dispatched ref.
+        required: false
+        type: string
+  schedule:
+    # 02:30 UTC nightly.  Off the hour to avoid the
+    # thundering herd of every cron job on the fleet.
+    - cron: '37 2 * * *'
+
+# One run at a time on the node: concurrent runs would
+# collide on VM ssh ports, the instance manifest and the
+# qcow2 overlays.  Queue rather than cancel so a nightly
+# run is never silently dropped.
+concurrency:
+  group: rocm-ernic-self-hosted
+  # Queue rather than cancel so a nightly run is never
+  # silently dropped.  The node can only service one run at
+  # a time, so pull requests serialise behind each other.
+  cancel-in-progress: false
+
+env:
+  CI_WORK: /var/tmp/ernic-ci-work
+  CI_VM_ACCEL: ${{ inputs.accel || 'kvm' }}
+  # The code under test.  refs/pull/<n>/head resolves for
+  # fork pull requests too, which is what makes them
+  # testable without granting the fork any other reach.
+  CI_CHECKOUT_REF: >-
+    ${{ inputs.pr
+        && format('refs/pull/{0}/head', inputs.pr)
+        || github.ref }}
+
+jobs:
+
+  preflight:
+    name: Preflight
+    runs-on: [self-hosted, linux, x64, rocm-ernic]
+    outputs:
+      tier: ${{ steps.plan.outputs.tier }}
+      kvm: ${{ steps.plan.outputs.kvm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Reset workspace results
+        run: |
+          rm -rf "${CI_WORK}/results" "${CI_WORK}/report"
+          mkdir -p "${CI_WORK}/results" "${CI_WORK}/report"
+
+      - name: Run doctor
+        id: doctor
+        continue-on-error: true
+        run: bash ci/doctor.sh | tee "${CI_WORK}/results/doctor.txt"
+
+      - name: Decide what can run
+        id: plan
+        run: |
+          # schedule/push have no inputs; default to full
+          # nightly coverage and functional on push.
+          case "${{ github.event_name }}" in
+            workflow_dispatch) tier="${{ inputs.tier }}" ;;
+            schedule)          tier="full" ;;
+            *)                 tier="functional" ;;
+          esac
+
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            kvm=true
+          else
+            kvm=false
+            echo "::warning::/dev/kvm is not accessible; VM and perf jobs will be skipped."
+          fi
+
+          echo "tier=${tier}" >> "$GITHUB_OUTPUT"
+          echo "kvm=${kvm}"   >> "$GITHUB_OUTPUT"
+          echo "tier=${tier} kvm=${kvm}"
+
+      - name: Publish doctor output
+        run: |
+          {
+            echo '## Preflight'
+            echo '```'
+            cat "${CI_WORK}/results/doctor.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build and unit tests
+    needs: preflight
+    runs-on: [self-hosted, linux, x64, rocm-ernic]
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Build and test (${{ matrix.build_type }})
+        env:
+          CI_BUILD_TYPE: ${{ matrix.build_type }}
+          # Keep matrix legs in separate build trees so
+          # they cannot clobber one another on the node.
+          CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-${{ matrix.build_type }}
+        run: bash ci/jobs/build.sh
+
+      - name: Upload CTest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-${{ matrix.build_type }}
+          path: /var/tmp/ernic-ci-work/results/ctest-junit.xml
+          if-no-files-found: warn
+
+  loopback:
+    name: Loopback functional
+    needs: build
+    runs-on: [self-hosted, linux, x64, rocm-ernic]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Loopback backend tests
+        env:
+          CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
+        run: bash ci/jobs/loopback.sh
+
+  vm-functional:
+    name: 2-VM RDMA functional
+    needs: [preflight, loopback]
+    if: >-
+      needs.preflight.outputs.tier != 'build'
+    runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
+    timeout-minutes: 90
+    env:
+      CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Bring up VMs
+        run: bash ci/jobs/vm-up.sh
+
+      - name: RDMA functional tests
+        run: bash ci/jobs/vm-functional.sh
+
+      - name: Tear down VMs
+        if: always()
+        run: bash ci/jobs/vm-down.sh
+
+      - name: Upload VM logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-logs
+          path: /var/tmp/ernic-ci-work/log/
+          if-no-files-found: warn
+
+  perf:
+    name: Performance sweeps
+    needs: [preflight, vm-functional]
+    if: >-
+      needs.preflight.outputs.tier == 'full'
+    runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
+    timeout-minutes: 180
+    env:
+      CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Bring up VMs
+        run: bash ci/jobs/vm-up.sh
+
+      - name: Performance sweeps
+        run: bash ci/jobs/perf.sh
+
+      - name: Tear down VMs
+        if: always()
+        run: bash ci/jobs/vm-down.sh
+
+      - name: Upload perf CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-csv
+          path: /var/tmp/ernic-ci-work/results/perf-csv/
+          if-no-files-found: warn
+
+      # The rocm-ernic instance logs are what diagnose a
+      # mid-sweep server crash; without them a perf
+      # failure is just a wall of FAIL rows.
+      - name: Upload server and VM logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-logs
+          path: /var/tmp/ernic-ci-work/log/
+          if-no-files-found: warn
+
+  report:
+    name: Report
+    needs: [preflight, build, loopback, vm-functional, perf]
+    # Report on whatever actually ran, including when an
+    # upstream tier was skipped or failed.  Still refuses
+    # fork pull requests.
+    if: always()
+    runs-on: [self-hosted, linux, x64, rocm-ernic]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Generate functional and performance report
+        id: report
+        continue-on-error: true
+        run: |
+          baseline="${CI_WORK}/baseline/summary.json"
+          args=(--results "${CI_WORK}/results"
+                --out "${CI_WORK}/report")
+          if [ -f "${baseline}" ]; then
+            args+=(--baseline "${baseline}" --threshold 15)
+            echo "comparing against baseline from ${baseline}"
+          else
+            echo "no baseline yet; skipping regression check"
+          fi
+          python3 ci/report/gen-report.py "${args[@]}"
+
+      - name: Update baseline
+        # Only a clean full run on main is allowed to
+        # move the baseline, so a failing or partial run
+        # can never silently lower the bar.
+        if: >-
+          steps.report.outcome == 'success' &&
+          github.ref == 'refs/heads/main' &&
+          needs.preflight.outputs.tier == 'full' &&
+          needs.perf.result == 'success'
+        run: |
+          mkdir -p "${CI_WORK}/baseline"
+          cp "${CI_WORK}/report/summary.json" "${CI_WORK}/baseline/summary.json"
+          echo "baseline updated from run ${GITHUB_RUN_ID}"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-report
+          path: |
+            /var/tmp/ernic-ci-work/report/
+            /var/tmp/ernic-ci-work/results/
+          if-no-files-found: warn
+
+      - name: Fail if the report found problems
+        if: steps.report.outcome != 'success'
+        run: |
+          echo "::error::Functional failures or performance regressions were reported."
+          exit 1

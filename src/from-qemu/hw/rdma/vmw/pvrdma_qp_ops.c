@@ -58,6 +58,7 @@ typedef struct DeferredCompletion {
     uint32_t qp_handle;
     struct pvrdma_cqe cqe;
     struct ibv_wc wc;
+    bool signaled;
 } DeferredCompletion;
 
 static GQueue *g_deferred_completions;
@@ -177,6 +178,7 @@ static void pvrdma_qp_ops_comp_handler(void *ctx, struct ibv_wc *wc)
     dc->qp_handle = comp_ctx->qp_handle;
     dc->cqe = comp_ctx->cqe;
     dc->wc = *wc;
+    dc->signaled = comp_ctx->signaled;
 
     qemu_mutex_lock(&g_deferred_lock);
     g_queue_push_tail(g_deferred_completions, dc);
@@ -281,6 +283,19 @@ void pvrdma_drain_deferred_completions(void)
                          dc->cq_handle, dc->cqe.qp ? dc->cqe.qp : dc->wc.qp_num,
                          dc->cqe.opcode, dc->wc.status, dc->wc.byte_len,
                          (unsigned long)dc->cqe.wr_id);
+
+        /*
+         * An unsignalled send that succeeded must not consume a
+         * CQ slot.  Posting one anyway overruns the CQ whenever
+         * the application moderates completions -- perftest
+         * signals every cq_mod-th WR by default -- and the
+         * dropped CQEs are the ones it is waiting for.
+         * Errors are always reported, signalled or not.
+         */
+        if (dc->qp_handle && !dc->signaled && dc->wc.status == IBV_WC_SUCCESS) {
+            g_free(dc);
+            continue;
+        }
 
         int post_rc =
             pvrdma_post_cqe(dc->dev, dc->cq_handle, &dc->cqe, &dc->wc);
@@ -473,6 +488,9 @@ static gboolean continue_qp_send_processing(gpointer user_data)
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
         comp_ctx->qp_handle = qp_handle;
+        /* PVRDMA_WQE_FLAG_SIGNALED is bit 0 of send_flags,
+         * written by the guest provider. */
+        comp_ctx->signaled = !!(wqe->hdr.send_flags & 1u);
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->opcode = pvrdma_opcode;
@@ -793,6 +811,9 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
         comp_ctx->qp_handle = qp_handle;
+        /* PVRDMA_WQE_FLAG_SIGNALED is bit 0 of send_flags,
+         * written by the guest provider. */
+        comp_ctx->signaled = !!(wqe->hdr.send_flags & 1u);
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->opcode = pvrdma_opcode;
