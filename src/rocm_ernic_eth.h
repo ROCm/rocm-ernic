@@ -32,10 +32,10 @@
 #define ROCM_ERNIC_ETH_MAC1    0x64 /* MAC Address bytes 4-5 (little-endian) */
 
 /* Ethernet Control Register bits */
-#define ROCM_ERNIC_ETH_CTL_ENABLE    (1 << 0)  /* Enable Ethernet */
-#define ROCM_ERNIC_ETH_CTL_TX_ENABLE (1 << 1)  /* Enable Transmit */
-#define ROCM_ERNIC_ETH_CTL_RX_ENABLE (1 << 2)  /* Enable Receive */
-#define ROCM_ERNIC_ETH_CTL_RESET     (1 << 31) /* Software Reset */
+#define ROCM_ERNIC_ETH_CTL_ENABLE    (1 << 0)   /* Enable Ethernet */
+#define ROCM_ERNIC_ETH_CTL_TX_ENABLE (1 << 1)   /* Enable Transmit */
+#define ROCM_ERNIC_ETH_CTL_RX_ENABLE (1 << 2)   /* Enable Receive */
+#define ROCM_ERNIC_ETH_CTL_RESET     (1u << 31) /* Software Reset */
 
 /* Ethernet Status Register bits */
 #define ROCM_ERNIC_ETH_STATUS_LINK_UP (1 << 0) /* Link Up */

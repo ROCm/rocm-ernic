@@ -270,8 +270,19 @@ int rocm_ernic_create_srq(struct ib_srq *ibsrq,
     srq->wqe_cnt = (int)wqe_cnt;
     srq->max_gs = (int)init_attr->attr.max_sge;
     srq->offset = PAGE_SIZE;
-    srq->rq_ring = rocm_ernic_page_dir_get_ptr(&srq->pdir, 8);
-    memset(srq->rq_ring, 0, sizeof(*srq->rq_ring));
+    /*
+     * The SRQ buffer is user memory registered through
+     * ib_umem_get, so the page directory is populated from
+     * the umem and pdir->pages is never allocated (page_dir_init
+     * is called with alloc_pages = false).  Dereferencing it to
+     * zero the ring header therefore faults on NULL, and the
+     * userspace provider already initialises the same header in
+     * its own mapping of this buffer.
+     *
+     * rq_ring stays NULL: it is only consumed by the kernel
+     * post path, and kernel SRQ clients are rejected above, so
+     * rocm_ernic_post_srq_recv's !srq->rq_ring guard covers it.
+     */
 
     memset(cmd, 0, sizeof(*cmd));
     cmd->hdr.cmd = ROCM_ERNIC_CMD_CREATE_SRQ;
