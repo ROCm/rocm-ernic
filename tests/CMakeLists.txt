@@ -194,6 +194,30 @@ target_link_options(test_dhcp_server_process PRIVATE ${ERNIC_PARSER_TEST_SAN})
 target_link_directories(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARIES})
 
+# -- DHCP server lifecycle / leak test ---------------------------
+# Reuses the shared ERNIC_UNIT_TEST_SAN flags (ASan + LeakSanitizer + UBSan)
+# so a leak in the DHCP server's create/destroy path fails the test.
+add_executable(test_dhcp_server_lifecycle
+    test_dhcp_server_lifecycle.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+)
+target_include_directories(test_dhcp_server_lifecycle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_dhcp_server_lifecycle PRIVATE _GNU_SOURCE)
+# QEMU-ported sources are compiled -w here, matching the main build.
+target_compile_options(test_dhcp_server_lifecycle PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_dhcp_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_dhcp_server_lifecycle PRIVATE
+    ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_dhcp_server_lifecycle PRIVATE ${GLIB2_LIBRARIES})
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -263,3 +287,10 @@ add_test(
     COMMAND $<TARGET_FILE:test_dhcp_server_process>
 )
 set_tests_properties(dhcp-server-process-unit PROPERTIES TIMEOUT 30)
+
+# DHCP server lifecycle / leak test (table-driven, ASan+LSan)
+add_test(
+    NAME dhcp-server-lifecycle-unit
+    COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
+)
+set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)

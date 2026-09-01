@@ -42,6 +42,9 @@ DhcpServer *dhcp_server_create(uint32_t server_ip, uint32_t subnet_mask,
     server->lease_time = lease_time;
     server->next_ip = ip_pool_start;
 
+    /* Both key (MAC copy) and value (allocated-IP copy) are heap-allocated,
+     * so the table owns and frees both. Previously the value destructor was
+     * NULL, leaking one IP copy per lease. */
     server->allocations =
         g_hash_table_new_full(mac_hash, mac_equal, g_free, g_free);
     server->leases = g_hash_table_new_full(mac_hash, mac_equal, g_free, g_free);
