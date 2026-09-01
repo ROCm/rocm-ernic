@@ -229,6 +229,13 @@ target_link_directories(test_dhcp_server_lifecycle PRIVATE
     ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_dhcp_server_lifecycle PRIVATE ${GLIB2_LIBRARIES})
 
+# ROCM_ERNIC_ETH_CTL_RESET bit-definition test (header-only, project header
+# so warnings stay enabled).
+add_executable(test_eth_ctl_reset test_eth_ctl_reset.c)
+target_include_directories(test_eth_ctl_reset PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -312,3 +319,10 @@ add_test(
     COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
 )
 set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# Ethernet control reset-bit definition unit test
+add_test(
+    NAME eth-ctl-reset-unit
+    COMMAND $<TARGET_FILE:test_eth_ctl_reset>
+)
+set_tests_properties(eth-ctl-reset-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
