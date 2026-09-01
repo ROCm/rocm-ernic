@@ -1520,7 +1520,11 @@ def cmd_vm_launch(args):
         "SSH_PORT": str(ssh_port),
         "VCPUS": vcpus,
         "VMEM": mem,
-        "KVM": "enable",
+        # "disable" falls back to TCG, which is far
+        # slower but lets functional tests run where
+        # /dev/kvm is unavailable (unprivileged CI,
+        # nested virt without KVM exposed).
+        "KVM": os.environ.get("KVM", "enable"),
         "VFIO_USERDEV": inst["socket"],
         "QMP_SOCKET": qmp_sock,
     })

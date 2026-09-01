@@ -73,6 +73,7 @@ Makefile
 Makefiles
 Mellanox
 NVMe
+NFS
 NICs
 Netdev
 PBA
@@ -166,6 +167,7 @@ cli
 cmake
 cmakelang
 ctest
+commenter
 cmd
 codebase
 compat
@@ -333,6 +335,7 @@ posix
 pdir
 pds
 perf
+prebuilt
 perftest
 pingpong
 pkey
@@ -345,6 +348,8 @@ pthread
 pvrdma
 pwd
 qcow
+teardown
+untrusted
 qemu
 qkey
 qmp
@@ -495,3 +500,5 @@ DCT
 ConnectX
 cmocka
 librocm
+passwordless
+runnable
