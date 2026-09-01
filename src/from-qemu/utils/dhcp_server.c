@@ -214,6 +214,15 @@ size_t dhcp_server_process(DhcpServer *server,
         return 0;
     }
 
+    /* The parser and dhcp_find_option() treat the request as a full,
+     * fixed-size dhcp_packet (including the 312-byte options array), so a
+     * short buffer would be read out of bounds. Reject anything smaller. */
+    if (request_len < sizeof(*request)) {
+        rdma_warn_report("DHCP: Request too short: %zu bytes (need %zu)",
+                         request_len, sizeof(*request));
+        return 0;
+    }
+
     qemu_mutex_lock(&server->lock);
 
     /* Debug: Print first few bytes of options field */
