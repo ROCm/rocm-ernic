@@ -25,6 +25,7 @@
 #include "rdma_cm_proto.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
 #include "net_headers.h"
+#include <stdio.h>
 #include <string.h>
 
 /* InfiniBand SA (Subnet Administration) header format
@@ -111,29 +112,24 @@ size_t rdma_cm_process_message(const void *tcp_payload, size_t payload_len,
 
     rdma_info_report("rdma_cm: Received message: payload_len=%zu", payload_len);
 
-    /* Log first 32 bytes of message for debugging */
-    rdma_info_report(
-        "rdma_cm: Message bytes (first 32): "
-        "%02x %02x %02x %02x %02x %02x %02x %02x "
-        "%02x %02x %02x %02x %02x %02x %02x %02x "
-        "%02x %02x %02x %02x %02x %02x %02x %02x "
-        "%02x %02x %02x %02x %02x %02x %02x %02x",
-        ((const uint8_t *)tcp_payload)[0], ((const uint8_t *)tcp_payload)[1],
-        ((const uint8_t *)tcp_payload)[2], ((const uint8_t *)tcp_payload)[3],
-        ((const uint8_t *)tcp_payload)[4], ((const uint8_t *)tcp_payload)[5],
-        ((const uint8_t *)tcp_payload)[6], ((const uint8_t *)tcp_payload)[7],
-        ((const uint8_t *)tcp_payload)[8], ((const uint8_t *)tcp_payload)[9],
-        ((const uint8_t *)tcp_payload)[10], ((const uint8_t *)tcp_payload)[11],
-        ((const uint8_t *)tcp_payload)[12], ((const uint8_t *)tcp_payload)[13],
-        ((const uint8_t *)tcp_payload)[14], ((const uint8_t *)tcp_payload)[15],
-        ((const uint8_t *)tcp_payload)[16], ((const uint8_t *)tcp_payload)[17],
-        ((const uint8_t *)tcp_payload)[18], ((const uint8_t *)tcp_payload)[19],
-        ((const uint8_t *)tcp_payload)[20], ((const uint8_t *)tcp_payload)[21],
-        ((const uint8_t *)tcp_payload)[22], ((const uint8_t *)tcp_payload)[23],
-        ((const uint8_t *)tcp_payload)[24], ((const uint8_t *)tcp_payload)[25],
-        ((const uint8_t *)tcp_payload)[26], ((const uint8_t *)tcp_payload)[27],
-        ((const uint8_t *)tcp_payload)[28], ((const uint8_t *)tcp_payload)[29],
-        ((const uint8_t *)tcp_payload)[30], ((const uint8_t *)tcp_payload)[31]);
+    /* Log up to the first 32 bytes of the message for debugging. The dump
+     * is bounded by payload_len so a short message is never read past its
+     * end (a payload of 4..31 bytes previously caused an out-of-bounds
+     * read here). */
+    {
+        const uint8_t *bytes = (const uint8_t *)tcp_payload;
+        size_t dump_len = payload_len < 32 ? payload_len : 32;
+        char hexbuf[32 * 3 + 1];
+        size_t i;
+
+        for (i = 0; i < dump_len; i++) {
+            snprintf(hexbuf + i * 3, sizeof(hexbuf) - i * 3, "%02x ", bytes[i]);
+        }
+        hexbuf[dump_len ? dump_len * 3 - 1 : 0] = '\0';
+
+        rdma_info_report("rdma_cm: Message bytes (first %zu): %s", dump_len,
+                         hexbuf);
+    }
 
     /* Try SA protocol format first */
     if (payload_len >= sizeof(struct ib_sa_hdr) &&

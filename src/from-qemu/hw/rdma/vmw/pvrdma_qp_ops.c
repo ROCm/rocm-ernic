@@ -58,6 +58,7 @@ typedef struct DeferredCompletion {
     uint32_t qp_handle;
     struct pvrdma_cqe cqe;
     struct ibv_wc wc;
+    bool signaled;
 } DeferredCompletion;
 
 static GQueue *g_deferred_completions;
@@ -180,6 +181,7 @@ static void pvrdma_qp_ops_comp_handler(void *ctx, struct ibv_wc *wc)
     dc->qp_handle = comp_ctx->qp_handle;
     dc->cqe = comp_ctx->cqe;
     dc->wc = *wc;
+    dc->signaled = comp_ctx->signaled;
 
     qemu_mutex_lock(&g_deferred_lock);
     g_queue_push_tail(g_deferred_completions, dc);
@@ -321,6 +323,19 @@ void pvrdma_drain_deferred_completions(void)
                          dc->cq_handle, dc->cqe.qp ? dc->cqe.qp : dc->wc.qp_num,
                          dc->cqe.opcode, dc->wc.status, dc->wc.byte_len,
                          (unsigned long)dc->cqe.wr_id);
+
+        /*
+         * An unsignalled send that succeeded must not consume a
+         * CQ slot.  Posting one anyway overruns the CQ whenever
+         * the application moderates completions -- perftest
+         * signals every cq_mod-th WR by default -- and the
+         * dropped CQEs are the ones it is waiting for.
+         * Errors are always reported, signalled or not.
+         */
+        if (dc->qp_handle && !dc->signaled && dc->wc.status == IBV_WC_SUCCESS) {
+            g_free(dc);
+            continue;
+        }
 
         int post_rc =
             pvrdma_post_cqe(dc->dev, dc->cq_handle, &dc->cqe, &dc->wc);
@@ -513,6 +528,9 @@ static gboolean continue_qp_send_processing(gpointer user_data)
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
         comp_ctx->qp_handle = qp_handle;
+        /* PVRDMA_WQE_FLAG_SIGNALED is bit 0 of send_flags,
+         * written by the guest provider. */
+        comp_ctx->signaled = !!(wqe->hdr.send_flags & 1u);
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->opcode = pvrdma_opcode;
@@ -527,6 +545,12 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             if (!sgid) {
                 rdma_error_report("Failed to get gid for idx %d",
                                   wqe->hdr.wr.ud.av.gid_index);
+                /*
+                 * This work request failed validation before the
+                 * send_in_flight increment below; clear the handle so
+                 * the deferred drain does not decrement it.
+                 */
+                comp_ctx->qp_handle = 0;
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 wqe = pvrdma_ring_next_elem_read(ring);
@@ -540,6 +564,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             if ((int8_t)sgid_idx < 0) {
                 rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
                                   wqe->hdr.wr.ud.av.gid_index);
+                comp_ctx->qp_handle = 0;
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 wqe = pvrdma_ring_next_elem_read(ring);
@@ -575,6 +600,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 uint64_t wire_key = (uint64_t)wqe->hdr.wr.dc.dc_access_key;
 
                 if (!dct) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -582,6 +608,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                     continue;
                 }
                 if (dct->dct_access_key != wire_key) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_DC_KEY, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -589,6 +616,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                     continue;
                 }
                 if (!dct->is_srq) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -598,6 +626,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 RdmaRmSRQ *srq_rm =
                     rdma_rm_get_srq(&dev->rdma_dev_res, dct->bound_srq_handle);
                 if (!srq_rm) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -630,6 +659,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             } else {
                 rdma_error_report("Unsupported opcode %u on DCI QP",
                                   pvrdma_opcode);
+                comp_ctx->qp_handle = 0;
                 complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 wqe = pvrdma_ring_next_elem_read(ring);
@@ -643,6 +673,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             dqkey = 0;
         } else {
             rdma_error_report("Unsupported QP type %d for send", qp->qp_type);
+            comp_ctx->qp_handle = 0;
             complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
             pvrdma_ring_read_inc(ring);
             wqe = pvrdma_ring_next_elem_read(ring);
@@ -653,6 +684,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
         if (wqe->hdr.num_sge > dev->dev_attr.max_sge) {
             rdma_error_report("Invalid num_sge=%d (max %d)", wqe->hdr.num_sge,
                               dev->dev_attr.max_sge);
+            comp_ctx->qp_handle = 0;
             complete_with_error(VENDOR_ERR_INV_NUM_SGE, comp_ctx);
             pvrdma_ring_read_inc(ring);
             wqe = pvrdma_ring_next_elem_read(ring);
@@ -850,6 +882,9 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
         comp_ctx->dev = dev;
         comp_ctx->cq_handle = qp->send_cq_handle;
         comp_ctx->qp_handle = qp_handle;
+        /* PVRDMA_WQE_FLAG_SIGNALED is bit 0 of send_flags,
+         * written by the guest provider. */
+        comp_ctx->signaled = !!(wqe->hdr.send_flags & 1u);
         comp_ctx->cqe.wr_id = wqe->hdr.wr_id;
         comp_ctx->cqe.qp = qp_handle;
         comp_ctx->opcode = pvrdma_opcode;
@@ -864,6 +899,12 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             if (!sgid) {
                 rdma_error_report("Failed to get gid for idx %d",
                                   wqe->hdr.wr.ud.av.gid_index);
+                /*
+                 * This work request failed validation before the
+                 * send_in_flight increment below; clear the handle so
+                 * the deferred drain does not decrement it.
+                 */
+                comp_ctx->qp_handle = 0;
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 qp->wqe_state.send_wqes_processed++;
@@ -877,6 +918,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             if ((int8_t)sgid_idx < 0) {
                 rdma_error_report("Failed to get bk sgid_idx for sgid_idx %d",
                                   wqe->hdr.wr.ud.av.gid_index);
+                comp_ctx->qp_handle = 0;
                 complete_with_error(VENDOR_ERR_INV_GID_IDX, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 qp->wqe_state.send_wqes_processed++;
@@ -912,6 +954,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                 uint64_t wire_key = (uint64_t)wqe->hdr.wr.dc.dc_access_key;
 
                 if (!dct) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -919,6 +962,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                     continue;
                 }
                 if (dct->dct_access_key != wire_key) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_DC_KEY, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -926,6 +970,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                     continue;
                 }
                 if (!dct->is_srq) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -935,6 +980,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                 RdmaRmSRQ *srq_rm =
                     rdma_rm_get_srq(&dev->rdma_dev_res, dct->bound_srq_handle);
                 if (!srq_rm) {
+                    comp_ctx->qp_handle = 0;
                     complete_with_error(VENDOR_ERR_INV_DCT, comp_ctx);
                     pvrdma_ring_read_inc(ring);
                     wqe = pvrdma_ring_next_elem_read(ring);
@@ -967,6 +1013,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             } else {
                 rdma_error_report("Unsupported opcode %u on DCI QP",
                                   pvrdma_opcode);
+                comp_ctx->qp_handle = 0;
                 complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
                 pvrdma_ring_read_inc(ring);
                 wqe = pvrdma_ring_next_elem_read(ring);
@@ -980,6 +1027,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             dqkey = 0;
         } else {
             rdma_error_report("Unsupported QP type %d for send", qp->qp_type);
+            comp_ctx->qp_handle = 0;
             complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
             pvrdma_ring_read_inc(ring);
             qp->wqe_state.send_wqes_processed++;
@@ -990,6 +1038,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
         if (wqe->hdr.num_sge > dev->dev_attr.max_sge) {
             rdma_error_report("Invalid num_sge=%d (max %d)", wqe->hdr.num_sge,
                               dev->dev_attr.max_sge);
+            comp_ctx->qp_handle = 0;
             complete_with_error(VENDOR_ERR_INV_NUM_SGE, comp_ctx);
             pvrdma_ring_read_inc(ring);
             qp->wqe_state.send_wqes_processed++;

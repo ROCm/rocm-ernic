@@ -18,8 +18,10 @@
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "vmw/pvrdma.h"
+#include "hw/pci/pci.h" /* For pci_dma_map/unmap/sync */
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
+#include "../../utils/parse_int.h"
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
@@ -66,8 +68,8 @@ static int tcp_env_int(const char *name, int fallback)
 {
     const char *val = getenv(name);
     if (val) {
-        int v = atoi(val);
-        if (v > 0) {
+        int v;
+        if (ernic_parse_int(val, &v) && v > 0) {
             return v;
         }
     }
@@ -763,7 +765,9 @@ static int parse_tcp_config_manager(const char *config, char **manager_host,
             rdma_error_report("TCP manager: missing port for listen mode");
             return -EINVAL;
         }
-        port_val = (uint16_t)atoi(token);
+        if (!ernic_parse_port(token, &port_val)) {
+            port_val = 0; /* rejected below by the port_val == 0 check */
+        }
         host_str = g_strdup("0.0.0.0");
     } else {
         host_str = g_strdup(token);
@@ -774,7 +778,9 @@ static int parse_tcp_config_manager(const char *config, char **manager_host,
             rdma_error_report("TCP manager: missing port");
             return -EINVAL;
         }
-        port_val = (uint16_t)atoi(token);
+        if (!ernic_parse_port(token, &port_val)) {
+            port_val = 0; /* rejected below by the port_val == 0 check */
+        }
     }
 
     if (port_val == 0) {
@@ -827,7 +833,9 @@ static int parse_tcp_config_worker(const char *config, char **manager_host,
         rdma_error_report("TCP worker: missing manager port");
         return -EINVAL;
     }
-    port_val = (uint16_t)atoi(token);
+    if (!ernic_parse_port(token, &port_val)) {
+        port_val = 0; /* rejected below by the port_val == 0 check */
+    }
 
     if (port_val == 0) {
         g_free(config_copy);
@@ -1522,10 +1530,22 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 resp.num_nodes = htonl(g_hash_table_size(priv->mesh_nodes));
                 resp.result = htonl(0); /* Success */
 
+                /*
+                 * conn->lock serialises writes to this socket.
+                 * The data path holds it across multi-megabyte
+                 * writev()s, so an unlocked control message here
+                 * would interleave into the middle of one and the
+                 * peer would read a header from the payload.
+                 * Released before broadcasting: that path takes
+                 * conn locks of its own and this mutex is not
+                 * recursive.
+                 */
+                qemu_mutex_lock(&conn->lock);
                 tcp_send_message(
                     conn->sockfd, TCP_MSG_REGISTER_RESP, &resp, sizeof(resp),
                     __atomic_fetch_add(&priv->next_seq, 1, __ATOMIC_RELAXED),
                     priv->local_node_id, assigned_id, 0, 0);
+                qemu_mutex_unlock(&conn->lock);
 
                 /* Broadcast updated topology to all nodes */
                 tcp_broadcast_mesh_topology(priv);
@@ -1694,20 +1714,26 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     }
                     qemu_mutex_unlock(&priv->mesh_table_lock);
 
+                    /* Serialised against the data path; see the
+                     * REGISTER_RESP send above. */
+                    qemu_mutex_lock(&conn->lock);
                     tcp_send_message(
                         conn->sockfd, TCP_MSG_HEARTBEAT_RESP, NULL, 0,
                         __atomic_fetch_add(&priv->next_seq, 1,
                                            __ATOMIC_RELAXED),
                         priv->local_node_id, hdr.src_node_id, 0, 0);
+                    qemu_mutex_unlock(&conn->lock);
                 } else {
                     /* Worker received heartbeat probe from manager —
                      * echo it back so the manager refreshes our
                      * liveness timestamp. */
+                    qemu_mutex_lock(&conn->lock);
                     tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
                                      __atomic_fetch_add(&priv->next_seq, 1,
                                                         __ATOMIC_RELAXED),
                                      priv->local_node_id, hdr.src_node_id, 0,
                                      0);
+                    qemu_mutex_unlock(&conn->lock);
                 }
                 break;
             }
@@ -1749,12 +1775,16 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                 if (resp_len > 0) {
                     /* Send DHCP response back to worker */
+                    /* Serialised against the data path; see the
+                     * REGISTER_RESP send above. */
+                    qemu_mutex_lock(&conn->lock);
                     int ret = tcp_send_message(
                         conn->sockfd, TCP_MSG_DHCP_RESPONSE, &dhcp_resp,
                         resp_len,
                         __atomic_fetch_add(&priv->next_seq, 1,
                                            __ATOMIC_RELAXED),
                         priv->local_node_id, hdr.src_node_id, 0, 0);
+                    qemu_mutex_unlock(&conn->lock);
                     if (ret < 0) {
                         rdma_error_report(
                             "TCP: Failed to send DHCP response to node %u",
@@ -2077,8 +2107,19 @@ static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
     payload.node_id = htonl(local_node_id);
     payload.version = htonl(TCP_PROTOCOL_VERSION);
 
-    return tcp_send_message(conn->sockfd, msg_type, &payload, sizeof(payload),
-                            1, local_node_id, conn->node_id, 0, 0);
+    /*
+     * The connection is published in priv->conn_table before
+     * the handshake is sent, so another thread can already be
+     * writing to this socket.  Serialise like every other
+     * sender.  No caller holds conn->lock, and this mutex is
+     * not recursive.
+     */
+    qemu_mutex_lock(&conn->lock);
+    int ret =
+        tcp_send_message(conn->sockfd, msg_type, &payload, sizeof(payload), 1,
+                         local_node_id, conn->node_id, 0, 0);
+    qemu_mutex_unlock(&conn->lock);
+    return ret;
 }
 
 /* Accept thread - accepts incoming connections and adds them to table */
@@ -2519,10 +2560,14 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     reg.port = htons(priv->listen_port);
     reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
 
-    /* Send registration request */
+    /* Send registration request. Re-registration can happen
+     * on reconnect while the manager connection is already
+     * carrying traffic, so serialise on conn->lock. */
+    qemu_mutex_lock(&priv->manager_conn->lock);
     ret = tcp_send_message(
         priv->manager_conn->sockfd, TCP_MSG_REGISTER_NODE, &reg, sizeof(reg),
         __atomic_fetch_add(&priv->next_seq, 1, __ATOMIC_RELAXED), 0, 0, 0, 0);
+    qemu_mutex_unlock(&priv->manager_conn->lock);
     if (ret < 0) {
         rdma_error_report("TCP: Failed to send registration request");
         return -1;

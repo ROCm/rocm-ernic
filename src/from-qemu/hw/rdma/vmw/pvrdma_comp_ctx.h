@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include "../rdma_backend_defs.h"
+#include <stdbool.h>
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 
 typedef struct PVRDMADev PVRDMADev;
@@ -28,6 +29,12 @@ typedef struct PvrdmaCompHandlerCtx {
     RdmaBackendSRQ *dc_target_srq;
     uint32_t dc_recv_cq_handle;
     uint32_t dc_src_qp;
+    /*
+     * Set when the originating send WQE carried the
+     * SIGNALED flag.  A successful unsignalled send must
+     * not consume a CQ slot; errors are always reported.
+     */
+    bool signaled;
 } PvrdmaCompHandlerCtx;
 
 #endif /* PVRDMA_COMP_CTX_H */
