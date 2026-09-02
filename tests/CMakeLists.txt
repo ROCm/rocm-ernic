@@ -48,9 +48,10 @@ target_link_libraries(test_rdma_cm PRIVATE
 
 # -- Unit tests --------------------------------------------------
 # Built with AddressSanitizer + LeakSanitizer + UBSan (unless the project
-# is already built with ThreadSanitizer, which is incompatible). Flag set
-# matches cmake/ErnicSanitizers.cmake; -fno-omit-frame-pointer is
-# compile-only.
+# is already built with ThreadSanitizer, which is incompatible) so a NULL
+# deref, leak, or out-of-bounds read fails the test even when the rest of
+# the project is built without sanitizers. Flag set matches
+# cmake/ErnicSanitizers.cmake; -fno-omit-frame-pointer is compile-only.
 set(ERNIC_UNIT_TEST_SAN)
 set(ERNIC_UNIT_TEST_SAN_LINK)
 if(NOT ERNIC_USE_THREAD_SANITIZER)
@@ -92,6 +93,23 @@ target_link_directories(test_rdma_backend_query_port PRIVATE
 target_link_libraries(test_rdma_backend_query_port PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# -- test_write_imm (requires libibverbs) ------------------------
+add_executable(test_write_imm
+    test_write_imm.c
+)
+target_compile_definitions(test_write_imm PRIVATE
+    _POSIX_C_SOURCE=200809L
+)
+target_include_directories(test_write_imm PRIVATE
+    ${IBVERBS_INCLUDE_DIRS}
+)
+target_link_directories(test_write_imm PRIVATE
+    ${IBVERBS_LIBRARY_DIRS}
+)
+target_link_libraries(test_write_imm PRIVATE
+    ${IBVERBS_LIBRARIES}
+)
+
 # -- test_dc_loopback (requires libibverbs + installed rocm_ernic provider) -
 # Only built when ERNIC_RDMA_CORE_BUILD=ON so that librocm_ernic and its
 # installed headers (including infiniband/rocm_ernic_dc.h) are available.
@@ -125,6 +143,36 @@ if(ERNIC_RDMA_CORE_BUILD)
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
     )
+
+    add_executable(test_dc_error_paths
+        test_dc_error_paths.c
+    )
+    target_compile_definitions(test_dc_error_paths PRIVATE
+        _POSIX_C_SOURCE=200809L
+    )
+    target_include_directories(test_dc_error_paths PRIVATE
+        ${IBVERBS_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/rdma-core/providers/rocm_ernic
+        ${RDMA_CORE_INCLUDE_DIR}
+    )
+    target_link_directories(test_dc_error_paths PRIVATE
+        ${IBVERBS_LIBRARY_DIRS}
+        ${RDMA_CORE_LIB_DIR}
+    )
+    target_link_libraries(test_dc_error_paths PRIVATE
+        ${IBVERBS_LIBRARIES}
+        rocm_ernic
+    )
+
+    add_test(
+        NAME dc-error-paths-test
+        COMMAND $<TARGET_FILE:test_dc_error_paths>
+    )
+    set_tests_properties(dc-error-paths-test PROPERTIES
+        TIMEOUT 60
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
 endif()
 
 # -- test_ernic_dc_uapi (cmocka + driver ABI header) --------------
@@ -143,6 +191,107 @@ if(CMOCKA_FOUND)
         ${CMOCKA_LIBRARIES}
     )
 endif()
+# net_headers.h checksum helpers are header-only and self-contained. The
+# ported header is a SYSTEM include so its warnings stay quiet while the
+# test source itself is still warning-checked.
+add_executable(test_net_checksum test_net_checksum.c)
+target_include_directories(test_net_checksum SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+)
+target_compile_options(test_net_checksum PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_net_checksum PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# -- Parser unit tests -------------------------------------------
+# These link the QEMU-ported wire parsers directly and are built with
+# AddressSanitizer + UBSan (unless the project is already built with
+# ThreadSanitizer, which is incompatible), so an out-of-bounds read fails
+# the test even when the rest of the project is built without sanitizers.
+set(ERNIC_PARSER_TEST_SAN "")
+if(NOT ERNIC_USE_THREAD_SANITIZER)
+    set(ERNIC_PARSER_TEST_SAN
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+
+add_executable(test_rdma_cm_proto
+    test_rdma_cm_proto.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/rdma_cm_proto.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+)
+target_include_directories(test_rdma_cm_proto PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
+# QEMU-ported sources are compiled -w here, matching the main build.
+target_compile_options(test_rdma_cm_proto PRIVATE
+    -w ${ERNIC_PARSER_TEST_SAN})
+target_link_options(test_rdma_cm_proto PRIVATE ${ERNIC_PARSER_TEST_SAN})
+target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
+
+add_executable(test_dhcp_server_process
+    test_dhcp_server_process.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+)
+target_include_directories(test_dhcp_server_process PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_dhcp_server_process PRIVATE _GNU_SOURCE)
+# QEMU-ported sources are compiled -w here, matching the main build.
+target_compile_options(test_dhcp_server_process PRIVATE
+    -w ${ERNIC_PARSER_TEST_SAN})
+target_link_options(test_dhcp_server_process PRIVATE ${ERNIC_PARSER_TEST_SAN})
+target_link_directories(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARIES})
+
+# -- DHCP server lifecycle / leak test ---------------------------
+# Reuses the shared ERNIC_UNIT_TEST_SAN flags (ASan + LeakSanitizer + UBSan)
+# so a leak in the DHCP server's create/destroy path fails the test.
+add_executable(test_dhcp_server_lifecycle
+    test_dhcp_server_lifecycle.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+)
+target_include_directories(test_dhcp_server_lifecycle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_dhcp_server_lifecycle PRIVATE _GNU_SOURCE)
+# QEMU-ported sources are compiled -w here, matching the main build.
+target_compile_options(test_dhcp_server_lifecycle PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_dhcp_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_dhcp_server_lifecycle PRIVATE
+    ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_dhcp_server_lifecycle PRIVATE ${GLIB2_LIBRARIES})
+
+# ROCM_ERNIC_ETH_CTL_RESET bit-definition test (header-only, project header
+# so warnings stay enabled).
+add_executable(test_eth_ctl_reset test_eth_ctl_reset.c)
+target_include_directories(test_eth_ctl_reset PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# Strict integer parser (parse_int.h) unit test (header-only). The ported
+# header dir is a SYSTEM include so its warnings stay quiet while the test
+# source itself is still warning-checked.
+add_executable(test_parse_int test_parse_int.c)
+target_include_directories(test_parse_int SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+)
+target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
 # ---------------------------------------------------------------
 # Register tests with CTest
@@ -167,6 +316,17 @@ add_test(
     COMMAND $<TARGET_FILE:test_data_transfer>
 )
 set_tests_properties(data-transfer-test PROPERTIES
+    TIMEOUT 60
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+)
+
+# Loopback WRITE_WITH_IMM responder-delivery test
+add_test(
+    NAME write-imm-test
+    COMMAND $<TARGET_FILE:test_write_imm>
+)
+set_tests_properties(write-imm-test PROPERTIES
     TIMEOUT 60
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
@@ -200,3 +360,44 @@ if(CMOCKA_FOUND)
         RUN_SERIAL TRUE
     )
 endif()
+# TCP/UDP checksum helper unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME net-checksum-unit
+    COMMAND $<TARGET_FILE:test_net_checksum>
+)
+set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# rdma_cm protocol parser unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME rdma-cm-proto-unit
+    COMMAND $<TARGET_FILE:test_rdma_cm_proto>
+)
+set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
+
+# DHCP server packet parser unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME dhcp-server-process-unit
+    COMMAND $<TARGET_FILE:test_dhcp_server_process>
+)
+set_tests_properties(dhcp-server-process-unit PROPERTIES TIMEOUT 30)
+
+# DHCP server lifecycle / leak test (table-driven, ASan+LSan)
+add_test(
+    NAME dhcp-server-lifecycle-unit
+    COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
+)
+set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# Ethernet control reset-bit definition unit test
+add_test(
+    NAME eth-ctl-reset-unit
+    COMMAND $<TARGET_FILE:test_eth_ctl_reset>
+)
+set_tests_properties(eth-ctl-reset-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# Strict integer parser unit test (table-driven, ASan-instrumented)
+add_test(
+    NAME parse-int-unit
+    COMMAND $<TARGET_FILE:test_parse_int>
+)
+set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
