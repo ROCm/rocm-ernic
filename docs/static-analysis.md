@@ -33,7 +33,7 @@ nix build .#analysis-clang-tidy      # also: -cppcheck, -flawfinder, -semgrep,
 nix build .#analysis-clang-analyzer  #       -gcc-warnings, -gcc-analyzer
 ```
 
-Each per-tool target writes `result/<tool>/report.*` and `result/<tool>/count.txt`; `report.xml` (cppcheck) and `report.json` (semgrep) are the machine-readable forms, and `result/clang-analyzer/html-report/` is the browsable scan-build tree. The `quick` / `standard` / `deep` aggregates layer more tools on and re-run the triage pass (score + de-duplicate + cross-reference). The dynamic passes (`.#analysis-sanitizers`, `.#analysis-tsan`, `.#analysis-valgrind`) and the fuzzers (`.#fuzz`, `.#fuzz-run`) are documented in `nix/README.md`.
+Each per-tool target writes `result/<tool>/report.*` and `result/<tool>/count.txt`; `report.xml` (cppcheck) and `report.json` (semgrep) are the machine-readable forms, and `result/clang-analyzer/html-report/` is the browsable scan-build tree. The `quick` / `standard` / `deep` aggregates layer more tools on and re-run the triage pass (score + deduplicate + cross-reference). The dynamic passes (`.#analysis-sanitizers`, `.#analysis-tsan`, `.#analysis-valgrind`) and the fuzzers (`.#fuzz`, `.#fuzz-run`) are documented in `nix/README.md`.
 
 ## Tools & totals
 
