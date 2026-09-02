@@ -674,6 +674,58 @@ jobs:
         fi
         echo "✓ DC guest smoke passed or skipped cleanly"
 
+    - name: DC error path guest smoke (build and run test_dc_error_paths)
+      shell: bash
+      run: |
+        echo "=== DC error path guest smoke (send_in_flight accounting) ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/dc-err-smoke"
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+          tests/test_dc_error_paths.c \
+          rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
+          "${VM_USER}@localhost:/tmp/dc-err-smoke/"
+        set +e
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        set -e
+        cd /tmp/dc-err-smoke
+        ROCM_LIBDIR=""
+        for d in /usr/lib/x86_64-linux-gnu/libibverbs /usr/lib/libibverbs; do
+          if [ -d "$d" ] && ls "$d"/librocm_ernic*.so >/dev/null 2>&1; then
+            ROCM_LIBDIR="$d"
+            break
+          fi
+        done
+        if [ -z "$ROCM_LIBDIR" ]; then
+          echo "librocm_ernic not found; skipping DC error path smoke"
+          exit 0
+        fi
+        gcc -O2 -Wall -Wextra -I. \
+          -o test_dc_error_paths test_dc_error_paths.c \
+          $(pkg-config --cflags --libs libibverbs) \
+          -L"$ROCM_LIBDIR" -lrocm_ernic -Wl,-rpath,"$ROCM_LIBDIR"
+        set +e
+        timeout 120 ./test_dc_error_paths
+        DCE_EXIT=$?
+        if [ "$DCE_EXIT" -eq 124 ]; then
+          echo "test_dc_error_paths timed out after 120s"
+        fi
+        set -e
+        if [ "$DCE_EXIT" -eq 77 ]; then
+          echo "No rocm_ernic device found; skipping DC error path smoke"
+          exit 0
+        fi
+        exit $DCE_EXIT
+        EOFVM
+        DCE_EXIT=$?
+        set -e
+        if [ "$DCE_EXIT" -ne 0 ]; then
+          echo "✗ DC error path guest smoke failed (exit $DCE_EXIT)"
+          exit 1
+        fi
+        echo "✓ DC error path guest smoke passed or skipped cleanly"
+
     - name: Sysfs loopback smoke test
       shell: bash
       run: |
