@@ -1,0 +1,42 @@
+# nix/shell-functions/help.nix
+#
+# Help text for the rocm-ernic dev shell. Returns a bash snippet spliced
+# into devshell.nix's shellHook.
+{ }:
+''
+  ernic-help() {
+    cat <<'EOF'
+  rocm-ernic dev shell — available commands:
+
+    ernic-configure [cmake args]  Configure ./build (Ninja, compile DB on)
+    ernic-build     [cmake args]  Build (auto-configures if needed)
+    ernic-test      [ctest args]  Run the CTest suite
+    ernic-clean                   Remove ./build
+    ernic-help                    Show this help
+
+  Sanitizer builds:
+    ernic-configure -DERNIC_USE_SANITIZERS=ON        # ASAN+LSAN+UBSAN
+    ernic-configure -DERNIC_USE_THREAD_SANITIZER=ON  # TSAN
+
+  Nix build targets (from the repo root):
+    nix build .#rocm-ernic        Build the server binary
+    nix develop                   Enter this shell
+
+  Analysis targets (see nix/README.md; `nix flake show` lists everything):
+    nix build .#analysis-quick    clang-tidy + cppcheck + triage
+    nix build .#analysis-standard + flawfinder, clang-analyzer, gcc-warnings
+    nix build .#analysis-deep     + gcc-analyzer, semgrep
+    nix build .#analysis-sanitizers | .#analysis-tsan | .#analysis-valgrind
+    nix build .#fuzz | .#fuzz-run libFuzzer harnesses for the wire parsers
+
+  Cross-compile + emulated run (from an x86_64-linux host):
+    nix build .#rocm-ernic-aarch64   also: -riscv64, -armv7l, -ppc64le
+    nix run   .#run-aarch64-tests    aarch64/riscv64: boot a QEMU microvm + self-test
+    nix run   .#run-armv7l-tests     armv7l/ppc64le: qemu-user smoke of the cross binary
+
+  OCI container images (dockerTools; ./result | docker load):
+    nix build .#oci-image            minimal amd64 image (also: -debug)
+    nix build .#oci-image-aarch64    minimal arm64 image (also: -riscv64, -debug)
+EOF
+  }
+''

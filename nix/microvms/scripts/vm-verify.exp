@@ -1,0 +1,44 @@
+#!/usr/bin/env expect
+#
+# vm-verify.exp — watch a rocm-ernic microvm's serial console for the
+# self-test verdict and exit accordingly.
+#
+# The guest's ernic-self-test service mirrors its output to the serial
+# console (StandardOutput=journal+console, see nix/microvms/mkVm.nix), so we
+# connect to QEMU's serial TCP server and wait for the marker line.
+#
+# Args:  <host> <port> <timeout-seconds>
+# Exit:  0 = SUCCESS marker seen, 1 = FAIL marker, 2 = timeout, 3 = eof,
+#        4 = could not connect.
+
+set host    [lindex $argv 0]
+set port    [lindex $argv 1]
+set timeout [lindex $argv 2]
+
+# Connect to QEMU's serial console TCP server (opened server,nowait).
+if {[catch {socket $host $port} sock]} {
+    puts "\[verify] cannot connect to $host:$port — $sock"
+    exit 4
+}
+fconfigure $sock -buffering none -translation binary -blocking 0
+spawn -open $sock
+
+# Stream the console; gate on the self-test verdict line.
+expect {
+    -re {ERNIC Self-Test: SUCCESS} {
+        puts "\n\[verify] SUCCESS marker seen"
+        exit 0
+    }
+    -re {ERNIC Self-Test: FAIL} {
+        puts "\n\[verify] FAIL marker seen"
+        exit 1
+    }
+    timeout {
+        puts "\n\[verify] timeout after ${timeout}s waiting for self-test verdict"
+        exit 2
+    }
+    eof {
+        puts "\n\[verify] console closed before a verdict appeared"
+        exit 3
+    }
+}
