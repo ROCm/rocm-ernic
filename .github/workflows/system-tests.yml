@@ -398,11 +398,15 @@ jobs:
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         KVER=$(uname -r)
+        # unattended-upgrades runs on a timer inside the guest image and
+        # holds /var/lib/dpkg/lock-frontend for minutes. Retrying against a
+        # held lock just burns the attempts, so wait for it instead.
+        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
             linux-headers-${KVER} linux-modules-extra-${KVER} && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
@@ -1659,11 +1663,15 @@ jobs:
         #!/bin/bash
         set -e
         KVER=$(uname -r)
+        # unattended-upgrades runs on a timer inside the guest image and
+        # holds /var/lib/dpkg/lock-frontend for minutes. Retrying against a
+        # held lock just burns the attempts, so wait for it instead.
+        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
             linux-headers-${KVER} linux-modules-extra-${KVER} && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10

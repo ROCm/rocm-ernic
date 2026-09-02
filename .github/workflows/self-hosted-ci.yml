@@ -289,7 +289,15 @@ jobs:
       - name: Generate functional and performance report
         id: report
         continue-on-error: true
+        env:
+          # What was actually checked out and tested. github.sha still
+          # points at main for a `pr`-dispatched run, so reporting it
+          # would label the report with the wrong tree.
+          CI_TESTED_REF: ${{ env.CI_CHECKOUT_REF }}
         run: |
+          CI_TESTED_SHA="$(git rev-parse HEAD)"
+          export CI_TESTED_SHA
+          echo "reporting against ${CI_TESTED_SHA} (${CI_TESTED_REF})"
           baseline="${CI_WORK}/baseline/summary.json"
           args=(--results "${CI_WORK}/results"
                 --out "${CI_WORK}/report")
