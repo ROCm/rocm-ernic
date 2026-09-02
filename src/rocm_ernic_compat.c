@@ -296,6 +296,13 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         pvrdma->tcp_connections = NULL;
     }
 
+    /* Free the DHCP server (created in pvrdma_device_realize for loopback
+     * and TCP-manager modes). Without this it leaks at shutdown. */
+    if (pvrdma->dhcp_server) {
+        dhcp_server_destroy((DhcpServer *)pvrdma->dhcp_server);
+        pvrdma->dhcp_server = NULL;
+    }
+
     free(pvrdma);
 
     rdma_info_report("PVRDMA device destroyed");

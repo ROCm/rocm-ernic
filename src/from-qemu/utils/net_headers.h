@@ -237,6 +237,12 @@ static inline uint16_t udp_checksum(const struct ip_header *ip_hdr,
     uint32_t sum = 0;
     uint16_t udp_len = ntohs(udp_hdr->len);
 
+    /* A NULL payload means "no payload"; treat it as zero-length so the
+     * pseudo-header length and the summation stay consistent. */
+    if (payload == NULL) {
+        payload_len = 0;
+    }
+
     /* Pseudo-header: src IP, dst IP, protocol, UDP length */
     sum += (ntohl(ip_hdr->src_ip) >> 16) & 0xFFFF;
     sum += ntohl(ip_hdr->src_ip) & 0xFFFF;
@@ -260,7 +266,7 @@ static inline uint16_t udp_checksum(const struct ip_header *ip_hdr,
 
     /* Add odd byte if present */
     if (payload_len % 2) {
-        sum += ((uint8_t *)payload)[payload_len - 1] << 8;
+        sum += ((const uint8_t *)payload)[payload_len - 1] << 8;
     }
 
     /* Add carry bits */
@@ -279,6 +285,13 @@ static inline uint16_t tcp_checksum(const struct ip_header *ip_hdr,
                                     const void *payload, size_t payload_len)
 {
     uint32_t sum = 0;
+
+    /* A NULL payload means "no payload"; treat it as zero-length so the
+     * pseudo-header length and the summation stay consistent. */
+    if (payload == NULL) {
+        payload_len = 0;
+    }
+
     uint16_t tcp_len = (tcp_hdr->data_off >> 4) * 4 + payload_len;
 
     /* Pseudo-header: src IP, dst IP, protocol, TCP length */
@@ -310,7 +323,7 @@ static inline uint16_t tcp_checksum(const struct ip_header *ip_hdr,
 
     /* Add odd byte if present */
     if (payload_len % 2) {
-        sum += ((uint8_t *)payload)[payload_len - 1] << 8;
+        sum += ((const uint8_t *)payload)[payload_len - 1] << 8;
     }
 
     /* Add carry bits */

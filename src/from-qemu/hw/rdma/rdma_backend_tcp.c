@@ -21,6 +21,7 @@
 #include "hw/pci/pci.h" /* For pci_dma_map/unmap/sync */
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
+#include "../../utils/parse_int.h"
 #include <errno.h>
 #include <string.h>
 #include <glib.h>
@@ -67,8 +68,8 @@ static int tcp_env_int(const char *name, int fallback)
 {
     const char *val = getenv(name);
     if (val) {
-        int v = atoi(val);
-        if (v > 0) {
+        int v;
+        if (ernic_parse_int(val, &v) && v > 0) {
             return v;
         }
     }
@@ -764,7 +765,9 @@ static int parse_tcp_config_manager(const char *config, char **manager_host,
             rdma_error_report("TCP manager: missing port for listen mode");
             return -EINVAL;
         }
-        port_val = (uint16_t)atoi(token);
+        if (!ernic_parse_port(token, &port_val)) {
+            port_val = 0; /* rejected below by the port_val == 0 check */
+        }
         host_str = g_strdup("0.0.0.0");
     } else {
         host_str = g_strdup(token);
@@ -775,7 +778,9 @@ static int parse_tcp_config_manager(const char *config, char **manager_host,
             rdma_error_report("TCP manager: missing port");
             return -EINVAL;
         }
-        port_val = (uint16_t)atoi(token);
+        if (!ernic_parse_port(token, &port_val)) {
+            port_val = 0; /* rejected below by the port_val == 0 check */
+        }
     }
 
     if (port_val == 0) {
@@ -828,7 +833,9 @@ static int parse_tcp_config_worker(const char *config, char **manager_host,
         rdma_error_report("TCP worker: missing manager port");
         return -EINVAL;
     }
-    port_val = (uint16_t)atoi(token);
+    if (!ernic_parse_port(token, &port_val)) {
+        port_val = 0; /* rejected below by the port_val == 0 check */
+    }
 
     if (port_val == 0) {
         g_free(config_copy);

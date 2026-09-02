@@ -1,5 +1,12 @@
 # rocm-ernic static-analysis report
 
+> **Snapshot.** This report reflects the tree at commit `f7dda29` (see
+> **Provenance**), before the fixes for these findings were merged. Every
+> issue below marked *Live* except **S3** has since been fixed on `main` —
+> D1 by #62, D2 by #63, D3 by #64, D4 by #63/#64, S1 by #65, S2 by #66 and
+> S4 by #67. S3 remains open as #68. Re-run `nix build .#analysis-deep` for
+> the current state rather than relying on the statuses below.
+
 ## What this is
 
 A triaged report of the security- and stability-relevant findings from a full **static-analysis** sweep of the rocm-ernic userspace target. It leads with the issues worth acting on — each validated by reading the source at the commit below — and keeps the long tail of style/convention findings in an appendix.

@@ -8,18 +8,36 @@
 # real VMs over the emulated RDMA NIC and produce
 # functional and performance reports.
 #
-# SECURITY: rocm-ernic is a public repository, so a
-# pull_request trigger would let a fork's code run on the
-# lab node.  Every job therefore requires the pull request
-# to originate from a branch in this repository; a fork PR
-# resolves the condition to false and no job starts.
+# SECURITY
+# --------
+# rocm-ernic is public, and this workflow runs on a lab
+# machine rather than a throwaway GitHub runner, so nothing
+# reaches the node without a maintainer asking for it.
+# There is no pull_request trigger: the only ways in are a
+# manual dispatch and the nightly schedule.
 #
-# Belt and braces: keep *Settings, Actions, General,
-# Require approval for all external contributors* enabled,
-# so a fork run cannot even be queued without a maintainer
-# releasing it.
+# Fork pull requests ARE testable, via the pr input.  The
+# split that makes this safe is that dispatch runs the
+# workflow file from the branch given to --ref (normally
+# main) while checking out refs/pull/<pr>/head as the code
+# under test.  A fork therefore supplies code to compile
+# and run, but cannot alter what this workflow does, and
+# cannot start a run at all: workflow_dispatch requires
+# write access.
+#
+# What that does NOT protect is the node itself.  Fork code
+# runs as the runner's user, so anyone who can dispatch a
+# fork PR can execute arbitrary code there.  Treat the
+# ability to dispatch as equivalent to shell access on the
+# lab node, and see ci/README.md for the hardening that is
+# still outstanding.
 
 name: Self-Hosted CI
+
+run-name: >-
+  Self-Hosted CI
+  ${{ inputs.pr && format('- PR #{0}', inputs.pr) || '' }}
+  ${{ inputs.tier && format('({0})', inputs.tier) || '' }}
 
 on:
   workflow_dispatch:
@@ -41,21 +59,17 @@ on:
         options:
           - kvm
           - tcg            # emulation; functional only
+      pr:
+        description: >-
+          Pull request number to test. Works for forks:
+          refs/pull/<pr>/head is checked out as the code
+          under test. Leave empty to run the dispatched ref.
+        required: false
+        type: string
   schedule:
     # 02:30 UTC nightly.  Off the hour to avoid the
     # thundering herd of every cron job on the fleet.
     - cron: '37 2 * * *'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'service/**'
-      - 'ansible/**'
-      - 'ci/**'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - '.github/workflows/self-hosted-ci.yml'
 
 # One run at a time on the node: concurrent runs would
 # collide on VM ssh ports, the instance manifest and the
@@ -71,21 +85,26 @@ concurrency:
 env:
   CI_WORK: /var/tmp/ernic-ci-work
   CI_VM_ACCEL: ${{ inputs.accel || 'kvm' }}
+  # The code under test.  refs/pull/<n>/head resolves for
+  # fork pull requests too, which is what makes them
+  # testable without granting the fork any other reach.
+  CI_CHECKOUT_REF: >-
+    ${{ inputs.pr
+        && format('refs/pull/{0}/head', inputs.pr)
+        || github.ref }}
 
 jobs:
 
   preflight:
     name: Preflight
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
       kvm: ${{ steps.plan.outputs.kvm }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Reset workspace results
         run: |
@@ -130,10 +149,6 @@ jobs:
 
   build:
     name: Build and unit tests
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: preflight
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     strategy:
@@ -142,6 +157,8 @@ jobs:
         build_type: [Release, Debug]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Build and test (${{ matrix.build_type }})
         env:
@@ -161,14 +178,12 @@ jobs:
 
   loopback:
     name: Loopback functional
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
-    if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Loopback backend tests
         env:
@@ -178,10 +193,7 @@ jobs:
   vm-functional:
     name: 2-VM RDMA functional
     needs: [preflight, loopback]
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
     if: >-
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.preflight.outputs.tier != 'build'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
     timeout-minutes: 90
@@ -189,6 +201,8 @@ jobs:
       CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Bring up VMs
         run: bash ci/jobs/vm-up.sh
@@ -211,10 +225,7 @@ jobs:
   perf:
     name: Performance sweeps
     needs: [preflight, vm-functional]
-    # Refuse fork pull requests: their code must never run
-    # on the lab node.  Non-PR events are unaffected.
     if: >-
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.preflight.outputs.tier == 'full'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
     timeout-minutes: 180
@@ -222,6 +233,8 @@ jobs:
       CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Bring up VMs
         run: bash ci/jobs/vm-up.sh
@@ -254,15 +267,24 @@ jobs:
 
   report:
     name: Report
+    # Only this job needs more than read: it pushes the
+    # published perf history and comments results back on a
+    # pull request.  The tiers that actually run untrusted
+    # code keep the default read-only token.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     needs: [preflight, build, loopback, vm-functional, perf]
     # Report on whatever actually ran, including when an
     # upstream tier was skipped or failed.  Still refuses
     # fork pull requests.
-    if: >-
-      always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: always()
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
 
       - name: Generate functional and performance report
         id: report
@@ -283,9 +305,15 @@ jobs:
         # Only a clean full run on main is allowed to
         # move the baseline, so a failing or partial run
         # can never silently lower the bar.
+        #
+        # inputs.pr must be empty too.  With the pr input
+        # github.ref is still main while the code under test is
+        # the pull request's, so without this any PR -- a fork's
+        # included -- could redefine what "no regression" means.
         if: >-
           steps.report.outcome == 'success' &&
           github.ref == 'refs/heads/main' &&
+          inputs.pr == '' &&
           needs.preflight.outputs.tier == 'full' &&
           needs.perf.result == 'success'
         run: |
@@ -302,6 +330,117 @@ jobs:
             /var/tmp/ernic-ci-work/report/
             /var/tmp/ernic-ci-work/results/
           if-no-files-found: warn
+
+      - name: Publish performance trends
+        # Same gate as the baseline, and for the same reason:
+        # a pull request's numbers describe the pull request,
+        # not main, and must never enter the published history.
+        # github.ref alone is not enough, since with the pr
+        # input it still says main.
+        if: >-
+          steps.report.outcome == 'success' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.pr == '' &&
+          needs.preflight.outputs.tier == 'full' &&
+          needs.perf.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 ci/report/publish-perf.py \
+            --summary "${CI_WORK}/report/summary.json" \
+            --docs-dir docs
+
+          if git diff --quiet -- docs/perf-history docs/perf-trends.rst; then
+            echo "no change to publish"
+            exit 0
+          fi
+
+          git config user.name  "rocm-ernic-ci"
+          git config user.email "rocm-ernic-ci@users.noreply.github.com"
+          git add docs/perf-history docs/perf-trends.rst
+          git commit -m "docs(perf): publish trends from run ${GITHUB_RUN_ID}" \
+                     -m "Generated by ci/report/publish-perf.py. [skip ci]"
+          # main can move during a run this long, so rebase
+          # before pushing.  Publishing is a nice-to-have: if it
+          # still cannot land, say so and leave the run green
+          # rather than failing a CI run over a docs commit.
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --quiet "${remote}" main
+          if ! git rebase FETCH_HEAD; then
+            git rebase --abort || true
+            echo "::warning::could not rebase onto main; trends not published"
+            exit 0
+          fi
+          if git push "${remote}" HEAD:main; then
+            echo "published; docs-deploy will rebuild Pages"
+          else
+            echo "::warning::push rejected; trends not published this run"
+          fi
+
+      - name: Summarise the outcome
+        id: outcome
+        if: always()
+        run: |
+          set -uo pipefail
+          # This job runs under always(), so a skipped or failed
+          # upstream tier still has to be described rather than
+          # inferred from the job's own status.
+          overall=success
+          for r in "${{ needs.preflight.result }}" \
+                   "${{ needs.build.result }}" \
+                   "${{ needs.loopback.result }}" \
+                   "${{ needs.vm-functional.result }}" \
+                   "${{ needs.perf.result }}"; do
+            case "${r}" in
+              failure|cancelled) overall=failure ;;
+            esac
+          done
+          [ "${{ steps.report.outcome }}" = "success" ] || overall=failure
+
+          # One line on purpose: multi-line Python inside a
+          # run: | block has to sit at column 0 to satisfy
+          # Python, which ends the YAML block scalar.
+          detail="$(python3 -c "import json; d=json.load(open('${CI_WORK}/report/summary.json')); f=d['functional']; print('%d/%d checks passed, %d failed, %d regression(s)' % (f['passed'], f['total'], f['failed'], len(d.get('regressions') or [])))" 2>/dev/null || true)"
+
+          {
+            echo "overall=${overall}"
+            echo "detail=${detail}"
+          } >> "$GITHUB_OUTPUT"
+          echo "overall=${overall} ${detail}"
+
+      - name: Report completion on the pull request
+        if: always() && inputs.pr != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OVERALL: ${{ steps.outcome.outputs.overall }}
+          DETAIL: ${{ steps.outcome.outputs.detail }}
+        run: |
+          if [ "${OVERALL}" = "success" ]; then
+            head="Self-hosted CI passed"
+          else
+            head="Self-hosted CI failed"
+          fi
+          {
+            echo "**${head}** on \`${{ runner.name }}\`, tier \`${{ needs.preflight.outputs.tier }}\`."
+            echo
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| Build + ctest | ${{ needs.build.result }} |"
+            echo "| Loopback | ${{ needs.loopback.result }} |"
+            echo "| 2-VM RDMA functional | ${{ needs.vm-functional.result }} |"
+            echo "| Performance sweeps | ${{ needs.perf.result }} |"
+            echo
+            if [ -n "${DETAIL}" ]; then
+              echo "Checks: ${DETAIL}"
+              echo
+            fi
+            echo "[Full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}); the report is attached as the \`ci-report\` artifact."
+          } > body.md
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/${{ inputs.pr }}/comments" \
+            -F body=@body.md --silent
+          echo "posted result to PR #${{ inputs.pr }}"
 
       - name: Fail if the report found problems
         if: steps.report.outcome != 'success'
