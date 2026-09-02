@@ -1,0 +1,2 @@
+# Published by ci/report/publish-perf.py on the nightly run.
+# history.jsonl accumulates one JSON object per run.

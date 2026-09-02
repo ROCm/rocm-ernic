@@ -47,6 +47,7 @@ Quick Start
    driver
    testing
    performance
+   perf-trends
 
 .. toctree::
    :maxdepth: 2
