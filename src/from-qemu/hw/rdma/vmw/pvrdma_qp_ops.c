@@ -121,6 +121,9 @@ static int pvrdma_post_cqe(PVRDMADev *dev, uint32_t cq_handle,
     cqe1->src_qp = wc->src_qp;
     cqe1->wc_flags = wc->wc_flags;
     cqe1->vendor_err = wc->vendor_err;
+    if (wc->wc_flags & IBV_WC_WITH_IMM) {
+        cqe1->imm_data = wc->imm_data;
+    }
 
     pvrdma_ring_write_inc(ring);
 
@@ -245,6 +248,43 @@ void pvrdma_queue_recv_work_completion(PVRDMADev *dev, uint32_t recv_cq_handle,
     d->wc.byte_len = byte_len;
     d->wc.qp_num = src_qp_num;
     d->wc.opcode = IBV_WC_RECV;
+    d->wc.wr_id = recv_guest_wr_id;
+    d->wc.src_qp = src_qp_num;
+
+    qemu_mutex_lock(&g_deferred_lock);
+    g_queue_push_tail(g_deferred_completions, d);
+    qemu_mutex_unlock(&g_deferred_lock);
+
+    __atomic_store_n(&dev->pending_cq_interrupt, 1, __ATOMIC_RELEASE);
+}
+
+void pvrdma_queue_recv_imm_work_completion(
+    PVRDMADev *dev, uint32_t recv_cq_handle, uint32_t recv_qp_handle,
+    uint64_t recv_guest_wr_id, uint32_t byte_len, uint32_t src_qp_num,
+    uint32_t imm_data)
+{
+    DeferredCompletion *d;
+
+    if (!g_deferred_completions) {
+        return;
+    }
+
+    d = g_new(DeferredCompletion, 1);
+    d->dev = dev;
+    d->cq_handle = recv_cq_handle;
+    d->qp_handle = 0;
+    memset(&d->cqe, 0, sizeof(d->cqe));
+    d->cqe.wr_id = recv_guest_wr_id;
+    d->cqe.qp = recv_qp_handle;
+    d->cqe.opcode = IBV_WC_RECV_RDMA_WITH_IMM;
+
+    memset(&d->wc, 0, sizeof(d->wc));
+    d->wc.status = IBV_WC_SUCCESS;
+    d->wc.byte_len = byte_len;
+    d->wc.qp_num = recv_qp_handle;
+    d->wc.opcode = IBV_WC_RECV_RDMA_WITH_IMM;
+    d->wc.wc_flags = IBV_WC_WITH_IMM;
+    d->wc.imm_data = imm_data;
     d->wc.wr_id = recv_guest_wr_id;
     d->wc.src_qp = src_qp_num;
 
@@ -543,6 +583,9 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 comp_ctx->remote_addr = wqe->hdr.wr.rdma.remote_addr;
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
             }
+            if (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM) {
+                comp_ctx->imm_data = wqe->hdr.ex.imm_data;
+            }
 
             sgid_idx = 0;
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
@@ -595,10 +638,24 @@ static gboolean continue_qp_send_processing(gpointer user_data)
                 comp_ctx->dc_src_qp = qp->qpn;
             } else if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
                        pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
-                       pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM ||
                        pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV) {
                 comp_ctx->remote_addr = wqe->hdr.wr.rdma.remote_addr;
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
+            } else if (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM) {
+                /* WRITE_WITH_IMM needs a responder receive; the
+                 * backend has no per-send DCT routing, so the
+                 * immediate cannot reach a real responder. Complete
+                 * locally: clear the QP handle so the deferred drain
+                 * does not drop send_in_flight that was never
+                 * incremented for this work request. */
+                rdma_error_report(
+                    "Unsupported opcode WRITE_WITH_IMM on DCI QP");
+                comp_ctx->qp_handle = 0;
+                complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
+                pvrdma_ring_read_inc(ring);
+                wqe = pvrdma_ring_next_elem_read(ring);
+                qp->wqe_state.send_wqes_processed++;
+                continue;
             } else {
                 rdma_error_report("Unsupported opcode %u on DCI QP",
                                   pvrdma_opcode);
@@ -880,6 +937,9 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                 comp_ctx->remote_addr = wqe->hdr.wr.rdma.remote_addr;
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
             }
+            if (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM) {
+                comp_ctx->imm_data = wqe->hdr.ex.imm_data;
+            }
 
             sgid_idx = 0;
             sgid = rdma_rm_get_gid(&dev->rdma_dev_res, 0);
@@ -932,10 +992,24 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
                 comp_ctx->dc_src_qp = qp->qpn;
             } else if (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
                        pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
-                       pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM ||
                        pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV) {
                 comp_ctx->remote_addr = wqe->hdr.wr.rdma.remote_addr;
                 comp_ctx->rkey = wqe->hdr.wr.rdma.rkey;
+            } else if (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM) {
+                /* WRITE_WITH_IMM needs a responder receive; the
+                 * backend has no per-send DCT routing, so the
+                 * immediate cannot reach a real responder. Complete
+                 * locally: clear the QP handle so the deferred drain
+                 * does not drop send_in_flight that was never
+                 * incremented for this work request. */
+                rdma_error_report(
+                    "Unsupported opcode WRITE_WITH_IMM on DCI QP");
+                comp_ctx->qp_handle = 0;
+                complete_with_error(VENDOR_ERR_INV_QP_TYPE, comp_ctx);
+                pvrdma_ring_read_inc(ring);
+                wqe = pvrdma_ring_next_elem_read(ring);
+                qp->wqe_state.send_wqes_processed++;
+                continue;
             } else {
                 rdma_error_report("Unsupported opcode %u on DCI QP",
                                   pvrdma_opcode);

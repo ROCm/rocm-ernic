@@ -93,6 +93,23 @@ target_link_directories(test_rdma_backend_query_port PRIVATE
 target_link_libraries(test_rdma_backend_query_port PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# -- test_write_imm (requires libibverbs) ------------------------
+add_executable(test_write_imm
+    test_write_imm.c
+)
+target_compile_definitions(test_write_imm PRIVATE
+    _POSIX_C_SOURCE=200809L
+)
+target_include_directories(test_write_imm PRIVATE
+    ${IBVERBS_INCLUDE_DIRS}
+)
+target_link_directories(test_write_imm PRIVATE
+    ${IBVERBS_LIBRARY_DIRS}
+)
+target_link_libraries(test_write_imm PRIVATE
+    ${IBVERBS_LIBRARIES}
+)
+
 # -- test_dc_loopback (requires libibverbs + installed rocm_ernic provider) -
 # Only built when ERNIC_RDMA_CORE_BUILD=ON so that librocm_ernic and its
 # installed headers (including infiniband/rocm_ernic_dc.h) are available.
@@ -299,6 +316,17 @@ add_test(
     COMMAND $<TARGET_FILE:test_data_transfer>
 )
 set_tests_properties(data-transfer-test PROPERTIES
+    TIMEOUT 60
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+)
+
+# Loopback WRITE_WITH_IMM responder-delivery test
+add_test(
+    NAME write-imm-test
+    COMMAND $<TARGET_FILE:test_write_imm>
+)
+set_tests_properties(write-imm-test PROPERTIES
     TIMEOUT 60
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77

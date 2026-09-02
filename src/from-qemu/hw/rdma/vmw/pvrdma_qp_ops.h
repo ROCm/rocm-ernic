@@ -30,4 +30,13 @@ void pvrdma_queue_recv_work_completion(PVRDMADev *dev, uint32_t recv_cq_handle,
                                        uint64_t recv_guest_wr_id,
                                        uint32_t byte_len, uint32_t src_qp_num);
 
+/* Variant used by RDMA WRITE_WITH_IMM: the completion carries the
+ * immediate data in network order and the RECV_RDMA_WITH_IMM opcode
+ * with the IBV_WC_WITH_IMM flag set, matching what a real HCA
+ * delivers to the responder's receive queue. */
+void pvrdma_queue_recv_imm_work_completion(
+    PVRDMADev *dev, uint32_t recv_cq_handle, uint32_t recv_qp_handle,
+    uint64_t recv_guest_wr_id, uint32_t byte_len, uint32_t src_qp_num,
+    uint32_t imm_data);
+
 #endif
