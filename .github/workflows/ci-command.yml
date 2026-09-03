@@ -281,15 +281,14 @@ jobs:
               echo "| Run | ${URL} |"
             fi
             echo
+            # GitHub renders comment bodies with hard line breaks, so each
+            # echo becomes a literal <br>. Keep one echo per paragraph and
+            # let the reader's client wrap it.
             if [ "${ACCEL}" = "tcg" ]; then
-              echo "> Running under emulation."
-              echo "> Performance sweeps are skipped;"
-              echo "> emulated numbers are not recorded."
+              echo "> Running under emulation. Performance sweeps are skipped; emulated numbers are not recorded."
               echo
             fi
-            echo "The functional and performance report is"
-            echo "attached to the run as the \`ci-report\` artifact"
-            echo "and mirrored into its job summary."
+            echo "The functional and performance report is attached to the run as the \`ci-report\` artifact and mirrored into its job summary."
           } > body.md
           gh api -X POST \
             "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \

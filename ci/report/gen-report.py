@@ -244,8 +244,17 @@ def _size_key(size):
 # reported, just not failed on. Override with --gate-metric.
 DEFAULT_GATE_METRICS = ("lat_typical_us", "lat_max_us")
 
+# The spreads above were measured across repeated sweeps. A
+# single sweep gives none of that: the median of one sample is
+# that sample, so an ordinary outlier reads as a regression.
+# Require a few successful samples on both sides before a
+# metric may fail the build -- otherwise the sweep is only
+# descriptive, and it is reported without gating.
+DEFAULT_MIN_SAMPLES = 3
 
-def compare(current, baseline, threshold, gate_metrics=None):
+
+def compare(current, baseline, threshold, gate_metrics=None,
+            min_samples=DEFAULT_MIN_SAMPLES):
     """Flag gated metrics that moved beyond threshold percent."""
     gate = set(gate_metrics or DEFAULT_GATE_METRICS)
     regressions = []
@@ -254,18 +263,24 @@ def compare(current, baseline, threshold, gate_metrics=None):
         for row in rows:
             key = (kind, row["verb"], row["size"],
                    row["metric"])
-            base_index[key] = row.get("median")
+            base_index[key] = (row.get("median"),
+                               row.get("n_ok", 0))
 
     for kind, rows in current.items():
         for row in rows:
             key = (kind, row["verb"], row["size"],
                    row["metric"])
-            base = base_index.get(key)
+            base, base_n = base_index.get(key, (None, 0))
             cur = row.get("median")
             if base is None or cur is None or base == 0:
                 continue
             metric = row["metric"]
             if metric not in gate:
+                continue
+            # Too few samples on either side to distinguish a
+            # regression from noise.
+            if (row.get("n_ok", 0) < min_samples
+                    or base_n < min_samples):
                 continue
             delta_pct = (cur - base) / abs(base) * 100.0
             # Normalise so negative always means "worse".
@@ -416,6 +431,12 @@ def main():
                     help="metric to gate regressions on; repeatable. "
                          "Defaults to "
                          + ", ".join(DEFAULT_GATE_METRICS))
+    ap.add_argument("--min-samples", type=int,
+                    default=DEFAULT_MIN_SAMPLES, metavar="N",
+                    help="minimum successful samples on both sides "
+                         "before a metric may gate; below this the "
+                         "median is too noisy to judge "
+                         f"(default {DEFAULT_MIN_SAMPLES})")
     ap.add_argument("--no-fail", action="store_true",
                     help="always exit 0")
     args = ap.parse_args()
@@ -432,12 +453,19 @@ def main():
         with open(args.baseline) as fh:
             baseline = json.load(fh)
         regressions = compare(perf, baseline, args.threshold,
-                              args.gate_metrics)
+                              args.gate_metrics, args.min_samples)
 
+    # GITHUB_SHA / GITHUB_REF_NAME describe what *triggered* the
+    # workflow, not what was checked out. A self-hosted run dispatched
+    # with a `pr` input still reports main there while testing the PR
+    # head, so the workflow passes the resolved ref explicitly. Fall
+    # back to the trigger values for local runs.
     meta = {
         "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
-        "sha": os.environ.get("GITHUB_SHA", "unknown"),
-        "ref": os.environ.get("GITHUB_REF_NAME", "unknown"),
+        "sha": (os.environ.get("CI_TESTED_SHA")
+                or os.environ.get("GITHUB_SHA", "unknown")),
+        "ref": (os.environ.get("CI_TESTED_REF")
+                or os.environ.get("GITHUB_REF_NAME", "unknown")),
         "node": os.environ.get("RUNNER_NAME",
                                os.uname().nodename),
         "accel": os.environ.get("CI_VM_ACCEL", "n/a"),

@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: MIT
+#
+# Keeps the Nix flake honest. The flake sits alongside the autotools /
+# CMake build rather than feeding it, so nothing else in CI would notice
+# if it stopped evaluating -- it would simply rot until someone tried to
+# use it.
+#
+# This deliberately stops at evaluation plus the dev shell. Building the
+# analysis toolkit or the cross/OCI targets pulls a very large closure and
+# belongs in a scheduled job, not on every pull request.
+name: Nix Check
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
+      - '.github/workflows/nix-check.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: nix-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Show flake metadata
+        run: nix flake metadata
+
+      # Evaluation only. --no-build keeps this to a few minutes and still
+      # catches the failure mode that matters here: a flake that no longer
+      # evaluates after a nixpkgs bump or a refactor under nix/.
+      - name: Evaluate the flake
+        run: nix flake check --no-build --all-systems
+
+      - name: List exposed packages
+        run: nix flake show
