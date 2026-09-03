@@ -6,9 +6,11 @@
 namespace: sbates130272
 name: rocm_ernic
 version: 0.1.0
-# README.md is the repo-local guide to this directory; the
-# Galaxy landing page is COLLECTION.md.
-readme: COLLECTION.md
+# The Galaxy importer looks for a file literally named README.md
+# in the artifact root and rejects the upload without one -- it
+# does not consult this key.  So README.md is the Galaxy landing
+# page and the repo-local guide to this directory is PLAYBOOKS.md.
+readme: README.md
 
 authors:
   - Stephen Bates <stephen@raithlin.com>
@@ -64,7 +66,7 @@ build_ignore:
   # directory -- gitignored, but build_ignore is a separate list.
   - .ansible
   - changelogs/.plugin-cache.yaml
-  - README.md
+  - PLAYBOOKS.md
   - requirements.yml
   - site.yml
   - ci-site.yml
