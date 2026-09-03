@@ -293,6 +293,30 @@ target_include_directories(test_parse_int SYSTEM PRIVATE
 target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# Loopback SGE-copy test. It #includes the loopback translation unit to
+# reach its static helpers and stubs the DMA layer with an identity
+# mapping, so no RDMA subsystem link is needed.
+add_executable(test_loopback_sge_copy test_loopback_sge_copy.c)
+target_include_directories(test_loopback_sge_copy PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+    ${IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_loopback_sge_copy PRIVATE
+    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+# -w: this test #includes the ported loopback translation unit, so warnings
+# would come from that ported C rather than the test itself; suppress them
+# to match how the ported sources are compiled in the main build.
+target_compile_options(test_loopback_sge_copy PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_loopback_sge_copy PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_loopback_sge_copy PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_loopback_sge_copy PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES})
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -401,3 +425,10 @@ add_test(
     COMMAND $<TARGET_FILE:test_parse_int>
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
+
+# Loopback SGE-copy boundary-walking unit test
+add_test(
+    NAME loopback-sge-copy-unit
+    COMMAND $<TARGET_FILE:test_loopback_sge_copy>
+)
+set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)

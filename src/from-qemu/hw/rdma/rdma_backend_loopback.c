@@ -377,9 +377,6 @@ static int loopback_copy_sge_data(PCIDevice *pci_dev, struct ibv_sge *src_sge,
                 rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
                 src_host = NULL;
             }
-            if (src_idx >= num_src_sge) {
-                break;
-            }
             src_mapped_len = src_sge[src_idx].length;
             src_host = rdma_pci_dma_map(pci_dev, src_sge[src_idx].addr,
                                         src_mapped_len);
@@ -403,9 +400,6 @@ static int loopback_copy_sge_data(PCIDevice *pci_dev, struct ibv_sge *src_sge,
                              dst_mapped_len);
                 rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
                 dst_host = NULL;
-            }
-            if (dst_idx >= num_dst_sge) {
-                break;
             }
             dst_mapped_len = dst_sge[dst_idx].length;
             dst_host = rdma_pci_dma_map(pci_dev, dst_sge[dst_idx].addr,
@@ -517,9 +511,6 @@ static int loopback_copy_to_remote_addr(
     while (src_idx < num_src_sge && remote_offset < total_len) {
         if (!src_host || src_offset >= src_mapped_len) {
             src_host = NULL;
-            if (src_idx >= num_src_sge) {
-                break;
-            }
             src_mapped_len = src_sge[src_idx].length;
             src_host = loopback_translate_addr(pci_dev, src_sge[src_idx].addr,
                                                src_mapped_len);
@@ -614,9 +605,6 @@ static int loopback_copy_from_remote_addr(
     while (dst_idx < num_dst_sge && remote_offset < total_len) {
         if (!dst_host || dst_offset >= dst_mapped_len) {
             dst_host = NULL;
-            if (dst_idx >= num_dst_sge) {
-                break;
-            }
             dst_mapped_len = dst_sge[dst_idx].length;
             dst_host = loopback_translate_addr(pci_dev, dst_sge[dst_idx].addr,
                                                dst_mapped_len);
