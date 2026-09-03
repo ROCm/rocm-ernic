@@ -377,9 +377,9 @@
         executable: /bin/bash
         cmd: >-
           set -o pipefail;
-          grep -c 'FAIL\|NODATA'
+          { grep -c 'FAIL\|NODATA'
           "{{ gpu_bw_csv }}" "{{ gpu_lat_csv }}"
-          2>/dev/null
+          2>/dev/null || true; }
           | awk -F: '{s+=$2} END {print s+0}'
       register: gpu_fail_count
       changed_when: false

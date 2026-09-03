@@ -530,9 +530,10 @@
         executable: /bin/bash
         cmd: >-
           set -o pipefail;
-          grep -c 'FAIL\|NODATA'
+          { grep -c 'FAIL\|NODATA'
           "{{ bw_csv }}" "{{ lat_csv }}" "{{ rel_csv }}"
-          2>/dev/null | awk -F: '{s+=$2} END {print s+0}'
+          2>/dev/null || true; }
+          | awk -F: '{s+=$2} END {print s+0}'
       register: fail_count
       changed_when: false
 
