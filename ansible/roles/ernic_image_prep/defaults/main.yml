@@ -1,0 +1,48 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Everything that is worth baking into a golden image, so
+# per-VM overlays do not re-download it.
+
+---
+# Install RDMA userspace and tooling via
+# sbates130272.batesste.rdma_setup.
+ernic_image_rdma: true
+
+# Extra build and test packages needed by ernic_guest_setup
+# (rdma-core rebuild, DKMS driver build, iperf3 sanity runs).
+ernic_image_packages:
+  - iperf3
+  - build-essential
+  - cmake
+  - ninja-build
+  - pkg-config
+  - curl
+  - dkms
+  - libcli11-dev
+  - prometheus-node-exporter
+
+# Install the ROCm stack via sbates130272.batesste.rocm_setup.
+# Only needed when the VM gets a GPU passed through.
+ernic_gpu_passthrough: true
+
+# Keep user units (tmux sessions, background test runs) alive
+# after the SSH session that started them goes away.
+ernic_image_logind_keep_processes: true
+
+# Load the rocm-ernic modules at boot so a rebooted overlay
+# comes back with its RDMA device.
+ernic_image_modules_load: true
+
+# Add the emulated NIC to the system pci.ids so lspci names it.
+ernic_image_pciids: true
+ernic_image_pciids_vendor: "1022"
+ernic_image_pciids_entry: "8000  ROCm Emulated RDMA NIC"
+
+# Drop the apt cache at the end to shrink the image.
+ernic_image_clean_apt: true
+
+# apt retries -- image builds routinely race a mirror.
+ernic_image_apt_retries: 3
+ernic_image_apt_delay: 10

@@ -5,10 +5,19 @@
 # Ansible Galaxy collection dependencies for rocm-ernic.
 # Install with: ansible-galaxy collection install -r requirements.yml
 
+#
+# sbates130272.rocm_ernic is not listed here: the playbooks in
+# this directory reach its roles by short name via roles_path in
+# ansible.cfg, so they use the source under ansible/roles/.
+# Consumers outside this repo install it from Galaxy:
+#
+#   - name: sbates130272.rocm_ernic
+#     version: ">=0.1.0"
+
 ---
 collections:
   - name: sbates130272.batesste
-    version: ">=1.2.0"
+    version: ">=1.3.0"
   - name: ansible.posix
     version: ">=1.6.2"
   - name: community.general

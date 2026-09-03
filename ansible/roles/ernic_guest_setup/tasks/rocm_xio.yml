@@ -1,0 +1,151 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# GPU passthrough path.  ROCm and the build tools come from
+# ernic_image_prep; only the rocm-xio build and load happen
+# here, against the tarball ernic_host_setup staged on the
+# guest.
+
+---
+- name: Add the VM user to the render and video groups
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: render,video
+    append: true
+
+- name: Load the amdgpu kernel module
+  community.general.modprobe:
+    name: amdgpu
+    state: present
+
+- name: Verify the GPU via rocm-smi
+  ansible.builtin.command:
+    cmd: rocm-smi --showid
+  register: ernic_rocm_smi_check
+  changed_when: false
+  failed_when: false
+
+- name: Display rocm-smi output
+  ansible.builtin.debug:
+    var: ernic_rocm_smi_check.stdout_lines
+
+- name: Assert the GPU is visible in the guest
+  ansible.builtin.assert:
+    that:
+      - ernic_rocm_smi_check.rc == 0
+    fail_msg: >-
+      rocm-smi failed. The GPU may not be passed through
+      correctly. Check QEMU PCI_HOSTDEV and IOMMU
+      configuration.
+
+- name: Copy and extract the rocm-xio tarball
+  ansible.builtin.unarchive:
+    src: "{{ ernic_rocm_xio_tarball }}"
+    dest: "{{ ernic_rocm_xio_dir | dirname }}"
+    creates: "{{ ernic_rocm_xio_dir }}"
+
+# rocm-xio expects ERNIC_PROJECT_DIR to be laid out like the
+# rocm-ernic repo, but only reads the provider directory.
+- name: Create the ERNIC_PROJECT_DIR stub
+  ansible.builtin.file:
+    path: "{{ ernic_rocm_xio_stub_dir }}/rdma-core/providers"
+    state: directory
+    mode: "0755"
+
+- name: Symlink the rocm_ernic provider into the stub
+  ansible.builtin.file:
+    src: "{{ ernic_guest_provider_dir }}/providers/rocm_ernic"
+    dest: >-
+      {{ ernic_rocm_xio_stub_dir }}/rdma-core/providers/rocm_ernic
+    state: link
+
+- name: Remove any stale rocm-xio build directory
+  ansible.builtin.file:
+    path: "{{ ernic_rocm_xio_dir }}/build"
+    state: absent
+
+- name: Configure the rocm-xio build
+  ansible.builtin.command:
+    argv:
+      - cmake
+      - -S
+      - "{{ ernic_rocm_xio_dir }}"
+      - -B
+      - "{{ ernic_rocm_xio_dir }}/build"
+      - -GNinja
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DGDA_ERNIC=ON
+      - "-DERNIC_PROJECT_DIR={{ ernic_rocm_xio_stub_dir }}"
+  changed_when: true
+
+- name: Build rocm-xio
+  ansible.builtin.command:
+    argv:
+      - cmake
+      - --build
+      - "{{ ernic_rocm_xio_dir }}/build"
+      - "-j{{ ansible_processor_vcpus | default(2) }}"
+  changed_when: true
+
+- name: Build, install and load the rocm-xio kernel module
+  when: ernic_pci_mmio_bridge | bool
+  block:
+
+    - name: Build the rocm-xio kernel module
+      community.general.make:
+        chdir: "{{ ernic_rocm_xio_dir }}/kernel/rocm-xio"
+        params:
+          KDIR: "/lib/modules/{{ ansible_kernel }}/build"
+
+    - name: Install the rocm-xio module for modprobe
+      ansible.builtin.shell:
+        cmd: >-
+          mkdir -p /lib/modules/{{ ansible_kernel }}/extra
+          && cp -f {{ ernic_rocm_xio_dir }}/kernel/rocm-xio/rocm-xio.ko
+          /lib/modules/{{ ansible_kernel }}/extra/
+          && depmod -a
+      changed_when: true
+
+    - name: Load the rocm-xio kernel module
+      community.general.modprobe:
+        name: rocm_xio
+        state: present
+
+    - name: Verify the rocm-xio module loaded
+      ansible.builtin.shell:
+        cmd: lsmod | grep -q rocm_xio
+      changed_when: false
+
+    - name: Verify /dev/rocm-xio exists
+      ansible.builtin.stat:
+        path: /dev/rocm-xio
+      register: ernic_rocm_xio_dev
+
+    - name: Assert the rocm-xio device node exists
+      ansible.builtin.assert:
+        that:
+          - ernic_rocm_xio_dev.stat.exists
+        fail_msg: >-
+          /dev/rocm-xio not found after loading rocm-xio.ko.
+          Check dmesg for errors.
+
+- name: Locate the xio-tester binary
+  ansible.builtin.shell:
+    cmd: >-
+      find {{ ernic_rocm_xio_dir }}/build -name xio-tester
+      -type f | head -1
+  register: ernic_xio_tester_path
+  changed_when: false
+
+- name: Verify xio-tester exists
+  ansible.builtin.assert:
+    that:
+      - ernic_xio_tester_path.stdout | length > 0
+    fail_msg: >-
+      xio-tester binary not found after building rocm-xio.
+      Check the build output for errors.
+
+- name: Display the xio-tester location
+  ansible.builtin.debug:
+    msg: "xio-tester: {{ ernic_xio_tester_path.stdout }}"

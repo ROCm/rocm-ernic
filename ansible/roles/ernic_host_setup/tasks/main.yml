@@ -1,0 +1,30 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Build, install, configure and start the rocm-ernic service on
+# this host, then prepare anything the guest VMs need from it.
+
+---
+# Short name, not the FQCN: it resolves against the containing
+# collection when installed from Galaxy, and against roles_path
+# when run from a checkout of this repo.
+- name: Resolve the rocm-ernic source checkout
+  ansible.builtin.include_role:
+    name: ernic_source
+
+- name: Build and install rocm-ernic
+  ansible.builtin.include_tasks: build.yml
+  when: ernic_build | bool
+
+- name: Configure and start the rocm-ernic service
+  ansible.builtin.include_tasks: service.yml
+  when: ernic_install_service | bool
+
+- name: Bind GPUs to vfio-pci for passthrough
+  ansible.builtin.include_tasks: vfio.yml
+  when: ernic_gpu_passthrough | bool
+
+- name: Stage rocm-xio for the guests
+  ansible.builtin.include_tasks: rocm_xio_stage.yml
+  when: ernic_gpu_passthrough | bool

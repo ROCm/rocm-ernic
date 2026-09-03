@@ -1,0 +1,31 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Push the driver sources and the rdma-core provider from the
+# controller's rocm-ernic checkout into the guest.
+
+---
+- name: Copy driver source to the guest
+  ansible.builtin.copy:
+    src: "{{ ernic_source_dir }}/driver/"
+    dest: "{{ ernic_guest_driver_dir }}/"
+    mode: "0755"
+
+- name: Create the rdma-core provider directory
+  ansible.builtin.file:
+    path: "{{ ernic_guest_provider_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy the rdma-core providers directory
+  ansible.builtin.copy:
+    src: "{{ ernic_source_dir }}/rdma-core/providers/"
+    dest: "{{ ernic_guest_provider_dir }}/providers/"
+    mode: "0755"
+
+- name: Copy the rdma-core rocm-ernic-dv directory
+  ansible.builtin.copy:
+    src: "{{ ernic_source_dir }}/rdma-core/rocm-ernic-dv/"
+    dest: "{{ ernic_guest_provider_dir }}/rocm-ernic-dv/"
+    mode: "0755"

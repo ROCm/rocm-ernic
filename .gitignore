@@ -120,6 +120,12 @@ docs/perf-results/
 ansible/playbooks/cloud-config-*
 ansible/playbooks/network-config-*
 
+# Ansible collection build output (ansible-galaxy collection
+# build), ansible-test scratch, and local -p collection installs
+sbates130272-rocm_ernic-*.tar.gz
+ansible/tests/output/
+ansible/collections/
+
 # Nix build symlinks and direnv cache (flake.lock IS tracked)
 /result
 /result-*

@@ -6,6 +6,15 @@ create golden VM images, launch VMs, install the kernel
 driver and custom rdma-core provider, and run iperf3 /
 perftest sanity tests.
 
+The reusable parts — everything needed to turn an Ubuntu
+image into a rocm-ernic node — are packaged as the
+[`sbates130272.rocm_ernic`](COLLECTION.md) collection,
+whose roles live in [roles/](roles/). This directory *is* the
+collection: `galaxy.yml` sits here and `build_ignore` excludes
+the repo-local parts (playbooks, inventory, group_vars) from
+the published artifact. The setup playbooks are thin wrappers
+around the roles; the test playbooks are repo-local.
+
 ## Prerequisites
 
 - Ubuntu 24.04 or 26.04 host
@@ -19,6 +28,24 @@ Install dependencies:
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
+```
+
+`sbates130272.rocm_ernic` is *not* in `requirements.yml`:
+`ansible.cfg` sets `roles_path = ./roles:...`, so
+these playbooks reach its roles by short name and always run
+against this checkout. That path is relative, so run
+`ansible-playbook` from this directory.
+
+To use the roles from another project, install the published
+collection and address them by fully qualified name:
+
+```bash
+ansible-galaxy collection install sbates130272.rocm_ernic
+```
+
+```yaml
+roles:
+  - role: sbates130272.rocm_ernic.ernic_image_prep
 ```
 
 ## Quick Start
@@ -87,46 +114,64 @@ ansible-playbook site.yml \
   -e ernic_vm_backing=/path/to/backing.qcow2
 ```
 
-See `group_vars/all.yml` for the full variable reference.
+`group_vars/all.yml` holds the site configuration for this
+repo.
+Per-role defaults (`ernic_bin`, `ernic_nic_name`,
+`ernic_rdma_core_version`, the debug switches, …) live in
+`roles/*/defaults/main.yml`; anything set in
+`group_vars/all.yml` wins over them.
 
 ## Directory Layout
 
-```
-ansible/
+```text
+ansible/                  # this directory is the collection
+├── galaxy.yml            # Collection metadata + build_ignore
+├── COLLECTION.md         # Galaxy landing page
+├── meta/runtime.yml      # Minimum ansible-core
+├── changelogs/           # antsibull-changelog fragments
+├── roles/                # Shipped to Galaxy
+│   ├── ernic_source/         # Resolve/clone the checkout
+│   ├── ernic_image_prep/     # Bake a golden image
+│   ├── ernic_guest_setup/    # Driver + rdma-core + NIC
+│   └── ernic_host_setup/     # Build, service, vfio-pci
+│                         # ── below: repo-local, build_ignore'd
 ├── ansible.cfg           # Ansible configuration
 ├── requirements.yml      # Galaxy collection deps
 ├── site.yml              # Master playbook
 ├── group_vars/
-│   └── all.yml           # Default variables
+│   └── all.yml           # Site configuration
 ├── inventory/
 │   └── hosts.yml         # Static inventory
 ├── playbooks/
-│   ├── host-setup.yml         # Build, install, configure
+│   ├── host-setup.yml         # -> ernic_host_setup
 │   ├── vm-create.yml          # Golden image + VM launch
-│   ├── guest-setup.yml        # Driver + rdma-core
+│   ├── guest-setup.yml        # -> ernic_guest_setup
 │   ├── sanity-tests.yml       # iperf3 + perftest
 │   ├── performance-tests.yml  # Full BW/lat sweeps
 │   └── stress-tests.yml       # Multi-QP, soak, churn
 └── templates/
-    └── rocm-ernic.env.j2 # Env file template
+    └── packages-ernic    # gen-vm package list
 ```
 
 ## How It Works
 
-1. **host-setup** builds the rocm-ernic server, installs the
-   systemd service and ernicctl, templates the env file from
-   Ansible variables, and starts the service.
+1. **host-setup** runs `ernic_host_setup`: builds the
+   rocm-ernic server, installs the systemd service and
+   ernicctl, templates the env file from Ansible variables,
+   starts the service, binds GPUs to vfio-pci and stages a
+   rocm-xio tarball for the guests.
 
 2. **vm-create** checks for an existing golden backing qcow2.
-   If absent, it runs `gen-vm` to create one via cloud-init.
-   It then calls `ernicctl vm-launch` for each instance and
-   waits for SSH readiness.
+   If absent, it runs `gen-vm` to create one via cloud-init,
+   boots it once and applies `ernic_image_prep` to bake in
+   RDMA userspace, ROCm and the build toolchain. It then calls
+   `ernicctl vm-launch` for each instance and waits for SSH
+   readiness.
 
-3. **guest-setup** uses the `sbates130272.batesste.rdma_setup`
-   role to install RDMA packages (including perftest), then
-   builds the custom rdma-core with the rocm_ernic provider,
-   builds and loads the kernel driver, and configures IP
-   addresses on the emulated NICs.
+3. **guest-setup** runs `ernic_guest_setup`: builds the custom
+   rdma-core with the rocm_ernic provider, builds and loads
+   the kernel driver via DKMS, applies the udev rules, and
+   configures IP addresses on the emulated NICs.
 
 4. **sanity-tests** runs iperf3 between two VMs over the
    emulated Ethernet NICs for TCP/IP validation, then runs

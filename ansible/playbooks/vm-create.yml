@@ -324,7 +324,10 @@
         - not ernic_backing_stat.stat.exists
         - ernic_golden_image | bool
 
-# Provision golden VM with collection roles
+# Provision golden VM with collection roles.  Everything that is
+# expensive and version-stable (RDMA userspace, ROCm, the build
+# toolchain, modules-load.d, pci.ids) is baked in here by
+# ernic_image_prep, so per-VM overlays do not repeat it.
 - name: Provision golden image with base packages
   hosts: ernic_golden
   become: true
@@ -332,117 +335,10 @@
   vars_files:
     - ../group_vars/all.yml
 
+  roles:
+    - role: ernic_image_prep
+
   tasks:
-
-    - name: Run rdma_setup role
-      block:
-        - name: Install RDMA packages
-          ansible.builtin.include_role:
-            name: sbates130272.batesste.rdma_setup
-          vars:
-            rdma_setup_install_rdma_exporter: true
-      rescue:
-        - name: Note rdma_setup non-fatal failure
-          ansible.builtin.debug:
-            msg: >-
-              rdma_setup role failed (likely rdma-detect
-              on emulated device). Packages were
-              installed; continuing.
-
-    - name: Install additional build and test packages
-      ansible.builtin.apt:
-        name:
-          - iperf3
-          - build-essential
-          - cmake
-          - ninja-build
-          - pkg-config
-          - curl
-          - dkms
-          - libcli11-dev
-          - prometheus-node-exporter
-        state: present
-        update_cache: true
-      register: golden_apt_result
-      retries: 3
-      delay: 10
-      until: golden_apt_result is success
-
-    - name: Install ROCm via rocm_setup role
-      ansible.builtin.include_role:
-        name: sbates130272.batesste.rocm_setup
-      vars:
-        rocm_setup_skip_reboot: true
-        rocm_setup_run_checks: false
-        rocm_setup_install_metrics_exporter: true
-      when: ernic_gpu_passthrough | bool
-
-    # ── Static config baked into golden image ───────
-    - name: Disable KillUserProcesses in logind
-      ansible.builtin.copy:
-        dest: /etc/systemd/logind.conf.d/99-kill-user-processes.conf
-        content: |
-          [Login]
-          KillUserProcesses=no
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Enable rocm-ernic modules on boot
-      ansible.builtin.copy:
-        dest: /etc/modules-load.d/rocm-ernic.conf
-        content: |
-          rocm_ernic_eth
-          rocm_ernic_rdma
-        mode: "0644"
-
-    - name: Enable rocm-xio module on boot
-      ansible.builtin.copy:
-        dest: /etc/modules-load.d/rocm-xio.conf
-        content: "rocm-xio\n"
-        mode: "0644"
-      when: ernic_gpu_passthrough | bool
-
-    - name: Find system pci.ids path
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - /usr/share/hwdata/pci.ids
-        - /usr/share/misc/pci.ids
-      register: pciids_stat
-
-    - name: Set pci.ids path fact
-      ansible.builtin.set_fact:
-        pciids_path: >-
-          {{ (pciids_stat.results
-              | selectattr('stat.exists')
-              | first
-              | default({})).item | default('') }}
-
-    - name: Check if ROCm ERNIC entry exists in pci.ids
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -q
-          - "8000  ROCm Emulated RDMA NIC"
-          - "{{ pciids_path }}"
-      register: pciids_grep
-      failed_when: false
-      changed_when: false
-      when: pciids_path | length > 0
-
-    - name: Merge ROCm ERNIC device into pci.ids
-      ansible.builtin.replace:
-        path: "{{ pciids_path }}"
-        regexp: '^(1022\s+.*)$'
-        replace: '\1\n\t8000  ROCm Emulated RDMA NIC'
-      when:
-        - pciids_path | length > 0
-        - pciids_grep.rc | default(1) != 0
-
-    - name: Clean apt cache to shrink image
-      ansible.builtin.apt:
-        autoclean: true
 
     - name: Shut down golden VM
       ansible.builtin.command:

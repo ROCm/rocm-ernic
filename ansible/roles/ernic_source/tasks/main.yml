@@ -1,0 +1,68 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Resolve the rocm-ernic source tree on the *controller*.
+# The guest roles copy the driver, the rdma-core provider and
+# the udev rules from here, so the clone deliberately happens
+# on localhost and not inside the target VM -- guests in the
+# test mesh generally have no route to GitHub.
+
+---
+- name: Resolve the rocm-ernic source checkout
+  when: not (ernic_source_resolved | default(false))
+  block:
+
+    - name: Clone rocm-ernic on the controller
+      ansible.builtin.git:
+        repo: "{{ ernic_source_repo_url }}"
+        dest: "{{ ernic_source_clone_dir }}"
+        version: "{{ ernic_source_repo_version }}"
+        accept_hostkey: true
+        force: "{{ ernic_source_force_clone | bool }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: not (ernic_source_dir | trim | length > 0)
+
+    - name: Record the resolved source directory
+      ansible.builtin.set_fact:
+        ernic_source_dir: >-
+          {{ (ernic_source_dir | trim)
+             if (ernic_source_dir | trim | length > 0)
+             else ernic_source_clone_dir }}
+
+    - name: Verify the source tree looks like rocm-ernic
+      ansible.builtin.stat:
+        path: "{{ ernic_source_dir }}/{{ item }}"
+      register: ernic_source_probe
+      delegate_to: localhost
+      become: false
+      run_once: true
+      loop:
+        - driver/setup-rocm-ernic-dkms.sh
+        - rdma-core/providers/rocm_ernic
+        - udev/99-rocm-ernic.rules
+
+    - name: Fail when the source tree is incomplete
+      ansible.builtin.assert:
+        that:
+          - ernic_source_probe.results
+            | rejectattr('stat.exists')
+            | list | length == 0
+        fail_msg: >-
+          {{ ernic_source_dir }} does not look like a rocm-ernic
+          checkout; missing
+          {{ ernic_source_probe.results
+             | rejectattr('stat.exists')
+             | map(attribute='item') | join(', ') }}.
+          Set ernic_source_dir to a checkout, or leave it empty
+          to clone {{ ernic_source_repo_url }}.
+      run_once: true
+
+    # Set last: the block's guard is re-evaluated per task, so
+    # raising this flag any earlier would skip the rest of the
+    # block on the very run that is meant to do the work.
+    - name: Mark the source as resolved
+      ansible.builtin.set_fact:
+        ernic_source_resolved: true

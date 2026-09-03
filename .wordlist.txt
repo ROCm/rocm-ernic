@@ -578,3 +578,12 @@ uAPI
 uninit
 unvalidated
 deduplicate
+deps
+GPUs
+HCA
+IOMMU
+NIC
+sbates
+SHA
+udev
+cfg

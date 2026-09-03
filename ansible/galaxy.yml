@@ -1,0 +1,62 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+namespace: sbates130272
+name: rocm_ernic
+version: 0.1.0
+# README.md is the repo-local guide to this directory; the
+# Galaxy landing page is COLLECTION.md.
+readme: COLLECTION.md
+
+authors:
+  - Stephen Bates <stephen@raithlin.com>
+
+description: >-
+  Ansible roles that prepare Ubuntu hosts and VM images for
+  rocm-ernic: the DKMS kernel driver, a custom rdma-core build
+  carrying the rocm_ernic provider, udev naming rules, emulated
+  NIC addressing, rocm-xio, and the rocm-ernic systemd service.
+
+license:
+  - MIT
+
+tags:
+  - linux
+  - rdma
+  - rocm
+  - gpu
+  - qemu
+  - virtualization
+
+dependencies:
+  sbates130272.batesste: ">=1.3.0"
+  ansible.posix: ">=1.6.2"
+  community.general: ">=9.0.0"
+
+repository: https://github.com/ROCm/rocm-ernic
+documentation: https://github.com/ROCm/rocm-ernic/tree/main/ansible
+homepage: https://github.com/ROCm/rocm-ernic
+issues: https://github.com/ROCm/rocm-ernic/issues
+
+# This directory is both the collection source and the repo's
+# own test automation, so build_ignore -- not a subdirectory --
+# is what keeps repo-local files out of the published artifact.
+# Anything new added here ships to Galaxy unless listed. The
+# build job in .github/workflows/ansible-collection.yml asserts
+# the artifact contents to catch that.
+build_ignore:
+  - "*.tar.gz"
+  - "roles/*/tests"
+  - ansible.cfg
+  - .ansible-lint
+  - README.md
+  - requirements.yml
+  - site.yml
+  - ci-site.yml
+  - playbooks
+  - group_vars
+  - inventory
+  - templates
+  - "*.sh"

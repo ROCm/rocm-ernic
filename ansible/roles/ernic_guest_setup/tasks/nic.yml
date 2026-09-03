@@ -1,0 +1,92 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Give each guest a unique hostname and an address on the
+# emulated NIC, so the mesh is reachable for the test plays.
+
+---
+- name: Set the VM hostname
+  ansible.builtin.hostname:
+    name: "{{ ernic_vm_name_base }}-{{ ernic_guest_vm_index }}"
+  when: ernic_set_hostname | bool
+
+- name: Update /etc/hosts with the new hostname
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: >-
+      127.0.1.1 {{ ernic_vm_name_base }}-{{ ernic_guest_vm_index }}
+  when: ernic_set_hostname | bool
+
+- name: Fail when no address was supplied for the NIC
+  ansible.builtin.assert:
+    that:
+      - ernic_guest_vm_ip | trim | length > 0
+    fail_msg: >-
+      ernic_guest_vm_ip is empty.  Set it (or the vm_ip host var
+      that vm-create.yml / ci-vm-register.yml supply) to the
+      address this guest should take on {{ ernic_nic_name }}.
+
+- name: Check that the emulated NIC exists
+  ansible.builtin.command:
+    cmd: "ip -o link show {{ ernic_nic_name }}"
+  register: ernic_nic_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail if the NIC is not found
+  ansible.builtin.assert:
+    that:
+      - ernic_nic_check.rc == 0
+    fail_msg: >-
+      NIC {{ ernic_nic_name }} not found.
+      Check udev rules and driver loading.
+
+- name: Bring the emulated NIC up
+  ansible.builtin.command:
+    argv:
+      - ip
+      - link
+      - set
+      - "{{ ernic_nic_name }}"
+      - up
+  changed_when: true
+
+- name: Check the existing IP on the NIC
+  ansible.builtin.command:
+    argv:
+      - ip
+      - addr
+      - show
+      - dev
+      - "{{ ernic_nic_name }}"
+  register: ernic_nic_addr_check
+  changed_when: false
+
+- name: Assign the IP address to the emulated NIC
+  ansible.builtin.command:
+    argv:
+      - ip
+      - addr
+      - add
+      - "{{ ernic_guest_vm_ip }}/{{ ernic_nic_prefix }}"
+      - dev
+      - "{{ ernic_nic_name }}"
+  when: ernic_guest_vm_ip not in ernic_nic_addr_check.stdout
+  changed_when: true
+
+- name: Display the NIC configuration
+  ansible.builtin.command:
+    argv:
+      - ip
+      - addr
+      - show
+      - dev
+      - "{{ ernic_nic_name }}"
+  register: ernic_nic_config
+  changed_when: false
+
+- name: Show NIC details
+  ansible.builtin.debug:
+    var: ernic_nic_config.stdout_lines

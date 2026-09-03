@@ -1,0 +1,21 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Where the rocm-ernic driver, rdma-core provider and udev
+# rules come from.  Everything the other roles copy into a
+# guest is read from ``ernic_source_dir`` on the controller.
+
+---
+# Set this to an existing rocm-ernic checkout to skip the
+# clone entirely.  The playbooks in the rocm-ernic repo set
+# it to the repo root; standalone consumers leave it empty
+# and get a clone at ``ernic_source_clone_dir``.
+ernic_source_dir: ""
+
+ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
+ernic_source_repo_version: "main"
+ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
+
+# Re-clone even when the checkout already exists.
+ernic_source_force_clone: false

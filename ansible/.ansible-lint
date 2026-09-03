@@ -1,0 +1,17 @@
+---
+# .ansible-lint
+# See https://ansible-lint.readthedocs.io/configuring/
+
+exclude_paths:
+  - roles/*/tests
+  - collections/  # local ansible-galaxy installs
+
+warn_list:
+  - command-instead-of-module
+  - command-instead-of-shell
+  - name[template]
+  - schema[meta]  # Ubuntu resolute not yet in schema
+  # The ernic_* prefix predates the split into roles and is used
+  # by the test playbooks and ci/jobs/*.sh; keeping it beats
+  # renaming every consumer to ernic_guest_setup_*.
+  - var-naming[no-role-prefix]
