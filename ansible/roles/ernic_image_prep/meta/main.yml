@@ -11,7 +11,7 @@ galaxy_info:
     Bake RDMA, ROCm and rocm-ernic prerequisites into a golden
     VM image
   license: MIT
-  min_ansible_version: "2.16.0"
+  min_ansible_version: "2.18.0"
   platforms:
     - name: Ubuntu
       versions:

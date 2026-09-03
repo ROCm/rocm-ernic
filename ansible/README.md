@@ -18,7 +18,9 @@ around the roles; the test playbooks are repo-local.
 ## Prerequisites
 
 - Ubuntu 24.04 or 26.04 host
-- Ansible 2.16+ (`sudo apt install ansible`)
+- Ansible core 2.18+ — Ubuntu 24.04's `ansible` package ships 2.16,
+  which is too old for `community.general` 13; use `pipx install
+  ansible-core` or the Ansible PPA
 - QEMU 10.1+ installed (default `/opt/qemu-v10.1.2/`)
 - The [qemu-minimal](https://github.com/sbates130272/qemu-minimal)
   checkout at `~/Projects/qemu-minimal`

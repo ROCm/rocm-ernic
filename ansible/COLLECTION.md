@@ -68,10 +68,14 @@ needs to be reproducible.
 
 ## Requirements
 
-- `ansible-core` >= 2.16
-- `sbates130272.batesste` >= 1.3.0 (`rdma_setup`, `rocm_setup`)
-- `ansible.posix` >= 1.6.2, `community.general` >= 9.0.0
+- `ansible-core` >= 2.18
+- `sbates130272.batesste` >= 2.3.0 (`rdma_setup`, `rocm_setup`)
+- `community.general` >= 13.3.0
 - A rocm-ernic checkout on the controller, or network access to clone one
+
+The `ansible-core` floor follows from the other two: `batesste` 2.3.0
+requires `community.general` >= 13.3.0, which requires `ansible-core`
+>= 2.18.
 
 ## License
 

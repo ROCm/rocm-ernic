@@ -11,7 +11,7 @@ galaxy_info:
     Resolve the rocm-ernic source checkout used by the other
     roles, cloning it on the controller when needed
   license: MIT
-  min_ansible_version: "2.16.0"
+  min_ansible_version: "2.18.0"
   platforms:
     - name: Ubuntu
       versions:

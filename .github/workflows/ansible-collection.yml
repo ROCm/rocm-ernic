@@ -197,6 +197,29 @@ jobs:
         with:
           name: collection-artifact
 
+      # Galaxy will not let a version be published twice, so a tag
+      # that disagrees with galaxy.yml burns that version number.
+      # Read the version out of the artifact rather than a fresh
+      # checkout: it asserts what is about to be uploaded, and
+      # actions/checkout would clean the tarball out of the
+      # workspace on its way past.
+      - name: Assert the tag matches the collection version
+        run: |
+          ver=$(python3 - <<'EOF'
+          import glob, json, tarfile
+          tar = tarfile.open(glob.glob('*.tar.gz')[0])
+          m = json.load(tar.extractfile('MANIFEST.json'))
+          print(m['collection_info']['version'])
+          EOF
+          )
+          tag="${GITHUB_REF_NAME#ansible-v}"
+          if [ "${tag}" != "${ver}" ]; then
+            echo "::error::tag ansible-v${tag} does not match" \
+              "version ${ver} in ${COLLECTION_DIR}/galaxy.yml"
+            exit 1
+          fi
+          echo "publishing ${COLLECTION_FQCN} ${ver}"
+
       - name: Publish to Galaxy
         run: >-
           ansible-galaxy collection publish
