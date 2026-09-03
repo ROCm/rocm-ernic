@@ -1,20 +1,23 @@
 # Static analysis via the Nix analysis toolkit (nix/analysis/).
 #
-# This runs the project's hermetic static-analysis aggregate on every pull
-# request and surfaces the triaged findings in the job summary plus a
-# downloadable artifact. It is INFORMATIONAL ONLY: `continue-on-error` keeps
-# the job green regardless of what the tools report (or if the analysis build
-# itself fails), so it can never block a merge. Findings are for reviewers to
-# read, not a gate.
+# OPT-IN and INFORMATIONAL. It does not run on ordinary pushes and never
+# blocks a merge. Trigger it either by:
+#   * adding the `run-static` label to a pull request (re-runs on each new
+#     push while the label is present), or
+#   * the manual "Run workflow" button (workflow_dispatch), choosing a level.
+#
+# Runs the project's hermetic static-analysis aggregate and surfaces the
+# triaged findings in the job summary plus a downloadable artifact.
+# `continue-on-error` keeps the job green regardless of what the tools report
+# (or if the analysis build itself fails), so it is purely informational.
 #
 # The `standard` level = clang-tidy + cppcheck + flawfinder + clang-analyzer +
-# gcc-warnings, then the triage prioritiser (nix/analysis/triage/). Use the
-# manual "Run workflow" button to run `quick` or `deep` on demand.
+# gcc-warnings, then the triage prioritiser (nix/analysis/triage/).
 name: Static Analysis (nix)
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [labeled, synchronize, reopened]
   workflow_dispatch:
     inputs:
       level:
@@ -39,6 +42,11 @@ concurrency:
 jobs:
   analysis:
     name: nix analysis
+    # Opt-in gate: run only on manual dispatch, or when the PR carries the
+    # `run-static` label. Ordinary pushes to an unlabelled PR are skipped.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-static')
     runs-on: ubuntu-24.04
     # Non-merge-blocking: this converts any failure below into a neutral/green
     # conclusion so the check is purely informational and never gates a PR.
