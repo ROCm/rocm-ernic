@@ -1,0 +1,116 @@
+# Opt-in fuzzing via the Nix fuzz harnesses (nix/analysis/fuzz/).
+#
+# libFuzzer harnesses for the untrusted wire-format parsers
+# (rdma_cm_process_message, dhcp_server_process, net_headers parsers), each
+# built with -fsanitize=fuzzer,address,undefined.
+#
+# This job is OPT-IN and INFORMATIONAL — it does not run on ordinary pushes
+# and never blocks a merge. Trigger it either by:
+#   * adding the `run-fuzz` label to a pull request (re-runs on each new push
+#     while the label is present), or
+#   * the manual "Run workflow" button (workflow_dispatch), with a chosen
+#     per-harness duration.
+#
+# The fuzzers always exit 0 — any crash inputs and symbolized repros are the
+# deliverable, uploaded as the `fuzz-report` artifact and summarised in the
+# job summary — so a discovered crash never fails the check.
+name: Fuzz (nix, opt-in)
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Seconds to fuzz each harness"
+        default: "60"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: nix fuzz
+    # Opt-in gate: run only on manual dispatch, or when the PR carries the
+    # `run-fuzz` label. Ordinary pushes to an unlabelled PR are skipped.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-fuzz')
+    runs-on: ubuntu-24.04
+    # Non-merge-blocking: informational only, never gates a PR.
+    continue-on-error: true
+    timeout-minutes: 30
+    # Resolve the duration into an env var (never interpolated into a shell
+    # command); defaults to 60s for the label-triggered path.
+    env:
+      FUZZ_SECONDS: ${{ github.event.inputs.fuzz_seconds || '60' }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Nix build cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build fuzz harnesses
+        run: nix build .#fuzz --print-build-logs --out-link fuzz
+
+      - name: Run fuzzers
+        id: fuzz
+        run: |
+          # Guard: only accept a positive integer duration; fall back to 60.
+          case "$FUZZ_SECONDS" in
+            ''|*[!0-9]*) FUZZ_SECONDS=60 ;;
+          esac
+          echo "Fuzzing ${FUZZ_SECONDS}s per harness"
+          mkdir -p fuzz-work
+          FUZZ_TIME="$FUZZ_SECONDS" FUZZ_WORKDIR="$PWD/fuzz-work" \
+            ./fuzz/bin/run-fuzzers | tee run-fuzzers.out || true
+          total=$(find fuzz-work -name 'crash-*' 2>/dev/null | wc -l)
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "Total crash inputs: $total"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          {
+            echo "## Fuzz (nix) — ${FUZZ_SECONDS}s per harness"
+            echo ""
+            total="${{ steps.fuzz.outputs.total }}"
+            if [ -z "$total" ]; then
+              echo "> ⚠️ The fuzz run did not complete — see the job log. This check does not block merges."
+            elif [ "$total" = "0" ]; then
+              echo "✅ No crashes found across the harnesses (rdma_cm_proto, dhcp_server, net_headers)."
+            else
+              echo "🐛 **$total crash input(s) found.** Crash inputs and symbolized repros are in the **fuzz-report** artifact."
+            fi
+            echo ""
+            if [ -f run-fuzzers.out ]; then
+              echo '```text'
+              cat run-fuzzers.out
+              echo '```'
+            fi
+            echo ""
+            echo "_Opt-in, informational only — this workflow never blocks merges._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload fuzz report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Logs (which contain the symbolized crash stack when a harness
+          # aborts) and any crash inputs — not the whole accumulated corpus.
+          name: fuzz-report
+          path: |
+            fuzz-work/*.log
+            fuzz-work/**/crash-*
+            run-fuzzers.out
+          if-no-files-found: warn
+          retention-days: 14

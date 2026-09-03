@@ -1,0 +1,135 @@
+# Static analysis via the Nix analysis toolkit (nix/analysis/).
+#
+# OPT-IN and INFORMATIONAL. It does not run on ordinary pushes and never
+# blocks a merge. Trigger it either by:
+#   * adding the `run-static` label to a pull request (re-runs on each new
+#     push while the label is present), or
+#   * the manual "Run workflow" button (workflow_dispatch), choosing a level.
+#
+# Runs the project's hermetic static-analysis aggregate and surfaces the
+# triaged findings in the job summary plus a downloadable artifact.
+# `continue-on-error` keeps the job green regardless of what the tools report
+# (or if the analysis build itself fails), so it is purely informational.
+#
+# The `standard` level = clang-tidy + cppcheck + flawfinder + clang-analyzer +
+# gcc-warnings, then the triage prioritiser (nix/analysis/triage/).
+name: Static Analysis (nix)
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Analysis level"
+        default: standard
+        type: choice
+        options:
+          - quick
+          - standard
+          - deep
+
+# Read-only: the job never writes to the repo or the PR, so it works
+# unchanged for pull requests from forks.
+permissions:
+  contents: read
+
+# One run per PR/branch; newer pushes cancel older in-flight runs.
+concurrency:
+  group: static-analysis-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: nix analysis
+    # Opt-in gate: run only on manual dispatch, or when the PR carries the
+    # `run-static` label. Ordinary pushes to an unlabelled PR are skipped.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-static')
+    runs-on: ubuntu-24.04
+    # Non-merge-blocking: this converts any failure below into a neutral/green
+    # conclusion so the check is purely informational and never gates a PR.
+    continue-on-error: true
+    timeout-minutes: 45
+    # Resolve the level once, into an env var, so it's never interpolated
+    # directly into a shell command. `inputs.level` is a constrained choice
+    # (quick|standard|deep); defaulting to standard for pull_request runs.
+    env:
+      LEVEL: ${{ github.event.inputs.level || 'standard' }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Determinate Systems' installer enables flakes + nix-command by default.
+      # Maintainers may pin these to a release tag/SHA per their action policy.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      # Optional but recommended: caches the Nix store between runs so the
+      # analysis tools and their closure aren't rebuilt every time. Safe to
+      # remove (or swap for Cachix/FlakeHub) if the org prefers.
+      - name: Nix build cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run static analysis
+        id: analysis
+        run: |
+          echo "Running: nix build .#analysis-$LEVEL"
+          if nix build ".#analysis-$LEVEL" --print-build-logs --out-link result; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::nix build .#analysis-$LEVEL did not complete cleanly (informational check, does not block merges)."
+          fi
+
+      # Dereference the store symlinks into a real directory so the summary
+      # and artifact steps don't depend on /nix/store being readable there.
+      - name: Collect reports
+        if: always()
+        run: |
+          mkdir -p analysis-report
+          if [ -e result ]; then
+            cp -rL result/. analysis-report/ 2>/dev/null || true
+          fi
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          {
+            echo "## Static Analysis (nix \`$LEVEL\`)"
+            echo ""
+            if [ "${{ steps.analysis.outputs.ok }}" != "true" ]; then
+              echo "> ⚠️ The analysis build did not complete cleanly — see the job log."
+              echo "> This check is informational and does not block merges."
+              echo ""
+            fi
+            if [ -f analysis-report/summary.txt ]; then
+              echo '```text'
+              cat analysis-report/summary.txt
+              echo '```'
+            else
+              echo "_No summary was produced._"
+            fi
+            if [ -s analysis-report/triage/high-confidence.txt ]; then
+              echo ""
+              echo "<details><summary>High-confidence triaged findings</summary>"
+              echo ""
+              echo '```text'
+              cat analysis-report/triage/high-confidence.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+            echo ""
+            echo "_Informational only — this workflow never blocks merges. Full per-tool reports are in the **ci-analysis-report** artifact._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload analysis report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-analysis-report
+          path: analysis-report/
+          if-no-files-found: warn
+          retention-days: 14
