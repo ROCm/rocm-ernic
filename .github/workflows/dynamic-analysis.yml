@@ -1,0 +1,153 @@
+# Dynamic / memory analysis via the Nix analysis toolkit (nix/analysis/).
+#
+# Instrumented builds that exercise the server on the loopback backend under:
+#   * sanitizers  — AddressSanitizer + LeakSanitizer + UBSan  (.#analysis-sanitizers)
+#   * valgrind    — memcheck (ptrace-free leak/memory-error detector) (.#analysis-valgrind)
+#   * tsan        — ThreadSanitizer                              (.#analysis-tsan)
+#
+# OPT-IN and INFORMATIONAL. It does not run on ordinary pushes and never
+# blocks a merge. Trigger it either by:
+#   * adding the `run-dynamic` label to a pull request (re-runs on each new
+#     push while the label is present) — runs all three tools, or
+#   * the manual "Run workflow" button (workflow_dispatch), choosing which
+#     tool(s) to run.
+#
+# Each target captures whatever the sanitizer/valgrind runtime reports and
+# always exits 0 (the findings are the deliverable, not a build failure), so
+# a detected leak or data race never fails the check. Counts go to the job
+# summary; the per-tool report (summary.txt + server/client logs) uploads as
+# a `dynamic-<tool>` artifact.
+#
+# Note: LSan's leak check uses ptrace at exit, which some Nix sandboxes
+# restrict; ASan/UBSan still fire during the run, and valgrind is a
+# ptrace-free second opinion for leaks.
+name: Dynamic Analysis (nix)
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: "Which dynamic analysis to run"
+        default: all
+        type: choice
+        options:
+          - all         # sanitizers + valgrind + tsan
+          - memory      # sanitizers + valgrind
+          - sanitizers
+          - valgrind
+          - tsan
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dynamic-analysis-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Resolve which tools to run into a matrix. Label-triggered runs do all
+  # three; workflow_dispatch honours the chosen option.
+  select:
+    name: select tools
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-dynamic')
+    runs-on: ubuntu-24.04
+    outputs:
+      tools: ${{ steps.pick.outputs.tools }}
+    steps:
+      - name: Pick tool set
+        id: pick
+        # `tool` is a constrained choice input; default to `all` for the
+        # label-triggered path. Resolved via env, never interpolated into
+        # the shell command.
+        env:
+          TOOL: ${{ github.event.inputs.tool || 'all' }}
+        run: |
+          case "$TOOL" in
+            all)     tools='["sanitizers","valgrind","tsan"]' ;;
+            memory)  tools='["sanitizers","valgrind"]' ;;
+            valgrind) tools='["valgrind"]' ;;
+            tsan)    tools='["tsan"]' ;;
+            *)       tools='["sanitizers"]' ;;
+          esac
+          echo "tools=$tools" >> "$GITHUB_OUTPUT"
+          echo "Selected: $tools"
+
+  dynamic:
+    name: nix dynamic
+    needs: select
+    runs-on: ubuntu-24.04
+    # Non-merge-blocking: informational only, never gates a PR.
+    continue-on-error: true
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.select.outputs.tools) }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Nix build cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run ${{ matrix.tool }}
+        id: run
+        env:
+          TOOL: ${{ matrix.tool }}
+        run: |
+          echo "Running: nix build .#analysis-$TOOL"
+          if nix build ".#analysis-$TOOL" --print-build-logs --out-link "result-$TOOL"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::nix build .#analysis-$TOOL did not complete cleanly (informational check, does not block merges)."
+          fi
+
+      - name: Collect report
+        if: always()
+        env:
+          TOOL: ${{ matrix.tool }}
+        run: |
+          mkdir -p "report-$TOOL"
+          if [ -e "result-$TOOL" ]; then
+            cp -rL "result-$TOOL"/. "report-$TOOL"/ 2>/dev/null || true
+          fi
+
+      - name: Publish job summary
+        if: always()
+        env:
+          TOOL: ${{ matrix.tool }}
+        run: |
+          {
+            echo "## Dynamic analysis — \`$TOOL\`"
+            echo ""
+            if [ "${{ steps.run.outputs.ok }}" != "true" ]; then
+              echo "> ⚠️ The build did not complete cleanly — see the job log. This check does not block merges."
+              echo ""
+            fi
+            if [ -f "report-$TOOL/summary.txt" ]; then
+              echo '```text'
+              cat "report-$TOOL/summary.txt"
+              echo '```'
+            else
+              echo "_No summary was produced._"
+            fi
+            echo ""
+            echo "_Informational only — this workflow never blocks merges. Full logs are in the **dynamic-$TOOL** artifact._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dynamic-${{ matrix.tool }}
+          path: report-${{ matrix.tool }}/
+          if-no-files-found: warn
+          retention-days: 14
