@@ -97,7 +97,9 @@
 
     - name: "Pre-flight: locate xio-tester on VM1"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm1_ssh }}
           'find /opt/rocm-xio/build
           -name xio-tester -type f
@@ -107,7 +109,9 @@
 
     - name: "Pre-flight: locate xio-tester on VM2"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm2_ssh }}
           'find /opt/rocm-xio/build
           -name xio-tester -type f
@@ -132,7 +136,9 @@
 
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm1_ssh }}
           'ibv_devices
           | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
@@ -202,7 +208,9 @@
 
     - name: "GPU 2-Node: size sweep"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           SIZE="{{ item }}"
           ITERS="{{ ernic_gpu_2node_iters }}"
           TOUT="{{ ernic_gpu_2node_timeout }}"

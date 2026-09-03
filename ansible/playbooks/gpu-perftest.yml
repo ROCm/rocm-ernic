@@ -284,7 +284,9 @@
 
     - name: Detect RDMA device name
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           ibv_devices
           | grep -oE
           "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
@@ -372,7 +374,9 @@
     # ── Summary ────────────────────────────────────
     - name: Count failures
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           grep -c 'FAIL\|NODATA'
           "{{ gpu_bw_csv }}" "{{ gpu_lat_csv }}"
           2>/dev/null

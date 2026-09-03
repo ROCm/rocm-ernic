@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Provision a guest VM with the rocm-ernic kernel driver, the
+# custom rdma-core provider, and IP addresses on the emulated
+# NICs.  Base packages come from ernic_image_prep, which runs
+# once against the golden image.
+
+---
+# Short name, not the FQCN: it resolves against the containing
+# collection when installed from Galaxy, and against roles_path
+# when run from a checkout of this repo.
+- name: Resolve the rocm-ernic source checkout
+  ansible.builtin.include_role:
+    name: ernic_source
+
+- name: Install and start the QEMU guest agent
+  ansible.builtin.include_tasks: guest_agent.yml
+  when: ernic_guest_agent | bool
+
+- name: Stage the driver and provider sources
+  ansible.builtin.include_tasks: stage_sources.yml
+
+- name: Build rdma-core with the rocm_ernic provider
+  ansible.builtin.include_tasks: rdma_core.yml
+  when: ernic_build_rdma_core | bool
+
+- name: Install and load the rocm-ernic driver
+  ansible.builtin.include_tasks: driver.yml
+  when: ernic_install_driver | bool
+
+- name: Configure the emulated NIC
+  ansible.builtin.include_tasks: nic.yml
+  when: ernic_configure_nic | bool
+
+- name: Build and load rocm-xio
+  ansible.builtin.include_tasks: rocm_xio.yml
+  when: ernic_gpu_passthrough | bool

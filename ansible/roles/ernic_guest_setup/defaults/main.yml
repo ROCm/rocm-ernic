@@ -1,0 +1,65 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# ── Phase gates ──────────────────────────────────
+ernic_guest_agent: true
+ernic_build_rdma_core: true
+ernic_install_driver: true
+ernic_configure_nic: true
+ernic_set_hostname: true
+
+# ── Staging paths inside the guest ───────────────
+ernic_guest_driver_dir: /tmp/driver
+ernic_guest_provider_dir: /tmp/rdma-core-provider
+ernic_guest_stamp_dir: /usr/local/share/rocm-ernic
+
+# ── DKMS ─────────────────────────────────────────
+# A fresh id each run, so setup-rocm-ernic-dkms.sh cannot
+# short-circuit on "already installed" while the staged
+# sources under ernic_guest_driver_dir have changed.
+ernic_dkms_pkg_version: >-
+  0.2.0-p{{ lookup('pipe', 'date +%s') }}
+
+# ── rdma-core provider build ─────────────────────
+ernic_rdma_core_version: "62.0"
+ernic_rdma_core_url: >-
+  https://github.com/linux-rdma/rdma-core/releases/download/v{{
+  ernic_rdma_core_version }}/rdma-core-{{
+  ernic_rdma_core_version }}.tar.gz
+ernic_rdma_core_build_dir: /tmp/rdma-core-build
+ernic_rdma_core_prefix: /usr
+
+# ── Kernel modules ───────────────────────────────
+ernic_guest_modules:
+  - ib_core
+  - ib_uverbs
+  - rocm_ernic_eth
+  - rocm_ernic_rdma
+
+# ── Guest NIC ────────────────────────────────────
+ernic_nic_name: rocm-ernic0
+ernic_nic_prefix: 24
+# Per-host values.  vm-create.yml / ci-vm-register.yml supply
+# vm_index and vm_ip via add_host; a static inventory can set
+# these directly instead.
+ernic_guest_vm_index: "{{ vm_index | default(1) }}"
+ernic_guest_vm_ip: "{{ vm_ip | default('') }}"
+ernic_vm_name_base: rocm-ernic-vm
+
+# ── GPU passthrough / rocm-xio ───────────────────
+ernic_gpu_passthrough: true
+ernic_pci_mmio_bridge: true
+# Tarball staged on the guest by ernic_host_setup.
+ernic_rocm_xio_tarball: /tmp/rocm-xio.tar.gz
+ernic_rocm_xio_dir: /opt/rocm-xio
+# rocm-xio wants an ERNIC_PROJECT_DIR laid out like the
+# rocm-ernic repo; only the provider directory is used.
+ernic_rocm_xio_stub_dir: /opt/rocm-ernic-stub
+
+# ── Timing ───────────────────────────────────────
+# A freshly booted guest runs unattended-upgrades, which holds
+# the dpkg lock for the first minute or so.
+ernic_dpkg_lock_wait: 300
+ernic_rdma_device_settle: 5

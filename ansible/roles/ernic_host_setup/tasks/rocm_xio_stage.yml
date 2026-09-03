@@ -1,0 +1,30 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Guests in the mesh have no route to GitHub, so rocm-xio is
+# cloned here and handed over as a tarball that
+# ernic_guest_setup unpacks.
+
+---
+- name: Clone rocm-xio on the host
+  ansible.builtin.git:
+    repo: "{{ ernic_rocm_xio_repo }}"
+    dest: "{{ ernic_rocm_xio_clone_dir }}"
+    version: >-
+      {{ ernic_rocm_xio_commit
+         if ernic_rocm_xio_commit | length > 0
+         else ernic_rocm_xio_branch }}
+    accept_hostkey: true
+    force: true
+
+- name: Create the rocm-xio tarball
+  ansible.builtin.command:
+    argv:
+      - tar
+      - czf
+      - "{{ ernic_rocm_xio_tarball }}"
+      - -C
+      - "{{ ernic_rocm_xio_clone_dir | dirname }}"
+      - "{{ ernic_rocm_xio_clone_dir | basename }}"
+  changed_when: true

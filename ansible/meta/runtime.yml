@@ -1,0 +1,9 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Set by the dependency chain, not by anything this collection
+# uses directly: sbates130272.batesste >=2.3.0 pulls
+# community.general >=13.3.0, which requires ansible-core >=2.18.
+requires_ansible: ">=2.18.0"

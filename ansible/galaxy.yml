@@ -1,0 +1,75 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+namespace: sbates130272
+name: rocm_ernic
+version: 0.1.0
+# README.md is the repo-local guide to this directory; the
+# Galaxy landing page is COLLECTION.md.
+readme: COLLECTION.md
+
+authors:
+  - Stephen Bates <stephen@raithlin.com>
+
+description: >-
+  Ansible roles that prepare Ubuntu hosts and VM images for
+  rocm-ernic: the DKMS kernel driver, a custom rdma-core build
+  carrying the rocm_ernic provider, udev naming rules, emulated
+  NIC addressing, rocm-xio, and the rocm-ernic systemd service.
+
+license:
+  - MIT
+
+tags:
+  - linux
+  - rdma
+  - rocm
+  - gpu
+  - qemu
+  - virtualization
+
+# ansible.posix is deliberately absent: no shipped role uses it.
+# The only consumer is playbooks/vm-create.yml, which does not
+# ship, so it is declared in requirements.yml instead.
+#
+# These floors are a chain, not three independent choices:
+# batesste 2.3.0 requires community.general >=13.3.0, which
+# requires ansible-core >=2.18.  Lowering any one of them without
+# the others gives a set the resolver cannot satisfy.  See
+# requires_ansible in meta/runtime.yml.
+dependencies:
+  sbates130272.batesste: ">=2.3.0"
+  community.general: ">=13.3.0"
+
+repository: https://github.com/ROCm/rocm-ernic
+documentation: https://github.com/ROCm/rocm-ernic/tree/main/ansible
+homepage: https://github.com/ROCm/rocm-ernic
+issues: https://github.com/ROCm/rocm-ernic/issues
+
+# This directory is both the collection source and the repo's
+# own test automation, so build_ignore -- not a subdirectory --
+# is what keeps repo-local files out of the published artifact.
+# Anything new added here ships to Galaxy unless listed. The
+# build job in .github/workflows/ansible-collection.yml asserts
+# the artifact contents to catch that.
+build_ignore:
+  - "*.tar.gz"
+  - "roles/*/tests"
+  - ansible.cfg
+  - .ansible-lint
+  # ansible-lint and ansible-galaxy stage collections here, so on
+  # any workspace that has linted before building this is a live
+  # directory -- gitignored, but build_ignore is a separate list.
+  - .ansible
+  - changelogs/.plugin-cache.yaml
+  - README.md
+  - requirements.yml
+  - site.yml
+  - ci-site.yml
+  - playbooks
+  - group_vars
+  - inventory
+  - templates
+  - "*.sh"

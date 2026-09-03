@@ -1,0 +1,117 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Build and install the rocm-ernic kernel driver via DKMS, then
+# load it and verify the RDMA device registers.
+
+---
+- name: Install the rocm-ernic driver via DKMS
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ ernic_guest_driver_dir }}/setup-rocm-ernic-dkms.sh"
+      - --version
+      - "{{ ernic_dkms_pkg_version | trim }}"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  changed_when: true
+
+# Installed before the modules load, so the devices come up with
+# their stable names the first time round.
+- name: Copy the rocm-ernic udev rules
+  ansible.builtin.copy:
+    src: "{{ ernic_source_dir }}/udev/99-rocm-ernic.rules"
+    dest: /etc/udev/rules.d/99-rocm-ernic.rules
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload udev rules
+  ansible.builtin.command:
+    cmd: udevadm control --reload-rules
+  changed_when: true
+
+- name: Load the rocm-ernic kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ ernic_guest_modules }}"
+
+- name: Verify the rocm-ernic modules loaded
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      lsmod | grep rocm_ernic
+  register: ernic_lsmod_output
+  changed_when: false
+
+- name: Trigger udev to apply naming rules
+  ansible.builtin.shell:
+    cmd: >-
+      udevadm trigger --subsystem-match=net
+      --subsystem-match=infiniband;
+      udevadm settle --timeout=10
+  changed_when: true
+
+- name: Wait for the RDMA device to register
+  ansible.builtin.pause:
+    seconds: "{{ ernic_rdma_device_settle }}"
+
+- name: Check for the RDMA device
+  ansible.builtin.command:
+    cmd: ibv_devices
+  register: ernic_ibv_devices_output
+  changed_when: false
+
+- name: Verify the rocm-ernic RDMA device exists
+  ansible.builtin.assert:
+    that:
+      - >-
+        'rocm-rdma-ernic' in ernic_ibv_devices_output.stdout
+        or 'rocep' in ernic_ibv_devices_output.stdout
+    fail_msg: >-
+      RDMA device not found. ibv_devices output:
+      {{ ernic_ibv_devices_output.stdout }}
+
+- name: Get the RDMA device name
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      ibv_devices | grep -E 'rocm-rdma-ernic|rocep'
+      | awk '{print $1}' | head -1
+  register: ernic_rdma_dev_name
+  changed_when: false
+
+- name: Display RDMA device info
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      ibv_devinfo -d {{ ernic_rdma_dev_name.stdout }}
+      | head -20
+  register: ernic_ibv_devinfo_output
+  changed_when: false
+
+- name: Show RDMA device details
+  ansible.builtin.debug:
+    var: ernic_ibv_devinfo_output.stdout_lines
+
+# The RDMA exporter reads ports/*/counters; the emulated device
+# only exposes hw_counters.
+- name: Symlink RDMA counters for the exporter
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      DEV=$(ibv_devices | grep -oE 'rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+' | head -1)
+      [ -z "$DEV" ] && exit 0
+      for PORT_DIR in /sys/class/infiniband/"$DEV"/ports/*/; do
+        [ -d "$PORT_DIR/hw_counters" ] || continue
+        [ -e "$PORT_DIR/counters" ] && continue
+        ln -s hw_counters "$PORT_DIR/counters"
+      done
+  changed_when: false
+  failed_when: false

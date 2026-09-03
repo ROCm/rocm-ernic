@@ -1,0 +1,129 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Render the env file the systemd unit and rocm-ernic-launcher
+# read, then restart the mesh cleanly.
+
+---
+- name: Ensure the rocm-ernic config directory exists
+  ansible.builtin.file:
+    path: "{{ ernic_config_dir }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+
+- name: Template the rocm-ernic env file
+  ansible.builtin.template:
+    src: rocm-ernic.env.j2
+    dest: "{{ ernic_config_dir }}/rocm-ernic.env"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Reload the systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: Check if the service is already running
+  ansible.builtin.stat:
+    path: "{{ ernic_run_dir }}/instances.json"
+  register: ernic_manifest
+
+- name: Tear down the previous run
+  when:
+    - ernic_manifest.stat.exists
+    - ernic_restart_existing | bool
+  block:
+
+    - name: Stop VMs attached to existing instances
+      ansible.builtin.shell:
+        cmd: >-
+          for i in $(seq 1 20); do
+            ernicctl vm-stop $i 2>/dev/null || true;
+          done
+      become: true
+      changed_when: true
+
+    - name: Find QEMU processes on the target SSH ports
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          set -o pipefail;
+          ss -tlnp 2>/dev/null
+          | grep ':{{ item }} '
+          | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
+          | head -1
+      register: ernic_cleanup_port_pids
+      changed_when: false
+      failed_when: false
+      loop: "{{ range(ernic_vm_ssh_base_port | int,
+                 ernic_vm_ssh_base_port | int
+                 + ernic_instances | int) | list }}"
+
+    - name: Kill QEMU processes on the target SSH ports
+      ansible.builtin.command:
+        argv:
+          - kill
+          - -9
+          - "{{ item.stdout }}"
+      become: true
+      changed_when: true
+      failed_when: false
+      loop: "{{ ernic_cleanup_port_pids.results | default([]) }}"
+      loop_control:
+        label: "port {{ item.item | default('?') }}"
+      when:
+        - item.stdout is defined
+        - item.stdout | length > 0
+
+    - name: Wait for killed processes to release the ports
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Stop the existing service for a clean restart
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - stop
+      become: true
+      changed_when: true
+
+    - name: Wait for cleanup to complete
+      ansible.builtin.pause:
+        seconds: 3
+
+- name: Start and verify the rocm-ernic service
+  when: ernic_start_service | bool
+  block:
+
+    - name: Start the rocm-ernic service
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - start
+      become: true
+      changed_when: true
+
+    - name: Wait for the instance sockets to appear
+      ansible.builtin.wait_for:
+        path: "{{ ernic_run_dir }}/{{ item }}.sock"
+        timeout: "{{ ernic_socket_wait }}"
+      loop: "{{ range(1, ernic_instances | int + 1) | list }}"
+
+    - name: Verify the service status
+      ansible.builtin.command:
+        argv:
+          - ernicctl
+          - status
+          - --json
+      register: ernic_status
+      changed_when: false
+
+    - name: Display the service status
+      ansible.builtin.debug:
+        var: ernic_status.stdout_lines

@@ -1,0 +1,227 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Sanity-check, lint, build and publish the
+# sbates130272.rocm_ernic Ansible collection.
+#
+# Publishing is driven by tags of the form ansible-vX.Y.Z, kept
+# separate from the repo's own release tags.  Bump the version
+# in galaxy.yml in the same commit as the tag.
+
+name: Ansible Collection
+
+"on":
+  workflow_dispatch: {}
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'ansible/**'
+      - '.github/workflows/ansible-collection.yml'
+  push:
+    tags:
+      - "ansible-v*"
+
+env:
+  COLLECTION_DIR: ansible
+  COLLECTION_FQCN: sbates130272.rocm_ernic
+
+jobs:
+  sanity:
+    name: Sanity tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: python3 -m pip install ansible-core
+
+      # Sanity runs against the built artifact, not the source
+      # directory. ansible/ holds the repo's own playbooks and
+      # scripts as well as the collection, and build_ignore --
+      # which keeps them out of the artifact -- has no effect on
+      # ansible-test. Testing the extracted tarball checks
+      # exactly what ships, with no second copy of the ignore
+      # list to drift. It also satisfies ansible-test's demand to
+      # run from a path ending in ansible_collections/<ns>/<name>.
+      - name: Build and extract the collection
+        run: |
+          ansible-galaxy collection build "${COLLECTION_DIR}" \
+            --force --output-path /tmp
+          mkdir -p /tmp/ac/ansible_collections/sbates130272/rocm_ernic
+          tar xzf /tmp/sbates130272-rocm_ernic-*.tar.gz \
+            -C /tmp/ac/ansible_collections/sbates130272/rocm_ernic
+
+      - name: Run sanity tests
+        working-directory: >-
+          /tmp/ac/ansible_collections/sbates130272/rocm_ernic
+        run: ansible-test sanity --python 3.12 -v
+
+  lint:
+    name: ansible-lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-lint
+        run: python3 -m pip install ansible-lint
+
+      - name: Install collection dependencies
+        working-directory: ansible
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Run ansible-lint
+        working-directory: ansible
+        run: ansible-lint
+
+  build:
+    name: Build collection artifact
+    needs: [sanity, lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: python3 -m pip install ansible-core
+
+      - name: Build the collection
+        run: >-
+          ansible-galaxy collection build ${{ env.COLLECTION_DIR }}
+          --force --output-path .
+
+      # ansible/ is both the collection source and the repo's own
+      # test automation, so build_ignore is a denylist: a new file
+      # added there ships to a public Galaxy artifact unless
+      # somebody remembers to exclude it. Assert the contents
+      # instead of trusting that they did.
+      - name: Assert the artifact ships only collection content
+        run: |
+          unexpected=$(tar tzf ./*.tar.gz \
+            | grep -vE '^(roles|meta|changelogs|tests)/' \
+            | grep -vE '^(MANIFEST\.json|FILES\.json|LICENSE|COLLECTION\.md|CHANGELOG\.rst)$' \
+            || true)
+          if [ -n "${unexpected}" ]; then
+            echo "::error::unexpected files in the collection artifact:"
+            echo "${unexpected}"
+            echo "Add them to build_ignore in ansible/galaxy.yml."
+            exit 1
+          fi
+
+      - name: Upload collection artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: collection-artifact
+          path: "*.tar.gz"
+          retention-days: 7
+
+  # The repo's own plays reach these roles by short name through
+  # roles_path, so nothing else here exercises the collection the
+  # way an external consumer does: installed from an artifact and
+  # addressed by FQCN.  This job does exactly that.
+  consumer:
+    name: Consume the built collection
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: python3 -m pip install ansible-core
+
+      - name: Download collection artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: collection-artifact
+
+      - name: Install the collection from the artifact
+        run: >-
+          ansible-galaxy collection install ./*.tar.gz
+          -p /tmp/consumer-collections
+
+      - name: Write a consumer playbook
+        run: |
+          cat > /tmp/consumer.yml <<'EOF'
+          ---
+          - name: Consume the rocm_ernic collection by FQCN
+            hosts: localhost
+            gather_facts: false
+            roles:
+              - role: sbates130272.rocm_ernic.ernic_image_prep
+              - role: sbates130272.rocm_ernic.ernic_guest_setup
+              - role: sbates130272.rocm_ernic.ernic_host_setup
+          EOF
+
+      - name: Syntax-check against the installed collection
+        env:
+          ANSIBLE_COLLECTIONS_PATH: /tmp/consumer-collections
+        run: ansible-playbook --syntax-check /tmp/consumer.yml
+
+  publish:
+    name: Publish to Ansible Galaxy
+    needs: consumer
+    if: startsWith(github.ref, 'refs/tags/ansible-v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: python3 -m pip install ansible-core
+
+      - name: Download collection artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: collection-artifact
+
+      # Galaxy will not let a version be published twice, so a tag
+      # that disagrees with galaxy.yml burns that version number.
+      # Read the version out of the artifact rather than a fresh
+      # checkout: it asserts what is about to be uploaded, and
+      # actions/checkout would clean the tarball out of the
+      # workspace on its way past.
+      - name: Assert the tag matches the collection version
+        run: |
+          ver=$(python3 - <<'EOF'
+          import glob, json, tarfile
+          tar = tarfile.open(glob.glob('*.tar.gz')[0])
+          m = json.load(tar.extractfile('MANIFEST.json'))
+          print(m['collection_info']['version'])
+          EOF
+          )
+          tag="${GITHUB_REF_NAME#ansible-v}"
+          if [ "${tag}" != "${ver}" ]; then
+            echo "::error::tag ansible-v${tag} does not match" \
+              "version ${ver} in ${COLLECTION_DIR}/galaxy.yml"
+            exit 1
+          fi
+          echo "publishing ${COLLECTION_FQCN} ${ver}"
+
+      - name: Publish to Galaxy
+        run: >-
+          ansible-galaxy collection publish
+          --api-key "${{ secrets.GALAXY_API_KEY }}"
+          *.tar.gz

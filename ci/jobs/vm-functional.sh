@@ -40,6 +40,11 @@ export JUNIT_FAIL_ON_IGNORE=yes
 # makes the report table unreadable.
 export JUNIT_HIDE_TASK_ARGUMENTS=yes
 export ANSIBLE_HOST_KEY_CHECKING=false
+# The plays are thin wrappers around the roles in the in-tree
+# sbates130272.rocm_ernic collection.  ansible.cfg points at them
+# with a relative path; name it absolutely here so the run does
+# not depend on the working directory.
+export ANSIBLE_ROLES_PATH="${ANSIBLE_DIR}/roles:${HOME}/.ansible/roles"
 
 # The junit callback has no v2_runner_on_unreachable
 # hook, so unreachable hosts produce no testcase at all

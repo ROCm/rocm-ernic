@@ -1,0 +1,122 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Prepare a base Ubuntu image for rocm-ernic.  Everything here
+# is expensive and version-stable, so it belongs in the golden
+# backing image rather than in ernic_guest_setup, which runs
+# per overlay on every test cycle.
+
+---
+- name: Install RDMA userspace and tooling
+  when: ernic_image_rdma | bool
+  block:
+    # rdma_setup ends with rdma-detect, which has no real HCA to
+    # find on an emulated device and exits non-zero.  The packages
+    # are installed by then, which is all this role wants.
+    - name: Run the rdma_setup role
+      ansible.builtin.include_role:
+        name: sbates130272.batesste.rdma_setup
+      vars:
+        rdma_setup_install_rdma_exporter: true
+  rescue:
+    - name: Note rdma_setup non-fatal failure
+      ansible.builtin.debug:
+        msg: >-
+          rdma_setup role failed (likely rdma-detect on an
+          emulated device). Packages were installed; continuing.
+
+- name: Install build and test packages
+  ansible.builtin.apt:
+    name: "{{ ernic_image_packages }}"
+    state: present
+    update_cache: true
+  register: ernic_image_apt_result
+  retries: "{{ ernic_image_apt_retries }}"
+  delay: "{{ ernic_image_apt_delay }}"
+  until: ernic_image_apt_result is success
+  when: ernic_image_packages | length > 0
+
+- name: Install ROCm via the rocm_setup role
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.rocm_setup
+  vars:
+    rocm_setup_skip_reboot: true
+    rocm_setup_run_checks: false
+    rocm_setup_install_metrics_exporter: true
+  when: ernic_gpu_passthrough | bool
+
+- name: Disable KillUserProcesses in logind
+  ansible.builtin.copy:
+    dest: /etc/systemd/logind.conf.d/99-kill-user-processes.conf
+    content: |
+      [Login]
+      KillUserProcesses=no
+    owner: root
+    group: root
+    mode: "0644"
+  when: ernic_image_logind_keep_processes | bool
+
+- name: Enable rocm-ernic modules on boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/rocm-ernic.conf
+    content: |
+      rocm_ernic_eth
+      rocm_ernic_rdma
+    mode: "0644"
+  when: ernic_image_modules_load | bool
+
+- name: Enable rocm-xio module on boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/rocm-xio.conf
+    content: "rocm-xio\n"
+    mode: "0644"
+  when:
+    - ernic_image_modules_load | bool
+    - ernic_gpu_passthrough | bool
+
+- name: Register the emulated NIC in pci.ids
+  when: ernic_image_pciids | bool
+  block:
+
+    - name: Find system pci.ids path
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/share/hwdata/pci.ids
+        - /usr/share/misc/pci.ids
+      register: ernic_pciids_stat
+
+    - name: Set pci.ids path fact
+      ansible.builtin.set_fact:
+        ernic_pciids_path: >-
+          {{ (ernic_pciids_stat.results
+              | selectattr('stat.exists')
+              | first
+              | default({})).item | default('') }}
+
+    - name: Check if the ROCm ERNIC entry exists in pci.ids
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -q
+          - "{{ ernic_image_pciids_entry }}"
+          - "{{ ernic_pciids_path }}"
+      register: ernic_pciids_grep
+      failed_when: false
+      changed_when: false
+      when: ernic_pciids_path | length > 0
+
+    - name: Merge the ROCm ERNIC device into pci.ids
+      ansible.builtin.replace:
+        path: "{{ ernic_pciids_path }}"
+        regexp: '^({{ ernic_image_pciids_vendor }}\s+.*)$'
+        replace: '\1\n\t{{ ernic_image_pciids_entry }}'
+      when:
+        - ernic_pciids_path | length > 0
+        - ernic_pciids_grep.rc | default(1) != 0
+
+- name: Clean apt cache to shrink image
+  ansible.builtin.apt:
+    autoclean: true
+  when: ernic_image_clean_apt | bool

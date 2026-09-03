@@ -1,0 +1,133 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Unbind the GPUs listed in ernic_gpu_pci_devices from amdgpu and
+# hand them to vfio-pci, so ernicctl vm-launch can pass them into
+# the guests.
+
+---
+- name: Collect the GPU BDF addresses
+  ansible.builtin.set_fact:
+    ernic_gpu_bdfs: >-
+      {{ ernic_gpu_pci_devices.values()
+         | select('ne', '')
+         | list }}
+
+- name: Skip vfio binding when no GPUs are listed
+  ansible.builtin.debug:
+    msg: >-
+      ernic_gpu_pci_devices is empty; nothing to bind to
+      vfio-pci.
+  when: ernic_gpu_bdfs | length == 0
+
+- name: Bind the GPUs to vfio-pci
+  when: ernic_gpu_bdfs | length > 0
+  block:
+
+    - name: Verify IOMMU is enabled
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          set -o pipefail;
+          ls /sys/kernel/iommu_groups/ 2>/dev/null
+          | head -1 | grep -q .
+          && echo OK || echo MISSING
+      register: ernic_iommu_check
+      changed_when: false
+
+    - name: Fail if IOMMU is not enabled
+      ansible.builtin.fail:
+        msg: >-
+          IOMMU does not appear to be enabled
+          (no groups in /sys/kernel/iommu_groups/).
+          Add amd_iommu=on (or intel_iommu=on) to
+          the kernel command line and reboot.
+      when: "'MISSING' in ernic_iommu_check.stdout"
+
+    - name: Load the vfio-pci kernel module
+      community.general.modprobe:
+        name: vfio-pci
+        state: present
+      become: true
+
+    - name: Get the vendor/device IDs for each GPU
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          set -o pipefail;
+          lspci -n -s {{ item }}
+          | awk '{print $3}'
+      register: ernic_gpu_dev_ids
+      changed_when: false
+      loop: "{{ ernic_gpu_bdfs }}"
+
+    - name: Check the current driver for each GPU
+      ansible.builtin.shell:
+        cmd: >-
+          basename "$(readlink -f
+          /sys/bus/pci/devices/{{ item }}/driver
+          2>/dev/null)" 2>/dev/null || echo none
+      register: ernic_gpu_current_driver
+      changed_when: false
+      loop: "{{ ernic_gpu_bdfs }}"
+
+    - name: Unbind the GPUs from their current driver
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{{ item.item }}'
+          > /sys/bus/pci/devices/{{ item.item }}/driver/unbind
+      become: true
+      changed_when: true
+      loop: "{{ ernic_gpu_current_driver.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.stdout != 'none'
+        - item.stdout != 'vfio-pci'
+
+    - name: Register the GPU vendor:device with vfio-pci
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{{ item.stdout }}'
+          > /sys/bus/pci/drivers/vfio-pci/new_id
+          2>/dev/null || true
+      become: true
+      changed_when: true
+      loop: "{{ ernic_gpu_dev_ids.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Bind the GPUs to vfio-pci
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{{ item }}'
+          > /sys/bus/pci/drivers/vfio-pci/bind
+          2>/dev/null || true
+      become: true
+      changed_when: true
+      loop: "{{ ernic_gpu_bdfs }}"
+
+    - name: Verify the GPUs are bound to vfio-pci
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          set -o pipefail;
+          lspci -k -s {{ item }}
+          | grep -q 'Kernel driver in use: vfio-pci'
+          && echo OK || echo FAIL
+      register: ernic_gpu_vfio_verify
+      changed_when: false
+      loop: "{{ ernic_gpu_bdfs }}"
+
+    - name: Assert all GPUs are bound to vfio-pci
+      ansible.builtin.assert:
+        that:
+          - item.stdout == 'OK'
+        fail_msg: >-
+          GPU {{ item.item }} is not bound to
+          vfio-pci. Check IOMMU groups and driver
+          binding.
+      loop: "{{ ernic_gpu_vfio_verify.results }}"
+      loop_control:
+        label: "{{ item.item }}"

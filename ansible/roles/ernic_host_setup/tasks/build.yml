@@ -1,0 +1,36 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Configure the CMake build
+  ansible.builtin.command:
+    argv:
+      - cmake
+      - -B
+      - "{{ ernic_build_dir }}"
+      - -G
+      - Ninja
+      - "-DCMAKE_BUILD_TYPE={{ ernic_build_type }}"
+      - "-DCMAKE_INSTALL_PREFIX={{ ernic_install_prefix }}"
+      - -DERNIC_INSTALL_SERVICE=ON
+    chdir: "{{ ernic_source_dir }}"
+    creates: "{{ ernic_build_dir }}/build.ninja"
+
+- name: Build the project
+  ansible.builtin.command:
+    argv:
+      - cmake
+      - --build
+      - "{{ ernic_build_dir }}"
+    chdir: "{{ ernic_source_dir }}"
+  changed_when: true
+
+- name: Install rocm-ernic (server, ernicctl, systemd units)
+  ansible.builtin.command:
+    argv:
+      - cmake
+      - --install
+      - "{{ ernic_build_dir }}"
+  become: true
+  changed_when: true

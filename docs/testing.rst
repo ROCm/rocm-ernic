@@ -211,13 +211,16 @@ This runs four plays in order:
 2. **vm-create** -- creates a golden backing image via
    ``gen-vm`` (skipped if it already exists), launches
    VMs with ``ernicctl vm-launch``, and waits for SSH.
-3. **guest-setup** -- uses the ``rdma_setup`` role to
-   install RDMA packages, builds the custom rdma-core
+3. **guest-setup** -- builds the custom rdma-core
    provider, builds and loads the kernel driver, and
    assigns IPs to the emulated NICs.
 4. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.
+
+The setup plays are thin wrappers around the roles of the
+``sbates130272.rocm_ernic`` collection, whose source lives in
+``ansible/roles/``; see :ref:`ansible-collection` below.
 
 Running individual plays
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -256,9 +259,58 @@ Override any default from ``group_vars/all.yml`` with
    ansible-playbook site.yml \
      -e ernic_vm_backing=/path/to/backing.qcow2
 
-See ``ansible/group_vars/all.yml`` for the full list of
-tunable variables and ``ansible/README.md`` for additional
-usage notes.
+``group_vars/all.yml`` holds the site configuration for this
+repo; the per-role defaults live in each role's
+``defaults/main.yml`` under the collection described below.
+Anything set in ``group_vars/all.yml`` wins over a role
+default. See ``ansible/README.md`` for additional usage
+notes.
+
+.. _ansible-collection:
+
+The rocm_ernic Ansible collection
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The reusable parts of the automation are packaged as the
+``sbates130272.rocm_ernic`` Galaxy collection, so a VM image
+can be built for rocm-ernic without the playbooks here:
+
+``ernic_image_prep``
+   Bakes RDMA userspace, ROCm, the build toolchain,
+   ``modules-load.d`` entries and the ``pci.ids`` entry into a
+   golden image.
+
+``ernic_guest_setup``
+   Installs the DKMS driver, builds rdma-core with the
+   ``rocm_ernic`` provider, applies the udev rules, addresses
+   the emulated NIC and builds rocm-xio.
+
+``ernic_host_setup``
+   Builds, installs and starts the rocm-ernic service, binds
+   GPUs to ``vfio-pci`` and stages rocm-xio for the guests.
+
+``ernic_source``
+   Resolves the rocm-ernic checkout the others copy from,
+   cloning it on the controller when ``ernic_source_dir`` is
+   not set.
+
+Consumers outside this repo install it from Galaxy and address
+the roles by their fully qualified name:
+
+.. code-block:: bash
+
+   ansible-galaxy collection install sbates130272.rocm_ernic
+
+.. code-block:: yaml
+
+   roles:
+     - role: sbates130272.rocm_ernic.ernic_image_prep
+
+Playbooks in this repo instead reach the same roles by short
+name through ``roles_path`` in ``ansible/ansible.cfg``, so they
+always run against this checkout rather than a published
+version. Because that path is relative, run ``ansible-playbook``
+from the ``ansible/`` directory.
 
 Self-Hosted CI
 --------------

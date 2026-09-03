@@ -38,7 +38,9 @@
 
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm1_ssh }}
           'ibv_devices | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
           | head -1'
@@ -99,7 +101,9 @@
     # ─────────────────────────────────────────────────
     - name: "TCP test: start netcat listener on VM1"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm1_ssh }}
           'sudo systemctl stop nc-echo 2>/dev/null;
           sudo systemctl reset-failed nc-echo 2>/dev/null;

@@ -1,0 +1,57 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# qemu-guest-agent lets the host query guest load over QMP
+# (guest-get-load) from ernicctl status, instead of falling
+# back to SSH.
+
+---
+# A freshly booted guest runs unattended-upgrades, which holds the
+# dpkg lock for the first minute or so.  Ansible's apt tasks race it
+# and fail with "Could not get lock /var/lib/dpkg/lock-frontend".
+# In CI the guests are cloned and booted seconds before this runs, so
+# the race is hit routinely -- and only on whichever VM loses it,
+# which makes it look like a random one-guest failure.
+- name: Wait for unattended-upgrades to release the dpkg lock
+  ansible.builtin.shell: |
+    for _ in $(seq 1 {{ (ernic_dpkg_lock_wait | int / 5) | round | int }}); do
+      fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || exit 0
+      sleep 5
+    done
+    echo "dpkg lock still held after {{ ernic_dpkg_lock_wait }}s" >&2
+    fuser -v /var/lib/dpkg/lock-frontend >&2 || true
+    exit 1
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Install qemu-guest-agent for QMP guest metrics
+  ansible.builtin.apt:
+    name: qemu-guest-agent
+    state: present
+
+# The agent unit pulls in a systemd device unit for this path.  If QEMU
+# was started without a virtio-serial org.qemu.guest_agent.0 channel
+# (common until run-vm exposes it), start would fail the whole play.
+- name: Check for the QEMU guest-agent virtio port in the guest
+  ansible.builtin.stat:
+    path: /dev/virtio-ports/org.qemu.guest_agent.0
+  register: ernic_qga_virtio_port
+
+- name: Enable and start qemu-guest-agent when the virtio port exists
+  ansible.builtin.systemd:
+    name: qemu-guest-agent.service
+    enabled: true
+    state: started
+  when: ernic_qga_virtio_port.stat.exists
+
+- name: Report when the guest-agent channel is missing from QEMU
+  ansible.builtin.debug:
+    msg: >-
+      qemu-guest-agent is installed but the virtio-serial channel
+      org.qemu.guest_agent.0 is not present.  Add it in run-vm / QEMU
+      (then re-run this task or: systemctl enable --now
+      qemu-guest-agent).  Until then, ernicctl status VM_LOAD falls
+      back to SSH.
+  when: not ernic_qga_virtio_port.stat.exists

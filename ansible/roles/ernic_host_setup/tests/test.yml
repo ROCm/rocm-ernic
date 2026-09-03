@@ -1,0 +1,11 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: The test playbook for the ernic_host_setup role
+  hosts: all
+  roles:
+    - role: ernic_host_setup
+      vars:
+        ernic_gpu_passthrough: false

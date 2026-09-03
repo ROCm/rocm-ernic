@@ -1,0 +1,25 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+galaxy_info:
+  author: Stephen Bates
+  company: Advanced Micro Devices, Inc.
+  role_name: ernic_source
+  description: >-
+    Resolve the rocm-ernic source checkout used by the other
+    roles, cloning it on the controller when needed
+  license: MIT
+  min_ansible_version: "2.18.0"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+        - resolute
+  galaxy_tags:
+    - rdma
+    - rocm
+    - git
+
+dependencies: []

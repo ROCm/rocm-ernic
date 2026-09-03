@@ -35,6 +35,11 @@ export ANSIBLE_CALLBACKS_ENABLED=junit
 export JUNIT_OUTPUT_DIR="${CI_RESULTS}/junit"
 export JUNIT_HIDE_TASK_ARGUMENTS=yes
 export ANSIBLE_HOST_KEY_CHECKING=false
+# The plays are thin wrappers around the roles in the in-tree
+# sbates130272.rocm_ernic collection.  ansible.cfg points at them
+# with a relative path; name it absolutely here so the run does
+# not depend on the working directory.
+export ANSIBLE_ROLES_PATH="${ANSIBLE_DIR}/roles:${HOME}/.ansible/roles"
 
 # Point the perf plays at the CI results dir rather
 # than docs/perf-results, so a CI run never dirties the
