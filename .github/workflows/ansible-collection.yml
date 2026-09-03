@@ -130,7 +130,7 @@ jobs:
         run: |
           unexpected=$(tar tzf ./*.tar.gz \
             | grep -vE '^(roles|meta|changelogs|tests)/' \
-            | grep -vE '^(MANIFEST\.json|FILES\.json|LICENSE|COLLECTION\.md|CHANGELOG\.rst)$' \
+            | grep -vE '^(MANIFEST\.json|FILES\.json|LICENSE|README\.md|CHANGELOG\.rst)$' \
             || true)
           if [ -n "${unexpected}" ]; then
             echo "::error::unexpected files in the collection artifact:"

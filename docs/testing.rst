@@ -263,7 +263,7 @@ Override any default from ``group_vars/all.yml`` with
 repo; the per-role defaults live in each role's
 ``defaults/main.yml`` under the collection described below.
 Anything set in ``group_vars/all.yml`` wins over a role
-default. See ``ansible/README.md`` for additional usage
+default. See ``ansible/PLAYBOOKS.md`` for additional usage
 notes.
 
 .. _ansible-collection:
