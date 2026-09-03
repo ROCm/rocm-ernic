@@ -79,9 +79,22 @@ jobs:
       - name: Install ansible-lint
         run: python3 -m pip install ansible-lint
 
+      # galaxy.ansible.com returns 504 often enough to redden a PR
+      # that changed nothing it touches, and only a repo admin can
+      # rerun a failed job, so a flake here blocks on someone with
+      # rights rather than on the author.
       - name: Install collection dependencies
         working-directory: ansible
-        run: ansible-galaxy collection install -r requirements.yml
+        run: |
+          for attempt in 1 2 3; do
+            if ansible-galaxy collection install -r requirements.yml; then
+              exit 0
+            fi
+            echo "::warning::galaxy install failed (attempt ${attempt}/3)"
+            sleep $((attempt * 20))
+          done
+          echo "::error::galaxy install failed after 3 attempts"
+          exit 1
 
       - name: Run ansible-lint
         working-directory: ansible
