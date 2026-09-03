@@ -70,7 +70,9 @@
   block:
     - name: "{{ pt_label }} @ {{ pt_size }}B: extract BW"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           RAW={{ pt_client.stdout | quote }}
           RC={{ pt_client.rc }}
 
@@ -111,7 +113,9 @@
   block:
     - name: "{{ pt_label }} @ {{ pt_size }}B: extract Lat"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           RAW={{ pt_client.stdout | quote }}
           RC={{ pt_client.rc }}
 

@@ -27,7 +27,9 @@
 
     - name: Check for processes listening on target ports
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           ss -tlnp 2>/dev/null
           | grep ':{{ item }} '
           | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
@@ -345,7 +347,10 @@
         cmd: shutdown -h now
       async: 0
       poll: 0
-      ignore_errors: true
+      # Fire and forget: the connection dies with the VM, so the
+      # task's own return code says nothing about whether the
+      # shutdown took.  The wait_for below is the real check.
+      failed_when: false
 
 # Resume on localhost for VM launch
 - name: Launch per-instance VMs
@@ -361,7 +366,9 @@
         path: /tmp/ernic-golden-vm.pid
         state: absent
         timeout: 60
-      ignore_errors: true
+      # A timeout here is not fatal: the next task kills the VM
+      # outright if it is still up.
+      failed_when: false
 
     - name: Ensure golden VM is stopped
       ansible.builtin.shell:

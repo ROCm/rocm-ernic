@@ -27,7 +27,9 @@
 
     - name: Verify IOMMU is enabled
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           ls /sys/kernel/iommu_groups/ 2>/dev/null
           | head -1 | grep -q .
           && echo OK || echo MISSING
@@ -51,7 +53,9 @@
 
     - name: Get the vendor/device IDs for each GPU
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           lspci -n -s {{ item }}
           | awk '{print $3}'
       register: ernic_gpu_dev_ids
@@ -106,7 +110,9 @@
 
     - name: Verify the GPUs are bound to vfio-pci
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           lspci -k -s {{ item }}
           | grep -q 'Kernel driver in use: vfio-pci'
           && echo OK || echo FAIL

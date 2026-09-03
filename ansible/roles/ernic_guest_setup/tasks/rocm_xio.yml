@@ -114,7 +114,10 @@
 
     - name: Verify the rocm-xio module loaded
       ansible.builtin.shell:
-        cmd: lsmod | grep -q rocm_xio
+        executable: /bin/bash
+        cmd: >-
+          set -o pipefail;
+          lsmod | grep -q rocm_xio
       changed_when: false
 
     - name: Verify /dev/rocm-xio exists
@@ -132,7 +135,9 @@
 
 - name: Locate the xio-tester binary
   ansible.builtin.shell:
+    executable: /bin/bash
     cmd: >-
+      set -o pipefail;
       find {{ ernic_rocm_xio_dir }}/build -name xio-tester
       -type f | head -1
   register: ernic_xio_tester_path

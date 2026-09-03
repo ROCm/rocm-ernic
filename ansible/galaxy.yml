@@ -51,6 +51,11 @@ build_ignore:
   - "roles/*/tests"
   - ansible.cfg
   - .ansible-lint
+  # ansible-lint and ansible-galaxy stage collections here, so on
+  # any workspace that has linted before building this is a live
+  # directory -- gitignored, but build_ignore is a separate list.
+  - .ansible
+  - changelogs/.plugin-cache.yaml
   - README.md
   - requirements.yml
   - site.yml

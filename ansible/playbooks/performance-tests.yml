@@ -75,14 +75,14 @@
       - 8388608
 
     bw_verbs:
-      - { tool: ib_send_bw,  label: send  }
-      - { tool: ib_write_bw, label: write }
-      - { tool: ib_read_bw,  label: read  }
+      - {tool: ib_send_bw, label: send}
+      - {tool: ib_write_bw, label: write}
+      - {tool: ib_read_bw, label: read}
 
     lat_verbs:
-      - { tool: ib_send_lat,  label: send  }
-      - { tool: ib_write_lat, label: write }
-      - { tool: ib_read_lat,  label: read  }
+      - {tool: ib_send_lat, label: send}
+      - {tool: ib_write_lat, label: write}
+      - {tool: ib_read_lat, label: read}
 
     ts: >-
       {{ ansible_date_time.date }}-{{
@@ -106,7 +106,9 @@
     # ─────────────────────────────────────────────────
     - name: Copy free-perftest-port to VM1
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
           | {{ vm1_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
           && sudo chmod 755 /usr/local/bin/free-perftest-port'
@@ -114,7 +116,9 @@
 
     - name: Copy free-perftest-port to VM2
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
           | {{ vm2_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
           && sudo chmod 755 /usr/local/bin/free-perftest-port'
@@ -136,7 +140,9 @@
 
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm1_ssh }}
           'ibv_devices
           | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
@@ -189,7 +195,9 @@
     # ─────────────────────────────────────────────────
     - name: "BW sweep: {{ item.0.label }} @ {{ item.1 }} B"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
@@ -275,7 +283,9 @@
     # ─────────────────────────────────────────────────
     - name: "Lat sweep: {{ item.0.label }} @ {{ item.1 }} B"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
@@ -356,7 +366,9 @@
     # ─────────────────────────────────────────────────
     - name: "Reliability: {{ item.0.label }} run {{ item.1 }}"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ rel_size }}"
@@ -435,7 +447,9 @@
     # ─────────────────────────────────────────────────
     - name: "Pingpong: run {{ item }}"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           DEV="{{ rdma_dev }}"
           N="{{ pp_iters }}"
           SZ="{{ pp_size }}"
@@ -513,7 +527,9 @@
     # ─────────────────────────────────────────────────
     - name: Count failures
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           grep -c 'FAIL\|NODATA'
           "{{ bw_csv }}" "{{ lat_csv }}" "{{ rel_csv }}"
           2>/dev/null | awk -F: '{s+=$2} END {print s+0}'

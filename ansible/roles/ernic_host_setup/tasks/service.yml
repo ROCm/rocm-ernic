@@ -51,7 +51,9 @@
 
     - name: Find QEMU processes on the target SSH ports
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           ss -tlnp 2>/dev/null
           | grep ':{{ item }} '
           | sed -n 's/.*pid=\([0-9]*\).*/\1/p'

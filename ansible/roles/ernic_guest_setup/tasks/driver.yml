@@ -40,7 +40,10 @@
 
 - name: Verify the rocm-ernic modules loaded
   ansible.builtin.shell:
-    cmd: lsmod | grep rocm_ernic
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      lsmod | grep rocm_ernic
   register: ernic_lsmod_output
   changed_when: false
 
@@ -74,7 +77,9 @@
 
 - name: Get the RDMA device name
   ansible.builtin.shell:
+    executable: /bin/bash
     cmd: >-
+      set -o pipefail;
       ibv_devices | grep -E 'rocm-rdma-ernic|rocep'
       | awk '{print $1}' | head -1
   register: ernic_rdma_dev_name
@@ -82,7 +87,9 @@
 
 - name: Display RDMA device info
   ansible.builtin.shell:
+    executable: /bin/bash
     cmd: >-
+      set -o pipefail;
       ibv_devinfo -d {{ ernic_rdma_dev_name.stdout }}
       | head -20
   register: ernic_ibv_devinfo_output
@@ -96,7 +103,9 @@
 # only exposes hw_counters.
 - name: Symlink RDMA counters for the exporter
   ansible.builtin.shell:
+    executable: /bin/bash
     cmd: |
+      set -o pipefail
       DEV=$(ibv_devices | grep -oE 'rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+' | head -1)
       [ -z "$DEV" ] && exit 0
       for PORT_DIR in /sys/class/infiniband/"$DEV"/ports/*/; do

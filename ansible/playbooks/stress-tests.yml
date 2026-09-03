@@ -73,8 +73,8 @@
       true
 
     bw_verbs:
-      - { tool: ib_send_bw,  label: send  }
-      - { tool: ib_write_bw, label: write }
+      - {tool: ib_send_bw, label: send}
+      - {tool: ib_write_bw, label: write}
 
     ts: >-
       {{ ansible_date_time.date }}-{{
@@ -97,7 +97,9 @@
     # ─────────────────────────────────────────────────
     - name: Copy free-perftest-port to VM1
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
           | {{ vm1_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
           && sudo chmod 755 /usr/local/bin/free-perftest-port'
@@ -105,7 +107,9 @@
 
     - name: Copy free-perftest-port to VM2
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           cat {{ ernic_project_root }}/ansible/playbooks/files/free-perftest-port.sh
           | {{ vm2_ssh }} 'sudo tee /usr/local/bin/free-perftest-port > /dev/null
           && sudo chmod 755 /usr/local/bin/free-perftest-port'
@@ -127,7 +131,9 @@
 
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           {{ vm1_ssh }}
           'ibv_devices
           | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
@@ -175,7 +181,9 @@
     # ─────────────────────────────────────────────────
     - name: "Multi-QP: {{ item.0.label }} -q {{ item.1 }}"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ=65536
@@ -265,7 +273,9 @@
     # ─────────────────────────────────────────────────
     - name: "Bidir: {{ item.0.label }} @ {{ item.1 }} B"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
@@ -348,7 +358,9 @@
     # ─────────────────────────────────────────────────
     - name: "Soak: {{ item.label }} --duration {{ soak_duration }}"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.tool }}"
           DEV="{{ rdma_dev }}"
           SZ=65536
@@ -462,7 +474,9 @@
     # ─────────────────────────────────────────────────
     - name: "Concurrent: send + write for {{ concurrent_duration }}s"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           DEV="{{ rdma_dev }}"
           SZ=65536
           DUR="{{ concurrent_duration }}"
@@ -582,7 +596,9 @@
     # ─────────────────────────────────────────────────
     - name: "High-iter: {{ item.0.label }} -n {{ high_iters }} @ {{ item.1 }} B"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
@@ -666,7 +682,9 @@
     # ─────────────────────────────────────────────────
     - name: "QP churn: {{ qp_churn_cycles }} cycles"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           DEV="{{ rdma_dev }}"
           CYCLES="{{ qp_churn_cycles }}"
           SERVER_IP="{{ vm1_ip }}"
@@ -735,7 +753,9 @@
     # ─────────────────────────────────────────────────
     - name: "Resource limits: max QP probe"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           DEV="{{ rdma_dev }}"
           SERVER_IP="{{ vm1_ip }}"
           MAX_QP=0
@@ -799,9 +819,11 @@
     # ─────────────────────────────────────────────────
     # 8. iperf3 TCP baseline
     # ─────────────────────────────────────────────────
-    - name: "iperf3: TCP baseline over emulated NIC"
+    - name: "Iperf3: TCP baseline over emulated NIC"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           SERVER_IP="{{ vm1_ip }}"
           DUR="{{ iperf_dur }}"
           BW="{{ iperf_bw }}"
@@ -878,7 +900,9 @@
     # ─────────────────────────────────────────────────
     - name: Count stress test failures
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: >-
+          set -o pipefail;
           grep -c 'FAIL\|NODATA'
           "{{ stress_csv }}"
           2>/dev/null || true

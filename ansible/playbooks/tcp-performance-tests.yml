@@ -75,9 +75,11 @@
           Ping failed between VMs. Emulated NIC may
           not be working.
 
-    - name: "iperf3: TCP throughput (VM2 → VM1)"
+    - name: "Iperf3: TCP throughput (VM2 → VM1)"
       ansible.builtin.shell:
+        executable: /bin/bash
         cmd: |
+          set -o pipefail
           SERVER_IP="{{ vm1_ip }}"
           DUR="{{ iperf_dur }}"
           BW="{{ iperf_bw }}"
