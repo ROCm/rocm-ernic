@@ -30,6 +30,7 @@ ERNIC_INSTANCES="${ERNIC_INSTANCES:-4}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6320}"
 ERNIC_MANAGER_IP="${ERNIC_MANAGER_IP:-127.0.0.1}"
 ERNIC_VERBOSE="${ERNIC_VERBOSE:-false}"
+ERNIC_LOG_LEVEL="${ERNIC_LOG_LEVEL:-warn}"
 
 MANIFEST="${ERNIC_RUN_DIR}/instances.json"
 
@@ -165,9 +166,10 @@ start_instance() {
     local stats="${ERNIC_RUN_DIR}/${id}.stats"
     local logfile="${ERNIC_LOG_DIR}/${id}.log"
 
-    local verbose_flag=""
+    # ERNIC_VERBOSE=true is legacy shorthand for the debug log level.
+    local level="${ERNIC_LOG_LEVEL}"
     if [ "${ERNIC_VERBOSE}" = "true" ]; then
-        verbose_flag="--verbose"
+        level="debug"
     fi
 
     local backend
@@ -185,7 +187,7 @@ start_instance() {
         --mac "${mac}" \
         --backend "${backend}" \
         --log-file "${logfile}" \
-        ${verbose_flag} &
+        --log-level "${level}" &
     local pid=$!
 
     if ! wait_for_socket "${sock}" 15; then

@@ -8,6 +8,29 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
+
+/*
+ * Runtime log level.  Set from the --log-level command line option or
+ * the ERNIC_LOG_LEVEL environment variable; defaults to ERNIC_LOG_WARN
+ * so per-operation INFO chatter stays out of the steady-state logs.
+ */
+typedef enum {
+    ERNIC_LOG_NONE = 0,
+    ERNIC_LOG_ERROR,
+    ERNIC_LOG_WARN,
+    ERNIC_LOG_INFO,
+    ERNIC_LOG_DEBUG,
+} ErnicLogLevel;
+
+bool ernic_log_parse_level(const char *s, ErnicLogLevel *out);
+const char *ernic_log_level_name(ErnicLogLevel lvl);
+void ernic_log_set_level(ErnicLogLevel lvl);
+ErnicLogLevel ernic_log_get_level(void);
+bool ernic_log_enabled(ErnicLogLevel lvl);
+
+/* One-shot startup/shutdown lines: unprefixed, printed at WARN and above. */
+void ernic_startup_report(const char *fmt, ...);
 
 /* Simple implementations that just print to stderr/stdout */
 
@@ -24,25 +47,6 @@ static inline int error_printf(const char *fmt, ...)
     ret = vfprintf(stderr, fmt, ap);
     va_end(ap);
     return ret;
-}
-
-static inline void error_vreport(const char *fmt, va_list ap)
-{
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
-}
-
-static inline void warn_vreport(const char *fmt, va_list ap)
-{
-    fprintf(stderr, "Warning: ");
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
-}
-
-static inline void info_vreport(const char *fmt, va_list ap)
-{
-    vfprintf(stdout, fmt, ap);
-    fprintf(stdout, "\n");
 }
 
 /* Declarations - implementations in error-report.c */

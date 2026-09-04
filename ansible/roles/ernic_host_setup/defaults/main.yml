@@ -23,6 +23,12 @@ ernic_tcp_port: 6320
 ernic_manager_ip: 127.0.0.1
 ernic_verbose: "false"
 
+# Server log verbosity written into the env file: one of
+# none, error, warn, info, debug.  warn keeps steady-state
+# logs to WARN/ERROR plus a short startup banner.  Note that
+# ernic_verbose: "true" overrides this with debug.
+ernic_log_level: warn
+
 # When true, /etc/rocm-ernic/rocm-ernic.env sets ERNIC_DEBUG_MESH=1
 # so rocm-ernic logs rate-limited mesh Ethernet diagnostics (EAGAIN
 # drops, inject failures, etc.).  Set false on production hosts to

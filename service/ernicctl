@@ -35,6 +35,7 @@ DEFAULTS = {
     "ERNIC_TCP_PORT": "6320",
     "ERNIC_MANAGER_IP": "127.0.0.1",
     "ERNIC_VERBOSE": "false",
+    "ERNIC_LOG_LEVEL": "warn",
     "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/driver",
     "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
     "ERNIC_QEMU_MINIMAL": os.path.expanduser(
@@ -1265,9 +1266,10 @@ def cmd_hot_reload(args):
 
     # Step 4: start new server
     print("Step 4/6: Starting new server...")
-    verbose_flag = ""
+    # ERNIC_VERBOSE=true is legacy shorthand for the debug log level.
+    level = CFG["ERNIC_LOG_LEVEL"]
     if CFG["ERNIC_VERBOSE"] == "true":
-        verbose_flag = "--verbose"
+        level = "debug"
 
     backend = (
         f"tcp:manager:listen:{CFG['ERNIC_TCP_PORT']}"
@@ -1288,9 +1290,8 @@ def cmd_hot_reload(args):
         "--mac", inst["mac"],
         "--backend", backend,
         "--log-file", logfile,
+        "--log-level", level,
     ]
-    if verbose_flag:
-        cmd.append(verbose_flag)
 
     proc = subprocess.Popen(cmd)
 

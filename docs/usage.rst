@@ -11,19 +11,61 @@ Start the server with a UNIX socket and the desired backend:
    # Loopback backend (no external dependencies)
    ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
-     --backend loopback \
-     --verbose
+     --backend loopback
 
    # RDMA verbs backend (requires RDMA hardware)
    ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
-     --verbose
+     --log-level info
 
    # No backend (minimal stubs)
    ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend none
+
+Log Levels
+----------
+
+``--log-level`` (short ``-L``) sets how much the server
+prints.  It can also be set with the ``ERNIC_LOG_LEVEL``
+environment variable; the command line wins when both are
+given.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 85
+
+   * - Level
+     - Output
+   * - ``none``
+     - Nothing at all.
+   * - ``error``
+     - ``ERROR:`` lines only.
+   * - ``warn``
+     - **Default.** ``ERROR:`` and ``WARN:`` lines, plus a
+       short startup/shutdown banner.
+   * - ``info``
+     - Adds the per-operation ``INFO:`` lines (BAR writes,
+       QP operations, ARP/ICMP packets, TCP mesh events).
+   * - ``debug``
+     - Everything, including libvfio-user debug output.
+
+``-v`` / ``--verbose`` remains as shorthand for
+``--log-level debug``.
+
+.. code-block:: bash
+
+   # Quiet by default -- only warnings and errors
+   ./build/rocm-ernic --backend loopback
+
+   # Full per-operation tracing
+   ERNIC_LOG_LEVEL=info ./build/rocm-ernic --backend loopback
+
+``ERNIC_DEBUG_MESH=1`` is unaffected: it is a separate
+mesh-specific toggle whose rate-limited diagnostics are
+emitted as ``WARN:`` lines, so they remain visible at the
+default level.
 
 Launching a VM
 --------------
