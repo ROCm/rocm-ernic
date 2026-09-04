@@ -120,9 +120,14 @@ Server settings
    * - ``ERNIC_MANAGER_IP``
      - ``127.0.0.1``
      - IP address workers connect to
+   * - ``ERNIC_LOG_LEVEL``
+     - ``warn``
+     - Server log verbosity:
+       ``none|error|warn|info|debug``
    * - ``ERNIC_VERBOSE``
      - ``false``
-     - Enable verbose server logging
+     - Legacy shorthand for
+       ``ERNIC_LOG_LEVEL=debug``
 
 MAC address overrides
 ^^^^^^^^^^^^^^^^^^^^^

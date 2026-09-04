@@ -68,18 +68,11 @@ int pvrdma_ring_init(PvrdmaRing *ring, const char *name, PCIDevice *dev,
         }
 
         mapped_addr = rdma_pci_dma_map(dev, tbl[i], PAGE_SIZE);
-        printf("DIRECT_PRINTF: page[%d] mapped_addr=%p (uintptr=%#lx)\n", i,
-               mapped_addr, (uintptr_t)mapped_addr);
-        fflush(stdout);
         rdma_info_report(">>> pvrdma_ring_init: page[%d]: guest=0x%lx -> "
                          "mapped_addr=%p (as lx=%#lx)",
                          i, tbl[i], mapped_addr, (unsigned long)mapped_addr);
 
         ring->pages[i] = mapped_addr;
-        printf("DIRECT_PRINTF: page[%d] STORED ring->pages[%d]=%p "
-               "(uintptr=%#lx)\n",
-               i, i, ring->pages[i], (uintptr_t)ring->pages[i]);
-        fflush(stdout);
         rdma_info_report(">>> pvrdma_ring_init: page[%d]: STORED "
                          "ring->pages[%d]=%p (as lx=%#lx)",
                          i, i, ring->pages[i], (unsigned long)ring->pages[i]);

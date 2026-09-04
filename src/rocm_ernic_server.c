@@ -38,6 +38,7 @@
 /* Internal headers */
 #include "rocm_ernic_internal.h"
 #include "rocm_ernic_compat.h"
+#include "qemu/error-report.h"
 
 /* AMD ROCm ERNIC device IDs (for vfio-user).
  * 0x1484 = GPP Bridge, 0x1485 = Reserved SPP, 0x1486 = CCP/PSP, 0x1487 = HD
@@ -84,20 +85,48 @@ static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
     case LOG_ALERT:
     case LOG_CRIT:
     case LOG_ERR:
-        fprintf(stderr, "%s: ERROR: %s\n", prefix, msg);
+        if (ernic_log_enabled(ERNIC_LOG_ERROR)) {
+            fprintf(stderr, "%s: ERROR: %s\n", prefix, msg);
+        }
         break;
     case LOG_WARNING:
-        fprintf(stderr, "%s: WARN: %s\n", prefix, msg);
+        if (ernic_log_enabled(ERNIC_LOG_WARN)) {
+            fprintf(stderr, "%s: WARN: %s\n", prefix, msg);
+        }
         break;
     case LOG_NOTICE:
     case LOG_INFO:
-        printf("%s: %s\n", prefix, msg);
+        if (ernic_log_enabled(ERNIC_LOG_INFO)) {
+            printf("%s: %s\n", prefix, msg);
+        }
         break;
     case LOG_DEBUG:
-        printf("%s: DEBUG: %s\n", prefix, msg);
+        if (ernic_log_enabled(ERNIC_LOG_DEBUG)) {
+            printf("%s: DEBUG: %s\n", prefix, msg);
+        }
         break;
     default:
         break;
+    }
+}
+
+/**
+ * Map the runtime log level onto the libvfio-user syslog threshold, so
+ * the library skips formatting messages we would drop anyway.
+ */
+static int vfu_log_threshold(ErnicLogLevel lvl)
+{
+    switch (lvl) {
+    case ERNIC_LOG_DEBUG:
+        return LOG_DEBUG;
+    case ERNIC_LOG_INFO:
+        return LOG_INFO;
+    case ERNIC_LOG_WARN:
+        return LOG_WARNING;
+    case ERNIC_LOG_ERROR:
+    case ERNIC_LOG_NONE:
+    default:
+        return LOG_ERR;
     }
 }
 
@@ -353,8 +382,9 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
 
     dev->device_initialized = true;
 
-    printf("PVRDMA device initialized successfully with '%s' backend\n",
-           dev->backend_type_str);
+    ernic_startup_report(
+        "PVRDMA device initialized successfully with '%s' backend",
+        dev->backend_type_str);
 
     return 0;
 }
@@ -385,8 +415,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                       0x00); /* Prog-if */
 
 
-    vfu_log(vfu_ctx, LOG_INFO, "PCI device configured: vendor=%#x device=%#x",
-            (unsigned)PCI_VENDOR_ID_AMD, (unsigned)PCI_DEVICE_ID_ROCM_ERNIC);
+    ernic_startup_report("rocm-ernic: PCI device configured: vendor=%#x "
+                         "device=%#x",
+                         (unsigned)PCI_VENDOR_ID_AMD,
+                         (unsigned)PCI_DEVICE_ID_ROCM_ERNIC);
 
     return 0;
 }
@@ -432,10 +464,11 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         err(EXIT_FAILURE, "Failed to setup BAR2");
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, "BARs configured: BAR0=%zu BAR1=%zu BAR2=%zu",
-            (size_t)RDMA_BAR0_MSIX_SIZE,
-            (size_t)(RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)),
-            (size_t)(RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)));
+    ernic_startup_report(
+        "rocm-ernic: BARs configured: BAR0=%zu BAR1=%zu BAR2=%zu",
+        (size_t)RDMA_BAR0_MSIX_SIZE,
+        (size_t)(RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)),
+        (size_t)(RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)));
 
     return 0;
 }
@@ -502,7 +535,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return (int)ret;
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, "Added MSI-X capability at offset 0x%zd", ret);
+    ernic_startup_report("rocm-ernic: Added MSI-X capability at offset 0x%zd",
+                         ret);
 
     /* Ensure standard PCI header tail (0x34-0x3f) is set for config reads */
     {
@@ -523,11 +557,12 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return (int)ret;
     }
 
-    vfu_log(vfu_ctx, LOG_INFO,
-            "Interrupts configured: INTx=1, MSI-X=%d vectors "
-            "(table=BAR%d:0x%x, pba=BAR%d:0x%x)",
-            RDMA_MAX_INTRS, MSIX_TABLE_BIR, (unsigned)MSIX_TABLE_OFFSET,
-            MSIX_PBA_BIR, (unsigned)MSIX_PBA_OFFSET);
+    ernic_startup_report("rocm-ernic: Interrupts configured: INTx=1, "
+                         "MSI-X=%d vectors "
+                         "(table=BAR%d:0x%x, pba=BAR%d:0x%x)",
+                         RDMA_MAX_INTRS, MSIX_TABLE_BIR,
+                         (unsigned)MSIX_TABLE_OFFSET, MSIX_PBA_BIR,
+                         (unsigned)MSIX_PBA_OFFSET);
 
     return 0;
 }
@@ -544,7 +579,11 @@ static void usage(const char *progname)
     fprintf(stderr,
             "  -b, --backend TYPE   RDMA backend: none|loopback|verbs|tcp\n");
     fprintf(stderr, "                       (default: loopback)\n");
-    fprintf(stderr, "  -v, --verbose        Enable verbose logging\n");
+    fprintf(stderr, "  -L, --log-level LEVEL Log verbosity: "
+                    "none|error|warn|info|debug\n");
+    fprintf(stderr, "                       (default: warn; also settable via "
+                    "ERNIC_LOG_LEVEL)\n");
+    fprintf(stderr, "  -v, --verbose        Shorthand for --log-level debug\n");
     fprintf(stderr, "  -S, --stats-file PATH Statistics output file path\n");
     fprintf(stderr, "                       (stats written every ~1 second)\n");
     fprintf(stderr, "  -l, --log-file PATH  Write all output to PATH (default: "
@@ -824,6 +863,8 @@ int main(int argc, char *argv[])
     rocm_ernic_dev_t *dev;
     const char *socket_path = DEFAULT_SOCKET_PATH;
     const char *log_file_path = NULL;
+    ErnicLogLevel log_level = ERNIC_LOG_WARN;
+    bool log_level_set = false;
     struct sigaction sa;
     int ret, opt;
 
@@ -833,6 +874,7 @@ int main(int argc, char *argv[])
         {"socket", required_argument, 0, 's'},
         {"backend", required_argument, 0, 'b'},
         {"verbose", no_argument, 0, 'v'},
+        {"log-level", required_argument, 0, 'L'},
         {"stats-file", required_argument, 0, 'S'},
         {"log-file", required_argument, 0, 'l'},
         {"mac", required_argument, 0, 'm'},
@@ -867,7 +909,7 @@ int main(int argc, char *argv[])
     dev->mac_addr[5] = 0x6e;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vS:m:l:h", long_options,
+    while ((opt = getopt_long(argc, argv, "s:b:vL:S:m:l:h", long_options,
                               NULL)) != -1) {
         switch (opt) {
         /* Common options */
@@ -880,6 +922,17 @@ int main(int argc, char *argv[])
             break;
         case 'v':
             dev->verbose = true;
+            break;
+        case 'L':
+            if (!ernic_log_parse_level(optarg, &log_level)) {
+                fprintf(stderr, "Error: Invalid log level: %s\n", optarg);
+                fprintf(stderr,
+                        "  Expected one of: none, error, warn, info, debug\n");
+                free(dev->backend_type_str);
+                free(dev);
+                exit(EXIT_FAILURE);
+            }
+            log_level_set = true;
             break;
         case 'S':
             /* Store stats file path - will be set after device init */
@@ -929,6 +982,14 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Log level precedence: --log-level, then --verbose, then the
+     * ERNIC_LOG_LEVEL environment variable (resolved lazily), then warn. */
+    if (log_level_set) {
+        ernic_log_set_level(log_level);
+    } else if (dev->verbose) {
+        ernic_log_set_level(ERNIC_LOG_DEBUG);
+    }
+
     /* Validate backend-specific options */
     if (validate_backend_options(dev) < 0) {
         free(dev->backend_type_str);
@@ -959,39 +1020,32 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
-    printf("rocm-ernic: Starting rocm-ernic device server (Multi-Backend "
-           "Support)\n");
-    printf("  Socket: %s\n", socket_path);
-    printf("  Backend: %s\n", dev->backend_type_str);
+    ernic_startup_report("rocm-ernic: Starting rocm-ernic device server "
+                         "(Multi-Backend Support)");
+    ernic_startup_report("  Socket: %s", socket_path);
+    ernic_startup_report("  Backend: %s", dev->backend_type_str);
+    ernic_startup_report("  Log level: %s",
+                         ernic_log_level_name(ernic_log_get_level()));
     if (log_file_path) {
-        printf("  Log file: %s\n", log_file_path);
+        ernic_startup_report("  Log file: %s", log_file_path);
     }
 
     /* Show backend-specific options only for verbs backend */
     if (!strcmp(get_backend_type_base(dev->backend_type_str), "verbs")) {
         if (dev->backend_device_name) {
-            printf("  IB Device: %s\n", dev->backend_device_name);
+            ernic_startup_report("  IB Device: %s", dev->backend_device_name);
         }
         if (dev->backend_eth_device) {
-            printf("  Eth Device: %s\n", dev->backend_eth_device);
+            ernic_startup_report("  Eth Device: %s", dev->backend_eth_device);
         }
-        printf("  IB Port: %u\n", dev->backend_port_num);
+        ernic_startup_report("  IB Port: %u", dev->backend_port_num);
     }
-    printf("\n");
-    printf("Features in this build:\n");
-    printf("  ✓ PCI device enumeration\n");
-    printf("  ✓ BAR0/1/2 access\n");
-    printf("  ✓ DSR register handling (QEMU integration)\n");
-    printf("  ✓ Command channel framework\n");
-    printf("  ✓ Multi-backend support (none/loopback/verbs)\n");
-    printf("  ⚠ Full command processing (in progress)\n");
-    printf("\n");
 
     /* Remove old socket if it exists - try multiple approaches */
     struct stat st;
     if (stat(socket_path, &st) == 0) {
         if (S_ISSOCK(st.st_mode)) {
-            printf("Removing stale socket file: %s\n", socket_path);
+            ernic_startup_report("Removing stale socket file: %s", socket_path);
             if (unlink(socket_path) != 0) {
                 warn("Failed to unlink existing socket");
             }
@@ -1012,8 +1066,8 @@ int main(int argc, char *argv[])
     dev->vfu_ctx = vfu_ctx;
 
     /* Setup logging */
-    ret =
-        vfu_setup_log(vfu_ctx, vfu_log_cb, dev->verbose ? LOG_DEBUG : LOG_INFO);
+    ret = vfu_setup_log(vfu_ctx, vfu_log_cb,
+                        vfu_log_threshold(ernic_log_get_level()));
     if (ret < 0) {
         err(EXIT_FAILURE, "vfu_setup_log() failed");
     }
@@ -1031,9 +1085,9 @@ int main(int argc, char *argv[])
                                        dev->backend_type_str);
         pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_AMD,
                                  PCI_DEVICE_ID_ROCM_ERNIC);
-        printf("rocm-ernic: Statistics will be written to: %s (every ~1 "
-               "second)\n",
-               dev->stats_file_path);
+        ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
+                             "(every ~1 second)",
+                             dev->stats_file_path);
         pvrdma_write_stats(dev->pvrdma_handle);
     }
 
@@ -1084,22 +1138,22 @@ int main(int argc, char *argv[])
                 "rocm-ernic: You may need to manually run: sudo chmod 666 %s\n",
                 socket_path);
     } else {
-        printf(
-            "rocm-ernic: ✓ Socket permissions set to 0666 (rw-rw-rw-) for %s\n",
-            socket_path);
-        fflush(stdout);
+        ernic_startup_report("rocm-ernic: ✓ Socket permissions set to 0666 "
+                             "(rw-rw-rw-) for %s",
+                             socket_path);
     }
 
     /* Log MAC address if set */
     if (dev->mac_addr_set) {
-        vfu_log(vfu_ctx, LOG_INFO,
-                "Device MAC address: %02x:%02x:%02x:%02x:%02x:%02x",
-                dev->mac_addr[0], dev->mac_addr[1], dev->mac_addr[2],
-                dev->mac_addr[3], dev->mac_addr[4], dev->mac_addr[5]);
+        ernic_startup_report("rocm-ernic: Device MAC address: "
+                             "%02x:%02x:%02x:%02x:%02x:%02x",
+                             dev->mac_addr[0], dev->mac_addr[1],
+                             dev->mac_addr[2], dev->mac_addr[3],
+                             dev->mac_addr[4], dev->mac_addr[5]);
     }
 
-    vfu_log(vfu_ctx, LOG_INFO,
-            "Device realized, waiting for client connection...");
+    ernic_startup_report("rocm-ernic: Device realized, waiting for client "
+                         "connection...");
 
     /* Main loop */
     while (!g_shutdown_requested) {
@@ -1120,7 +1174,7 @@ int main(int argc, char *argv[])
             err(EXIT_FAILURE, "vfu_attach_ctx() failed");
         }
 
-        vfu_log(vfu_ctx, LOG_INFO, "Client connected!");
+        ernic_startup_report("rocm-ernic: Client connected!");
         if (dev->pvrdma_handle) {
             pvrdma_set_stats_connection_state(dev->pvrdma_handle, "connected");
         }
@@ -1156,8 +1210,9 @@ int main(int argc, char *argv[])
 
             if (ret < 0) {
                 if (errno == ENOTCONN) {
-                    vfu_log(vfu_ctx, LOG_INFO,
-                            "Client disconnected after %d loops", loop_count);
+                    ernic_startup_report(
+                        "rocm-ernic: Client disconnected after %d loops",
+                        loop_count);
                     if (dev->pvrdma_handle) {
                         pvrdma_set_stats_connection_state(
                             dev->pvrdma_handle, "disconnected (client closed)");
@@ -1194,7 +1249,7 @@ int main(int argc, char *argv[])
         g_main_context_pop_thread_default(main_context);
     }
 
-    vfu_log(vfu_ctx, LOG_INFO, "Shutting down");
+    ernic_startup_report("rocm-ernic: Shutting down");
 
     /* Mark cleanup in progress to prevent signal handler re-entry */
     g_cleanup_in_progress = 1;
@@ -1234,7 +1289,7 @@ int main(int argc, char *argv[])
 
     unlink(socket_path);
 
-    printf("rocm-ernic: Shutdown complete\n");
+    ernic_startup_report("rocm-ernic: Shutdown complete");
 
     return EXIT_SUCCESS;
 }

@@ -42,7 +42,8 @@ ernic_install_prefix: /usr/local
 ernic_instances: 2
 ernic_tcp_port: 6320
 ernic_manager_ip: 127.0.0.1
-ernic_verbose: "false"
+ernic_log_level: warn           # none|error|warn|info|debug
+ernic_verbose: "false"          # legacy shorthand for debug
 ernic_debug_mesh: true
 ernic_debug_dma_map: false
 
