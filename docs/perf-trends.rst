@@ -4,9 +4,44 @@
 Performance trends
 ==================
 
-No published measurements yet.
+Medians from the nightly full-tier run on ``hpe-rack-15``, oldest run at
+the left. Latest: ``56b302de`` at 2026-09-07 03:06:57 UTC.
 
-The nightly full-tier run on the lab node appends its medians
-here and regenerates this page, so charts appear after the
-first successful nightly. Pull request runs never publish:
-their numbers describe the pull request, not ``main``.
+Each panel carries one message size on its own scale. Bandwidth at 4 KiB
+and at 1 MiB differ by more than an order of magnitude, so a shared axis
+would flatten the small sizes onto the baseline and hide exactly the
+movement a regression shows up in. Bandwidth and latency are likewise
+never combined: they share no scale.
+
+Send bandwidth over time
+------------------------
+
+Median ``bw_peak_GBs`` for ``send`` (higher is better).
+
+.. raw:: html
+   :file: perf-history/chart-bandwidth.html
+
+Last 1 runs, in GB/s:
+
+======== ===== ====== =====
+Run      4 KiB 64 KiB 1 MiB
+======== ===== ====== =====
+56b302de 0.36  2.56   6.02
+======== ===== ====== =====
+
+Send latency over time
+----------------------
+
+Median ``lat_typical_us`` for ``send`` (lower is better).
+
+.. raw:: html
+   :file: perf-history/chart-latency.html
+
+Last 1 runs, in µs:
+
+======== ====== ====== ======
+Run      4 KiB  64 KiB 1 MiB
+======== ====== ====== ======
+56b302de 321.46 325.81 468.44
+======== ====== ====== ======
+
