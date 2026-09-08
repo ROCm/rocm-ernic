@@ -24,12 +24,17 @@ option(ERNIC_BUILD_KMOD
 
 # Pinned Linux kernel git reference for the ionic driver sources.
 # Update this when moving to a newer upstream baseline.
-set(IONIC_KERNEL_REF "v6.12"
+#
+# Must be >= v6.18: drivers/infiniband/hw/ionic (ionic_rdma.ko) was only
+# merged for 6.18, so earlier refs cannot supply the RDMA half of the
+# stack and the DKMS build fails with a missing source directory.
+set(IONIC_KERNEL_REF "v7.2.4"
     CACHE STRING
     "Linux kernel git tag or SHA to fetch ionic sources from")
 
+# Stable tree, so point releases (vX.Y.Z) as well as vX.Y are resolvable.
 set(IONIC_KERNEL_REPO
-    "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
     CACHE STRING
     "Linux kernel git repository URL")
 

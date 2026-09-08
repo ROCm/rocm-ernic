@@ -144,9 +144,31 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
-    if (dev->ionic_mode && dev->ionic_emu)
-        return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
-                                         is_write);
+    if (dev->ionic_mode && dev->ionic_emu) {
+        /* Below IONIC_BAR0_REGS_SIZE is the ionic register window; at and
+         * above it is the MSI-X table/PBA, which is a plain shadow the
+         * client reads back.  An access must not straddle the two. */
+        if ((size_t)offset + count <= IONIC_BAR0_REGS_SIZE)
+            return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
+                                             is_write);
+
+        if ((size_t)offset < IONIC_BAR0_REGS_SIZE ||
+            (size_t)offset + count > IONIC_BAR0_TOTAL_SIZE) {
+            vfu_log(vfu_ctx, LOG_ERR,
+                    "ionic BAR0 access out of bounds or straddling the "
+                    "register/MSI-X split: offset=%#lx count=%zu",
+                    (unsigned long)offset, count);
+            errno = EINVAL;
+            return -1;
+        }
+
+        size_t msix_off = (size_t)offset - IONIC_BAR0_REGS_SIZE;
+        if (is_write)
+            memcpy((char *)dev->bar0_mem + msix_off, buf, count);
+        else
+            memcpy(buf, (char *)dev->bar0_mem + msix_off, count);
+        return (ssize_t)count;
+    }
 
     if ((size_t)offset + count > RDMA_BAR0_MSIX_SIZE) {
         vfu_log(vfu_ctx, LOG_ERR,
@@ -475,9 +497,16 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     int ret;
 
     if (dev->ionic_mode) {
-        /* ionic BAR0: 32 KB device registers (callback handles shadow buf) */
+        /* Shadow for the MSI-X table/PBA that sits above the ionic
+         * register window; the register window itself is shadowed inside
+         * ionic_eth_emu. */
+        dev->bar0_mem = calloc(1, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
+        if (!dev->bar0_mem)
+            err(EXIT_FAILURE, "ionic: Failed to allocate BAR0 MSI-X shadow");
+
+        /* ionic BAR0: 32 KB register window + MSI-X table/PBA above it */
         ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
-                               IONIC_BAR0_REGS_SIZE, bar0_access,
+                               IONIC_BAR0_TOTAL_SIZE, bar0_access,
                                VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL,
                                0, -1, 0);
         if (ret < 0)
@@ -492,8 +521,9 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
             err(EXIT_FAILURE, "ionic: Failed to setup BAR2");
 
         ernic_startup_report(
-            "rocm-ernic: ionic BARs configured: BAR0=%zu BAR2=%zu",
-            (size_t)IONIC_BAR0_REGS_SIZE, (size_t)IONIC_BAR2_DB_SIZE);
+            "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
+            (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
+            (size_t)IONIC_BAR2_DB_SIZE);
         return 0;
     }
 
@@ -584,11 +614,18 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Message Control: bits [10:0] = Table Size-1 */
     msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
 
+    /* In ionic mode the table/PBA must sit above the 32 KB ionic register
+     * window: offset 0 is the DEVI signature ionic_dev_setup() probes and
+     * 0x2000 is intr_ctrl, so the legacy placement would alias both. */
+    uint32_t table_off =
+        dev->ionic_mode ? IONIC_BAR0_MSIX_TABLE : MSIX_TABLE_OFFSET;
+    uint32_t pba_off = dev->ionic_mode ? IONIC_BAR0_MSIX_PBA : MSIX_PBA_OFFSET;
+
     /* Table Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
-    msix_cap.table = (MSIX_TABLE_OFFSET & 0xFFFFFFF8) | (MSIX_TABLE_BIR & 0x7);
+    msix_cap.table = (table_off & 0xFFFFFFF8) | (MSIX_TABLE_BIR & 0x7);
 
     /* PBA Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
-    msix_cap.pba = (MSIX_PBA_OFFSET & 0xFFFFFFF8) | (MSIX_PBA_BIR & 0x7);
+    msix_cap.pba = (pba_off & 0xFFFFFFF8) | (MSIX_PBA_BIR & 0x7);
 
     /* Add MSI-X capability to PCI config space at automatic position (pos=0) */
     ret = vfu_pci_add_capability(vfu_ctx, 0, 0, &msix_cap);
@@ -622,9 +659,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ernic_startup_report("rocm-ernic: Interrupts configured: INTx=1, "
                          "MSI-X=%d vectors "
                          "(table=BAR%d:0x%x, pba=BAR%d:0x%x)",
-                         (int)nr_intrs, MSIX_TABLE_BIR,
-                         (unsigned)MSIX_TABLE_OFFSET, MSIX_PBA_BIR,
-                         (unsigned)MSIX_PBA_OFFSET);
+                         (int)nr_intrs, MSIX_TABLE_BIR, (unsigned)table_off,
+                         MSIX_PBA_BIR, (unsigned)pba_off);
 
     return 0;
 }

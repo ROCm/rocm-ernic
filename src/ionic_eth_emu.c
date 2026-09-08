@@ -73,11 +73,27 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_FW_STS_F_RUNNING   0x01u
 
 /* BAR0 layout offsets */
-#define IONIC_BAR0_DEV_INFO_REGS_OFFSET     0x0000u
-#define IONIC_BAR0_DEV_CMD_REGS_OFFSET      0x0800u
-#define IONIC_BAR0_DEV_CMD_DATA_REGS_OFFSET 0x0c00u
-#define IONIC_BAR0_INTR_CTRL_OFFSET         0x2000u
-#define IONIC_BAR0_SIZE                     0x8000u /* 32 KB */
+#define IONIC_BAR0_DEV_INFO_REGS_OFFSET 0x0000u
+#define IONIC_BAR0_DEV_CMD_REGS_OFFSET  0x0800u
+#define IONIC_BAR0_INTR_STATUS_OFFSET   0x1000u
+#define IONIC_BAR0_INTR_CTRL_OFFSET     0x2000u
+#define IONIC_BAR0_SIZE                 0x8000u /* 32 KB */
+
+/* dev_info_regs field offsets (union ionic_dev_info_regs in ionic_if.h).
+ * fw_version is at +0x0c, NOT +0x08 -- +0x08 is fw_heartbeat, which the
+ * driver's watchdog polls.  A constant non-zero heartbeat makes
+ * ionic_heartbeat_check() report "FW heartbeat stalled" and return
+ * -ENXIO, which tears the LIF down. */
+#define DEVINFO_SIGNATURE_OFF    0x00u
+#define DEVINFO_VERSION_OFF      0x04u
+#define DEVINFO_ASIC_TYPE_OFF    0x05u
+#define DEVINFO_ASIC_REV_OFF     0x06u
+#define DEVINFO_FW_STATUS_OFF    0x07u
+#define DEVINFO_FW_HEARTBEAT_OFF 0x08u
+#define DEVINFO_FW_VERSION_OFF   0x0cu /* char[32] */
+#define DEVINFO_SERIAL_NUM_OFF   0x2cu /* char[32] */
+#define DEVINFO_FWVERS_BUFLEN    32u
+#define DEVINFO_SERIAL_BUFLEN    32u
 
 #define IONIC_DEV_CMD_DONE 0x00000001u
 
@@ -135,28 +151,52 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
 /* -------------------------------------------------------------------------
- * dev_cmd_regs layout (64-bit register block starting at offset 0x0800)
+ * dev_cmd_regs layout, relative to IONIC_BAR0_DEV_CMD_REGS_OFFSET.
  *
- *   +0x00  doorbell  (w1 triggers cmd processing)
- *   +0x04  done      (bit 0 = 1 when complete)
- *   +0x08  cmd[60]   (command bytes)
- *   +0x44  comp[16]  (completion bytes)
- *   +0x54  rsvd[48]
- * data area at 0x0c00: 478 * 4 = 1912 bytes
+ * These are the offsets of union ionic_dev_cmd_regs in ionic_if.h; the
+ * driver reaches every field through that struct, so the struct is the
+ * contract, not the IONIC_BAR0_DEV_CMD_* macros.
+ *
+ *   +0x00  doorbell   u32   (w1 triggers cmd processing)
+ *   +0x04  done       u32   (bit 0 = 1 when complete)
+ *   +0x08  cmd        union ionic_dev_cmd      (words[16], 64 B)
+ *   +0x48  comp       union ionic_dev_cmd_comp (words[4],  16 B)
+ *   +0x58  rsvd[48]
+ *   +0x88  data[478]  u32   (1912 B, ends exactly at +0x800)
+ *
+ * Note IONIC_BAR0_DEV_CMD_DATA_REGS_OFFSET (0x0c00) is vestigial in
+ * upstream -- no driver code references it.  The real data window is at
+ * dev_cmd_regs+0x88, i.e. absolute BAR0 offset 0x0888.  Placing it at
+ * 0x0c00 silently breaks every IDENTIFY-style command.
  * -------------------------------------------------------------------------
  */
 #define DEVCMD_DOORBELL_OFF 0x00u
 #define DEVCMD_DONE_OFF     0x04u
 #define DEVCMD_CMD_OFF      0x08u
-#define DEVCMD_COMP_OFF     0x44u
+#define DEVCMD_COMP_OFF     0x48u
+#define DEVCMD_DATA_OFF     0x88u
+#define DEVCMD_DATA_SIZE    1912u
 
 /* -------------------------------------------------------------------------
  * Emulator state
  * -------------------------------------------------------------------------
  */
 
-/* Size of the emulated BAR0 shadow buffer (32 KB). */
+/* Size of the emulated BAR0 shadow buffer (32 KB).
+ * This must equal the BAR0 size advertised to the guest in setup_bars(),
+ * or the driver gets a window it cannot address. */
 #define BAR0_BUF_SIZE IONIC_BAR0_SIZE
+
+/* The dev_cmd data window ends exactly where intr_status begins; a
+ * larger data area would silently corrupt the interrupt registers. */
+_Static_assert(IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DATA_OFF +
+                       DEVCMD_DATA_SIZE ==
+                   IONIC_BAR0_INTR_STATUS_OFFSET,
+               "dev_cmd data window must abut intr_status at 0x1000");
+_Static_assert(DEVCMD_DATA_OFF == DEVCMD_COMP_OFF + 16u + 48u,
+               "dev_cmd data must follow comp[16] + rsvd[48]");
+_Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
+               "dev_cmd comp must follow cmd[64]");
 
 struct ionic_eth_emu {
     vfu_ctx_t *vfu_ctx;
@@ -234,14 +274,22 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     uint8_t *info = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET;
 
     uint32_t sig = le32(IONIC_DEV_INFO_SIGNATURE);
-    memcpy(info + 0, &sig, 4);        /* signature  */
-    info[4] = IONIC_DEV_INFO_VERSION; /* version    */
-    info[5] = IONIC_ASIC_TYPE_NONE;   /* asic_type  */
-    info[6] = 0;                      /* asic_rev   */
-    info[7] = IONIC_FW_STS_F_RUNNING; /* fw_status  */
+    memcpy(info + DEVINFO_SIGNATURE_OFF, &sig, 4);
+    info[DEVINFO_VERSION_OFF] = IONIC_DEV_INFO_VERSION;
+    info[DEVINFO_ASIC_TYPE_OFF] = IONIC_ASIC_TYPE_NONE;
+    info[DEVINFO_ASIC_REV_OFF] = 0;
+    info[DEVINFO_FW_STATUS_OFF] = IONIC_FW_STS_F_RUNNING;
 
-    /* fw_version string at offset 8 */
-    strncpy((char *)(info + 8), "rocm-ernic-1.0", 32);
+    /* Leave fw_heartbeat at 0: ionic_heartbeat_check() special-cases a
+     * zero heartbeat as "early FW with no heartbeat" and treats it as
+     * healthy, so we do not need a ticking counter to keep the LIF up. */
+    uint32_t hb = 0;
+    memcpy(info + DEVINFO_FW_HEARTBEAT_OFF, &hb, 4);
+
+    strncpy((char *)(info + DEVINFO_FW_VERSION_OFF), "rocm-ernic-1.0",
+            DEVINFO_FWVERS_BUFLEN);
+    strncpy((char *)(info + DEVINFO_SERIAL_NUM_OFF), "rocm-ernic-emulated",
+            DEVINFO_SERIAL_BUFLEN);
 
     /* Mask all interrupts initially. */
     for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++)
@@ -408,7 +456,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
     uint8_t *cmd_base = emu->bar0 + IONIC_BAR0_DEV_CMD_REGS_OFFSET;
     uint8_t *cmd = cmd_base + DEVCMD_CMD_OFF;
     uint8_t *comp = cmd_base + DEVCMD_COMP_OFF;
-    uint8_t *data = emu->bar0 + IONIC_BAR0_DEV_CMD_DATA_REGS_OFFSET;
+    uint8_t *data = cmd_base + DEVCMD_DATA_OFF;
 
     uint8_t opcode = cmd[0];
 
@@ -559,8 +607,8 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
 {
     (void)cmd;
 
-    /* ionic_lif_identity: 478 * 4 = 1912 bytes, fits in data area. */
-    memset(data, 0, 1912);
+    /* ionic_lif_identity: 478 * 4 = 1912 bytes, fills the data area. */
+    memset(data, 0, DEVCMD_DATA_SIZE);
 
     /* capabilities: ETH | RDMA */
     uint64_t caps = le64((uint64_t)(IONIC_LIF_CAP_ETH | IONIC_LIF_CAP_RDMA));

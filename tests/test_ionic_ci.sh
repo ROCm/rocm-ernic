@@ -8,7 +8,7 @@
 # Tests that can run without a VM (no RDMA device needed):
 #   1. Server starts in --ionic mode with loopback backend
 #   2. Server announces correct VID:DID (0x1022:0x8001)
-#   3. Server reports correct BAR layout (32K + 4M)
+#   3. Server reports correct BAR layout (64K BAR0 / 32K regs + 4M BAR2)
 #   4. Server reports correct MSI-X vector count (4)
 #   5. Server exits cleanly on SIGTERM
 
@@ -88,9 +88,13 @@ grep -q "ionic emulation initialized" "$LOG" || fail "ionic banner missing"
 pass "ionic banner present"
 
 # --- Test 4: correct BAR layout ---
+# BAR0 is 64K: a 32K ionic register window (ionic_dev_setup() requires
+# >= IONIC_BAR0_SIZE = 0x8000) plus the MSI-X table/PBA above it, which
+# cannot alias the register window.  BAR2 is the 4M doorbell BAR.
 echo ""
-echo "Test 4: BAR layout (BAR0=32K, BAR2=4M)"
-grep -q "BAR0=4194304" "$LOG" || fail "BAR0 size wrong (expected 4194304=4M)"
+echo "Test 4: BAR layout (BAR0=64K total / 32K regs, BAR2=4M)"
+grep -q "BAR0=65536" "$LOG" || fail "BAR0 size wrong (expected 65536=64K)"
+grep -q "regs=32768" "$LOG" || fail "BAR0 register window wrong (expected 32768=32K)"
 grep -q "BAR2=4194304" "$LOG" || fail "BAR2 size wrong (expected 4194304=4M)"
 pass "BAR layout correct"
 

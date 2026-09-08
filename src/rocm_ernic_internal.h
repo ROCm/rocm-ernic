@@ -48,25 +48,44 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 #define INTR_VEC_CMD_COMPLETION_Q 2
 
 /* ---------------------------------------------------------------------------
- * ionic BAR layout (target layout after ionic migration).
+ * ionic BAR layout.  Checked against upstream v7.2.4:
+ * drivers/net/ethernet/pensando/ionic/{ionic_if.h,ionic_dev.c,ionic_bus_pci.c}
  *
- * Real Pensando DSC BAR map (from ionic_if.h / ionic driver probe):
- *   BAR0 (64-bit): device registers + admin queue doorbell region (~4 MB)
- *   BAR2 (no BAR1): doorbell BAR — per-LIF doorbell pages for SQ/RQ/CQ/EQ
- *   BAR4:           device info page (read-only)
+ * ionic_map_bars() walks PCI BARs 0..5, skips any without IORESOURCE_MEM,
+ * and compacts what is left into ionic->bars[].  So the driver's indices
+ * are positional, not PCI BAR numbers:
+ *   bars[0] = register BAR   -- ionic_dev_setup() requires len >= 0x8000
+ *   bars[1] = doorbell BAR   (IONIC_PCI_BAR_DBELL)
+ *   bars[2] = CMB, optional  (IONIC_PCI_BAR_CMB)
  *
- * For the emulated device we simplify to:
- *   BAR0: 4 MB — devcmd registers + MSI-X table/PBA
- *   BAR2: 4 MB — doorbell pages (per-LIF: kernel page at index kern_pid,
- *                user pages at higher indices via mmap)
+ * Our BAR0 is 64-bit, so it consumes PCI BAR0+BAR1 and the guest sees our
+ * PCI BAR2 as bars[1].  We expose no third MEM BAR, so the driver takes
+ * the "no CMB" path.
  *
- * The ionic driver discovers these sizes from the identify response.
+ * BAR0 map.  The first 32 KB is the ionic register window, laid out
+ * exactly as ionic_dev_setup() expects.  MSI-X cannot live at offset 0
+ * (that is the DEVI signature the driver probes) or at 0x2000 (intr_ctrl),
+ * so the table and PBA sit above the register window:
+ *
+ *   0x0000  dev_info_regs   (signature, fw_status, fw_heartbeat, ...)
+ *   0x0800  dev_cmd_regs    (doorbell, done, cmd, comp, data)
+ *   0x1000  intr_status
+ *   0x2000  intr_ctrl       (32 B per vector)
+ *   0x8000  MSI-X table     <- above IONIC_BAR0_SIZE, invisible to ionic
+ *   0xa000  MSI-X PBA
+ *   0x10000 end
+ *
+ * BAR2: doorbell pages -- kernel page at index kern_pid, user pages at
+ * higher indices via mmap.
  * ---------------------------------------------------------------------------
  */
-#define IONIC_BAR0_REGS_SIZE (4 * 1024 * 1024) /* 4 MB: regs + MSI-X   */
-#define IONIC_BAR2_DB_SIZE   (4 * 1024 * 1024) /* 4 MB: doorbell pages  */
-#define IONIC_DB_PAGE_SIZE   4096              /* one 4K page per LIF   */
-#define IONIC_KERN_PID       0                 /* kernel doorbell page  */
+#define IONIC_BAR0_REGS_SIZE  0x8000u  /* 32 KB ionic register window */
+#define IONIC_BAR0_MSIX_TABLE 0x8000u  /* MSI-X table, above the regs */
+#define IONIC_BAR0_MSIX_PBA   0xa000u  /* MSI-X PBA                   */
+#define IONIC_BAR0_TOTAL_SIZE 0x10000u /* 64 KB total BAR0            */
+#define IONIC_BAR2_DB_SIZE    (4 * 1024 * 1024) /* 4 MB doorbell pages */
+#define IONIC_DB_PAGE_SIZE    4096              /* one 4K page per LIF */
+#define IONIC_KERN_PID        0                 /* kernel doorbell page */
 
 /* ionic MSI-X vectors: EQ per vector (driver requests eq_count vectors).
  * We start with a fixed count matching IONIC_EQ_COUNT_MIN = 4. */
