@@ -14,7 +14,7 @@
 # The fuzzers always exit 0 — any crash inputs and symbolized repros are the
 # deliverable, uploaded as the `fuzz-report` artifact and summarised in the
 # job summary — so a discovered crash never fails the check.
-name: Fuzz (nix, opt-in)
+name: rocm-ernic - Fuzz (nix, opt-in)
 
 on:
   pull_request:

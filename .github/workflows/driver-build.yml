@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: Driver Build
+name: rocm-ernic - Driver Build
 
 on:
   pull_request:
@@ -123,4 +123,3 @@ jobs:
           echo "❌ Driver build failed!"
           exit 1
         fi
-

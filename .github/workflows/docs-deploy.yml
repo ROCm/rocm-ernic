@@ -7,7 +7,7 @@
 # Prerequisites (one-time, requires repo-admin access):
 #   Settings > Pages > Source = "GitHub Actions"
 
-name: docs-deploy
+name: rocm-ernic - docs-deploy
 
 on:
   workflow_dispatch:

@@ -5,7 +5,7 @@
 # Optional host-only mlx5 DC reference (perftest / libmlx5).  Not wired to
 # rocm_ernic wire compatibility; use for manual behavior comparison only.
 
-name: DC mlx5 reference (optional)
+name: rocm-ernic - DC mlx5 reference (optional)
 
 on:
   workflow_dispatch:
