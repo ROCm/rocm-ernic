@@ -28,11 +28,14 @@
 #include <errno.h>
 #include <syslog.h>
 #include <endian.h>
+#include <sys/mman.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "ionic_rdma_devcmd.h"
+#include "ionic_eth_emu.h"
 #include "ionic_adminq.h"
+#include "ionic_datapath.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants (devcmd opcodes and structs)
@@ -76,12 +79,16 @@ struct ionic_rdma_eq {
     uint64_t dma_addr;   /* guest PA of EQE ring  */
     uint8_t depth_log2;
     uint8_t stride_log2;
+    uint32_t prod; /* next EQE slot to write */
+    uint8_t color; /* colour bit the driver expects; ionic_create_eq()
+                    * seeds eq->q.cons = true, so we start at 1 */
 };
 
 struct ionic_rdma_aq {
     bool valid;
     uint32_t qid;
     uint32_t cq_id;       /* paired admin CQ */
+    uint32_t eq_id;       /* EQ that CQ raises events on */
     uint64_t dma_addr;    /* guest PA of WQE ring */
     uint64_t cq_dma_addr; /* guest PA of CQE ring */
     uint8_t depth_log2;
@@ -93,12 +100,16 @@ struct ionic_rdma_aq {
 struct ionic_rdma_devcmd_state {
     vfu_ctx_t *vfu_ctx;
 
+    /* Used to raise the MSI-X vector behind an EQ. */
+    struct ionic_eth_emu *eth_emu;
+
     /* EQ table */
     struct ionic_rdma_eq eq[IONIC_MAX_EQ];
     int eq_count;
 
     /* Pending CQ (created with opcode 52, consumed by next opcode 53) */
     uint32_t pending_cq_qid;
+    uint32_t pending_cq_eq_id;
     uint64_t pending_cq_dma;
     uint8_t pending_cq_depth_log2;
     uint8_t pending_cq_stride_log2;
@@ -111,6 +122,36 @@ struct ionic_rdma_devcmd_state {
     /* Admin queue service context (ionic_adminq.c) */
     struct ionic_adminq_ctx *adminq_ctx;
 };
+
+static void rdma_cq_event_cb(void *opaque, uint32_t eq_id, uint32_t cq_id);
+
+static int rdma_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
+                          size_t len)
+{
+    dma_sg_t *sg = malloc(dma_sg_size());
+    struct iovec iov;
+    int ret;
+
+    if (!sg)
+        return -ENOMEM;
+
+    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
+                          PROT_WRITE);
+    if (ret < 0)
+        goto out;
+
+    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
+    if (ret < 0)
+        goto out;
+
+    memcpy(iov.iov_base, buf, len);
+    vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
+    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
+    ret = 0;
+out:
+    free(sg);
+    return ret;
+}
 
 /* -------------------------------------------------------------------------
  * Construction / destruction
@@ -186,6 +227,8 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
     s->eq[idx].dma_addr = dma_addr;
     s->eq[idx].depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
     s->eq[idx].stride_log2 = cmd[RDMA_QUEUE_STRIDE_OFF];
+    s->eq[idx].prod = 0;
+    s->eq[idx].color = 1;
 
     vfu_log(s->vfu_ctx, LOG_INFO,
             "ionic_rdma_devcmd: CREATE_EQ qid=%u intr=%u depth=2^%u "
@@ -198,17 +241,21 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
 static void handle_create_cq(struct ionic_rdma_devcmd_state *s,
                              const uint8_t *cmd, uint8_t *comp)
 {
-    uint32_t qid_ver;
+    uint32_t qid_ver, cid;
     uint64_t dma_addr;
     memcpy(&qid_ver, cmd + RDMA_QUEUE_QID_VER_OFF, 4);
+    memcpy(&cid, cmd + RDMA_QUEUE_CID_OFF, 4);
     memcpy(&dma_addr, cmd + RDMA_QUEUE_DMA_OFF, 8);
     qid_ver = le32toh(qid_ver);
+    cid = le32toh(cid);
     dma_addr = le64toh(dma_addr);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
 
-    /* Store as pending; the next CREATE_ADMINQ will consume it. */
+    /* Store as pending; the next CREATE_ADMINQ will consume it.  For a CQ,
+     * cid is the id of the EQ that carries its notifications. */
     s->pending_cq_qid = qid;
+    s->pending_cq_eq_id = cid;
     s->pending_cq_dma = dma_addr;
     s->pending_cq_depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
     s->pending_cq_stride_log2 = cmd[RDMA_QUEUE_STRIDE_OFF];
@@ -251,6 +298,7 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
     s->aq[idx].valid = true;
     s->aq[idx].qid = qid;
     s->aq[idx].cq_id = s->pending_cq_qid;
+    s->aq[idx].eq_id = s->pending_cq_eq_id;
     s->aq[idx].dma_addr = dma_addr;
     s->aq[idx].cq_dma_addr = s->pending_cq_dma;
     s->aq[idx].depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
@@ -275,9 +323,10 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
             return;
         }
     }
-    ionic_adminq_register_queue(s->adminq_ctx, idx, dma_addr,
-                                s->aq[idx].depth_log2, s->pending_cq_dma,
-                                s->pending_cq_depth_log2);
+    ionic_adminq_set_cq_event_cb(s->adminq_ctx, rdma_cq_event_cb, s);
+    ionic_adminq_register_queue(
+        s->adminq_ctx, idx, dma_addr, s->aq[idx].depth_log2, s->pending_cq_dma,
+        s->pending_cq_depth_log2, s->aq[idx].cq_id, s->aq[idx].eq_id);
 
     comp[0] = 0;
 }
@@ -321,12 +370,75 @@ struct ionic_adminq_ctx *ionic_rdma_devcmd_get_adminq_ctx(
     return s ? s->adminq_ctx : NULL;
 }
 
-/* Accessor used by the admin queue layer to trigger EQ interrupts. */
-int ionic_rdma_devcmd_trigger_eq(struct ionic_rdma_devcmd_state *s, int eq_idx,
-                                 ionic_irq_trigger_fn_t trigger_fn,
-                                 void *trigger_opaque)
+void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
+                                   struct ionic_eth_emu *eth_emu)
 {
-    if (eq_idx < 0 || eq_idx >= s->eq_count || !s->eq[eq_idx].valid)
+    if (s)
+        s->eth_emu = eth_emu;
+}
+
+void ionic_rdma_devcmd_set_datapath(struct ionic_rdma_devcmd_state *s,
+                                    struct ionic_datapath *dp)
+{
+    /* Data-path CQEs need the same EQE-then-MSI-X sequence as admin CQEs. */
+    if (s)
+        ionic_datapath_set_cq_event_cb(dp, rdma_cq_event_cb, s);
+}
+
+int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
+                                    uint32_t eq_id, uint32_t cq_id)
+{
+    struct ionic_rdma_eq *eq = NULL;
+
+    if (!s)
         return -EINVAL;
-    return trigger_fn(trigger_opaque, (int)s->eq[eq_idx].intr_index);
+
+    for (int i = 0; i < s->eq_count; i++) {
+        if (s->eq[i].valid && s->eq[i].qid == eq_id) {
+            eq = &s->eq[i];
+            break;
+        }
+    }
+    if (!eq) {
+        vfu_log(s->vfu_ctx, LOG_ERR,
+                "ionic_rdma_devcmd: CQ event for unknown eq %u", eq_id);
+        return -ENOENT;
+    }
+
+    /* struct ionic_v1_eqe is a single be32:
+     *   bit 0     colour
+     *   bits 3:1  type (0 = CQ)
+     *   bits 7:4  code (0 = CQ_NOTIFY)
+     *   bits 31:8 qid
+     * The driver walks the ring until the colour stops matching, so the
+     * entry has to be written before the interrupt is raised. */
+    uint32_t evt = (cq_id << 8) | (eq->color ? 1u : 0u);
+    uint32_t be_evt = htobe32(evt);
+
+    uint32_t depth = 1u << eq->depth_log2;
+    uint64_t gpa = eq->dma_addr + (uint64_t)eq->prod * (1u << eq->stride_log2);
+
+    vfu_log(s->vfu_ctx, LOG_DEBUG,
+            "ionic_rdma_devcmd: EQE eq=%u cq=%u prod=%u color=%u gpa=%#lx",
+            eq_id, cq_id, eq->prod, eq->color, (unsigned long)gpa);
+
+    if (rdma_dma_write(s->vfu_ctx, gpa, &be_evt, sizeof(be_evt)) < 0) {
+        vfu_log(s->vfu_ctx, LOG_ERR,
+                "ionic_rdma_devcmd: EQE write to %#lx failed", gpa);
+        return -EIO;
+    }
+
+    if (++eq->prod == depth) {
+        eq->prod = 0;
+        eq->color ^= 1;
+    }
+
+    if (!s->eth_emu)
+        return 0;
+    return ionic_eth_emu_trigger_irq(s->eth_emu, (int)eq->intr_index);
+}
+
+static void rdma_cq_event_cb(void *opaque, uint32_t eq_id, uint32_t cq_id)
+{
+    ionic_rdma_devcmd_post_cq_event(opaque, eq_id, cq_id);
 }

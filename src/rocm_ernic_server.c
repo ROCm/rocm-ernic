@@ -408,6 +408,13 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
  */
 static int ionic_device_init(rocm_ernic_dev_t *dev)
 {
+    /* The ionic front end replaces PVRDMA's registers and doorbells, but the
+     * resource manager and backend behind them are shared: without this the
+     * admin queue has no pvrdma_handle and every CREATE_CQ/CREATE_QP is a
+     * no-op stub. */
+    if (pvrdma_device_init(dev) < 0)
+        return -1;
+
     dev->ionic_emu = ionic_eth_emu_create(dev->vfu_ctx, IONIC_BAR2_DB_SIZE);
     if (!dev->ionic_emu) {
         fprintf(stderr, "ionic_device_init: failed to create eth emulator\n");
@@ -424,6 +431,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     ionic_eth_emu_register_rdma_handler(
         dev->ionic_emu, ionic_rdma_devcmd_dispatch, dev->ionic_rdma);
+    ionic_rdma_devcmd_set_eth_emu(dev->ionic_rdma, dev->ionic_emu);
 
     dev->ionic_dp = ionic_datapath_create(dev->vfu_ctx, dev->ionic_emu);
     if (!dev->ionic_dp) {
@@ -606,10 +614,10 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     msix_cap.next =
         0; /* Will be filled by libvfio-user if there are more caps */
 
-    /* ionic mode needs at least IONIC_MSIX_MIN_VECTORS (4) EQ vectors;
-     * the legacy PVRDMA path uses RDMA_MAX_INTRS (3). */
+    /* ionic mode needs an interrupt per Ethernet queue pair plus at least
+     * four RDMA EQs; the legacy PVRDMA path uses RDMA_MAX_INTRS (3). */
     uint32_t nr_intrs =
-        dev->ionic_mode ? IONIC_MSIX_MIN_VECTORS : RDMA_MAX_INTRS;
+        dev->ionic_mode ? IONIC_MSIX_MAX_VECTORS : RDMA_MAX_INTRS;
 
     /* Message Control: bits [10:0] = Table Size-1 */
     msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
@@ -1337,6 +1345,11 @@ int main(int argc, char *argv[])
                      * the producer index for correct poll-loop termination. */
                     if (dev->ionic_emu)
                         ionic_eth_emu_register_adminq(dev->ionic_emu, aqctx);
+                    /* CREATE_CQ/QP/MR describe the guest rings the data path
+                     * later needs, so it has to be reachable from here. */
+                    ionic_adminq_set_datapath(aqctx, dev->ionic_dp);
+                    ionic_rdma_devcmd_set_datapath(dev->ionic_rdma,
+                                                   dev->ionic_dp);
                     ionic_adminq_poll(aqctx, vfu_ctx);
                 }
                 if (dev->ionic_dp)

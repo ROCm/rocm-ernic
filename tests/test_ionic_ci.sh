@@ -9,7 +9,7 @@
 #   1. Server starts in --ionic mode with loopback backend
 #   2. Server announces correct VID:DID (0x1022:0x8001)
 #   3. Server reports correct BAR layout (64K BAR0 / 32K regs + 4M BAR2)
-#   4. Server reports correct MSI-X vector count (4)
+#   4. Server reports correct MSI-X vector count (32)
 #   5. Server exits cleanly on SIGTERM
 
 set -euo pipefail
@@ -100,8 +100,8 @@ pass "BAR layout correct"
 
 # --- Test 5: correct MSI-X vector count ---
 echo ""
-echo "Test 5: MSI-X 4 vectors (IONIC_EQ_COUNT_MIN)"
-grep -q "MSI-X=4 vectors" "$LOG" || fail "MSI-X vector count wrong (expected 4)"
+echo "Test 5: MSI-X 32 vectors"
+grep -q "MSI-X=32 vectors" "$LOG" || fail "MSI-X vector count wrong (expected 32)"
 pass "MSI-X vectors correct"
 
 # --- Test 6: SIGTERM shuts down cleanly ---

@@ -87,9 +87,10 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 #define IONIC_DB_PAGE_SIZE    4096              /* one 4K page per LIF */
 #define IONIC_KERN_PID        0                 /* kernel doorbell page */
 
-/* ionic MSI-X vectors: EQ per vector (driver requests eq_count vectors).
- * We start with a fixed count matching IONIC_EQ_COUNT_MIN = 4. */
-#define IONIC_MSIX_MIN_VECTORS 4
+/* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
+ * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with
+ * -EINVAL below IONIC_EQ_COUNT_MIN = 4 EQs, so a 4-vector table cannot carry
+ * both halves of the driver.  Advertise the full table instead. */
 #define IONIC_MSIX_MAX_VECTORS 32
 
 /**
