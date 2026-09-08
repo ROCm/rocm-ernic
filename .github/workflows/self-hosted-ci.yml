@@ -35,7 +35,7 @@
 name: rocm-ernic - Self-Hosted CI
 
 run-name: >-
-  Self-Hosted CI
+  rocm-ernic - Self-Hosted CI
   ${{ inputs.pr && format('- PR #{0}', inputs.pr) || '' }}
   ${{ inputs.tier && format('({0})', inputs.tier) || '' }}
 
