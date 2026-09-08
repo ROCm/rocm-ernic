@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: Lint
+name: rocm-ernic - Lint
 
 on:
   pull_request:

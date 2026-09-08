@@ -21,7 +21,7 @@
 # Note: LSan's leak check uses ptrace at exit, which some Nix sandboxes
 # restrict; ASan/UBSan still fire during the run, and valgrind is a
 # ptrace-free second opinion for leaks.
-name: Dynamic Analysis (nix)
+name: rocm-ernic - Dynamic Analysis (nix)
 
 on:
   pull_request:

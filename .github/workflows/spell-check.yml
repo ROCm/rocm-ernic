@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: Spell Check
+name: rocm-ernic - Spell Check
 
 on:
   pull_request:

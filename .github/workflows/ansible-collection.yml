@@ -9,7 +9,7 @@
 # separate from the repo's own release tags.  Bump the version
 # in galaxy.yml in the same commit as the tag.
 
-name: Ansible Collection
+name: rocm-ernic - Ansible Collection
 
 "on":
   workflow_dispatch: {}

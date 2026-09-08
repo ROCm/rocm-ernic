@@ -8,7 +8,7 @@
 # This deliberately stops at evaluation plus the dev shell. Building the
 # analysis toolkit or the cross/OCI targets pulls a very large closure and
 # belongs in a scheduled job, not on every pull request.
-name: Nix Check
+name: rocm-ernic - Nix Check
 
 on:
   pull_request:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: Service Tooling Tests
+name: rocm-ernic - Service Tooling Tests
 
 on:
   pull_request:

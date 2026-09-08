@@ -36,7 +36,7 @@
 # treat "can run /run-ci on a fork PR" as equivalent to
 # shell access there.
 
-name: CI Command
+name: rocm-ernic - CI Command
 
 on:
   issue_comment:

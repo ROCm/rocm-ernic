@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: Performance Benchmark
+name: rocm-ernic - Performance Benchmark
 
 on:
   pull_request:

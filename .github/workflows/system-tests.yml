@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: System Tests
+name: rocm-ernic - System Tests
 
 on:
   pull_request:
