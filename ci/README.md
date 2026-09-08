@@ -255,22 +255,29 @@ trends*.
 
 `ci/report/publish-perf.py` appends one record per run to
 `docs/perf-history/history.jsonl`, regenerates
-`docs/perf-trends.rst`, and commits both to `main`. The
-existing `docs-deploy` workflow triggers on `docs/**` and
-rebuilds Pages, so no second Pages deployment is involved --
-a repository only gets one, and it already belongs to the
-Sphinx docs. The publish commit is not tagged `[skip ci]`,
-since skipping CI would also skip `docs-deploy` and the
-charts and badges would never reach Pages.
+`docs/perf-trends.rst`, and commits both to `main`. That
+commit is pushed with the job's own `GITHUB_TOKEN`, which
+GitHub's loop-prevention rule exempts from starting other
+workflow runs -- `docs-deploy`'s `push` trigger would not
+fire on it either way, `[skip ci]` or not -- so the report
+job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
+needs `actions: write`) right after the push to rebuild Pages.
 
 The same run writes `docs/perf-history/badge-rdma.json` and
 `badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
 each for the most recent RDMA (`ib_send_bw`, 1 MiB, peak GB/s)
-and TCP/IP (`iperf3`, sustained GB/s) bandwidth. `docs/conf.py`
-publishes `docs/perf-history` as `html_static_path`, so once
-Pages rebuilds they are reachable at
+and TCP/IP (`iperf3`, sustained GB/s) bandwidth, falling back to
+the latest prior run that has a value so one bad sweep does not
+grey out a badge. `docs/conf.py` publishes the whole of
+`docs/perf-history` (charts, history, badges, this file) as
+`html_static_path`, so once Pages rebuilds the badges are
+reachable at
 `https://rocm.github.io/rocm-ernic/_static/badge-rdma.json` and
-`.../badge-tcp.json` -- the URLs README.md's badges point at.
+`.../badge-tcp.json`. README.md links the RDMA one; the TCP
+badge is not linked yet since no nightly has produced a real
+number for it, and a "no data" badge on the front page reads as
+a broken project rather than a pending measurement -- link it
+once the first nightly with TCP data has published.
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
