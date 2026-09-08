@@ -259,7 +259,20 @@ trends*.
 existing `docs-deploy` workflow triggers on `docs/**` and
 rebuilds Pages, so no second Pages deployment is involved --
 a repository only gets one, and it already belongs to the
-Sphinx docs.
+Sphinx docs. The publish commit is not tagged `[skip ci]`,
+since skipping CI would also skip `docs-deploy` and the
+charts and badges would never reach Pages.
+
+The same run writes `docs/perf-history/badge-rdma.json` and
+`badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
+each for the most recent RDMA (`ib_send_bw`, 1 MiB, peak GB/s)
+and TCP/IP (`iperf3`, sustained GB/s) bandwidth. `docs/conf.py`
+publishes `docs/perf-history` as `html_static_path`, so once
+Pages rebuilds they are reachable at
+`https://rocm.github.io/rocm-ernic/_static/badge-rdma.json` and
+`.../badge-tcp.json` -- the URLs README.md's badges point at.
+
+[shields-endpoint]: https://shields.io/badges/endpoint-badge
 
 Only a clean full-tier nightly on `main` publishes.
 Pull request runs are excluded by the same condition that

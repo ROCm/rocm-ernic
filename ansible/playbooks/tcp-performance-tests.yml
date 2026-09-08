@@ -39,11 +39,36 @@
       sudo pkill -9 iperf3 2>/dev/null;
       true
 
+    # Same CSV convention as the RDMA sweep in
+    # performance-tests.yml: written under results_dir so
+    # ci/report/gen-report.py can pick it up as one more
+    # perf-csv/*.csv file.
+    results_dir: >-
+      {{ ernic_project_root }}/docs/perf-results
+    tcp_bw_csv: "{{ results_dir }}/tcp-bw-{{ ts }}.csv"
+    ts: >-
+      {{ ansible_date_time.date }}-{{
+         ansible_date_time.hour }}{{
+         ansible_date_time.minute }}{{
+         ansible_date_time.second }}
+
   tasks:
 
     - name: Skip if tests disabled
       ansible.builtin.meta: end_play
       when: not (ernic_tests | bool)
+
+    - name: Create results directory
+      ansible.builtin.file:
+        path: "{{ results_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write TCP bandwidth CSV header
+      ansible.builtin.copy:
+        dest: "{{ tcp_bw_csv }}"
+        content: "verb,size,bw_peak_GBs,bw_avg_GBs,msg_rate_mpps\n"
+        mode: "0644"
 
     - name: Display iperf3 configuration
       ansible.builtin.debug:
@@ -109,6 +134,7 @@
           RC=$?
 
           if [ $RC -ne 0 ]; then
+            echo "tcp,stream,FAIL,FAIL,FAIL" >> "{{ tcp_bw_csv }}"
             echo "iperf3 FAIL rc=$RC"
             echo "$RAW"
             exit 1
@@ -137,6 +163,20 @@
           " 2>/dev/null)
 
           echo "iperf3 TCP: send=${BPS_SEND} recv=${BPS_RECV} Mbit/s (${DUR}s)"
+
+          # Same bw-csv convention as the RDMA sweep: GB/s so
+          # the report and badges compare send throughput on
+          # one scale regardless of transport. iperf3 reports
+          # a single sustained rate rather than peak/avg, so
+          # both columns carry the same value; msg_rate_mpps
+          # has no TCP equivalent.
+          if [ "$BPS_SEND" != "N/A" ]; then
+            SEND_GBs=$(echo "scale=3; $BPS_SEND / 8000" \
+              | bc -l 2>/dev/null || echo "N/A")
+          else
+            SEND_GBs="N/A"
+          fi
+          echo "tcp,stream,${SEND_GBs},${SEND_GBs},N/A" >> "{{ tcp_bw_csv }}"
       register: iperf_result
       changed_when: false
       failed_when: false

@@ -79,6 +79,7 @@ def extract(summary):
         "run_id": summary["meta"].get("run_id"),
         "node": summary["meta"].get("node"),
         "series": {},
+        "badges": {},
     }
     for chart in CHARTS:
         got = {}
@@ -89,7 +90,29 @@ def extract(summary):
                     and row.get("median") is not None):
                 got[str(row["size"])] = float(row["median"])
         rec["series"][chart["key"]] = got
+
+    # README badges: the single most recent number for each
+    # transport, rather than a per-size series. RDMA uses the
+    # largest tracked size, where transport overhead matters
+    # least. TCP/IP has no size sweep -- ci/jobs/perf.sh writes
+    # one sustained iperf3 rate per run under size "stream".
+    bw_rows = summary.get("perf", {}).get("bandwidth", [])
+    rec["badges"]["rdma_bw_GBs"] = _find_median(
+        bw_rows, verb="send", size=TRACKED_SIZES[-1],
+        metric="bw_peak_GBs")
+    rec["badges"]["tcp_bw_GBs"] = _find_median(
+        bw_rows, verb="tcp", size="stream", metric="bw_avg_GBs")
     return rec
+
+
+def _find_median(rows, verb, size, metric):
+    for row in rows:
+        if (row.get("verb") == verb
+                and str(row.get("size")) == str(size)
+                and row.get("metric") == metric
+                and row.get("median") is not None):
+            return float(row["median"])
+    return None
 
 
 def nice_ceiling(v):
@@ -328,6 +351,43 @@ def build_page(history, docs_dir):
     return out
 
 
+# README badges: shields.io "endpoint" schema
+# (https://shields.io/badges/endpoint-badge). One JSON file per
+# transport; both are copied to the built docs site's _static/
+# (see docs/conf.py) so a shields.io endpoint badge in
+# README.md can point at them from GitHub Pages.
+BADGES = (
+    {
+        "key": "rdma_bw_GBs",
+        "file": "badge-rdma.json",
+        "label": "RDMA bandwidth",
+        "unit": "GB/s",
+    },
+    {
+        "key": "tcp_bw_GBs",
+        "file": "badge-tcp.json",
+        "label": "TCP/IP bandwidth",
+        "unit": "GB/s",
+    },
+)
+
+
+def write_badges(rec, docs_dir):
+    """Emit one shields.io endpoint JSON per transport."""
+    out_dir = docs_dir / "perf-history"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for badge in BADGES:
+        value = rec.get("badges", {}).get(badge["key"])
+        message = (f"{value:g} {badge['unit']}"
+                   if value is not None else "no data")
+        (out_dir / badge["file"]).write_text(json.dumps({
+            "schemaVersion": 1,
+            "label": badge["label"],
+            "message": message,
+            "color": "blue" if value is not None else "lightgrey",
+        }, sort_keys=True) + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--summary", required=True)
@@ -342,7 +402,8 @@ def main():
 
     summary = json.load(open(args.summary))
     rec = extract(summary)
-    if not any(rec["series"].values()):
+    if not any(rec["series"].values()) and not any(
+            rec["badges"].values()):
         print("no tracked medians in this run; nothing published")
         return 0
 
@@ -355,6 +416,8 @@ def main():
     history = history[-args.max_runs:]
     hist_path.write_text(
         "".join(json.dumps(h, sort_keys=True) + "\n" for h in history))
+
+    write_badges(rec, docs)
 
     page = build_page(history, docs)
     print(f"recorded run {rec['run_id']} ({rec['sha']}); "

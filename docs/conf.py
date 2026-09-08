@@ -51,4 +51,13 @@ html_theme_options = {
     "show_toc_level": 2,
 }
 html_title = f"rocm-ernic {version}"
-html_static_path = []
+# docs/perf-history holds the nightly perf charts and the
+# shields.io endpoint badges (badge-rdma.json, badge-tcp.json)
+# that README.md points at. Publishing it as html_static_path
+# copies its contents into the built site's _static/, so once
+# docs-deploy pushes the build to GitHub Pages the badges are
+# reachable at a stable URL. sphinx-build is invoked with -c
+# pointing at a separate configured-conf.py directory (see
+# cmake/ErnicDocumentation.cmake), so this path must be
+# absolute rather than relative to the docs/ source tree.
+html_static_path = ["@CMAKE_SOURCE_DIR@/docs/perf-history"]
