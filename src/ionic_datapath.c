@@ -302,6 +302,13 @@ struct ionic_datapath {
     pthread_mutex_t rx_lock;
     struct dp_inmsg *rx_head;
     struct dp_inmsg *rx_tail;
+    /*
+     * Messages on @rx_head that have never been tried.  Only these justify
+     * skipping the main loop's idle sleep: a message put back by the RNR
+     * defer path will still be undeliverable on the next pass, so treating it
+     * as work would spin the loop until the peer posts a receive.
+     */
+    uint32_t rx_fresh;
 };
 
 /* -------------------------------------------------------------------------
@@ -547,6 +554,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
         m = next;
     }
     dp->rx_head = dp->rx_tail = NULL;
+    dp->rx_fresh = 0;
     pthread_mutex_unlock(&dp->rx_lock);
     pthread_mutex_destroy(&dp->rx_lock);
 
@@ -747,7 +755,20 @@ static uint64_t sge_gpa(struct ionic_datapath *dp, uint32_t lkey, uint64_t va,
         *run = 0;
         return 0;
     }
-    return buf_gpa(&m->buf, va - m->va, run);
+
+    uint64_t gpa = buf_gpa(&m->buf, va - m->va, run);
+    /*
+     * Checking the start address is not enough: a caller asks for a length of
+     * its own choosing, and on the responder path that length comes off the
+     * wire.  Without this, a peer naming a small region and a large length
+     * would have the transfer run past the end of it into unrelated guest
+     * pages.  A single-page region reports an unbounded run, so this is the
+     * only bound such a region ever gets.
+     */
+    uint64_t left = m->va + m->length - va;
+    if (*run > left)
+        *run = left;
+    return gpa;
 }
 
 /*
@@ -1588,6 +1609,7 @@ static void dp_mesh_recv(void *opaque, uint32_t src_node, const void *buf,
     else
         dp->rx_head = m;
     dp->rx_tail = m;
+    dp->rx_fresh++;
     pthread_mutex_unlock(&dp->rx_lock);
 }
 
@@ -1813,7 +1835,7 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp)
         return false;
 
     pthread_mutex_lock(&dp->rx_lock);
-    work = dp->rx_head != NULL;
+    work = dp->rx_fresh != 0;
     pthread_mutex_unlock(&dp->rx_lock);
     return work;
 }
@@ -1828,6 +1850,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     pthread_mutex_lock(&dp->rx_lock);
     list = dp->rx_head;
     dp->rx_head = dp->rx_tail = NULL;
+    dp->rx_fresh = 0;
     pthread_mutex_unlock(&dp->rx_lock);
 
     /*
