@@ -70,9 +70,35 @@ Build Options
      - ``OFF``
      - Configure only documentation targets (no library
        dependencies required)
+   * - ``ERNIC_BUILD_KMOD``
+     - ``OFF``
+     - Enable the DKMS targets that build the patched
+       upstream ionic guest modules (see :doc:`ionic`)
+   * - ``IONIC_KERNEL_REF``
+     - ``v7.2.4``
+     - Linux kernel tag or SHA the ionic sources are fetched
+       from; must be ``v6.18`` or newer
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix
+
+Guest ionic Modules
+-------------------
+
+The guest-side driver for ``--ionic`` mode is the upstream
+Linux ionic driver with the patches in ``patches/`` applied.
+Configure with ``-DERNIC_BUILD_KMOD=ON`` to get the DKMS
+targets, and run them in the guest:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DERNIC_BUILD_KMOD=ON
+   cmake --build build --target fetch-ionic-sources
+   cmake --build build --target build-ionic-dkms
+   sudo cmake --build build --target install-ionic-dkms
+
+:doc:`ionic` describes the patches, the pinned upstream ref,
+and how to move to a newer baseline.
 
 Building Documentation
 ----------------------

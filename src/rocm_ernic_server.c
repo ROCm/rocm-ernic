@@ -705,6 +705,13 @@ static void usage(const char *progname)
     fprintf(stderr,
             "                       See: "
             "patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch\n");
+    fprintf(stderr, "  -T, --tap IFNAME     Attach the emulated NIC to a host "
+                    "TAP interface\n");
+    fprintf(stderr, "                       (ionic mode only; gives the guest "
+                    "working Ethernet\n");
+    fprintf(stderr, "                       and TCP/IP.  Pre-create it with: "
+                    "ip tuntap add\n");
+    fprintf(stderr, "                       dev IFNAME mode tap user $USER)\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -976,6 +983,7 @@ int main(int argc, char *argv[])
     rocm_ernic_dev_t *dev;
     const char *socket_path = DEFAULT_SOCKET_PATH;
     const char *log_file_path = NULL;
+    const char *tap_ifname = NULL;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
     struct sigaction sa;
@@ -994,6 +1002,7 @@ int main(int argc, char *argv[])
         {"help", no_argument, 0, 'h'},
         /* ionic emulation mode (replaces legacy PVRDMA path) */
         {"ionic", no_argument, 0, 'I'},
+        {"tap", required_argument, 0, 'T'},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, 0, 'd'},
         {"ethdev", required_argument, 0, 'e'},
@@ -1024,7 +1033,7 @@ int main(int argc, char *argv[])
     dev->mac_addr[5] = 0x6e;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vL:S:m:l:hI", long_options,
+    while ((opt = getopt_long(argc, argv, "s:b:vL:S:m:l:hIT:", long_options,
                               NULL)) != -1) {
         switch (opt) {
         /* Common options */
@@ -1090,6 +1099,9 @@ int main(int argc, char *argv[])
             break;
         case 'I':
             dev->ionic_mode = true;
+            break;
+        case 'T':
+            tap_ifname = optarg;
             break;
         case 'h':
             usage(argv[0]);
@@ -1280,6 +1292,29 @@ int main(int argc, char *argv[])
                              dev->mac_addr[4], dev->mac_addr[5]);
     }
 
+    /* Attach the host network backend before the first client shows up, so a
+     * bad --tap is a startup failure rather than a silently dead link. */
+    if (tap_ifname) {
+        if (!dev->ionic_mode || !dev->ionic_emu) {
+            fprintf(stderr, "rocm-ernic: --tap requires --ionic\n");
+            exit(EXIT_FAILURE);
+        }
+        char assigned[64] = {0};
+        ret = ionic_eth_emu_attach_tap(dev->ionic_emu, tap_ifname, assigned,
+                                       sizeof(assigned));
+        if (ret < 0) {
+            fprintf(stderr, "rocm-ernic: failed to attach TAP '%s': %s\n",
+                    tap_ifname, strerror(-ret));
+            fprintf(stderr,
+                    "rocm-ernic: pre-create it with: ip tuntap add dev "
+                    "%s mode tap user $USER\n",
+                    tap_ifname);
+            exit(EXIT_FAILURE);
+        }
+        ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s",
+                             assigned);
+    }
+
     ernic_startup_report("rocm-ernic: Device realized, waiting for client "
                          "connection...");
 
@@ -1334,6 +1369,11 @@ int main(int argc, char *argv[])
 
             if (dev->pvrdma_handle)
                 pvrdma_drain_pending_interrupts(dev->pvrdma_handle);
+
+            /* ionic: move frames from the host TAP into the guest Rx ring.
+             * This has to happen on this thread: only it may DMA. */
+            if (dev->ionic_mode && dev->ionic_emu)
+                ionic_eth_emu_poll_rx(dev->ionic_emu);
 
             /* ionic: poll admin queue rings for new WQEs */
             if (dev->ionic_mode && dev->ionic_rdma) {

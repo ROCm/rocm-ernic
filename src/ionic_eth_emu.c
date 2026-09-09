@@ -42,6 +42,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ionic_eth_emu.h"
+#include "ionic_eth_net.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
 #include "rocm_ernic_internal.h"
@@ -225,14 +226,38 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
 #define ADMIN_COMP_SIZE       16u
 #define ADMIN_COMP_COLOR_MASK 0x80u
 
+/* struct ionic_txq_desc / ionic_rxq_desc / their completions are all 16 B. */
+#define ETH_DESC_SIZE 16u
+#define ETH_COMP_SIZE 16u
+
+/* struct ionic_txq_sg_elem: le64 addr, le16 len, le16 rsvd[3]. */
+#define TXQ_SG_ELEM_SIZE 16u
+#define TXQ_SG_MAX_ELEMS 8u
+
+/* encode_txq_desc_cmd(): flags[3:0] opcode[7:4] nsge[11:8] addr[63:12]. */
+#define TXQ_DESC_NSGE_SHIFT  8
+#define TXQ_DESC_ADDR_SHIFT  12
+#define TXQ_DESC_NIBBLE_MASK 0xfu
+
+/* struct ionic_intr is 32 bytes: coal_init, mask, credits, mask_assert, coal.
+ * mask and mask_assert take IONIC_INTR_MASK_SET/CLEAR; a write to credits
+ * with the UNMASK bit is how NAPI re-arms the vector. */
+#define INTR_REG_STRIDE      32
+#define INTR_MASK_OFF        4
+#define INTR_CREDITS_OFF     8
+#define INTR_MASK_ASSERT_OFF 12
+#define INTR_CRED_UNMASK     0x10000u
+
 /* State captured from Q_INIT for an Ethernet logical queue. */
 struct eth_queue {
     bool valid;
     uint16_t intr_index;
     uint64_t ring_base;
     uint64_t cq_ring_base;
+    uint64_t sg_ring_base;
     uint16_t depth;
     uint16_t head;     /* next descriptor to consume */
+    uint16_t prod;     /* last producer index the driver rang for */
     uint16_t cq_index; /* next completion slot to fill */
     uint8_t cq_color;  /* colour bit the driver is currently expecting */
 };
@@ -262,11 +287,17 @@ struct ionic_eth_emu {
     /* Admin queue context for AQ doorbell producer-index updates. */
     struct ionic_adminq_ctx *adminq;
 
-    /* Interrupt controller shadow (per-vector: mask register). */
+    /* Interrupt controller shadow (per-vector: mask, mask-on-assert). */
     uint32_t intr_mask[IONIC_MSIX_MAX_VECTORS];
+    uint32_t intr_mask_assert[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
     struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
+
+    /* Host network backend, or NULL when Tx is a sink. */
+    struct ionic_eth_net *net;
+    /* Staging buffer for one frame in either direction. */
+    uint8_t frame[IONIC_ETH_NET_MTU_MAX];
 };
 
 /* -------------------------------------------------------------------------
@@ -349,6 +380,7 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
 {
     if (!emu)
         return;
+    ionic_eth_net_close(emu->net);
     free(emu->bar2);
     free(emu);
 }
@@ -412,15 +444,32 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
         }
     }
 
-    /* Interrupt controller writes: just update mask shadow. */
-    if (offset >= (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET &&
+    /* Interrupt controller writes. */
+    if (offset >= (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET && count == 4 &&
         (size_t)offset + count <= BAR0_BUF_SIZE) {
         loff_t rel = offset - (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET;
-        int vec = (int)(rel / 32); /* each intr ctrl block is 32 bytes */
+        int vec = (int)(rel / INTR_REG_STRIDE);
         if (vec >= 0 && vec < IONIC_MSIX_MAX_VECTORS) {
-            loff_t in_blk = rel % 32;
-            if (in_blk == 4 && count == 4)
-                memcpy(&emu->intr_mask[vec], buf, 4);
+            uint32_t val;
+            memcpy(&val, buf, 4);
+
+            switch (rel % INTR_REG_STRIDE) {
+            case INTR_MASK_OFF:
+                emu->intr_mask[vec] = val;
+                break;
+            case INTR_MASK_ASSERT_OFF:
+                emu->intr_mask_assert[vec] = val;
+                break;
+            case INTR_CREDITS_OFF:
+                /* NAPI returns credits with IONIC_INTR_CRED_UNMASK to re-arm
+                 * a vector that mask-on-assert disabled.  Ignoring this pins
+                 * the mask after the first interrupt and the queue stalls. */
+                if (val & INTR_CRED_UNMASK)
+                    emu->intr_mask[vec] = 0;
+                break;
+            default:
+                break;
+            }
         }
     }
 
@@ -483,12 +532,17 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
          * ionic_admin_cmd descriptors — Tx/Rx doorbells point at packet
          * descriptor rings and must not be fed to the command engine. */
         if (qtype >= 0 && qtype < IONIC_QTYPE_ETH_MAX) {
-            if (qtype == IONIC_QTYPE_ADMINQ)
+            if (qtype == IONIC_QTYPE_ADMINQ) {
                 eth_adminq_service(emu, p_index);
-            else if (qtype == IONIC_QTYPE_TXQ)
+            } else if (qtype == IONIC_QTYPE_TXQ) {
                 eth_txq_service(emu, qid, p_index);
-            /* Rx and notify descriptors are buffers the driver hands us to
-             * fill; there is nothing to complete until traffic arrives. */
+            } else if (qtype == IONIC_QTYPE_RXQ && qid < IONIC_EMU_ETH_QCOUNT) {
+                /* Rx descriptors are buffers the driver hands us to fill;
+                 * record how many are posted and wait for traffic. */
+                struct eth_queue *rq = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
+                if (rq->valid)
+                    rq->prod = (uint16_t)(p_index % rq->depth);
+            }
             return (ssize_t)count;
         }
 
@@ -934,38 +988,62 @@ static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: Q_IDENTIFY qtype=%u",
             qtype);
 
-    /* ionic_q_identity layout:
-     *   u8  version
-     *   u8  supported (max version)
-     *   u8  rsvd[2]
-     *   le16 max_sg_elems
-     *   le16 sg_desc_stride
-     *   le16 desc_stride (log2)
-     *   ... (64 bytes total)
+    /* union ionic_q_identity (packed):
+     *   u8   version     @0
+     *   u8   supported   @1   bitfield of versions, bit 0 = ver 0
+     *   u8   rsvd[6]     @2
+     *   le64 features    @8   enum ionic_q_feature
+     *   le16 desc_sz     @16
+     *   le16 comp_sz     @18
+     *   le16 sg_desc_sz  @20
+     *   le16 max_sg_elems   @22
+     *   le16 sg_desc_stride @24
      *
-     * We return minimal safe values. The RDMA driver uses Q_IDENTIFY for
-     * EQ, AQ, SQ, RQ, CQ — fill with RDMA-appropriate strides.
-     */
-    memset(data, 0, 64);
-    data[0] = 1; /* version */
-    data[1] = 1; /* supported */
+     * ionic_lif_queue_identify() only asks about the four Ethernet logical
+     * qtypes, and it overwrites max_sg_elems with its own per-qtype limit
+     * afterwards, so the sizes are what actually matter here. */
+#define QID_FEATURES_OFF       8u
+#define QID_DESC_SZ_OFF        16u
+#define QID_COMP_SZ_OFF        18u
+#define QID_SG_DESC_SZ_OFF     20u
+#define QID_MAX_SG_ELEMS_OFF   22u
+#define QID_SG_DESC_STRIDE_OFF 24u
 
-    if (qtype == IONIC_RDMA_QTYPE_SQ || qtype == IONIC_RDMA_QTYPE_RQ) {
-        uint16_t v = le16(16); /* max_sg_elems */
-        memcpy(data + 4, &v, 2);
-        v = le16(64); /* sg_desc_stride */
-        memcpy(data + 6, &v, 2);
-        v = le16(6); /* desc_stride_log2 = 64 bytes */
-        memcpy(data + 8, &v, 2);
-    } else {
-        uint16_t v = le16(64);
-        memcpy(data + 6, &v, 2);
-        v = le16(6);
-        memcpy(data + 8, &v, 2);
+    memset(data, 0, 64);
+    data[0] = 0; /* version 0: the base descriptor formats */
+    data[1] = 1; /* supported: bit 0 = version 0 */
+
+    uint16_t v;
+#define PUT16(off, val)              \
+    do {                             \
+        v = le16(val);               \
+        memcpy(data + (off), &v, 2); \
+    } while (0)
+
+    PUT16(QID_DESC_SZ_OFF, ETH_DESC_SIZE);
+    PUT16(QID_COMP_SZ_OFF, ETH_COMP_SIZE);
+
+    if (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ) {
+        PUT16(QID_SG_DESC_SZ_OFF, TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE);
+        PUT16(QID_MAX_SG_ELEMS_OFF, TXQ_SG_MAX_ELEMS);
+        PUT16(QID_SG_DESC_STRIDE_OFF, TXQ_SG_MAX_ELEMS);
     }
 
+    /* features stays zero: no CMB, no 2x/4x descriptor rings, no expanded
+     * doorbell.  Every one of those changes a ring layout we would then have
+     * to decode differently. */
+    PUT16(QID_FEATURES_OFF, 0);
+#undef PUT16
+#undef QID_SG_DESC_STRIDE_OFF
+#undef QID_MAX_SG_ELEMS_OFF
+#undef QID_SG_DESC_SZ_OFF
+#undef QID_COMP_SZ_OFF
+#undef QID_DESC_SZ_OFF
+#undef QID_FEATURES_OFF
+
+    /* struct ionic_q_identify_comp: status@0, rsvd@1, comp_index@2, ver@4. */
     comp[0] = 0;
-    comp[1] = 1; /* version */
+    comp[4] = 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -1001,9 +1079,10 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(&intr_index, cmd + 14, 2);
     intr_index = le16toh(intr_index);
     uint8_t ring_size = cmd[19];
-    uint64_t ring_base, cq_ring_base;
+    uint64_t ring_base, cq_ring_base, sg_ring_base;
     memcpy(&ring_base, cmd + 20, 8);
     memcpy(&cq_ring_base, cmd + 28, 8);
+    memcpy(&sg_ring_base, cmd + 36, 8);
 
     vfu_log(emu->vfu_ctx, LOG_INFO,
             "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=%u "
@@ -1020,6 +1099,7 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
             .intr_index = intr_index,
             .ring_base = le64toh(ring_base),
             .cq_ring_base = le64toh(cq_ring_base),
+            .sg_ring_base = le64toh(sg_ring_base),
             .depth = (uint16_t)(1u << ring_size),
             /* ionic_cq_init() starts with done_color = 1. */
             .cq_color = 1,
@@ -1163,9 +1243,97 @@ static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index)
     ionic_eth_emu_trigger_irq(emu, q->intr_index);
 }
 
-/* The loopback backend has no wire to put frames on, so Tx is a sink: every
- * descriptor the driver posts is completed immediately.  Without this the
- * netdev watchdog fires every five seconds and resets the queues. */
+/* Advance a queue's completion cursor after writing one completion. */
+static void eth_cq_advance(struct eth_queue *q)
+{
+    if (++q->cq_index == q->depth) {
+        q->cq_index = 0;
+        q->cq_color ^= 1;
+    }
+}
+
+/* Pull one transmitted frame out of guest memory into emu->frame.  Returns
+ * the assembled length, or 0 if the descriptor cannot be gathered. */
+static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
+                            uint16_t index)
+{
+    uint8_t desc[ETH_DESC_SIZE];
+
+    if (eth_dma_rw(emu->vfu_ctx, q->ring_base + (uint64_t)index * ETH_DESC_SIZE,
+                   desc, sizeof(desc), false) < 0)
+        return 0;
+
+    uint64_t cmd;
+    uint16_t len;
+    memcpy(&cmd, desc, 8);
+    memcpy(&len, desc + 8, 2);
+    cmd = le64toh(cmd);
+    len = le16toh(len);
+
+    uint8_t nsge =
+        (uint8_t)((cmd >> TXQ_DESC_NSGE_SHIFT) & TXQ_DESC_NIBBLE_MASK);
+    uint64_t addr = cmd >> TXQ_DESC_ADDR_SHIFT;
+
+    /* len is the whole frame; the head descriptor carries the first fragment
+     * and the SG ring carries the rest.  We advertise no offloads, so the
+     * driver never posts a TSO descriptor whose len exceeds one frame. */
+    if (!len || len > sizeof(emu->frame))
+        return 0;
+
+    if (!nsge) {
+        if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, len, false) < 0)
+            return 0;
+        return len;
+    }
+
+    if (nsge > TXQ_SG_MAX_ELEMS)
+        return 0;
+
+    uint8_t sg[TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
+    if (eth_dma_rw(emu->vfu_ctx,
+                   q->sg_ring_base +
+                       (uint64_t)index * TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE,
+                   sg, (size_t)nsge * TXQ_SG_ELEM_SIZE, false) < 0)
+        return 0;
+
+    /* The head descriptor's own fragment length is len minus everything the
+     * SG elements contribute. */
+    size_t sg_total = 0;
+    for (uint8_t i = 0; i < nsge; i++) {
+        uint16_t elen;
+        memcpy(&elen, sg + (size_t)i * TXQ_SG_ELEM_SIZE + 8, 2);
+        sg_total += le16toh(elen);
+    }
+    if (sg_total >= len)
+        return 0;
+
+    size_t head_len = len - sg_total;
+    if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, head_len, false) < 0)
+        return 0;
+
+    size_t off = head_len;
+    for (uint8_t i = 0; i < nsge; i++) {
+        const uint8_t *e = sg + (size_t)i * TXQ_SG_ELEM_SIZE;
+        uint64_t eaddr;
+        uint16_t elen;
+        memcpy(&eaddr, e, 8);
+        memcpy(&elen, e + 8, 2);
+        eaddr = le64toh(eaddr);
+        elen = le16toh(elen);
+        if (!elen)
+            continue;
+        if (eth_dma_rw(emu->vfu_ctx, eaddr, emu->frame + off, elen, false) < 0)
+            return 0;
+        off += elen;
+    }
+
+    return off;
+}
+
+/* Drain the Tx ring.  Frames go to the host network backend when one is
+ * attached; otherwise Tx is a sink, which is still necessary -- without a
+ * completion the netdev watchdog fires every five seconds and resets the
+ * queues. */
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index)
 {
@@ -1177,27 +1345,128 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         return;
 
     uint16_t prod = (uint16_t)(p_index % q->depth);
+    q->prod = prod;
 
     for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
+        if (emu->net) {
+            size_t len = eth_tx_gather(emu, q, q->head);
+            if (len)
+                ionic_eth_net_send(emu->net, emu->frame, len);
+        }
+
         /* struct ionic_txq_comp: status @0, comp_index le16 @2, colour @15. */
-        uint8_t comp[ADMIN_COMP_SIZE] = {0};
+        uint8_t comp[ETH_COMP_SIZE] = {0};
         uint16_t comp_index = le16(q->head);
         memcpy(comp + 2, &comp_index, 2);
-        comp[ADMIN_COMP_SIZE - 1] =
+        comp[ETH_COMP_SIZE - 1] =
             q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
         eth_dma_rw(emu->vfu_ctx,
-                   q->cq_ring_base + (uint64_t)q->cq_index * ADMIN_COMP_SIZE,
+                   q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
                    comp, sizeof(comp), true);
 
         q->head = (uint16_t)((q->head + 1) % q->depth);
-        if (++q->cq_index == q->depth) {
-            q->cq_index = 0;
-            q->cq_color ^= 1;
-        }
+        eth_cq_advance(q);
     }
 
     ionic_eth_emu_trigger_irq(emu, q->intr_index);
+}
+
+/* -------------------------------------------------------------------------
+ * Receive path
+ *
+ * ionic_rx_fill() posts one descriptor per buffer and rings the Rx doorbell
+ * with its head index; we treat that as the producer index and consume
+ * descriptors from our own tail as frames arrive.  With no offloads
+ * advertised the driver never asks for more than IONIC_PAGE_SIZE in the first
+ * fragment, so a 1500-byte MTU frame always fits in a single descriptor.
+ * -------------------------------------------------------------------------
+ */
+
+static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
+                          uint8_t *frame, size_t len)
+{
+    if (q->head == q->prod)
+        return -ENOBUFS; /* guest has posted no buffers */
+
+    uint8_t desc[ETH_DESC_SIZE];
+    if (eth_dma_rw(emu->vfu_ctx,
+                   q->ring_base + (uint64_t)q->head * ETH_DESC_SIZE, desc,
+                   sizeof(desc), false) < 0)
+        return -EIO;
+
+    /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8. */
+    uint16_t cap;
+    uint64_t addr;
+    memcpy(&cap, desc + 6, 2);
+    memcpy(&addr, desc + 8, 8);
+    cap = le16toh(cap);
+    addr = le64toh(addr);
+
+    if (len > cap)
+        return -EMSGSIZE;
+
+    if (eth_dma_rw(emu->vfu_ctx, addr, frame, len, true) < 0)
+        return -EIO;
+
+    /* struct ionic_rxq_comp: status@0, num_sg_elems@1, comp_index le16 @2,
+     * rss_hash le32 @4, csum le16 @8, vlan_tci le16 @10, len le16 @12,
+     * csum_flags@14, pkt_type_color@15.  csum_flags stays zero so the driver
+     * marks the skb CHECKSUM_NONE and verifies in software. */
+    uint8_t comp[ETH_COMP_SIZE] = {0};
+    uint16_t comp_index = le16(q->head);
+    uint16_t clen = le16((uint16_t)len);
+    comp[1] = 0;
+    memcpy(comp + 2, &comp_index, 2);
+    memcpy(comp + 12, &clen, 2);
+    comp[ETH_COMP_SIZE - 1] = q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
+
+    if (eth_dma_rw(emu->vfu_ctx,
+                   q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
+                   comp, sizeof(comp), true) < 0)
+        return -EIO;
+
+    q->head = (uint16_t)((q->head + 1) % q->depth);
+    eth_cq_advance(q);
+    return 0;
+}
+
+void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
+{
+    if (!emu || !emu->net)
+        return;
+
+    struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][0];
+    if (!q->valid)
+        return;
+
+    /* Bounded per poll so a busy tap cannot starve the RDMA admin queue. */
+    bool delivered = false;
+    for (unsigned n = 0; n < 64; n++) {
+        ssize_t len =
+            ionic_eth_net_recv(emu->net, emu->frame, sizeof(emu->frame));
+        if (len <= 0)
+            break;
+
+        if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0)
+            delivered = true;
+    }
+
+    if (delivered)
+        ionic_eth_emu_trigger_irq(emu, q->intr_index);
+}
+
+int ionic_eth_emu_attach_tap(struct ionic_eth_emu *emu, const char *ifname,
+                             char *out_ifname, size_t out_ifname_len)
+{
+    if (emu->net)
+        return -EBUSY;
+
+    emu->net = ionic_eth_net_open_tap(ifname, out_ifname, out_ifname_len);
+    if (!emu->net)
+        return -errno;
+
+    return 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -1226,5 +1495,11 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
         return -EINVAL;
     if (emu->intr_mask[vec])
         return 0; /* masked */
+
+    /* Real hardware latches the mask as it asserts when mask_assert is set,
+     * so the driver's NAPI poll runs without a second interrupt racing it. */
+    if (emu->intr_mask_assert[vec])
+        emu->intr_mask[vec] = 1;
+
     return vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
 }

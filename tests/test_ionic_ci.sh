@@ -11,6 +11,7 @@
 #   3. Server reports correct BAR layout (64K BAR0 / 32K regs + 4M BAR2)
 #   4. Server reports correct MSI-X vector count (32)
 #   5. Server exits cleanly on SIGTERM
+#   6. --tap is rejected without --ionic, and attaches when a tap exists
 
 set -euo pipefail
 
@@ -118,6 +119,49 @@ echo "Test 7: ionic mode with none backend"
 start_server none || fail "server did not start with none backend"
 grep -q "VID:DID 0x1022:0x8001" "$LOG" || fail "VID:DID not in none backend log"
 pass "none backend works"
+
+# --- Test 8: --tap requires --ionic ---
+echo ""
+echo "Test 8: --tap without --ionic is rejected"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+rm -f "$SOCKET" "$LOG"
+if "$SERVER_BIN" --backend none --socket "$SOCKET" --tap ernic-ci0 \
+        > "$LOG" 2>&1; then
+    fail "--tap without --ionic should have failed"
+fi
+grep -q -- "--tap requires --ionic" "$LOG" || {
+    cat "$LOG"
+    fail "expected a '--tap requires --ionic' diagnostic"
+}
+pass "--tap rejected outside ionic mode"
+
+# --- Test 9: --tap attaches to a host TAP interface ---
+# Needs a pre-created persistent tap owned by this user; skipped otherwise,
+# because creating one takes CAP_NET_ADMIN that CI runners rarely grant.
+echo ""
+echo "Test 9: --tap attaches when the interface exists"
+TAP_IF="${ERNIC_TEST_TAP:-}"
+if [ -z "$TAP_IF" ] || [ ! -d "/sys/class/net/$TAP_IF" ]; then
+    echo -e "${YELLOW}⚠ skipped: set ERNIC_TEST_TAP to a tap owned by $USER${NC}"
+else
+    rm -f "$SOCKET" "$LOG"
+    "$SERVER_BIN" --ionic --backend loopback --socket "$SOCKET" \
+        --tap "$TAP_IF" > "$LOG" 2>&1 &
+    SERVER_PID=$!
+    elapsed=0
+    while [ $elapsed -lt 10 ]; do
+        sleep 0.5; elapsed=$((elapsed + 1))
+        [ -S "$SOCKET" ] && break
+        kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
+    done
+    grep -q "Ethernet attached to TAP $TAP_IF" "$LOG" || {
+        cat "$LOG"
+        fail "server did not report attaching to $TAP_IF"
+    }
+    pass "attached to TAP $TAP_IF"
+fi
 
 echo ""
 echo "================================================="

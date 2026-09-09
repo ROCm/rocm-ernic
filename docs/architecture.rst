@@ -74,8 +74,25 @@ management, and completion-queue posting. It is intentionally
 kept close to the upstream QEMU source to simplify future
 synchronization.
 
+ionic Emulation (``src/ionic_*.c``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An alternative front end, selected with ``--ionic``, that
+implements the register and queue protocol of the AMD
+Pensando ionic NIC so the guest can run the upstream Linux
+``ionic`` and ``ionic_rdma`` drivers. It provides the device
+command interface and the Ethernet LIF
+(``ionic_eth_emu.c``), a TAP host backend
+(``ionic_eth_net.c``), the admin queue (``ionic_adminq.c``),
+and the RDMA device commands (``ionic_rdma_devcmd.c``). The
+RDMA operations themselves are handed to the same backends
+as the legacy path. See :doc:`ionic`.
+
 PCI BARs
 --------
+
+The legacy personality uses three BARs; the ionic
+personality uses the layout described in :doc:`ionic`.
 
 .. list-table::
    :header-rows: 1
@@ -161,3 +178,14 @@ None
 
 Minimal stubs that accept but do not process work requests.
 Suitable for PCI enumeration and basic driver bring-up tests.
+
+TAP (Ethernet only)
+^^^^^^^^^^^^^^^^^^^
+
+Not an RDMA backend: in ionic mode ``--tap`` binds the
+emulated Ethernet LIF to a host TAP interface, so guest
+frames land on a real host netdev and the host stack handles
+ARP, ICMP, DHCP, and TCP with no protocol emulation in the
+server. The TAP fd is non-blocking and drained from the
+server's existing poll loop, because only the thread owning
+the vfio-user context may DMA into guest memory.

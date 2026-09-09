@@ -425,6 +425,15 @@ the modules, ``--build-only`` to compile without
 loading, and ``--dkms`` to use DKMS instead of
 ``insmod``.
 
+.. note::
+
+   Driver distribution covers the legacy modules in
+   ``driver/`` only. A guest attached to a server running
+   with ``--ionic`` uses the upstream ``ionic`` and
+   ``ionic_rdma`` modules instead, installed from the
+   patched sources by the DKMS targets described in
+   :doc:`ionic`.
+
 Manifest
 --------
 

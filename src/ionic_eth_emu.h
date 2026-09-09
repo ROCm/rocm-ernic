@@ -59,4 +59,22 @@ struct ionic_adminq_ctx;
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq);
 
+/*
+ * Attach the emulated LIF to a host TAP interface, giving the guest a real
+ * Ethernet segment.  Without this Tx is a sink and nothing is ever received.
+ * @ifname may be NULL or empty to let the kernel pick a name; the name that
+ * was actually assigned is copied into @out_ifname.
+ *
+ * Returns 0 on success, or a negative errno.
+ */
+int ionic_eth_emu_attach_tap(struct ionic_eth_emu *emu, const char *ifname,
+                             char *out_ifname, size_t out_ifname_len);
+
+/*
+ * Move any frames waiting on the host backend into the guest's Rx ring.
+ * Must be called from the thread that owns the vfio-user context; the
+ * server's main loop does this on every iteration.
+ */
+void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu);
+
 #endif /* IONIC_ETH_EMU_H */

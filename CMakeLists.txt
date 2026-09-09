@@ -178,6 +178,7 @@ set(BRIDGE_SOURCES
 # ionic emulation layer (replaces PVRDMA for the ionic migration path)
 set(IONIC_EMU_SOURCES
     src/ionic_eth_emu.c
+    src/ionic_eth_net.c
     src/ionic_rdma_devcmd.c
     src/ionic_adminq.c
     src/ionic_datapath.c
