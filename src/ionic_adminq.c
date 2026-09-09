@@ -975,7 +975,8 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         uint32_t hdr_len = ah_id_len >> 24;
         if (hdr_len && ah_dma)
-            dgid_valid = adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, dmac);
+            dgid_valid =
+                adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, dmac);
 
         if (dgid_valid)
             vfu_log(ctx->vfu_ctx, LOG_DEBUG,
@@ -989,8 +990,8 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
          * backend routes on its QPNs.  For UD this field is the qkey instead,
          * so only translate when the mask says it is a destination QPN. */
         if (attr_mask & (1u << 20)) {
-            uint32_t dest_node = ionic_dp_node_from_gid(
-                ctx->dp, dgid_valid ? dgid : NULL);
+            uint32_t dest_node =
+                ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
 
             ionic_datapath_set_dest(ctx->dp, qp_id, qkey_dest_qpn, dest_node);
             uint32_t dest_qpn;

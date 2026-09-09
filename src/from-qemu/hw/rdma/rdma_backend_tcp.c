@@ -18,7 +18,7 @@
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "vmw/pvrdma.h"
-#include "hw/pci/pci.h" /* For pci_dma_map/unmap/sync */
+#include "hw/pci/pci.h"        /* For pci_dma_map/unmap/sync */
 #include "rocm_ernic_compat.h" /* IONIC_MESH_MAX_MSG, kept in step below */
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
@@ -1005,9 +1005,8 @@ static int tcp_listen_on_port(uint16_t port)
 static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
                              const void *payload, size_t payload_len,
                              const void *payload2, size_t payload2_len,
-                             uint32_t seq, uint32_t src_node,
-                             uint32_t dst_node, uint32_t src_qpn,
-                             uint32_t dst_qpn)
+                             uint32_t seq, uint32_t src_node, uint32_t dst_node,
+                             uint32_t src_qpn, uint32_t dst_qpn)
 {
     TcpMsgHeader hdr;
     ssize_t ret;
@@ -4118,8 +4117,8 @@ int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
 }
 
 int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                             const void *hdr, size_t hdr_len,
-                             const void *body, size_t body_len)
+                             const void *hdr, size_t hdr_len, const void *body,
+                             size_t body_len)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
@@ -4145,11 +4144,10 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
     }
 
     qemu_mutex_lock(&conn->lock);
-    rc = tcp_send_message2(conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body,
-                           body_len,
-                           __atomic_fetch_add(&priv->next_seq, 1,
-                                              __ATOMIC_RELAXED),
-                           priv->local_node_id, dst_node, 0, 0);
+    rc = tcp_send_message2(
+        conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body, body_len,
+        __atomic_fetch_add(&priv->next_seq, 1, __ATOMIC_RELAXED),
+        priv->local_node_id, dst_node, 0, 0);
     qemu_mutex_unlock(&conn->lock);
 
     return rc < 0 ? -EIO : 0;

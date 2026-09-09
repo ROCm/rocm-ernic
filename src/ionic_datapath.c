@@ -132,8 +132,8 @@
 #define MAX_SGE 32
 
 /* In-flight work requests waiting for a peer instance to answer. */
-#define MAX_PENDING   1024
-#define PENDING_MS    30000
+#define MAX_PENDING 1024
+#define PENDING_MS  30000
 
 
 /* A guest buffer: either directly addressed or described by a page table. */
@@ -1099,7 +1099,8 @@ static uint32_t dp_gather(struct ionic_datapath *dp,
         if (!chunk)
             continue;
 
-        uint32_t n = dp_sge_to_host(dp, l->lkey[i], l->va[i], dst + done, chunk);
+        uint32_t n =
+            dp_sge_to_host(dp, l->lkey[i], l->va[i], dst + done, chunk);
         done += n;
         if (n != chunk)
             break;
@@ -1120,7 +1121,8 @@ static uint32_t dp_scatter(struct ionic_datapath *dp,
         if (!chunk)
             continue;
 
-        uint32_t n = dp_host_to_sge(dp, l->lkey[i], l->va[i], src + done, chunk);
+        uint32_t n =
+            dp_host_to_sge(dp, l->lkey[i], l->va[i], src + done, chunk);
         done += n;
         if (n != chunk)
             break;
@@ -1212,11 +1214,10 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     pvrdma_rdma_bytes_count(dp->pvrdma_handle, dst_qp_id, copied,
                             PVRDMA_STAT_RECV);
 
-    cq_post_recv(dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op,
-                 imm_be,
-                 truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR)
-                           : copied,
-                 truncated);
+    cq_post_recv(
+        dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op, imm_be,
+        truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR) : copied,
+        truncated);
 
     return copied;
 }
@@ -1649,7 +1650,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     dst_id);
             break;
         }
-        if (deliver_recv(dp, dq, dst_id, qp_id, &src, NULL, recv_op, imm_be) < 0)
+        if (deliver_recv(dp, dq, dst_id, qp_id, &src, NULL, recv_op, imm_be) <
+            0)
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u has no posted receive, dropping "
                     "%u bytes from QP %u",
@@ -1860,14 +1862,14 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
      * no MR lookup and no bound, which is fine for a key our own guest put in a
      * WQE but would let another instance reach any guest physical page.
      */
-    if (!rkey && (h->op == IONIC_WIRE_WRITE || h->op == IONIC_WIRE_WRITE_IMM ||
-                  h->op == IONIC_WIRE_READ_REQ ||
-                  h->op == IONIC_WIRE_ATOMIC_REQ)) {
+    if (!rkey &&
+        (h->op == IONIC_WIRE_WRITE || h->op == IONIC_WIRE_WRITE_IMM ||
+         h->op == IONIC_WIRE_READ_REQ || h->op == IONIC_WIRE_ATOMIC_REQ)) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: node %u sent op %u with rkey 0, rejecting",
                 src_node, h->op);
         dp_wire_reply(dp, src_node,
-                      h->op == IONIC_WIRE_READ_REQ    ? IONIC_WIRE_READ_RESP
+                      h->op == IONIC_WIRE_READ_REQ     ? IONIC_WIRE_READ_RESP
                       : h->op == IONIC_WIRE_ATOMIC_REQ ? IONIC_WIRE_ATOMIC_RESP
                                                        : IONIC_WIRE_ACK,
                       h, IONIC_STS_REMOTE_ACC_ERR, NULL, 0);

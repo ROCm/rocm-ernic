@@ -86,8 +86,8 @@ int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
                            const void *buf, size_t len);
 /* As above, but header and body stay separate all the way down to writev. */
 int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                             const void *hdr, size_t hdr_len,
-                             const void *body, size_t body_len);
+                             const void *hdr, size_t hdr_len, const void *body,
+                             size_t body_len);
 void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
                                    tcp_ionic_recv_fn fn, void *opaque);
 

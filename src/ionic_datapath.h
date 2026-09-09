@@ -71,8 +71,7 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
  * this instance has no mesh backend.  @dgid may be NULL, which asks for the
  * default peer.
  */
-uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp,
-                                const uint8_t *dgid);
+uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid);
 
 /*
  * MR registration.  @lkey is the driver's full mrid (index | key << 24), which

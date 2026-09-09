@@ -390,9 +390,8 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
 int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
                     size_t len);
 /* As above, but header and body stay separate all the way down to writev. */
-int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node,
-                     const void *hdr, size_t hdr_len, const void *body,
-                     size_t body_len);
+int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+                     size_t hdr_len, const void *body, size_t body_len);
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
                             void *opaque);
 

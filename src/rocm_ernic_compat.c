@@ -1199,9 +1199,8 @@ int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
     return tcp_backend_send_ionic(&pvrdma->backend_dev, dst_node, buf, len);
 }
 
-int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node,
-                     const void *hdr, size_t hdr_len, const void *body,
-                     size_t body_len)
+int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+                     size_t hdr_len, const void *body, size_t body_len)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
 
@@ -1218,6 +1217,6 @@ void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
 
     if (!pvrdma)
         return;
-    tcp_backend_set_ionic_recv_cb(&pvrdma->backend_dev,
-                                  (tcp_ionic_recv_fn)fn, opaque);
+    tcp_backend_set_ionic_recv_cb(&pvrdma->backend_dev, (tcp_ionic_recv_fn)fn,
+                                  opaque);
 }
