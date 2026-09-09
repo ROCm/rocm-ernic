@@ -72,8 +72,13 @@ ernic_vm_backing: "{{ ernic_vm_image_dir }}/backing/{{ ernic_vm_name_base }}-bac
 # The NIC name itself is an ernic_guest_setup role default.
 ernic_nic_subnet: "192.168.200"
 # iperf3 rate limit and duration.  Bandwidth is passed to iperf3 -b verbatim
-# (e.g. 100M, 1G, 8M); see iperf3(1) for accepted forms.
-ernic_iperf_bandwidth: "8M"
+# (e.g. 100M, 1G); see iperf3(1) for accepted forms.  "0" means unlimited,
+# which is the only setting a throughput measurement can use: a cap here is
+# indistinguishable in the results from the link running that slowly.  The
+# stress run keeps a cap, because there it is the sustained load profile and
+# not the peak rate that is under test.
+ernic_iperf_bandwidth: "0"
+ernic_iperf_stress_bandwidth: "1G"
 ernic_iperf_duration: 60
 
 # ── Performance sweep defaults ───────────────────
