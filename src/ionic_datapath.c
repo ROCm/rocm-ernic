@@ -309,35 +309,72 @@ struct ionic_datapath {
  * -------------------------------------------------------------------------
  */
 
+/*
+ * How many host mappings one transfer may span.  A single guest run is usually
+ * one mapping, but the guest's view is contiguous where the host's need not be,
+ * so ask for room and split the transfer if even that is not enough.
+ */
+#define DP_DMA_SGL_MAX 128
+
 static int dp_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
                      bool write)
 {
-    dma_sg_t *sg = malloc(dma_sg_size());
-    struct iovec iov;
-    int ret;
+    dma_sg_t *sg;
+    struct iovec iov[DP_DMA_SGL_MAX];
+    size_t done = 0;
+    int cnt;
 
+    if (!len)
+        return 0;
+
+    sg = malloc(dma_sg_size() * DP_DMA_SGL_MAX);
     if (!sg)
         return -ENOMEM;
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          write ? PROT_WRITE : PROT_READ);
-    if (ret < 0) {
+
+    cnt = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg,
+                          DP_DMA_SGL_MAX, write ? PROT_WRITE : PROT_READ);
+    if (cnt < 0) {
         free(sg);
-        return ret;
+        /*
+         * Too fragmented to describe in one list.  Halving is enough to make
+         * progress; the caller's loop is driven by what we report, not by a
+         * fixed step.
+         */
+        if (errno == ENOSPC && len > 4096) {
+            size_t half = len / 2;
+            int rc = dp_dma_rw(vfu_ctx, gpa, buf, half, write);
+            if (rc < 0)
+                return rc;
+            return dp_dma_rw(vfu_ctx, gpa + half, (char *)buf + half,
+                             len - half, write);
+        }
+        return -EIO;
     }
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) {
+
+    size_t nsg = (size_t)cnt;
+
+    if (vfu_sgl_get(vfu_ctx, sg, iov, nsg, 0) < 0) {
         free(sg);
-        return ret;
+        return -EIO;
     }
-    if (write) {
-        memcpy(iov.iov_base, buf, len);
-        vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
-    } else {
-        memcpy(buf, iov.iov_base, len);
+
+    for (size_t i = 0; i < nsg && done < len; i++) {
+        size_t n = iov[i].iov_len;
+
+        if (n > len - done)
+            n = len - done;
+        if (write)
+            memcpy(iov[i].iov_base, (const char *)buf + done, n);
+        else
+            memcpy((char *)buf + done, iov[i].iov_base, n);
+        done += n;
     }
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
+
+    if (write)
+        vfu_sgl_mark_dirty(vfu_ctx, sg, nsg);
+    vfu_sgl_put(vfu_ctx, sg, iov, nsg);
     free(sg);
-    return 0;
+    return done == len ? 0 : -EIO;
 }
 
 static int dp_dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
@@ -414,8 +451,22 @@ static uint64_t buf_gpa(const struct dp_buf *b, uint64_t off, uint64_t *run)
         *run = 0;
         return 0;
     }
-    *run = psz - poff;
-    return b->pages[idx] + poff;
+
+    /*
+     * Report every physically adjacent page that follows, not just this one.
+     * A large MR is usually backed by runs of contiguous pages, and stopping at
+     * each page boundary turned an 8 MiB transfer into 2048 separate DMA calls.
+     */
+    uint64_t gpa = b->pages[idx] + poff;
+    uint64_t len = psz - poff;
+
+    while (idx + 1 < b->npages && b->pages[idx + 1] == b->pages[idx] + psz) {
+        len += psz;
+        idx++;
+    }
+
+    *run = len;
+    return gpa;
 }
 
 /* -------------------------------------------------------------------------
@@ -1177,26 +1228,8 @@ static int dp_mesh_tx(struct ionic_datapath *dp, uint32_t dst_node,
                       const struct ionic_wire_hdr *hdr, const uint8_t *payload,
                       uint32_t payload_len)
 {
-    uint8_t stackbuf[sizeof(*hdr) + 2048];
-    uint8_t *buf = stackbuf;
-    size_t total = sizeof(*hdr) + payload_len;
-    int rc;
-
-    if (total > sizeof(stackbuf)) {
-        buf = malloc(total);
-        if (!buf)
-            return -ENOMEM;
-    }
-
-    memcpy(buf, hdr, sizeof(*hdr));
-    if (payload_len)
-        memcpy(buf + sizeof(*hdr), payload, payload_len);
-
-    rc = ionic_mesh_send(dp->pvrdma_handle, dst_node, buf, total);
-
-    if (buf != stackbuf)
-        free(buf);
-    return rc;
+    return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, hdr, sizeof(*hdr),
+                            payload, payload_len);
 }
 
 static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
@@ -1770,6 +1803,19 @@ static uint32_t inmsg_dst_qp(const struct dp_inmsg *m)
     const struct ionic_wire_hdr *h = (const struct ionic_wire_hdr *)m->buf;
 
     return le32toh(h->dst_qp_id);
+}
+
+bool ionic_datapath_has_work(struct ionic_datapath *dp)
+{
+    bool work;
+
+    if (!dp)
+        return false;
+
+    pthread_mutex_lock(&dp->rx_lock);
+    work = dp->rx_head != NULL;
+    pthread_mutex_unlock(&dp->rx_lock);
+    return work;
 }
 
 void ionic_datapath_poll(struct ionic_datapath *dp)

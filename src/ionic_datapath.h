@@ -108,4 +108,7 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
  */
 void ionic_datapath_poll(struct ionic_datapath *dp);
 
+/* True when a peer message is queued, so the caller can skip its idle sleep. */
+bool ionic_datapath_has_work(struct ionic_datapath *dp);
+
 #endif /* IONIC_DATAPATH_H */

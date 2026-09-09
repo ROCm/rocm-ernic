@@ -1465,7 +1465,8 @@ int main(int argc, char *argv[])
              * completion-to-interrupt latency tight while
              * still avoiding 100 % CPU in the idle case.
              */
-            if (ret == 0 && !had_events) {
+            if (ret == 0 && !had_events &&
+                !ionic_datapath_has_work(dev->ionic_dp)) {
                 usleep(100);
             }
         }

@@ -66,7 +66,6 @@ _Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
 
 /* Tunable defaults -- overridable via env vars */
 #define TCP_DEFAULT_LISTEN_BACKLOG    32
-#define TCP_DEFAULT_SOCKBUF_BYTES     (4 * 1024 * 1024)
 #define TCP_DEFAULT_HEALTH_INTERVAL_S 5
 
 static int tcp_env_int(const char *name, int fallback)
@@ -867,6 +866,37 @@ static int parse_tcp_config_worker(const char *config, char **manager_host,
     return 0;
 }
 
+/*
+ * Size the socket buffers.  Doing nothing is the fast default: Linux autotunes
+ * up to tcp_wmem[2]/tcp_rmem[2], which are megabytes, whereas any explicit
+ * SO_SNDBUF/SO_RCVBUF is both clamped to net.core.{w,r}mem_max -- typically
+ * 208 KiB -- and latches SOCK_{SND,RCV}BUF_LOCK, so the buffer can never grow
+ * again.  Asking for 4 MiB that way yields a socket an order of magnitude
+ * smaller than leaving it alone, which throttles the large-message path.
+ * ERNIC_TCP_SOCKBUF remains for hosts that really do want a fixed size.
+ */
+static void tcp_tune_sockbuf(int sockfd)
+{
+    const char *val = getenv("ERNIC_TCP_SOCKBUF");
+    int bufsize, got;
+    socklen_t len;
+
+    if (!val || !ernic_parse_int(val, &bufsize) || bufsize <= 0)
+        return;
+
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+
+    len = sizeof(got);
+    if (getsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &got, &len) == 0 &&
+        got / 2 < bufsize) {
+        rdma_warn_report("TCP: ERNIC_TCP_SOCKBUF=%d clamped to %d by "
+                         "net.core.wmem_max; raise it or unset the variable "
+                         "to let the kernel autotune",
+                         bufsize, got / 2);
+    }
+}
+
 static int tcp_connect_to_remote(const char *host, uint16_t port)
 {
     struct addrinfo hints, *res, *rp;
@@ -909,10 +939,7 @@ static int tcp_connect_to_remote(const char *host, uint16_t port)
     int flag = 1;
     setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-    /* Enlarge socket buffers for throughput */
-    int bufsize = tcp_env_int("ERNIC_TCP_SOCKBUF", TCP_DEFAULT_SOCKBUF_BYTES);
-    setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    tcp_tune_sockbuf(sockfd);
 
     /* Set socket to non-blocking */
     int flags = fcntl(sockfd, F_GETFL, 0);
@@ -970,43 +997,54 @@ static int tcp_listen_on_port(uint16_t port)
     return sockfd;
 }
 
-static int tcp_send_message(int sockfd, TcpMsgType msg_type,
-                            const void *payload, size_t payload_len,
-                            uint32_t seq, uint32_t src_node, uint32_t dst_node,
-                            uint32_t src_qpn, uint32_t dst_qpn)
+/*
+ * The payload may be given in two parts so a caller that already holds a
+ * header and a body separately does not have to splice them into one buffer
+ * first -- writev sends them as one message either way.
+ */
+static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
+                             const void *payload, size_t payload_len,
+                             const void *payload2, size_t payload2_len,
+                             uint32_t seq, uint32_t src_node,
+                             uint32_t dst_node, uint32_t src_qpn,
+                             uint32_t dst_qpn)
 {
     TcpMsgHeader hdr;
     ssize_t ret;
 
     hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
     hdr.msg_type = htonl(msg_type);
-    hdr.msg_len = htonl(payload_len);
+    hdr.msg_len = htonl(payload_len + payload2_len);
     hdr.seq = htonl(seq);
     hdr.src_node_id = htonl(src_node);
     hdr.dst_node_id = htonl(dst_node);
     hdr.src_qpn = htonl(src_qpn);
     hdr.dst_qpn = htonl(dst_qpn);
 
-    struct iovec iov[2];
+    struct iovec iov[3];
     int iovcnt = 1;
+    size_t total = sizeof(hdr);
 
     iov[0].iov_base = &hdr;
     iov[0].iov_len = sizeof(hdr);
 
     if (payload && payload_len > 0) {
-        iov[1].iov_base = (void *)payload;
-        iov[1].iov_len = payload_len;
-        iovcnt = 2;
+        iov[iovcnt].iov_base = (void *)payload;
+        iov[iovcnt].iov_len = payload_len;
+        total += payload_len;
+        iovcnt++;
+    }
+    if (payload2 && payload2_len > 0) {
+        iov[iovcnt].iov_base = (void *)payload2;
+        iov[iovcnt].iov_len = payload2_len;
+        total += payload2_len;
+        iovcnt++;
     }
 
-    size_t total = iov[0].iov_len;
-    if (iovcnt == 2) {
-        total += iov[1].iov_len;
-    }
     size_t sent = 0;
 
     while (sent < total) {
-        struct iovec cur[2];
+        struct iovec cur[3];
         int cur_cnt = 0;
         size_t skip = sent;
 
@@ -1036,6 +1074,15 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
     }
 
     return 0;
+}
+
+static int tcp_send_message(int sockfd, TcpMsgType msg_type,
+                            const void *payload, size_t payload_len,
+                            uint32_t seq, uint32_t src_node, uint32_t dst_node,
+                            uint32_t src_qpn, uint32_t dst_qpn)
+{
+    return tcp_send_message2(sockfd, msg_type, payload, payload_len, NULL, 0,
+                             seq, src_node, dst_node, src_qpn, dst_qpn);
 }
 
 /*
@@ -2219,11 +2266,7 @@ static void *tcp_accept_thread(void *opaque)
         int nodelay = 1;
         setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
-        /* Enlarge socket buffers for throughput */
-        int bufsize =
-            tcp_env_int("ERNIC_TCP_SOCKBUF", TCP_DEFAULT_SOCKBUF_BYTES);
-        setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
-        setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+        tcp_tune_sockbuf(sockfd);
 
         /* Set socket to non-blocking */
         flags = fcntl(sockfd, F_GETFL, 0);
@@ -4071,11 +4114,19 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
 int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
                            const void *buf, size_t len)
 {
+    return tcp_backend_send_ionic_v(backend_dev, dst_node, buf, len, NULL, 0);
+}
+
+int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                             const void *hdr, size_t hdr_len,
+                             const void *body, size_t body_len)
+{
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
+    size_t len = hdr_len + body_len;
     int rc;
 
-    if (!priv || !buf || len == 0 || len > TCP_MAX_PAYLOAD_LEN)
+    if (!priv || !hdr || hdr_len == 0 || len > TCP_MAX_PAYLOAD_LEN)
         return -EINVAL;
 
     if (dst_node == priv->local_node_id)
@@ -4094,10 +4145,11 @@ int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
     }
 
     qemu_mutex_lock(&conn->lock);
-    rc = tcp_send_message(conn->sockfd, TCP_MSG_IONIC, buf, len,
-                          __atomic_fetch_add(&priv->next_seq, 1,
-                                             __ATOMIC_RELAXED),
-                          priv->local_node_id, dst_node, 0, 0);
+    rc = tcp_send_message2(conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body,
+                           body_len,
+                           __atomic_fetch_add(&priv->next_seq, 1,
+                                              __ATOMIC_RELAXED),
+                           priv->local_node_id, dst_node, 0, 0);
     qemu_mutex_unlock(&conn->lock);
 
     return rc < 0 ? -EIO : 0;
