@@ -139,12 +139,29 @@ jobs:
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
 
-        git clone --depth 1 --branch "$REF" --filter=blob:none --sparse \
-          https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
-          ionic-kernel-src
-        git -C ionic-kernel-src sparse-checkout set \
-          drivers/net/ethernet/pensando/ionic \
-          drivers/infiniband/hw/ionic
+        # Fetch into an empty repo rather than "clone --branch", which only
+        # accepts a tag or branch: this resolves a bare SHA too, with a full
+        # blobless fetch as the fallback if the server will not serve it.
+        URL=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+        mkdir -p ionic-kernel-src
+        (
+          cd ionic-kernel-src
+          git init -q .
+          git remote add origin "$URL"
+          git sparse-checkout init --cone
+          git sparse-checkout set \
+            drivers/net/ethernet/pensando/ionic \
+            drivers/infiniband/hw/ionic
+          if git fetch -q --depth 1 --filter=blob:none origin "$REF"; then
+            rev=FETCH_HEAD
+          else
+            echo "$REF is not directly fetchable; fetching full history"
+            git fetch -q --filter=blob:none --tags origin
+            rev=$REF
+          fi
+          git checkout -q --detach "$rev"
+        )
+        git -C ionic-kernel-src rev-parse HEAD > /tmp/ionic-base-sha
 
         for p in $(ls patches/*.patch 2>/dev/null | sort); do
           echo "  applying: $p"
@@ -165,15 +182,17 @@ jobs:
         done
 
         # Every patch in patches/ must appear as a commit on top of the ref.
+        # Count from the pre-patch SHA: the fetch may have pulled full history.
+        base=$(cat /tmp/ionic-base-sha)
         want=$(ls patches/*.patch 2>/dev/null | wc -l)
-        got=$(git -C "$SRC" rev-list --count HEAD)
-        echo "patches in tree: $want, commits applied: $((got - 1))"
-        if [ "$want" -ne "$((got - 1))" ]; then
-          echo "::error::expected $want patch commits, found $((got - 1))"
-          git -C "$SRC" log --oneline
+        got=$(git -C "$SRC" rev-list --count "${base}..HEAD")
+        echo "patches in tree: $want, commits applied: $got"
+        if [ "$want" -ne "$got" ]; then
+          echo "::error::expected $want patch commits, found $got"
+          git -C "$SRC" log --oneline "${base}..HEAD"
           exit 1
         fi
-        git -C "$SRC" log --oneline
+        git -C "$SRC" log --oneline "${base}..HEAD"
 
   driver-build-status:
     name: Driver Build Status

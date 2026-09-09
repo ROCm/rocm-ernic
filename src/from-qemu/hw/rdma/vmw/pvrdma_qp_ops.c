@@ -167,6 +167,11 @@ static void pvrdma_qp_ops_comp_handler(void *ctx, struct ibv_wc *wc)
 {
     CompHandlerCtx *comp_ctx = (CompHandlerCtx *)ctx;
 
+    /* A backend may complete a request that was posted without a context (the
+     * ionic datapath posts its own CQEs); there is nothing to defer then. */
+    if (!comp_ctx)
+        return;
+
     /*
      * Queue the completion for the main loop to
      * post.  All vfio-user / DMA-mapped memory

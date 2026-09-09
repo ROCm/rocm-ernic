@@ -1008,8 +1008,9 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
                 strides = pending - processed;
             if (strides > 1) {
                 uint64_t extra_gpa = wqe_gpa + ADMIN_WQE_STRIDE;
-                dma_read(vfu_ctx, extra_gpa, wqe_buf + ADMIN_WQE_STRIDE,
-                         (strides - 1u) * ADMIN_WQE_STRIDE);
+                if (dma_read(vfu_ctx, extra_gpa, wqe_buf + ADMIN_WQE_STRIDE,
+                             (strides - 1u) * ADMIN_WQE_STRIDE) < 0)
+                    break;
             }
 
             uint16_t cmd_idx = (uint16_t)slot;

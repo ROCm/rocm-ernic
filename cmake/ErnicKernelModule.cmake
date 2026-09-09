@@ -69,17 +69,31 @@ if(ERNIC_BUILD_KMOD)
             "-- Fetching ionic sources at ${IONIC_KERNEL_REF}..."
         # Remove any previous checkout so the ref is always clean.
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${IONIC_SOURCE_DIR}"
-        COMMAND git clone
-            --depth 1
-            --branch "${IONIC_KERNEL_REF}"
-            --filter=blob:none
-            --sparse
-            "${IONIC_KERNEL_REPO}"
-            "${IONIC_SOURCE_DIR}"
-        # Sparse-checkout only the two ionic subtrees we need.
-        COMMAND git -C "${IONIC_SOURCE_DIR}" sparse-checkout set
-            "drivers/net/ethernet/pensando/ionic"
-            "drivers/infiniband/hw/ionic"
+        # Fetch the pinned ref.  "git clone --branch" only accepts a tag or a
+        # branch, so fetch into an empty repository instead: that also resolves
+        # a bare SHA, and falls back to a full blobless fetch if the server
+        # refuses to serve the object directly.  Only the two ionic subtrees
+        # are checked out.
+        COMMAND bash -c
+            "set -e; \
+             mkdir -p '${IONIC_SOURCE_DIR}'; \
+             cd '${IONIC_SOURCE_DIR}'; \
+             git init -q .; \
+             git remote add origin '${IONIC_KERNEL_REPO}'; \
+             git sparse-checkout init --cone; \
+             git sparse-checkout set \
+                 'drivers/net/ethernet/pensando/ionic' \
+                 'drivers/infiniband/hw/ionic'; \
+             if git fetch -q --depth 1 --filter=blob:none \
+                    origin '${IONIC_KERNEL_REF}'; then \
+                 rev=FETCH_HEAD; \
+             else \
+                 echo '   ${IONIC_KERNEL_REF} is not directly fetchable;' \
+                      'falling back to a full blobless fetch'; \
+                 git fetch -q --filter=blob:none --tags origin; \
+                 rev='${IONIC_KERNEL_REF}'; \
+             fi; \
+             git checkout -q --detach \"$rev\""
         # Apply rocm-ernic patches in order.
         COMMAND ${CMAKE_COMMAND} -E echo
             "-- Applying rocm-ernic patches..."

@@ -1027,27 +1027,16 @@ int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
     if (!rm_qp)
         return -ENOENT;
 
-    /* Translate ionic SGEs (big-endian guest VA/len/lkey) to ibv_sge. */
-    struct ibv_sge sge[32];
-    for (uint32_t i = 0; i < num_sge; i++) {
-        sge[i].addr = sge_va[i];
-        sge[i].length = sge_len[i];
-        sge[i].lkey = sge_lkey[i];
-    }
-
+    /* The ionic datapath posts its own CQEs directly via post_data_cqe(), so a
+     * backend completion would be a duplicate.  There is also no
+     * CompHandlerCtx to hand to rdma_backend_post_send(), and every completion
+     * path dereferences it, so the backend post is skipped for all backends
+     * until the ionic path grows a real per-request context.  The QP lookup
+     * above is kept so an unknown QPN is still rejected. */
+    (void)sge_va;
+    (void)sge_len;
+    (void)sge_lkey;
     (void)opcode;
-
-    /* The loopback backend's completion handler (pvrdma_qp_ops_comp_handler)
-     * unconditionally dereferences ctx — passing NULL crashes the process.
-     * The ionic datapath posts its own CQEs directly via post_data_cqe(), so
-     * we skip the backend post_send entirely for the loopback case. */
-    if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_LOOPBACK)
-        return 0;
-
-    union ibv_gid zero_gid = {};
-    rdma_backend_post_send(&pvrdma->backend_dev, &rm_qp->backend_qp,
-                           (uint8_t)rm_qp->qp_type, sge, num_sge, 0, &zero_gid,
-                           &zero_gid, 0, 0, NULL);
     return 0;
 }
 
