@@ -216,8 +216,8 @@ Driver settings
      - Default
      - Description
    * - ``ERNIC_DRIVER_SOURCE``
-     - ``/usr/share/rocm-ernic/driver``
-     - Installed driver source tree
+     - ``/usr/share/rocm-ernic/driver-legacy``
+     - Installed legacy driver source tree
    * - ``ERNIC_DRIVER_TARBALL``
      - ``/tmp/rocm-ernic-driver.tar.gz``
      - Path to the built tarball
@@ -424,6 +424,15 @@ The install script also supports ``--unload`` to remove
 the modules, ``--build-only`` to compile without
 loading, and ``--dkms`` to use DKMS instead of
 ``insmod``.
+
+.. note::
+
+   Driver distribution covers the legacy modules in
+   ``driver/`` only. A guest attached to a server running
+   with ``--ionic`` uses the upstream ``ionic`` and
+   ``ionic_rdma`` modules instead, installed from the
+   patched sources by the DKMS targets described in
+   :doc:`ionic`.
 
 Manifest
 --------

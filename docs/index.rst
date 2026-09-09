@@ -15,10 +15,15 @@ Key Features
 ^^^^^^^^^^^^
 
 - Full PCIe device emulation in userspace
-- Three memory-mapped BARs (MSI-X, registers, UAR)
+- Two device personalities: a legacy PVRDMA-derived device
+  driven by the companion ``rocm_ernic`` module, and an
+  ``--ionic`` mode driven by the upstream Linux ``ionic``
+  driver (see :doc:`ionic`)
+- Memory-mapped BARs (MSI-X, registers, doorbells)
 - MSI-X interrupt support
 - Multiple RDMA backends (loopback, TCP/IP, native verbs)
-- Companion Linux kernel driver (``rocm_ernic``)
+- Working Ethernet and TCP/IP to the host via a TAP
+  interface in ionic mode
 - Comprehensive statistics collection
 
 Quick Start
@@ -35,6 +40,15 @@ Quick Start
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --verbose
 
+Or, to present the device to the guest as an upstream-driven
+ionic NIC with Ethernet attached to a host TAP interface:
+
+.. code-block:: bash
+
+   ./build/rocm-ernic --ionic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback --tap ernic0
+
 .. toctree::
    :maxdepth: 2
    :caption: User Guide
@@ -42,6 +56,7 @@ Quick Start
    building
    architecture
    usage
+   ionic
    service
    monitoring
    driver

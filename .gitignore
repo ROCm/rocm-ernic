@@ -62,9 +62,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Patch files
+# Patch files (exclude patches/ directory which ships driver patches)
 *.patch
 *.diff
+!patches/
+!patches/*.patch
 
 # Log files
 *.log
@@ -135,3 +137,6 @@ ansible/changelogs/.plugin-cache.yaml
 /result
 /result-*
 .direnv/
+
+# Working notes, not part of the tree
+overnight.md

@@ -6,12 +6,15 @@ on:
     branches: [ main ]
     paths:
       - 'driver/**'
+      - 'patches/**'
+      - 'scripts/setup-ionic-dkms.sh'
+      - 'cmake/ErnicKernelModule.cmake'
       - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
 jobs:
   driver-build:
-    name: Build Kernel Driver on ${{ matrix.os }}
+    name: Build Legacy Kernel Driver on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     
     strategy:
@@ -107,20 +110,111 @@ jobs:
         rm -f *.o *.ko *.mod *.mod.c *.mod.o .*.cmd Module.symvers \
           modules.order build.log
 
+  # The ionic path does not ship a driver of its own: it runs the upstream
+  # Linux ionic.ko and ionic_rdma.ko with the patches in patches/ applied.
+  # What CI can check on a hosted runner is that the pinned upstream ref still
+  # exists and that every patch still applies to it -- the modules themselves
+  # need kernel >= 6.18 headers, which hosted runners do not have.
+  ionic-patches:
+    name: Apply ionic Driver Patches
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Fetch upstream ionic sources and apply patches
+      run: |
+        # Mirror cmake/ErnicKernelModule.cmake, but without configuring the
+        # whole project: this job only needs git.  The pinned ref is read
+        # from the cmake file so the two cannot drift apart.
+        REF=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+              cmake/ErnicKernelModule.cmake)
+        if [ -z "$REF" ]; then
+          echo "::error::could not read IONIC_KERNEL_REF from cmake/ErnicKernelModule.cmake"
+          exit 1
+        fi
+        echo "ionic kernel ref: $REF"
+
+        git config --global user.email "ci@rocm-ernic.invalid"
+        git config --global user.name "rocm-ernic CI"
+
+        # Fetch into an empty repo rather than "clone --branch", which only
+        # accepts a tag or branch: this resolves a bare SHA too, with a full
+        # blobless fetch as the fallback if the server will not serve it.
+        URL=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+        mkdir -p ionic-kernel-src
+        (
+          cd ionic-kernel-src
+          git init -q .
+          git remote add origin "$URL"
+          git sparse-checkout init --cone
+          git sparse-checkout set \
+            drivers/net/ethernet/pensando/ionic \
+            drivers/infiniband/hw/ionic
+          if git fetch -q --depth 1 --filter=blob:none origin "$REF"; then
+            rev=FETCH_HEAD
+          else
+            echo "$REF is not directly fetchable; fetching full history"
+            git fetch -q --filter=blob:none --tags origin
+            rev=$REF
+          fi
+          git checkout -q --detach "$rev"
+        )
+        git -C ionic-kernel-src rev-parse HEAD > /tmp/ionic-base-sha
+
+        for p in $(ls patches/*.patch 2>/dev/null | sort); do
+          echo "  applying: $p"
+          git -C ionic-kernel-src am --whitespace=fix "$(pwd)/$p" || {
+            echo "::error file=$p::patch does not apply to $REF"
+            exit 1
+          }
+        done
+
+    - name: Verify the patched tree
+      run: |
+        SRC=ionic-kernel-src
+        for d in drivers/net/ethernet/pensando/ionic drivers/infiniband/hw/ionic; do
+          if [ ! -d "$SRC/$d" ]; then
+            echo "::error::missing $d in the fetched tree"
+            exit 1
+          fi
+        done
+
+        # Every patch in patches/ must appear as a commit on top of the ref.
+        # Count from the pre-patch SHA: the fetch may have pulled full history.
+        base=$(cat /tmp/ionic-base-sha)
+        want=$(ls patches/*.patch 2>/dev/null | wc -l)
+        got=$(git -C "$SRC" rev-list --count "${base}..HEAD")
+        echo "patches in tree: $want, commits applied: $got"
+        if [ "$want" -ne "$got" ]; then
+          echo "::error::expected $want patch commits, found $got"
+          git -C "$SRC" log --oneline "${base}..HEAD"
+          exit 1
+        fi
+        git -C "$SRC" log --oneline "${base}..HEAD"
+
   driver-build-status:
     name: Driver Build Status
-    needs: driver-build
+    needs: [driver-build, ionic-patches]
     runs-on: ubuntu-latest
     if: always()
-    
+
     steps:
     - name: Check build result
       run: |
+        rc=0
         if [ "${{ needs.driver-build.result }}" = "success" ]; then
-          echo "✅ All driver builds succeeded!"
-          exit 0
+          echo "✅ Legacy driver build succeeded"
         else
-          echo "❌ Driver build failed!"
-          exit 1
+          echo "❌ Legacy driver build failed"
+          rc=1
         fi
+        if [ "${{ needs.ionic-patches.result }}" = "success" ]; then
+          echo "✅ ionic driver patches apply cleanly"
+        else
+          echo "❌ ionic driver patches do not apply"
+          rc=1
+        fi
+        exit $rc
 

@@ -36,7 +36,7 @@ DEFAULTS = {
     "ERNIC_MANAGER_IP": "127.0.0.1",
     "ERNIC_VERBOSE": "false",
     "ERNIC_LOG_LEVEL": "warn",
-    "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/driver",
+    "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/driver-legacy",
     "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
     "ERNIC_QEMU_MINIMAL": os.path.expanduser(
         "~/Projects/qemu-minimal"

@@ -53,6 +53,35 @@ this may require the rocm-ernic server running with loopback backend
 and a VM with the driver loaded, or it will be skipped if no device
 is found.
 
+### test_ionic_ci.sh
+
+Shell test for the `--ionic` device personality, registered with CTest
+as `ionic-ci`. Needs neither a VM nor an RDMA device.
+
+**Tests Performed:**
+- Server starts in `--ionic` mode on the `loopback` and `none` backends
+- PCI Device ID verification (ionic ERNIC: `0x1022:0x8001`)
+- BAR geometry (64K BAR0 with a 32K register window, 4M BAR2)
+- MSI-X vector count (32)
+- Clean shutdown on `SIGTERM`
+- `--tap` is rejected without `--ionic`
+- `--tap` attaches to an existing host TAP interface
+
+**Requirements:**
+- The TAP attach check is skipped unless `ERNIC_TEST_TAP` names an
+  existing interface owned by the current user, since creating one
+  needs `CAP_NET_ADMIN`:
+
+  ```bash
+  sudo ip tuntap add dev ernic-ci0 mode tap user "$USER"
+  ERNIC_TEST_TAP=ernic-ci0 ctest --test-dir build -R ionic-ci
+  ```
+
+**Exit Codes:**
+- 0: All tests passed
+- 1: Test failure
+- 77: Skipped (server binary not built)
+
 ## Running Tests
 
 ### Quick Local Test

@@ -35,12 +35,13 @@ static struct ibv_device *find_rocm_ernic(struct ibv_device **list, int n)
          * The device is named from its PCI address on some
          * setups (rocep0s4) and from the driver on others
          * (rocm-rdma-ernic0), so match the "ernic" stem too.
-         * Missing a name here is silent: the test skips with
-         * 77 and the caller reports success having tested
-         * nothing.
+         * ionic_* covers the upstream ionic driver with the AMD
+         * emulated DID patch.  Missing a name here is silent: the
+         * test skips with 77 and the caller reports success having
+         * tested nothing.
          */
         if (strstr(name, "rocm_ernic") || strstr(name, "rocep") ||
-            strstr(name, "ernic"))
+            strstr(name, "ernic") || strstr(name, "ionic_"))
             return list[i];
     }
     return NULL;

@@ -27,7 +27,7 @@ if [ -f "${ENV_FILE}" ]; then
     set +a
 fi
 
-ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-/usr/share/rocm-ernic/driver}"
+ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-/usr/share/rocm-ernic/driver-legacy}"
 ERNIC_DRIVER_TARBALL="${ERNIC_DRIVER_TARBALL:-/tmp/rocm-ernic-driver.tar.gz}"
 
 STAGING="/tmp/rocm-ernic-driver-staging"

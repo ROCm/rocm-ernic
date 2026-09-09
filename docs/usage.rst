@@ -24,6 +24,34 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend none
 
+   # ionic personality, Ethernet attached to a host TAP
+   ./build/rocm-ernic --ionic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback --tap ernic0
+
+Device Personality
+------------------
+
+``--ionic`` (short ``-I``) makes the server emulate an AMD
+Pensando ionic NIC (``1022:8001``) driven by the upstream
+Linux ``ionic`` and ``ionic_rdma`` modules, instead of the
+default PVRDMA-derived device (``1022:8000``) driven by the
+companion module in ``driver/``.
+
+``--tap IFNAME`` (short ``-T``) attaches the emulated
+Ethernet interface to an existing host TAP. It requires
+``--ionic``; the server exits with a diagnostic otherwise.
+Create the TAP up front, owned by the user running the
+server:
+
+.. code-block:: bash
+
+   sudo ip tuntap add dev ernic0 mode tap user "$USER"
+
+The backend selection is independent of the personality:
+``--backend`` governs the RDMA data path, ``--tap`` the
+Ethernet one. See :doc:`ionic` for the full picture.
+
 Log Levels
 ----------
 
@@ -98,7 +126,17 @@ Inside the guest, load the kernel driver and verify:
 .. code-block:: bash
 
    sudo modprobe rocm_ernic
-   lspci | grep 1022:8000
+   lspci -nn | grep 1022:8000
+   ibv_devices
+
+In ionic mode the guest loads the upstream modules against
+the ``1022:8001`` device instead:
+
+.. code-block:: bash
+
+   sudo modprobe ionic
+   sudo modprobe ionic_rdma
+   lspci -nn | grep 1022:8001
    ibv_devices
 
 Statistics Collection

@@ -206,9 +206,9 @@ test_config() {
         if sshpass -p "$VM_PASSWORD" \
            ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << EOFVM
         set -e
-        # Check for RDMA device
-        if ! ibv_devices | grep -q rocm_ernic; then
-          echo "No rocm_ernic device found - driver may need to be loaded"
+        # Check for RDMA device (rocm_ernic legacy or ionic_* new path)
+        if ! ibv_devices | grep -qE 'rocm_ernic|ionic_'; then
+          echo "No rocm_ernic or ionic_ device found - driver may need to be loaded"
           exit 77
         fi
         # Run test (assuming test binary is in PATH or /opt/rocm-ernic/tests/)

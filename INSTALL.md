@@ -66,7 +66,23 @@ Supported platforms: Linux (tested on Ubuntu 24.04)
 | ERNIC\_USE\_THREAD\_SANITIZER | OFF | Enable TSAN (incompatible with above) |
 | ERNIC\_BUILD\_DOCS | OFF | Build Sphinx + Breathe + Doxygen documentation |
 | ERNIC\_DOCS\_ONLY | OFF | Docs-only build (no library dependencies required) |
+| ERNIC\_BUILD\_KMOD | OFF | DKMS targets for the patched upstream ionic guest modules |
+| IONIC\_KERNEL\_REF | v7.2.4 | Kernel tag/SHA the ionic sources are fetched from (>= v6.18) |
 | CMAKE\_INSTALL\_PREFIX | /usr/local | Installation prefix |
+
+### Guest ionic modules
+
+For `--ionic` mode the guest runs the upstream Linux `ionic` and
+`ionic_rdma` drivers with the patches in `patches/` applied. Configure with
+`-DERNIC_BUILD_KMOD=ON` and run these targets inside the guest:
+
+```
+cmake --build build --target fetch-ionic-sources
+cmake --build build --target build-ionic-dkms
+sudo cmake --build build --target install-ionic-dkms
+```
+
+See [docs/ionic.rst](docs/ionic.rst) for details.
 
 ### Build
 

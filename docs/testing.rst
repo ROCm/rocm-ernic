@@ -45,6 +45,30 @@ test_rdma_cm
 RDMA Connection Manager test using libibverbs. Validates
 connection setup and teardown paths.
 
+test_ionic_ci.sh
+^^^^^^^^^^^^^^^^
+
+Shell test for the ionic personality, registered with CTest
+as ``ionic-ci``. It needs no VM and no RDMA device:
+
+- Server starts in ``--ionic`` mode on the ``loopback`` and
+  ``none`` backends
+- PCI identity is ``0x1022:0x8001``
+- BAR geometry is 64 KB BAR0 (32 KB register window) and
+  4 MB BAR2, with 32 MSI-X vectors
+- Clean shutdown on ``SIGTERM``
+- ``--tap`` is rejected without ``--ionic``
+- ``--tap`` attaches to an existing host TAP
+
+The last check is skipped unless ``ERNIC_TEST_TAP`` names a
+TAP interface owned by the current user, since creating one
+needs ``CAP_NET_ADMIN``:
+
+.. code-block:: bash
+
+   sudo ip tuntap add dev ernic-ci0 mode tap user "$USER"
+   ERNIC_TEST_TAP=ernic-ci0 ctest --test-dir build -R ionic-ci
+
 Running Tests
 -------------
 
@@ -311,6 +335,20 @@ name through ``roles_path`` in ``ansible/ansible.cfg``, so they
 always run against this checkout rather than a published
 version. Because that path is relative, run ``ansible-playbook``
 from the ``ansible/`` directory.
+
+Guest Driver CI
+---------------
+
+``.github/workflows/driver-build.yml`` covers both guest
+drivers. One job builds the legacy modules in ``driver/``
+against the runner's kernel headers. A second job,
+``ionic-patches``, reads ``IONIC_KERNEL_REF`` straight out
+of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
+ionic subtrees at that ref, and applies every
+``patches/*.patch`` with ``git am``, failing the pull
+request if one no longer applies. The ionic modules
+themselves are not built there: they need kernel 6.18 or
+newer headers, which hosted runners do not carry.
 
 Self-Hosted CI
 --------------
