@@ -5,7 +5,7 @@ Performance trends
 ==================
 
 Medians from the nightly full-tier run on ``hpe-rack-15``, oldest run at
-the left. Latest: ``9a44f18e`` at 2026-09-08 03:06:18 UTC.
+the left. Latest: ``5e0516af`` at 2026-09-09 03:08:46 UTC.
 
 Each panel carries one message size on its own scale. Bandwidth at 4 KiB
 and at 1 MiB differ by more than an order of magnitude, so a shared axis
@@ -21,13 +21,14 @@ Median ``bw_peak_GBs`` for ``send`` (higher is better).
 .. raw:: html
    :file: perf-history/chart-bandwidth.html
 
-Last 2 runs, in GB/s:
+Last 3 runs, in GB/s:
 
 ======== ===== ====== =====
 Run      4 KiB 64 KiB 1 MiB
 ======== ===== ====== =====
 56b302de 0.36  2.56   6.02
 9a44f18e 0.32  2.4    4.46
+5e0516af 0.39  2.45   4.72
 ======== ===== ====== =====
 
 Send latency over time
@@ -38,12 +39,13 @@ Median ``lat_typical_us`` for ``send`` (lower is better).
 .. raw:: html
    :file: perf-history/chart-latency.html
 
-Last 2 runs, in µs:
+Last 3 runs, in µs:
 
 ======== ====== ====== ======
 Run      4 KiB  64 KiB 1 MiB
 ======== ====== ====== ======
 56b302de 321.46 325.81 468.44
 9a44f18e 244.11 328.34 474.77
+5e0516af 242.48 247.64 393.74
 ======== ====== ====== ======
 
