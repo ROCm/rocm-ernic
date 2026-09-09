@@ -103,7 +103,7 @@ group_end
 
 probe_rdma_device() {
     vm_ssh "$1" 'ibv_devices' \
-        | grep -qE 'rocm-rdma-ernic|rocep'
+        | grep -qE 'rocm-rdma-ernic|rocep|ionic'
 }
 
 probe_port_active() {

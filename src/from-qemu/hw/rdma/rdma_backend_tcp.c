@@ -19,6 +19,7 @@
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "vmw/pvrdma.h"
 #include "hw/pci/pci.h" /* For pci_dma_map/unmap/sync */
+#include "rocm_ernic_compat.h" /* IONIC_MESH_MAX_MSG, kept in step below */
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
 #include "../../utils/parse_int.h"
@@ -58,6 +59,10 @@
 #define TCP_MAX_ETH_FRAME_LEN  2048
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
+
+/* ionic sizes its own wire payload against this; keep the two in step. */
+_Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
+               "IONIC_MESH_MAX_MSG must match TCP_MAX_PAYLOAD_LEN");
 
 /* Tunable defaults -- overridable via env vars */
 #define TCP_DEFAULT_LISTEN_BACKLOG    32
@@ -142,6 +147,13 @@ typedef enum {
     TCP_MSG_RDMA_WRITE,     /* RDMA Write: DMA to remote MR */
     TCP_MSG_RDMA_READ_REQ,  /* RDMA Read request */
     TCP_MSG_RDMA_READ_RESP, /* RDMA Read response data */
+    /*
+     * Opaque node-to-node payload for the ionic data path.  The mesh only
+     * routes it; ionic_datapath.c owns the contents, because ionic resolves
+     * rkeys against its own guest-physical MR table rather than through
+     * rdma_rm.
+     */
+    TCP_MSG_IONIC,
 } TcpMsgType;
 
 typedef struct {
@@ -455,6 +467,11 @@ struct TcpBackendPrivate {
 
     /* Receive buffer pool */
     TcpBufPool recv_pool;
+
+    /* Sink for TCP_MSG_IONIC, registered by the ionic data path.  Called on
+     * a receive thread, so the callee must hand off to its own thread. */
+    tcp_ionic_recv_fn ionic_recv_fn;
+    void *ionic_recv_opaque;
 
     /* TCP-layer performance counters */
     struct {
@@ -1878,6 +1895,48 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 break;
             }
 
+            case TCP_MSG_IONIC: {
+                TcpBackendPrivate *priv = conn->priv;
+
+                if (!priv || !payload || hdr.msg_len == 0)
+                    break;
+
+                if (hdr.dst_node_id == priv->local_node_id) {
+                    tcp_ionic_recv_fn fn;
+                    void *fn_opaque;
+
+                    qemu_mutex_lock(&priv->lock);
+                    fn = priv->ionic_recv_fn;
+                    fn_opaque = priv->ionic_recv_opaque;
+                    qemu_mutex_unlock(&priv->lock);
+
+                    if (fn)
+                        fn(fn_opaque, hdr.src_node_id, payload, hdr.msg_len);
+                    else
+                        rdma_error_report("TCP: ionic message from node %u "
+                                          "with no data path registered",
+                                          hdr.src_node_id);
+                } else if (priv->is_manager) {
+                    /* Worker-to-worker: relay to the addressed node. */
+                    TcpConnection *fwd =
+                        tcp_get_connection(priv, hdr.dst_node_id);
+
+                    if (fwd && fwd->is_connected && fwd->sockfd >= 0) {
+                        qemu_mutex_lock(&fwd->lock);
+                        tcp_send_message(fwd->sockfd, TCP_MSG_IONIC, payload,
+                                         hdr.msg_len, hdr.seq, hdr.src_node_id,
+                                         hdr.dst_node_id, hdr.src_qpn,
+                                         hdr.dst_qpn);
+                        qemu_mutex_unlock(&fwd->lock);
+                    } else {
+                        rdma_error_report("TCP: cannot relay ionic message "
+                                          "from node %u to node %u",
+                                          hdr.src_node_id, hdr.dst_node_id);
+                    }
+                }
+                break;
+            }
+
             case TCP_MSG_RDMA_WRITE: {
                 TcpBackendPrivate *priv = conn->priv;
                 if (!priv || !payload ||
@@ -3207,6 +3266,41 @@ static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     return 0;
 }
 
+/*
+ * Resolve a destination GID to a mesh node id.
+ *
+ * GID index 0 (from tcp_add_gid) carries the node id directly in raw[15].
+ * GID index 1+ is the IPv4-mapped address the guest kernel builds, where
+ * raw[10..11] == 0xff,0xff and raw[12..15] hold the IPv4 address; raw[15] is
+ * then the last IP octet, not a node id.  VM addresses follow
+ * <subnet>.<(node_id + 1) * 10>, so the last octet resolves the node.
+ *
+ * An IPv6 link-local GID (fe80::/10) is neither: it is the EUI-64 of the port
+ * MAC, so its last byte is a MAC octet and means nothing here.  The ionic
+ * driver reports one at GID index 0, so this case has to be rejected rather
+ * than run through the raw[15] rule.
+ *
+ * Returns UINT32_MAX when the GID says nothing useful, leaving the caller to
+ * apply its own default-peer policy.
+ */
+static uint32_t tcp_resolve_node_from_gid(const union ibv_gid *dgid)
+{
+    if (!dgid)
+        return UINT32_MAX;
+
+    if (dgid->raw[0] == 0xfe && (dgid->raw[1] & 0xc0) == 0x80)
+        return UINT32_MAX;
+
+    if (!(dgid->raw[10] == 0xff && dgid->raw[11] == 0xff))
+        return (uint32_t)dgid->raw[15];
+
+    uint8_t last = dgid->raw[15];
+    if (last >= 10 && (last % 10) == 0)
+        return (uint32_t)(last / 10) - 1;
+
+    return UINT32_MAX;
+}
+
 static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                             uint8_t qp_type, uint8_t sgid_idx,
                             union ibv_gid *dgid, uint32_t dqpn, uint32_t rq_psn,
@@ -3229,52 +3323,20 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
         }
 
-        /*
-         * Resolve remote node ID from dgid.
-         *
-         * GID index 0 (from tcp_add_gid): node_id is
-         * encoded in raw[15] directly.
-         *
-         * GID index 1+ (IPv4-mapped, from guest kernel):
-         * raw[10..11] = 0xff,0xff and raw[12..15] hold
-         * the IPv4 address.  raw[15] is the last IP
-         * octet, NOT the node_id.  Detect this case and
-         * resolve via the mesh topology.
-         */
         if (dgid) {
-            bool is_ipv4_mapped =
-                (dgid->raw[10] == 0xff && dgid->raw[11] == 0xff);
+            uint32_t resolved = tcp_resolve_node_from_gid(dgid);
 
-            if (!is_ipv4_mapped) {
-                tqp->remote_node_id = (uint32_t)dgid->raw[15];
+            if (resolved != UINT32_MAX) {
+                tqp->remote_node_id = resolved;
+            } else if (priv->mode == TCP_MODE_WORKER) {
+                tqp->remote_node_id = 0;
             } else {
-                /*
-                 * Derive target node from IPv4 last octet.
-                 * VM IPs follow the pattern
-                 *   <subnet>.<(node_id + 1) * 10>
-                 * so last_octet / 10 - 1 = node_id.
-                 * A zero or non-multiples-of-10 last octet
-                 * fall through to the default peer routing.
-                 */
-                uint8_t last = dgid->raw[15];
-                uint32_t resolved = 0xFFFFFFFF;
-
-                if (last >= 10 && (last % 10) == 0)
-                    resolved = (uint32_t)(last / 10) - 1;
-
-                if (resolved != 0xFFFFFFFF) {
-                    tqp->remote_node_id = resolved;
-                } else if (priv->mode == TCP_MODE_WORKER) {
-                    tqp->remote_node_id = 0;
-                } else {
-                    tqp->remote_node_id = 1;
-                }
-
-                rdma_info_report("TCP: Resolved IPv4 GID "
-                                 "%u.%u.%u.%u -> node %u",
-                                 dgid->raw[12], dgid->raw[13], dgid->raw[14],
-                                 dgid->raw[15], tqp->remote_node_id);
+                tqp->remote_node_id = 1;
             }
+
+            rdma_info_report("TCP: Resolved GID %u.%u.%u.%u -> node %u",
+                             dgid->raw[12], dgid->raw[13], dgid->raw[14],
+                             dgid->raw[15], tqp->remote_node_id);
         } else if (priv->mode == TCP_MODE_WORKER) {
             tqp->remote_node_id = 0;
         } else {
@@ -3955,4 +4017,88 @@ int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
     }
 
     return sent;
+}
+
+uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+        return UINT32_MAX;
+    return priv->local_node_id;
+}
+
+uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
+                                   const union ibv_gid *dgid)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+    uint32_t node;
+
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+        return UINT32_MAX;
+
+    node = tcp_resolve_node_from_gid(dgid);
+    if (node != UINT32_MAX)
+        return node;
+
+    /* Same default-peer policy tcp_qp_state_rtr applies: with two instances
+     * the peer is unambiguous even when the GID says nothing. */
+    if (priv->mode == TCP_MODE_WORKER)
+        return 0;
+    return priv->local_node_id == 0 ? 1 : 0;
+}
+
+void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
+                                   tcp_ionic_recv_fn fn, void *opaque)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+
+    if (!priv)
+        return;
+
+    qemu_mutex_lock(&priv->lock);
+    priv->ionic_recv_fn = fn;
+    priv->ionic_recv_opaque = opaque;
+    qemu_mutex_unlock(&priv->lock);
+}
+
+/*
+ * Unicast an opaque ionic message to @dst_node.  Unlike Ethernet frames these
+ * carry RDMA payloads and completions, so a drop is not recoverable by a
+ * guest retransmit: send blocking (tcp_send_message polls on EAGAIN) and
+ * report failure to the caller, which turns it into an error completion.
+ */
+int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                           const void *buf, size_t len)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+    TcpConnection *conn;
+    int rc;
+
+    if (!priv || !buf || len == 0 || len > TCP_MAX_PAYLOAD_LEN)
+        return -EINVAL;
+
+    if (dst_node == priv->local_node_id)
+        return -EINVAL;
+
+    /* A worker has no direct socket to another worker; the manager relays. */
+    conn = tcp_get_connection(priv, dst_node);
+    if ((!conn || !conn->is_connected || conn->sockfd < 0) &&
+        priv->manager_conn && priv->manager_conn->is_connected)
+        conn = priv->manager_conn;
+
+    if (!conn || !conn->is_connected || conn->sockfd < 0) {
+        rdma_error_report("TCP: no connection to node %u for ionic message",
+                          dst_node);
+        return -ENOTCONN;
+    }
+
+    qemu_mutex_lock(&conn->lock);
+    rc = tcp_send_message(conn->sockfd, TCP_MSG_IONIC, buf, len,
+                          __atomic_fetch_add(&priv->next_seq, 1,
+                                             __ATOMIC_RELAXED),
+                          priv->local_node_id, dst_node, 0, 0);
+    qemu_mutex_unlock(&conn->lock);
+
+    return rc < 0 ? -EIO : 0;
 }

@@ -1070,6 +1070,52 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                              &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
 }
 
-/* pvrdma_get_dev_resources and pvrdma_get_backend_dev are retained in the
- * header for potential future use but are currently unused — the ionic path
- * uses the ionic_rm_* wrappers above instead. */
+/* pvrdma_get_dev_resources is retained in the header for potential future use
+ * but is currently unused — the ionic path uses the ionic_rm_* wrappers above
+ * instead. */
+
+uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return UINT32_MAX;
+    return tcp_backend_local_node_id(&pvrdma->backend_dev);
+}
+
+uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    union ibv_gid dgid;
+
+    if (!pvrdma)
+        return UINT32_MAX;
+
+    if (!dest_gid_16bytes)
+        return tcp_backend_node_from_gid(&pvrdma->backend_dev, NULL);
+
+    memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
+    return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
+}
+
+int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
+                    size_t len)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return -EINVAL;
+    return tcp_backend_send_ionic(&pvrdma->backend_dev, dst_node, buf, len);
+}
+
+void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+                            void *opaque)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return;
+    tcp_backend_set_ionic_recv_cb(&pvrdma->backend_dev,
+                                  (tcp_ionic_recv_fn)fn, opaque);
+}

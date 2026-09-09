@@ -294,6 +294,9 @@ struct ionic_eth_emu {
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
     struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
 
+    /* Station MAC reported by LIF_IDENTIFY. */
+    uint8_t mac[6];
+
     /* Host network backend, or NULL when Tx is a sink. */
     struct ionic_eth_net *net;
     /* Staging buffer for one frame in either direction. */
@@ -340,6 +343,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
 
     emu->vfu_ctx = vfu_ctx;
     emu->bar2_size = bar2_size;
+    memcpy(emu->mac, (const uint8_t[]){0x02, 0xa0, 0xd1, 0x00, 0x00, 0x01}, 6);
     emu->bar2 = calloc(1, bar2_size);
     if (!emu->bar2) {
         free(emu);
@@ -403,6 +407,11 @@ void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq)
 {
     emu->adminq = adminq;
+}
+
+void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
+{
+    memcpy(emu->mac, mac, 6);
 }
 
 /* -------------------------------------------------------------------------
@@ -794,8 +803,7 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
 
     PUT32(LIFID_CONFIG_MTU_OFF, 1500);
 
-    static const uint8_t mac[6] = {0x02, 0xa0, 0xd1, 0x00, 0x00, 0x01};
-    memcpy(data + LIFID_CONFIG_MAC_OFF, mac, sizeof(mac));
+    memcpy(data + LIFID_CONFIG_MAC_OFF, emu->mac, sizeof(emu->mac));
 
 #undef PUT_QCOUNT
 #undef PUT32
@@ -954,24 +962,34 @@ static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * LIF_SETATTR / LIF_GETATTR (opcodes 24, 23)
  * -------------------------------------------------------------------------
  */
+/* enum ionic_lif_attr */
+#define IONIC_LIF_ATTR_MAC 3
+
+/* struct ionic_lif_{get,set}attr_{cmd,comp}: opcode, attr, __le16 index,
+ * then the attribute union at byte 4 in both directions. */
+#define LIF_ATTR_CMD_OFF  4u
+#define LIF_ATTR_COMP_OFF 4u
+
 static void handle_lif_setattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp)
 {
-    (void)emu;
-    uint8_t attr = cmd[2];
+    uint8_t attr = cmd[1];
     vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: LIF_SETATTR attr=%u",
             attr);
-    comp[0] = 0;
+    if (attr == IONIC_LIF_ATTR_MAC)
+        memcpy(emu->mac, cmd + LIF_ATTR_CMD_OFF, sizeof(emu->mac));
+    comp[0] = IONIC_RC_SUCCESS;
 }
 
 static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp)
 {
-    (void)emu;
-    uint8_t attr = cmd[2];
+    uint8_t attr = cmd[1];
     vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: LIF_GETATTR attr=%u",
             attr);
-    comp[0] = 0;
+    if (attr == IONIC_LIF_ATTR_MAC)
+        memcpy(comp + LIF_ATTR_COMP_OFF, emu->mac, sizeof(emu->mac));
+    comp[0] = IONIC_RC_SUCCESS;
 }
 
 /* -------------------------------------------------------------------------
@@ -1190,9 +1208,21 @@ static void process_adminq_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
         handle_rdma_cmd(emu, cmd, comp);
         break;
 
+    /* The station MAC does not come from LIF_IDENTIFY: ionic_lif_alloc()
+     * asks for it here, and reads an all-zero answer as "nothing
+     * programmed", generating a random address instead.  Two bridged
+     * instances then collide only by luck. */
+    case IONIC_CMD_LIF_GETATTR:
+        handle_lif_getattr(emu, cmd, comp);
+        break;
+
+    case IONIC_CMD_LIF_SETATTR:
+        handle_lif_setattr(emu, cmd, comp);
+        break;
+
     default:
         /* Everything else the Ethernet driver posts during bring-up
-         * (LIF_SETATTR, RX_MODE_SET, RX_FILTER_ADD, ...) has no state in the
+         * (RX_MODE_SET, RX_FILTER_ADD, ...) has no state in the
          * emulator, and a zeroed completion reads back as success. */
         vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: adminq opcode=%u",
                 cmd[0]);

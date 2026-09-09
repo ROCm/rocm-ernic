@@ -82,10 +82,16 @@ git checkout -q --detach "${rev}"
 echo "-- Applying rocm-ernic patches from ${PATCHES_DIR}..."
 # This is a scratch build tree, and a user with commit.gpgsign=true globally
 # cannot sign non-interactively, so signing is disabled for these commits.
+# The committer identity is pinned for the same reason: git am refuses to
+# commit without one, and the guests this runs in (as root, in a VM with no
+# git config) have none.
 shopt -s nullglob
 for p in "${PATCHES_DIR}"/*.patch; do
     echo "  applying: ${p}"
-    git -c commit.gpgsign=false am --whitespace=fix "${p}"
+    git -c commit.gpgsign=false \
+        -c user.name="rocm-ernic build" \
+        -c user.email="rocm-ernic@localhost" \
+        am --whitespace=fix "${p}"
 done
 shopt -u nullglob
 

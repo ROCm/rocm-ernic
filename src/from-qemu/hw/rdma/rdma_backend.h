@@ -70,6 +70,31 @@ void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
 int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
                                size_t len);
 
+/*
+ * Opaque node-to-node transport for the ionic data path.
+ *
+ * ionic cannot ride the RDMA_WRITE/READ messages above: those resolve rkeys
+ * with rdma_rm_get_mr() and write through RdmaRmMR::virt, a host pointer,
+ * while ionic MRs are guest-physical page tables reached over vfio-user DMA.
+ * So the mesh carries ionic's own protocol as an opaque payload, exactly as
+ * it already carries raw Ethernet frames.
+ */
+typedef void (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node,
+                                  const void *buf, size_t len);
+
+int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                           const void *buf, size_t len);
+void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
+                                   tcp_ionic_recv_fn fn, void *opaque);
+
+/*
+ * Mesh addressing, shared with the ionic data path so there is one copy of
+ * the GID-to-node rule.  Returns UINT32_MAX when the backend is not a mesh.
+ */
+uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev);
+uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
+                                   const union ibv_gid *dgid);
+
 /* Legacy verbs backend init (for compatibility) */
 int rdma_backend_init(RdmaBackendDev *backend_dev, PCIDevice *pdev,
                       RdmaDeviceResources *rdma_dev_res,

@@ -60,6 +60,13 @@ void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq);
 
 /*
+ * Set the station MAC the LIF reports to the guest.  Two instances bridged
+ * together must not share one, so the launcher derives it from the instance
+ * id; without this every guest on the bridge answers to the same address.
+ */
+void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6]);
+
+/*
  * Attach the emulated LIF to a host TAP interface, giving the guest a real
  * Ethernet segment.  Without this Tx is a sink and nothing is ever received.
  * @ifname may be NULL or empty to let the kernel pick a name; the name that

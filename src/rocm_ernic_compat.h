@@ -307,4 +307,35 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes);
 
+/**
+ * Mesh access for the ionic data path.
+ *
+ * ionic resolves rkeys against its own guest-physical MR table rather than
+ * through rdma_rm, so it cannot use the backend's RDMA messages.  It carries
+ * its own protocol as an opaque mesh payload instead; these are thin
+ * wrappers over the tcp_backend_* entry points so ionic_datapath.c does not
+ * have to pull in the QEMU-derived headers.
+ *
+ * ionic_mesh_local_node() and ionic_mesh_node_from_gid() return UINT32_MAX
+ * when the instance has no mesh backend (loopback or none), which the caller
+ * reads as "every peer is local".
+ */
+typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
+                                   const void *buf, size_t len);
+
+/*
+ * Largest single message ionic_mesh_send() accepts, header included.  Mirrors
+ * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp.c, which static-asserts the two
+ * agree.
+ */
+#define IONIC_MESH_MAX_MSG (16u << 20)
+
+uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
+uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes);
+int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
+                    size_t len);
+void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+                            void *opaque);
+
 #endif /* ROCM_ERNIC_COMPAT_H */

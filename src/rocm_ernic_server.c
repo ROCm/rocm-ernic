@@ -423,6 +423,9 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         return -1;
     }
 
+    if (dev->mac_addr_set)
+        ionic_eth_emu_set_mac(dev->ionic_emu, dev->mac_addr);
+
     dev->ionic_rdma = ionic_rdma_devcmd_create(dev->vfu_ctx);
     if (!dev->ionic_rdma) {
         ionic_eth_emu_destroy(dev->ionic_emu);
@@ -1422,9 +1425,13 @@ int main(int argc, char *argv[])
                                                    dev->ionic_dp);
                     ionic_adminq_poll(aqctx, vfu_ctx);
                 }
-                if (dev->ionic_dp)
+                if (dev->ionic_dp) {
                     ionic_datapath_set_pvrdma(dev->ionic_dp,
                                               dev->pvrdma_handle);
+                    /* Apply anything peer instances sent us; like the Rx poll
+                     * above, this has to run on the DMA-capable thread. */
+                    ionic_datapath_poll(dev->ionic_dp);
+                }
             }
 
             if (ret < 0) {
