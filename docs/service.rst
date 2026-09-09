@@ -216,8 +216,8 @@ Driver settings
      - Default
      - Description
    * - ``ERNIC_DRIVER_SOURCE``
-     - ``/usr/share/rocm-ernic/driver``
-     - Installed driver source tree
+     - ``/usr/share/rocm-ernic/driver-legacy``
+     - Installed legacy driver source tree
    * - ``ERNIC_DRIVER_TARBALL``
      - ``/tmp/rocm-ernic-driver.tar.gz``
      - Path to the built tarball

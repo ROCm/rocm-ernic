@@ -74,7 +74,7 @@
  *   recv body: [16:31] reserved
  *   [32...] payload: struct ionic_sge { be64 va; be32 len; be32 lkey; }
  */
-#define WQE_PLD_OFF 32
+#define WQE_PLD_OFF      32
 #define WQE_SEND_LEN_OFF 28
 
 /* struct ionic_v1_common_bdy.rdma overlays the send body: two be32 halves of
@@ -90,15 +90,15 @@
 #define WQE_ATOMIC_SGE_OFF      48
 
 /* struct ionic_v1_cqe (32 bytes) */
-#define CQE_SIZE 32
-#define CQE_COLOR_BIT 0x01u
-#define CQE_ERROR_BIT 0x02u
+#define CQE_SIZE          32
+#define CQE_COLOR_BIT     0x01u
+#define CQE_ERROR_BIT     0x02u
 #define CQE_TYPE_RECV     (1u << 5)
 #define CQE_TYPE_SEND_MSN (2u << 5)
 #define CQE_TYPE_SEND_NPG (3u << 5)
 
 /* enum ionic_v1_cqe_src_qpn_bits */
-#define CQE_RECV_OP_SHIFT 24
+#define CQE_RECV_OP_SHIFT    24
 #define CQE_RECV_OP_SEND     0
 #define CQE_RECV_OP_SEND_INV 1
 #define CQE_RECV_OP_SEND_IMM 2
@@ -121,8 +121,8 @@
 
 /* A guest buffer: either directly addressed or described by a page table. */
 struct dp_buf {
-    uint64_t base;    /* direct GPA when npages <= 1                    */
-    uint64_t *pages;  /* page-table contents when npages > 1            */
+    uint64_t base;   /* direct GPA when npages <= 1                    */
+    uint64_t *pages; /* page-table contents when npages > 1            */
     uint32_t npages;
     uint8_t page_size_log2;
     uint32_t first_off; /* byte offset of the region within page 0      */
@@ -386,8 +386,8 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
     c->valid = true;
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
-            "ionic_datapath: CQ %u depth=%u stride=2^%u eq=%u pages=%u",
-            cq_id, c->depth, c->stride_log2, eq_id, c->buf.npages);
+            "ionic_datapath: CQ %u depth=%u stride=2^%u eq=%u pages=%u", cq_id,
+            c->depth, c->stride_log2, eq_id, c->buf.npages);
 }
 
 void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
@@ -537,8 +537,8 @@ static uint64_t sge_gpa(struct ionic_datapath *dp, uint32_t lkey, uint64_t va,
  * by page.  Returns the number of bytes copied.
  */
 static uint32_t dp_copy_sge(struct ionic_datapath *dp, uint32_t dst_lkey,
-                            uint64_t dst_va, uint32_t src_lkey,
-                            uint64_t src_va, uint32_t len)
+                            uint64_t dst_va, uint32_t src_lkey, uint64_t src_va,
+                            uint32_t len)
 {
     uint8_t bounce[4096];
     uint32_t done = 0;
@@ -595,8 +595,8 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
 
     uint32_t stride = 1u << c->stride_log2;
     uint64_t run;
-    uint64_t gpa = buf_gpa(&c->buf, (uint64_t)(c->prod % c->depth) * stride,
-                           &run);
+    uint64_t gpa =
+        buf_gpa(&c->buf, (uint64_t)(c->prod % c->depth) * stride, &run);
     if (!run || dp_dma_write(dp->vfu_ctx, gpa, cqe, CQE_SIZE) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQE write failed for cq_id=%u", cq_id);
@@ -627,8 +627,8 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
     /* recv.wqe_id is a native u64 the driver indexes rq_meta with. */
     memcpy(body + 0, &rq_wqe_id, 8);
 
-    uint32_t qpn_op =
-        htobe32(((uint32_t)recv_op << CQE_RECV_OP_SHIFT) | (src_qpn & 0xffffffu));
+    uint32_t qpn_op = htobe32(((uint32_t)recv_op << CQE_RECV_OP_SHIFT) |
+                              (src_qpn & 0xffffffu));
     memcpy(body + 8, &qpn_op, 4);
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
 
@@ -705,10 +705,10 @@ static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
  * Deliver a SEND payload into the destination QP's next posted receive.
  * Returns the number of bytes delivered, or -1 if no receive was available.
  */
-static int64_t deliver_recv(struct ionic_datapath *dp,
-                            struct ionic_qp_ring *dq, uint32_t dst_qp_id,
-                            uint32_t src_qp_id, const struct dp_sge_list *src,
-                            uint8_t recv_op, uint32_t imm_be)
+static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
+                            uint32_t dst_qp_id, uint32_t src_qp_id,
+                            const struct dp_sge_list *src, uint8_t recv_op,
+                            uint32_t imm_be)
 {
     if (dq->rq_cons == dq->rq_prod)
         return -1;
@@ -845,8 +845,8 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
     if (dp_dma_read(dp->vfu_ctx, rgpa, &old, 8) < 0)
         return false;
 
-    uint64_t new = compare_swap ? (old == compare ? swap_add : old)
-                                : old + swap_add;
+    uint64_t new =
+        compare_swap ? (old == compare ? swap_add : old) : old + swap_add;
 
     if (dp_dma_write(dp->vfu_ctx, rgpa, &new, 8) < 0)
         return false;
@@ -862,7 +862,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     uint8_t wqe[256];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
-    if (!run || run < read_sz || dp_dma_read(dp->vfu_ctx, gpa, wqe, read_sz) < 0)
+    if (!run || run < read_sz ||
+        dp_dma_read(dp->vfu_ctx, gpa, wqe, read_sz) < 0)
         return;
 
     uint64_t wqe_id;
@@ -899,15 +900,14 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     case IONIC_V1_OP_SEND:
     case IONIC_V1_OP_SEND_INV:
     case IONIC_V1_OP_SEND_IMM: {
-        uint8_t recv_op = op == IONIC_V1_OP_SEND_IMM ? CQE_RECV_OP_SEND_IMM
-                          : op == IONIC_V1_OP_SEND_INV
-                              ? CQE_RECV_OP_SEND_INV
-                              : CQE_RECV_OP_SEND;
+        uint8_t recv_op = op == IONIC_V1_OP_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
+                          : op == IONIC_V1_OP_SEND_INV ? CQE_RECV_OP_SEND_INV
+                                                       : CQE_RECV_OP_SEND;
 
         uint32_t dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
-        struct ionic_qp_ring *dq =
-            dst_id < dp->qp_count && dp->qp[dst_id].valid ? &dp->qp[dst_id]
-                                                          : NULL;
+        struct ionic_qp_ring *dq = dst_id < dp->qp_count && dp->qp[dst_id].valid
+                                       ? &dp->qp[dst_id]
+                                       : NULL;
         if (!dq) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u SEND to unknown peer %u", qp_id,
@@ -931,14 +931,13 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
         memcpy(&length, wqe + WQE_SEND_LEN_OFF, 4);
 
-        uint64_t remote_va =
-            ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+        uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
         rkey = be32toh(rkey);
         length = be32toh(length);
 
         bool to_remote = op != IONIC_V1_OP_RDMA_READ;
-        uint32_t moved = rdma_xfer(dp, &src, rkey, remote_va, length,
-                                   to_remote);
+        uint32_t moved =
+            rdma_xfer(dp, &src, rkey, remote_va, length, to_remote);
         if (moved != length) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#lx moved "
@@ -958,8 +957,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                                                               : NULL;
             struct dp_sge_list none = {.count = 0, .total = 0};
             if (dq)
-                deliver_recv(dp, dq, dst_id, qp_id, &none,
-                             CQE_RECV_OP_RDMA_IMM, imm_be);
+                deliver_recv(dp, dq, dst_id, qp_id, &none, CQE_RECV_OP_RDMA_IMM,
+                             imm_be);
         }
         break;
     }
@@ -1030,8 +1029,9 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
 
     case DP_QTYPE_RQ:
         if (qid < dp->qp_count && dp->qp[qid].valid)
-            dp->qp[qid].rq_prod += (uint32_t)(uint16_t)(
-                p_index - (uint16_t)(dp->qp[qid].rq_prod & 0xffffu));
+            dp->qp[qid].rq_prod +=
+                (uint32_t)(uint16_t)(p_index -
+                                     (uint16_t)(dp->qp[qid].rq_prod & 0xffffu));
         return;
 
     case DP_QTYPE_SQ:

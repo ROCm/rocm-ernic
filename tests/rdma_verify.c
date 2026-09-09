@@ -22,7 +22,7 @@
 #include <arpa/inet.h>
 #include <infiniband/verbs.h>
 
-#define BUF_SIZE 8192
+#define BUF_SIZE  8192
 #define GID_INDEX 0
 
 static int failures;
@@ -280,8 +280,8 @@ int main(int argc, char **argv)
 
     *remote_word = 100;
     *result = 0;
-    post_atomic(&a, IBV_WR_ATOMIC_FETCH_AND_ADD, 6144,
-                (uintptr_t)remote_word, b.mr->rkey, 23, 0);
+    post_atomic(&a, IBV_WR_ATOMIC_FETCH_AND_ADD, 6144, (uintptr_t)remote_word,
+                b.mr->rkey, 23, 0);
     wait_cq(&a, "fetch-add");
     if (*result == 100 && *remote_word == 123) {
         printf("ok   %-16s 100 + 23 -> 123, returned 100\n", "ATOMIC FA");

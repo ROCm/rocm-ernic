@@ -180,15 +180,27 @@ jobs:
           "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"
 
         echo ""
-        echo "=== Driver source files ==="
-        ls "${PREFIX}/share/rocm-ernic/driver/" \
+        echo "=== ionic driver files ==="
+        ls "${PREFIX}/share/rocm-ernic/patches/" | head -20
+        if ls "${PREFIX}/share/rocm-ernic/patches/"*.patch \
+          > /dev/null 2>&1; then
+          echo "OK: ionic driver patches installed"
+        else
+          echo "MISSING: ionic driver patches"
+          exit 1
+        fi
+        check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
+
+        echo ""
+        echo "=== Legacy driver source files ==="
+        ls "${PREFIX}/share/rocm-ernic/driver-legacy/" \
           | head -20
         if [ -f \
-          "${PREFIX}/share/rocm-ernic/driver/rocm_ernic_main.c" \
+          "${PREFIX}/share/rocm-ernic/driver-legacy/rocm_ernic_main.c" \
         ]; then
-          echo "OK: Driver sources installed"
+          echo "OK: Legacy driver sources installed"
         else
-          echo "MISSING: Driver sources"
+          echo "MISSING: Legacy driver sources"
           exit 1
         fi
 
