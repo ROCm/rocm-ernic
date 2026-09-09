@@ -15,9 +15,14 @@ temporary VM, a cloud instance, a Packer build). It installs:
   `ernic_gpu_passthrough` is true
 
 and applies the static configuration that has to be present before first boot:
-`KillUserProcesses=no`, `modules-load.d` entries for `rocm_ernic_eth` /
-`rocm_ernic_rdma` / `rocm-xio`, and a `pci.ids` entry so `lspci` names the
-emulated NIC.
+`KillUserProcesses=no`, `modules-load.d` entries for the guest RDMA modules
+and `rocm-xio`, and a `pci.ids` entry so `lspci` names the emulated NIC.
+
+Both of those follow `ernic_device_mode`, which defaults to `ionic`: the image
+loads `ionic` / `ionic_rdma` and names `1022:8001`. With
+`-e ernic_device_mode=legacy` it loads `rocm_ernic_eth` / `rocm_ernic_rdma`
+and names `1022:8000` instead. Prepare the image for the mode the guests will
+actually run.
 
 It does **not** install the driver or the rdma-core provider — those track the
 source tree and belong in `ernic_guest_setup`, which runs per overlay.
@@ -46,7 +51,9 @@ ernic_image_logind_keep_processes: true
 ernic_image_modules_load: true
 ernic_image_pciids: true
 ernic_image_pciids_vendor: "1022"
-ernic_image_pciids_entry: "8000  ROCm Emulated RDMA NIC"
+# Both default to the ionic values; see defaults/main.yml.
+ernic_image_boot_modules: [ionic, ionic_rdma]
+ernic_image_pciids_entry: "8001  ROCm Emulated ionic RDMA NIC"
 ernic_image_clean_apt: true
 ernic_image_apt_retries: 3
 ernic_image_apt_delay: 10

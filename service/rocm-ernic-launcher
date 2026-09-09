@@ -31,6 +31,8 @@ ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6320}"
 ERNIC_MANAGER_IP="${ERNIC_MANAGER_IP:-127.0.0.1}"
 ERNIC_VERBOSE="${ERNIC_VERBOSE:-false}"
 ERNIC_LOG_LEVEL="${ERNIC_LOG_LEVEL:-warn}"
+ERNIC_DEVICE_MODE="${ERNIC_DEVICE_MODE:-ionic}"
+ERNIC_TAP_PREFIX="${ERNIC_TAP_PREFIX:-ernic-tap}"
 
 MANIFEST="${ERNIC_RUN_DIR}/instances.json"
 
@@ -181,7 +183,21 @@ start_instance() {
 
     rm -f "${sock}"
 
+    local -a mode_args=()
+    if [ "${ERNIC_DEVICE_MODE}" = "legacy" ]; then
+        mode_args+=(--legacy)
+    else
+        local tap="${ERNIC_TAP_PREFIX}${id}"
+        if [ -d "/sys/class/net/${tap}" ]; then
+            mode_args+=(--tap "${tap}")
+        else
+            log_info "TAP ${tap} not present;" \
+                "instance ${id} starts without Ethernet"
+        fi
+    fi
+
     ${ERNIC_BIN} \
+        "${mode_args[@]}" \
         --socket "${sock}" \
         --stats-file "${stats}" \
         --mac "${mac}" \

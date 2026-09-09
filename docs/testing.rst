@@ -51,13 +51,15 @@ test_ionic_ci.sh
 Shell test for the ionic personality, registered with CTest
 as ``ionic-ci``. It needs no VM and no RDMA device:
 
-- Server starts in ``--ionic`` mode on the ``loopback`` and
-  ``none`` backends
+- Server starts in the default ionic mode on the
+  ``loopback`` and ``none`` backends, with no flag
 - PCI identity is ``0x1022:0x8001``
 - BAR geometry is 64 KB BAR0 (32 KB register window) and
   4 MB BAR2, with 32 MSI-X vectors
 - Clean shutdown on ``SIGTERM``
-- ``--tap`` is rejected without ``--ionic``
+- ``--legacy`` announces ``0x1022:0x8000`` and warns that
+  the path is deprecated
+- ``--tap`` is rejected together with ``--legacy``
 - ``--tap`` attaches to an existing host TAP
 
 The last check is skipped unless ``ERNIC_TEST_TAP`` names a
@@ -123,11 +125,26 @@ standard RDMA benchmarks over the emulated NICs.
 
 Prerequisites:
 
-1. Start the rocm-ernic service and launch two VMs
+1. In the default ionic mode, one host TAP per instance,
+   all enslaved to a shared bridge, so the guests can
+   reach each other over IP (see :doc:`ionic`):
+
+   .. code-block:: bash
+
+      sudo ip link add ernicbr0 type bridge
+      sudo ip link set ernicbr0 up
+      for n in 1 2; do
+        sudo ip tuntap add dev "ernic-tap${n}" mode tap \
+          user "$USER"
+        sudo ip link set "ernic-tap${n}" master ernicbr0 up
+      done
+
+   The ``ernic_host_setup`` Ansible role does this for you.
+2. Start the rocm-ernic service and launch two VMs
    (see :doc:`service`).
-2. Install the driver and custom rdma-core v62 in
-   both VMs (see ``ernicctl driver-push``).
-3. Configure IP addresses on the rocm-ernic NICs
+3. Install the guest drivers and rdma-core v62 in both VMs
+   (see ``ernicctl driver-push``).
+4. Configure IP addresses on the rocm-ernic NICs
    (``enp1s0``) in both VMs.
 
 ibv_rc_pingpong
@@ -235,9 +252,11 @@ This runs four plays in order:
 2. **vm-create** -- creates a golden backing image via
    ``gen-vm`` (skipped if it already exists), launches
    VMs with ``ernicctl vm-launch``, and waits for SSH.
-3. **guest-setup** -- builds the custom rdma-core
-   provider, builds and loads the kernel driver, and
-   assigns IPs to the emulated NICs.
+3. **guest-setup** -- installs rdma-core v62, builds and
+   loads the guest driver (the ionic DKMS package by
+   default, the deprecated ``rocm_ernic`` modules under
+   ``-e ernic_device_mode=legacy``), and assigns IPs to
+   the emulated NICs.
 4. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.

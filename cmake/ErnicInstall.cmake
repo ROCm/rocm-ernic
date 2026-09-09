@@ -81,9 +81,9 @@ if(ERNIC_INSTALL_SERVICE)
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
-    # Legacy custom driver source (deprecated; kept for reference until the
-    # ionic migration is fully validated and driver/ is deleted).
-    # New installations should use the ionic driver path (--ionic flag).
+    # Legacy custom driver source.  DEPRECATED: do not use for new
+    # deployments.  Kept installable so existing --legacy setups keep
+    # working; the ionic path below is the default.
     if(EXISTS ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_main.c)
         install(DIRECTORY
             ${CMAKE_SOURCE_DIR}/driver/
@@ -105,7 +105,7 @@ if(ERNIC_INSTALL_SERVICE)
         )
     endif()
 
-    # ionic driver patch and DKMS script (new path)
+    # ionic driver patches and helper scripts (the default path)
     install(DIRECTORY
         ${CMAKE_SOURCE_DIR}/patches/
         DESTINATION ${ERNIC_SHARE_DIR}/patches
@@ -113,6 +113,7 @@ if(ERNIC_INSTALL_SERVICE)
     )
     install(PROGRAMS
         ${CMAKE_SOURCE_DIR}/scripts/setup-ionic-dkms.sh
+        ${CMAKE_SOURCE_DIR}/scripts/fetch-ionic-sources.sh
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 endif()

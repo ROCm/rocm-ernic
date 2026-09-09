@@ -23,6 +23,7 @@
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import textwrap
@@ -71,6 +72,16 @@ def load_history(path):
     return out
 
 
+def record_mode(rec):
+    """Device mode of a history record.
+
+    Records written before ionic became the default carry no
+    mode key, and every one of them measured the legacy
+    rocm_ernic stack.
+    """
+    return rec.get("mode") or "legacy"
+
+
 def _find_median(rows, verb, size, metric):
     for row in rows:
         if (row.get("verb") == verb
@@ -88,6 +99,10 @@ def extract(summary):
         "sha": (summary["meta"].get("sha") or "")[:8],
         "run_id": summary["meta"].get("run_id"),
         "node": summary["meta"].get("node"),
+        # The device mode the run measured.  One series covers
+        # both, so a reader needs to know where the guest stack
+        # changed underneath the numbers.
+        "mode": os.environ.get("CI_ERNIC_MODE", "ionic"),
         "series": {},
         "badges": {},
     }
@@ -296,8 +311,30 @@ def build_page(history, docs_dir):
         f"Medians from the nightly full-tier run on "
         f"``{latest.get('node', 'the lab node')}``, oldest run at the "
         f"left. Latest: ``{latest['sha']}`` at "
-        f"{latest.get('generated', 'an unknown time')}.", 72)
+        f"{latest.get('generated', 'an unknown time')}, in "
+        f"``{record_mode(latest)}`` device mode.", 72)
     lines.append("")
+
+    # One series spans the ionic switch-over, so say where the
+    # guest stack changed rather than letting the step in the
+    # curves read as a regression.
+    modes = [record_mode(h) for h in history]
+    if len(set(modes)) > 1:
+        current = modes[-1]
+        first = len(modes)
+        while first > 0 and modes[first - 1] == current:
+            first -= 1
+        switch = history[first]
+        lines += [".. note::", ""]
+        lines += ["   " + ln for ln in textwrap.wrap(
+            f"Device mode changed to ``{current}`` at run "
+            f"``{switch['sha']}`` "
+            f"({switch.get('generated', 'an unknown time')}). "
+            f"Runs before it measured the ``{modes[first - 1]}`` "
+            f"stack -- a different guest driver and userspace "
+            f"provider -- so points either side of that run are "
+            f"not directly comparable.", 69)]
+        lines.append("")
     lines += textwrap.wrap(
         "Each panel carries one message size on its own scale. "
         "Bandwidth at 4 KiB and at 1 MiB differ by more than an "
@@ -421,6 +458,9 @@ def main():
     ap.add_argument("--docs-dir", default="docs")
     ap.add_argument("--max-runs", type=int, default=60,
                     help="how many runs of history to keep")
+    ap.add_argument("--allow-mode-change", action="store_true",
+                    help="permit appending a run measured in a "
+                         "different device mode than the previous one")
     args = ap.parse_args()
 
     docs = pathlib.Path(args.docs_dir)
@@ -438,6 +478,18 @@ def main():
     if history and history[-1].get("run_id") == rec["run_id"]:
         print(f"run {rec['run_id']} already recorded; nothing to do")
         return 0
+
+    # A single series across a device-mode switch compares
+    # different guest stacks, so the switch has to be a
+    # deliberate act rather than a stray environment variable.
+    if history:
+        prev_mode = record_mode(history[-1])
+        if prev_mode != rec["mode"] and not args.allow_mode_change:
+            print(f"refusing to append a {rec['mode']} run to a "
+                  f"{prev_mode} series; re-run with "
+                  f"--allow-mode-change to record the switch",
+                  file=sys.stderr)
+            return 1
 
     history.append(rec)
     history = history[-args.max_runs:]

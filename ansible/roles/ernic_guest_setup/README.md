@@ -1,9 +1,28 @@
 # ernic_guest_setup
 
 Turns a prepared Ubuntu guest into a working rocm-ernic RDMA node: the DKMS
-kernel driver, a custom rdma-core carrying the `rocm_ernic` provider, udev
-naming rules, an address on the emulated NIC, and optionally rocm-xio for
-GPU-initiated transfers.
+kernel modules, rdma-core, udev naming rules, an address on the emulated NIC,
+and optionally rocm-xio for GPU-initiated transfers.
+
+## Device mode
+
+`ernic_device_mode` decides what gets built. It defaults to `ionic` and must
+match the mode the host's `rocm-ernic` server runs in.
+
+| Component | `ionic` (default) | `legacy` (deprecated) |
+|---|---|---|
+| PCI ID | `1022:8001` | `1022:8000` |
+| Kernel modules | `ionic`, `ionic_rdma` from patched upstream sources, DKMS package `ionic-ernic` | `rocm_ernic_eth`, `rocm_ernic_rdma` from `driver/` |
+| rdma-core | stock, upstream `providers/ionic` | `rocm_ernic` provider injected |
+| rocm-xio | `GDA_IONIC=ON`, `RDMA_CORE_BUILD=OFF` | `GDA_ERNIC=ON` |
+
+The legacy path is deprecated and will be removed in a future release. udev
+names the devices `rocm-ernic0` and `rocm-rdma-ernic0` in both modes, so
+nothing downstream of this role has to care which one ran.
+
+ionic mode needs a guest kernel of 6.18 or newer
+(`ernic_ionic_min_kernel`) — that is where `drivers/infiniband/hw/ionic`
+landed — and rdma-core 61 or newer, which is where `providers/ionic` did.
 
 ## Overview
 
@@ -12,20 +31,23 @@ Phases, each behind a flag:
 | Phase | Tasks | Flag |
 |---|---|---|
 | Guest agent | `qemu-guest-agent` for QMP `guest-get-load` | `ernic_guest_agent` |
-| Stage sources | push `driver/`, `rdma-core/` from the controller | always |
-| rdma-core | download, inject the provider, build, install, stamp | `ernic_build_rdma_core` |
-| Driver | DKMS build, udev rules, modprobe, `ibv_devices` checks | `ernic_install_driver` |
+| Stage sources | push `patches/` and the ionic helper scripts (legacy: `driver/`, `rdma-core/`) from the controller | always |
+| rdma-core | download, patch or inject the provider, build, install, stamp | `ernic_build_rdma_core` |
+| Driver | fetch and patch the ionic sources, DKMS build, udev rules, modprobe, `ibv_devices` checks | `ernic_install_driver` |
 | NIC | hostname, `/etc/hosts`, address on `ernic_nic_name` | `ernic_configure_nic` |
 | rocm-xio | build, `rocm-xio.ko`, `xio-tester` | `ernic_gpu_passthrough` |
 
-Sources come from the controller via
-[`ernic_source`](../ernic_source/README.md), which this role includes: guests in
-a rocm-ernic mesh usually have no route to GitHub.
+What the controller supplies comes from
+[`ernic_source`](../ernic_source/README.md), which this role includes. In ionic
+mode that is only the patch series and two helper scripts: the guest fetches
+the upstream kernel sources and rocm-xio itself. A tarball staged by
+`ernic_host_setup` at `ernic_rocm_xio_tarball` is still used when it exists, so
+air-gapped guests keep working.
 
 The rdma-core build is the expensive part (about seven minutes per guest), so
-it is skipped when `provider.stamp` shows the installed provider was built from
-the same source hash and rdma-core version. The stamp is written last, so an
-interrupted build is not mistaken for a complete one.
+it is skipped when `provider.stamp` shows it was built from the same mode,
+version and source hashes. The stamp is written last, so an interrupted build
+is not mistaken for a complete one.
 
 Run `ernic_image_prep` first — this role assumes RDMA userspace, ROCm and the
 build toolchain are already present.
@@ -40,6 +62,15 @@ build toolchain are already present.
 ## Role Variables
 
 ```yaml
+# Device mode: ionic (default) or legacy (deprecated)
+ernic_device_mode: ionic
+
+# ionic kernel modules. An empty ref means "use the
+# IONIC_KERNEL_REF pinned in cmake/ErnicKernelModule.cmake".
+ernic_ionic_kernel_ref: ""
+ernic_ionic_source_dir: /var/tmp/ionic-src
+ernic_ionic_min_kernel: "6.18"
+
 # Phase gates
 ernic_guest_agent: true
 ernic_build_rdma_core: true
@@ -62,7 +93,9 @@ ernic_guest_vm_index: "{{ vm_index | default(1) }}"
 ernic_guest_vm_ip: "{{ vm_ip | default('') }}"
 ernic_vm_name_base: rocm-ernic-vm
 
-# rocm-xio: tarball staged on the guest by ernic_host_setup
+# rocm-xio. The guest clones this unless a tarball staged by
+# ernic_host_setup is found on the controller.
+ernic_rocm_xio_guest_repo: "https://github.com/ROCm/rocm-xio.git"
 ernic_rocm_xio_tarball: /tmp/rocm-xio.tar.gz
 ```
 

@@ -77,6 +77,7 @@ _ci_ansible_run() {
         -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
+        -e "ernic_device_mode=${CI_ERNIC_MODE}" \
         "$@" </dev/null
 }
 

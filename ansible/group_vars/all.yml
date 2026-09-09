@@ -17,6 +17,17 @@
 # ── Project paths ────────────────────────────────
 ernic_project_root: "{{ playbook_dir }}/../.."
 
+# ── Device mode ──────────────────────────────────
+# ionic (default): the server presents 1022:8001 and the guest
+# drives it with patched upstream ionic.ko / ionic_rdma.ko.  Guest
+# Ethernet leaves through a host TAP on ernic_tap_bridge.
+#
+# The deprecated out-of-tree rocm_ernic driver is still available
+# for one more release:
+#
+#   ansible-playbook site.yml -e ernic_device_mode=legacy
+ernic_device_mode: ionic
+
 # ── Service / env-file settings ──────────────────
 ernic_run_dir: /run/rocm-ernic
 ernic_instances: 2

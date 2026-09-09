@@ -3,6 +3,12 @@
 # SPDX-License-Identifier: MIT
 
 ---
+# ── Device mode ──────────────────────────────────
+# ionic  : upstream ionic.ko + ionic_rdma.ko built from patched
+#          kernel sources (VID:DID 1022:8001).  The default.
+# legacy : DEPRECATED out-of-tree rocm_ernic modules (1022:8000).
+ernic_device_mode: ionic
+
 # ── Phase gates ──────────────────────────────────
 ernic_guest_agent: true
 ernic_build_rdma_core: true
@@ -14,6 +20,21 @@ ernic_set_hostname: true
 ernic_guest_driver_dir: /tmp/driver
 ernic_guest_provider_dir: /tmp/rdma-core-provider
 ernic_guest_stamp_dir: /usr/local/share/rocm-ernic
+
+# ── ionic kernel modules ─────────────────────────
+# The patches and the two helper scripts are staged here; the
+# guest then fetches the upstream ionic sources itself.
+ernic_guest_ionic_dir: /tmp/ionic
+# Where the sparse kernel checkout lands.  Outside /tmp so a
+# reboot does not force a re-clone.
+ernic_ionic_source_dir: /var/tmp/ionic-src
+# Empty means "use the IONIC_KERNEL_REF pinned in
+# cmake/ErnicKernelModule.cmake", read from the controller's
+# checkout so the guest and the host build the same driver.
+ernic_ionic_kernel_ref: ""
+# drivers/infiniband/hw/ionic was merged for 6.18; older guest
+# kernels cannot build the RDMA half.
+ernic_ionic_min_kernel: "6.18"
 
 # ── DKMS ─────────────────────────────────────────
 # A fresh id each run, so setup-rocm-ernic-dkms.sh cannot
@@ -32,11 +53,20 @@ ernic_rdma_core_build_dir: /tmp/rdma-core-build
 ernic_rdma_core_prefix: /usr
 
 # ── Kernel modules ───────────────────────────────
-ernic_guest_modules:
+ernic_guest_modules_ionic:
+  - ib_core
+  - ib_uverbs
+  - ionic
+  - ionic_rdma
+ernic_guest_modules_legacy:
   - ib_core
   - ib_uverbs
   - rocm_ernic_eth
   - rocm_ernic_rdma
+ernic_guest_modules: >-
+  {{ ernic_guest_modules_legacy
+     if ernic_device_mode == 'legacy'
+     else ernic_guest_modules_ionic }}
 
 # ── Guest NIC ────────────────────────────────────
 ernic_nic_name: rocm-ernic0
@@ -51,9 +81,44 @@ ernic_vm_name_base: rocm-ernic-vm
 # ── GPU passthrough / rocm-xio ───────────────────
 ernic_gpu_passthrough: true
 ernic_pci_mmio_bridge: true
-# Tarball staged on the guest by ernic_host_setup.
+# The guest clones rocm-xio itself.  A tarball staged by
+# ernic_host_setup is used instead when it is present, so
+# air-gapped guests still work.
+#
+# Separate from ernic_rocm_xio_repo, which the host role uses for
+# its own clone: sites set that to the SSH remote, and a guest has
+# no agent to authenticate with.
+ernic_rocm_xio_guest_repo: "https://github.com/ROCm/rocm-xio.git"
+ernic_rocm_xio_branch: "main"
+ernic_rocm_xio_commit: ""
 ernic_rocm_xio_tarball: /tmp/rocm-xio.tar.gz
 ernic_rocm_xio_dir: /opt/rocm-xio
+# ionic GDA direct-verbs patches, applied to rdma-core so the
+# installed libionic exports the symbols rocm-xio links against.
+ernic_ionic_gda_patch_dir: >-
+  {{ ernic_rocm_xio_dir }}/rdma-core/ionic-gda
+
+# rocm-xio cmake command line, assembled per device mode.
+ernic_rocm_xio_cmake_base:
+  - cmake
+  - -S
+  - "{{ ernic_rocm_xio_dir }}"
+  - -B
+  - "{{ ernic_rocm_xio_dir }}/build"
+  - -GNinja
+  - -DCMAKE_BUILD_TYPE=Release
+# RDMA_CORE_BUILD=OFF: rdma_core.yml already installed a patched
+# rdma-core into /usr, and letting rocm-xio build its own into
+# _deps/rdma-core/install would leave the guest with two.
+# IONIC_BUILD_KMOD stays off so rocm-xio's own DKMS script does
+# not fight the ionic-ernic package from driver_ionic.yml.
+ernic_rocm_xio_cmake_ionic:
+  - -DGDA_IONIC=ON
+  - -DGDA_BNXT=OFF
+  - -DRDMA_CORE_BUILD=OFF
+ernic_rocm_xio_cmake_legacy:
+  - -DGDA_ERNIC=ON
+  - "-DERNIC_PROJECT_DIR={{ ernic_rocm_xio_stub_dir }}"
 # rocm-xio wants an ERNIC_PROJECT_DIR laid out like the
 # rocm-ernic repo; only the provider directory is used.
 ernic_rocm_xio_stub_dir: /opt/rocm-ernic-stub

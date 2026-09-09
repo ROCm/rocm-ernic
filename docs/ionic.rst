@@ -11,44 +11,57 @@ different PCIe devices, selected at server start-up:
    * - Mode
      - VID:DID
      - Guest driver
-   * - Legacy (default)
+   * - ionic (default)
+     - ``1022:8001``
+     - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
+       with the patches in ``patches/`` applied, and the
+       upstream ``providers/ionic`` in rdma-core
+   * - ``--legacy`` (deprecated)
      - ``1022:8000``
      - ``rocm_ernic_eth.ko`` + ``rocm_ernic_rdma.ko``
        from ``driver/`` (see :doc:`driver`)
-   * - ``--ionic``
-     - ``1022:8001``
-     - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
-       with the patches in ``patches/`` applied
+
+ionic mode emulates the register and queue protocol of the
+AMD Pensando ionic NIC, so the guest runs a driver that is
+already in mainline Linux. Nothing about the guest is bespoke
+apart from a two-line device-ID patch.
 
 The legacy device is derived from QEMU's PVRDMA model and
-needs an out-of-tree guest driver that only exists in this
-repository. The ionic mode instead emulates the register and
-queue protocol of the AMD Pensando ionic NIC, so the guest
-runs a driver that is already in mainline Linux. Nothing
-about the guest is bespoke apart from a two-line device-ID
-patch.
+needs an out-of-tree guest driver, and a patched rdma-core,
+that only exist in this repository. It is deprecated: kept
+working for existing deployments, not a target for new ones.
 
 Device ID 0x8001 is used rather than the real Pensando
 ``1dd8:1002`` so an emulated device can never be confused
 with physical hardware on the same host.
 
-Starting the Server in ionic Mode
----------------------------------
+Starting the Server
+-------------------
 
 .. code-block:: bash
 
    ./build/rocm-ernic \
-     --ionic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback \
      --tap ernic0 \
      --log-level info
 
-``--ionic`` (short ``-I``) switches the device identity, BAR
-layout, and register model. ``--tap`` (short ``-T``) attaches
-the emulated Ethernet LIF to a host TAP interface and is only
-valid together with ``--ionic``; the server exits with a
-diagnostic otherwise.
+No flag is needed: ionic is the default. ``--ionic`` (short
+``-I``) is still accepted and does nothing, so existing
+scripts keep working. ``--tap`` (short ``-T``) attaches the
+emulated Ethernet LIF to a host TAP interface.
+
+``--legacy`` (alias ``--pvrdma``) selects the deprecated
+PVRDMA device instead, and prints a warning saying so. It
+switches the device identity, BAR layout, and register model
+back, and is incompatible with ``--tap``; the server exits
+with a diagnostic if both are given.
+
+The systemd service and ``ernicctl`` follow the same default
+through ``ERNIC_DEVICE_MODE`` (see :doc:`service`), and the
+Ansible collection through ``ernic_device_mode``, which is
+``ionic`` unless a play is run with
+``-e ernic_device_mode=legacy``.
 
 All the usual RDMA backends (``loopback``, ``tcp``,
 ``verbs``, ``none``) work unchanged in ionic mode: the
@@ -109,6 +122,42 @@ configure the guest end of the segment:
    sudo ip addr add 192.168.77.2/24 dev enp0s4
    sudo ip link set enp0s4 up
    ping 192.168.77.1
+
+Two Guests on One Bridge
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+A single TAP with an address on it is enough for host-to-guest
+traffic, but every two-VM test in ``ansible/playbooks/`` needs
+guest-to-guest IP on ``192.168.200.x``: ``sanity-tests.yml``
+pings it, ``tcp-performance-tests.yml`` runs iperf3 over it,
+and ``performance-tests.yml`` uses it for the out-of-band
+exchange in perftest. In ionic mode that traffic leaves
+through the TAP rather than through the rocm-ernic TCP mesh,
+so each instance needs its own TAP and all of them need to
+share one host bridge:
+
+.. code-block:: bash
+
+   sudo ip link add ernicbr0 type bridge
+   sudo ip link set ernicbr0 up
+   for n in 1 2; do
+     sudo ip tuntap add dev "ernic-tap${n}" mode tap user "$USER"
+     sudo ip link set "ernic-tap${n}" master ernicbr0 up
+   done
+
+The ``ernic_host_setup`` role does this from
+``tasks/tap.yml`` using ``ernic_tap_prefix``,
+``ernic_tap_bridge`` and ``ernic_tap_owner``; the launcher
+then passes ``--tap ${ERNIC_TAP_PREFIX}${id}`` to each
+instance. A missing TAP is a warning rather than an error
+there, so a loopback-only host still starts --- but the guest
+comes up with no Ethernet, which is why ``ci/doctor.sh`` and
+``ci/jobs/vm-up.sh`` check for the interfaces up front.
+
+The bridge carries no IP of its own by default; the guests
+address each other directly across it. Set
+``ernic_tap_bridge_ip`` if the host needs to join the segment
+for debugging.
 
 The transmit path gathers the head fragment plus any
 scatter-gather elements out of guest memory and writes the
@@ -191,6 +240,25 @@ Loading and Verifying
    ip link                  # the LIF appears as a normal netdev
    ibv_devices              # the RDMA device appears here
 
+Userspace: the Upstream Provider
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Unlike the legacy path, ionic mode needs no patched
+rdma-core: ``providers/ionic`` landed upstream in rdma-core
+v61, and the guest role installs v62.0. The
+``ernic_guest_setup`` role therefore skips the provider
+injection and registration steps entirely and only verifies
+that ``libionic*.so`` landed in ``libibverbs/``.
+
+The one exception is GPU work. With
+``ernic_gpu_passthrough`` on, the role applies
+``rdma-core/ionic-gda/*.patch`` from the guest's rocm-xio
+checkout before configuring, so the installed provider
+exposes the direct-verbs symbols the ``GDA_IONIC`` backend
+in rocm-xio links against. rocm-xio is then configured with
+``-DGDA_IONIC=ON -DRDMA_CORE_BUILD=OFF`` so it uses that
+system rdma-core rather than building a second copy.
+
 Bumping the Upstream Baseline
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -209,8 +277,11 @@ Testing
 ``ionic-ci`` and needs no VM. It checks that the server
 starts in ionic mode on each backend, announces
 ``1022:8001``, reports the expected BAR and MSI-X geometry,
-shuts down cleanly on ``SIGTERM``, rejects ``--tap`` outside
-ionic mode, and attaches to a TAP when one is available.
+shuts down cleanly on ``SIGTERM``, rejects ``--tap`` together
+with ``--legacy``, and attaches to a TAP when one is
+available. It also checks that the no-flag default is ionic
+and that ``--legacy`` announces ``1022:8000`` with a
+deprecation warning.
 
 The TAP attach check is skipped unless ``ERNIC_TEST_TAP``
 names an existing interface owned by the current user,

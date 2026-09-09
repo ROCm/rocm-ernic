@@ -40,6 +40,12 @@ else
     export KVM=disable
 fi
 
+# In ionic mode the launcher attaches each instance to its TAP,
+# and a missing TAP is a warning there rather than an error --
+# the instance simply comes up with no Ethernet.  CI wants that
+# to be fatal and to say so once, here.
+require_taps || die "ionic TAP interfaces are not usable by $(id -un)"
+
 group_start "Start rocm-ernic instances"
 "${ERNIC_LAUNCHER}" --stop >/dev/null 2>&1 || true
 run_check vm-up "launcher-start" "${ERNIC_LAUNCHER}"

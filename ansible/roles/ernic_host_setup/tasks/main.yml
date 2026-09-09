@@ -17,6 +17,14 @@
   ansible.builtin.include_tasks: build.yml
   when: ernic_build | bool
 
+# Must run before the service starts: the launcher only attaches an
+# instance to its TAP if the interface already exists.
+- name: Create the host bridge and per-instance TAP interfaces
+  ansible.builtin.include_tasks: tap.yml
+  when:
+    - ernic_device_mode == 'ionic'
+    - ernic_tap_setup | bool
+
 - name: Configure and start the rocm-ernic service
   ansible.builtin.include_tasks: service.yml
   when: ernic_install_service | bool

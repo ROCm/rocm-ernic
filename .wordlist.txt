@@ -1,4 +1,3 @@
-
 ABI
 APIs
 ASAN
@@ -26,8 +25,10 @@ Ctrl
 DCI
 DCMAKE
 DCT
+DGDA
 DKMS
 DMA
+DRDMA
 DSR
 DSRHIGH
 DSRLOW
@@ -48,6 +49,7 @@ ESXi
 Eth
 FAILs
 Filesystem
+GDA
 GHCR
 GHashTable
 GID
@@ -136,6 +138,7 @@ SRQ
 SRQs
 Shaia
 Sphinx
+TAPs
 TCP
 TODO
 TSAN
@@ -247,6 +250,7 @@ env
 eqe
 ernic
 ernicX
+ernicbr
 ernicctl
 eth
 ethdev
@@ -263,6 +267,7 @@ fs
 func
 galaxy
 gcc
+gda
 ghcr
 gid
 gids
@@ -319,6 +324,7 @@ len
 libexec
 libglib
 libibverbs
+libionic
 librdmacm
 librocm
 libvfio

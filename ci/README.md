@@ -110,6 +110,20 @@ sudo install -d -o "$USER" -g "$(id -gn)" -m 0755 /local/"$USER"
 Override with `--root` or `CI_RUNNER_ROOT` if your node
 lays out local storage differently.
 
+`install-runner.sh` also creates the TAP interfaces the
+default ionic device mode needs — `ernic-ci-br0` plus one
+`ernic-ci-tapN` per instance, owned by the runner user.
+That is the one step needing root, and it needs it once:
+jobs themselves never use `sudo`, and an unprivileged
+runner cannot create a TAP for itself. Without them the
+guests come up with no Ethernet and every guest-to-guest
+test fails one at a time without saying why, so
+`ci/doctor.sh` and `ci/jobs/vm-up.sh` check for them up
+front. Pass `--skip-taps` if the node already has them or
+you would rather run the `ip` commands by hand; without
+passwordless `sudo` the step warns and skips itself.
+Legacy mode (`CI_ERNIC_MODE=legacy`) needs none of this.
+
 This deliberately stops short of registering. Mint a
 registration token at
 `https://github.com/ROCm/rocm-ernic/settings/actions/runners/new`
@@ -263,6 +277,14 @@ fire on it either way, `[skip ci]` or not -- so the report
 job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
 needs `actions: write`) right after the push to rebuild Pages.
 
+Each record carries the device mode it was measured in, and
+the script refuses to append a run whose mode differs from
+the previous record unless `--allow-mode-change` is passed
+(the `allow_mode_change` dispatch input). One series that
+silently spans a guest-stack change reads as a regression
+rather than a switch; the switch-over point is annotated on
+the generated page. Legacy runs never publish at all.
+
 The same run writes `docs/perf-history/badge-rdma.json` and
 `badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
 each for the most recent RDMA (`ib_send_bw`, 1 MiB, peak GB/s)
@@ -322,6 +344,9 @@ Useful overrides:
 | `CI_WORK` | `/var/tmp/ernic-ci-work` | workspace root |
 | `CI_BUILD_TYPE` | `Release` | CMake build type |
 | `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
+| `CI_ERNIC_MODE` | `ionic` | `legacy` for the deprecated driver |
+| `CI_TAP_PREFIX` | `ernic-ci-tap` | per-instance TAP name prefix |
+| `CI_TAP_BRIDGE` | `ernic-ci-br0` | bridge the TAPs are enslaved to |
 | `ERNIC_INSTANCES` | `2` | number of VMs |
 | `CI_VM_SSH_BASE_PORT` | `2350` | first guest ssh port |
 | `CI_KEEP_OVERLAYS` | `false` | keep qcow2 after teardown |

@@ -6,11 +6,19 @@
 # rocm-ernic-driver-pack
 #
 # Builds a tarball containing everything a VM needs to
-# compile and load the rocm-ernic kernel driver:
+# compile and load the rocm-ernic guest driver.
+#
+# ionic mode (default) packs the kernel patches plus the
+# fetch and DKMS helper scripts; the guest pulls the
+# upstream ionic sources itself.
+#
+# legacy mode packs the deprecated out-of-tree driver:
 #   - driver source (*.c, *.h, Makefile, dkms.conf)
 #   - ABI / UAPI headers
 #   - DKMS setup script
-#   - vm-driver-install.sh (self-contained installer)
+#
+# Both include vm-driver-install.sh (self-contained
+# installer).
 #
 # The tarball is placed at $ERNIC_DRIVER_TARBALL
 # (default /tmp/rocm-ernic-driver.tar.gz).
@@ -27,7 +35,13 @@ if [ -f "${ENV_FILE}" ]; then
     set +a
 fi
 
-ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-/usr/share/rocm-ernic/driver-legacy}"
+ERNIC_DEVICE_MODE="${ERNIC_DEVICE_MODE:-ionic}"
+ERNIC_SHARE_DIR="${ERNIC_SHARE_DIR:-/usr/share/rocm-ernic}"
+if [ "${ERNIC_DEVICE_MODE}" = "legacy" ]; then
+    ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-${ERNIC_SHARE_DIR}/driver-legacy}"
+else
+    ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-${ERNIC_SHARE_DIR}/patches}"
+fi
 ERNIC_DRIVER_TARBALL="${ERNIC_DRIVER_TARBALL:-/tmp/rocm-ernic-driver.tar.gz}"
 
 STAGING="/tmp/rocm-ernic-driver-staging"
@@ -45,25 +59,45 @@ fi
 rm -rf "${STAGING}"
 mkdir -p "${DEST}"
 
-log_info "Collecting driver sources from" \
+log_info "Collecting ${ERNIC_DEVICE_MODE} driver sources from" \
     "${ERNIC_DRIVER_SOURCE}..."
 
-for ext in c h; do
-    for f in "${ERNIC_DRIVER_SOURCE}"/*."${ext}"; do
-        [ -f "${f}" ] && cp "${f}" "${DEST}/"
+if [ "${ERNIC_DEVICE_MODE}" != "legacy" ]; then
+    mkdir -p "${DEST}/patches"
+    cp "${ERNIC_DRIVER_SOURCE}"/*.patch "${DEST}/patches/"
+    for helper in fetch-ionic-sources.sh setup-ionic-dkms.sh; do
+        if [ -f "${ERNIC_SHARE_DIR}/${helper}" ]; then
+            cp "${ERNIC_SHARE_DIR}/${helper}" "${DEST}/"
+            chmod +x "${DEST}/${helper}"
+        else
+            log_error "Missing ${ERNIC_SHARE_DIR}/${helper}"
+            exit 1
+        fi
     done
-done
+    # Record the pinned ref so the guest fetches the same baseline the
+    # host was built against.
+    echo "${ERNIC_IONIC_KERNEL_REF:-v7.2.4}" \
+        > "${DEST}/ionic-kernel-ref"
+fi
 
-for name in Makefile dkms.conf Kconfig; do
-    if [ -f "${ERNIC_DRIVER_SOURCE}/${name}" ]; then
-        cp "${ERNIC_DRIVER_SOURCE}/${name}" "${DEST}/"
+if [ "${ERNIC_DEVICE_MODE}" = "legacy" ]; then
+    for ext in c h; do
+        for f in "${ERNIC_DRIVER_SOURCE}"/*."${ext}"; do
+            [ -f "${f}" ] && cp "${f}" "${DEST}/"
+        done
+    done
+
+    for name in Makefile dkms.conf Kconfig; do
+        if [ -f "${ERNIC_DRIVER_SOURCE}/${name}" ]; then
+            cp "${ERNIC_DRIVER_SOURCE}/${name}" "${DEST}/"
+        fi
+    done
+
+    if [ -f "${ERNIC_DRIVER_SOURCE}/setup-rocm-ernic-dkms.sh" ]; then
+        cp "${ERNIC_DRIVER_SOURCE}/setup-rocm-ernic-dkms.sh" \
+            "${DEST}/"
+        chmod +x "${DEST}/setup-rocm-ernic-dkms.sh"
     fi
-done
-
-if [ -f "${ERNIC_DRIVER_SOURCE}/setup-rocm-ernic-dkms.sh" ]; then
-    cp "${ERNIC_DRIVER_SOURCE}/setup-rocm-ernic-dkms.sh" \
-        "${DEST}/"
-    chmod +x "${DEST}/setup-rocm-ernic-dkms.sh"
 fi
 
 # Generate the in-VM installer script from the

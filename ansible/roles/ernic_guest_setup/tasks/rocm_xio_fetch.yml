@@ -1,0 +1,49 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Make sure the rocm-xio checkout exists in the guest.
+#
+# Included by both rdma_core.yml (which needs
+# rdma-core/ionic-gda/*.patch before it builds rdma-core) and
+# rocm_xio.yml, so whichever runs first does the work.
+#
+# A tarball staged on the controller by ernic_host_setup wins when
+# it is there, which is what the playbooks in this repo do and
+# what an air-gapped guest needs.  Otherwise the guest clones over
+# its own internet connection.
+
+---
+- name: Check for an existing rocm-xio checkout
+  ansible.builtin.stat:
+    path: "{{ ernic_rocm_xio_dir }}/CMakeLists.txt"
+  register: ernic_rocm_xio_present
+
+- name: Fetch rocm-xio
+  when: not ernic_rocm_xio_present.stat.exists
+  block:
+
+    - name: Look for a staged rocm-xio tarball on the controller
+      ansible.builtin.stat:
+        path: "{{ ernic_rocm_xio_tarball }}"
+      delegate_to: localhost
+      become: false
+      register: ernic_rocm_xio_tar
+
+    - name: Copy and extract the staged rocm-xio tarball
+      ansible.builtin.unarchive:
+        src: "{{ ernic_rocm_xio_tarball }}"
+        dest: "{{ ernic_rocm_xio_dir | dirname }}"
+        creates: "{{ ernic_rocm_xio_dir }}"
+      when: ernic_rocm_xio_tar.stat.exists
+
+    - name: Clone rocm-xio in the guest
+      ansible.builtin.git:
+        repo: "{{ ernic_rocm_xio_guest_repo }}"
+        dest: "{{ ernic_rocm_xio_dir }}"
+        version: >-
+          {{ ernic_rocm_xio_commit
+             if (ernic_rocm_xio_commit | trim | length > 0)
+             else ernic_rocm_xio_branch }}
+        accept_hostkey: true
+      when: not ernic_rocm_xio_tar.stat.exists

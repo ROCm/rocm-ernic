@@ -42,8 +42,10 @@
 #include "ionic_adminq.h"
 
 /* AMD device IDs (for vfio-user).
- * DID 0x8000 = legacy PVRDMA-derived NIC (rocm_ernic_{eth,rdma}.ko driver).
- * DID 0x8001 = ionic-protocol NIC (upstream ionic.ko + ionic_rdma.ko, patched
+ * DID 0x8000 = deprecated PVRDMA-derived NIC (rocm_ernic_{eth,rdma}.ko
+ *              driver); selected with --legacy.
+ * DID 0x8001 = ionic-protocol NIC, the default (upstream ionic.ko +
+ *              ionic_rdma.ko, patched
  *              via patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch).
  *              Unique DID avoids collisions with Pensando hardware (0x1dd8). */
 #define PCI_VENDOR_ID_AMD             0x1022
@@ -404,7 +406,7 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
 
 /**
  * Initialize ionic emulation layer.
- * Called instead of pvrdma_device_init() when --ionic flag is given.
+ * Used unless --legacy selects the deprecated PVRDMA path.
  */
 static int ionic_device_init(rocm_ernic_dev_t *dev)
 {
@@ -698,17 +700,27 @@ static void usage(const char *progname)
             "  -m, --mac ADDRESS    MAC address (format: XX:XX:XX:XX:XX:XX)\n");
     fprintf(stderr, "                       (default: 72:6f:63:6d:2d:6e, "
                     "rocm-nic)\n");
-    fprintf(stderr, "  -I, --ionic          Use ionic emulation path (VID:DID "
-                    "0x1022:0x8001)\n");
-    fprintf(stderr, "                       Guest must use patched ionic.ko + "
-                    "ionic_rdma.ko\n");
+    fprintf(stderr, "  -I, --ionic          Use the ionic emulation path "
+                    "(VID:DID 0x1022:0x8001)\n");
+    fprintf(stderr, "                       This is the default; the flag is "
+                    "accepted for\n");
+    fprintf(stderr, "                       compatibility.  Guest uses patched "
+                    "ionic.ko +\n");
     fprintf(stderr,
-            "                       See: "
+            "                       ionic_rdma.ko.  See: "
             "patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch\n");
+    fprintf(stderr, "      --legacy         DEPRECATED: use the PVRDMA-derived "
+                    "device\n");
+    fprintf(stderr, "                       (VID:DID 0x1022:0x8000) with the "
+                    "out-of-tree\n");
+    fprintf(stderr, "                       rocm_ernic_eth.ko + "
+                    "rocm_ernic_rdma.ko modules.\n");
+    fprintf(stderr, "                       (alias: --pvrdma)\n");
     fprintf(stderr, "  -T, --tap IFNAME     Attach the emulated NIC to a host "
                     "TAP interface\n");
-    fprintf(stderr, "                       (ionic mode only; gives the guest "
-                    "working Ethernet\n");
+    fprintf(stderr, "                       (not available with --legacy; "
+                    "gives the guest\n");
+    fprintf(stderr, "                       working Ethernet\n");
     fprintf(stderr, "                       and TCP/IP.  Pre-create it with: "
                     "ip tuntap add\n");
     fprintf(stderr, "                       dev IFNAME mode tap user $USER)\n");
@@ -989,6 +1001,9 @@ int main(int argc, char *argv[])
     struct sigaction sa;
     int ret, opt;
 
+    /* Long-only option codes start above the ASCII range. */
+    enum { OPT_LEGACY = 1000 };
+
     /* Command-line option definitions */
     static struct option long_options[] = {
         /* Common options */
@@ -1000,8 +1015,11 @@ int main(int argc, char *argv[])
         {"log-file", required_argument, 0, 'l'},
         {"mac", required_argument, 0, 'm'},
         {"help", no_argument, 0, 'h'},
-        /* ionic emulation mode (replaces legacy PVRDMA path) */
+        /* Device personality.  ionic is the default; --ionic is retained as a
+         * no-op so existing command lines keep working. */
         {"ionic", no_argument, 0, 'I'},
+        {"legacy", no_argument, 0, OPT_LEGACY},
+        {"pvrdma", no_argument, 0, OPT_LEGACY},
         {"tap", required_argument, 0, 'T'},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, 0, 'd'},
@@ -1020,6 +1038,9 @@ int main(int argc, char *argv[])
         strdup("loopback"); /* Default to "loopback" backend */
     dev->backend_port_num = 1;
     dev->verbose = false;
+    /* ionic is the default personality; --legacy selects the deprecated
+     * PVRDMA device. */
+    dev->ionic_mode = true;
     dev->device_initialized = false;
     dev->device_active = false;
     dev->mac_addr_set = false;
@@ -1098,7 +1119,11 @@ int main(int argc, char *argv[])
             }
             break;
         case 'I':
+            /* Accepted for compatibility; ionic is already the default. */
             dev->ionic_mode = true;
+            break;
+        case OPT_LEGACY:
+            dev->ionic_mode = false;
             break;
         case 'T':
             tap_ifname = optarg;
@@ -1172,7 +1197,12 @@ int main(int argc, char *argv[])
     }
     ernic_startup_report("  Mode: %s", dev->ionic_mode
                                            ? "ionic (upstream driver path)"
-                                           : "PVRDMA legacy");
+                                           : "PVRDMA legacy (deprecated)");
+    if (!dev->ionic_mode) {
+        warn_report("--legacy selects the deprecated rocm_ernic driver path; "
+                    "it will be removed in a future release. "
+                    "See docs/ionic.rst.");
+    }
 
     /* Remove old socket if it exists - try multiple approaches */
     struct stat st;
@@ -1205,9 +1235,8 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "vfu_setup_log() failed");
     }
 
-    /* Initialize device emulation.
-     * ionic_mode is set by --ionic flag (or by default in future once the
-     * ionic path is fully validated).  Until then both paths coexist. */
+    /* Initialize device emulation.  ionic is the default; --legacy selects
+     * the deprecated PVRDMA path, which is kept working but unmaintained. */
     if (dev->ionic_mode) {
         if (ionic_device_init(dev) < 0)
             err(EXIT_FAILURE, "ionic_device_init() failed");
@@ -1296,7 +1325,8 @@ int main(int argc, char *argv[])
      * bad --tap is a startup failure rather than a silently dead link. */
     if (tap_ifname) {
         if (!dev->ionic_mode || !dev->ionic_emu) {
-            fprintf(stderr, "rocm-ernic: --tap requires --ionic\n");
+            fprintf(stderr,
+                    "rocm-ernic: --tap is not supported with --legacy\n");
             exit(EXIT_FAILURE);
         }
         char assigned[64] = {0};

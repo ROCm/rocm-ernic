@@ -5,11 +5,16 @@
 #
 # vm-driver-install.sh
 #
-# Self-contained installer for the rocm-ernic kernel
-# driver inside a guest VM.  Distributed inside the
-# driver tarball created by rocm-ernic-driver-pack.
+# Self-contained installer for the rocm-ernic guest
+# driver inside a VM.  Distributed inside the driver
+# tarball created by rocm-ernic-driver-pack.
 #
-# This script:
+# The pack tells the installer which mode it is: an
+# ionic pack carries fetch-ionic-sources.sh, in which
+# case this script fetches the patched upstream ionic
+# sources and installs them via DKMS.
+#
+# For a legacy pack this script:
 #   1. Builds rocm_ernic_eth.ko and rocm_ernic_rdma.ko
 #      against the running kernel.
 #   2. Loads prerequisite IB modules.
@@ -48,13 +53,74 @@ done
 log_info()  { echo "[INFO]  $*"; }
 log_error() { echo "[ERROR] $*" >&2; }
 
+# An ionic pack ships the fetch helper; a legacy pack
+# ships the out-of-tree driver sources instead.
+IONIC_MODE=false
+if [ -x "${SCRIPT_DIR}/fetch-ionic-sources.sh" ]; then
+    IONIC_MODE=true
+fi
+
 # ── Unload ────────────────────────────────────────
 
 if ${UNLOAD}; then
-    log_info "Unloading rocm_ernic modules..."
-    sudo rmmod rocm_ernic_rdma 2>/dev/null || true
-    sudo rmmod rocm_ernic_eth  2>/dev/null || true
+    if ${IONIC_MODE}; then
+        log_info "Unloading ionic modules..."
+        sudo modprobe -r ionic_rdma 2>/dev/null || true
+        sudo modprobe -r ionic      2>/dev/null || true
+    else
+        log_info "Unloading rocm_ernic modules..."
+        sudo rmmod rocm_ernic_rdma 2>/dev/null || true
+        sudo rmmod rocm_ernic_eth  2>/dev/null || true
+    fi
     log_info "Modules unloaded."
+    exit 0
+fi
+
+# ── ionic path ────────────────────────────────────
+
+if ${IONIC_MODE}; then
+    KREF="$(cat "${SCRIPT_DIR}/ionic-kernel-ref" 2>/dev/null || echo v7.2.4)"
+    SRC="${SCRIPT_DIR}/ionic-kernel-src"
+
+    log_info "Fetching upstream ionic sources at ${KREF}..."
+    "${SCRIPT_DIR}/fetch-ionic-sources.sh" \
+        --source-dir "${SRC}" \
+        --kernel-ref "${KREF}" \
+        --patches-dir "${SCRIPT_DIR}/patches"
+
+    DKMS_ARGS=(--source-dir "${SRC}" --kernel-ref "${KREF}")
+    if ${BUILD_ONLY}; then
+        DKMS_ARGS+=(--build-only)
+    fi
+
+    log_info "Installing ionic + ionic_rdma via DKMS..."
+    "${SCRIPT_DIR}/setup-ionic-dkms.sh" "${DKMS_ARGS[@]}"
+
+    if ${BUILD_ONLY}; then
+        log_info "Build-only mode; stopping here."
+        exit 0
+    fi
+
+    sudo modprobe ib_core
+    sudo modprobe ib_uverbs
+    sudo modprobe ionic
+    sudo modprobe ionic_rdma
+
+    log_info "Verifying RDMA device..."
+    sleep 2
+    if ibv_devices 2>/dev/null | grep -qE "rocm-rdma-ernic|ionic|rocep"; then
+        DEVICE="$(ibv_devices \
+            | grep -E "rocm-rdma-ernic|ionic|rocep" \
+            | awk '{print $1}' | head -1)"
+        log_info "RDMA device found: ${DEVICE}"
+        ibv_devinfo -d "${DEVICE}" 2>/dev/null | head -20 || true
+    else
+        log_error "RDMA device not detected."
+        sudo dmesg | grep -i ionic | tail -10
+        exit 1
+    fi
+
+    log_info "Driver installation complete."
     exit 0
 fi
 

@@ -19,14 +19,18 @@ requiring physical RDMA hardware or an in-guest software stack such as
 (multi-node without hardware), and native verbs (real InfiniBand HCA
 pass-through).
 
-The server can present two device personalities. By default it emulates a
-PVRDMA-derived device (`1022:8000`) driven by the companion `rocm_ernic`
-module in [`driver/`](driver/). With `--ionic` it emulates an AMD Pensando
-ionic NIC (`1022:8001`) instead, so the guest runs the upstream Linux
+The server can present two device personalities. By default it emulates an
+AMD Pensando ionic NIC (`1022:8001`), so the guest runs the upstream Linux
 `ionic` and `ionic_rdma` drivers with only the small device-ID and UC
-address-handle patches in [`patches/`](patches/) applied. In ionic mode
-`--tap IFNAME` attaches the emulated Ethernet interface to a host TAP, giving
-the guest a real routable segment with working ARP, ICMP, and TCP/IP. See
+address-handle patches in [`patches/`](patches/) applied, and the upstream
+`providers/ionic` in rdma-core. `--tap IFNAME` attaches the emulated Ethernet
+interface to a host TAP, giving the guest a real routable segment with working
+ARP, ICMP, and TCP/IP.
+
+`--legacy` (alias `--pvrdma`) selects the older PVRDMA-derived device
+(`1022:8000`) driven by the out-of-tree `rocm_ernic` module in
+[`driver/`](driver/). **That path is deprecated**: it is kept working for
+existing deployments but should not be used for new ones. See
 [`docs/ionic.rst`](docs/ionic.rst) for details.
 
 ## Installing and Using rocm-ernic

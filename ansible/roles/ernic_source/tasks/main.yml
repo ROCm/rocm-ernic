@@ -43,6 +43,9 @@
         - driver/setup-rocm-ernic-dkms.sh
         - rdma-core/providers/rocm_ernic
         - udev/99-rocm-ernic.rules
+        - scripts/fetch-ionic-sources.sh
+        - scripts/setup-ionic-dkms.sh
+        - patches
 
     - name: Fail when the source tree is incomplete
       ansible.builtin.assert:

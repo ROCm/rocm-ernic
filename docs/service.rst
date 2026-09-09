@@ -128,6 +128,23 @@ Server settings
      - ``false``
      - Legacy shorthand for
        ``ERNIC_LOG_LEVEL=debug``
+   * - ``ERNIC_DEVICE_MODE``
+     - ``ionic``
+     - Device personality: ``ionic`` or the deprecated
+       ``legacy``.  ``legacy`` adds ``--legacy`` to every
+       instance; see :doc:`ionic`
+   * - ``ERNIC_TAP_PREFIX``
+     - ``ernic-tap``
+     - ionic mode only.  Instance *n* is started with
+       ``--tap ${ERNIC_TAP_PREFIX}n``; a missing interface
+       is a warning and the instance starts without
+       Ethernet
+   * - ``ERNIC_TAP_BRIDGE``
+     - ``ernicbr0``
+     - Host bridge the TAPs are enslaved to, so guests can
+       reach each other.  Created by the
+       ``ernic_host_setup`` Ansible role, not by the
+       launcher
 
 MAC address overrides
 ^^^^^^^^^^^^^^^^^^^^^
@@ -216,8 +233,11 @@ Driver settings
      - Default
      - Description
    * - ``ERNIC_DRIVER_SOURCE``
-     - ``/usr/share/rocm-ernic/driver-legacy``
-     - Installed legacy driver source tree
+     - ``/usr/share/rocm-ernic/patches``
+     - Driver sources to pack for the guest.  The default
+       suits ionic mode; in ``legacy`` mode it falls back
+       to ``/usr/share/rocm-ernic/driver-legacy`` when
+       unset
    * - ``ERNIC_DRIVER_TARBALL``
      - ``/tmp/rocm-ernic-driver.tar.gz``
      - Path to the built tarball
@@ -241,12 +261,14 @@ Or use ``ernicctl`` which wraps ``systemctl``:
    ernicctl status
    sudo ernicctl stop
 
-The ``ernicctl status`` command shows a table of all
-instances with their PID, MAC, socket, VM attachment,
-IP and RDMA byte counts (TX/RX), liveness state,
-uptime, and log file path:
+The ``ernicctl status`` command reports the active device
+mode, then a table of all instances with their PID, MAC,
+socket, VM attachment, IP and RDMA byte counts (TX/RX),
+liveness state, uptime, and log file path:
 
 .. code-block:: text
+
+   Device mode: ionic (1022:8001, TAP ernic-tap<id>)
 
    ID  ROLE      PID    STATE      UPTIME     MAC                SOCKET                         VM           IP (TX/RX)      RDMA (TX/RX)    LOG
    1   manager   12345  running    2h15m      02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         67890:2222   1.2K/3.4K       45M/12M         /var/log/rocm-ernic/1.log
