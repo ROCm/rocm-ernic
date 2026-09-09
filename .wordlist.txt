@@ -266,6 +266,7 @@ fini
 fs
 func
 galaxy
+gapped
 gcc
 gda
 ghcr
@@ -333,6 +334,7 @@ lifecycle
 linux
 lkey
 localhost
+logind
 loopback
 loopback's
 lsmod
@@ -383,6 +385,7 @@ param
 paravirtualized
 passthrough
 pci
+pciids
 pdir
 pds
 perf
