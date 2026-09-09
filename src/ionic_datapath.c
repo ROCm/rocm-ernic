@@ -106,10 +106,20 @@
 #define CQE_RECV_OP_SEND_IMM 2
 #define CQE_RECV_OP_RDMA_IMM 3
 
-/* IONIC_STS_LOCAL_LEN_ERR — recv buffer too small for the inbound message. */
-#define IONIC_STS_OK             0
-#define IONIC_STS_LOCAL_LEN_ERR  1
-#define IONIC_STS_REMOTE_ACC_ERR 9
+/*
+ * enum ionic_status from the guest driver's ionic_fw.h, which runs these
+ * through ionic_to_ib_status() to reach an ib_wc_status.  LOCAL_LEN_ERR is a
+ * receive buffer too small for the inbound message; LOCAL_PROT_ERR is an SGE
+ * that does not lie inside the MR its own key names.
+ */
+#define IONIC_STS_OK                 0
+#define IONIC_STS_LOCAL_LEN_ERR      1
+#define IONIC_STS_LOCAL_QP_OPER_ERR  2
+#define IONIC_STS_LOCAL_PROT_ERR     3
+#define IONIC_STS_LOCAL_ACC_ERR      7
+#define IONIC_STS_REMOTE_ACC_ERR     9
+#define IONIC_STS_RETRY_EXCEEDED     11
+#define IONIC_STS_RNR_RETRY_EXCEEDED 12
 
 /* -------------------------------------------------------------------------
  * State
@@ -309,6 +319,15 @@ struct ionic_datapath {
      * as work would spin the loop until the peer posts a receive.
      */
     uint32_t rx_fresh;
+
+    /*
+     * Why the last transfer stopped short.  A byte count on its own cannot
+     * say: a short copy is a receive buffer that ran out, an SGE outside the
+     * MR its key names, or a guest mapping that refused the DMA -- and those
+     * are three different completion statuses.  Everything that touches this
+     * runs on the vfu thread, so a plain field is enough.
+     */
+    uint32_t fault;
 };
 
 /* -------------------------------------------------------------------------
@@ -411,6 +430,8 @@ static int buf_init(struct ionic_datapath *dp, struct dp_buf *b,
                     const struct ionic_dp_buf_desc *desc, uint64_t va)
 {
     buf_release(b);
+    if (desc->page_size_log2 > 30)
+        return -EINVAL;
     b->page_size_log2 = desc->page_size_log2 ? desc->page_size_log2 : 12;
     b->npages = desc->map_count;
 
@@ -584,13 +605,30 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
         return;
 
     struct ionic_cq_ring *c = &dp->cq[cq_id];
+    uint8_t stride_log2 = ring->stride_log2 ? ring->stride_log2 : 5;
+
+    /*
+     * The guest picks this geometry, so it has to be checked before it is
+     * used: a stride below CQE_SIZE would make each completion overwrite the
+     * one after it, and the shifts are undefined once the exponent reaches the
+     * width of the type.
+     */
+    if (stride_log2 < 5 || stride_log2 > 16 || ring->depth_log2 > 24) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: CQ %u bad geometry depth=2^%u stride=2^%u",
+                cq_id, ring->depth_log2, stride_log2);
+        buf_release(&c->buf);
+        c->valid = false;
+        return;
+    }
     if (buf_init(dp, &c->buf, &ring->buf, 0) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u page table read failed", cq_id);
+        c->valid = false;
         return;
     }
     c->depth = 1u << ring->depth_log2;
-    c->stride_log2 = ring->stride_log2 ? ring->stride_log2 : 5;
+    c->stride_log2 = stride_log2;
     c->prod = 0;
     c->color = true; /* the driver's cq->color also starts true */
     c->armed = false;
@@ -737,6 +775,41 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
  * -------------------------------------------------------------------------
  */
 
+static void dp_fault_clear(struct ionic_datapath *dp)
+{
+    dp->fault = IONIC_STS_OK;
+}
+
+/* First reason wins: it is the one that stopped the transfer. */
+static void dp_fault_set(struct ionic_datapath *dp, uint32_t status)
+{
+    if (dp->fault == IONIC_STS_OK)
+        dp->fault = status;
+}
+
+static uint32_t dp_fault_status(const struct ionic_datapath *dp,
+                                uint32_t fallback)
+{
+    return dp->fault != IONIC_STS_OK ? dp->fault : fallback;
+}
+
+/*
+ * Does the MR named by @key cover [@va, @va + @len)?  rkeys and lkeys share
+ * one table here, so a failed transfer cannot be blamed on the remote end just
+ * because a key was involved; this is what tells the two ends apart.
+ */
+static bool mr_covers(struct ionic_datapath *dp, uint32_t key, uint64_t va,
+                      uint64_t len)
+{
+    if (key == 0)
+        return true;
+
+    struct dp_mr *m = mr_find(dp, key);
+
+    return m && va >= m->va && len <= m->length &&
+           va - m->va <= m->length - len;
+}
+
 /*
  * Resolve one (lkey, va) pair to a guest physical address, reporting how many
  * bytes stay contiguous.  lkey 0 is IONIC_DMA_LKEY: the va is already a bus
@@ -752,6 +825,7 @@ static uint64_t sge_gpa(struct ionic_datapath *dp, uint32_t lkey, uint64_t va,
 
     struct dp_mr *m = mr_find(dp, lkey);
     if (!m || va < m->va || va >= m->va + m->length) {
+        dp_fault_set(dp, IONIC_STS_LOCAL_PROT_ERR);
         *run = 0;
         return 0;
     }
@@ -797,10 +871,11 @@ static uint32_t dp_copy_sge(struct ionic_datapath *dp, uint32_t dst_lkey,
         if (chunk > sizeof(bounce))
             chunk = sizeof(bounce);
 
-        if (dp_dma_read(dp->vfu_ctx, src, bounce, (size_t)chunk) < 0)
+        if (dp_dma_read(dp->vfu_ctx, src, bounce, (size_t)chunk) < 0 ||
+            dp_dma_write(dp->vfu_ctx, dst, bounce, (size_t)chunk) < 0) {
+            dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
             break;
-        if (dp_dma_write(dp->vfu_ctx, dst, bounce, (size_t)chunk) < 0)
-            break;
+        }
         done += (uint32_t)chunk;
     }
     return done;
@@ -825,8 +900,10 @@ static uint32_t dp_sge_to_host(struct ionic_datapath *dp, uint32_t lkey,
         uint64_t chunk = len - done;
         if (chunk > run)
             chunk = run;
-        if (dp_dma_read(dp->vfu_ctx, gpa, dst + done, (size_t)chunk) < 0)
+        if (dp_dma_read(dp->vfu_ctx, gpa, dst + done, (size_t)chunk) < 0) {
+            dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
             break;
+        }
         done += (uint32_t)chunk;
     }
     return done;
@@ -846,8 +923,10 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
         uint64_t chunk = len - done;
         if (chunk > run)
             chunk = run;
-        if (dp_dma_write(dp->vfu_ctx, gpa, src + done, (size_t)chunk) < 0)
+        if (dp_dma_write(dp->vfu_ctx, gpa, src + done, (size_t)chunk) < 0) {
+            dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
             break;
+        }
         done += (uint32_t)chunk;
     }
     return done;
@@ -857,6 +936,27 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
  * CQ posting
  * -------------------------------------------------------------------------
  */
+
+static int cq_write(struct ionic_datapath *dp, struct ionic_cq_ring *c,
+                    uint64_t off, const uint8_t *src, size_t len)
+{
+    size_t done = 0;
+
+    while (done < len) {
+        uint64_t run;
+        uint64_t gpa = buf_gpa(&c->buf, off + done, &run);
+        if (!run)
+            return -1;
+
+        size_t chunk = len - done;
+        if (run < chunk)
+            chunk = (size_t)run;
+        if (dp_dma_write(dp->vfu_ctx, gpa, src + done, chunk) < 0)
+            return -1;
+        done += chunk;
+    }
+    return 0;
+}
 
 static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
                     const uint8_t cqe_body[CQE_SIZE - 8], uint32_t status_len,
@@ -880,10 +980,16 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     memcpy(cqe + 28, &qtf, 4);
 
     uint32_t stride = 1u << c->stride_log2;
-    uint64_t run;
-    uint64_t gpa =
-        buf_gpa(&c->buf, (uint64_t)(c->prod % c->depth) * stride, &run);
-    if (!run || dp_dma_write(dp->vfu_ctx, gpa, cqe, CQE_SIZE) < 0) {
+    uint64_t base = (uint64_t)(c->prod % c->depth) * stride;
+
+    /*
+     * The guest polls the colour word in the last four bytes to decide a CQE
+     * is complete, so those bytes go down after the body -- and the body
+     * itself is written a page-run at a time, because a small page_size_log2
+     * can put the run boundary inside the CQE.
+     */
+    if (cq_write(dp, c, base, cqe, CQE_SIZE - 4) < 0 ||
+        cq_write(dp, c, base + CQE_SIZE - 4, cqe + CQE_SIZE - 4, 4) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQE write failed for cq_id=%u", cq_id);
         return;
@@ -1060,6 +1166,8 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
 
     uint32_t copied = 0;
 
+    dp_fault_clear(dp);
+
     if (src_host) {
         /* The payload is already linear; only the receive side scatters. */
         copied = dp_scatter(dp, &dst, src_host,
@@ -1093,9 +1201,17 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
         }
     }
 
+    /*
+     * A short delivery is only a length error when the receive buffer was the
+     * thing that ran out.  If a scatter SGE would not resolve, the guest needs
+     * to see that as a protection fault against its own memory, not as a
+     * message it merely truncated.
+     */
     bool truncated = copied < src->total;
     cq_post_recv(dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op,
-                 imm_be, truncated ? IONIC_STS_LOCAL_LEN_ERR : copied,
+                 imm_be,
+                 truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR)
+                           : copied,
                  truncated);
 
     return copied;
@@ -1168,23 +1284,45 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
     local_va = be64toh(local_va);
     local_lkey = be32toh(local_lkey);
 
+    /*
+     * The two ends fail differently even though one table resolves both, so
+     * each failure is attributed as it happens rather than inferred from the
+     * false return.
+     */
+    if (!mr_covers(dp, rkey, remote_va, 8)) {
+        dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
+        return false;
+    }
+
     uint64_t rgpa = sge_gpa(dp, rkey, remote_va, &run);
-    if (run < 8)
+    if (run < 8) {
+        dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
         return false;
+    }
     uint64_t lgpa = sge_gpa(dp, local_lkey, local_va, &run);
-    if (run < 8)
+    if (run < 8) {
+        dp_fault_set(dp, IONIC_STS_LOCAL_PROT_ERR);
         return false;
+    }
 
     uint64_t old;
-    if (dp_dma_read(dp->vfu_ctx, rgpa, &old, 8) < 0)
+    if (dp_dma_read(dp->vfu_ctx, rgpa, &old, 8) < 0) {
+        dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
         return false;
+    }
 
     uint64_t new =
         compare_swap ? (old == compare ? swap_add : old) : old + swap_add;
 
-    if (dp_dma_write(dp->vfu_ctx, rgpa, &new, 8) < 0)
+    if (dp_dma_write(dp->vfu_ctx, rgpa, &new, 8) < 0) {
+        dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
         return false;
-    return dp_dma_write(dp->vfu_ctx, lgpa, &old, 8) == 0;
+    }
+    if (dp_dma_write(dp->vfu_ctx, lgpa, &old, 8) < 0) {
+        dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
+        return false;
+    }
+    return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -1477,6 +1615,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         return;
     }
 
+    dp_fault_clear(dp);
+
     switch (op) {
     case IONIC_V1_OP_SEND:
     case IONIC_V1_OP_SEND_INV:
@@ -1525,7 +1665,15 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     "%u of %u bytes",
                     qp_id, to_remote ? "write" : "read", rkey,
                     (unsigned long)remote_va, moved, length);
-            status = IONIC_STS_REMOTE_ACC_ERR;
+            /*
+             * Blame the end that was actually out of bounds.  Both ends
+             * resolve through the same MR table, so without this an SGE of
+             * the guest's own that overruns its MR is reported back to the
+             * guest as the peer denying access.
+             */
+            status = mr_covers(dp, rkey, remote_va, length)
+                         ? dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR)
+                         : IONIC_STS_REMOTE_ACC_ERR;
             break;
         }
 
@@ -1549,14 +1697,14 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         if (!do_atomic(dp, wqe, op == IONIC_V1_OP_ATOMIC_CS)) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u atomic op=%u failed", qp_id, op);
-            status = IONIC_STS_REMOTE_ACC_ERR;
+            status = dp_fault_status(dp, IONIC_STS_REMOTE_ACC_ERR);
         }
         break;
 
     default:
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u unsupported op=%u", qp_id, op);
-        status = IONIC_STS_REMOTE_ACC_ERR;
+        status = IONIC_STS_LOCAL_QP_OPER_ERR;
         break;
     }
 
@@ -1729,7 +1877,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     "ionic_datapath: QP %u posted no receive within %u ms, "
                     "dropping %u bytes from node %u",
                     dst_qp_id, RNR_RETRY_MS, src.total, src_node);
-            status = IONIC_STS_REMOTE_ACC_ERR;
+            status = IONIC_STS_RNR_RETRY_EXCEEDED;
         }
         dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
         break;
@@ -1802,8 +1950,12 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         status = le32toh(h->status);
         if (status == IONIC_STS_OK && h->op != IONIC_WIRE_ACK) {
             uint32_t want = p->length < payload_len ? p->length : payload_len;
+
+            /* The peer answered; anything that goes wrong from here is this
+             * guest's own memory refusing the landing. */
+            dp_fault_clear(dp);
             if (dp_scatter(dp, &p->local, payload, want) != want)
-                status = IONIC_STS_REMOTE_ACC_ERR;
+                status = dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR);
         }
         pending_complete(dp, p, status);
         break;
@@ -1825,6 +1977,21 @@ static uint32_t inmsg_dst_qp(const struct dp_inmsg *m)
     const struct ionic_wire_hdr *h = (const struct ionic_wire_hdr *)m->buf;
 
     return le32toh(h->dst_qp_id);
+}
+
+/*
+ * dp_wire_reply() addresses a response to the QP that originated the request,
+ * so on this side its dst_qp_id names a send queue rather than a receive queue
+ * and collides with the ids inbound requests carry.  A response takes no part
+ * in receive-side ordering: it retires a pending work request, and holding one
+ * behind an RNR'd SEND stalls this QP's send queue until that SEND times out.
+ */
+static bool inmsg_is_response(const struct dp_inmsg *m)
+{
+    const struct ionic_wire_hdr *h = (const struct ionic_wire_hdr *)m->buf;
+
+    return h->op == IONIC_WIRE_ACK || h->op == IONIC_WIRE_READ_RESP ||
+           h->op == IONIC_WIRE_ATOMIC_RESP;
 }
 
 bool ionic_datapath_has_work(struct ionic_datapath *dp)
@@ -1855,9 +2022,9 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
 
     /*
      * Messages that cannot be delivered yet go on @defer and are put back for
-     * the next poll.  Anything else addressed to the same QP has to be
-     * deferred with it, or a later SEND would overtake an earlier one; traffic
-     * for other QPs keeps flowing.
+     * the next poll.  Any further request for the same QP has to be deferred
+     * with it, or a later SEND would overtake an earlier one; traffic for
+     * other QPs, and every response, keeps flowing.
      */
     struct dp_inmsg *defer_head = NULL, *defer_tail = NULL;
     uint64_t now = dp_now_ms();
@@ -1868,10 +2035,12 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
         m->next = NULL;
 
         bool blocked = false;
-        for (struct dp_inmsg *d = defer_head; d; d = d->next) {
-            if (inmsg_dst_qp(d) == inmsg_dst_qp(m)) {
-                blocked = true;
-                break;
+        if (!inmsg_is_response(m)) {
+            for (struct dp_inmsg *d = defer_head; d; d = d->next) {
+                if (inmsg_dst_qp(d) == inmsg_dst_qp(m)) {
+                    blocked = true;
+                    break;
+                }
             }
         }
 
@@ -1909,7 +2078,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u request %u timed out", p->qp_id,
                     p->req_id);
-            pending_complete(dp, p, IONIC_STS_REMOTE_ACC_ERR);
+            pending_complete(dp, p, IONIC_STS_RETRY_EXCEEDED);
         }
     }
 }
