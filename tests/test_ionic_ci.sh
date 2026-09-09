@@ -49,7 +49,7 @@ cleanup() {
         kill "$SERVER_PID" 2>/dev/null
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    rm -f "$SOCKET" "$LOG"
+    rm -f "$SOCKET" "$LOG" ${STATS:+"$STATS"}
 }
 trap cleanup EXIT INT TERM
 
@@ -210,6 +210,41 @@ grep -qi "deprecated" "$LOG" || {
     fail "--legacy did not print a deprecation warning"
 }
 pass "--legacy works and is marked deprecated"
+
+# --- Test 12: stats file is emitted in ionic mode with the full counter set ---
+# The counters themselves stay zero here: driving them needs a real vfio-user
+# client, which this VM-free suite does not have.  What this does guard is that
+# --stats-file works in ionic mode and that the field set ionic feeds is the
+# same one ernicctl parses.
+echo ""
+echo "Test 12: stats file carries the full counter set in ionic mode"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+rm -f "$SOCKET" "$LOG"
+STATS="/tmp/vfio-ionic-ci-$$.stats"
+rm -f "$STATS"
+"$SERVER_BIN" --backend loopback --socket "$SOCKET" --stats-file "$STATS" \
+    > "$LOG" 2>&1 &
+SERVER_PID=$!
+elapsed=0
+while [ $elapsed -lt 10 ]; do
+    sleep 0.5; elapsed=$((elapsed + 1))
+    [ -s "$STATS" ] && break
+    kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
+done
+[ -s "$STATS" ] || fail "no stats file was written"
+for field in commands bar0_reads bar0_writes uar_reads uar_writes \
+             mmio_reads_total mmio_writes_total interrupts reset_count \
+             total_bytes_sent total_bytes_received total_bytes_rdma_read \
+             total_bytes_rdma_write total_ip_bytes_tx total_ip_bytes_rx; do
+    grep -q "^  $field  *: " "$STATS" || {
+        cat "$STATS"
+        fail "stats file is missing the '$field' counter"
+    }
+done
+rm -f "$STATS"
+pass "stats file has every counter ernicctl expects"
 
 echo ""
 echo "================================================="

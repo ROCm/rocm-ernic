@@ -147,6 +147,9 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
     if (dev->ionic_mode && dev->ionic_emu) {
+        if (dev->pvrdma_handle)
+            pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
+
         /* Below IONIC_BAR0_REGS_SIZE is the ionic register window; at and
          * above it is the MSI-X table/PBA, which is a plain shadow the
          * client reads back.  An access must not straddle the two. */
@@ -272,9 +275,14 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
-    if (dev->ionic_mode && dev->ionic_emu)
+    if (dev->ionic_mode && dev->ionic_emu) {
+        /* BAR2 is the doorbell window in both personalities, so it feeds the
+         * same uar_* counters the legacy UAR does. */
+        if (dev->pvrdma_handle)
+            pvrdma_uar_mmio_count(dev->pvrdma_handle, is_write);
         return ionic_eth_emu_bar2_access(dev->ionic_emu, buf, count, offset,
                                          is_write);
+    }
 
     uint32_t val;
     if ((size_t)offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
@@ -422,6 +430,8 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         fprintf(stderr, "ionic_device_init: failed to create eth emulator\n");
         return -1;
     }
+
+    ionic_eth_emu_set_pvrdma(dev->ionic_emu, dev->pvrdma_handle);
 
     if (dev->mac_addr_set)
         ionic_eth_emu_set_mac(dev->ionic_emu, dev->mac_addr);

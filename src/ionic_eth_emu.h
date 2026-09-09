@@ -49,6 +49,13 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
 /* Trigger an MSI-X vector (0 = success, -EINVAL = bad vec, 0 if masked). */
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 
+/*
+ * Set the pvrdma handle so the emulator can record interrupts and Ethernet
+ * bytes into the shared statistics block.
+ * @handle: pvrdma_handle_t (void *) from pvrdma_device_create().
+ */
+void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, void *handle);
+
 /* Register the datapath handler for doorbell writes (BAR2). */
 struct ionic_datapath;
 void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,

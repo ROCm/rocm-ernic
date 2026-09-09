@@ -1208,6 +1208,10 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
      * message it merely truncated.
      */
     bool truncated = copied < src->total;
+
+    pvrdma_rdma_bytes_count(dp->pvrdma_handle, dst_qp_id, copied,
+                            PVRDMA_STAT_RECV);
+
     cq_post_recv(dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op,
                  imm_be,
                  truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR)
@@ -1540,6 +1544,16 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * failed send does not leave a hole the driver would wait on. */
         if (use_msn)
             p->msn = ++q->msn;
+
+        /* A READ has moved nothing yet; it is counted when the response
+         * scatters into p->local. */
+        if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM)
+            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, payload_len,
+                                    PVRDMA_STAT_RDMA_WRITE);
+        else if (wire_op != IONIC_WIRE_READ_REQ &&
+                 wire_op != IONIC_WIRE_ATOMIC_REQ)
+            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, payload_len,
+                                    PVRDMA_STAT_SEND);
     } else {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u send to node %u failed", qp_id,
@@ -1640,6 +1654,9 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     "ionic_datapath: QP %u has no posted receive, dropping "
                     "%u bytes from QP %u",
                     dst_id, src.total, qp_id);
+        else
+            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, src.total,
+                                    PVRDMA_STAT_SEND);
         break;
     }
 
@@ -1676,6 +1693,10 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                          : IONIC_STS_REMOTE_ACC_ERR;
             break;
         }
+
+        pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, moved,
+                                to_remote ? PVRDMA_STAT_RDMA_WRITE
+                                          : PVRDMA_STAT_RDMA_READ);
 
         /* Only the _IMM form consumes a receive on the far side, and it does
          * so with no payload: the data already landed via the rkey. */
@@ -1829,6 +1850,10 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         dst_qp_id < dp->qp_count && dp->qp[dst_qp_id].valid ? &dp->qp[dst_qp_id]
                                                             : NULL;
 
+    /* A plain RDMA op names only an rkey, so the QP it quotes may not exist
+     * here; attribute those bytes to the device alone. */
+    uint32_t stat_qp = dq ? dst_qp_id : PVRDMA_STAT_NO_QP;
+
     /*
      * A peer may only name memory this instance has registered.  sge_gpa()
      * reads key 0 as IONIC_DMA_LKEY and hands back the va as a bus address with
@@ -1893,10 +1918,17 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     "failed",
                     rkey, (unsigned long)remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
-        } else if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
-            struct dp_sge_list none = {.count = 0, .total = 0};
-            deliver_recv(dp, dq, dst_qp_id, src_qp_id, &none, NULL,
-                         CQE_RECV_OP_RDMA_IMM, h->imm_be);
+        } else {
+            /* The responder counts what landed in its own memory too, so each
+             * instance's totals describe the traffic it actually moved. */
+            pvrdma_rdma_bytes_count(dp->pvrdma_handle, stat_qp, n,
+                                    PVRDMA_STAT_RDMA_WRITE);
+
+            if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
+                struct dp_sge_list none = {.count = 0, .total = 0};
+                deliver_recv(dp, dq, dst_qp_id, src_qp_id, &none, NULL,
+                             CQE_RECV_OP_RDMA_IMM, h->imm_be);
+            }
         }
         dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
         break;
@@ -1915,6 +1947,9 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     "failed",
                     rkey, (unsigned long)remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
+        } else {
+            pvrdma_rdma_bytes_count(dp->pvrdma_handle, stat_qp, length,
+                                    PVRDMA_STAT_RDMA_READ);
         }
 
         dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, h, status,
@@ -1954,8 +1989,14 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
             /* The peer answered; anything that goes wrong from here is this
              * guest's own memory refusing the landing. */
             dp_fault_clear(dp);
-            if (dp_scatter(dp, &p->local, payload, want) != want)
+            uint32_t got = dp_scatter(dp, &p->local, payload, want);
+            if (got != want)
                 status = dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR);
+
+            /* The requester's READ bytes only exist once they have landed. */
+            if (h->op == IONIC_WIRE_READ_RESP)
+                pvrdma_rdma_bytes_count(dp->pvrdma_handle, p->qp_id, got,
+                                        PVRDMA_STAT_RDMA_READ);
         }
         pending_complete(dp, p, status);
         break;

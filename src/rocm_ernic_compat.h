@@ -120,6 +120,60 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
  */
 void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
 
+/**
+ * pvrdma_uar_mmio_count - Record a doorbell-window MMIO access for statistics
+ * @handle: Device handle
+ * @is_write: true for write, false for read
+ *
+ * The legacy UAR and the ionic BAR2 doorbell page are the same thing to these
+ * counters, so both personalities share uar_reads/uar_writes.
+ */
+void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
+
+/**
+ * pvrdma_irq_count - Record one delivered MSI-X interrupt
+ * @handle: Device handle
+ *
+ * post_interrupt() counts its own; this is for the ionic path, which triggers
+ * the vector itself.
+ */
+void pvrdma_irq_count(pvrdma_handle_t handle);
+
+/**
+ * pvrdma_eth_bytes_count - Record guest Ethernet bytes moved
+ * @handle: Device handle
+ * @bytes: Frame length
+ * @is_tx: true for guest-to-host, false for host-to-guest
+ */
+void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx);
+
+/**
+ * pvrdma_adminq_count - Record one executed admin-queue command
+ * @handle: Device handle
+ */
+void pvrdma_adminq_count(pvrdma_handle_t handle);
+
+/* Operation classes for pvrdma_rdma_bytes_count(). */
+enum pvrdma_stat_op {
+    PVRDMA_STAT_SEND,
+    PVRDMA_STAT_RECV,
+    PVRDMA_STAT_RDMA_READ,
+    PVRDMA_STAT_RDMA_WRITE,
+};
+
+/* Pass as @qp_id to update only the device totals. */
+#define PVRDMA_STAT_NO_QP 0xffffffffu
+
+/**
+ * pvrdma_rdma_bytes_count - Record RDMA bytes against the device and a QP
+ * @handle: Device handle
+ * @qp_id: QP to attribute the bytes to, or PVRDMA_STAT_NO_QP for totals only
+ * @bytes: Number of bytes actually moved
+ * @op: Operation class
+ */
+void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
+                             uint64_t bytes, enum pvrdma_stat_op op);
+
 /*
  * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */

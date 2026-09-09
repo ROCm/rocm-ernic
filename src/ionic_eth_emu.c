@@ -282,6 +282,9 @@ struct ionic_eth_emu {
     ionic_rdma_devcmd_fn_t rdma_devcmd_fn;
     void *rdma_devcmd_opaque;
 
+    /* Statistics sink, shared with the pvrdma resource manager. */
+    pvrdma_handle_t pvrdma_handle;
+
     /* Data-path handler for BAR2 doorbell writes. */
     struct ionic_datapath *dp;
     /* Admin queue context for AQ doorbell producer-index updates. */
@@ -407,6 +410,11 @@ void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq)
 {
     emu->adminq = adminq;
+}
+
+void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, void *handle)
+{
+    emu->pvrdma_handle = (pvrdma_handle_t)handle;
 }
 
 void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
@@ -1380,8 +1388,10 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
     for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
         if (emu->net) {
             size_t len = eth_tx_gather(emu, q, q->head);
-            if (len)
+            if (len) {
                 ionic_eth_net_send(emu->net, emu->frame, len);
+                pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
+            }
         }
 
         /* struct ionic_txq_comp: status @0, comp_index le16 @2, colour @15. */
@@ -1478,8 +1488,10 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (len <= 0)
             break;
 
-        if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0)
+        if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0) {
             delivered = true;
+            pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
+        }
     }
 
     if (delivered)
@@ -1531,5 +1543,9 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
     if (emu->intr_mask_assert[vec])
         emu->intr_mask[vec] = 1;
 
-    return vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
+    int ret = vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
+    if (!ret)
+        pvrdma_irq_count(emu->pvrdma_handle);
+
+    return ret;
 }

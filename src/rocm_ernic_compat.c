@@ -531,6 +531,96 @@ void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
     }
 }
 
+void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    if (is_write) {
+        pvrdma->stats.uar_writes++;
+    } else {
+        pvrdma->stats.uar_reads++;
+    }
+}
+
+void pvrdma_irq_count(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    pvrdma->stats.interrupts++;
+}
+
+void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    if (is_tx) {
+        pvrdma->stats.total_ip_bytes_tx += bytes;
+    } else {
+        pvrdma->stats.total_ip_bytes_rx += bytes;
+    }
+}
+
+void pvrdma_adminq_count(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    pvrdma->stats.commands++;
+}
+
+void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
+                             uint64_t bytes, enum pvrdma_stat_op op)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || !bytes) {
+        return;
+    }
+
+    qp = qp_id == PVRDMA_STAT_NO_QP ? NULL : pvrdma_get_qp_stats(pvrdma, qp_id);
+
+    switch (op) {
+    case PVRDMA_STAT_SEND:
+        pvrdma->stats.total_bytes_sent += bytes;
+        if (qp) {
+            qp->bytes_sent += bytes;
+        }
+        break;
+    case PVRDMA_STAT_RECV:
+        pvrdma->stats.total_bytes_received += bytes;
+        if (qp) {
+            qp->bytes_received += bytes;
+        }
+        break;
+    case PVRDMA_STAT_RDMA_READ:
+        pvrdma->stats.total_bytes_rdma_read += bytes;
+        if (qp) {
+            qp->bytes_rdma_read += bytes;
+        }
+        break;
+    case PVRDMA_STAT_RDMA_WRITE:
+        pvrdma->stats.total_bytes_rdma_write += bytes;
+        if (qp) {
+            qp->bytes_rdma_write += bytes;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
