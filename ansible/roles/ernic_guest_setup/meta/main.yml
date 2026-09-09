@@ -8,9 +8,9 @@ galaxy_info:
   company: Advanced Micro Devices, Inc.
   role_name: ernic_guest_setup
   description: >-
-    Install the rocm-ernic DKMS driver, a custom rdma-core with
-    the rocm_ernic provider, udev rules and NIC addressing in a
-    guest VM
+    Install the patched upstream ionic kernel modules as a DKMS
+    package, rdma-core with its upstream ionic provider, udev
+    rules and NIC addressing in a guest VM
   license: MIT
   min_ansible_version: "2.18.0"
   platforms:

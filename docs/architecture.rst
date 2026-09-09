@@ -2,9 +2,12 @@ Architecture
 ============
 
 rocm-ernic emulates a complete PCIe RDMA device in userspace
-using the VFIO-User protocol. A companion kernel driver inside
-the guest VM communicates with the emulated device, providing
-standard InfiniBand verbs to applications.
+using the VFIO-User protocol. A kernel driver inside the guest
+VM communicates with the emulated device, providing standard
+InfiniBand verbs to applications. In the default ionic mode
+that driver is the upstream Linux ``ionic`` pair; in the
+deprecated legacy mode it is the companion ``rocm_ernic``
+module in ``driver/``. See :doc:`ionic`.
 
 High-Level Overview
 -------------------
@@ -14,7 +17,7 @@ High-Level Overview
   ┌──────────────────────────────────────────────┐
   │          Virtual Machine (Guest)             │
   │  ┌────────────────────────────────────┐      │
-  │  │   Linux Kernel rocm_ernic Driver   │      │
+  │  │  Linux ionic + ionic_rdma Drivers  │      │
   │  └─────────────┬──────────────────────┘      │
   │                │ PCI Interface               │
   └────────────────┼─────────────────────────────┘
@@ -54,8 +57,9 @@ Server (``rocm_ernic_server.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The main entry point. It creates the libvfio-user context,
-sets up the three PCI BARs, registers MSI-X vectors, and
-enters the server loop waiting for a QEMU client to connect.
+sets up the PCI BARs for the selected personality, registers
+MSI-X vectors, and enters the server loop waiting for a QEMU
+client to connect.
 
 Compatibility Bridge (``rocm_ernic_compat.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -77,8 +81,8 @@ synchronization.
 ionic Emulation (``src/ionic_*.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-An alternative front end, selected with ``--ionic``, that
-implements the register and queue protocol of the AMD
+The default front end, used unless ``--legacy`` is given,
+that implements the register and queue protocol of the AMD
 Pensando ionic NIC so the guest can run the upstream Linux
 ``ionic`` and ``ionic_rdma`` drivers. It provides the device
 command interface and the Ethernet LIF

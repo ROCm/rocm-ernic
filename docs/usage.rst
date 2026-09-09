@@ -24,25 +24,29 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend none
 
-   # ionic personality, Ethernet attached to a host TAP
-   ./build/rocm-ernic --ionic \
+   # Ethernet attached to a host TAP
+   ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0
 
 Device Personality
 ------------------
 
-``--ionic`` (short ``-I``) makes the server emulate an AMD
-Pensando ionic NIC (``1022:8001``) driven by the upstream
-Linux ``ionic`` and ``ionic_rdma`` modules, instead of the
-default PVRDMA-derived device (``1022:8000``) driven by the
-companion module in ``driver/``.
+No flag is needed: ionic is the default. The server emulates
+an AMD Pensando ionic NIC (``1022:8001``) driven by the
+upstream Linux ``ionic`` and ``ionic_rdma`` modules.
+``--ionic`` (short ``-I``) is still accepted and does
+nothing, so existing scripts keep working.
+
+``--legacy`` (alias ``--pvrdma``) selects the deprecated
+PVRDMA-derived device (``1022:8000``) driven by the companion
+module in ``driver/``, and prints a warning saying so.
 
 ``--tap IFNAME`` (short ``-T``) attaches the emulated
-Ethernet interface to an existing host TAP. It requires
-``--ionic``; the server exits with a diagnostic otherwise.
-Create the TAP up front, owned by the user running the
-server:
+Ethernet interface to an existing host TAP. It is
+incompatible with ``--legacy``; the server exits with a
+diagnostic if both are given. Create the TAP up front, owned
+by the user running the server:
 
 .. code-block:: bash
 
