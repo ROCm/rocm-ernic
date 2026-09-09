@@ -1626,6 +1626,26 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         dst_qp_id < dp->qp_count && dp->qp[dst_qp_id].valid ? &dp->qp[dst_qp_id]
                                                             : NULL;
 
+    /*
+     * A peer may only name memory this instance has registered.  sge_gpa()
+     * reads key 0 as IONIC_DMA_LKEY and hands back the va as a bus address with
+     * no MR lookup and no bound, which is fine for a key our own guest put in a
+     * WQE but would let another instance reach any guest physical page.
+     */
+    if (!rkey && (h->op == IONIC_WIRE_WRITE || h->op == IONIC_WIRE_WRITE_IMM ||
+                  h->op == IONIC_WIRE_READ_REQ ||
+                  h->op == IONIC_WIRE_ATOMIC_REQ)) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: node %u sent op %u with rkey 0, rejecting",
+                src_node, h->op);
+        dp_wire_reply(dp, src_node,
+                      h->op == IONIC_WIRE_READ_REQ    ? IONIC_WIRE_READ_RESP
+                      : h->op == IONIC_WIRE_ATOMIC_REQ ? IONIC_WIRE_ATOMIC_RESP
+                                                       : IONIC_WIRE_ACK,
+                      h, IONIC_STS_REMOTE_ACC_ERR, NULL, 0);
+        return true;
+    }
+
     switch (h->op) {
     case IONIC_WIRE_SEND:
     case IONIC_WIRE_SEND_IMM:
