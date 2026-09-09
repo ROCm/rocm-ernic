@@ -1,0 +1,45 @@
+From a50e4d5722133cda688f713987a547cceeeeae35 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: Tue, 8 Sep 2026 19:39:40 -0400
+Subject: [PATCH] ionic: allocate an address handle for UC queue pairs
+
+ionic_create_qp() sets has_ah only for IB_QPT_RC, so a UC QP never gets
+its struct ib_ud_header allocated.  ionic_modify_qp() then unconditionally
+requires that header whenever IB_QP_AV is set, which it always is for a
+RoCE transition to RTR:
+
+	if (mask & IB_QP_AV) {
+		if (!qp->hdr)
+			return -ENOMEM;
+
+The result is that every UC QP fails to reach RTR.  ibv_uc_pingpong
+reports "Failed to modify QP to RTR" and no command is ever posted to
+the device.
+
+UC needs the same L2/L3 header as RC -- the transport differs only in
+acknowledgement, not in addressing -- so extend has_ah to cover it.  All
+three other users of has_ah are the matching ahid/hdr alloc and free
+paths, which become symmetric for UC as a result.
+
+Signed-off-by: Stephen Bates <stephen.bates@amd.com>
+---
+ drivers/infiniband/hw/ionic/ionic_controlpath.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/infiniband/hw/ionic/ionic_controlpath.c b/drivers/infiniband/hw/ionic/ionic_controlpath.c
+index 9d91f7667..efe3186a1 100644
+--- a/drivers/infiniband/hw/ionic/ionic_controlpath.c
++++ b/drivers/infiniband/hw/ionic/ionic_controlpath.c
+@@ -2200,7 +2200,8 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
+ 		return rc;
+ 
+ 	qp->sig_all = attr->sq_sig_type == IB_SIGNAL_ALL_WR;
+-	qp->has_ah = attr->qp_type == IB_QPT_RC;
++	qp->has_ah = attr->qp_type == IB_QPT_RC ||
++		     attr->qp_type == IB_QPT_UC;
+ 
+ 	if (qp->has_ah) {
+ 		qp->hdr = kzalloc_obj(*qp->hdr);
+-- 
+2.43.0
+

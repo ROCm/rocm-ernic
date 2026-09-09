@@ -49,6 +49,11 @@
 #define IONIC_V1_OP_SEND           0
 #define IONIC_V1_OP_SEND_INV       1
 #define IONIC_V1_OP_SEND_IMM       2
+#define IONIC_V1_OP_RDMA_READ      3
+#define IONIC_V1_OP_RDMA_WRITE     4
+#define IONIC_V1_OP_RDMA_WRITE_IMM 5
+#define IONIC_V1_OP_ATOMIC_CS      6
+#define IONIC_V1_OP_ATOMIC_FA      7
 
 /* enum ionic_v1_flag (be16 at WQE byte 10) */
 #define IONIC_V1_FLAG_INL 0x0004u
@@ -72,6 +77,18 @@
 #define WQE_PLD_OFF 32
 #define WQE_SEND_LEN_OFF 28
 
+/* struct ionic_v1_common_bdy.rdma overlays the send body: two be32 halves of
+ * the remote va at 16/20, then the remote rkey, then the shared length. */
+#define WQE_RDMA_VA_HI_OFF 16
+#define WQE_RDMA_VA_LO_OFF 20
+#define WQE_RDMA_RKEY_OFF  24
+
+/* struct ionic_v1_atomic_bdy shares the first three fields with the rdma body
+ * and then carries its operands and a single fixed 8-byte result SGE. */
+#define WQE_ATOMIC_SWAP_ADD_OFF 28
+#define WQE_ATOMIC_COMPARE_OFF  36
+#define WQE_ATOMIC_SGE_OFF      48
+
 /* struct ionic_v1_cqe (32 bytes) */
 #define CQE_SIZE 32
 #define CQE_COLOR_BIT 0x01u
@@ -85,9 +102,12 @@
 #define CQE_RECV_OP_SEND     0
 #define CQE_RECV_OP_SEND_INV 1
 #define CQE_RECV_OP_SEND_IMM 2
+#define CQE_RECV_OP_RDMA_IMM 3
 
 /* IONIC_STS_LOCAL_LEN_ERR — recv buffer too small for the inbound message. */
-#define IONIC_STS_LOCAL_LEN_ERR 1
+#define IONIC_STS_OK             0
+#define IONIC_STS_LOCAL_LEN_ERR  1
+#define IONIC_STS_REMOTE_ACC_ERR 9
 
 /* -------------------------------------------------------------------------
  * State
@@ -616,7 +636,7 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
 }
 
 static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,
-                             uint32_t qid, uint32_t msn)
+                             uint32_t qid, uint32_t msn, uint32_t status)
 {
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
@@ -624,7 +644,8 @@ static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,
     uint32_t m = htobe32(msn);
     memcpy(body + 4, &m, 4); /* send.msg_msn */
 
-    cq_post(dp, cq_id, body, 0, CQE_TYPE_SEND_MSN, qid, false);
+    cq_post(dp, cq_id, body, status, CQE_TYPE_SEND_MSN, qid,
+            status != IONIC_STS_OK);
 }
 
 static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
@@ -746,6 +767,92 @@ static int64_t deliver_recv(struct ionic_datapath *dp,
     return copied;
 }
 
+/*
+ * Move @len bytes between a local SGE list and a remote region named by
+ * (rkey, remote_va).  The remote side is linear, so it is just an offset walk;
+ * the local side is scattered.  Returns the number of bytes transferred.
+ *
+ * Both ends resolve through the same MR table: an rkey is an lkey here,
+ * because the emulator holds every registration for the one guest it serves.
+ */
+static uint32_t rdma_xfer(struct ionic_datapath *dp,
+                          const struct dp_sge_list *local, uint32_t rkey,
+                          uint64_t remote_va, uint32_t len, bool to_remote)
+{
+    uint32_t done = 0;
+
+    for (uint32_t i = 0; i < local->count && done < len; i++) {
+        uint32_t chunk = local->len[i];
+        if (chunk > len - done)
+            chunk = len - done;
+        if (!chunk)
+            continue;
+
+        uint32_t n = to_remote
+                         ? dp_copy_sge(dp, rkey, remote_va + done,
+                                       local->lkey[i], local->va[i], chunk)
+                         : dp_copy_sge(dp, local->lkey[i], local->va[i], rkey,
+                                       remote_va + done, chunk);
+        done += n;
+        if (n != chunk)
+            break;
+    }
+    return done;
+}
+
+/* Read the be32 pair at @off as one 64-bit value: the wire splits every
+ * address and operand into high and low halves. */
+static uint64_t wqe_be64_pair(const uint8_t *wqe, uint32_t off)
+{
+    uint32_t hi, lo;
+    memcpy(&hi, wqe + off, 4);
+    memcpy(&lo, wqe + off + 4, 4);
+    return ((uint64_t)be32toh(hi) << 32) | be32toh(lo);
+}
+
+/*
+ * Compare-and-swap or fetch-and-add on 8 bytes of remote memory, with the
+ * original value returned to the local SGE.  Both operands and remote memory
+ * are treated as host-order u64: the driver converts the caller's values to
+ * big endian for the wire, so undoing that yields exactly what the
+ * application passed, and the same guest owns both sides of the copy.
+ */
+static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
+                      bool compare_swap)
+{
+    uint64_t remote_va = wqe_be64_pair(wqe, WQE_RDMA_VA_HI_OFF);
+    uint64_t swap_add = wqe_be64_pair(wqe, WQE_ATOMIC_SWAP_ADD_OFF);
+    uint64_t compare = wqe_be64_pair(wqe, WQE_ATOMIC_COMPARE_OFF);
+    uint32_t rkey;
+    memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
+    rkey = be32toh(rkey);
+
+    uint64_t local_va, run;
+    uint32_t local_lkey;
+    memcpy(&local_va, wqe + WQE_ATOMIC_SGE_OFF, 8);
+    memcpy(&local_lkey, wqe + WQE_ATOMIC_SGE_OFF + 12, 4);
+    local_va = be64toh(local_va);
+    local_lkey = be32toh(local_lkey);
+
+    uint64_t rgpa = sge_gpa(dp, rkey, remote_va, &run);
+    if (run < 8)
+        return false;
+    uint64_t lgpa = sge_gpa(dp, local_lkey, local_va, &run);
+    if (run < 8)
+        return false;
+
+    uint64_t old;
+    if (dp_dma_read(dp->vfu_ctx, rgpa, &old, 8) < 0)
+        return false;
+
+    uint64_t new = compare_swap ? (old == compare ? swap_add : old)
+                                : old + swap_add;
+
+    if (dp_dma_write(dp->vfu_ctx, rgpa, &new, 8) < 0)
+        return false;
+    return dp_dma_write(dp->vfu_ctx, lgpa, &old, 8) == 0;
+}
+
 static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
@@ -786,6 +893,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     }
 
     bool remote = q->ib_qp_type != 1 /* GSI */ && q->ib_qp_type != 4 /* UD */;
+    uint32_t status = IONIC_STS_OK;
 
     switch (op) {
     case IONIC_V1_OP_SEND:
@@ -814,9 +922,61 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         break;
     }
 
+    case IONIC_V1_OP_RDMA_READ:
+    case IONIC_V1_OP_RDMA_WRITE:
+    case IONIC_V1_OP_RDMA_WRITE_IMM: {
+        uint32_t va_hi, va_lo, rkey, length;
+        memcpy(&va_hi, wqe + WQE_RDMA_VA_HI_OFF, 4);
+        memcpy(&va_lo, wqe + WQE_RDMA_VA_LO_OFF, 4);
+        memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
+        memcpy(&length, wqe + WQE_SEND_LEN_OFF, 4);
+
+        uint64_t remote_va =
+            ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+        rkey = be32toh(rkey);
+        length = be32toh(length);
+
+        bool to_remote = op != IONIC_V1_OP_RDMA_READ;
+        uint32_t moved = rdma_xfer(dp, &src, rkey, remote_va, length,
+                                   to_remote);
+        if (moved != length) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#lx moved "
+                    "%u of %u bytes",
+                    qp_id, to_remote ? "write" : "read", rkey,
+                    (unsigned long)remote_va, moved, length);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+            break;
+        }
+
+        /* Only the _IMM form consumes a receive on the far side, and it does
+         * so with no payload: the data already landed via the rkey. */
+        if (op == IONIC_V1_OP_RDMA_WRITE_IMM) {
+            uint32_t dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
+            struct ionic_qp_ring *dq =
+                dst_id < dp->qp_count && dp->qp[dst_id].valid ? &dp->qp[dst_id]
+                                                              : NULL;
+            struct dp_sge_list none = {.count = 0, .total = 0};
+            if (dq)
+                deliver_recv(dp, dq, dst_id, qp_id, &none,
+                             CQE_RECV_OP_RDMA_IMM, imm_be);
+        }
+        break;
+    }
+
+    case IONIC_V1_OP_ATOMIC_CS:
+    case IONIC_V1_OP_ATOMIC_FA:
+        if (!do_atomic(dp, wqe, op == IONIC_V1_OP_ATOMIC_CS)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u atomic op=%u failed", qp_id, op);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+        }
+        break;
+
     default:
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u unsupported op=%u", qp_id, op);
+        status = IONIC_STS_REMOTE_ACC_ERR;
         break;
     }
 
@@ -828,7 +988,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      */
     if (remote) {
         q->msn++;
-        cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn);
+        cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
     } else if (flags & IONIC_V1_FLAG_SIG) {
         cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
     }
