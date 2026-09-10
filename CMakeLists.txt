@@ -229,7 +229,6 @@ target_compile_definitions(rocm-ernic PRIVATE
     GIT_SHA_FULL="${GIT_SHA_FULL}"
     GIT_SHA_SHORT="${GIT_SHA_SHORT}"
     _GNU_SOURCE
-    TARGET_PAGE_SIZE=4096
 )
 
 target_compile_options(rocm-ernic PRIVATE

@@ -81,7 +81,7 @@ target_include_directories(test_rdma_backend_query_port PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_backend_query_port PRIVATE
-    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+    _GNU_SOURCE)
 # -w: this test links the ported RDMA-backend translation units, so warnings
 # would come from that ported C rather than the test itself; suppress them
 # to match how the ported sources are compiled in the main build.
@@ -305,7 +305,7 @@ target_include_directories(test_loopback_sge_copy PRIVATE
     ${IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_loopback_sge_copy PRIVATE
-    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+    _GNU_SOURCE)
 # -w: this test #includes the ported loopback translation unit, so warnings
 # would come from that ported C rather than the test itself; suppress them
 # to match how the ported sources are compiled in the main build.
@@ -330,7 +330,7 @@ target_include_directories(test_tcp_mesh_topology PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_tcp_mesh_topology PRIVATE
-    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+    _GNU_SOURCE)
 # -w: this test #includes the ported TCP backend translation unit, so warnings
 # would come from that ported C rather than the test itself; suppress them
 # to match how the ported sources are compiled in the main build.
