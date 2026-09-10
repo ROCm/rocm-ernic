@@ -12,35 +12,8 @@
 # re-runs cheap, so there is no separate Ansible stamp here.
 
 ---
-- name: Read the pinned ionic kernel ref from cmake
-  ansible.builtin.shell:
-    executable: /bin/bash
-    cmd: >-
-      set -o pipefail;
-      grep -oP 'set\(IONIC_KERNEL_REF\s+"\K[^"]+'
-      "{{ ernic_source_dir }}/cmake/ErnicKernelModule.cmake"
-  delegate_to: localhost
-  become: false
-  run_once: true
-  changed_when: false
-  register: ernic_ionic_cmake_ref
-  when: not (ernic_ionic_kernel_ref | trim | length > 0)
-
-- name: Resolve the ionic kernel ref
-  ansible.builtin.set_fact:
-    ernic_ionic_ref: >-
-      {{ (ernic_ionic_kernel_ref | trim)
-         if (ernic_ionic_kernel_ref | trim | length > 0)
-         else (ernic_ionic_cmake_ref.stdout | trim) }}
-
-- name: Assert the ionic kernel ref resolved
-  ansible.builtin.assert:
-    that:
-      - ernic_ionic_ref | length > 0
-    fail_msg: >-
-      Could not determine the ionic kernel ref.  Set
-      ernic_ionic_kernel_ref, or check that IONIC_KERNEL_REF is
-      still defined in cmake/ErnicKernelModule.cmake.
+# ernic_ionic_ref and ernic_ionic_kver are resolved by the
+# ernic_source role, which main.yml includes first.
 
 # drivers/infiniband/hw/ionic landed in 6.18.  On an older guest
 # the Ethernet half builds and the RDMA half does not, which fails
@@ -56,6 +29,48 @@
       {{ ernic_ionic_min_kernel }}; ionic_rdma cannot be built.
       Update the guest image, or run with
       -e ernic_device_mode=legacy.
+
+# The floor above is necessary but nowhere near sufficient.  The
+# ionic sources track IB-core helpers that move between minor
+# releases -- v7.2.4 sources on a 7.0 kernel fail on four implicit
+# declarations deep inside the DKMS build, which is a wall of
+# compiler output instead of a diagnosis.  A point-release gap
+# (v7.2.4 sources on 7.2.3) is fine, so only major.minor is
+# compared.
+- name: Assert the guest kernel matches the ionic sources
+  ansible.builtin.assert:
+    that:
+      - >-
+        ansible_kernel.split('-')[0].split('.')[0:2] | join('.')
+        == ernic_ionic_kver.split('.')[0:2] | join('.')
+    fail_msg: >-
+      Guest kernel {{ ansible_kernel }} does not match the ionic
+      sources pinned at {{ ernic_ionic_ref }}; ionic_rdma needs a
+      {{ ernic_ionic_kver.split('.')[0:2] | join('.') }}.x kernel.
+      Rebuild the golden image with
+      ernic_image_kernel_mainline=true, or set
+      ernic_ionic_kernel_ref to a tag matching this kernel.
+  when: ernic_ionic_kver | length > 0
+
+# The overlays are meant to be identical.  When they are not, the
+# asymmetry turns up as an unexplained perf result rather than as
+# a setup failure.
+- name: Assert every guest is running the same kernel
+  ansible.builtin.assert:
+    that:
+      - >-
+        groups['ernic_vms']
+        | map('extract', hostvars, 'ansible_kernel')
+        | unique | length == 1
+    fail_msg: >-
+      The guests disagree on their kernel version:
+      {{ groups['ernic_vms']
+         | zip(groups['ernic_vms']
+               | map('extract', hostvars, 'ansible_kernel'))
+         | map('join', '=') | join(', ') }}.
+      Rebuild the overlays from a single golden image.
+  run_once: true
+  when: groups['ernic_vms'] | default([]) | length > 1
 
 - name: Fetch and patch the upstream ionic sources
   ansible.builtin.command:

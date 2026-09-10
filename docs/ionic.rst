@@ -225,8 +225,20 @@ DKMS package is registered as ``ionic-ernic``.
 
    ``IONIC_KERNEL_REF`` must be at least ``v6.18``:
    ``drivers/infiniband/hw/ionic`` was merged for 6.18, so
-   older refs cannot supply the RDMA half of the stack. The
-   guest kernel must also be new enough to build it.
+   older refs cannot supply the RDMA half of the stack.
+
+   The guest kernel's *major.minor* must also match the ref.
+   The ionic sources track IB-core helpers that move between
+   minor releases --- ``v7.2.4`` sources on a 7.0 kernel fail
+   on ``ib_umem_get_va``, ``ib_copy_validate_udata_in`` and
+   ``ib_respond_udata`` --- so the default ``v7.2.4`` needs a
+   7.2.x guest. A point-release gap (``v7.2.4`` sources on
+   7.2.3) is fine. No Ubuntu stock kernel qualifies today:
+   noble HWE is 6.17 and resolute GA is 7.0, so
+   ``ernic_image_prep`` installs a matching kernel from the
+   Ubuntu mainline PPA when it builds the golden image, and
+   ``ernic_guest_setup`` asserts the match before it starts
+   the DKMS build.
 
 Loading and Verifying
 ^^^^^^^^^^^^^^^^^^^^^

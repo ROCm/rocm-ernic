@@ -20,6 +20,7 @@
 
 ernic_env
 mkdir -p "${CI_RESULTS}/perf-csv" "${CI_RESULTS}/junit"
+start_suite perf
 
 # Refuse to produce numbers that would be recorded as
 # a performance baseline but measured under software

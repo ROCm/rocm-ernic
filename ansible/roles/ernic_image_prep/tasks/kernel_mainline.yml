@@ -1,0 +1,163 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Install an Ubuntu mainline-PPA kernel matching the ionic driver
+# sources.  No Ubuntu stock kernel is usable: the in-tree ionic
+# RDMA driver starts at 6.18, noble HWE is 6.17 and resolute GA is
+# 7.0, while the sources are pinned well past all three.  Without
+# this the golden image cannot build the driver it ships.
+
+---
+- name: Resolve the mainline kernel version
+  ansible.builtin.set_fact:
+    ernic_image_kver: >-
+      {{ (ernic_image_kernel_version | trim)
+         if (ernic_image_kernel_version | trim | length > 0)
+         else (ernic_ionic_kver | default('') | trim) }}
+
+- name: Assert a mainline kernel version could be determined
+  ansible.builtin.assert:
+    that:
+      - ernic_image_kver | length > 0
+    fail_msg: >-
+      ernic_image_kernel_mainline is set but no kernel version is
+      available.  The ionic ref
+      ({{ ernic_ionic_ref | default('unset') }}) is not a vX.Y[.Z]
+      tag, so it names no kernel version; set
+      ernic_image_kernel_version explicitly.
+
+# The mainline PPA names a v6.18 build 6.18.0-061800-generic, so
+# the tag and uname -r only line up once both are three components.
+- name: Normalise the version for comparison
+  ansible.builtin.set_fact:
+    ernic_image_kver_full: >-
+      {{ ernic_image_kver
+         if (ernic_image_kver.split('.') | length == 3)
+         else ernic_image_kver ~ '.0' }}
+
+- name: Note that the running kernel already matches
+  ansible.builtin.debug:
+    msg: >-
+      Kernel {{ ansible_kernel }} already matches
+      {{ ernic_image_kver_full }}; skipping the mainline install.
+  when: ansible_kernel.split('-')[0] == ernic_image_kver_full
+
+- name: Install the mainline kernel
+  when: ansible_kernel.split('-')[0] != ernic_image_kver_full
+  block:
+
+    - name: Create a download directory for the mainline debs
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: mainline
+      register: ernic_image_kernel_tmp
+
+    # The filenames carry a build timestamp, so they can only be
+    # read out of CHECKSUMS -- never constructed.
+    - name: Fetch the mainline CHECKSUMS manifest
+      ansible.builtin.get_url:
+        url: >-
+          {{ ernic_image_kernel_mainline_url }}/v{{
+             ernic_image_kver }}/amd64/CHECKSUMS
+        dest: "{{ ernic_image_kernel_tmp.path }}/CHECKSUMS"
+        mode: "0644"
+      register: ernic_image_checksums
+      retries: "{{ ernic_image_apt_retries }}"
+      delay: "{{ ernic_image_apt_delay }}"
+      until: ernic_image_checksums is success
+      # A 404 here means the PPA has no build for this version,
+      # which the assert below reports far better than get_url does.
+      ignore_errors: true
+
+    - name: Assert the mainline build exists
+      ansible.builtin.assert:
+        that:
+          - ernic_image_checksums is success
+        fail_msg: >-
+          No mainline build for v{{ ernic_image_kver }} at
+          {{ ernic_image_kernel_mainline_url }} ({{
+             ernic_image_checksums.msg | default('download failed')
+          }}).  Pick a version the PPA has published, or set
+          ernic_image_kernel_version.
+
+    - name: Read the CHECKSUMS manifest
+      ansible.builtin.slurp:
+        src: "{{ ernic_image_kernel_tmp.path }}/CHECKSUMS"
+      register: ernic_image_checksums_raw
+
+    # CHECKSUMS holds a sha1 section followed by a sha256 one, in
+    # "<hash>  <name>" lines.  Take the 64-character hashes.
+    - name: Select the packages to install
+      ansible.builtin.set_fact:
+        ernic_image_kernel_debs: >-
+          {{ ernic_image_checksums_raw.content | b64decode
+             | regex_findall('^([0-9a-f]{64})\s+\*?(\S+\.deb)$',
+                             multiline=True)
+             | selectattr(1, 'match', ernic_image_kernel_deb_re)
+             | list }}
+
+    - name: Assert all four kernel packages were found
+      ansible.builtin.assert:
+        that:
+          - ernic_image_kernel_debs | length == 4
+        fail_msg: >-
+          Expected 4 kernel packages for v{{ ernic_image_kver }},
+          found {{ ernic_image_kernel_debs | length }}:
+          {{ ernic_image_kernel_debs | map(attribute=1) | join(', ') }}.
+          The mainline PPA layout may have changed.
+
+    - name: Download the mainline kernel packages
+      ansible.builtin.get_url:
+        url: >-
+          {{ ernic_image_kernel_mainline_url }}/v{{
+             ernic_image_kver }}/amd64/{{ item[1] }}
+        dest: "{{ ernic_image_kernel_tmp.path }}/{{ item[1] }}"
+        checksum: "sha256:{{ item[0] }}"
+        mode: "0644"
+      loop: "{{ ernic_image_kernel_debs }}"
+      loop_control:
+        label: "{{ item[1] }}"
+      register: ernic_image_kernel_dl
+      retries: "{{ ernic_image_apt_retries }}"
+      delay: "{{ ernic_image_apt_delay }}"
+      until: ernic_image_kernel_dl is success
+
+    # The debs pull a handful of archive dependencies, so the cache
+    # has to be current before they are installed.
+    - name: Update the apt cache
+      ansible.builtin.apt:
+        update_cache: true
+      register: ernic_image_kernel_apt_update
+      retries: "{{ ernic_image_apt_retries }}"
+      delay: "{{ ernic_image_apt_delay }}"
+      until: ernic_image_kernel_apt_update is success
+
+    # One apt invocation for all four: linux-headers-<ver>_all is a
+    # dependency of linux-headers-<ver>-generic, so installing them
+    # one at a time fails on ordering.  The kernel postinst runs
+    # update-grub itself.
+    - name: Install the mainline kernel packages
+      ansible.builtin.command:
+        argv: >-
+          {{ ['apt-get', 'install', '-y', '--no-install-recommends']
+             + (ernic_image_kernel_debs
+                | map(attribute=1)
+                | map('regex_replace', '^', './') | list) }}
+        chdir: "{{ ernic_image_kernel_tmp.path }}"
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      changed_when: true
+
+    - name: Remove the downloaded debs
+      ansible.builtin.file:
+        path: "{{ ernic_image_kernel_tmp.path }}"
+        state: absent
+
+    # Off by default: the golden image is shut down straight after
+    # this role and its overlays boot fresh, so the reboot is only
+    # wanted when the role is pointed at a live guest.
+    - name: Reboot into the mainline kernel
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ ernic_image_kernel_reboot_timeout }}"
+      when: ernic_image_kernel_reboot | bool

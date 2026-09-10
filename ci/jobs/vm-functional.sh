@@ -25,6 +25,7 @@
 
 ernic_env
 mkdir -p "${CI_RESULTS}/junit"
+start_suite vm-functional
 
 ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
 [ -f "${ANSIBLE_DIR}/ci-site.yml" ] || \

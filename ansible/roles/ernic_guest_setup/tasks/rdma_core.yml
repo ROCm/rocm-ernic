@@ -251,3 +251,20 @@
         content: "{{ ernic_provider_want }}\n"
         dest: "{{ ernic_guest_stamp_dir }}/provider.stamp"
         mode: "0644"
+
+# ernic_rdma_core_prefix is /usr, so the build above overwrites the
+# distro's rdma-core in place while dpkg still believes its own
+# version is installed.  Only our build ships an ionic provider, so
+# an apt upgrade that restores the packaged libraries takes the
+# device away entirely -- and does it long after the fact, with
+# nothing to connect the failure to its cause.  Held outside the
+# build block so re-runs that skip the rebuild still reapply it.
+- name: Hold the packages our rdma-core build overwrites
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ ernic_rdma_core_hold_packages }}"
+  failed_when: false
+  when:
+    - ernic_rdma_core_hold | bool
+    - ernic_rdma_core_prefix == '/usr'

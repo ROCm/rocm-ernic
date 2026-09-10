@@ -22,11 +22,19 @@
     vm1_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
       -p {{ ernic_vm_ssh_base_port | int + 1 }}
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"

@@ -69,3 +69,7 @@
     - name: Mark the source as resolved
       ansible.builtin.set_fact:
         ernic_source_resolved: true
+
+- name: Resolve the ionic kernel ref
+  ansible.builtin.include_tasks: ionic_ref.yml
+  when: ernic_ionic_ref is not defined

@@ -21,6 +21,7 @@
 
 ernic_env
 mkdir -p "${CI_RESULTS}" "${CI_RUN_DIR}" "${CI_LOG_DIR}"
+start_suite vm-up
 
 [ -x "${CI_BUILD_DIR}/rocm-ernic" ] || \
     die "no build at ${CI_BUILD_DIR}; run ci/jobs/build.sh first"

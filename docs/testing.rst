@@ -366,8 +366,24 @@ of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
 ionic subtrees at that ref, and applies every
 ``patches/*.patch`` with ``git am``, failing the pull
 request if one no longer applies. The ionic modules
-themselves are not built there: they need kernel 6.18 or
-newer headers, which hosted runners do not carry.
+themselves are not built there: they need headers matching
+``IONIC_KERNEL_REF`` --- the sources track IB-core helpers
+that move between minor releases, so the guest kernel's
+major.minor must equal the ref's, and no hosted runner
+carries such a kernel.
+
+``.github/workflows/system-tests.yml`` boots guests under
+KVM on hosted runners and provisions them by running the
+collection itself --- ``ansible-playbook ci-site.yml --tags
+guest-setup`` against a generated ``instances.json`` ---
+rather than by copying sources in over ``ssh``. The role is
+therefore exercised on every pull request, and the guest
+build in CI is the same one a ``vm-create.yml`` run
+produces. The workflow installs only kernel headers and the
+build toolchain before handing over; the mainline kernel
+itself must already be in the guest image, and
+``ernic_guest_setup`` asserts that it matches the pinned ref
+before it starts the DKMS build.
 
 Self-Hosted CI
 --------------

@@ -1,0 +1,49 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Resolve the upstream kernel tag the ionic driver sources come
+# from.  Both ernic_guest_setup (which builds the DKMS package)
+# and ernic_image_prep (which installs a kernel new enough to
+# build it) need this, so it lives in the shared source role.
+
+---
+- name: Read the pinned ionic kernel ref from cmake
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      grep -oP 'set\(IONIC_KERNEL_REF\s+"\K[^"]+'
+      "{{ ernic_source_dir }}/cmake/ErnicKernelModule.cmake"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  register: ernic_ionic_cmake_ref
+  when: not (ernic_ionic_kernel_ref | trim | length > 0)
+
+- name: Resolve the ionic kernel ref
+  ansible.builtin.set_fact:
+    ernic_ionic_ref: >-
+      {{ (ernic_ionic_kernel_ref | trim)
+         if (ernic_ionic_kernel_ref | trim | length > 0)
+         else (ernic_ionic_cmake_ref.stdout | trim) }}
+
+- name: Assert the ionic kernel ref resolved
+  ansible.builtin.assert:
+    that:
+      - ernic_ionic_ref | length > 0
+    fail_msg: >-
+      Could not determine the ionic kernel ref.  Set
+      ernic_ionic_kernel_ref, or check that IONIC_KERNEL_REF is
+      still defined in cmake/ErnicKernelModule.cmake.
+
+# A vX.Y[.Z] tag also names a kernel version; a bare SHA does not.
+# Consumers that need the version (the mainline kernel install, the
+# skew assert) skip themselves when this comes back empty.
+- name: Derive the kernel version from the ionic ref
+  ansible.builtin.set_fact:
+    ernic_ionic_kver: >-
+      {{ (ernic_ionic_ref | regex_replace('^v', ''))
+         if (ernic_ionic_ref is match('^v[0-9]+\.[0-9]+(\.[0-9]+)?$'))
+         else '' }}

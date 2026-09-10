@@ -28,10 +28,9 @@ ernic_guest_ionic_dir: /tmp/ionic
 # Where the sparse kernel checkout lands.  Outside /tmp so a
 # reboot does not force a re-clone.
 ernic_ionic_source_dir: /var/tmp/ionic-src
-# Empty means "use the IONIC_KERNEL_REF pinned in
-# cmake/ErnicKernelModule.cmake", read from the controller's
-# checkout so the guest and the host build the same driver.
-ernic_ionic_kernel_ref: ""
+# The kernel ref itself (ernic_ionic_kernel_ref, defaulting to the
+# IONIC_KERNEL_REF pin in cmake/ErnicKernelModule.cmake) is owned
+# by the ernic_source role, which ernic_image_prep shares.
 # drivers/infiniband/hw/ionic was merged for 6.18; older guest
 # kernels cannot build the RDMA half.
 ernic_ionic_min_kernel: "6.18"
@@ -51,6 +50,15 @@ ernic_rdma_core_url: >-
   ernic_rdma_core_version }}.tar.gz
 ernic_rdma_core_build_dir: /tmp/rdma-core-build
 ernic_rdma_core_prefix: /usr
+# The build above installs over the distro's rdma-core, so apt must
+# not be allowed to put the packaged libraries back -- only our
+# build has an ionic provider.  Ignored unless the prefix is /usr.
+ernic_rdma_core_hold: true
+ernic_rdma_core_hold_packages:
+  - rdma-core
+  - libibverbs1
+  - librdmacm1
+  - ibverbs-providers
 
 # ── Kernel modules ───────────────────────────────
 ernic_guest_modules_ionic:

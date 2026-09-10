@@ -24,6 +24,13 @@ ionic mode needs a guest kernel of 6.18 or newer
 (`ernic_ionic_min_kernel`) — that is where `drivers/infiniband/hw/ionic`
 landed — and rdma-core 61 or newer, which is where `providers/ionic` did.
 
+The floor is not enough on its own. The ionic sources track IB-core helpers
+that move between minor releases, so the guest kernel's major.minor must also
+match `IONIC_KERNEL_REF`: `v7.2.4` sources build on a 7.2.3 kernel but not on a
+7.0 one. The role asserts this before the DKMS build rather than letting it
+fail as a wall of implicit-declaration errors. `ernic_image_prep` installs a
+matching mainline kernel when it builds the golden image.
+
 ## Overview
 
 Phases, each behind a flag:
@@ -50,7 +57,10 @@ version and source hashes. The stamp is written last, so an interrupted build
 is not mistaken for a complete one.
 
 Run `ernic_image_prep` first — this role assumes RDMA userspace, ROCm and the
-build toolchain are already present.
+build toolchain are already present. That includes `perftest`: the rocm-xio
+fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
+`ib_*_bw` binaries a CI perf sweep measures with are the distro package
+(24.01.0, reporting `Version: 6.20`) rather than the fork.
 
 ## Requirements
 
@@ -65,9 +75,9 @@ build toolchain are already present.
 # Device mode: ionic (default) or legacy (deprecated)
 ernic_device_mode: ionic
 
-# ionic kernel modules. An empty ref means "use the
+# ionic kernel modules. The ref itself is ernic_ionic_kernel_ref,
+# owned by the ernic_source role: empty means "use the
 # IONIC_KERNEL_REF pinned in cmake/ErnicKernelModule.cmake".
-ernic_ionic_kernel_ref: ""
 ernic_ionic_source_dir: /var/tmp/ionic-src
 ernic_ionic_min_kernel: "6.18"
 
@@ -80,9 +90,13 @@ ernic_set_hostname: true
 ernic_gpu_passthrough: true
 ernic_pci_mmio_bridge: true
 
-# rdma-core
+# rdma-core.  The build installs over the distro's rdma-core,
+# so the packages it overwrites are held: only this build has
+# an ionic provider, and an apt upgrade that restored the
+# packaged libraries would take the RDMA device away.
 ernic_rdma_core_version: "62.0"
 ernic_rdma_core_prefix: /usr
+ernic_rdma_core_hold: true
 
 # NIC. vm_index / vm_ip host vars (set by vm-create.yml) are
 # picked up automatically; set these directly for a static

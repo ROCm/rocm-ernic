@@ -53,6 +53,31 @@ ernic_image_pciids_entry: >-
      if ernic_device_mode == 'legacy'
      else '8001  ROCm Emulated ionic RDMA NIC' }}
 
+# ── Mainline kernel ──────────────────────────────
+# The ionic RDMA driver needs a kernel matching the sources pinned
+# by IONIC_KERNEL_REF, and no Ubuntu stock kernel is new enough
+# (in-tree ionic starts at 6.18, noble HWE is 6.17, resolute GA is
+# 7.0).  Install one from the Ubuntu mainline PPA alongside the
+# distro kernel, which stays as a fallback.
+ernic_image_kernel_mainline: "{{ ernic_device_mode != 'legacy' }}"
+# Empty means "derive from the ionic ref": v7.2.4 -> 7.2.4.
+ernic_image_kernel_version: ""
+ernic_image_kernel_mainline_url: "https://kernel.ubuntu.com/mainline"
+# The four amd64 packages the PPA publishes per version.  Their
+# filenames carry a build timestamp, so they are matched out of the
+# CHECKSUMS manifest rather than constructed.
+ernic_image_kernel_deb_re: >-
+  ^linux-(headers-[0-9].*_(all|amd64)|image-unsigned-[0-9].*-generic_.*_amd64|modules-[0-9].*-generic_.*_amd64)\.deb$
+# The golden image shuts down after this role and its overlays boot
+# fresh, so the new kernel is picked up without a reboot here.
+ernic_image_kernel_reboot: false
+ernic_image_kernel_reboot_timeout: 600
+
+# Background upgrades are what silently replaced the source-built
+# rdma-core on the test guests and drifted their kernel packages
+# apart.  A test image wants a frozen userspace, not a current one.
+ernic_image_disable_unattended: true
+
 # Drop the apt cache at the end to shrink the image.
 ernic_image_clean_apt: true
 

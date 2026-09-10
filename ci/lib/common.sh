@@ -115,6 +115,20 @@ die() { log_error "$*"; exit 1; }
 # turns those into the functional report and the
 # GitHub step summary.  Keeping this append-only means
 # a job that dies mid-way still reports what it did.
+#
+# Append-only across *runs* is a different matter: the
+# results dir survives, so a job that does not truncate
+# counts every failure it has ever recorded.  A clean
+# perf run reported "5 perf check(s) failed" from
+# entries left by earlier runs.  Every job calls
+# start_suite once, before its first check.
+
+start_suite() {
+    # start_suite <suite>
+    local suite="$1"
+    mkdir -p "${CI_RESULTS}"
+    : >"${CI_RESULTS}/${suite}.jsonl"
+}
 
 record_result() {
     # record_result <suite> <name> <status> <duration_s> [detail]
