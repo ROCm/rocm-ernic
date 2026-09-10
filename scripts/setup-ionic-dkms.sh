@@ -149,9 +149,18 @@ sudo dkms add "${PKG_NAME}/${PKG_VERSION}"
 KVER="$(uname -r)"
 echo "Building ionic + ionic_rdma for ${KVER}..."
 if ! sudo dkms build "${PKG_NAME}/${PKG_VERSION}" -k "${KVER}"; then
+    MAKE_LOG="/var/lib/dkms/${PKG_NAME}/${PKG_VERSION}/build/make.log"
     echo ""
     echo "ERROR: DKMS build failed."
-    echo "Check: /var/lib/dkms/${PKG_NAME}/${PKG_VERSION}/build/make.log"
+    echo "Check: ${MAKE_LOG}"
+    # In CI the guest is torn down straight after this, so the log has to be
+    # emitted here or the actual compile error is lost.
+    if [ -r "${MAKE_LOG}" ]; then
+        echo ""
+        echo "=== ${MAKE_LOG} (last 200 lines) ==="
+        sudo tail -200 "${MAKE_LOG}"
+        echo "=== end of make.log ==="
+    fi
     exit 1
 fi
 
