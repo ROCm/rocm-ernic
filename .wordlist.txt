@@ -577,6 +577,7 @@ dedupe
 deduplicates
 DHCP
 distro
+distro's
 distroless
 dockerTools
 EABI
@@ -648,10 +649,12 @@ deduplicate
 deps
 GPUs
 HCA
+HWE
 IOMMU
 NIC
 sbates
 SHA
+sha
 udev
 cfg
 gpu
