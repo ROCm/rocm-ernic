@@ -2328,7 +2328,12 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
         return;
     }
 
+    /* The whole payload goes on the wire, including the node slots past
+     * num_nodes, so the struct MUST be zeroed to avoid sending stack
+     * contents when there are unused nodes.
+     */
     TcpMeshTopologyPayload topo;
+    memset(&topo, 0, sizeof(topo));
     uint32_t num_nodes = 0;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
