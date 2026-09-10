@@ -81,7 +81,7 @@ target_include_directories(test_rdma_backend_query_port PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_backend_query_port PRIVATE
-    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+    _GNU_SOURCE)
 # -w: this test links the ported RDMA-backend translation units, so warnings
 # would come from that ported C rather than the test itself; suppress them
 # to match how the ported sources are compiled in the main build.
@@ -305,7 +305,7 @@ target_include_directories(test_loopback_sge_copy PRIVATE
     ${IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_loopback_sge_copy PRIVATE
-    _GNU_SOURCE TARGET_PAGE_SIZE=4096)
+    _GNU_SOURCE)
 # -w: this test #includes the ported loopback translation unit, so warnings
 # would come from that ported C rather than the test itself; suppress them
 # to match how the ported sources are compiled in the main build.
@@ -316,6 +316,31 @@ target_link_directories(test_loopback_sge_copy PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_loopback_sge_copy PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES})
+
+# TCP mesh-topology broadcast test. It #includes the TCP backend translation
+# unit to reach its static helpers and stubs the backend's externals, so no
+# RDMA subsystem link is needed; the broadcast goes over a socketpair.
+add_executable(test_tcp_mesh_topology test_tcp_mesh_topology.c)
+target_include_directories(test_tcp_mesh_topology PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_tcp_mesh_topology PRIVATE
+    _GNU_SOURCE)
+# -w: this test #includes the ported TCP backend translation unit, so warnings
+# would come from that ported C rather than the test itself; suppress them
+# to match how the ported sources are compiled in the main build.
+target_compile_options(test_tcp_mesh_topology PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_tcp_mesh_topology PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_tcp_mesh_topology PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_tcp_mesh_topology PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # ---------------------------------------------------------------
 # Register tests with CTest
@@ -432,6 +457,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_loopback_sge_copy>
 )
 set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# TCP mesh-topology broadcast unit test: asserts the unused node slots in the
+# fixed-size payload are zeroed rather than carrying stack contents.
+add_test(
+    NAME tcp-mesh-topology-unit
+    COMMAND $<TARGET_FILE:test_tcp_mesh_topology>
+)
+set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # ionic server smoke test: start server in --ionic mode, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.
