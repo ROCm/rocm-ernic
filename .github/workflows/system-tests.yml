@@ -190,7 +190,9 @@ jobs:
         echo "=== Starting rocm-ernic server ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
-        
+
+        # No mode flag: ionic (1022:8001) is the default, and the guest
+        # below builds the matching upstream ionic + ionic_rdma modules.
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback:mode=preserve \
@@ -360,7 +362,7 @@ jobs:
         
         echo "=== PCI Devices ==="
         sudo lspci | grep -i amd || echo "AMD device not found yet"
-        sudo lspci -nn | grep -E "1022:8000|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
+        sudo lspci -nn | grep -E "1022:8001|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
         
         echo ""
         echo "=== Checking for RDMA device ==="
@@ -375,20 +377,38 @@ jobs:
         lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
         EOFVM
     
-    - name: Copy driver source to VM
+    - name: Copy ionic driver sources to VM
       shell: bash
       run: |
-        echo "=== Copying driver source to VM ==="
+        echo "=== Copying ionic build scripts and patches to VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        
+
+        # The guest clones the upstream kernel itself, so only the
+        # fetch/DKMS scripts and the AMD device-ID patches travel over.
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/ionic"
         scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
-          driver/ "${VM_USER}@localhost:/tmp/" || {
-          echo "✗ Failed to copy driver source to VM"
+          scripts/fetch-ionic-sources.sh scripts/setup-ionic-dkms.sh patches \
+          "${VM_USER}@localhost:/tmp/ionic/" || {
+          echo "✗ Failed to copy ionic sources to VM"
           exit 1
         }
-        echo "✓ Driver source copied to VM"
-    
+        echo "✓ ionic build scripts and patches copied to VM"
+
+    - name: Read the pinned ionic kernel ref
+      shell: bash
+      run: |
+        IONIC_KERNEL_REF=$(grep -oP 'set\(IONIC_KERNEL_REF\s+"\K[^"]+' \
+          cmake/ErnicKernelModule.cmake)
+        if [ -z "$IONIC_KERNEL_REF" ]; then
+          echo "✗ IONIC_KERNEL_REF not found in cmake/ErnicKernelModule.cmake"
+          exit 1
+        fi
+        echo "IONIC_KERNEL_REF=$IONIC_KERNEL_REF" >> $GITHUB_ENV
+        echo "✓ ionic kernel ref: $IONIC_KERNEL_REF"
+
+
     - name: Install kernel-version-specific packages in VM
       shell: bash
       run: |
@@ -398,6 +418,17 @@ jobs:
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         KVER=$(uname -r)
+
+        # drivers/infiniband/hw/ionic landed in 6.18, so an older guest
+        # cannot build the RDMA half at all. Fail here with the reason
+        # rather than deep inside a DKMS make.log.
+        KBASE=${KVER%%-*}
+        if [ "$(printf '%s\n6.18\n' "$KBASE" | sort -V | head -1)" != "6.18" ]; then
+          echo "✗ Guest kernel $KVER is older than 6.18"
+          echo "  ionic_rdma cannot be built; the CI guest image needs updating."
+          exit 1
+        fi
+
         # unattended-upgrades runs on a timer inside the guest image and
         # holds /var/lib/dpkg/lock-frontend for minutes. Retrying against a
         # held lock just burns the attempts, so wait for it instead.
@@ -407,25 +438,13 @@ jobs:
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+            linux-headers-${KVER} linux-modules-extra-${KVER} \
+            dkms git build-essential && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
         echo "✓ Kernel packages installed for ${KVER}"
         EOFVM
-
-    - name: Copy rdma-core provider to VM
-      shell: bash
-      run: |
-        echo "=== Copying rdma-core provider to VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
-          "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-provider"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
-          rdma-core/providers rdma-core/rocm-ernic-dv \
-          "${VM_USER}@localhost:/tmp/rdma-core-provider/"
-        echo "✓ Provider source copied to VM"
 
     - name: Copy rdma-core tarball to VM
       shell: bash
@@ -439,10 +458,10 @@ jobs:
           "${VM_USER}@localhost:/tmp/rdma-core-build/rdma-core-62.0.tar.gz"
         echo "✓ rdma-core tarball copied to VM"
 
-    - name: Build custom rdma-core provider in VM
+    - name: Build rdma-core in VM
       shell: bash
       run: |
-        echo "=== Building custom rdma-core provider ==="
+        echo "=== Building rdma-core with its upstream ionic provider ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
@@ -454,10 +473,11 @@ jobs:
         mkdir -p "${BUILD_DIR}"
         echo "Extracting rdma-core v${RDMA_CORE_VER}..."
         tar xf "${TARBALL}" -C "${BUILD_DIR}"
-        echo "Injecting rocm_ernic provider..."
-        cp -r /tmp/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
-        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
-          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
+        # providers/ionic has been upstream since rdma-core v61, so this
+        # is a stock build with nothing injected.
+        if [ ! -d "${SRC_DIR}/providers/ionic" ]; then
+          echo "✗ rdma-core ${RDMA_CORE_VER} has no providers/ionic"
+          exit 1
         fi
         echo "Building rdma-core..."
         cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
@@ -465,42 +485,43 @@ jobs:
         echo "Installing rdma-core..."
         sudo cmake --install "${BUILD_DIR}/build"
         sudo ldconfig
-        echo "Verifying provider..."
-        find /usr/lib -name "librocm_ernic*" 2>/dev/null || echo "Provider may be in lib64"
-        echo "✓ Custom rdma-core provider installed"
+        echo "Verifying the ionic provider..."
+        ls /usr/lib/*/libibverbs/libionic*.so
+        echo "✓ rdma-core installed with the ionic provider"
         EOFVM
 
-    - name: Build and load driver in VM
+    - name: Build and load ionic driver in VM
       shell: bash
       run: |
-        echo "=== Building and loading driver in VM ==="
+        echo "=== Building and loading ionic driver in VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "IONIC_KERNEL_REF=$IONIC_KERNEL_REF bash -s" << 'EOFVM'
         set -e
-        
+
         echo "=== Kernel Version ==="
         uname -r
-        
+
         echo ""
-        echo "=== Building Driver ==="
-        cd /tmp/driver
-        make KDIR=/lib/modules/$(uname -r)/build
-        if [ ! -f rocm_ernic_eth.ko ] || [ ! -f rocm_ernic_rdma.ko ]; then
-          echo "✗ Driver modules not found!"
-          echo "Expected: rocm_ernic_eth.ko and rocm_ernic_rdma.ko"
-          ls -lh *.ko 2>/dev/null || echo "No .ko files found"
-          exit 1
-        fi
-        ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
-        echo "✓ Driver built for kernel $(uname -r)"
-        
+        echo "=== Fetching and patching upstream ionic sources ($IONIC_KERNEL_REF) ==="
+        bash /tmp/ionic/fetch-ionic-sources.sh \
+          --source-dir /tmp/ionic/linux \
+          --kernel-ref "$IONIC_KERNEL_REF" \
+          --patches-dir /tmp/ionic/patches
+
+        echo ""
+        echo "=== Building the ionic-ernic DKMS package ==="
+        bash /tmp/ionic/setup-ionic-dkms.sh \
+          --source-dir /tmp/ionic/linux \
+          --kernel-ref "$IONIC_KERNEL_REF"
+
         echo ""
         echo "=== Loading InfiniBand Core ==="
         if ! sudo modprobe ib_core; then
           echo "✗ Failed to load ib_core module"
-          echo "This module is required for the rocm_ernic driver."
+          echo "This module is required for the ionic_rdma driver."
           echo "Checking available modules:"
           find /lib/modules/$(uname -r) -name "*ib_core*" 2>/dev/null || echo "No ib_core module found"
           echo ""
@@ -511,7 +532,7 @@ jobs:
         
         if ! sudo modprobe ib_uverbs; then
           echo "✗ Failed to load ib_uverbs module"
-          echo "This module is required for the rocm_ernic driver."
+          echo "This module is required for the ionic_rdma driver."
           echo "Checking available modules:"
           find /lib/modules/$(uname -r) -name "*ib_uverbs*" 2>/dev/null || echo "No ib_uverbs module found"
           exit 1
@@ -537,30 +558,35 @@ jobs:
         
         echo ""
         echo "=== Loading Driver ==="
-        # Load eth module first (required dependency)
-        sudo insmod ./rocm_ernic_eth.ko 2>&1 || {
-          echo "⚠️  Driver eth module load failed"
+        # The distro kernel ships its own in-tree ionic.ko, and depmod only
+        # prefers the DKMS module in updates/dkms once the stale one is out
+        # of the way.
+        sudo modprobe -r ionic_rdma 2>/dev/null || true
+        sudo modprobe -r ionic 2>/dev/null || true
+        sudo depmod -a
+
+        sudo modprobe ionic 2>&1 || {
+          echo "⚠️  ionic module load failed"
           echo "Kernel messages:"
           sudo dmesg | tail -30
           exit 1
         }
-        
-        # Load rdma module (depends on eth module)
-        sudo insmod ./rocm_ernic_rdma.ko 2>&1 || {
-          echo "⚠️  Driver rdma module load failed"
+
+        sudo modprobe ionic_rdma 2>&1 || {
+          echo "⚠️  ionic_rdma module load failed"
           echo "Kernel messages:"
           sudo dmesg | tail -30
           exit 1
         }
-        
+
         echo "✓ Driver loaded successfully"
-        lsmod | grep rocm_ernic
-        
+        lsmod | grep ionic
+
         echo ""
         echo "=== Checking RDMA Device ==="
         sleep 2  # Give device time to register
-        if ibv_devices | grep -E "rocm_ernic|rocep"; then
-          DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
+        if ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic"; then
+          DEVICE=$(ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk '{print $1}' | head -1)
           echo "✓ RDMA device found: $DEVICE"
           ibv_devinfo -d "$DEVICE" | head -20 || true
         else
@@ -599,12 +625,12 @@ jobs:
         set +e
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
           "${VM_USER}@localhost" <<-'EOFVM'
-        	if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
+        	if ! ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
         	  echo "✗ RDMA device not found"
         	  exit 1
         	fi
 
-        	DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" \
+        	DEVICE=$(ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" \
         	         | awk '{print $1}' | head -1)
         	echo "✓ RDMA device found: $DEVICE"
         	ibv_devinfo -d "$DEVICE" | head -20 || true
@@ -622,6 +648,8 @@ jobs:
       shell: bash
       run: |
         echo "=== DC guest smoke (SRQ + DCT + DCI create) ==="
+        # DC is a rocm_ernic direct-verbs extension, so this needs
+        # librocm_ernic and skips cleanly on the ionic default path.
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
@@ -696,8 +724,8 @@ jobs:
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
-        if ! ibv_devices 2>/dev/null | grep -qE "rocm_ernic|rocep|rocm-rdma-ernic"; then
-          echo "No rocm_ernic device found; skipping WRITE_WITH_IMM smoke"
+        if ! ibv_devices 2>/dev/null | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
+          echo "No rocm-ernic device found; skipping WRITE_WITH_IMM smoke"
           exit 0
         fi
         gcc -O2 -Wall -Wextra \
@@ -708,7 +736,7 @@ jobs:
         WIMM_EXIT=$?
         set -e
         if [ "$WIMM_EXIT" -eq 77 ]; then
-          echo "No rocm_ernic device found; skipping WRITE_WITH_IMM smoke"
+          echo "No rocm-ernic device found; skipping WRITE_WITH_IMM smoke"
           exit 0
         fi
         exit $WIMM_EXIT
@@ -779,6 +807,10 @@ jobs:
         echo "=== Sysfs Loopback Smoke Test ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
+
+        # The loopback sysfs attribute is a rocm_ernic driver feature with
+        # no upstream ionic equivalent, so in ionic mode this finds no
+        # attributes and skips with 77.
 
         # Start a loopback server for the sysfs test
         ./build/rocm-ernic \
@@ -1162,7 +1194,7 @@ jobs:
         echo "=== Starting TCP server 1 (manager) ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
-        
+
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
@@ -1618,20 +1650,18 @@ jobs:
     - name: Copy files to VMs (parallel)
       shell: bash
       run: |
-        echo "=== Copying driver source, rdma-core provider, and tarball to both VMs in parallel ==="
+        echo "=== Copying ionic sources and rdma-core tarball to both VMs in parallel ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
         _copy_to_vm() {
           local PORT="$1"
-          scp -o StrictHostKeyChecking=no -P "$PORT" -r driver "${VM_USER}@localhost:~/" || {
-            echo "✗ Failed to copy driver to VM (port $PORT)"
-            return 1
-          }
-          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" "mkdir -p ~/rdma-core-provider"
+          # Only the fetch/DKMS scripts and the AMD device-ID patches: the
+          # guest clones the upstream kernel itself.
+          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" "mkdir -p /tmp/ionic"
           scp -o StrictHostKeyChecking=no -P "$PORT" -r \
-            rdma-core/providers rdma-core/rocm-ernic-dv \
-            "${VM_USER}@localhost:~/rdma-core-provider/" || {
-            echo "✗ Failed to copy rdma-core provider to VM (port $PORT)"
+            scripts/fetch-ionic-sources.sh scripts/setup-ionic-dkms.sh patches \
+            "${VM_USER}@localhost:/tmp/ionic/" || {
+            echo "✗ Failed to copy ionic sources to VM (port $PORT)"
             return 1
           }
           # Copy pre-downloaded tarball to avoid in-VM network download
@@ -1659,10 +1689,31 @@ jobs:
     - name: Write VM setup script
       shell: bash
       run: |
-        cat > /tmp/vm-setup.sh << 'SCRIPT'
+        IONIC_KERNEL_REF=$(grep -oP 'set\(IONIC_KERNEL_REF\s+"\K[^"]+' \
+          cmake/ErnicKernelModule.cmake)
+        if [ -z "$IONIC_KERNEL_REF" ]; then
+          echo "✗ IONIC_KERNEL_REF not found in cmake/ErnicKernelModule.cmake"
+          exit 1
+        fi
+        echo "✓ ionic kernel ref: $IONIC_KERNEL_REF"
+
+        cat > /tmp/vm-setup.sh << SCRIPT
         #!/bin/bash
         set -e
+        IONIC_KERNEL_REF="${IONIC_KERNEL_REF}"
+        SCRIPT
+        cat >> /tmp/vm-setup.sh << 'SCRIPT'
         KVER=$(uname -r)
+
+        # drivers/infiniband/hw/ionic landed in 6.18, so an older guest
+        # cannot build the RDMA half at all.
+        KBASE=${KVER%%-*}
+        if [ "$(printf '%s\n6.18\n' "$KBASE" | sort -V | head -1)" != "6.18" ]; then
+          echo "Guest kernel $KVER is older than 6.18; ionic_rdma cannot be built."
+          echo "The CI guest image needs updating."
+          exit 1
+        fi
+
         # unattended-upgrades runs on a timer inside the guest image and
         # holds /var/lib/dpkg/lock-frontend for minutes. Retrying against a
         # held lock just burns the attempts, so wait for it instead.
@@ -1672,38 +1723,53 @@ jobs:
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+            linux-headers-${KVER} linux-modules-extra-${KVER} \
+            dkms git build-essential && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
         echo "Kernel packages installed for ${KVER}"
+
+        # Stock rdma-core: providers/ionic has been upstream since v61.
         BUILD_DIR="/tmp/rdma-core-build"
         SRC_DIR="${BUILD_DIR}/rdma-core-62.0"
         mkdir -p "${BUILD_DIR}"
         tar xf "${BUILD_DIR}/rdma-core-62.0.tar.gz" -C "${BUILD_DIR}"
-        cp -r ~/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
-        grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt" || \
-          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
+        [ -d "${SRC_DIR}/providers/ionic" ] || {
+          echo "rdma-core 62.0 has no providers/ionic"; exit 1; }
         cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja \
           -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
           -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
         cmake --build "${BUILD_DIR}/build" -j$(nproc)
         sudo cmake --install "${BUILD_DIR}/build"
         sudo ldconfig
-        echo "rdma-core provider installed"
-        cd ~/driver
-        make KDIR=/lib/modules/$(uname -r)/build
+        ls /usr/lib/*/libibverbs/libionic*.so
+        echo "rdma-core installed with the ionic provider"
+
+        bash /tmp/ionic/fetch-ionic-sources.sh \
+          --source-dir /tmp/ionic/linux \
+          --kernel-ref "$IONIC_KERNEL_REF" \
+          --patches-dir /tmp/ionic/patches
+        bash /tmp/ionic/setup-ionic-dkms.sh \
+          --source-dir /tmp/ionic/linux \
+          --kernel-ref "$IONIC_KERNEL_REF"
+
+        # depmod only prefers the DKMS module in updates/dkms once the
+        # in-tree ionic.ko is unloaded.
+        sudo modprobe -r ionic_rdma 2>/dev/null || true
+        sudo modprobe -r ionic 2>/dev/null || true
+        sudo depmod -a
         sudo modprobe ib_core
         sudo modprobe ib_uverbs
-        sudo insmod rocm_ernic_eth.ko
-        sudo insmod rocm_ernic_rdma.ko
+        sudo modprobe ionic
+        sudo modprobe ionic_rdma
         sleep 2
         ibv_devinfo || echo "No RDMA devices yet"
         echo "Driver loaded"
         SCRIPT
         chmod +x /tmp/vm-setup.sh
 
-    - name: Build rdma-core provider and driver in VMs (parallel)
+    - name: Build rdma-core and ionic driver in VMs (parallel)
       shell: bash
       run: |
         echo "=== Running per-VM setup in parallel ==="
@@ -1735,8 +1801,8 @@ jobs:
         FAILED=0
 
         echo "--- VM 1 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
+          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
           echo "✓ VM 1 RDMA device found: $DEVICE"
           ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
         else
@@ -1748,8 +1814,8 @@ jobs:
 
         echo ""
         echo "--- VM 2 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
+          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
           echo "✓ VM 2 RDMA device found: $DEVICE"
           ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
         else
