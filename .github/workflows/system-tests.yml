@@ -438,11 +438,19 @@ jobs:
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} linux-modules-extra-${KVER} \
-            dkms git build-essential && break
+            linux-headers-${KVER} dkms git build-essential && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
+
+        # ib_core and ib_uverbs live in linux-modules-extra on some
+        # releases and in the base linux-modules on others, so this is
+        # best-effort. The explicit modprobe later is what actually
+        # decides whether the IB core is usable.
+        sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
+          linux-modules-extra-${KVER} \
+          || echo "note: no linux-modules-extra-${KVER}; relying on the base kernel modules"
+
         echo "✓ Kernel packages installed for ${KVER}"
         EOFVM
 
@@ -1723,11 +1731,18 @@ jobs:
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} linux-modules-extra-${KVER} \
-            dkms git build-essential && break
+            linux-headers-${KVER} dkms git build-essential && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
+
+        # Best-effort: ib_core lives in linux-modules-extra on some
+        # releases and in the base linux-modules on others. The
+        # explicit modprobe below is the real check.
+        sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
+          linux-modules-extra-${KVER} \
+          || echo "note: no linux-modules-extra-${KVER}; relying on the base kernel modules"
+
         echo "Kernel packages installed for ${KVER}"
 
         # Stock rdma-core: providers/ionic has been upstream since v61.
