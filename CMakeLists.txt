@@ -217,6 +217,9 @@ endif()
 target_include_directories(rocm-ernic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+)
+
+target_include_directories(rocm-ernic SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
