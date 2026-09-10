@@ -18,10 +18,26 @@ jobs:
     container:
       # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
+      # guests run accelerated instead of under TCG.
+      options: --device /dev/kvm
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Select QEMU accelerator
+      shell: bash
+      run: |
+        if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
+          echo "✓ /dev/kvm present; using KVM acceleration"
+          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
+          echo "QEMU_CPU=host" >> $GITHUB_ENV
+        else
+          echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
+          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
+          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+        fi
 
     - name: Display environment
       run: |
@@ -256,8 +272,8 @@ jobs:
         # Start VM with vfio-user device
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem0 \
-          -cpu qemu64 \
+          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem0 \
+          -cpu ${QEMU_CPU} \
           -smp 2 \
           -m 1G \
           -object memory-backend-memfd,id=mem0,share=on,size=1G \
@@ -963,11 +979,27 @@ jobs:
     container:
       # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
+      # guests run accelerated instead of under TCG.
+      options: --device /dev/kvm
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
+    - name: Select QEMU accelerator
+      shell: bash
+      run: |
+        if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
+          echo "✓ /dev/kvm present; using KVM acceleration"
+          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
+          echo "QEMU_CPU=host" >> $GITHUB_ENV
+        else
+          echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
+          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
+          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+        fi
+
     - name: Verify environment
       run: |
         echo "=== QEMU Version ==="
@@ -1539,8 +1571,8 @@ jobs:
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem1 \
-          -cpu qemu64 \
+          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem1 \
+          -cpu ${QEMU_CPU} \
           -smp 2 \
           -m 1G \
           -object memory-backend-memfd,id=mem1,share=on,size=1G \
@@ -1577,8 +1609,8 @@ jobs:
         SSH_PORT_2=2223
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem2 \
-          -cpu qemu64 \
+          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem2 \
+          -cpu ${QEMU_CPU} \
           -smp 2 \
           -m 1G \
           -object memory-backend-memfd,id=mem2,share=on,size=1G \
