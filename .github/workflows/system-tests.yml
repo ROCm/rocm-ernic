@@ -392,7 +392,7 @@ jobs:
     - name: Install kernel-version-specific packages in VM
       shell: bash
       run: |
-        echo "=== Installing kernel headers and modules in VM ==="
+        echo "=== Installing kernel headers and modules-extra in VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
@@ -405,22 +405,9 @@ jobs:
         for i in 1 2 3; do
           sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
-        # Ubuntu 25.10+ dropped the linux-modules-extra-<ver> split; the
-        # infiniband modules (ib_core, ib_uverbs) now ship in linux-modules
-        # instead, which is already installed as a dep of linux-image. Ask
-        # for whichever one this release actually publishes.
-        KERNEL_PKGS="linux-headers-${KVER}"
-        for pkg in linux-modules-extra-${KVER} linux-modules-${KVER}; do
-          if apt-cache show "$pkg" 2>/dev/null | grep -q '^Version:'; then
-            KERNEL_PKGS="${KERNEL_PKGS} ${pkg}"
-            break
-          fi
-        done
-        echo "Installing: ${KERNEL_PKGS}"
         for i in 1 2 3 4 5; do
-          # shellcheck disable=SC2086  # KERNEL_PKGS is a deliberate word list
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            $KERNEL_PKGS && break
+            linux-headers-${KVER} linux-modules-extra-${KVER} && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
@@ -517,9 +504,8 @@ jobs:
           echo "Checking available modules:"
           find /lib/modules/$(uname -r) -name "*ib_core*" 2>/dev/null || echo "No ib_core module found"
           echo ""
-          echo "You may need to install the kernel modules package:"
-          echo "  sudo apt-get update && sudo apt-get install linux-modules-$(uname -r)"
-          echo "  (on Ubuntu 25.04 and older: linux-modules-extra-$(uname -r))"
+          echo "You may need to install linux-modules-extra:"
+          echo "  sudo apt-get update && sudo apt-get install linux-modules-extra-$(uname -r)"
           exit 1
         fi
         
@@ -1684,22 +1670,9 @@ jobs:
         for i in 1 2 3; do
           sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
-        # Ubuntu 25.10+ dropped the linux-modules-extra-<ver> split; the
-        # infiniband modules (ib_core, ib_uverbs) now ship in linux-modules
-        # instead, which is already installed as a dep of linux-image. Ask
-        # for whichever one this release actually publishes.
-        KERNEL_PKGS="linux-headers-${KVER}"
-        for pkg in linux-modules-extra-${KVER} linux-modules-${KVER}; do
-          if apt-cache show "$pkg" 2>/dev/null | grep -q '^Version:'; then
-            KERNEL_PKGS="${KERNEL_PKGS} ${pkg}"
-            break
-          fi
-        done
-        echo "Installing: ${KERNEL_PKGS}"
         for i in 1 2 3 4 5; do
-          # shellcheck disable=SC2086  # KERNEL_PKGS is a deliberate word list
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            $KERNEL_PKGS && break
+            linux-headers-${KVER} linux-modules-extra-${KVER} && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
