@@ -49,6 +49,13 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
 /* Trigger an MSI-X vector (0 = success, -EINVAL = bad vec, 0 if masked). */
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 
+/*
+ * Set the pvrdma handle so the emulator can record interrupts and Ethernet
+ * bytes into the shared statistics block.
+ * @handle: pvrdma_handle_t (void *) from pvrdma_device_create().
+ */
+void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, void *handle);
+
 /* Register the datapath handler for doorbell writes (BAR2). */
 struct ionic_datapath;
 void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
@@ -58,6 +65,13 @@ void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
 struct ionic_adminq_ctx;
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq);
+
+/*
+ * Set the station MAC the LIF reports to the guest.  Two instances bridged
+ * together must not share one, so the launcher derives it from the instance
+ * id; without this every guest on the bridge answers to the same address.
+ */
+void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6]);
 
 /*
  * Attach the emulated LIF to a host TAP interface, giving the guest a real

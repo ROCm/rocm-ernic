@@ -8,6 +8,32 @@
 # per overlay on every test cycle.
 
 ---
+# Short name, not the FQCN: it resolves against the containing
+# collection when installed from Galaxy, and against roles_path
+# when run from a checkout of this repo.  Needed here for
+# ernic_ionic_kver, which decides the mainline kernel version.
+- name: Resolve the rocm-ernic source checkout
+  ansible.builtin.include_role:
+    name: ernic_source
+  when: ernic_image_kernel_mainline | bool
+
+- name: Stop unattended-upgrades from mutating the image
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop:
+    - unattended-upgrades.service
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+  failed_when: false
+  when: ernic_image_disable_unattended | bool
+
+- name: Install a mainline kernel for the ionic driver
+  ansible.builtin.include_tasks: kernel_mainline.yml
+  when: ernic_image_kernel_mainline | bool
+
 - name: Install RDMA userspace and tooling
   when: ernic_image_rdma | bool
   block:
@@ -61,8 +87,7 @@
   ansible.builtin.copy:
     dest: /etc/modules-load.d/rocm-ernic.conf
     content: |
-      rocm_ernic_eth
-      rocm_ernic_rdma
+      {{ ernic_image_boot_modules | join('\n') }}
     mode: "0644"
   when: ernic_image_modules_load | bool
 

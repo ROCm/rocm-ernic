@@ -438,6 +438,68 @@ static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
 }
 
 /* -------------------------------------------------------------------------
+ * RoCE header template
+ * -------------------------------------------------------------------------
+ */
+
+/*
+ * CREATE_AH and the RTR transition of MODIFY_QP both hand us a packet header
+ * template built by ib_ud_header_pack() with the BTH and DETH trimmed off:
+ * Ethernet, an optional 802.1Q tag, IPv4 or IPv6, then UDP.  The destination
+ * address in it is the only statement of which peer the QP is being pointed
+ * at -- the WQEs themselves never name one.
+ *
+ * Fills @dgid with the destination GID (IPv4 in the ::ffff:a.b.c.d mapped
+ * form the rest of the stack expects) and @dmac with the destination MAC.
+ * Returns 1 on success, 0 if the template could not be parsed.
+ */
+static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
+                                 uint32_t len, uint8_t dgid[16],
+                                 uint8_t dmac[6])
+{
+    uint8_t hdr[128];
+
+    if (len < 14 || len > sizeof(hdr))
+        return 0;
+    if (dma_read(ctx->vfu_ctx, gpa, hdr, len) < 0)
+        return 0;
+
+    memcpy(dmac, hdr, 6);
+
+    uint32_t off = 12;
+    uint16_t ethertype = (uint16_t)((hdr[off] << 8) | hdr[off + 1]);
+
+    if (ethertype == 0x8100) { /* 802.1Q tag, ethertype repeats after it */
+        off += 4;
+        if (off + 2 > len)
+            return 0;
+        ethertype = (uint16_t)((hdr[off] << 8) | hdr[off + 1]);
+    }
+    off += 2;
+
+    if (ethertype == 0x0800) { /* IPv4: daddr at +16 */
+        if (off + 20 > len)
+            return 0;
+        memset(dgid, 0, 16);
+        dgid[10] = 0xff;
+        dgid[11] = 0xff;
+        memcpy(dgid + 12, hdr + off + 16, 4);
+        return 1;
+    }
+
+    if (ethertype == 0x86dd) { /* IPv6: daddr at +24 */
+        if (off + 40 > len)
+            return 0;
+        memcpy(dgid, hdr + off + 24, 16);
+        return 1;
+    }
+
+    vfu_log(ctx->vfu_ctx, LOG_WARNING,
+            "ionic_adminq: unrecognised RoCE header ethertype %#x", ethertype);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
  * Post an admin CQE
  * -------------------------------------------------------------------------
  */
@@ -897,24 +959,49 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
+        /* The RoCE header template the driver DMAs for this transition is the
+         * only place the destination address appears; without it every peer
+         * resolves to the same default node. */
+        uint32_t ah_id_len;
+        bool dgid_valid = false;
+        uint64_t ah_dma;
+        uint8_t dgid[16] = {0};
+        uint8_t dmac[6] = {0};
+
+        memcpy(&ah_id_len, body + 32, 4);
+        ah_id_len = le32toh(ah_id_len);
+        memcpy(&ah_dma, body + 48, 8);
+        ah_dma = le64toh(ah_dma);
+
+        uint32_t hdr_len = ah_id_len >> 24;
+        if (hdr_len && ah_dma)
+            dgid_valid =
+                adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, dmac);
+
+        if (dgid_valid)
+            vfu_log(ctx->vfu_ctx, LOG_DEBUG,
+                    "ionic_adminq MODIFY_QP %u: peer %02x:%02x:%02x:%02x:%02x:"
+                    "%02x gid %02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                    qp_id, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5],
+                    dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
+                    dgid[14], dgid[15]);
+
         /* IB_QP_DEST_QPN: the driver names the peer by its own qpid, but the
          * backend routes on its QPNs.  For UD this field is the qkey instead,
          * so only translate when the mask says it is a destination QPN. */
         if (attr_mask & (1u << 20)) {
-            ionic_datapath_set_dest_qp(ctx->dp, qp_id, qkey_dest_qpn);
+            uint32_t dest_node =
+                ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
+
+            ionic_datapath_set_dest(ctx->dp, qp_id, qkey_dest_qpn, dest_node);
             uint32_t dest_qpn;
             if (adminq_lookup_qp(ctx, qkey_dest_qpn, &dest_qpn))
                 qkey_dest_qpn = dest_qpn;
         }
 
-        /* AH DMA address carries the destination GID in some transitions.
-         * We read 16 bytes from the ah_id_len field area as a proxy for
-         * dgid; a full implementation would DMA-read from dma_addr. */
-        uint8_t dgid_zeros[16] = {0};
-
         int ret =
             ionic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
-                               sq_psn, rq_psn, qkey_dest_qpn, dgid_zeros);
+                               sq_psn, rq_psn, qkey_dest_qpn, dgid);
         if (ret) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq MODIFY_QP %u: failed (%d)", qp_id, ret);
@@ -1017,6 +1104,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             uint8_t status =
                 dispatch_wqe(ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
             post_admin_cqe(ctx, r, cmd_idx, op, status);
+            pvrdma_adminq_count(ctx->pvrdma_handle);
 
             /* Never write back to guest WQE memory — the driver owns the ring.
              * Use producer-index tracking to avoid re-processing stale entries.

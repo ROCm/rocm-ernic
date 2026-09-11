@@ -1,0 +1,93 @@
+---
+name: Fetch guest VM image
+description: Pull the guest qcow2 and its metadata from the ORAS artifact.
+
+inputs:
+  repo:
+    description: Artifact repository
+    required: false
+    default: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+  tag:
+    description: Artifact tag; pin an immutable date-prefixed one in CI
+    required: true
+  dest:
+    description: Directory to unpack into
+    required: false
+    default: /guest-image
+  info_artifact_type:
+    description: artifactType of the referrer carrying vm-info.json and the keys
+    required: false
+    default: application/vnd.batesste.vm-info.v1
+
+outputs:
+  output_dir:
+    description: Directory holding the qcow2, keys and vm-info.json
+    value: ${{ steps.fetch.outputs.output_dir }}
+
+runs:
+  using: composite
+  steps:
+  - id: fetch
+    shell: bash
+    env:
+      REPO: ${{ inputs.repo }}
+      TAG: ${{ inputs.tag }}
+      DEST: ${{ inputs.dest }}
+      INFO_TYPE: ${{ inputs.info_artifact_type }}
+    run: |
+      set -euo pipefail
+      REF="${REPO}:${TAG}"
+
+      # oras and zstd ship in the builder image; nothing to install, so
+      # no apt-get sits on the path to a guest.
+      mkdir -p "${DEST}/output"
+      cd "${DEST}/output"
+
+      echo "=== Fetching metadata for ${REF} ==="
+      # Referrer first: it is kilobytes, so a bad reference fails in
+      # seconds rather than after a 3.7 GB download.
+      DIGEST=$(oras discover --format json "$REF" \
+        | jq -r --arg t "$INFO_TYPE" \
+            '[.referrers[] | select(.artifactType==$t)]
+             | sort_by(.annotations["org.opencontainers.image.created"])
+             | last | .digest')
+      if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+        echo "✗ ${REF} has no ${INFO_TYPE} referrer"
+        exit 1
+      fi
+      oras pull "${REPO}@${DIGEST}"
+
+      # oras does not preserve modes; OpenSSH refuses a group-readable key.
+      # Take the key name from the metadata for the same reason the disk
+      # name is globbed below: a rename upstream should not abort the job
+      # on a hardcoded filename under set -e.
+      KEY=$(jq -r '.ssh_keys.private_key_path // ""' vm-info.json)
+      KEY=$(basename -- "${KEY:-id_rsa}")
+      if [ ! -f "$KEY" ]; then
+        echo "✗ referrer carries no private key named ${KEY}"
+        ls -la
+        exit 1
+      fi
+      chmod 600 "$KEY"
+
+      echo "=== Fetching disk for ${REF} ==="
+      oras pull "$REF"
+
+      # Take the disk name from what actually landed rather than pinning
+      # it, so a renamed guest fails here instead of in Read VM info.
+      shopt -s nullglob
+      ZST=(*.qcow2.zst)
+      if [ ${#ZST[@]} -ne 1 ]; then
+        echo "✗ expected exactly one *.qcow2.zst, got: ${ZST[*]:-none}"
+        ls -la
+        exit 1
+      fi
+
+      # --long=27 matches the compressor's window, which zstd otherwise
+      # refuses as needing too much memory to decode.  --rm releases the
+      # 3.7 GB .zst as the 5.75 GB disk lands: the runner does not
+      # comfortably hold both alongside a build tree.
+      zstd -d --long=27 --rm -q "${ZST[0]}"
+
+      ls -la "${DEST}/output"
+      echo "output_dir=${DEST}/output" >> "$GITHUB_OUTPUT"

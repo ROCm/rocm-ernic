@@ -1,0 +1,60 @@
+---
+minor_changes:
+  - >-
+    ``ernic_image_prep`` installs an Ubuntu mainline kernel matching the
+    pinned ionic sources when building the golden image, so the image can
+    build the driver it ships.  No stock Ubuntu kernel is new enough:
+    ``drivers/infiniband/hw/ionic`` starts at 6.18, noble HWE is 6.17 and
+    resolute GA is 7.0.  The version comes from ``IONIC_KERNEL_REF`` unless
+    ``ernic_image_kernel_version`` overrides it, the four ``amd64`` packages
+    are read out of the mainline ``CHECKSUMS`` manifest and verified by
+    sha256, and the distro kernel stays installed as a fallback.  New
+    variables ``ernic_image_kernel_mainline`` (on except in legacy mode),
+    ``ernic_image_kernel_version``, ``ernic_image_kernel_mainline_url``,
+    ``ernic_image_kernel_deb_re``, ``ernic_image_kernel_reboot`` and
+    ``ernic_image_kernel_reboot_timeout``.
+  - >-
+    ``ernic_guest_setup`` asserts that the guest kernel's major.minor matches
+    the ionic sources before starting the DKMS build.  The old ``>= 6.18``
+    floor is necessary but not sufficient --- the sources track IB-core
+    helpers that move between minor releases, so ``v7.2.4`` sources on a 7.0
+    kernel used to fail as a wall of implicit-declaration errors.  A
+    point-release gap is still fine.  The role also asserts that every guest
+    in ``ernic_vms`` is running the same kernel, so package drift between
+    guests surfaces at setup rather than as an unexplained asymmetry in a
+    performance sweep.
+  - >-
+    The ionic kernel ref resolution moved to ``ernic_source`` so
+    ``ernic_guest_setup`` and ``ernic_image_prep`` share one pin.
+    ``ernic_ionic_kernel_ref`` is now a variable of that role.
+  - >-
+    ``ernic_image_prep`` masks ``unattended-upgrades`` and the apt daily
+    timers (``ernic_image_disable_unattended``, on by default).  A test image
+    wants a frozen userspace; background upgrades are what replaced the
+    source-built rdma-core on the CI guests and drifted their kernel packages
+    apart.
+  - >-
+    ``ernic_vm_release`` defaults to ``resolute`` (26.04) rather than
+    ``noble``.  Installing a mainline kernel on noble needs two workarounds:
+    the ``linux-image`` preinst hands ``run-parts`` two directories and
+    noble's ``debianutils`` takes one, and 7.x headers want a gcc newer than
+    noble ships.  Neither applies on resolute, which is also what the CI
+    guest image uses.
+  - >-
+    ``ernic_guest_setup`` greps the installed kernel headers for
+    ``ib_umem_get_va`` before building, so a guest whose headers cannot
+    build the pinned ionic sources is named as such rather than discovered
+    through implicit-declaration errors.
+bugfixes:
+  - >-
+    ``ernic_guest_setup`` now holds ``rdma-core``, ``libibverbs1``,
+    ``librdmacm1`` and ``ibverbs-providers`` after building rdma-core into
+    ``/usr`` (``ernic_rdma_core_hold``).  The source build overwrites the
+    packaged libraries in place while dpkg still believes its own version is
+    installed, so any apt upgrade silently restored a rdma-core with no ionic
+    provider and every verbs test began failing with no device found.
+  - >-
+    The ``ssh`` commands in the performance, stress, sanity and TCP
+    performance playbooks set ``BatchMode``, ``ConnectTimeout`` and
+    keepalives.  Without them a command against a healthy guest could block
+    indefinitely, and one hung for 25 minutes.

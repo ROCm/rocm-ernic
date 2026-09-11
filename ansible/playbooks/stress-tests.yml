@@ -30,14 +30,25 @@
     - ../group_vars/all.yml
 
   vars:
+    # BatchMode and the keepalives are not optional: without them
+    # a bare ssh to a healthy guest can block indefinitely, and one
+    # did -- a 25-minute hang on a two-second command.
     vm1_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
       -p {{ ernic_vm_ssh_base_port | int + 1 }}
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
@@ -63,7 +74,7 @@
       {{ ernic_stress_concurrent_duration
          | default(60) | int }}
 
-    iperf_bw: "{{ ernic_iperf_bandwidth }}"
+    iperf_bw: "{{ ernic_iperf_stress_bandwidth }}"
     iperf_dur: >-
       {{ ernic_iperf_duration | default(10) }}
 

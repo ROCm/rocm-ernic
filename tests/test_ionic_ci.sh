@@ -1,17 +1,19 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# CI test for the ionic emulation path.
-# Verifies the server starts correctly in --ionic mode across all backends
-# and that the PCI device identity is correct.
+# CI test for the ionic emulation path, which is the default device mode.
+# Verifies the server starts correctly across all backends and that the PCI
+# device identity is correct.
 #
 # Tests that can run without a VM (no RDMA device needed):
-#   1. Server starts in --ionic mode with loopback backend
+#   1. Server starts in ionic mode with loopback backend
 #   2. Server announces correct VID:DID (0x1022:0x8001)
 #   3. Server reports correct BAR layout (64K BAR0 / 32K regs + 4M BAR2)
 #   4. Server reports correct MSI-X vector count (32)
 #   5. Server exits cleanly on SIGTERM
-#   6. --tap is rejected without --ionic, and attaches when a tap exists
+#   6. --tap is rejected with --legacy, and attaches when a tap exists
+#   7. ionic is the default with no flag; --legacy selects the deprecated
+#      PVRDMA device and warns
 
 set -euo pipefail
 
@@ -47,7 +49,7 @@ cleanup() {
         kill "$SERVER_PID" 2>/dev/null
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    rm -f "$SOCKET" "$LOG"
+    rm -f "$SOCKET" "$LOG" ${STATS:+"$STATS"}
 }
 trap cleanup EXIT INT TERM
 
@@ -120,22 +122,22 @@ start_server none || fail "server did not start with none backend"
 grep -q "VID:DID 0x1022:0x8001" "$LOG" || fail "VID:DID not in none backend log"
 pass "none backend works"
 
-# --- Test 8: --tap requires --ionic ---
+# --- Test 8: --tap is rejected in legacy mode ---
 echo ""
-echo "Test 8: --tap without --ionic is rejected"
+echo "Test 8: --tap with --legacy is rejected"
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 rm -f "$SOCKET" "$LOG"
-if "$SERVER_BIN" --backend none --socket "$SOCKET" --tap ernic-ci0 \
+if "$SERVER_BIN" --legacy --backend none --socket "$SOCKET" --tap ernic-ci0 \
         > "$LOG" 2>&1; then
-    fail "--tap without --ionic should have failed"
+    fail "--tap with --legacy should have failed"
 fi
-grep -q -- "--tap requires --ionic" "$LOG" || {
+grep -q -- "--tap is not supported with --legacy" "$LOG" || {
     cat "$LOG"
-    fail "expected a '--tap requires --ionic' diagnostic"
+    fail "expected a '--tap is not supported with --legacy' diagnostic"
 }
-pass "--tap rejected outside ionic mode"
+pass "--tap rejected in legacy mode"
 
 # --- Test 9: --tap attaches to a host TAP interface ---
 # Needs a pre-created persistent tap owned by this user; skipped otherwise,
@@ -162,6 +164,87 @@ else
     }
     pass "attached to TAP $TAP_IF"
 fi
+
+# --- Test 10: ionic is the default with no mode flag ---
+echo ""
+echo "Test 10: ionic is the default (no flag)"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+rm -f "$SOCKET" "$LOG"
+"$SERVER_BIN" --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
+SERVER_PID=$!
+elapsed=0
+while [ $elapsed -lt 10 ]; do
+    sleep 0.5; elapsed=$((elapsed + 1))
+    [ -S "$SOCKET" ] && break
+    kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
+done
+grep -q "VID:DID 0x1022:0x8001" "$LOG" || {
+    cat "$LOG"
+    fail "default mode did not announce the ionic device"
+}
+pass "default mode is ionic"
+
+# --- Test 11: --legacy selects the deprecated PVRDMA device ---
+echo ""
+echo "Test 11: --legacy selects 0x1022:0x8000 and warns"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+rm -f "$SOCKET" "$LOG"
+"$SERVER_BIN" --legacy --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
+SERVER_PID=$!
+elapsed=0
+while [ $elapsed -lt 10 ]; do
+    sleep 0.5; elapsed=$((elapsed + 1))
+    [ -S "$SOCKET" ] && break
+    kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
+done
+grep -q "device=0x8000" "$LOG" || {
+    cat "$LOG"
+    fail "--legacy did not configure the PVRDMA device id"
+}
+grep -qi "deprecated" "$LOG" || {
+    cat "$LOG"
+    fail "--legacy did not print a deprecation warning"
+}
+pass "--legacy works and is marked deprecated"
+
+# --- Test 12: stats file is emitted in ionic mode with the full counter set ---
+# The counters themselves stay zero here: driving them needs a real vfio-user
+# client, which this VM-free suite does not have.  What this does guard is that
+# --stats-file works in ionic mode and that the field set ionic feeds is the
+# same one ernicctl parses.
+echo ""
+echo "Test 12: stats file carries the full counter set in ionic mode"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+rm -f "$SOCKET" "$LOG"
+STATS="/tmp/vfio-ionic-ci-$$.stats"
+rm -f "$STATS"
+"$SERVER_BIN" --backend loopback --socket "$SOCKET" --stats-file "$STATS" \
+    > "$LOG" 2>&1 &
+SERVER_PID=$!
+elapsed=0
+while [ $elapsed -lt 10 ]; do
+    sleep 0.5; elapsed=$((elapsed + 1))
+    [ -s "$STATS" ] && break
+    kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
+done
+[ -s "$STATS" ] || fail "no stats file was written"
+for field in commands bar0_reads bar0_writes uar_reads uar_writes \
+             mmio_reads_total mmio_writes_total interrupts reset_count \
+             total_bytes_sent total_bytes_received total_bytes_rdma_read \
+             total_bytes_rdma_write total_ip_bytes_tx total_ip_bytes_rx; do
+    grep -q "^  $field  *: " "$STATS" || {
+        cat "$STATS"
+        fail "stats file is missing the '$field' counter"
+    }
+done
+rm -f "$STATS"
+pass "stats file has every counter ernicctl expects"
 
 echo ""
 echo "================================================="

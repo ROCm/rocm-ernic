@@ -10,6 +10,7 @@ Phases, each behind a flag:
 | Phase | Tasks | Flag |
 |---|---|---|
 | Build | cmake configure / build / install (server, `ernicctl`, systemd units) | `ernic_build` |
+| TAP | create `ernic_tap_bridge` and one TAP per instance, enslave, verify | `ernic_tap_setup` (ionic only) |
 | Service | render `/etc/rocm-ernic/rocm-ernic.env`, reload systemd, tear down a previous run, `ernicctl start`, wait for sockets | `ernic_install_service` |
 | vfio | IOMMU check, unbind from `amdgpu`, bind to `vfio-pci`, verify | `ernic_gpu_passthrough` |
 | rocm-xio | clone and tar rocm-xio for the guests | `ernic_gpu_passthrough` |
@@ -17,8 +18,28 @@ Phases, each behind a flag:
 The source tree comes from [`ernic_source`](../ernic_source/README.md), which
 this role includes; `ernic_build_dir` defaults to `<source>/build`.
 
-Guests have no route to GitHub, so rocm-xio is cloned here and staged at
-`ernic_rocm_xio_tarball` for `ernic_guest_setup` to unpack.
+rocm-xio is cloned here and staged at `ernic_rocm_xio_tarball`;
+`ernic_guest_setup` unpacks it when it is there and clones for itself when it
+is not.
+
+## Device mode and TAP networking
+
+`ernic_device_mode` defaults to `ionic`, so the server presents `1022:8001`
+and each instance attaches to a host TAP. The deprecated legacy PVRDMA path
+is still reachable with `-e ernic_device_mode=legacy`.
+
+In ionic mode guest Ethernet leaves through the TAP rather than the rocm-ernic
+TCP mesh, so every TAP is enslaved to a shared bridge — otherwise the guests
+cannot reach each other on `ernic_nic_subnet` and every two-VM test fails.
+The TAP phase creates `ernic_tap_bridge` and `ernic_tap_prefix<n>` for
+`n` in `1..ernic_instances`, owned by `ernic_tap_owner` so an unprivileged
+launcher can open them. It runs before the service starts, because the
+launcher only attaches an instance to a TAP that already exists.
+
+Set `ernic_tap_setup: false` when the interfaces are provisioned some other
+way (the CI runner creates them once at install time), and
+`ernic_tap_bridge_ip` to give the host an address on the segment for
+debugging.
 
 ## Requirements
 
@@ -31,6 +52,14 @@ Guests have no route to GitHub, so rocm-xio is cloned here and staged at
 ## Role Variables
 
 ```yaml
+ernic_device_mode: ionic        # ionic | legacy (deprecated)
+
+ernic_tap_setup: true           # ionic only
+ernic_tap_prefix: ernic-tap
+ernic_tap_bridge: ernicbr0
+ernic_tap_owner: "{{ ansible_user_id }}"
+ernic_tap_bridge_ip: ""         # e.g. 192.168.200.1/24
+
 ernic_build: true
 ernic_install_service: true
 ernic_start_service: true

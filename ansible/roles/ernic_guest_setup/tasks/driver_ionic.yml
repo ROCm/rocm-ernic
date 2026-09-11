@@ -1,0 +1,141 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Default device mode: build ionic.ko + ionic_rdma.ko from patched
+# upstream kernel sources and register them with DKMS as the
+# ionic-ernic package.
+#
+# The guest has outbound internet, so it sparse-clones the kernel
+# itself with the same scripts/fetch-ionic-sources.sh the host build
+# uses.  The .patches-applied-<ref> sentinel that script writes makes
+# re-runs cheap, so there is no separate Ansible stamp here.
+
+---
+# ernic_ionic_ref and ernic_ionic_kver are resolved by the
+# ernic_source role, which main.yml includes first.
+
+# drivers/infiniband/hw/ionic landed in 6.18.  On an older guest
+# the Ethernet half builds and the RDMA half does not, which fails
+# much later and much less clearly than this does.
+- name: Assert the guest kernel is new enough for ionic_rdma
+  ansible.builtin.assert:
+    that:
+      - >-
+        ansible_kernel.split('-')[0]
+        is version(ernic_ionic_min_kernel, '>=')
+    fail_msg: >-
+      Guest kernel {{ ansible_kernel }} is older than
+      {{ ernic_ionic_min_kernel }}; ionic_rdma cannot be built.
+      Update the guest image, or run with
+      -e ernic_device_mode=legacy.
+
+# The floor above is necessary but nowhere near sufficient.  The
+# ionic sources track IB-core helpers that move between minor
+# releases -- v7.2.4 sources on a 7.0 kernel fail on four implicit
+# declarations deep inside the DKMS build, which is a wall of
+# compiler output instead of a diagnosis.  A point-release gap
+# (v7.2.4 sources on 7.2.3) is fine, so only major.minor is
+# compared.
+- name: Assert the guest kernel matches the ionic sources
+  ansible.builtin.assert:
+    that:
+      - >-
+        ansible_kernel.split('-')[0].split('.')[0:2] | join('.')
+        == ernic_ionic_kver.split('.')[0:2] | join('.')
+    fail_msg: >-
+      Guest kernel {{ ansible_kernel }} does not match the ionic
+      sources pinned at {{ ernic_ionic_ref }}; ionic_rdma needs a
+      {{ ernic_ionic_kver.split('.')[0:2] | join('.') }}.x kernel.
+      Rebuild the golden image with
+      ernic_image_kernel_mainline=true, or set
+      ernic_ionic_kernel_ref to a tag matching this kernel.
+  when: ernic_ionic_kver | length > 0
+
+# The overlays are meant to be identical.  When they are not, the
+# asymmetry turns up as an unexplained perf result rather than as
+# a setup failure.
+- name: Assert every guest is running the same kernel
+  ansible.builtin.assert:
+    that:
+      - >-
+        groups['ernic_vms']
+        | map('extract', hostvars, 'ansible_kernel')
+        | unique | length == 1
+    fail_msg: >-
+      The guests disagree on their kernel version:
+      {{ groups['ernic_vms']
+         | zip(groups['ernic_vms']
+               | map('extract', hostvars, 'ansible_kernel'))
+         | map('join', '=') | join(', ') }}.
+      Rebuild the overlays from a single golden image.
+  run_once: true
+  when: groups['ernic_vms'] | default([]) | length > 1
+
+# The version comparisons above are a proxy; this is the thing they
+# are a proxy for.  A mainline kernel's headers come from loose .deb
+# files with no apt index behind them, so "linux-headers-$(uname -r)
+# is installed" is not a question apt can answer on such a guest --
+# what matters is that the build tree is there and carries the
+# helper the ionic sources call.  ib_umem_get_va landed after 7.0,
+# which is exactly the implicit declaration a 7.0 guest died on.
+- name: Look for the IB-core helpers ionic_rdma needs
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -qs
+      - ib_umem_get_va
+      - "/lib/modules/{{ ansible_kernel }}/build/include/rdma/ib_umem.h"
+  register: ernic_ionic_umem_helper
+  failed_when: false
+  changed_when: false
+
+- name: Assert the kernel headers can build ionic_rdma
+  ansible.builtin.assert:
+    that:
+      - ernic_ionic_umem_helper.rc == 0
+    fail_msg: >-
+      /lib/modules/{{ ansible_kernel }}/build does not provide
+      ib_umem_get_va, so the ionic sources at {{ ernic_ionic_ref }}
+      cannot build against it.  Either the kernel headers are not
+      installed --- note that a mainline kernel's headers come from
+      the .deb, not from apt --- or they predate the helper.
+
+- name: Fetch and patch the upstream ionic sources
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ ernic_guest_ionic_dir }}/fetch-ionic-sources.sh"
+      - --source-dir
+      - "{{ ernic_ionic_source_dir }}"
+      - --kernel-ref
+      - "{{ ernic_ionic_ref }}"
+      - --patches-dir
+      - "{{ ernic_guest_ionic_dir }}/patches"
+    creates: >-
+      {{ ernic_ionic_source_dir }}/.patches-applied-{{ ernic_ionic_ref }}
+
+- name: Install the ionic-ernic DKMS package
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ ernic_guest_ionic_dir }}/setup-ionic-dkms.sh"
+      - --source-dir
+      - "{{ ernic_ionic_source_dir }}"
+      - --kernel-ref
+      - "{{ ernic_ionic_ref }}"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  changed_when: true
+
+# The distro kernel ships its own in-tree ionic.ko.  DKMS installs
+# into updates/dkms/, which depmod ranks first, but only once the
+# stale module is out of the way.
+- name: Unload any running in-tree ionic modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: absent
+  loop:
+    - ionic_rdma
+    - ionic
+  failed_when: false

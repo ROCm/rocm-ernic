@@ -57,9 +57,21 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                 const struct ionic_dp_ring_desc *rq);
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id);
 
-/* RC/UC peer, learned from MODIFY_QP's IB_QP_DEST_QPN. */
-void ionic_datapath_set_dest_qp(struct ionic_datapath *dp, uint32_t qp_id,
-                                uint32_t dest_qp_id);
+/*
+ * RC/UC peer, learned from MODIFY_QP's IB_QP_DEST_QPN and the destination
+ * address in the RoCE header template.  @dest_node_id is a mesh node id;
+ * when it names this instance the peer QP is local and never leaves the
+ * emulator.  Pass UINT32_MAX when there is no mesh.
+ */
+void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
+                             uint32_t dest_qp_id, uint32_t dest_node_id);
+
+/*
+ * Resolve a 16-byte destination GID to a mesh node id, or UINT32_MAX when
+ * this instance has no mesh backend.  @dgid may be NULL, which asks for the
+ * default peer.
+ */
+uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid);
 
 /*
  * MR registration.  @lkey is the driver's full mrid (index | key << 24), which
@@ -85,5 +97,17 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle);
  */
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val);
+
+/*
+ * Drain messages that arrived from peer instances and retire work requests
+ * whose peer never answered.  Every guest DMA has to happen on the thread
+ * that owns the vfio-user context, but mesh messages arrive on a backend
+ * receive thread, so they are queued there and applied here.  The server's
+ * main loop calls this on every iteration, like ionic_eth_emu_poll_rx().
+ */
+void ionic_datapath_poll(struct ionic_datapath *dp);
+
+/* True when a peer message is queued, so the caller can skip its idle sleep. */
+bool ionic_datapath_has_work(struct ionic_datapath *dp);
 
 #endif /* IONIC_DATAPATH_H */

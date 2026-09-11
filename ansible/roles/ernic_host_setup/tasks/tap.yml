@@ -1,0 +1,94 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Create the host bridge and the per-instance TAP interfaces the ionic
+# device mode needs.
+#
+# In ionic mode the guest's Ethernet leaves through a TAP rather than the
+# rocm-ernic TCP mesh, so the guests can only reach each other on
+# ernic_nic_subnet if every TAP is enslaved to a common bridge.  The
+# playbooks in this collection (ping, iperf3, and the perftest out-of-band
+# exchange) all depend on that.
+
+---
+- name: Load the tun kernel module
+  community.general.modprobe:
+    name: tun
+    state: present
+  become: true
+
+# Read the real link list even under --check: every task below keys off
+# it, and a skipped read makes them all claim the interfaces are missing.
+- name: Read the existing link list
+  ansible.builtin.command: ip -o link show
+  register: ernic_tap_links
+  changed_when: false
+  check_mode: false
+
+- name: Create the rocm-ernic bridge
+  ansible.builtin.command: >-
+    ip link add name {{ ernic_tap_bridge }} type bridge
+  become: true
+  when: >-
+    ernic_tap_bridge not in
+    (ernic_tap_links.stdout | regex_findall('\d+:\s+([^:@]+)'))
+  changed_when: true
+
+- name: Bring the bridge up
+  ansible.builtin.command: >-
+    ip link set {{ ernic_tap_bridge }} up
+  become: true
+  changed_when: true
+
+- name: Address the bridge on the host
+  ansible.builtin.command: >-
+    ip addr replace {{ ernic_tap_bridge_ip }} dev {{ ernic_tap_bridge }}
+  become: true
+  when: ernic_tap_bridge_ip | default('') | trim | length > 0
+  changed_when: true
+
+- name: Create the per-instance TAP interfaces
+  ansible.builtin.command: >-
+    ip tuntap add dev {{ ernic_tap_prefix }}{{ item }} mode tap
+    user {{ ernic_tap_owner }}
+  become: true
+  loop: "{{ range(1, (ernic_instances | int) + 1) | list }}"
+  when: >-
+    (ernic_tap_prefix ~ item) not in
+    (ernic_tap_links.stdout | regex_findall('\d+:\s+([^:@]+)'))
+  changed_when: true
+
+- name: Enslave the TAP interfaces to the bridge and bring them up
+  ansible.builtin.shell:
+    cmd: >-
+      ip link set {{ ernic_tap_prefix }}{{ item }}
+      master {{ ernic_tap_bridge }} &&
+      ip link set {{ ernic_tap_prefix }}{{ item }} up
+  become: true
+  loop: "{{ range(1, (ernic_instances | int) + 1) | list }}"
+  changed_when: true
+
+# Nothing was actually created under --check, so there is nothing to
+# verify; asserting here would fail on a host that is merely being
+# previewed.
+- name: Verify every TAP is up and enslaved
+  ansible.builtin.command: >-
+    ip -o link show {{ ernic_tap_prefix }}{{ item }}
+  register: ernic_tap_verify
+  changed_when: false
+  when: not ansible_check_mode
+  loop: "{{ range(1, (ernic_instances | int) + 1) | list }}"
+
+- name: Assert the TAP interfaces joined the bridge
+  ansible.builtin.assert:
+    that:
+      - "'master ' ~ ernic_tap_bridge in item.stdout"
+    fail_msg: >-
+      {{ ernic_tap_prefix }}{{ item.item }} is not enslaved to
+      {{ ernic_tap_bridge }}; guests will not be able to reach
+      each other.
+  when: not ansible_check_mode
+  loop: "{{ ernic_tap_verify.results | default([]) }}"
+  loop_control:
+    label: "{{ ernic_tap_prefix }}{{ item.item }}"

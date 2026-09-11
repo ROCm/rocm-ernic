@@ -120,6 +120,60 @@ uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
  */
 void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
 
+/**
+ * pvrdma_uar_mmio_count - Record a doorbell-window MMIO access for statistics
+ * @handle: Device handle
+ * @is_write: true for write, false for read
+ *
+ * The legacy UAR and the ionic BAR2 doorbell page are the same thing to these
+ * counters, so both personalities share uar_reads/uar_writes.
+ */
+void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
+
+/**
+ * pvrdma_irq_count - Record one delivered MSI-X interrupt
+ * @handle: Device handle
+ *
+ * post_interrupt() counts its own; this is for the ionic path, which triggers
+ * the vector itself.
+ */
+void pvrdma_irq_count(pvrdma_handle_t handle);
+
+/**
+ * pvrdma_eth_bytes_count - Record guest Ethernet bytes moved
+ * @handle: Device handle
+ * @bytes: Frame length
+ * @is_tx: true for guest-to-host, false for host-to-guest
+ */
+void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx);
+
+/**
+ * pvrdma_adminq_count - Record one executed admin-queue command
+ * @handle: Device handle
+ */
+void pvrdma_adminq_count(pvrdma_handle_t handle);
+
+/* Operation classes for pvrdma_rdma_bytes_count(). */
+enum pvrdma_stat_op {
+    PVRDMA_STAT_SEND,
+    PVRDMA_STAT_RECV,
+    PVRDMA_STAT_RDMA_READ,
+    PVRDMA_STAT_RDMA_WRITE,
+};
+
+/* Pass as @qp_id to update only the device totals. */
+#define PVRDMA_STAT_NO_QP 0xffffffffu
+
+/**
+ * pvrdma_rdma_bytes_count - Record RDMA bytes against the device and a QP
+ * @handle: Device handle
+ * @qp_id: QP to attribute the bytes to, or PVRDMA_STAT_NO_QP for totals only
+ * @bytes: Number of bytes actually moved
+ * @op: Operation class
+ */
+void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
+                             uint64_t bytes, enum pvrdma_stat_op op);
+
 /*
  * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */
@@ -306,5 +360,39 @@ int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
 int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes);
+
+/**
+ * Mesh access for the ionic data path.
+ *
+ * ionic resolves rkeys against its own guest-physical MR table rather than
+ * through rdma_rm, so it cannot use the backend's RDMA messages.  It carries
+ * its own protocol as an opaque mesh payload instead; these are thin
+ * wrappers over the tcp_backend_* entry points so ionic_datapath.c does not
+ * have to pull in the QEMU-derived headers.
+ *
+ * ionic_mesh_local_node() and ionic_mesh_node_from_gid() return UINT32_MAX
+ * when the instance has no mesh backend (loopback or none), which the caller
+ * reads as "every peer is local".
+ */
+typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
+                                   const void *buf, size_t len);
+
+/*
+ * Largest single message ionic_mesh_send() accepts, header included.  Mirrors
+ * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp.c, which static-asserts the two
+ * agree.
+ */
+#define IONIC_MESH_MAX_MSG (16u << 20)
+
+uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
+uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes);
+int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
+                    size_t len);
+/* As above, but header and body stay separate all the way down to writev. */
+int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+                     size_t hdr_len, const void *body, size_t body_len);
+void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+                            void *opaque);
 
 #endif /* ROCM_ERNIC_COMPAT_H */

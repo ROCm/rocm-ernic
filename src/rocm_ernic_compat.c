@@ -531,6 +531,96 @@ void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
     }
 }
 
+void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    if (is_write) {
+        pvrdma->stats.uar_writes++;
+    } else {
+        pvrdma->stats.uar_reads++;
+    }
+}
+
+void pvrdma_irq_count(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    pvrdma->stats.interrupts++;
+}
+
+void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    if (is_tx) {
+        pvrdma->stats.total_ip_bytes_tx += bytes;
+    } else {
+        pvrdma->stats.total_ip_bytes_rx += bytes;
+    }
+}
+
+void pvrdma_adminq_count(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma) {
+        return;
+    }
+    pvrdma->stats.commands++;
+}
+
+void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
+                             uint64_t bytes, enum pvrdma_stat_op op)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || !bytes) {
+        return;
+    }
+
+    qp = qp_id == PVRDMA_STAT_NO_QP ? NULL : pvrdma_get_qp_stats(pvrdma, qp_id);
+
+    switch (op) {
+    case PVRDMA_STAT_SEND:
+        pvrdma->stats.total_bytes_sent += bytes;
+        if (qp) {
+            qp->bytes_sent += bytes;
+        }
+        break;
+    case PVRDMA_STAT_RECV:
+        pvrdma->stats.total_bytes_received += bytes;
+        if (qp) {
+            qp->bytes_received += bytes;
+        }
+        break;
+    case PVRDMA_STAT_RDMA_READ:
+        pvrdma->stats.total_bytes_rdma_read += bytes;
+        if (qp) {
+            qp->bytes_rdma_read += bytes;
+        }
+        break;
+    case PVRDMA_STAT_RDMA_WRITE:
+        pvrdma->stats.total_bytes_rdma_write += bytes;
+        if (qp) {
+            qp->bytes_rdma_write += bytes;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -1070,6 +1160,63 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                              &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
 }
 
-/* pvrdma_get_dev_resources and pvrdma_get_backend_dev are retained in the
- * header for potential future use but are currently unused — the ionic path
- * uses the ionic_rm_* wrappers above instead. */
+/* pvrdma_get_dev_resources is retained in the header for potential future use
+ * but is currently unused — the ionic path uses the ionic_rm_* wrappers above
+ * instead. */
+
+uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return UINT32_MAX;
+    return tcp_backend_local_node_id(&pvrdma->backend_dev);
+}
+
+uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    union ibv_gid dgid;
+
+    if (!pvrdma)
+        return UINT32_MAX;
+
+    if (!dest_gid_16bytes)
+        return tcp_backend_node_from_gid(&pvrdma->backend_dev, NULL);
+
+    memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
+    return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
+}
+
+int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
+                    size_t len)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return -EINVAL;
+    return tcp_backend_send_ionic(&pvrdma->backend_dev, dst_node, buf, len);
+}
+
+int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+                     size_t hdr_len, const void *body, size_t body_len)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return -EINVAL;
+    return tcp_backend_send_ionic_v(&pvrdma->backend_dev, dst_node, hdr,
+                                    hdr_len, body, body_len);
+}
+
+void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+                            void *opaque)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma)
+        return;
+    tcp_backend_set_ionic_recv_cb(&pvrdma->backend_dev, (tcp_ionic_recv_fn)fn,
+                                  opaque);
+}

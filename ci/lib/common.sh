@@ -36,6 +36,20 @@ CI_LOG_DIR="${CI_LOG_DIR:-${CI_WORK}/log}"
 
 ERNIC_INSTANCES="${ERNIC_INSTANCES:-2}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6420}"
+
+# Device personality under test.  ionic (1022:8001) is the
+# default everywhere; legacy selects the deprecated PVRDMA
+# device and is only reachable via workflow_dispatch.
+CI_ERNIC_MODE="${CI_ERNIC_MODE:-ionic}"
+
+# In ionic mode each instance attaches to a TAP enslaved to a
+# shared bridge, which is what carries guest-to-guest IP.  The
+# runner cannot create those unprivileged, so install-runner.sh
+# makes them once as root; ci/doctor.sh checks them.  Distinct
+# from the interactive ernic-tap<n> / ernicbr0 for the same
+# reason the VM names are.
+CI_TAP_PREFIX="${CI_TAP_PREFIX:-ernic-ci-tap}"
+CI_TAP_BRIDGE="${CI_TAP_BRIDGE:-ernic-ci-br0}"
 # Prefer the checked-out copies over whatever is
 # installed system-wide: CI must test the tree it was
 # handed, and /usr/local is root-owned so a CI run can
@@ -101,6 +115,20 @@ die() { log_error "$*"; exit 1; }
 # turns those into the functional report and the
 # GitHub step summary.  Keeping this append-only means
 # a job that dies mid-way still reports what it did.
+#
+# Append-only across *runs* is a different matter: the
+# results dir survives, so a job that does not truncate
+# counts every failure it has ever recorded.  A clean
+# perf run reported "5 perf check(s) failed" from
+# entries left by earlier runs.  Every job calls
+# start_suite once, before its first check.
+
+start_suite() {
+    # start_suite <suite>
+    local suite="$1"
+    mkdir -p "${CI_RESULTS}"
+    : >"${CI_RESULTS}/${suite}.jsonl"
+}
 
 record_result() {
     # record_result <suite> <name> <status> <duration_s> [detail]
@@ -162,6 +190,9 @@ ernic_env() {
     export ERNIC_LOG_DIR="${CI_LOG_DIR}"
     export ERNIC_INSTANCES
     export ERNIC_TCP_PORT
+    export ERNIC_DEVICE_MODE="${CI_ERNIC_MODE}"
+    export ERNIC_TAP_PREFIX="${CI_TAP_PREFIX}"
+    export ERNIC_TAP_BRIDGE="${CI_TAP_BRIDGE}"
     export ERNIC_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR}"
     export ERNIC_VM_BACKING="${CI_VM_BACKING}"
     export ERNIC_VM_NAME="${CI_VM_NAME_BASE}"
@@ -244,7 +275,7 @@ require_guests_ready() {
     local i ok=0
     for i in $(seq 1 "${ERNIC_INSTANCES}"); do
         if ! vm_ssh "${i}" 'ibv_devices' 2>/dev/null \
-                | grep -qE 'rocm-rdma-ernic|rocep'; then
+                | grep -qE 'rocm-rdma-ernic|rocep|ionic'; then
             log_error "guest ${i}: no RDMA device"
             ok=1
             continue
@@ -262,6 +293,54 @@ require_guests_ready() {
             ok=1
         fi
     done
+    return "${ok}"
+}
+
+# Verify the ionic TAP interfaces exist, are up, are enslaved
+# to the bridge and are owned by this user.
+#
+# The runner is unprivileged, so it cannot create them; without
+# them the launcher starts every instance with no Ethernet and
+# each guest-to-guest test fails on its own, far from the cause.
+require_taps() {
+    [ "${CI_ERNIC_MODE}" = "ionic" ] || return 0
+
+    local i tap ok=0 uid
+    uid="$(id -u)"
+    for i in $(seq 1 "${ERNIC_INSTANCES}"); do
+        tap="${CI_TAP_PREFIX}${i}"
+        if [ ! -d "/sys/class/net/${tap}" ]; then
+            log_error "TAP ${tap} does not exist"
+            ok=1
+            continue
+        fi
+        if [ "$(cat "/sys/class/net/${tap}/owner" \
+                2>/dev/null || echo -1)" != "${uid}" ]; then
+            log_error "TAP ${tap} is not owned by uid ${uid}"
+            ok=1
+        fi
+        if [ ! -e "/sys/class/net/${tap}/master" ]; then
+            log_error "TAP ${tap} is not enslaved to a bridge"
+            ok=1
+        elif [ "$(basename "$(readlink \
+                "/sys/class/net/${tap}/master")")" \
+                != "${CI_TAP_BRIDGE}" ]; then
+            log_error "TAP ${tap} is not on ${CI_TAP_BRIDGE}"
+            ok=1
+        fi
+    done
+
+    if [ "${ok}" -ne 0 ]; then
+        log_error "Create them once as root with:"
+        log_error "  sudo ip link add ${CI_TAP_BRIDGE} type bridge"
+        log_error "  sudo ip link set ${CI_TAP_BRIDGE} up"
+        for i in $(seq 1 "${ERNIC_INSTANCES}"); do
+            tap="${CI_TAP_PREFIX}${i}"
+            log_error "  sudo ip tuntap add dev ${tap} mode tap user $(id -un)"
+            log_error "  sudo ip link set ${tap} master ${CI_TAP_BRIDGE} up"
+        done
+        log_error "or re-run ci/runner/install-runner.sh."
+    fi
     return "${ok}"
 }
 

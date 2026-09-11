@@ -2,30 +2,63 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Push the driver sources and the rdma-core provider from the
-# controller's rocm-ernic checkout into the guest.
+# Push what the guest needs to build its driver from the
+# controller's rocm-ernic checkout.
+#
+# ionic mode stages only the kernel patches and the two helper
+# scripts -- the guest fetches the upstream sources itself.  Legacy
+# mode stages the out-of-tree driver and the rdma-core provider.
 
 ---
-- name: Copy driver source to the guest
-  ansible.builtin.copy:
-    src: "{{ ernic_source_dir }}/driver/"
-    dest: "{{ ernic_guest_driver_dir }}/"
-    mode: "0755"
+- name: Stage the ionic patches and helper scripts
+  when: ernic_device_mode != 'legacy'
+  block:
 
-- name: Create the rdma-core provider directory
-  ansible.builtin.file:
-    path: "{{ ernic_guest_provider_dir }}"
-    state: directory
-    mode: "0755"
+    - name: Create the ionic staging directory
+      ansible.builtin.file:
+        path: "{{ ernic_guest_ionic_dir }}"
+        state: directory
+        mode: "0755"
 
-- name: Copy the rdma-core providers directory
-  ansible.builtin.copy:
-    src: "{{ ernic_source_dir }}/rdma-core/providers/"
-    dest: "{{ ernic_guest_provider_dir }}/providers/"
-    mode: "0755"
+    - name: Copy the ionic kernel patches
+      ansible.builtin.copy:
+        src: "{{ ernic_source_dir }}/patches/"
+        dest: "{{ ernic_guest_ionic_dir }}/patches/"
+        mode: "0644"
 
-- name: Copy the rdma-core rocm-ernic-dv directory
-  ansible.builtin.copy:
-    src: "{{ ernic_source_dir }}/rdma-core/rocm-ernic-dv/"
-    dest: "{{ ernic_guest_provider_dir }}/rocm-ernic-dv/"
-    mode: "0755"
+    - name: Copy the ionic helper scripts
+      ansible.builtin.copy:
+        src: "{{ ernic_source_dir }}/scripts/{{ item }}"
+        dest: "{{ ernic_guest_ionic_dir }}/{{ item }}"
+        mode: "0755"
+      loop:
+        - fetch-ionic-sources.sh
+        - setup-ionic-dkms.sh
+
+- name: Stage the deprecated driver and rdma-core provider
+  when: ernic_device_mode == 'legacy'
+  block:
+
+    - name: Copy driver source to the guest
+      ansible.builtin.copy:
+        src: "{{ ernic_source_dir }}/driver/"
+        dest: "{{ ernic_guest_driver_dir }}/"
+        mode: "0755"
+
+    - name: Create the rdma-core provider directory
+      ansible.builtin.file:
+        path: "{{ ernic_guest_provider_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the rdma-core providers directory
+      ansible.builtin.copy:
+        src: "{{ ernic_source_dir }}/rdma-core/providers/"
+        dest: "{{ ernic_guest_provider_dir }}/providers/"
+        mode: "0755"
+
+    - name: Copy the rdma-core rocm-ernic-dv directory
+      ansible.builtin.copy:
+        src: "{{ ernic_source_dir }}/rdma-core/rocm-ernic-dv/"
+        dest: "{{ ernic_guest_provider_dir }}/rocm-ernic-dv/"
+        mode: "0755"

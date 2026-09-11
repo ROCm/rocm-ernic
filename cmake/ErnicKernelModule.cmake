@@ -48,6 +48,8 @@ set(IONIC_PATCHES_DIR
     "${CMAKE_SOURCE_DIR}/patches")
 set(IONIC_DKMS_SCRIPT
     "${CMAKE_SOURCE_DIR}/scripts/setup-ionic-dkms.sh")
+set(IONIC_FETCH_SCRIPT
+    "${CMAKE_SOURCE_DIR}/scripts/fetch-ionic-sources.sh")
 
 # ---------------------------------------------------------------------------
 # Helper: fetch-and-patch target
@@ -65,45 +67,12 @@ if(ERNIC_BUILD_KMOD)
     # -- fetch-ionic-sources -------------------------------------------------
     add_custom_command(
         OUTPUT "${IONIC_FETCH_SENTINEL}"
-        COMMAND ${CMAKE_COMMAND} -E echo
-            "-- Fetching ionic sources at ${IONIC_KERNEL_REF}..."
-        # Remove any previous checkout so the ref is always clean.
-        COMMAND ${CMAKE_COMMAND} -E rm -rf "${IONIC_SOURCE_DIR}"
-        # Fetch the pinned ref.  "git clone --branch" only accepts a tag or a
-        # branch, so fetch into an empty repository instead: that also resolves
-        # a bare SHA, and falls back to a full blobless fetch if the server
-        # refuses to serve the object directly.  Only the two ionic subtrees
-        # are checked out.
-        COMMAND bash -c
-            "set -e; \
-             mkdir -p '${IONIC_SOURCE_DIR}'; \
-             cd '${IONIC_SOURCE_DIR}'; \
-             git init -q .; \
-             git remote add origin '${IONIC_KERNEL_REPO}'; \
-             git sparse-checkout init --cone; \
-             git sparse-checkout set \
-                 'drivers/net/ethernet/pensando/ionic' \
-                 'drivers/infiniband/hw/ionic'; \
-             if git fetch -q --depth 1 --filter=blob:none \
-                    origin '${IONIC_KERNEL_REF}'; then \
-                 rev=FETCH_HEAD; \
-             else \
-                 echo '   ${IONIC_KERNEL_REF} is not directly fetchable;' \
-                      'falling back to a full blobless fetch'; \
-                 git fetch -q --filter=blob:none --tags origin; \
-                 rev='${IONIC_KERNEL_REF}'; \
-             fi; \
-             git checkout -q --detach \"$rev\""
-        # Apply rocm-ernic patches in order.
-        COMMAND ${CMAKE_COMMAND} -E echo
-            "-- Applying rocm-ernic patches..."
-        COMMAND bash -c
-            "cd '${IONIC_SOURCE_DIR}' && \
-             for p in $(ls '${IONIC_PATCHES_DIR}'/*.patch 2>/dev/null | sort); do \
-                 echo \"  applying: $p\"; \
-                 git am --whitespace=fix \"$p\" || exit 1; \
-             done"
-        COMMAND ${CMAKE_COMMAND} -E touch "${IONIC_FETCH_SENTINEL}"
+        COMMAND "${IONIC_FETCH_SCRIPT}"
+            --source-dir "${IONIC_SOURCE_DIR}"
+            --kernel-ref "${IONIC_KERNEL_REF}"
+            --patches-dir "${IONIC_PATCHES_DIR}"
+            --repo "${IONIC_KERNEL_REPO}"
+            --force
         COMMENT
             "Fetching Linux ${IONIC_KERNEL_REF} ionic sources and applying patches"
         VERBATIM

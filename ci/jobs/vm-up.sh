@@ -21,6 +21,7 @@
 
 ernic_env
 mkdir -p "${CI_RESULTS}" "${CI_RUN_DIR}" "${CI_LOG_DIR}"
+start_suite vm-up
 
 [ -x "${CI_BUILD_DIR}/rocm-ernic" ] || \
     die "no build at ${CI_BUILD_DIR}; run ci/jobs/build.sh first"
@@ -39,6 +40,12 @@ else
     log_warn "running VMs under TCG emulation -- functional only, no valid perf"
     export KVM=disable
 fi
+
+# In ionic mode the launcher attaches each instance to its TAP,
+# and a missing TAP is a warning there rather than an error --
+# the instance simply comes up with no Ethernet.  CI wants that
+# to be fatal and to say so once, here.
+require_taps || die "ionic TAP interfaces are not usable by $(id -un)"
 
 group_start "Start rocm-ernic instances"
 "${ERNIC_LAUNCHER}" --stop >/dev/null 2>&1 || true

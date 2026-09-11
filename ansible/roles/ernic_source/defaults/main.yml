@@ -19,3 +19,9 @@ ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
 
 # Re-clone even when the checkout already exists.
 ernic_source_force_clone: false
+
+# Upstream kernel tag the ionic driver sources are taken from.
+# Empty means read IONIC_KERNEL_REF out of
+# cmake/ErnicKernelModule.cmake, which is the single pin the C
+# build, the guest DKMS build and the golden image all share.
+ernic_ionic_kernel_ref: ""

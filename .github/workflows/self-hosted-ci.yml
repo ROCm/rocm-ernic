@@ -38,6 +38,7 @@ run-name: >-
   rocm-ernic - Self-Hosted CI
   ${{ inputs.pr && format('- PR #{0}', inputs.pr) || '' }}
   ${{ inputs.tier && format('({0})', inputs.tier) || '' }}
+  ${{ inputs.mode == 'legacy' && '[legacy]' || '' }}
 
 on:
   workflow_dispatch:
@@ -51,6 +52,26 @@ on:
           - build          # build + ctest + loopback
           - functional     # ... plus 2-VM RDMA tests
           - full           # ... plus performance sweeps
+      mode:
+        description: >-
+          Device personality. ionic is the default everywhere;
+          legacy selects the deprecated rocm_ernic driver and
+          is not published to the perf trend series.
+        required: true
+        default: 'ionic'
+        type: choice
+        options:
+          - ionic
+          - legacy         # deprecated PVRDMA path
+      allow_mode_change:
+        description: >-
+          Let this run append to the perf trend series even
+          though the previous published run measured a
+          different device mode. Needed exactly once, for the
+          first ionic run after the switch.
+        required: false
+        default: false
+        type: boolean
       accel:
         description: 'VM accelerator'
         required: true
@@ -85,6 +106,7 @@ concurrency:
 env:
   CI_WORK: /var/tmp/ernic-ci-work
   CI_VM_ACCEL: ${{ inputs.accel || 'kvm' }}
+  CI_ERNIC_MODE: ${{ inputs.mode || 'ionic' }}
   # The code under test.  refs/pull/<n>/head resolves for
   # fork pull requests too, which is what makes them
   # testable without granting the fork any other reach.
@@ -323,12 +345,16 @@ jobs:
         # github.ref is still main while the code under test is
         # the pull request's, so without this any PR -- a fork's
         # included -- could redefine what "no regression" means.
+        #
+        # legacy is excluded as well: it is a deprecated path
+        # kept working, not the thing the baseline describes.
         if: >-
           steps.report.outcome == 'success' &&
           github.ref == 'refs/heads/main' &&
           inputs.pr == '' &&
           needs.preflight.outputs.tier == 'full' &&
-          needs.perf.result == 'success'
+          needs.perf.result == 'success' &&
+          inputs.mode != 'legacy'
         run: |
           mkdir -p "${CI_WORK}/baseline"
           cp "${CI_WORK}/report/summary.json" "${CI_WORK}/baseline/summary.json"
@@ -355,14 +381,19 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.pr == '' &&
           needs.preflight.outputs.tier == 'full' &&
-          needs.perf.result == 'success'
+          needs.perf.result == 'success' &&
+          inputs.mode != 'legacy'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Empty unless the dispatcher asked for it, so the
+          # ${VAR:+flag} expansion below adds nothing by default.
+          ALLOW_MODE_CHANGE: ${{ inputs.allow_mode_change && '1' || '' }}
         run: |
           set -euo pipefail
           python3 ci/report/publish-perf.py \
             --summary "${CI_WORK}/report/summary.json" \
-            --docs-dir docs
+            --docs-dir docs \
+            ${ALLOW_MODE_CHANGE:+--allow-mode-change}
 
           if git diff --quiet -- docs/perf-history docs/perf-trends.rst; then
             echo "no change to publish"

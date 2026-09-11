@@ -20,6 +20,7 @@
 
 ernic_env
 mkdir -p "${CI_RESULTS}/perf-csv" "${CI_RESULTS}/junit"
+start_suite perf
 
 # Refuse to produce numbers that would be recorded as
 # a performance baseline but measured under software
@@ -72,6 +73,7 @@ _ci_ansible_run() {
         -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
+        -e "ernic_device_mode=${CI_ERNIC_MODE}" \
         "$@" </dev/null
 }
 

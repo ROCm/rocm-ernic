@@ -5,7 +5,11 @@
 # rocm-ernic persistent device naming rules.
 #
 # Renames network interfaces and InfiniBand devices
-# created by the rocm_ernic driver to stable names.
+# created by rocm-ernic to stable names, so guests see
+# the same rocm-ernic0 / rocm-rdma-ernic0 regardless of
+# which device mode the server runs in:
+#   ionic  (1022:8001) - upstream ionic driver, default
+#   legacy (1022:8000) - deprecated rocm_ernic driver
 #
 # Install with:
 #   sudo cp udev/99-rocm-ernic.rules /etc/udev/rules.d/
@@ -23,6 +27,16 @@ SUBSYSTEM=="net", ACTION=="add", \
   DRIVERS=="rocm_ernic_eth", \
   NAME="rocm-ernic%n"
 
+# Same, for the ionic driver.  The device-ID guard is
+# what keeps this off real Pensando hardware, which the
+# same driver also binds.
+
+SUBSYSTEM=="net", ACTION=="add", \
+  ATTR{device/vendor}=="0x1022", \
+  ATTR{device/device}=="0x8001", \
+  DRIVERS=="ionic", \
+  NAME="rocm-ernic%n"
+
 # --- InfiniBand device naming ---
 #
 # Renames the RDMA device from the PCI-topology
@@ -38,8 +52,9 @@ SUBSYSTEM=="net", ACTION=="add", \
 # rdma_rename and device settling finish first.
 
 SUBSYSTEM=="infiniband", ACTION=="add", \
-  DRIVERS=="rocm_ernic_eth", \
+  DRIVERS=="rocm_ernic_eth|ionic|ionic_rdma", \
   ATTRS{vendor}=="0x1022", \
+  ATTRS{device}=="0x8000|0x8001", \
   RUN+="/bin/sh -c '(sleep 2; \
     for v in /sys/class/infiniband/*/device/vendor; do \
       [ -f $v ] || continue; \

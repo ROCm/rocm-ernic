@@ -38,8 +38,30 @@ ernic_debug_mesh: true
 # Use only for short-lived pointer / mapping debugging.
 ernic_debug_dma_map: false
 
+# ── Device mode ─────────────────────────────────
+# ionic  : upstream ionic.ko + ionic_rdma.ko in the guest
+#          (VID:DID 1022:8001).  The default.
+# legacy : DEPRECATED PVRDMA device (1022:8000) driven by the
+#          out-of-tree rocm_ernic modules in driver/.
+ernic_device_mode: ionic
+
+# ── Host TAP / bridge (ionic mode) ──────────────
+# Each instance gets ${ernic_tap_prefix}<n>, enslaved to a shared
+# bridge so guests can reach each other on ernic_nic_subnet.
+ernic_tap_setup: true
+ernic_tap_prefix: ernic-tap
+ernic_tap_bridge: ernicbr0
+ernic_tap_owner: "{{ ansible_user_id }}"
+# Optional host address on the bridge, for debugging from the host.
+ernic_tap_bridge_ip: ""
+
 # ── Driver distribution ─────────────────────────
-ernic_driver_source: /usr/share/rocm-ernic/driver
+# ionic mode ships the kernel patches plus the fetch/DKMS helpers;
+# legacy mode ships the deprecated out-of-tree driver sources.
+ernic_driver_source: >-
+  {{ '/usr/share/rocm-ernic/driver-legacy'
+     if ernic_device_mode == 'legacy'
+     else '/usr/share/rocm-ernic/patches' }}
 ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 
 # ── QEMU / VM defaults written into the env file ─

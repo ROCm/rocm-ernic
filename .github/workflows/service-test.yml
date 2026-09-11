@@ -194,9 +194,10 @@ jobs:
           exit 1
         fi
         check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
+        check_file "${PREFIX}/share/rocm-ernic/fetch-ionic-sources.sh"
 
         echo ""
-        echo "=== Legacy driver source files ==="
+        echo "=== Legacy driver source files (deprecated path) ==="
         ls "${PREFIX}/share/rocm-ernic/driver-legacy/" \
           | head -20
         if [ -f \

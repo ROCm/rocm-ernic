@@ -5,7 +5,7 @@
 ---
 namespace: sbates130272
 name: rocm_ernic
-version: 0.1.0
+version: 0.2.0
 # The Galaxy importer looks for a file literally named README.md
 # in the artifact root and rejects the upload without one -- it
 # does not consult this key.  So README.md is the Galaxy landing
@@ -17,9 +17,10 @@ authors:
 
 description: >-
   Ansible roles that prepare Ubuntu hosts and VM images for
-  rocm-ernic: the DKMS kernel driver, a custom rdma-core build
-  carrying the rocm_ernic provider, udev naming rules, emulated
-  NIC addressing, rocm-xio, and the rocm-ernic systemd service.
+  rocm-ernic: the patched upstream ionic kernel modules as a DKMS
+  package, rdma-core with its upstream ionic provider, host TAP
+  and bridge networking, udev naming rules, emulated NIC
+  addressing, rocm-xio, and the rocm-ernic systemd service.
 
 license:
   - MIT

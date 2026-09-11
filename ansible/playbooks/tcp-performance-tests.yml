@@ -20,11 +20,19 @@
     vm1_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
       ssh -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
       -p {{ ernic_vm_ssh_base_port | int + 1 }}
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
@@ -32,7 +40,7 @@
 
     iperf_dur: >-
       {{ ernic_iperf_duration | default(30) }}
-    iperf_bw: "{{ ernic_iperf_bandwidth | default('10G') }}"
+    iperf_bw: "{{ ernic_iperf_bandwidth }}"
 
     kill_perftest: >-
       sudo /usr/local/bin/free-perftest-port 2>/dev/null;
@@ -126,43 +134,22 @@
 
           sleep 3
 
+          # Keep stderr off the JSON stream: an iperf3 warning would otherwise
+          # be parsed as the result and reported as N/A.
           RAW=$({{ vm2_ssh }} "
             timeout $(( DUR * 4 + 30 )) \
               iperf3 -c $SERVER_IP -t $DUR \
-              -b ${BW} --json 2>&1
+              -b ${BW} --json 2>/tmp/iperf3-client.err
           ")
           RC=$?
 
           if [ $RC -ne 0 ]; then
             echo "tcp,stream,FAIL,FAIL,FAIL" >> "{{ tcp_bw_csv }}"
             echo "iperf3 FAIL rc=$RC"
-            echo "$RAW"
+            {{ vm2_ssh }} 'cat /tmp/iperf3-client.err' || true
+            echo "$RAW" | head -c 2000
             exit 1
           fi
-
-          BPS_SEND=$(echo "$RAW" \
-            | python3 -c "
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              bps = d['end']['sum_sent']['bits_per_second']
-              print(f'{bps/1e6:.2f}')
-          except Exception:
-              print('N/A')
-          " 2>/dev/null)
-
-          BPS_RECV=$(echo "$RAW" \
-            | python3 -c "
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              bps = d['end']['sum_received']['bits_per_second']
-              print(f'{bps/1e6:.2f}')
-          except Exception:
-              print('N/A')
-          " 2>/dev/null)
-
-          echo "iperf3 TCP: send=${BPS_SEND} recv=${BPS_RECV} Mbit/s (${DUR}s)"
 
           # Same bw-csv convention as the RDMA sweep: GB/s so
           # the report and badges compare send throughput on
@@ -170,12 +157,26 @@
           # a single sustained rate rather than peak/avg, so
           # both columns carry the same value; msg_rate_mpps
           # has no TCP equivalent.
-          if [ "$BPS_SEND" != "N/A" ]; then
-            SEND_GBs=$(echo "scale=3; $BPS_SEND / 8000" \
-              | bc -l 2>/dev/null || echo "N/A")
-          else
-            SEND_GBs="N/A"
-          fi
+          #
+          # Convert once, straight from bits/s, at four decimal places.  Going
+          # via Mbit/s rounded to 2dp and then bc's scale=3 put the resolution
+          # floor at 0.001 GB/s -- 8 Mbit/s -- so every result slower than that
+          # printed as the same number.
+          read -r BPS_SEND BPS_RECV SEND_GBs <<<"$(echo "$RAW" \
+            | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              s = d['end']['sum_sent']['bits_per_second']
+              r = d['end']['sum_received']['bits_per_second']
+              print(f'{s/1e6:.2f} {r/1e6:.2f} {s/8e9:.4f}')
+          except Exception as e:
+              sys.stderr.write(f'iperf3 JSON parse failed: {e}\n')
+              print('N/A N/A N/A')
+          ")"
+
+          echo "iperf3 TCP: send=${BPS_SEND} recv=${BPS_RECV} Mbit/s" \
+               "(${DUR}s, -b ${BW})"
           echo "tcp,stream,${SEND_GBs},${SEND_GBs},N/A" >> "{{ tcp_bw_csv }}"
       register: iperf_result
       changed_when: false

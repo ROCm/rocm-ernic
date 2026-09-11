@@ -3,9 +3,13 @@
 # SPDX-License-Identifier: MIT
 #
 # GPU passthrough path.  ROCm and the build tools come from
-# ernic_image_prep; only the rocm-xio build and load happen
-# here, against the tarball ernic_host_setup staged on the
-# guest.
+# ernic_image_prep; only the rocm-xio build and load happen here.
+#
+# In ionic mode rocm-xio builds its GDA_IONIC backend against the
+# system rdma-core that rdma_core.yml has already installed with
+# the ionic GDA patches applied, so RDMA_CORE_BUILD is off and the
+# guest ends up with exactly one rdma-core.  The deprecated legacy
+# mode still uses GDA_ERNIC and the ERNIC_PROJECT_DIR stub.
 
 ---
 - name: Add the VM user to the render and video groups
@@ -39,26 +43,28 @@
       correctly. Check QEMU PCI_HOSTDEV and IOMMU
       configuration.
 
-- name: Copy and extract the rocm-xio tarball
-  ansible.builtin.unarchive:
-    src: "{{ ernic_rocm_xio_tarball }}"
-    dest: "{{ ernic_rocm_xio_dir | dirname }}"
-    creates: "{{ ernic_rocm_xio_dir }}"
+- name: Make sure the rocm-xio checkout is present
+  ansible.builtin.include_tasks: rocm_xio_fetch.yml
 
 # rocm-xio expects ERNIC_PROJECT_DIR to be laid out like the
 # rocm-ernic repo, but only reads the provider directory.
-- name: Create the ERNIC_PROJECT_DIR stub
-  ansible.builtin.file:
-    path: "{{ ernic_rocm_xio_stub_dir }}/rdma-core/providers"
-    state: directory
-    mode: "0755"
+# GDA_IONIC needs neither, so this is legacy-only.
+- name: Set up the deprecated ERNIC_PROJECT_DIR stub
+  when: ernic_device_mode == 'legacy'
+  block:
 
-- name: Symlink the rocm_ernic provider into the stub
-  ansible.builtin.file:
-    src: "{{ ernic_guest_provider_dir }}/providers/rocm_ernic"
-    dest: >-
-      {{ ernic_rocm_xio_stub_dir }}/rdma-core/providers/rocm_ernic
-    state: link
+    - name: Create the ERNIC_PROJECT_DIR stub
+      ansible.builtin.file:
+        path: "{{ ernic_rocm_xio_stub_dir }}/rdma-core/providers"
+        state: directory
+        mode: "0755"
+
+    - name: Symlink the rocm_ernic provider into the stub
+      ansible.builtin.file:
+        src: "{{ ernic_guest_provider_dir }}/providers/rocm_ernic"
+        dest: >-
+          {{ ernic_rocm_xio_stub_dir }}/rdma-core/providers/rocm_ernic
+        state: link
 
 - name: Remove any stale rocm-xio build directory
   ansible.builtin.file:
@@ -67,16 +73,10 @@
 
 - name: Configure the rocm-xio build
   ansible.builtin.command:
-    argv:
-      - cmake
-      - -S
-      - "{{ ernic_rocm_xio_dir }}"
-      - -B
-      - "{{ ernic_rocm_xio_dir }}/build"
-      - -GNinja
-      - -DCMAKE_BUILD_TYPE=Release
-      - -DGDA_ERNIC=ON
-      - "-DERNIC_PROJECT_DIR={{ ernic_rocm_xio_stub_dir }}"
+    argv: >-
+      {{ ernic_rocm_xio_cmake_base + (ernic_rocm_xio_cmake_legacy
+         if ernic_device_mode == 'legacy'
+         else ernic_rocm_xio_cmake_ionic) }}
   changed_when: true
 
 - name: Build rocm-xio

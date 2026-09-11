@@ -36,7 +36,10 @@ DEFAULTS = {
     "ERNIC_MANAGER_IP": "127.0.0.1",
     "ERNIC_VERBOSE": "false",
     "ERNIC_LOG_LEVEL": "warn",
-    "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/driver-legacy",
+    "ERNIC_DEVICE_MODE": "ionic",
+    "ERNIC_TAP_PREFIX": "ernic-tap",
+    "ERNIC_TAP_BRIDGE": "ernicbr0",
+    "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/patches",
     "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
     "ERNIC_QEMU_MINIMAL": os.path.expanduser(
         "~/Projects/qemu-minimal"
@@ -87,6 +90,29 @@ MANIFEST = os.path.join(RUN_DIR, "instances.json")
 LAUNCHER = (
     "/usr/local/libexec/rocm-ernic/rocm-ernic-launcher"
 )
+
+
+def device_mode():
+    """Device personality: ``ionic`` (default) or the deprecated ``legacy``."""
+    mode = (CFG.get("ERNIC_DEVICE_MODE") or "ionic").strip().lower()
+    return "legacy" if mode in ("legacy", "pvrdma") else "ionic"
+
+
+def guest_driver_modules():
+    """Guest kernel modules for the active mode, in unload order."""
+    if device_mode() == "legacy":
+        return ["rocm_ernic_rdma", "rocm_ernic_eth"]
+    return ["ionic_rdma", "ionic"]
+
+
+def server_mode_args(instance_id):
+    """Device-mode command line for the server, matching the launcher."""
+    if device_mode() == "legacy":
+        return ["--legacy"]
+    tap = f"{CFG['ERNIC_TAP_PREFIX']}{instance_id}"
+    if os.path.isdir(f"/sys/class/net/{tap}"):
+        return ["--tap", tap]
+    return []
 
 
 def _cfg_vm_ssh_host():
@@ -847,6 +873,7 @@ def cmd_status(args):
             ) or {}
 
     if args.json:
+        m["device_mode"] = device_mode()
         for inst in m["instances"]:
             iid = inst["id"]
             alive = pid_alive(inst["pid"])
@@ -908,6 +935,16 @@ def cmd_status(args):
         print("No instances found.  Service may not"
               " be running.")
         return
+
+    mode = device_mode()
+    if mode == "legacy":
+        print("Device mode: legacy (PVRDMA 1022:8000, DEPRECATED)")
+    else:
+        print(
+            f"Device mode: ionic (1022:8001, "
+            f"TAP {CFG['ERNIC_TAP_PREFIX']}<id>)"
+        )
+    print()
 
     fmt = (
         "{:<4} {:<9} {:<7} {:<10} {:<10}"
@@ -1183,11 +1220,14 @@ def _do_detach(inst, unload_driver=False):
 
     if unload_driver and vm.get("ssh_port"):
         print("Unloading guest driver via SSH...")
+        rmmod = "; ".join(
+            f"sudo rmmod {mod} 2>/dev/null"
+            for mod in guest_driver_modules()
+        )
         guest_ssh(
             vm.get("ssh_user", "ubuntu"),
             vm["ssh_port"],
-            "sudo rmmod rocm_ernic_rdma 2>/dev/null;"
-            " sudo rmmod rocm_ernic_eth 2>/dev/null",
+            rmmod,
         )
         time.sleep(1)
 
@@ -1285,6 +1325,7 @@ def cmd_hot_reload(args):
     )
     cmd = [
         CFG["ERNIC_BIN"],
+        *server_mode_args(inst["id"]),
         "--socket", sock_path,
         "--stats-file", stats,
         "--mac", inst["mac"],

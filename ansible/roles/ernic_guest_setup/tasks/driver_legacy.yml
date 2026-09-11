@@ -1,0 +1,19 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# DEPRECATED: build and install the out-of-tree rocm_ernic driver
+# via DKMS.  Selected by ernic_device_mode=legacy; the default
+# ionic path is in driver_ionic.yml.
+
+---
+- name: Install the rocm-ernic driver via DKMS
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ ernic_guest_driver_dir }}/setup-rocm-ernic-dkms.sh"
+      - --version
+      - "{{ ernic_dkms_pkg_version | trim }}"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  changed_when: true

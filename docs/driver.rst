@@ -1,20 +1,25 @@
-Kernel Driver
-=============
+Kernel Driver (deprecated)
+==========================
+
+.. warning::
+
+   The ``rocm_ernic`` driver is deprecated and will be removed
+   in a future release. Do not use it for new deployments.
+   ionic is the default: the server presents ``1022:8001`` and
+   the guest drives it with upstream ``ionic`` and
+   ``ionic_rdma`` built from a pinned kernel tree with the
+   patches in ``patches/`` applied --- nothing in ``driver/``
+   is involved. See :doc:`ionic`.
+
+   This page describes what you get by opting back in with
+   ``rocm-ernic --legacy`` on the host, or
+   ``-e ernic_device_mode=legacy`` with the Ansible collection.
 
 The ``rocm_ernic`` Linux kernel module is the guest-side
-companion to the userspace server in its default, legacy
-personality (PCI ID ``1022:8000``). It registers an
-InfiniBand device so that standard RDMA applications
-(libibverbs, librdmacm) work inside the virtual machine.
-
-.. note::
-
-   This page covers the legacy driver only. When the server
-   runs with ``--ionic`` the guest instead uses the upstream
-   Linux ``ionic`` and ``ionic_rdma`` modules built from a
-   pinned kernel tree with the patches in ``patches/``
-   applied --- nothing in ``driver/`` is involved. See
-   :doc:`ionic`.
+companion to the userspace server in its legacy personality
+(PCI ID ``1022:8000``). It registers an InfiniBand device so
+that standard RDMA applications (libibverbs, librdmacm) work
+inside the virtual machine.
 
 Building the Driver
 -------------------

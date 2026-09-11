@@ -1,12 +1,17 @@
 # AMD ROCm ERNIC Driver (rocm_ernic) — DEPRECATED
 
-> **This driver is deprecated.**  New deployments should use the upstream
-> **ionic** driver with the AMD emulated-device patch instead.  See
+> **This driver is deprecated; do not use it for new deployments.**  The
+> upstream **ionic** driver with the AMD emulated-device patch is the default
+> and the only supported path.  See
 > `patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch` and
-> `scripts/setup-ionic-dkms.sh`.  Start the server with `--ionic` (`-I`).
+> `scripts/setup-ionic-dkms.sh`.
 >
-> This directory is retained for reference and backwards compatibility.
-> It will be removed once the ionic migration path is validated end-to-end.
+> `rocm-ernic` with no flag already runs ionic.  This driver is reached only
+> by starting the server with `--legacy` (alias `--pvrdma`), or by running the
+> Ansible collection with `-e ernic_device_mode=legacy`.
+>
+> This directory is retained for reference and backwards compatibility, and
+> will be removed in a future release.
 
 ## Overview (historical)
 

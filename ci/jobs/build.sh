@@ -21,6 +21,7 @@ CI_BUILD_TYPE="${CI_BUILD_TYPE:-Release}"
 CI_BUILD_JOBS="${CI_BUILD_JOBS:-$(nproc)}"
 
 mkdir -p "${CI_RESULTS}"
+start_suite build
 
 group_start "Configure (${CI_BUILD_TYPE})"
 cmake_args=(

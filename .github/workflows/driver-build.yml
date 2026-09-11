@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   driver-build:
-    name: Build Legacy Kernel Driver on ${{ matrix.os }}
+    name: Build Deprecated rocm_ernic Driver on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     
     strategy:
@@ -120,7 +120,7 @@ jobs:
   # exists and that every patch still applies to it -- the modules themselves
   # need kernel >= 6.18 headers, which hosted runners do not have.
   ionic-patches:
-    name: Apply ionic Driver Patches
+    name: Apply ionic Driver Patches (default path)
     runs-on: ubuntu-24.04
 
     steps:
@@ -208,16 +208,16 @@ jobs:
     - name: Check build result
       run: |
         rc=0
-        if [ "${{ needs.driver-build.result }}" = "success" ]; then
-          echo "✅ Legacy driver build succeeded"
+        if [ "${{ needs.ionic-patches.result }}" = "success" ]; then
+          echo "✅ ionic patches apply cleanly (default driver path)"
         else
-          echo "❌ Legacy driver build failed"
+          echo "❌ ionic patches do not apply (default driver path)"
           rc=1
         fi
-        if [ "${{ needs.ionic-patches.result }}" = "success" ]; then
-          echo "✅ ionic driver patches apply cleanly"
+        if [ "${{ needs.driver-build.result }}" = "success" ]; then
+          echo "✅ rocm_ernic driver build succeeded (deprecated path)"
         else
-          echo "❌ ionic driver patches do not apply"
+          echo "❌ rocm_ernic driver build failed (deprecated path)"
           rc=1
         fi
         exit $rc

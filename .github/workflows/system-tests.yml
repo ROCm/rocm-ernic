@@ -13,6 +13,17 @@ concurrency:
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000
+  # The guest qcow2 ships as an ORAS artifact -- 3.7 GB zstd rather than
+  # the 5.75 GB raw the FROM-scratch payload image carried, and no skopeo.
+  # Both jobs pull it through .github/actions/fetch-guest-vm.  The builder
+  # image carries no guest at all: guest building moved out to its own
+  # repository, one per flavour, so there is nothing to fall back to if
+  # this pull fails.
+  #
+  # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
+  # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
+  # the build inputs, so a rebuild from the same sources republishes it.
+  GUEST_ARTIFACT_TAG: 20260911-vm.resolute-ionic-qm.737f735-qcow2
 
 jobs:
   system-test-loopback-vm:
@@ -22,10 +33,60 @@ jobs:
     container:
       # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
+      # guests run accelerated instead of under TCG.
+      options: --device /dev/kvm
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Select QEMU accelerator and guest size
+      shell: bash
+      env:
+        VMS: 1
+      run: |
+        if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
+          echo "✓ /dev/kvm present; using KVM acceleration"
+          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
+          echo "QEMU_CPU=host" >> $GITHUB_ENV
+        else
+          echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
+          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
+          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+        fi
+
+        # Size the guests from the runner rather than pinning 2 vCPU / 1 GB.
+        # The hosted runner is 4 vCPU / 16 GB, so the old numbers left most
+        # of the machine idle while a DKMS kernel build ran single-file in
+        # the guest.  Derive it instead: a larger runner class or the
+        # self-hosted node then benefits without another edit here.
+        #
+        # One core and a quarter of RAM stay with the host -- the
+        # vfio-user server, the harness and the runner agent share it --
+        # and the memfd backend is not preallocated, so the guest only
+        # takes what it touches.
+        HOST_CPUS=$(nproc)
+        HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+
+        VM_VCPUS=$(( (HOST_CPUS - 1) / VMS ))
+        # Four is a hard floor, not a preference.  ionic_lif_size() sets
+        # neqs = min(rdma.eq_qtype.qid_count, num_online_cpus()), and
+        # ionic_create_rdma_admin() rejects anything below
+        # IONIC_EQ_COUNT_MIN (4) with a silent -EINVAL that surfaces only
+        # as "Failed to register ibdev".  A guest with fewer than 4 online
+        # CPUs can never bring up ionic_rdma, whatever the device
+        # advertises.  Oversubscribing the runner is fine; starving the
+        # guest is not.
+        [ "$VM_VCPUS" -lt 4 ] && VM_VCPUS=4
+        VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
+        [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
+        [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
+
+        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
+        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
+        echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
 
     - name: Display environment
       run: |
@@ -37,58 +98,63 @@ jobs:
         cmake --version || echo "CMake not found"
         ninja --version || echo "Ninja not found"
         pkg-config --exists libibverbs && pkg-config --modversion libibverbs || echo "libibverbs not found"
-        echo ""
-        echo "=== VM Disk Image Location ==="
-        echo "Checking /output directory..."
-        if [ -d "/output" ]; then
-          echo "✓ /output directory exists"
-          echo "Contents:"
-          ls -la /output || echo "Failed to list contents"
-        else
-          echo "✗ /output directory does not exist"
-        fi
-    
+
+    - name: Fetch the guest VM image
+      id: guest_image
+      uses: ./.github/actions/fetch-guest-vm
+      with:
+        tag: ${{ env.GUEST_ARTIFACT_TAG }}
+
     - name: Read VM info
       id: vm_info
       shell: bash
       run: |
-        echo "=== Reading VM info from /output/vm-info.json ==="
-        if [ ! -f /output/vm-info.json ]; then
-          echo "✗ vm-info.json not found in /output"
-          ls -la /output
+        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        echo "=== Reading VM info from $OUT/vm-info.json ==="
+        if [ ! -f "$OUT/vm-info.json" ]; then
+          echo "✗ vm-info.json not found in $OUT"
+          ls -la "$OUT"
           exit 1
         fi
-        
-        cat /output/vm-info.json
-        
-        # Extract values using jq or python
-        if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
-          VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
-          SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
-          SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
-          SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
-        else
-          # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
-          VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
-          SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
-          SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
-          SSH_KEY_PUBLIC=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('public_key_path', ''))")
-        fi
-        
-        # image_path should already be absolute, but verify
+
+        cat "$OUT/vm-info.json"
+
+        # Paths in vm-info.json are absolute from the machine that built
+        # the image, so resolve each against $OUT by basename.
+        eval "$(python3 - "$OUT" <<'PYEOF'
+        import json, os, shlex, sys
+        out = sys.argv[1]
+        d = json.load(open(os.path.join(out, "vm-info.json")))
+        here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
+        keys = {
+            "VM_USER": d.get("username", "ci"),
+            "VM_DISK": here(d.get("image_path", "")),
+            "SSH_KEY": d.get("ssh_key", ""),
+            "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
+            "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
+            # Only the payload image sets these.  kernel_ref is nested
+            # under provisioning in schema v2; reading it from the top
+            # level is why this reported "ionic ref unknown".
+            "KERNEL_RELEASE": d.get("kernel_release", ""),
+            "KERNEL_REF": d.get("provisioning", {}).get("kernel_ref", ""),
+            "FLAVOUR": d.get("flavour", ""),
+        }
+        for k, v in keys.items():
+            print(f"{k}={shlex.quote(str(v))}")
+        PYEOF
+        )"
+
         if [ -z "$VM_DISK" ]; then
           echo "✗ image_path not found in vm-info.json"
           exit 1
         fi
-    
+
         if [ ! -f "$VM_DISK" ]; then
           echo "✗ VM disk image not found: $VM_DISK"
-          ls -la /output
+          ls -la "$OUT"
           exit 1
         fi
-        
+
         # Verify disk image is accessible and check for missing backing file
         # Error out immediately if disk has a backing file reference that doesn't exist
         QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
@@ -97,7 +163,6 @@ jobs:
           if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
             echo "✗ Disk image has backing file reference but backing file does not exist"
             echo "The disk image metadata references a backing file that is missing."
-            echo "This indicates the disk image is corrupted or incorrectly generated."
             echo ""
             echo "Disk path: $VM_DISK"
             echo "qemu-img info output:"
@@ -110,18 +175,20 @@ jobs:
             exit 1
           fi
         fi
-        
+
         echo "✓ VM username: $VM_USER"
         echo "✓ VM disk: $VM_DISK"
         echo "✓ SSH key: ${SSH_KEY:-not specified}"
+        echo "✓ Guest flavour: ${FLAVOUR:-unknown}"
+        echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
-        
+
         echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
         echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
         echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-    
+        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
     - name: Install dependencies
       run: |
         apt-get update
@@ -135,7 +202,8 @@ jobs:
           librdmacm-dev \
           libglib2.0-dev \
           libjson-c-dev \
-          libcmocka-dev
+          libcmocka-dev \
+          iproute2
 
     - name: Cache libvfio-user build
       id: cache-libvfio-user
@@ -194,7 +262,9 @@ jobs:
         echo "=== Starting rocm-ernic server ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
-        
+
+        # No mode flag: ionic (1022:8001) is the default, and the guest
+        # below builds the matching upstream ionic + ionic_rdma modules.
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback:mode=preserve \
@@ -258,30 +328,35 @@ jobs:
         # Start VM with vfio-user device
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem0 \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem0,share=on,size=1G \
+          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem0 \
+          -cpu ${QEMU_CPU} \
+          -smp ${VM_VCPUS} \
+          -m ${VM_MEM_MB}M \
+          -object memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M \
           -nographic \
           -drive file="$VM_DISK",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
           -device virtio-net-pci,netdev=net0 \
           -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-rocm-ernic.sock"}}' \
-          -serial mon:stdio > /tmp/qemu.log 2>&1 &
-        
+          -serial file:/tmp/qemu-console.log \
+          -monitor none \
+          -qmp unix:/tmp/qmp.sock,server=on,wait=off > /tmp/qemu.log 2>&1 &
+
         QEMU_PID=$!
         echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
         echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
         echo "✓ QEMU started (PID: $QEMU_PID)"
-        
+
         # Early failure detection: check if QEMU dies within 5 seconds
         echo "Monitoring QEMU for early failures..."
         sleep 5
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then
           echo "✗ QEMU process died within 5 seconds (PID: $QEMU_PID)"
-          echo "=== QEMU log (last 100 lines) ==="
-          tail -100 /tmp/qemu.log || echo "Log file not found"
+          echo "=== QEMU log ==="
+          cat /tmp/qemu.log || echo "Log file not found"
+          echo ""
+          echo "=== Guest console ==="
+          cat /tmp/qemu-console.log || echo "Console log not found"
           echo ""
           echo "=== QEMU exit code ==="
           wait "$QEMU_PID" 2>&1 || echo "Exit code: $?"
@@ -323,12 +398,28 @@ jobs:
         echo "✓ Using SSH keys from vm-info.json"
         echo "  Private key: $SSH_KEY_PRIVATE"
         echo "  Public key: $SSH_KEY_PUBLIC"
-        cp "$SSH_KEY_PRIVATE" ~/.ssh/id_ed25519
-        cp "$SSH_KEY_PUBLIC" ~/.ssh/id_ed25519.pub
-        chmod 600 ~/.ssh/id_ed25519
-        chmod 644 ~/.ssh/id_ed25519.pub
-        
+
         ssh-keyscan -p "$SSH_PORT" localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+        # Use the key where the fetch action left it rather than copying
+        # it into ~/.ssh and letting ssh find it by default, because ssh
+        # will not: ~ is $HOME, which a container job sets to
+        # /github/home, but OpenSSH builds its default identity and
+        # known_hosts paths from getpwuid() -- /root for us -- which is
+        # empty.  The copy therefore landed somewhere ssh never looked,
+        # and six runs died at "Permission denied (publickey,password)"
+        # looking exactly like a guest that never booted.
+        #
+        # IdentitiesOnly stops an agent or those defaults from being
+        # offered as well, so this stays legible if it ever breaks again;
+        # BatchMode turns the password fallback into an immediate failure
+        # with a usable message instead of a read_passphrase error.
+        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
+        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
+        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
+        echo "✓ SSH_OPTS=$SSH_OPTS"
     
     - name: Wait for VM SSH
       shell: bash
@@ -337,19 +428,32 @@ jobs:
         SSH_PORT="$SSH_PORT"
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
         
+        # Keep ssh's stderr rather than discarding it: "Connection
+        # refused" and "Connection timed out" are different faults, and
+        # the old 2>/dev/null hid which one this was for five runs.
         for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/dev/null; then
+          if ssh $SSH_OPTS -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
             echo "VM_USER=$VM_USER" >> $GITHUB_ENV
             exit 0
           fi
-          echo "Attempt $i/60: Waiting for SSH..."
+          echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
           sleep 5
         done
-        
+
         echo "✗ VM SSH timeout"
-        echo "=== QEMU Log ==="
-        tail -100 /tmp/qemu.log
+        echo ""
+        echo "=== Final attempt, verbose ==="
+        ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
+          -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
+
+        "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+          --label VM \
+          --ssh-port "$SSH_PORT" \
+          --qmp /tmp/qmp.sock \
+          --console /tmp/qemu-console.log \
+          --qemu-log /tmp/qemu.log \
+          --pid "$QEMU_PID"
         exit 1
     
     - name: Verify RDMA NIC in VM
@@ -359,12 +463,12 @@ jobs:
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         
         echo "=== PCI Devices ==="
         sudo lspci | grep -i amd || echo "AMD device not found yet"
-        sudo lspci -nn | grep -E "1022:8000|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
+        sudo lspci -nn | grep -E "1022:8001|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
         
         echo ""
         echo "=== Checking for RDMA device ==="
@@ -379,203 +483,110 @@ jobs:
         lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
         EOFVM
     
-    - name: Copy driver source to VM
+    - name: Install the Ansible collection dependencies
       shell: bash
       run: |
-        echo "=== Copying driver source to VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
-          driver/ "${VM_USER}@localhost:/tmp/" || {
-          echo "✗ Failed to copy driver source to VM"
-          exit 1
-        }
-        echo "✓ Driver source copied to VM"
-    
-    - name: Install kernel-version-specific packages in VM
+        echo "=== Installing the Ansible collection dependencies ==="
+        # The guest is provisioned by the sbates130272.rocm_ernic
+        # collection in this repo, so the same role the self-hosted CI
+        # and developers use is what these jobs exercise.
+        #
+        # The container's ansible-core comes from pipx and searches
+        # ~/.ansible/collections, not the dist-packages tree the
+        # "ansible" apt bundle installs into, so installing that
+        # bundle leaves community.general invisible.  Install the
+        # collections the same way a real consumer does instead.
+        ansible --version
+        ansible-galaxy collection install -r ansible/requirements.yml
+
+    - name: Install kernel headers and build tools in VM
       shell: bash
       run: |
-        echo "=== Installing kernel headers and modules-extra in VM ==="
+        echo "=== Installing kernel headers and build tools in VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         KVER=$(uname -r)
-        # unattended-upgrades runs on a timer inside the guest image and
-        # holds /var/lib/dpkg/lock-frontend for minutes. Retrying against a
-        # held lock just burns the attempts, so wait for it instead.
+
+        # ernic_image_prep bakes these into the golden image on the
+        # self-hosted path.  These jobs run against a prebuilt CI qcow2
+        # instead, so the build toolchain is installed here.  The kernel
+        # version itself is the image's business, and ernic_guest_setup
+        # asserts it matches the pinned ionic sources.
+        #
+        # Headers are a check, not an install.  A guest on a mainline
+        # kernel has them from the .deb, and kernel.ubuntu.com is a
+        # directory of loose .debs with no Packages index behind it --
+        # so there is no apt source to install them from and
+        # linux-headers-$(uname -r) 404s.  What matters is that the
+        # build tree is there; ask for the package only when it is not.
+        HEADER_PKG=""
+        if [ -d "/lib/modules/${KVER}/build" ]; then
+          echo "Kernel headers already present for ${KVER}"
+        else
+          echo "No build tree for ${KVER}; asking apt for the headers"
+          HEADER_PKG="linux-headers-${KVER}"
+        fi
+
         APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
           sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+            pkg-config libnl-3-dev libnl-route-3-dev libudev-dev python3-docutils && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
+
         echo "✓ Kernel packages installed for ${KVER}"
         EOFVM
 
-    - name: Copy rdma-core provider to VM
+    - name: Provision the VM with the Ansible collection
       shell: bash
       run: |
-        echo "=== Copying rdma-core provider to VM ==="
+        echo "=== Provisioning the guest via ernic_guest_setup ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
-          "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-provider"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" -r \
-          rdma-core/providers rdma-core/rocm-ernic-dv \
-          "${VM_USER}@localhost:/tmp/rdma-core-provider/"
-        echo "✓ Provider source copied to VM"
+        ERNIC_RUN_DIR=/tmp/ernic-ci
+        mkdir -p "$ERNIC_RUN_DIR"
 
-    - name: Copy rdma-core tarball to VM
-      shell: bash
-      run: |
-        echo "=== Copying rdma-core tarball to VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-build"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
-          /tmp/rdma-core-62.0.tar.gz \
-          "${VM_USER}@localhost:/tmp/rdma-core-build/rdma-core-62.0.tar.gz"
-        echo "✓ rdma-core tarball copied to VM"
-
-    - name: Build custom rdma-core provider in VM
-      shell: bash
-      run: |
-        echo "=== Building custom rdma-core provider ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        RDMA_CORE_VER="62.0"
-        BUILD_DIR="/tmp/rdma-core-build"
-        SRC_DIR="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}"
-        TARBALL="${BUILD_DIR}/rdma-core-${RDMA_CORE_VER}.tar.gz"
-        mkdir -p "${BUILD_DIR}"
-        echo "Extracting rdma-core v${RDMA_CORE_VER}..."
-        tar xf "${TARBALL}" -C "${BUILD_DIR}"
-        echo "Injecting rocm_ernic provider..."
-        cp -r /tmp/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
-        if ! grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt"; then
-          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
-        fi
-        echo "Building rdma-core..."
-        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
-        cmake --build "${BUILD_DIR}/build" -j$(nproc)
-        echo "Installing rdma-core..."
-        sudo cmake --install "${BUILD_DIR}/build"
-        sudo ldconfig
-        echo "Verifying provider..."
-        find /usr/lib -name "librocm_ernic*" 2>/dev/null || echo "Provider may be in lib64"
-        echo "✓ Custom rdma-core provider installed"
-        EOFVM
-
-    - name: Build and load driver in VM
-      shell: bash
-      run: |
-        echo "=== Building and loading driver in VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
-        set -e
-        
-        echo "=== Kernel Version ==="
-        uname -r
-        
-        echo ""
-        echo "=== Building Driver ==="
-        cd /tmp/driver
-        make KDIR=/lib/modules/$(uname -r)/build
-        if [ ! -f rocm_ernic_eth.ko ] || [ ! -f rocm_ernic_rdma.ko ]; then
-          echo "✗ Driver modules not found!"
-          echo "Expected: rocm_ernic_eth.ko and rocm_ernic_rdma.ko"
-          ls -lh *.ko 2>/dev/null || echo "No .ko files found"
-          exit 1
-        fi
-        ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
-        echo "✓ Driver built for kernel $(uname -r)"
-        
-        echo ""
-        echo "=== Loading InfiniBand Core ==="
-        if ! sudo modprobe ib_core; then
-          echo "✗ Failed to load ib_core module"
-          echo "This module is required for the rocm_ernic driver."
-          echo "Checking available modules:"
-          find /lib/modules/$(uname -r) -name "*ib_core*" 2>/dev/null || echo "No ib_core module found"
-          echo ""
-          echo "You may need to install linux-modules-extra:"
-          echo "  sudo apt-get update && sudo apt-get install linux-modules-extra-$(uname -r)"
-          exit 1
-        fi
-        
-        if ! sudo modprobe ib_uverbs; then
-          echo "✗ Failed to load ib_uverbs module"
-          echo "This module is required for the rocm_ernic driver."
-          echo "Checking available modules:"
-          find /lib/modules/$(uname -r) -name "*ib_uverbs*" 2>/dev/null || echo "No ib_uverbs module found"
-          exit 1
-        fi
-        
-        echo "Loaded IB modules:"
-        lsmod | grep ib_ || echo "No IB modules loaded"
-        
-        # Verify required symbols are available
-        echo ""
-        echo "=== Verifying InfiniBand symbols ==="
-        if ! grep -q "ib_umem_get" /proc/kallsyms 2>/dev/null; then
-          echo "✗ ib_umem_get symbol not found in kernel"
-          echo "The InfiniBand core modules may not be properly loaded or may not export symbols."
-          exit 1
-        fi
-        if ! grep -q "ib_umem_release" /proc/kallsyms 2>/dev/null; then
-          echo "✗ ib_umem_release symbol not found in kernel"
-          echo "The InfiniBand core modules may not be properly loaded or may not export symbols."
-          exit 1
-        fi
-        echo "✓ Required InfiniBand symbols are available"
-        
-        echo ""
-        echo "=== Loading Driver ==="
-        # Load eth module first (required dependency)
-        sudo insmod ./rocm_ernic_eth.ko 2>&1 || {
-          echo "⚠️  Driver eth module load failed"
-          echo "Kernel messages:"
-          sudo dmesg | tail -30
-          exit 1
+        # ci-vm-register.yml turns this manifest into the ernic_vms
+        # inventory group; on the self-hosted path ernicctl writes it.
+        cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
+        {
+          "instances": [
+            {
+              "id": 1,
+              "vm": {
+                "vm_name": "gh-loopback-vm1",
+                "ssh_port": ${SSH_PORT},
+                "ssh_user": "${VM_USER}"
+              }
+            }
+          ]
         }
-        
-        # Load rdma module (depends on eth module)
-        sudo insmod ./rocm_ernic_rdma.ko 2>&1 || {
-          echo "⚠️  Driver rdma module load failed"
-          echo "Kernel messages:"
-          sudo dmesg | tail -30
-          exit 1
-        }
-        
-        echo "✓ Driver loaded successfully"
-        lsmod | grep rocm_ernic
-        
-        echo ""
-        echo "=== Checking RDMA Device ==="
-        sleep 2  # Give device time to register
-        if ibv_devices | grep -E "rocm_ernic|rocep"; then
-          DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" | awk '{print $1}' | head -1)
-          echo "✓ RDMA device found: $DEVICE"
-          ibv_devinfo -d "$DEVICE" | head -20 || true
-        else
-          echo "⚠️  RDMA device not found after driver load"
-          echo "PCI devices:"
-          sudo lspci | grep -i amd || true
-          echo "Kernel messages:"
-          sudo dmesg | tail -30
-          exit 1
-        fi
-        EOFVM
+        EOFJSON
+
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
+
+        cd ansible
+        ansible-playbook ci-site.yml --tags guest-setup \
+          -e ernic_project_root="$PROJECT_ROOT" \
+          -e ernic_run_dir="$ERNIC_RUN_DIR" \
+          -e ernic_instances=1 \
+          -e ernic_vm_ssh_base_port="$SSH_PORT" \
+          -e ernic_vm_ssh_user="$VM_USER" \
+          -e ernic_device_mode=ionic \
+          -e ernic_gpu_passthrough=false \
+          -e ernic_guest_agent=false \
+          -e ernic_set_hostname=false \
+          -e ernic_configure_nic=false
     
     - name: Verify RDMA device with running server
       shell: bash
@@ -601,14 +612,14 @@ jobs:
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
         set +e
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" <<-'EOFVM'
-        	if ! ibv_devices | grep -qE "rocm_ernic|rocep"; then
+        	if ! ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
         	  echo "✗ RDMA device not found"
         	  exit 1
         	fi
 
-        	DEVICE=$(ibv_devices | grep -E "rocm_ernic|rocep" \
+        	DEVICE=$(ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" \
         	         | awk '{print $1}' | head -1)
         	echo "✓ RDMA device found: $DEVICE"
         	ibv_devinfo -d "$DEVICE" | head -20 || true
@@ -626,11 +637,13 @@ jobs:
       shell: bash
       run: |
         echo "=== DC guest smoke (SRQ + DCT + DCI create) ==="
+        # DC is a rocm_ernic direct-verbs extension, so this needs
+        # librocm_ernic and skips cleanly on the ionic default path.
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/dc-smoke"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+        scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_dc_loopback.c \
           rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
           "${VM_USER}@localhost:/tmp/dc-smoke/"
@@ -641,7 +654,7 @@ jobs:
         # set -e still in effect its status becomes the shell's
         # exit status. The step would then report failure even
         # when the test passed.
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/dc-smoke
         ROCM_LIBDIR=""
@@ -688,20 +701,20 @@ jobs:
         echo "=== WRITE_WITH_IMM guest smoke (loopback responder delivery) ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+        scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_write_imm.c \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
         set +e
         # Run via 'bash -s' for the same reason as the DC guest smoke step:
         # a login shell would source ~/.bash_logout on exit and its failure
         # could override the test exit status.
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
-        if ! ibv_devices 2>/dev/null | grep -qE "rocm_ernic|rocep|rocm-rdma-ernic"; then
-          echo "No rocm_ernic device found; skipping WRITE_WITH_IMM smoke"
+        if ! ibv_devices 2>/dev/null | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
+          echo "No rocm-ernic device found; skipping WRITE_WITH_IMM smoke"
           exit 0
         fi
         gcc -O2 -Wall -Wextra \
@@ -712,7 +725,7 @@ jobs:
         WIMM_EXIT=$?
         set -e
         if [ "$WIMM_EXIT" -eq 77 ]; then
-          echo "No rocm_ernic device found; skipping WRITE_WITH_IMM smoke"
+          echo "No rocm-ernic device found; skipping WRITE_WITH_IMM smoke"
           exit 0
         fi
         exit $WIMM_EXIT
@@ -731,14 +744,14 @@ jobs:
         echo "=== DC error path guest smoke (send_in_flight accounting) ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/dc-err-smoke"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+        scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_dc_error_paths.c \
           rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
           "${VM_USER}@localhost:/tmp/dc-err-smoke/"
         set +e
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/dc-err-smoke
         ROCM_LIBDIR=""
@@ -784,6 +797,10 @@ jobs:
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
 
+        # The loopback sysfs attribute is a rocm_ernic driver feature with
+        # no upstream ionic equivalent, so in ionic mode this finds no
+        # attributes and skips with 77.
+
         # Start a loopback server for the sysfs test
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic-test.sock \
@@ -806,7 +823,7 @@ jobs:
         fi
 
         set +e
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" <<-'EOFVM'
         	SYSFS_ETH=""
         	SYSFS_IB=""
@@ -900,9 +917,26 @@ jobs:
         ls -lh /tmp/vfu_server*.log || echo "No server logs"
         tail -50 /tmp/vfu_server*.log || true
         echo ""
-        echo "=== QEMU Log (last 100 lines) ==="
-        tail -100 /tmp/qemu.log || echo "No QEMU log"
-    
+        echo "=== QEMU Log ==="
+        cat /tmp/qemu.log || echo "No QEMU log"
+        echo ""
+        # Whole file, not a tail: a boot log is under a thousand lines
+        # and the network setup it has to explain is near the top.
+        echo "=== Guest console (complete) ==="
+        cat /tmp/qemu-console.log || echo "No console log"
+
+    - name: Upload test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: loopback-backend-test-logs
+        path: |
+          /tmp/vfu_server.log
+          /tmp/qemu.log
+          /tmp/qemu-console.log
+        retention-days: 7
+        if-no-files-found: ignore
+
     - name: Cleanup
       if: always()
       run: |
@@ -927,11 +961,52 @@ jobs:
     container:
       # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
+      # guests run accelerated instead of under TCG.
+      options: --device /dev/kvm
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
+    - name: Select QEMU accelerator and guest size
+      shell: bash
+      env:
+        VMS: 2
+      run: |
+        if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
+          echo "✓ /dev/kvm present; using KVM acceleration"
+          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
+          echo "QEMU_CPU=host" >> $GITHUB_ENV
+        else
+          echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
+          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
+          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+        fi
+
+        # See the loopback job; VMS is 2 here, so each guest gets half.
+        HOST_CPUS=$(nproc)
+        HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+
+        VM_VCPUS=$(( (HOST_CPUS - 1) / VMS ))
+        # Four is a hard floor, not a preference.  ionic_lif_size() sets
+        # neqs = min(rdma.eq_qtype.qid_count, num_online_cpus()), and
+        # ionic_create_rdma_admin() rejects anything below
+        # IONIC_EQ_COUNT_MIN (4) with a silent -EINVAL that surfaces only
+        # as "Failed to register ibdev".  A guest with fewer than 4 online
+        # CPUs can never bring up ionic_rdma, whatever the device
+        # advertises.  Oversubscribing the runner is fine; starving the
+        # guest is not.
+        [ "$VM_VCPUS" -lt 4 ] && VM_VCPUS=4
+        VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
+        [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
+        [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
+
+        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
+        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
+        echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
+
     - name: Verify environment
       run: |
         echo "=== QEMU Version ==="
@@ -957,7 +1032,8 @@ jobs:
           librdmacm-dev \
           libglib2.0-dev \
           libjson-c-dev \
-          libcmocka-dev
+          libcmocka-dev \
+          iproute2
 
     - name: Cache libvfio-user build
       id: cache-libvfio-user
@@ -1012,47 +1088,62 @@ jobs:
         ls -lh build/rocm-ernic
         file build/rocm-ernic
 
+    - name: Fetch the guest VM image
+      id: guest_image
+      uses: ./.github/actions/fetch-guest-vm
+      with:
+        tag: ${{ env.GUEST_ARTIFACT_TAG }}
+
     - name: Read VM info
       id: vm_info
       shell: bash
       run: |
-        echo "=== Reading VM info from /output/vm-info.json ==="
-        if [ ! -f /output/vm-info.json ]; then
-          echo "✗ vm-info.json not found in /output"
-          ls -la /output
+        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        echo "=== Reading VM info from $OUT/vm-info.json ==="
+        if [ ! -f "$OUT/vm-info.json" ]; then
+          echo "✗ vm-info.json not found in $OUT"
+          ls -la "$OUT"
           exit 1
         fi
-        
-        cat /output/vm-info.json
-        
-        # Extract values using jq or python
-        if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
-          VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
-          SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
-          SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
-          SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
-        else
-          # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
-          VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
-          SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
-          SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
-          SSH_KEY_PUBLIC=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('public_key_path', ''))")
-        fi
-        
-        # image_path should already be absolute, but verify
+
+        cat "$OUT/vm-info.json"
+
+        # Paths in vm-info.json are absolute from the machine that built
+        # the image, so resolve each against $OUT by basename.
+        eval "$(python3 - "$OUT" <<'PYEOF'
+        import json, os, shlex, sys
+        out = sys.argv[1]
+        d = json.load(open(os.path.join(out, "vm-info.json")))
+        here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
+        keys = {
+            "VM_USER": d.get("username", "ci"),
+            "VM_DISK": here(d.get("image_path", "")),
+            "SSH_KEY": d.get("ssh_key", ""),
+            "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
+            "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
+            # Only the payload image sets these.  kernel_ref is nested
+            # under provisioning in schema v2; reading it from the top
+            # level is why this reported "ionic ref unknown".
+            "KERNEL_RELEASE": d.get("kernel_release", ""),
+            "KERNEL_REF": d.get("provisioning", {}).get("kernel_ref", ""),
+            "FLAVOUR": d.get("flavour", ""),
+        }
+        for k, v in keys.items():
+            print(f"{k}={shlex.quote(str(v))}")
+        PYEOF
+        )"
+
         if [ -z "$VM_DISK" ]; then
           echo "✗ image_path not found in vm-info.json"
           exit 1
         fi
-    
+
         if [ ! -f "$VM_DISK" ]; then
           echo "✗ VM disk image not found: $VM_DISK"
-          ls -la /output
+          ls -la "$OUT"
           exit 1
         fi
-        
+
         # Verify disk image is accessible and check for missing backing file
         # Error out immediately if disk has a backing file reference that doesn't exist
         QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
@@ -1061,7 +1152,6 @@ jobs:
           if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
             echo "✗ Disk image has backing file reference but backing file does not exist"
             echo "The disk image metadata references a backing file that is missing."
-            echo "This indicates the disk image is corrupted or incorrectly generated."
             echo ""
             echo "Disk path: $VM_DISK"
             echo "qemu-img info output:"
@@ -1071,53 +1161,50 @@ jobs:
             echo "✗ Failed to read disk image info"
             echo "Disk path: $VM_DISK"
             echo "$QEMU_IMG_OUTPUT"
-          exit 1
+            exit 1
           fi
         fi
-        
+
         echo "✓ VM username: $VM_USER"
         echo "✓ VM disk: $VM_DISK"
         echo "✓ SSH key: ${SSH_KEY:-not specified}"
+        echo "✓ Guest flavour: ${FLAVOUR:-unknown}"
+        echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
-        
+
         echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
         echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
         echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-    
-    - name: Copy VM disk for second VM
+        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
+    - name: Create the per-VM disk overlays
       id: copy_vm_disk
       shell: bash
       run: |
-        echo "=== Copying VM disk for second VM ==="
-        VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
-        
-        # Create second VM disk name by inserting .2 before .qcow2 extension
-        # e.g., /output/ci-vm.qcow2 -> /output/ci-vm.2.qcow2
-        VM_DISK_DIR=$(dirname "$VM_DISK_1")
-        VM_DISK_BASENAME=$(basename "$VM_DISK_1")
-        VM_DISK_NAME="${VM_DISK_BASENAME%.qcow2}"
-        VM_DISK_2="${VM_DISK_DIR}/${VM_DISK_NAME}.2.qcow2"
-        
-        echo "VM disk 1: $VM_DISK_1"
-        echo "VM disk 2: $VM_DISK_2"
-        echo "Copying $VM_DISK_1 to $VM_DISK_2..."
-        # Use cp to create an exact copy preserving all disk structure and metadata
-        cp "$VM_DISK_1" "$VM_DISK_2" || {
-          echo "✗ Failed to copy VM disk"
-          exit 1
-        }
-        
-        echo "Verifying copied disk..."
-        qemu-img info "$VM_DISK_2" || {
-          echo "✗ Failed to read copied disk info"
-          exit 1
-        }
-        
+        set -euo pipefail
+        echo "=== Creating per-VM overlays ==="
+        # Overlays, not copies.  The fetched qcow2 is 5.75 GB, and both
+        # guests boot the same golden image and diverge only in what they
+        # write, so cp spent a minute and 5.75 GB to reproduce something
+        # qemu-img create does instantly.
+        #
+        # Both VMs get one, including the first: with VM 1 writing to the
+        # base directly, VM 2's backing file would mutate underneath it.
+        BASE="${{ steps.vm_info.outputs.vm_disk }}"
+        STEM="$(dirname "$BASE")/$(basename "$BASE" .qcow2)"
+        VM_DISK_1="${STEM}.1.qcow2"
+        VM_DISK_2="${STEM}.2.qcow2"
+
+        for DISK in "$VM_DISK_1" "$VM_DISK_2"; do
+          rm -f "$DISK"
+          qemu-img create -f qcow2 -F qcow2 -b "$BASE" "$DISK"
+          qemu-img info "$DISK"
+        done
+
         echo "vm_disk_1=$VM_DISK_1" >> $GITHUB_OUTPUT
         echo "vm_disk_2=$VM_DISK_2" >> $GITHUB_OUTPUT
-        echo "✓ VM disk copied for second VM"
+        echo "✓ overlays created over $BASE"
     
     - name: Setup SSH keys
       shell: bash
@@ -1152,13 +1239,19 @@ jobs:
         echo "✓ Using SSH keys from vm-info.json"
         echo "  Private key: $SSH_KEY_PRIVATE"
         echo "  Public key: $SSH_KEY_PUBLIC"
-        cp "$SSH_KEY_PRIVATE" ~/.ssh/id_ed25519
-        cp "$SSH_KEY_PUBLIC" ~/.ssh/id_ed25519.pub
-        chmod 600 ~/.ssh/id_ed25519
-        chmod 644 ~/.ssh/id_ed25519.pub
-        
         ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
         ssh-keyscan -p 2223 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+        # See the loopback job: ~ is $HOME (/github/home in a container
+        # job) but OpenSSH builds its defaults from getpwuid(), so the key
+        # is used where it lies rather than copied somewhere ssh will
+        # never look for it.
+        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
+        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
+        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
+        echo "✓ SSH_OPTS=$SSH_OPTS"
 
     - name: Start TCP server 1 (manager)
       shell: bash
@@ -1166,7 +1259,7 @@ jobs:
         echo "=== Starting TCP server 1 (manager) ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
-        
+
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
@@ -1499,22 +1592,24 @@ jobs:
       shell: bash
       run: |
         echo "=== Starting VM 1 ==="
-        VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
+        VM_DISK_1="${{ steps.copy_vm_disk.outputs.vm_disk_1 }}"
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem1 \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem1,share=on,size=1G \
+          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem1 \
+          -cpu ${QEMU_CPU} \
+          -smp ${VM_VCPUS} \
+          -m ${VM_MEM_MB}M \
+          -object memory-backend-memfd,id=mem1,share=on,size=${VM_MEM_MB}M \
           -nographic \
           -drive file="$VM_DISK_1",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
           -device virtio-net-pci,netdev=net0 \
           -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server1.sock"}}' \
-          -serial mon:stdio > /tmp/qemu-vm1.log 2>&1 &
-        
+          -serial file:/tmp/qemu-vm1-console.log \
+          -monitor none \
+          -qmp unix:/tmp/qmp-vm1.sock,server=on,wait=off > /tmp/qemu-vm1.log 2>&1 &
+
         QEMU_VM1_PID=$!
         echo "QEMU_VM1_PID=$QEMU_VM1_PID" >> $GITHUB_ENV
         echo "✓ VM 1 started (PID: $QEMU_VM1_PID)"
@@ -1524,8 +1619,11 @@ jobs:
         sleep 5
         if ! kill -0 "$QEMU_VM1_PID" 2>/dev/null; then
           echo "✗ VM 1 QEMU process died within 5 seconds (PID: $QEMU_VM1_PID)"
-          echo "=== VM 1 QEMU log (last 100 lines) ==="
-          tail -100 /tmp/qemu-vm1.log || echo "Log file not found"
+          echo "=== VM 1 QEMU log ==="
+          cat /tmp/qemu-vm1.log || echo "Log file not found"
+          echo ""
+          echo "=== VM 1 guest console ==="
+          cat /tmp/qemu-vm1-console.log || echo "Console log not found"
           echo ""
           echo "=== VM 1 QEMU exit code ==="
           wait "$QEMU_VM1_PID" 2>&1 || echo "Exit code: $?"
@@ -1541,18 +1639,20 @@ jobs:
         SSH_PORT_2=2223
         
         qemu-system-x86_64 \
-          -machine q35,accel=tcg,memory-backend=mem2 \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem2,share=on,size=1G \
+          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem2 \
+          -cpu ${QEMU_CPU} \
+          -smp ${VM_VCPUS} \
+          -m ${VM_MEM_MB}M \
+          -object memory-backend-memfd,id=mem2,share=on,size=${VM_MEM_MB}M \
           -nographic \
           -drive file="$VM_DISK_2",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
           -device virtio-net-pci,netdev=net0 \
           -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server2.sock"}}' \
-          -serial mon:stdio > /tmp/qemu-vm2.log 2>&1 &
-        
+          -serial file:/tmp/qemu-vm2-console.log \
+          -monitor none \
+          -qmp unix:/tmp/qmp-vm2.sock,server=on,wait=off > /tmp/qemu-vm2.log 2>&1 &
+
         QEMU_VM2_PID=$!
         echo "QEMU_VM2_PID=$QEMU_VM2_PID" >> $GITHUB_ENV
         echo "✓ VM 2 started (PID: $QEMU_VM2_PID)"
@@ -1562,8 +1662,11 @@ jobs:
         sleep 5
         if ! kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
           echo "✗ VM 2 QEMU process died within 5 seconds (PID: $QEMU_VM2_PID)"
-          echo "=== VM 2 QEMU log (last 100 lines) ==="
-          tail -100 /tmp/qemu-vm2.log || echo "Log file not found"
+          echo "=== VM 2 QEMU log ==="
+          cat /tmp/qemu-vm2.log || echo "Log file not found"
+          echo ""
+          echo "=== VM 2 guest console ==="
+          cat /tmp/qemu-vm2-console.log || echo "Console log not found"
           echo ""
           echo "=== VM 2 QEMU exit code ==="
           wait "$QEMU_VM2_PID" 2>&1 || echo "Exit code: $?"
@@ -1577,158 +1680,165 @@ jobs:
         echo "=== Waiting for VMs to boot ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Wait for VM 1 SSH
-        for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2222 "${VM_USER}@localhost" 'echo VM1 Ready' 2>/dev/null; then
-            echo "✓ VM 1 is accessible via SSH"
-            break
-          fi
-          if [ $i -eq 60 ]; then
-            echo "✗ VM 1 boot timeout"
-            tail -50 /tmp/qemu-vm1.log
-            exit 1
-          fi
-          sleep 10
-        done
+        # Keep ssh's stderr rather than discarding it: "Connection
+        # refused" and "Connection timed out" are different faults, and
+        # the old 2>/dev/null hid which one this was for five runs.
+        wait_for_vm() {
+          local label="$1" port="$2" pid="$3" console="$4" qemu_log="$5" qmp="$6"
+          local i
 
-        # Wait for VM 2 SSH
-        for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2223 "${VM_USER}@localhost" 'echo VM2 Ready' 2>/dev/null; then
-            echo "✓ VM 2 is accessible via SSH"
-            break
-          fi
-          if [ $i -eq 60 ]; then
-            echo "✗ VM 2 boot timeout"
-            echo "=== VM 2 QEMU log (last 100 lines) ==="
-            tail -100 /tmp/qemu-vm2.log || echo "Log file not found"
-            echo ""
-            echo "=== Checking VM 2 QEMU process ==="
-            if [ -n "$QEMU_VM2_PID" ]; then
-              if kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
-                echo "VM 2 QEMU process is still running (PID: $QEMU_VM2_PID)"
-              else
-                echo "VM 2 QEMU process has died (PID: $QEMU_VM2_PID)"
-              fi
+          for i in {1..60}; do
+            if ssh $SSH_OPTS -o ConnectTimeout=5 \
+                 -p "$port" "${VM_USER}@localhost" "echo ${label} Ready" \
+                 2>/tmp/ssh-attempt.err; then
+              echo "✓ ${label} is accessible via SSH"
+              return 0
             fi
+            echo "${label} attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
+            sleep 10
+          done
+
+          echo "✗ ${label} boot timeout"
           echo ""
-            echo "=== Disk image info ==="
-            VM_DISK_2="${{ steps.copy_vm_disk.outputs.vm_disk_2 }}"
-            qemu-img info "$VM_DISK_2" || echo "Failed to get disk info"
-          exit 1
-        fi
-          sleep 10
-        done
+          echo "=== ${label}: final attempt, verbose ==="
+          ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
+            -p "$port" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
-    - name: Copy files to VMs (parallel)
-      shell: bash
-      run: |
-        echo "=== Copying driver source, rdma-core provider, and tarball to both VMs in parallel ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-
-        _copy_to_vm() {
-          local PORT="$1"
-          scp -o StrictHostKeyChecking=no -P "$PORT" -r driver "${VM_USER}@localhost:~/" || {
-            echo "✗ Failed to copy driver to VM (port $PORT)"
-            return 1
-          }
-          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" "mkdir -p ~/rdma-core-provider"
-          scp -o StrictHostKeyChecking=no -P "$PORT" -r \
-            rdma-core/providers rdma-core/rocm-ernic-dv \
-            "${VM_USER}@localhost:~/rdma-core-provider/" || {
-            echo "✗ Failed to copy rdma-core provider to VM (port $PORT)"
-            return 1
-          }
-          # Copy pre-downloaded tarball to avoid in-VM network download
-          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" "mkdir -p /tmp/rdma-core-build"
-          scp -o StrictHostKeyChecking=no -P "$PORT" \
-            /tmp/rdma-core-62.0.tar.gz \
-            "${VM_USER}@localhost:/tmp/rdma-core-build/rdma-core-62.0.tar.gz" || {
-            echo "✗ Failed to copy rdma-core tarball to VM (port $PORT)"
-            return 1
-          }
-          echo "✓ Files copied to VM on port $PORT"
+          "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+            --label "$label" --ssh-port "$port" --qmp "$qmp" \
+            --console "$console" --qemu-log "$qemu_log" --pid "$pid"
+          return 1
         }
 
-        _copy_to_vm 2222 > /tmp/copy-vm1.log 2>&1 &
-        PID1=$!
-        _copy_to_vm 2223 > /tmp/copy-vm2.log 2>&1 &
-        PID2=$!
+        wait_for_vm "VM1" 2222 "$QEMU_VM1_PID" \
+          /tmp/qemu-vm1-console.log /tmp/qemu-vm1.log /tmp/qmp-vm1.sock
 
-        FAILED=0
-        wait "$PID1" || { echo "✗ Copy to VM 1 failed"; cat /tmp/copy-vm1.log; FAILED=1; }
-        wait "$PID2" || { echo "✗ Copy to VM 2 failed"; cat /tmp/copy-vm2.log; FAILED=1; }
-        [ $FAILED -eq 0 ] && echo "✓ All files copied to both VMs"
-        exit $FAILED
+        wait_for_vm "VM2" 2223 "$QEMU_VM2_PID" \
+          /tmp/qemu-vm2-console.log /tmp/qemu-vm2.log /tmp/qmp-vm2.sock
 
-    - name: Write VM setup script
+    - name: Install the Ansible collection dependencies
       shell: bash
       run: |
-        cat > /tmp/vm-setup.sh << 'SCRIPT'
-        #!/bin/bash
+        echo "=== Installing the Ansible collection dependencies ==="
+        # Both VMs are provisioned by the sbates130272.rocm_ernic
+        # collection in this repo, so these jobs exercise the same role
+        # the self-hosted CI and developers use.
+        #
+        # The container's ansible-core comes from pipx and searches
+        # ~/.ansible/collections, not the dist-packages tree the
+        # "ansible" apt bundle installs into, so installing that
+        # bundle leaves community.general invisible.  Install the
+        # collections the same way a real consumer does instead.
+        ansible --version
+        ansible-galaxy collection install -r ansible/requirements.yml
+
+    - name: Install kernel headers and build tools in VMs (parallel)
+      shell: bash
+      run: |
+        echo "=== Installing kernel headers and build tools in both VMs ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        # ernic_image_prep bakes these into the golden image on the
+        # self-hosted path.  These jobs run against a prebuilt CI qcow2,
+        # so the build toolchain goes in here.  The kernel version itself
+        # is the image's business, and ernic_guest_setup asserts it
+        # matches the pinned ionic sources.
+        #
+        # Headers are a check, not an install: a guest on a mainline
+        # kernel has them from the .deb, and kernel.ubuntu.com carries
+        # no Packages index, so linux-headers-$(uname -r) 404s there.
+        cat > /tmp/vm-packages.sh << 'SCRIPT'
         set -e
         KVER=$(uname -r)
-        # unattended-upgrades runs on a timer inside the guest image and
-        # holds /var/lib/dpkg/lock-frontend for minutes. Retrying against a
-        # held lock just burns the attempts, so wait for it instead.
+        HEADER_PKG=""
+        if [ -d "/lib/modules/${KVER}/build" ]; then
+          echo "Kernel headers already present for ${KVER}"
+        else
+          echo "No build tree for ${KVER}; asking apt for the headers"
+          HEADER_PKG="linux-headers-${KVER}"
+        fi
         APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
           sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} linux-modules-extra-${KVER} && break
+            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+            pkg-config libnl-3-dev libnl-route-3-dev libudev-dev python3-docutils && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
         echo "Kernel packages installed for ${KVER}"
-        BUILD_DIR="/tmp/rdma-core-build"
-        SRC_DIR="${BUILD_DIR}/rdma-core-62.0"
-        mkdir -p "${BUILD_DIR}"
-        tar xf "${BUILD_DIR}/rdma-core-62.0.tar.gz" -C "${BUILD_DIR}"
-        cp -r ~/rdma-core-provider/providers/rocm_ernic "${SRC_DIR}/providers/rocm_ernic"
-        grep -q "rocm_ernic" "${SRC_DIR}/CMakeLists.txt" || \
-          echo "add_subdirectory(providers/rocm_ernic)" >> "${SRC_DIR}/CMakeLists.txt"
-        cmake -S "${SRC_DIR}" -B "${BUILD_DIR}/build" -GNinja \
-          -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
-          -DNO_PYVERBS=1 -DNO_MAN_PAGES=1 -DENABLE_STATIC=0
-        cmake --build "${BUILD_DIR}/build" -j$(nproc)
-        sudo cmake --install "${BUILD_DIR}/build"
-        sudo ldconfig
-        echo "rdma-core provider installed"
-        cd ~/driver
-        make KDIR=/lib/modules/$(uname -r)/build
-        sudo modprobe ib_core
-        sudo modprobe ib_uverbs
-        sudo insmod rocm_ernic_eth.ko
-        sudo insmod rocm_ernic_rdma.ko
-        sleep 2
-        ibv_devinfo || echo "No RDMA devices yet"
-        echo "Driver loaded"
         SCRIPT
-        chmod +x /tmp/vm-setup.sh
 
-    - name: Build rdma-core provider and driver in VMs (parallel)
-      shell: bash
-      run: |
-        echo "=== Running per-VM setup in parallel ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-
-        _setup_vm() {
+        _packages_vm() {
           local PORT="$1"
-          scp -o StrictHostKeyChecking=no -P "$PORT" /tmp/vm-setup.sh "${VM_USER}@localhost:/tmp/vm-setup.sh"
-          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-setup.sh
+          scp $SSH_OPTS -P "$PORT" /tmp/vm-packages.sh \
+            "${VM_USER}@localhost:/tmp/vm-packages.sh"
+          ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-packages.sh
         }
 
-        _setup_vm 2222 > /tmp/setup-vm1.log 2>&1 &
+        _packages_vm 2222 > /tmp/packages-vm1.log 2>&1 &
         PID1=$!
-        _setup_vm 2223 > /tmp/setup-vm2.log 2>&1 &
+        _packages_vm 2223 > /tmp/packages-vm2.log 2>&1 &
         PID2=$!
 
         FAILED=0
-        wait "$PID1" || { echo "✗ VM 1 setup failed"; cat /tmp/setup-vm1.log; FAILED=1; }
-        wait "$PID2" || { echo "✗ VM 2 setup failed"; cat /tmp/setup-vm2.log; FAILED=1; }
-        [ $FAILED -eq 0 ] && echo "✓ Both VMs set up successfully"
+        wait "$PID1" || { echo "✗ VM 1 package install failed"; cat /tmp/packages-vm1.log; FAILED=1; }
+        wait "$PID2" || { echo "✗ VM 2 package install failed"; cat /tmp/packages-vm2.log; FAILED=1; }
+        [ $FAILED -eq 0 ] && echo "✓ Kernel packages installed in both VMs"
         exit $FAILED
+
+    - name: Provision the VMs with the Ansible collection
+      shell: bash
+      run: |
+        echo "=== Provisioning both guests via ernic_guest_setup ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        ERNIC_RUN_DIR=/tmp/ernic-ci
+        mkdir -p "$ERNIC_RUN_DIR"
+
+        # ci-vm-register.yml turns this manifest into the ernic_vms
+        # inventory group; on the self-hosted path ernicctl writes it.
+        # Ansible then drives both guests in parallel by itself.
+        cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
+        {
+          "instances": [
+            {
+              "id": 1,
+              "vm": {
+                "vm_name": "gh-tcp-vm1",
+                "ssh_port": 2222,
+                "ssh_user": "${VM_USER}"
+              }
+            },
+            {
+              "id": 2,
+              "vm": {
+                "vm_name": "gh-tcp-vm2",
+                "ssh_port": 2223,
+                "ssh_user": "${VM_USER}"
+              }
+            }
+          ]
+        }
+        EOFJSON
+
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
+
+        cd ansible
+        ansible-playbook ci-site.yml --tags guest-setup \
+          -e ernic_project_root="$PROJECT_ROOT" \
+          -e ernic_run_dir="$ERNIC_RUN_DIR" \
+          -e ernic_instances=2 \
+          -e ernic_vm_ssh_base_port=2222 \
+          -e ernic_vm_ssh_user="$VM_USER" \
+          -e ernic_device_mode=ionic \
+          -e ernic_gpu_passthrough=false \
+          -e ernic_guest_agent=false \
+          -e ernic_set_hostname=false
 
     - name: Verify RDMA devices in VMs
       shell: bash
@@ -1739,27 +1849,27 @@ jobs:
         FAILED=0
 
         echo "--- VM 1 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+        if ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
+          DEVICE=$(ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
           echo "✓ VM 1 RDMA device found: $DEVICE"
-          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
         else
           echo "✗ VM 1: RDMA device not found"
           echo "Checking ibv_devices output:"
-          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
           FAILED=$((FAILED + 1))
         fi
 
         echo ""
         echo "--- VM 2 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm_ernic|rocep"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm_ernic|rocep" | awk "{print \$1}" | head -1')
+        if ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
+          DEVICE=$(ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
           echo "✓ VM 2 RDMA device found: $DEVICE"
-          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+          ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
         else
           echo "✗ VM 2: RDMA device not found"
           echo "Checking ibv_devices output:"
-          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
           FAILED=$((FAILED + 1))
         fi
         
@@ -1822,6 +1932,8 @@ jobs:
           /tmp/server2.log
           /tmp/qemu-vm1.log
           /tmp/qemu-vm2.log
+          /tmp/qemu-vm1-console.log
+          /tmp/qemu-vm2-console.log
         retention-days: 7
         if-no-files-found: ignore
   
@@ -1836,14 +1948,24 @@ jobs:
       run: |
         LOOPBACK_VM_RESULT="${{ needs.system-test-loopback-vm.result }}"
         TCP_RESULT="${{ needs.system-test-tcp.result }}"
-        
-        if [ "$LOOPBACK_VM_RESULT" = "success" ] && [ "$TCP_RESULT" = "success" ]; then
+
+        # Both jobs are enabled, so anything other than success -- including
+        # the "skipped" a disabled job reports -- is a failure here.
+        FAILED=0
+        if [ "$LOOPBACK_VM_RESULT" != "success" ]; then
+          FAILED=1
+        fi
+        if [ "$TCP_RESULT" != "success" ]; then
+          FAILED=1
+        fi
+
+        echo "Loopback VM test: $LOOPBACK_VM_RESULT"
+        echo "TCP backend test: $TCP_RESULT"
+
+        if [ "$FAILED" -eq 0 ]; then
           echo "✅ All system tests passed!"
           exit 0
-        else
-          echo "❌ Some system tests failed!"
-          echo "Loopback VM test: $LOOPBACK_VM_RESULT"
-          echo "TCP backend test: $TCP_RESULT"
-          exit 1
         fi
+        echo "❌ Some system tests failed!"
+        exit 1
 

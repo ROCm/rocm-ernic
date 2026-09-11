@@ -14,12 +14,17 @@
 # should be made explicitly.  Run register-runner.sh
 # once you have a token.
 #
-# Nothing here needs root.  Persistence across reboots
-# comes from a systemd *user* service plus lingering,
+# Only the TAP step needs root, and only once: the CI jobs
+# run in the default ionic device mode, where each instance
+# attaches to a TAP enslaved to a shared bridge, and an
+# unprivileged runner cannot create those for itself.  Skip
+# it with --skip-taps if the node already has them or you
+# want to run the ip commands by hand.  Persistence across
+# reboots comes from a systemd *user* service plus lingering,
 # which loginctl grants to your own account.
 #
 # Usage:
-#   ci/runner/install-runner.sh [--version 2.337.0]
+#   ci/runner/install-runner.sh [--version 2.337.0] [--skip-taps]
 
 set -euo pipefail
 
@@ -35,11 +40,19 @@ RUNNER_ROOT="${RUNNER_ROOT:-${CI_RUNNER_ROOT:-/local/${USER}/actions-runner-rocm
 # and checkouts/builds there are markedly slower.
 RUNNER_WORK="${RUNNER_WORK:-/var/tmp/ernic-ci-work/runner-work}"
 
+# Must agree with CI_TAP_PREFIX / CI_TAP_BRIDGE / ERNIC_INSTANCES
+# in ci/lib/common.sh; ci/doctor.sh checks the result.
+SKIP_TAPS=false
+CI_TAP_PREFIX="${CI_TAP_PREFIX:-ernic-ci-tap}"
+CI_TAP_BRIDGE="${CI_TAP_BRIDGE:-ernic-ci-br0}"
+CI_TAP_COUNT="${CI_TAP_COUNT:-${ERNIC_INSTANCES:-2}}"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) RUNNER_VERSION="$2"; shift 2 ;;
         --root)    RUNNER_ROOT="$2";    shift 2 ;;
         --work)    RUNNER_WORK="$2";    shift 2 ;;
+        --skip-taps) SKIP_TAPS=true;    shift ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -119,6 +132,42 @@ if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != "yes" 
     log "enabling lingering so the runner survives logout/reboot"
     loginctl enable-linger "$(id -un)" || \
         log "WARNING: could not enable lingering; runner will not auto-start at boot"
+fi
+
+# ── ionic TAP interfaces (one-time, root) ─────────
+#
+# Created here rather than by ernic_host_setup: the CI runner
+# never uses sudo at job time, and these outlive any single run.
+
+setup_taps() {
+    local i tap
+    if ! sudo -n true 2>/dev/null; then
+        log "WARNING: no passwordless sudo; skipping TAP setup."
+        log "  run ci/doctor.sh for the exact commands to run as root."
+        return 0
+    fi
+
+    if [ ! -d "/sys/class/net/${CI_TAP_BRIDGE}" ]; then
+        log "creating bridge ${CI_TAP_BRIDGE}"
+        sudo ip link add name "${CI_TAP_BRIDGE}" type bridge
+    fi
+    sudo ip link set "${CI_TAP_BRIDGE}" up
+
+    for i in $(seq 1 "${CI_TAP_COUNT}"); do
+        tap="${CI_TAP_PREFIX}${i}"
+        if [ ! -d "/sys/class/net/${tap}" ]; then
+            log "creating TAP ${tap} owned by $(id -un)"
+            sudo ip tuntap add dev "${tap}" mode tap user "$(id -un)"
+        fi
+        sudo ip link set "${tap}" master "${CI_TAP_BRIDGE}"
+        sudo ip link set "${tap}" up
+    done
+}
+
+if [ "${SKIP_TAPS}" = "true" ]; then
+    log "skipping TAP setup (--skip-taps)"
+else
+    setup_taps
 fi
 
 log "staged runner v${RUNNER_VERSION}"

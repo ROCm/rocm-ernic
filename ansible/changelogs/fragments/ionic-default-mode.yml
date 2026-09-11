@@ -1,0 +1,29 @@
+---
+major_changes:
+  - The collection now provisions the ionic device mode by default.
+    ``ernic_device_mode`` defaults to ``ionic`` in ``ernic_host_setup``,
+    ``ernic_guest_setup`` and ``ernic_image_prep`` --- the guest runs patched
+    upstream ``ionic.ko`` and ``ionic_rdma.ko`` from the ``ionic-ernic`` DKMS
+    package against the ``1022:8001`` device, and stock rdma-core with its
+    upstream ``providers/ionic``.  udev keeps the device names
+    (``rocm-ernic0``, ``rocm-rdma-ernic0``) unchanged, so playbooks and
+    inventories need no edits.
+  - >-
+    ``ernic_host_setup`` creates a host bridge (``ernic_tap_bridge``, default
+    ``ernicbr0``) and one TAP per instance (``ernic_tap_prefix``, default
+    ``ernic-tap``), and the launcher attaches each instance to its TAP.  In
+    ionic mode guest Ethernet leaves through the TAP rather than the
+    rocm-ernic TCP mesh, so the shared bridge is what lets guests reach each
+    other on ``ernic_nic_subnet``.  Disable by setting ``ernic_tap_setup``
+    to false.
+  - >-
+    ``ernic_guest_setup`` builds rocm-xio with ``-DGDA_IONIC=ON
+    -DRDMA_CORE_BUILD=OFF`` in ionic mode, against the system rdma-core it
+    has already patched with the rocm-xio ionic GDA direct-verbs series.
+    Guests fetch the ionic kernel sources and rocm-xio themselves; a tarball
+    staged by ``ernic_host_setup`` is still used when present.
+deprecated_features:
+  - The out-of-tree ``rocm_ernic_eth`` / ``rocm_ernic_rdma`` driver path and
+    the ``rocm_ernic`` rdma-core provider are deprecated and will be removed
+    in a future release.  Select them for now with
+    ``-e ernic_device_mode=legacy``.

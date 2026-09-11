@@ -43,6 +43,9 @@
         - driver/setup-rocm-ernic-dkms.sh
         - rdma-core/providers/rocm_ernic
         - udev/99-rocm-ernic.rules
+        - scripts/fetch-ionic-sources.sh
+        - scripts/setup-ionic-dkms.sh
+        - patches
 
     - name: Fail when the source tree is incomplete
       ansible.builtin.assert:
@@ -66,3 +69,7 @@
     - name: Mark the source as resolved
       ansible.builtin.set_fact:
         ernic_source_resolved: true
+
+- name: Resolve the ionic kernel ref
+  ansible.builtin.include_tasks: ionic_ref.yml
+  when: ernic_ionic_ref is not defined

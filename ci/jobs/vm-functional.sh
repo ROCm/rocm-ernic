@@ -25,6 +25,7 @@
 
 ernic_env
 mkdir -p "${CI_RESULTS}/junit"
+start_suite vm-functional
 
 ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
 [ -f "${ANSIBLE_DIR}/ci-site.yml" ] || \
@@ -77,6 +78,7 @@ _ci_ansible_run() {
         -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
+        -e "ernic_device_mode=${CI_ERNIC_MODE}" \
         "$@" </dev/null
 }
 
@@ -102,7 +104,7 @@ group_end
 
 probe_rdma_device() {
     vm_ssh "$1" 'ibv_devices' \
-        | grep -qE 'rocm-rdma-ernic|rocep'
+        | grep -qE 'rocm-rdma-ernic|rocep|ionic'
 }
 
 probe_port_active() {
