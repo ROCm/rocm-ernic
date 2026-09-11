@@ -9,15 +9,13 @@ on:
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000
-  # The guest qcow2 ships as its own FROM-scratch payload image whose
-  # only content is /output.  The builder image carries no guest at all:
-  # guest building moved out to its own repository, one per flavour, so
-  # there is nothing to fall back to if this pull fails.
+  # The guest qcow2 ships as an ORAS artifact -- 3.7 GB zstd rather than
+  # the 5.75 GB raw the FROM-scratch payload image carried, and no skopeo.
+  # Both jobs pull it through .github/actions/fetch-guest-vm.  The builder
+  # image carries no guest at all: guest building moved out to its own
+  # repository, one per flavour, so there is nothing to fall back to if
+  # this pull fails.
   #
-  # Only the two-VM job still reads this.  The one-VM job pulls the same
-  # guest as an ORAS artifact instead (3.7 GB zstd rather than 5.75 GB
-  # raw, and no skopeo); the scratch image goes away once that is proven.
-  GUEST_IMAGE_REF: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:latest
   # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
   # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
   # the build inputs, so a rebuild from the same sources republishes it.
@@ -954,13 +952,6 @@ jobs:
 
   system-test-tcp:
     name: TCP Backend System Tests (Two Servers)
-    # Temporarily disabled.  This job fails in the same place as the
-    # loopback one -- the guest boots to a login prompt and never answers
-    # SSH -- so it costs ~14 minutes a run to reproduce a failure we are
-    # already chasing there.  Re-enable once loopback is green; it is
-    # still on the skopeo fetch, so turning it back on also re-tests that
-    # path before it is retired.
-    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
@@ -1095,64 +1086,9 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      shell: bash
-      run: |
-        set -euo pipefail
-        DEST=/guest-image
-        BLOBS=/tmp/guest-blobs
-
-        echo "=== Fetching ${GUEST_IMAGE_REF} ==="
-
-        # skopeo, not docker: this job runs inside a container with no
-        # daemon and no socket to talk to one.  The payload image is
-        # FROM scratch, so its layers are plain tars carrying /output
-        # and there is nothing to run.
-        apt-get update -qq
-        apt-get install -y -qq skopeo
-
-        mkdir -p "$DEST" "$BLOBS"
-
-        # No fallback to the builder image's own qcow2.  That guest is on
-        # the release's stock kernel and cannot build ionic_rdma, so
-        # booting it when the pull fails would turn a broken image
-        # reference into a confusing failure four minutes downstream.
-        if ! skopeo copy "docker://${GUEST_IMAGE_REF}" "dir:${BLOBS}"; then
-          echo "✗ could not pull ${GUEST_IMAGE_REF}"
-          echo "  The system tests boot the guest from this image; there is"
-          echo "  nothing usable to fall back to."
-          exit 1
-        fi
-
-        # skopeo names blobs by digest, with or without the algorithm
-        # prefix depending on its version.  Extract in manifest order.
-        LAYERS=$(python3 - "$BLOBS" <<'PYEOF'
-        import json, os, sys
-        blobs = sys.argv[1]
-        for layer in json.load(open(os.path.join(blobs, "manifest.json")))["layers"]:
-            digest = layer["digest"]
-            for name in (digest.split(":", 1)[1], digest.replace(":", "-"), digest):
-                if os.path.exists(os.path.join(blobs, name)):
-                    print(name)
-                    break
-            else:
-                sys.exit(f"no blob on disk for {digest}")
-        PYEOF
-        )
-
-        while read -r blob; do
-          tar -xf "${BLOBS}/${blob}" -C "$DEST"
-        done <<< "$LAYERS"
-
-        rm -rf "$BLOBS"
-
-        if [ ! -d "$DEST/output" ]; then
-          echo "✗ the payload image has no /output"
-          find "$DEST" -maxdepth 2 -ls
-          exit 1
-        fi
-
-        ls -la "$DEST/output"
-        echo "output_dir=$DEST/output" >> $GITHUB_OUTPUT
+      uses: ./.github/actions/fetch-guest-vm
+      with:
+        tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
     - name: Read VM info
       id: vm_info
@@ -1238,38 +1174,33 @@ jobs:
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
         echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
-    - name: Copy VM disk for second VM
+    - name: Create the per-VM disk overlays
       id: copy_vm_disk
       shell: bash
       run: |
-        echo "=== Copying VM disk for second VM ==="
-        VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
-        
-        # Create second VM disk name by inserting .2 before .qcow2 extension
-        # e.g., /output/ci-vm.qcow2 -> /output/ci-vm.2.qcow2
-        VM_DISK_DIR=$(dirname "$VM_DISK_1")
-        VM_DISK_BASENAME=$(basename "$VM_DISK_1")
-        VM_DISK_NAME="${VM_DISK_BASENAME%.qcow2}"
-        VM_DISK_2="${VM_DISK_DIR}/${VM_DISK_NAME}.2.qcow2"
-        
-        echo "VM disk 1: $VM_DISK_1"
-        echo "VM disk 2: $VM_DISK_2"
-        echo "Copying $VM_DISK_1 to $VM_DISK_2..."
-        # Use cp to create an exact copy preserving all disk structure and metadata
-        cp "$VM_DISK_1" "$VM_DISK_2" || {
-          echo "✗ Failed to copy VM disk"
-          exit 1
-        }
-        
-        echo "Verifying copied disk..."
-        qemu-img info "$VM_DISK_2" || {
-          echo "✗ Failed to read copied disk info"
-          exit 1
-        }
-        
+        set -euo pipefail
+        echo "=== Creating per-VM overlays ==="
+        # Overlays, not copies.  The fetched qcow2 is 5.75 GB, and both
+        # guests boot the same golden image and diverge only in what they
+        # write, so cp spent a minute and 5.75 GB to reproduce something
+        # qemu-img create does instantly.
+        #
+        # Both VMs get one, including the first: with VM 1 writing to the
+        # base directly, VM 2's backing file would mutate underneath it.
+        BASE="${{ steps.vm_info.outputs.vm_disk }}"
+        STEM="$(dirname "$BASE")/$(basename "$BASE" .qcow2)"
+        VM_DISK_1="${STEM}.1.qcow2"
+        VM_DISK_2="${STEM}.2.qcow2"
+
+        for DISK in "$VM_DISK_1" "$VM_DISK_2"; do
+          rm -f "$DISK"
+          qemu-img create -f qcow2 -F qcow2 -b "$BASE" "$DISK"
+          qemu-img info "$DISK"
+        done
+
         echo "vm_disk_1=$VM_DISK_1" >> $GITHUB_OUTPUT
         echo "vm_disk_2=$VM_DISK_2" >> $GITHUB_OUTPUT
-        echo "✓ VM disk copied for second VM"
+        echo "✓ overlays created over $BASE"
     
     - name: Setup SSH keys
       shell: bash
@@ -1657,7 +1588,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Starting VM 1 ==="
-        VM_DISK_1="${{ steps.vm_info.outputs.vm_disk }}"
+        VM_DISK_1="${{ steps.copy_vm_disk.outputs.vm_disk_1 }}"
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
@@ -2014,25 +1945,21 @@ jobs:
         LOOPBACK_VM_RESULT="${{ needs.system-test-loopback-vm.result }}"
         TCP_RESULT="${{ needs.system-test-tcp.result }}"
 
-        # A disabled job reports "skipped", which must not read as a pass
-        # for loopback but is the expected state for TCP while it is
-        # turned off.
+        # Both jobs are enabled, so anything other than success -- including
+        # the "skipped" a disabled job reports -- is a failure here.
         FAILED=0
         if [ "$LOOPBACK_VM_RESULT" != "success" ]; then
           FAILED=1
         fi
-        if [ "$TCP_RESULT" != "success" ] && [ "$TCP_RESULT" != "skipped" ]; then
+        if [ "$TCP_RESULT" != "success" ]; then
           FAILED=1
         fi
 
         echo "Loopback VM test: $LOOPBACK_VM_RESULT"
         echo "TCP backend test: $TCP_RESULT"
-        if [ "$TCP_RESULT" = "skipped" ]; then
-          echo "  (TCP is disabled; see the if: false on system-test-tcp)"
-        fi
 
         if [ "$FAILED" -eq 0 ]; then
-          echo "✅ All enabled system tests passed!"
+          echo "✅ All system tests passed!"
           exit 0
         fi
         echo "❌ Some system tests failed!"

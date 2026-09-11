@@ -1181,7 +1181,17 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
 
     dp_fault_clear(dp);
 
-    if (src_host) {
+    if (recv_op == CQE_RECV_OP_RDMA_IMM) {
+        /*
+         * RDMA_WRITE_WITH_IMM consumes a receive but scatters nothing into
+         * it: the payload already landed through the rkey.  The completion
+         * still reports the length of that write, so take it from
+         * @src->total rather than counting a copy that never happens.
+         * Reporting zero here left the guest with a byte_len of 0 on an
+         * otherwise successful completion.
+         */
+        copied = src->total;
+    } else if (src_host) {
         /* The payload is already linear; only the receive side scatters. */
         copied = dp_scatter(dp, &dst, src_host,
                             src->total < dst.total ? src->total : dst.total);
@@ -1712,15 +1722,17 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                                           : PVRDMA_STAT_RDMA_READ);
 
         /* Only the _IMM form consumes a receive on the far side, and it does
-         * so with no payload: the data already landed via the rkey. */
+         * so with no payload: the data already landed via the rkey.  The
+         * length still rides along, because the responder's completion
+         * reports how many bytes the write moved. */
         if (op == IONIC_V1_OP_RDMA_WRITE_IMM) {
             uint32_t dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
             struct ionic_qp_ring *dq =
                 dst_id < dp->qp_count && dp->qp[dst_id].valid ? &dp->qp[dst_id]
                                                               : NULL;
-            struct dp_sge_list none = {.count = 0, .total = 0};
+            struct dp_sge_list written = {.count = 0, .total = moved};
             if (dq)
-                deliver_recv(dp, dq, dst_id, qp_id, &none, NULL,
+                deliver_recv(dp, dq, dst_id, qp_id, &written, NULL,
                              CQE_RECV_OP_RDMA_IMM, imm_be);
         }
         break;
@@ -1938,8 +1950,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                                     PVRDMA_STAT_RDMA_WRITE);
 
             if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
-                struct dp_sge_list none = {.count = 0, .total = 0};
-                deliver_recv(dp, dq, dst_qp_id, src_qp_id, &none, NULL,
+                struct dp_sge_list written = {.count = 0, .total = n};
+                deliver_recv(dp, dq, dst_qp_id, src_qp_id, &written, NULL,
                              CQE_RECV_OP_RDMA_IMM, h->imm_be);
             }
         }
