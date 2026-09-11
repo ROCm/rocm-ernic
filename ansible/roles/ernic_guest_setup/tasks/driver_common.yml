@@ -77,6 +77,38 @@
   register: ernic_rdma_dev_name
   changed_when: false
 
+# On the ionic path the IB port state follows the netdev, and nothing
+# else brings that netdev up: there is no matching netplan entry, and
+# the loopback backend gives it no carrier to trigger one.  Left down,
+# the device still registers and ibv_devices still lists it, but the
+# port reports PORT_DOWN and every modify_qp to RTR fails -- the AV
+# cannot resolve without a GID.
+- name: Bring the RDMA netdev up
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      DEV={{ ernic_rdma_dev_name.stdout | quote }}
+      for NET in /sys/class/infiniband/"$DEV"/device/net/*; do
+        [ -e "$NET" ] || continue
+        ip link set "$(basename "$NET")" up
+      done
+  changed_when: true
+
+- name: Wait for the RDMA port to become active
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      awk '{print $2}' \
+        /sys/class/infiniband/{{ ernic_rdma_dev_name.stdout | quote }}/ports/1/state |
+        grep -qx 'ACTIVE'
+  register: ernic_rdma_port_active
+  until: ernic_rdma_port_active.rc == 0
+  retries: 10
+  delay: 2
+  changed_when: false
+
 - name: Display RDMA device info
   ansible.builtin.shell:
     executable: /bin/bash
