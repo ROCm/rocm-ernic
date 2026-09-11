@@ -72,6 +72,35 @@
   run_once: true
   when: groups['ernic_vms'] | default([]) | length > 1
 
+# The version comparisons above are a proxy; this is the thing they
+# are a proxy for.  A mainline kernel's headers come from loose .deb
+# files with no apt index behind them, so "linux-headers-$(uname -r)
+# is installed" is not a question apt can answer on such a guest --
+# what matters is that the build tree is there and carries the
+# helper the ionic sources call.  ib_umem_get_va landed after 7.0,
+# which is exactly the implicit declaration a 7.0 guest died on.
+- name: Look for the IB-core helpers ionic_rdma needs
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -qs
+      - ib_umem_get_va
+      - "/lib/modules/{{ ansible_kernel }}/build/include/rdma/ib_umem.h"
+  register: ernic_ionic_umem_helper
+  failed_when: false
+  changed_when: false
+
+- name: Assert the kernel headers can build ionic_rdma
+  ansible.builtin.assert:
+    that:
+      - ernic_ionic_umem_helper.rc == 0
+    fail_msg: >-
+      /lib/modules/{{ ansible_kernel }}/build does not provide
+      ib_umem_get_va, so the ionic sources at {{ ernic_ionic_ref }}
+      cannot build against it.  Either the kernel headers are not
+      installed --- note that a mainline kernel's headers come from
+      the .deb, not from apt --- or they predate the helper.
+
 - name: Fetch and patch the upstream ionic sources
   ansible.builtin.command:
     argv:

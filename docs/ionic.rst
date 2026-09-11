@@ -23,8 +23,13 @@ different PCIe devices, selected at server start-up:
 
 ionic mode emulates the register and queue protocol of the
 AMD Pensando ionic NIC, so the guest runs a driver that is
-already in mainline Linux. Nothing about the guest is bespoke
-apart from a two-line device-ID patch.
+already in mainline Linux rather than one that only exists
+here. The driver source is near-stock --- two small patches,
+one of them a device-ID addition --- but the guest itself is
+not a stock cloud image: it needs a mainline kernel matching
+``IONIC_KERNEL_REF`` and the headers to build against, which
+is what the ``ernic_image_prep`` role provides. See the
+warning below.
 
 The legacy device is derived from QEMU's PVRDMA model and
 needs an out-of-tree guest driver, and a patched rdma-core,

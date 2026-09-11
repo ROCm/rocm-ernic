@@ -20,7 +20,8 @@ guests can reach each other over IP. Run any play with
 `-e ernic_device_mode=legacy` to get the deprecated out-of-tree `rocm_ernic`
 driver and the patched rdma-core it needs.
 
-It supports Ubuntu 24.04 LTS (noble) and 26.04 LTS (resolute).
+It supports Ubuntu 24.04 LTS (noble) and 26.04 LTS (resolute); guests in the
+default ionic mode need resolute, which is what `ernic_vm_release` selects.
 
 ## Roles
 

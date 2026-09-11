@@ -9,6 +9,11 @@ on:
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000
+  # The guest qcow2 ships as its own FROM-scratch payload image whose
+  # only content is /output.  The builder image below carries a qcow2
+  # too, but that one is a side effect of building the toolchain: it is
+  # on the release's stock kernel, which cannot build ionic_rdma.
+  GUEST_IMAGE_REF: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:latest
 
 jobs:
   system-test-loopback-vm:
@@ -50,57 +55,119 @@ jobs:
         ninja --version || echo "Ninja not found"
         pkg-config --exists libibverbs && pkg-config --modversion libibverbs || echo "libibverbs not found"
         echo ""
-        echo "=== VM Disk Image Location ==="
-        echo "Checking /output directory..."
+        echo "=== Builder image payload ==="
+        # Informational only: the guest this job boots comes from
+        # GUEST_IMAGE_REF, not from whatever the builder image carries.
         if [ -d "/output" ]; then
-          echo "✓ /output directory exists"
-          echo "Contents:"
-          ls -la /output || echo "Failed to list contents"
+          ls -la /output || true
         else
-          echo "✗ /output directory does not exist"
+          echo "no /output in the builder image"
         fi
     
+    - name: Fetch the guest VM image
+      id: guest_image
+      shell: bash
+      run: |
+        set -uo pipefail
+        DEST=/guest-image
+        BLOBS=/tmp/guest-blobs
+
+        echo "=== Fetching ${GUEST_IMAGE_REF} ==="
+
+        # skopeo, not docker: this job runs inside a container with no
+        # daemon and no socket to talk to one.  The payload image is
+        # FROM scratch, so its layers are plain tars carrying /output
+        # and there is nothing to run.
+        apt-get update -qq
+        apt-get install -y -qq skopeo
+
+        mkdir -p "$DEST" "$BLOBS"
+        if ! skopeo copy "docker://${GUEST_IMAGE_REF}" "dir:${BLOBS}"; then
+          # TODO: drop the fallback once the payload image is published.
+          echo "⚠ ${GUEST_IMAGE_REF} is not pullable; falling back to the"
+          echo "  qcow2 baked into the builder image.  That guest is on the"
+          echo "  release's stock kernel, so ernic_guest_setup will stop at"
+          echo "  the kernel skew assert."
+          echo "output_dir=/output" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # skopeo names blobs by digest, with or without the algorithm
+        # prefix depending on its version.  Extract in manifest order.
+        python3 - "$BLOBS" <<'PYEOF' | while read -r blob; do
+        import json, os, sys
+        blobs = sys.argv[1]
+        for layer in json.load(open(os.path.join(blobs, "manifest.json")))["layers"]:
+            digest = layer["digest"]
+            for name in (digest.split(":", 1)[1], digest.replace(":", "-"), digest):
+                if os.path.exists(os.path.join(blobs, name)):
+                    print(name)
+                    break
+            else:
+                sys.exit(f"no blob on disk for {digest}")
+        PYEOF
+          tar -xf "${BLOBS}/${blob}" -C "$DEST"
+        done
+
+        rm -rf "$BLOBS"
+
+        if [ ! -d "$DEST/output" ]; then
+          echo "✗ the payload image has no /output"
+          find "$DEST" -maxdepth 2 -ls
+          exit 1
+        fi
+
+        ls -la "$DEST/output"
+        echo "output_dir=$DEST/output" >> $GITHUB_OUTPUT
+
     - name: Read VM info
       id: vm_info
       shell: bash
       run: |
-        echo "=== Reading VM info from /output/vm-info.json ==="
-        if [ ! -f /output/vm-info.json ]; then
-          echo "✗ vm-info.json not found in /output"
-          ls -la /output
+        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        echo "=== Reading VM info from $OUT/vm-info.json ==="
+        if [ ! -f "$OUT/vm-info.json" ]; then
+          echo "✗ vm-info.json not found in $OUT"
+          ls -la "$OUT"
           exit 1
         fi
-        
-        cat /output/vm-info.json
-        
-        # Extract values using jq or python
-        if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
-          VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
-          SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
-          SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
-          SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
-        else
-          # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
-          VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
-          SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
-          SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
-          SSH_KEY_PUBLIC=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('public_key_path', ''))")
-        fi
-        
-        # image_path should already be absolute, but verify
+
+        cat "$OUT/vm-info.json"
+
+        # Paths in vm-info.json are absolute from the machine that built
+        # the image, so resolve each against $OUT by basename.
+        eval "$(python3 - "$OUT" <<'PYEOF'
+        import json, os, shlex, sys
+        out = sys.argv[1]
+        d = json.load(open(os.path.join(out, "vm-info.json")))
+        here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
+        keys = {
+            "VM_USER": d.get("username", "ci"),
+            "VM_DISK": here(d.get("image_path", "")),
+            "SSH_KEY": d.get("ssh_key", ""),
+            "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
+            "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
+            # Only the payload image sets these.
+            "KERNEL_RELEASE": d.get("kernel_release", ""),
+            "KERNEL_REF": d.get("kernel_ref", ""),
+            "FLAVOUR": d.get("flavour", ""),
+        }
+        for k, v in keys.items():
+            print(f"{k}={shlex.quote(str(v))}")
+        PYEOF
+        )"
+
         if [ -z "$VM_DISK" ]; then
           echo "✗ image_path not found in vm-info.json"
           exit 1
         fi
-    
+
         if [ ! -f "$VM_DISK" ]; then
           echo "✗ VM disk image not found: $VM_DISK"
-          ls -la /output
+          ls -la "$OUT"
           exit 1
         fi
-        
+
         # Verify disk image is accessible and check for missing backing file
         # Error out immediately if disk has a backing file reference that doesn't exist
         QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
@@ -109,7 +176,6 @@ jobs:
           if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
             echo "✗ Disk image has backing file reference but backing file does not exist"
             echo "The disk image metadata references a backing file that is missing."
-            echo "This indicates the disk image is corrupted or incorrectly generated."
             echo ""
             echo "Disk path: $VM_DISK"
             echo "qemu-img info output:"
@@ -122,18 +188,20 @@ jobs:
             exit 1
           fi
         fi
-        
+
         echo "✓ VM username: $VM_USER"
         echo "✓ VM disk: $VM_DISK"
         echo "✓ SSH key: ${SSH_KEY:-not specified}"
+        echo "✓ Guest flavour: ${FLAVOUR:-unknown}"
+        echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
-        
+
         echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
         echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
         echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-    
+        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
     - name: Install dependencies
       run: |
         apt-get update
@@ -421,16 +489,31 @@ jobs:
 
         # ernic_image_prep bakes these into the golden image on the
         # self-hosted path.  These jobs run against a prebuilt CI qcow2
-        # instead, so the kernel-version-specific packages are installed
-        # here.  The kernel version itself is the image's business, and
-        # ernic_guest_setup asserts it matches the pinned ionic sources.
+        # instead, so the build toolchain is installed here.  The kernel
+        # version itself is the image's business, and ernic_guest_setup
+        # asserts it matches the pinned ionic sources.
+        #
+        # Headers are a check, not an install.  A guest on a mainline
+        # kernel has them from the .deb, and kernel.ubuntu.com is a
+        # directory of loose .debs with no Packages index behind it --
+        # so there is no apt source to install them from and
+        # linux-headers-$(uname -r) 404s.  What matters is that the
+        # build tree is there; ask for the package only when it is not.
+        HEADER_PKG=""
+        if [ -d "/lib/modules/${KVER}/build" ]; then
+          echo "Kernel headers already present for ${KVER}"
+        else
+          echo "No build tree for ${KVER}; asking apt for the headers"
+          HEADER_PKG="linux-headers-${KVER}"
+        fi
+
         APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
           sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} dkms git build-essential cmake ninja-build \
+            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev python3-docutils && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
@@ -940,47 +1023,110 @@ jobs:
         ls -lh build/rocm-ernic
         file build/rocm-ernic
 
+    - name: Fetch the guest VM image
+      id: guest_image
+      shell: bash
+      run: |
+        set -uo pipefail
+        DEST=/guest-image
+        BLOBS=/tmp/guest-blobs
+
+        echo "=== Fetching ${GUEST_IMAGE_REF} ==="
+
+        # skopeo, not docker: this job runs inside a container with no
+        # daemon and no socket to talk to one.  The payload image is
+        # FROM scratch, so its layers are plain tars carrying /output
+        # and there is nothing to run.
+        apt-get update -qq
+        apt-get install -y -qq skopeo
+
+        mkdir -p "$DEST" "$BLOBS"
+        if ! skopeo copy "docker://${GUEST_IMAGE_REF}" "dir:${BLOBS}"; then
+          # TODO: drop the fallback once the payload image is published.
+          echo "⚠ ${GUEST_IMAGE_REF} is not pullable; falling back to the"
+          echo "  qcow2 baked into the builder image.  That guest is on the"
+          echo "  release's stock kernel, so ernic_guest_setup will stop at"
+          echo "  the kernel skew assert."
+          echo "output_dir=/output" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # skopeo names blobs by digest, with or without the algorithm
+        # prefix depending on its version.  Extract in manifest order.
+        python3 - "$BLOBS" <<'PYEOF' | while read -r blob; do
+        import json, os, sys
+        blobs = sys.argv[1]
+        for layer in json.load(open(os.path.join(blobs, "manifest.json")))["layers"]:
+            digest = layer["digest"]
+            for name in (digest.split(":", 1)[1], digest.replace(":", "-"), digest):
+                if os.path.exists(os.path.join(blobs, name)):
+                    print(name)
+                    break
+            else:
+                sys.exit(f"no blob on disk for {digest}")
+        PYEOF
+          tar -xf "${BLOBS}/${blob}" -C "$DEST"
+        done
+
+        rm -rf "$BLOBS"
+
+        if [ ! -d "$DEST/output" ]; then
+          echo "✗ the payload image has no /output"
+          find "$DEST" -maxdepth 2 -ls
+          exit 1
+        fi
+
+        ls -la "$DEST/output"
+        echo "output_dir=$DEST/output" >> $GITHUB_OUTPUT
+
     - name: Read VM info
       id: vm_info
       shell: bash
       run: |
-        echo "=== Reading VM info from /output/vm-info.json ==="
-        if [ ! -f /output/vm-info.json ]; then
-          echo "✗ vm-info.json not found in /output"
-          ls -la /output
+        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        echo "=== Reading VM info from $OUT/vm-info.json ==="
+        if [ ! -f "$OUT/vm-info.json" ]; then
+          echo "✗ vm-info.json not found in $OUT"
+          ls -la "$OUT"
           exit 1
         fi
-        
-        cat /output/vm-info.json
-        
-        # Extract values using jq or python
-        if command -v jq &> /dev/null; then
-          VM_USER=$(jq -r '.username // "ci"' /output/vm-info.json)
-          VM_DISK=$(jq -r '.image_path' /output/vm-info.json)
-          SSH_KEY=$(jq -r '.ssh_key // ""' /output/vm-info.json)
-          SSH_KEY_PRIVATE=$(jq -r '.ssh_keys.private_key_path // ""' /output/vm-info.json)
-          SSH_KEY_PUBLIC=$(jq -r '.ssh_keys.public_key_path // ""' /output/vm-info.json)
-        else
-          # Fallback to python if jq not available
-          VM_USER=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('username', 'ci'))")
-          VM_DISK=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('image_path', ''))")
-          SSH_KEY=$(python3 -c "import json; print(json.load(open('/output/vm-info.json')).get('ssh_key', ''))")
-          SSH_KEY_PRIVATE=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('private_key_path', ''))")
-          SSH_KEY_PUBLIC=$(python3 -c "import json; d=json.load(open('/output/vm-info.json')); print(d.get('ssh_keys', {}).get('public_key_path', ''))")
-        fi
-        
-        # image_path should already be absolute, but verify
+
+        cat "$OUT/vm-info.json"
+
+        # Paths in vm-info.json are absolute from the machine that built
+        # the image, so resolve each against $OUT by basename.
+        eval "$(python3 - "$OUT" <<'PYEOF'
+        import json, os, shlex, sys
+        out = sys.argv[1]
+        d = json.load(open(os.path.join(out, "vm-info.json")))
+        here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
+        keys = {
+            "VM_USER": d.get("username", "ci"),
+            "VM_DISK": here(d.get("image_path", "")),
+            "SSH_KEY": d.get("ssh_key", ""),
+            "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
+            "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
+            # Only the payload image sets these.
+            "KERNEL_RELEASE": d.get("kernel_release", ""),
+            "KERNEL_REF": d.get("kernel_ref", ""),
+            "FLAVOUR": d.get("flavour", ""),
+        }
+        for k, v in keys.items():
+            print(f"{k}={shlex.quote(str(v))}")
+        PYEOF
+        )"
+
         if [ -z "$VM_DISK" ]; then
           echo "✗ image_path not found in vm-info.json"
           exit 1
         fi
-    
+
         if [ ! -f "$VM_DISK" ]; then
           echo "✗ VM disk image not found: $VM_DISK"
-          ls -la /output
+          ls -la "$OUT"
           exit 1
         fi
-        
+
         # Verify disk image is accessible and check for missing backing file
         # Error out immediately if disk has a backing file reference that doesn't exist
         QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
@@ -989,7 +1135,6 @@ jobs:
           if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
             echo "✗ Disk image has backing file reference but backing file does not exist"
             echo "The disk image metadata references a backing file that is missing."
-            echo "This indicates the disk image is corrupted or incorrectly generated."
             echo ""
             echo "Disk path: $VM_DISK"
             echo "qemu-img info output:"
@@ -999,21 +1144,23 @@ jobs:
             echo "✗ Failed to read disk image info"
             echo "Disk path: $VM_DISK"
             echo "$QEMU_IMG_OUTPUT"
-          exit 1
+            exit 1
           fi
         fi
-        
+
         echo "✓ VM username: $VM_USER"
         echo "✓ VM disk: $VM_DISK"
         echo "✓ SSH key: ${SSH_KEY:-not specified}"
+        echo "✓ Guest flavour: ${FLAVOUR:-unknown}"
+        echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
-        
+
         echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
         echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
         echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-    
+        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
     - name: Copy VM disk for second VM
       id: copy_vm_disk
       shell: bash
@@ -1571,19 +1718,30 @@ jobs:
 
         # ernic_image_prep bakes these into the golden image on the
         # self-hosted path.  These jobs run against a prebuilt CI qcow2,
-        # so the kernel-version-specific packages go in here.  The kernel
-        # version itself is the image's business, and ernic_guest_setup
-        # asserts it matches the pinned ionic sources.
+        # so the build toolchain goes in here.  The kernel version itself
+        # is the image's business, and ernic_guest_setup asserts it
+        # matches the pinned ionic sources.
+        #
+        # Headers are a check, not an install: a guest on a mainline
+        # kernel has them from the .deb, and kernel.ubuntu.com carries
+        # no Packages index, so linux-headers-$(uname -r) 404s there.
         cat > /tmp/vm-packages.sh << 'SCRIPT'
         set -e
         KVER=$(uname -r)
+        HEADER_PKG=""
+        if [ -d "/lib/modules/${KVER}/build" ]; then
+          echo "Kernel headers already present for ${KVER}"
+        else
+          echo "No build tree for ${KVER}; asking apt for the headers"
+          HEADER_PKG="linux-headers-${KVER}"
+        fi
         APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
           sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
         done
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            linux-headers-${KVER} dkms git build-essential cmake ninja-build \
+            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev python3-docutils && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10

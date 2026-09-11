@@ -36,6 +36,12 @@ reading the four `amd64` packages out of that version's `CHECKSUMS` manifest
 (their filenames carry a build timestamp and cannot be constructed) and
 verifying each sha256.
 
+This is why `ernic_vm_release` defaults to resolute (26.04). On noble the
+mainline `linux-image` preinst hands `run-parts` two directories and noble's
+`debianutils` takes one, so the install dies at `run-parts: missing operand`;
+and 7.x headers want gcc-15, which noble cannot supply. Both problems are
+absent on resolute, so the role carries no workaround for either.
+
 The version comes from `IONIC_KERNEL_REF` by default — one pin for the C build,
 the guest DKMS build and the image — and the distro kernel is left installed as
 a fallback. No reboot is issued: the golden image is shut down after this role
@@ -55,7 +61,8 @@ so the failure is logged and the play continues.
 
 ## Requirements
 
-- Ubuntu noble (24.04) or resolute (26.04)
+- Ubuntu resolute (26.04) when installing a mainline kernel, noble (24.04) or
+  resolute otherwise
 - `become: true`
 - `sbates130272.batesste` >= 1.3.0
 

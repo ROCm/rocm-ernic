@@ -33,6 +33,18 @@ minor_changes:
     wants a frozen userspace; background upgrades are what replaced the
     source-built rdma-core on the CI guests and drifted their kernel packages
     apart.
+  - >-
+    ``ernic_vm_release`` defaults to ``resolute`` (26.04) rather than
+    ``noble``.  Installing a mainline kernel on noble needs two workarounds:
+    the ``linux-image`` preinst hands ``run-parts`` two directories and
+    noble's ``debianutils`` takes one, and 7.x headers want a gcc newer than
+    noble ships.  Neither applies on resolute, which is also what the CI
+    guest image uses.
+  - >-
+    ``ernic_guest_setup`` greps the installed kernel headers for
+    ``ib_umem_get_va`` before building, so a guest whose headers cannot
+    build the pinned ionic sources is named as such rather than discovered
+    through implicit-declaration errors.
 bugfixes:
   - >-
     ``ernic_guest_setup`` now holds ``rdma-core``, ``libibverbs1``,

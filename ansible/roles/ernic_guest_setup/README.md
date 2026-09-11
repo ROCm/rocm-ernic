@@ -64,7 +64,8 @@ fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
 
 ## Requirements
 
-- Ubuntu noble (24.04) or resolute (26.04) guest
+- Ubuntu resolute (26.04) guest in ionic mode, noble (24.04) or resolute in
+  legacy mode
 - `become: true`
 - `community.general` for `modprobe` / `make`
 - A rocm-ernic checkout on the controller, or network access to clone one
