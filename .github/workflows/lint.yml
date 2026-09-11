@@ -17,6 +17,10 @@ on:
       - '.github/workflows/lint.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-clang-format:
     name: clang-format

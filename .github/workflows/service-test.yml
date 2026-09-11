@@ -10,6 +10,10 @@ on:
       - '.github/workflows/service-test.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ernicctl-syntax:
     name: ernicctl Python syntax and imports

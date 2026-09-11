@@ -6,6 +6,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000

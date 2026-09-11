@@ -22,6 +22,14 @@ on:
       - 'requirements.txt'
       - '.github/workflows/docs-deploy.yml'
 
+# Serialise deploys to Pages.  Unlike the pull request workflows this does
+# NOT cancel in progress: a half-finished deploy would leave the published
+# site in whatever state actions/deploy-pages had reached, so a superseded
+# run queues behind the current one and then publishes the newer docs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

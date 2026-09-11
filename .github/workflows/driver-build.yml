@@ -12,6 +12,10 @@ on:
       - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   driver-build:
     name: Build Legacy Kernel Driver on ${{ matrix.os }}
