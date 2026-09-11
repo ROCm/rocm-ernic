@@ -19,6 +19,10 @@ on:
       - '.github/workflows/dc-tests.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dc-build-and-ctest:
     name: DC unit tests (cmocka)
