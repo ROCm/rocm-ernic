@@ -393,17 +393,21 @@ jobs:
         lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
         EOFVM
     
-    - name: Install Ansible
+    - name: Install the Ansible collection dependencies
       shell: bash
       run: |
-        echo "=== Installing Ansible ==="
+        echo "=== Installing the Ansible collection dependencies ==="
         # The guest is provisioned by the sbates130272.rocm_ernic
         # collection in this repo, so the same role the self-hosted CI
-        # and developers use is what these jobs exercise.  The distro
-        # package bundles community.general, which is the only external
-        # collection ernic_guest_setup needs.
-        apt-get install -y ansible
+        # and developers use is what these jobs exercise.
+        #
+        # The container's ansible-core comes from pipx and searches
+        # ~/.ansible/collections, not the dist-packages tree the
+        # "ansible" apt bundle installs into, so installing that
+        # bundle leaves community.general invisible.  Install the
+        # collections the same way a real consumer does instead.
         ansible --version
+        ansible-galaxy collection install -r ansible/requirements.yml
 
     - name: Install kernel headers and build tools in VM
       shell: bash
@@ -1543,17 +1547,21 @@ jobs:
           sleep 10
         done
 
-    - name: Install Ansible
+    - name: Install the Ansible collection dependencies
       shell: bash
       run: |
-        echo "=== Installing Ansible ==="
+        echo "=== Installing the Ansible collection dependencies ==="
         # Both VMs are provisioned by the sbates130272.rocm_ernic
         # collection in this repo, so these jobs exercise the same role
-        # the self-hosted CI and developers use.  The distro package
-        # bundles community.general, the only external collection
-        # ernic_guest_setup needs.
-        apt-get install -y ansible
+        # the self-hosted CI and developers use.
+        #
+        # The container's ansible-core comes from pipx and searches
+        # ~/.ansible/collections, not the dist-packages tree the
+        # "ansible" apt bundle installs into, so installing that
+        # bundle leaves community.general invisible.  Install the
+        # collections the same way a real consumer does instead.
         ansible --version
+        ansible-galaxy collection install -r ansible/requirements.yml
 
     - name: Install kernel headers and build tools in VMs (parallel)
       shell: bash
