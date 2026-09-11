@@ -68,7 +68,7 @@ jobs:
       id: guest_image
       shell: bash
       run: |
-        set -uo pipefail
+        set -euo pipefail
         DEST=/guest-image
         BLOBS=/tmp/guest-blobs
 
@@ -82,19 +82,21 @@ jobs:
         apt-get install -y -qq skopeo
 
         mkdir -p "$DEST" "$BLOBS"
+
+        # No fallback to the builder image's own qcow2.  That guest is on
+        # the release's stock kernel and cannot build ionic_rdma, so
+        # booting it when the pull fails would turn a broken image
+        # reference into a confusing failure four minutes downstream.
         if ! skopeo copy "docker://${GUEST_IMAGE_REF}" "dir:${BLOBS}"; then
-          # TODO: drop the fallback once the payload image is published.
-          echo "⚠ ${GUEST_IMAGE_REF} is not pullable; falling back to the"
-          echo "  qcow2 baked into the builder image.  That guest is on the"
-          echo "  release's stock kernel, so ernic_guest_setup will stop at"
-          echo "  the kernel skew assert."
-          echo "output_dir=/output" >> $GITHUB_OUTPUT
-          exit 0
+          echo "✗ could not pull ${GUEST_IMAGE_REF}"
+          echo "  The system tests boot the guest from this image; there is"
+          echo "  nothing usable to fall back to."
+          exit 1
         fi
 
         # skopeo names blobs by digest, with or without the algorithm
         # prefix depending on its version.  Extract in manifest order.
-        python3 - "$BLOBS" <<'PYEOF' | while read -r blob; do
+        LAYERS=$(python3 - "$BLOBS" <<'PYEOF'
         import json, os, sys
         blobs = sys.argv[1]
         for layer in json.load(open(os.path.join(blobs, "manifest.json")))["layers"]:
@@ -106,8 +108,11 @@ jobs:
             else:
                 sys.exit(f"no blob on disk for {digest}")
         PYEOF
+        )
+
+        while read -r blob; do
           tar -xf "${BLOBS}/${blob}" -C "$DEST"
-        done
+        done <<< "$LAYERS"
 
         rm -rf "$BLOBS"
 
@@ -1027,7 +1032,7 @@ jobs:
       id: guest_image
       shell: bash
       run: |
-        set -uo pipefail
+        set -euo pipefail
         DEST=/guest-image
         BLOBS=/tmp/guest-blobs
 
@@ -1041,19 +1046,21 @@ jobs:
         apt-get install -y -qq skopeo
 
         mkdir -p "$DEST" "$BLOBS"
+
+        # No fallback to the builder image's own qcow2.  That guest is on
+        # the release's stock kernel and cannot build ionic_rdma, so
+        # booting it when the pull fails would turn a broken image
+        # reference into a confusing failure four minutes downstream.
         if ! skopeo copy "docker://${GUEST_IMAGE_REF}" "dir:${BLOBS}"; then
-          # TODO: drop the fallback once the payload image is published.
-          echo "⚠ ${GUEST_IMAGE_REF} is not pullable; falling back to the"
-          echo "  qcow2 baked into the builder image.  That guest is on the"
-          echo "  release's stock kernel, so ernic_guest_setup will stop at"
-          echo "  the kernel skew assert."
-          echo "output_dir=/output" >> $GITHUB_OUTPUT
-          exit 0
+          echo "✗ could not pull ${GUEST_IMAGE_REF}"
+          echo "  The system tests boot the guest from this image; there is"
+          echo "  nothing usable to fall back to."
+          exit 1
         fi
 
         # skopeo names blobs by digest, with or without the algorithm
         # prefix depending on its version.  Extract in manifest order.
-        python3 - "$BLOBS" <<'PYEOF' | while read -r blob; do
+        LAYERS=$(python3 - "$BLOBS" <<'PYEOF'
         import json, os, sys
         blobs = sys.argv[1]
         for layer in json.load(open(os.path.join(blobs, "manifest.json")))["layers"]:
@@ -1065,8 +1072,11 @@ jobs:
             else:
                 sys.exit(f"no blob on disk for {digest}")
         PYEOF
+        )
+
+        while read -r blob; do
           tar -xf "${BLOBS}/${blob}" -C "$DEST"
-        done
+        done <<< "$LAYERS"
 
         rm -rf "$BLOBS"
 
