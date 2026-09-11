@@ -39,8 +39,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Select QEMU accelerator
+    - name: Select QEMU accelerator and guest size
       shell: bash
+      env:
+        VMS: 1
       run: |
         if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
           echo "✓ /dev/kvm present; using KVM acceleration"
@@ -51,6 +53,30 @@ jobs:
           echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
           echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
         fi
+
+        # Size the guests from the runner rather than pinning 2 vCPU / 1 GB.
+        # The hosted runner is 4 vCPU / 16 GB, so the old numbers left most
+        # of the machine idle while a DKMS kernel build ran single-file in
+        # the guest.  Derive it instead: a larger runner class or the
+        # self-hosted node then benefits without another edit here.
+        #
+        # One core and a quarter of RAM stay with the host -- the
+        # vfio-user server, the harness and the runner agent share it --
+        # and the memfd backend is not preallocated, so the guest only
+        # takes what it touches.
+        HOST_CPUS=$(nproc)
+        HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+
+        VM_VCPUS=$(( (HOST_CPUS - 1) / VMS ))
+        [ "$VM_VCPUS" -lt 2 ] && VM_VCPUS=2
+        VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
+        [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
+        [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
+
+        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
+        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
+        echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
 
     - name: Display environment
       run: |
@@ -294,9 +320,9 @@ jobs:
         qemu-system-x86_64 \
           -machine q35,accel=${QEMU_ACCEL},memory-backend=mem0 \
           -cpu ${QEMU_CPU} \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem0,share=on,size=1G \
+          -smp ${VM_VCPUS} \
+          -m ${VM_MEM_MB}M \
+          -object memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M \
           -nographic \
           -drive file="$VM_DISK",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
@@ -362,12 +388,28 @@ jobs:
         echo "✓ Using SSH keys from vm-info.json"
         echo "  Private key: $SSH_KEY_PRIVATE"
         echo "  Public key: $SSH_KEY_PUBLIC"
-        cp "$SSH_KEY_PRIVATE" ~/.ssh/id_ed25519
-        cp "$SSH_KEY_PUBLIC" ~/.ssh/id_ed25519.pub
-        chmod 600 ~/.ssh/id_ed25519
-        chmod 644 ~/.ssh/id_ed25519.pub
-        
+
         ssh-keyscan -p "$SSH_PORT" localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+        # Use the key where the fetch action left it rather than copying
+        # it into ~/.ssh and letting ssh find it by default, because ssh
+        # will not: ~ is $HOME, which a container job sets to
+        # /github/home, but OpenSSH builds its default identity and
+        # known_hosts paths from getpwuid() -- /root for us -- which is
+        # empty.  The copy therefore landed somewhere ssh never looked,
+        # and six runs died at "Permission denied (publickey,password)"
+        # looking exactly like a guest that never booted.
+        #
+        # IdentitiesOnly stops an agent or those defaults from being
+        # offered as well, so this stays legible if it ever breaks again;
+        # BatchMode turns the password fallback into an immediate failure
+        # with a usable message instead of a read_passphrase error.
+        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
+        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
+        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
+        echo "✓ SSH_OPTS=$SSH_OPTS"
     
     - name: Wait for VM SSH
       shell: bash
@@ -380,7 +422,7 @@ jobs:
         # refused" and "Connection timed out" are different faults, and
         # the old 2>/dev/null hid which one this was for five runs.
         for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
+          if ssh $SSH_OPTS -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
             echo "VM_USER=$VM_USER" >> $GITHUB_ENV
             exit 0
@@ -392,7 +434,7 @@ jobs:
         echo "✗ VM SSH timeout"
         echo ""
         echo "=== Final attempt, verbose ==="
-        ssh -vvv -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+        ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
           -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
         "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
@@ -411,7 +453,7 @@ jobs:
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         
         echo "=== PCI Devices ==="
@@ -453,7 +495,7 @@ jobs:
         echo "=== Installing kernel headers and build tools in VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         KVER=$(uname -r)
 
@@ -519,7 +561,7 @@ jobs:
         EOFJSON
 
         export ANSIBLE_HOST_KEY_CHECKING=false
-        export ANSIBLE_PRIVATE_KEY_FILE="$HOME/.ssh/id_ed25519"
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
         PROJECT_ROOT="$PWD"
 
@@ -560,7 +602,7 @@ jobs:
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
         set +e
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" <<-'EOFVM'
         	if ! ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
         	  echo "✗ RDMA device not found"
@@ -589,9 +631,9 @@ jobs:
         # librocm_ernic and skips cleanly on the ionic default path.
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/dc-smoke"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+        scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_dc_loopback.c \
           rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
           "${VM_USER}@localhost:/tmp/dc-smoke/"
@@ -602,7 +644,7 @@ jobs:
         # set -e still in effect its status becomes the shell's
         # exit status. The step would then report failure even
         # when the test passed.
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/dc-smoke
         ROCM_LIBDIR=""
@@ -649,16 +691,16 @@ jobs:
         echo "=== WRITE_WITH_IMM guest smoke (loopback responder delivery) ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+        scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_write_imm.c \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
         set +e
         # Run via 'bash -s' for the same reason as the DC guest smoke step:
         # a login shell would source ~/.bash_logout on exit and its failure
         # could override the test exit status.
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
         if ! ibv_devices 2>/dev/null | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
@@ -692,14 +734,14 @@ jobs:
         echo "=== DC error path guest smoke (send_in_flight accounting) ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/dc-err-smoke"
-        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" \
+        scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_dc_error_paths.c \
           rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
           "${VM_USER}@localhost:/tmp/dc-err-smoke/"
         set +e
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/dc-err-smoke
         ROCM_LIBDIR=""
@@ -771,7 +813,7 @@ jobs:
         fi
 
         set +e
-        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" \
+        ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" <<-'EOFVM'
         	SYSFS_ETH=""
         	SYSFS_IB=""
@@ -924,8 +966,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Select QEMU accelerator
+    - name: Select QEMU accelerator and guest size
       shell: bash
+      env:
+        VMS: 2
       run: |
         if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
           echo "✓ /dev/kvm present; using KVM acceleration"
@@ -936,6 +980,21 @@ jobs:
           echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
           echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
         fi
+
+        # See the loopback job; VMS is 2 here, so each guest gets half.
+        HOST_CPUS=$(nproc)
+        HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+
+        VM_VCPUS=$(( (HOST_CPUS - 1) / VMS ))
+        [ "$VM_VCPUS" -lt 2 ] && VM_VCPUS=2
+        VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
+        [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
+        [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
+
+        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
+        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
+        echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
 
     - name: Verify environment
       run: |
@@ -1229,13 +1288,19 @@ jobs:
         echo "✓ Using SSH keys from vm-info.json"
         echo "  Private key: $SSH_KEY_PRIVATE"
         echo "  Public key: $SSH_KEY_PUBLIC"
-        cp "$SSH_KEY_PRIVATE" ~/.ssh/id_ed25519
-        cp "$SSH_KEY_PUBLIC" ~/.ssh/id_ed25519.pub
-        chmod 600 ~/.ssh/id_ed25519
-        chmod 644 ~/.ssh/id_ed25519.pub
-        
         ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
         ssh-keyscan -p 2223 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+        # See the loopback job: ~ is $HOME (/github/home in a container
+        # job) but OpenSSH builds its defaults from getpwuid(), so the key
+        # is used where it lies rather than copied somewhere ssh will
+        # never look for it.
+        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
+        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
+        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
+        echo "✓ SSH_OPTS=$SSH_OPTS"
 
     - name: Start TCP server 1 (manager)
       shell: bash
@@ -1582,9 +1647,9 @@ jobs:
         qemu-system-x86_64 \
           -machine q35,accel=${QEMU_ACCEL},memory-backend=mem1 \
           -cpu ${QEMU_CPU} \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem1,share=on,size=1G \
+          -smp ${VM_VCPUS} \
+          -m ${VM_MEM_MB}M \
+          -object memory-backend-memfd,id=mem1,share=on,size=${VM_MEM_MB}M \
           -nographic \
           -drive file="$VM_DISK_1",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
@@ -1625,9 +1690,9 @@ jobs:
         qemu-system-x86_64 \
           -machine q35,accel=${QEMU_ACCEL},memory-backend=mem2 \
           -cpu ${QEMU_CPU} \
-          -smp 2 \
-          -m 1G \
-          -object memory-backend-memfd,id=mem2,share=on,size=1G \
+          -smp ${VM_VCPUS} \
+          -m ${VM_MEM_MB}M \
+          -object memory-backend-memfd,id=mem2,share=on,size=${VM_MEM_MB}M \
           -nographic \
           -drive file="$VM_DISK_2",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
@@ -1672,7 +1737,7 @@ jobs:
           local i
 
           for i in {1..60}; do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+            if ssh $SSH_OPTS -o ConnectTimeout=5 \
                  -p "$port" "${VM_USER}@localhost" "echo ${label} Ready" \
                  2>/tmp/ssh-attempt.err; then
               echo "✓ ${label} is accessible via SSH"
@@ -1685,7 +1750,7 @@ jobs:
           echo "✗ ${label} boot timeout"
           echo ""
           echo "=== ${label}: final attempt, verbose ==="
-          ssh -vvv -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+          ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
             -p "$port" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
           "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
@@ -1757,9 +1822,9 @@ jobs:
 
         _packages_vm() {
           local PORT="$1"
-          scp -o StrictHostKeyChecking=no -P "$PORT" /tmp/vm-packages.sh \
+          scp $SSH_OPTS -P "$PORT" /tmp/vm-packages.sh \
             "${VM_USER}@localhost:/tmp/vm-packages.sh"
-          ssh -o StrictHostKeyChecking=no -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-packages.sh
+          ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-packages.sh
         }
 
         _packages_vm 2222 > /tmp/packages-vm1.log 2>&1 &
@@ -1808,7 +1873,7 @@ jobs:
         EOFJSON
 
         export ANSIBLE_HOST_KEY_CHECKING=false
-        export ANSIBLE_PRIVATE_KEY_FILE="$HOME/.ssh/id_ed25519"
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
         PROJECT_ROOT="$PWD"
 
@@ -1833,27 +1898,27 @@ jobs:
         FAILED=0
 
         echo "--- VM 1 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
+        if ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
+          DEVICE=$(ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
           echo "✓ VM 1 RDMA device found: $DEVICE"
-          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
         else
           echo "✗ VM 1: RDMA device not found"
           echo "Checking ibv_devices output:"
-          ssh -o StrictHostKeyChecking=no -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
           FAILED=$((FAILED + 1))
         fi
 
         echo ""
         echo "--- VM 2 RDMA devices ---"
-        if ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
-          DEVICE=$(ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
+        if ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
+          DEVICE=$(ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
           echo "✓ VM 2 RDMA device found: $DEVICE"
-          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
+          ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
         else
           echo "✗ VM 2: RDMA device not found"
           echo "Checking ibv_devices output:"
-          ssh -o StrictHostKeyChecking=no -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
+          ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
           FAILED=$((FAILED + 1))
         fi
         
