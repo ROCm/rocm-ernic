@@ -68,7 +68,15 @@ jobs:
         HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
 
         VM_VCPUS=$(( (HOST_CPUS - 1) / VMS ))
-        [ "$VM_VCPUS" -lt 2 ] && VM_VCPUS=2
+        # Four is a hard floor, not a preference.  ionic_lif_size() sets
+        # neqs = min(rdma.eq_qtype.qid_count, num_online_cpus()), and
+        # ionic_create_rdma_admin() rejects anything below
+        # IONIC_EQ_COUNT_MIN (4) with a silent -EINVAL that surfaces only
+        # as "Failed to register ibdev".  A guest with fewer than 4 online
+        # CPUs can never bring up ionic_rdma, whatever the device
+        # advertises.  Oversubscribing the runner is fine; starving the
+        # guest is not.
+        [ "$VM_VCPUS" -lt 4 ] && VM_VCPUS=4
         VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
         [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
         [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
@@ -986,7 +994,15 @@ jobs:
         HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
 
         VM_VCPUS=$(( (HOST_CPUS - 1) / VMS ))
-        [ "$VM_VCPUS" -lt 2 ] && VM_VCPUS=2
+        # Four is a hard floor, not a preference.  ionic_lif_size() sets
+        # neqs = min(rdma.eq_qtype.qid_count, num_online_cpus()), and
+        # ionic_create_rdma_admin() rejects anything below
+        # IONIC_EQ_COUNT_MIN (4) with a silent -EINVAL that surfaces only
+        # as "Failed to register ibdev".  A guest with fewer than 4 online
+        # CPUs can never bring up ionic_rdma, whatever the device
+        # advertises.  Oversubscribing the runner is fine; starving the
+        # guest is not.
+        [ "$VM_VCPUS" -lt 4 ] && VM_VCPUS=4
         VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
         [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
         [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
