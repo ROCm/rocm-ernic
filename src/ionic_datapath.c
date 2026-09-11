@@ -306,6 +306,9 @@ struct ionic_datapath {
     /* Mesh state.  local_node is UINT32_MAX until a mesh backend is
      * attached, which keeps every peer local for loopback runs. */
     uint32_t local_node;
+    /* The poll loop re-attaches the handle every iteration, so the mesh
+     * state is only worth logging when it actually changes. */
+    bool mesh_reported;
     uint32_t next_req_id;
     struct dp_pending pending[MAX_PENDING];
 
@@ -532,6 +535,9 @@ static void dp_mesh_recv(void *opaque, uint32_t src_node, const void *buf,
 
 void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle)
 {
+    uint32_t node;
+    bool changed;
+
     if (!dp)
         return;
 
@@ -539,16 +545,21 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle)
     if (!handle)
         return;
 
-    dp->local_node = ionic_mesh_local_node(dp->pvrdma_handle);
-    if (dp->local_node == UINT32_MAX) {
-        vfu_log(dp->vfu_ctx, LOG_INFO,
-                "ionic_datapath: no mesh backend, remote QPs unreachable");
+    node = ionic_mesh_local_node(dp->pvrdma_handle);
+    changed = !dp->mesh_reported || node != dp->local_node;
+    dp->local_node = node;
+    dp->mesh_reported = true;
+
+    if (node == UINT32_MAX) {
+        if (changed)
+            vfu_log(dp->vfu_ctx, LOG_INFO,
+                    "ionic_datapath: no mesh backend, remote QPs unreachable");
         return;
     }
 
     ionic_mesh_set_recv_cb(dp->pvrdma_handle, dp_mesh_recv, dp);
-    vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: mesh node %u",
-            dp->local_node);
+    if (changed)
+        vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: mesh node %u", node);
 }
 
 void ionic_datapath_set_cq_event_cb(struct ionic_datapath *dp,
