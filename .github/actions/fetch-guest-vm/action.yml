@@ -58,7 +58,17 @@ runs:
       oras pull "${REPO}@${DIGEST}"
 
       # oras does not preserve modes; OpenSSH refuses a group-readable key.
-      chmod 600 id_rsa
+      # Take the key name from the metadata for the same reason the disk
+      # name is globbed below: a rename upstream should not abort the job
+      # on a hardcoded filename under set -e.
+      KEY=$(jq -r '.ssh_keys.private_key_path // ""' vm-info.json)
+      KEY=$(basename -- "${KEY:-id_rsa}")
+      if [ ! -f "$KEY" ]; then
+        echo "✗ referrer carries no private key named ${KEY}"
+        ls -la
+        exit 1
+      fi
+      chmod 600 "$KEY"
 
       echo "=== Fetching disk for ${REF} ==="
       oras pull "$REF"
