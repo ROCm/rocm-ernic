@@ -166,7 +166,8 @@ jobs:
           librdmacm-dev \
           libglib2.0-dev \
           libjson-c-dev \
-          libcmocka-dev
+          libcmocka-dev \
+          iproute2
 
     - name: Cache libvfio-user build
       id: cache-libvfio-user
@@ -301,20 +302,25 @@ jobs:
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
           -device virtio-net-pci,netdev=net0 \
           -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-rocm-ernic.sock"}}' \
-          -serial mon:stdio > /tmp/qemu.log 2>&1 &
-        
+          -serial file:/tmp/qemu-console.log \
+          -monitor none \
+          -qmp unix:/tmp/qmp.sock,server=on,wait=off > /tmp/qemu.log 2>&1 &
+
         QEMU_PID=$!
         echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
         echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
         echo "✓ QEMU started (PID: $QEMU_PID)"
-        
+
         # Early failure detection: check if QEMU dies within 5 seconds
         echo "Monitoring QEMU for early failures..."
         sleep 5
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then
           echo "✗ QEMU process died within 5 seconds (PID: $QEMU_PID)"
-          echo "=== QEMU log (last 100 lines) ==="
-          tail -100 /tmp/qemu.log || echo "Log file not found"
+          echo "=== QEMU log ==="
+          cat /tmp/qemu.log || echo "Log file not found"
+          echo ""
+          echo "=== Guest console ==="
+          cat /tmp/qemu-console.log || echo "Console log not found"
           echo ""
           echo "=== QEMU exit code ==="
           wait "$QEMU_PID" 2>&1 || echo "Exit code: $?"
@@ -370,19 +376,32 @@ jobs:
         SSH_PORT="$SSH_PORT"
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
         
+        # Keep ssh's stderr rather than discarding it: "Connection
+        # refused" and "Connection timed out" are different faults, and
+        # the old 2>/dev/null hid which one this was for five runs.
         for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/dev/null; then
+          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
             echo "VM_USER=$VM_USER" >> $GITHUB_ENV
             exit 0
           fi
-          echo "Attempt $i/60: Waiting for SSH..."
+          echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
           sleep 5
         done
-        
+
         echo "✗ VM SSH timeout"
-        echo "=== QEMU Log ==="
-        tail -100 /tmp/qemu.log
+        echo ""
+        echo "=== Final attempt, verbose ==="
+        ssh -vvv -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+          -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
+
+        "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+          --label VM \
+          --ssh-port "$SSH_PORT" \
+          --qmp /tmp/qmp.sock \
+          --console /tmp/qemu-console.log \
+          --qemu-log /tmp/qemu.log \
+          --pid "$QEMU_PID"
         exit 1
     
     - name: Verify RDMA NIC in VM
@@ -846,9 +865,26 @@ jobs:
         ls -lh /tmp/vfu_server*.log || echo "No server logs"
         tail -50 /tmp/vfu_server*.log || true
         echo ""
-        echo "=== QEMU Log (last 100 lines) ==="
-        tail -100 /tmp/qemu.log || echo "No QEMU log"
-    
+        echo "=== QEMU Log ==="
+        cat /tmp/qemu.log || echo "No QEMU log"
+        echo ""
+        # Whole file, not a tail: a boot log is under a thousand lines
+        # and the network setup it has to explain is near the top.
+        echo "=== Guest console (complete) ==="
+        cat /tmp/qemu-console.log || echo "No console log"
+
+    - name: Upload test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: loopback-backend-test-logs
+        path: |
+          /tmp/vfu_server.log
+          /tmp/qemu.log
+          /tmp/qemu-console.log
+        retention-days: 7
+        if-no-files-found: ignore
+
     - name: Cleanup
       if: always()
       run: |
@@ -926,7 +962,8 @@ jobs:
           librdmacm-dev \
           libglib2.0-dev \
           libjson-c-dev \
-          libcmocka-dev
+          libcmocka-dev \
+          iproute2
 
     - name: Cache libvfio-user build
       id: cache-libvfio-user
@@ -1553,8 +1590,10 @@ jobs:
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
           -device virtio-net-pci,netdev=net0 \
           -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server1.sock"}}' \
-          -serial mon:stdio > /tmp/qemu-vm1.log 2>&1 &
-        
+          -serial file:/tmp/qemu-vm1-console.log \
+          -monitor none \
+          -qmp unix:/tmp/qmp-vm1.sock,server=on,wait=off > /tmp/qemu-vm1.log 2>&1 &
+
         QEMU_VM1_PID=$!
         echo "QEMU_VM1_PID=$QEMU_VM1_PID" >> $GITHUB_ENV
         echo "✓ VM 1 started (PID: $QEMU_VM1_PID)"
@@ -1564,8 +1603,11 @@ jobs:
         sleep 5
         if ! kill -0 "$QEMU_VM1_PID" 2>/dev/null; then
           echo "✗ VM 1 QEMU process died within 5 seconds (PID: $QEMU_VM1_PID)"
-          echo "=== VM 1 QEMU log (last 100 lines) ==="
-          tail -100 /tmp/qemu-vm1.log || echo "Log file not found"
+          echo "=== VM 1 QEMU log ==="
+          cat /tmp/qemu-vm1.log || echo "Log file not found"
+          echo ""
+          echo "=== VM 1 guest console ==="
+          cat /tmp/qemu-vm1-console.log || echo "Console log not found"
           echo ""
           echo "=== VM 1 QEMU exit code ==="
           wait "$QEMU_VM1_PID" 2>&1 || echo "Exit code: $?"
@@ -1591,8 +1633,10 @@ jobs:
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
           -device virtio-net-pci,netdev=net0 \
           -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server2.sock"}}' \
-          -serial mon:stdio > /tmp/qemu-vm2.log 2>&1 &
-        
+          -serial file:/tmp/qemu-vm2-console.log \
+          -monitor none \
+          -qmp unix:/tmp/qmp-vm2.sock,server=on,wait=off > /tmp/qemu-vm2.log 2>&1 &
+
         QEMU_VM2_PID=$!
         echo "QEMU_VM2_PID=$QEMU_VM2_PID" >> $GITHUB_ENV
         echo "✓ VM 2 started (PID: $QEMU_VM2_PID)"
@@ -1602,8 +1646,11 @@ jobs:
         sleep 5
         if ! kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
           echo "✗ VM 2 QEMU process died within 5 seconds (PID: $QEMU_VM2_PID)"
-          echo "=== VM 2 QEMU log (last 100 lines) ==="
-          tail -100 /tmp/qemu-vm2.log || echo "Log file not found"
+          echo "=== VM 2 QEMU log ==="
+          cat /tmp/qemu-vm2.log || echo "Log file not found"
+          echo ""
+          echo "=== VM 2 guest console ==="
+          cat /tmp/qemu-vm2-console.log || echo "Console log not found"
           echo ""
           echo "=== VM 2 QEMU exit code ==="
           wait "$QEMU_VM2_PID" 2>&1 || echo "Exit code: $?"
@@ -1617,47 +1664,41 @@ jobs:
         echo "=== Waiting for VMs to boot ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Wait for VM 1 SSH
-        for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2222 "${VM_USER}@localhost" 'echo VM1 Ready' 2>/dev/null; then
-            echo "✓ VM 1 is accessible via SSH"
-            break
-          fi
-          if [ $i -eq 60 ]; then
-            echo "✗ VM 1 boot timeout"
-            tail -50 /tmp/qemu-vm1.log
-            exit 1
-          fi
-          sleep 10
-        done
+        # Keep ssh's stderr rather than discarding it: "Connection
+        # refused" and "Connection timed out" are different faults, and
+        # the old 2>/dev/null hid which one this was for five runs.
+        wait_for_vm() {
+          local label="$1" port="$2" pid="$3" console="$4" qemu_log="$5" qmp="$6"
+          local i
 
-        # Wait for VM 2 SSH
-        for i in {1..60}; do
-          if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 2223 "${VM_USER}@localhost" 'echo VM2 Ready' 2>/dev/null; then
-            echo "✓ VM 2 is accessible via SSH"
-            break
-          fi
-          if [ $i -eq 60 ]; then
-            echo "✗ VM 2 boot timeout"
-            echo "=== VM 2 QEMU log (last 100 lines) ==="
-            tail -100 /tmp/qemu-vm2.log || echo "Log file not found"
-            echo ""
-            echo "=== Checking VM 2 QEMU process ==="
-            if [ -n "$QEMU_VM2_PID" ]; then
-              if kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
-                echo "VM 2 QEMU process is still running (PID: $QEMU_VM2_PID)"
-              else
-                echo "VM 2 QEMU process has died (PID: $QEMU_VM2_PID)"
-              fi
+          for i in {1..60}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+                 -p "$port" "${VM_USER}@localhost" "echo ${label} Ready" \
+                 2>/tmp/ssh-attempt.err; then
+              echo "✓ ${label} is accessible via SSH"
+              return 0
             fi
+            echo "${label} attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
+            sleep 10
+          done
+
+          echo "✗ ${label} boot timeout"
           echo ""
-            echo "=== Disk image info ==="
-            VM_DISK_2="${{ steps.copy_vm_disk.outputs.vm_disk_2 }}"
-            qemu-img info "$VM_DISK_2" || echo "Failed to get disk info"
-          exit 1
-        fi
-          sleep 10
-        done
+          echo "=== ${label}: final attempt, verbose ==="
+          ssh -vvv -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+            -p "$port" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
+
+          "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+            --label "$label" --ssh-port "$port" --qmp "$qmp" \
+            --console "$console" --qemu-log "$qemu_log" --pid "$pid"
+          return 1
+        }
+
+        wait_for_vm "VM1" 2222 "$QEMU_VM1_PID" \
+          /tmp/qemu-vm1-console.log /tmp/qemu-vm1.log /tmp/qmp-vm1.sock
+
+        wait_for_vm "VM2" 2223 "$QEMU_VM2_PID" \
+          /tmp/qemu-vm2-console.log /tmp/qemu-vm2.log /tmp/qmp-vm2.sock
 
     - name: Install the Ansible collection dependencies
       shell: bash
@@ -1875,6 +1916,8 @@ jobs:
           /tmp/server2.log
           /tmp/qemu-vm1.log
           /tmp/qemu-vm2.log
+          /tmp/qemu-vm1-console.log
+          /tmp/qemu-vm2-console.log
         retention-days: 7
         if-no-files-found: ignore
   
