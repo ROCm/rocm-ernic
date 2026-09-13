@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT
+version: 2
+updates:
+  # GitHub Dependabot can update the action references used by workflows
+  # and the local composite action metadata in .github/actions/.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Current Python dependency manifests in this repo live at the top level
+  # and under prometheus/.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns:
+          - "*"
+
+  - package-ecosystem: pip
+    directory: "/prometheus"
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns:
+          - "*"
