@@ -38,6 +38,33 @@ runs:
       set -euo pipefail
       REF="${REPO}:${TAG}"
 
+      retry_oras() {
+        local what="$1"
+        shift
+        local attempt=1
+        local max_attempts=4
+        local delay=2
+        local status=0
+
+        while true; do
+          if "$@"; then
+            return 0
+          else
+            status=$?
+          fi
+
+          if [ "$attempt" -ge "$max_attempts" ]; then
+            echo "✗ ${what} failed after ${attempt} attempts"
+            return "$status"
+          fi
+
+          echo "⚠ ${what} failed with exit code ${status} (attempt ${attempt}/${max_attempts}); retrying in ${delay}s"
+          sleep "$delay"
+          attempt=$((attempt + 1))
+          delay=$((delay * 2))
+        done
+      }
+
       # oras and zstd ship in the builder image; nothing to install, so
       # no apt-get sits on the path to a guest.
       mkdir -p "${DEST}/output"
@@ -55,7 +82,8 @@ runs:
         echo "✗ ${REF} has no ${INFO_TYPE} referrer"
         exit 1
       fi
-      oras pull "${REPO}@${DIGEST}"
+      retry_oras "metadata pull for ${REPO}@${DIGEST}" \
+        oras pull "${REPO}@${DIGEST}"
 
       # oras does not preserve modes; OpenSSH refuses a group-readable key.
       # Take the key name from the metadata for the same reason the disk
@@ -71,7 +99,7 @@ runs:
       chmod 600 "$KEY"
 
       echo "=== Fetching disk for ${REF} ==="
-      oras pull "$REF"
+      retry_oras "disk pull for ${REF}" oras pull "$REF"
 
       # Take the disk name from what actually landed rather than pinning
       # it, so a renamed guest fails here instead of in Read VM info.
