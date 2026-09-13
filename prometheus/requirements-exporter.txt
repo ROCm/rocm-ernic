@@ -7,4 +7,4 @@
 #   python3 -m venv /opt/ernic-exporter-venv
 #   /opt/ernic-exporter-venv/bin/pip install -r requirements-exporter.txt
 
-prometheus_client>=0.21.0,<1.0.0
+prometheus_client>=0.26.0,<1.0.0
