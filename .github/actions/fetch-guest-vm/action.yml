@@ -38,7 +38,7 @@ runs:
       set -euo pipefail
       REF="${REPO}:${TAG}"
 
-      retry_oras() {
+      retry() {
         local what="$1"
         shift
         local attempt=1
@@ -57,11 +57,11 @@ runs:
           fi
 
           if [ "$attempt" -ge "$max_attempts" ]; then
-            echo "✗ ${what} failed after ${attempt} attempts"
+            echo "✗ ${what} failed after ${attempt} attempts" >&2
             return "$status"
           fi
 
-          echo "⚠ ${what} failed with exit code ${status} (attempt ${attempt}/${max_attempts}); retrying in ${delay}s"
+          echo "⚠ ${what} failed with exit code ${status} (attempt ${attempt}/${max_attempts}); retrying in ${delay}s" >&2
           sleep "$delay"
           attempt=$((attempt + 1))
           delay=$((delay * 2))
@@ -76,7 +76,8 @@ runs:
       echo "=== Fetching metadata for ${REF} ==="
       # Referrer first: it is kilobytes, so a bad reference fails in
       # seconds rather than after a 3.7 GB download.
-      DIGEST=$(oras discover --format json "$REF" \
+      DIGEST=$(retry "metadata discovery for ${REF}" \
+        oras discover --format json "$REF" \
         | jq -r --arg t "$INFO_TYPE" \
             '[.referrers[] | select(.artifactType==$t)]
              | sort_by(.annotations["org.opencontainers.image.created"])
@@ -85,7 +86,7 @@ runs:
         echo "✗ ${REF} has no ${INFO_TYPE} referrer"
         exit 1
       fi
-      retry_oras "metadata pull for ${REPO}@${DIGEST}" \
+      retry "metadata pull for ${REPO}@${DIGEST}" \
         oras pull "${REPO}@${DIGEST}"
 
       # oras does not preserve modes; OpenSSH refuses a group-readable key.
@@ -102,7 +103,7 @@ runs:
       chmod 600 "$KEY"
 
       echo "=== Fetching disk for ${REF} ==="
-      retry_oras "disk pull for ${REF}" oras pull "$REF"
+      retry "disk pull for ${REF}" oras pull "$REF"
 
       # Take the disk name from what actually landed rather than pinning
       # it, so a renamed guest fails here instead of in Read VM info.

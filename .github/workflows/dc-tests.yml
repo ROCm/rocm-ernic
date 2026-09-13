@@ -28,7 +28,7 @@ jobs:
     name: DC unit tests (cmocka)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install dependencies
         run: |
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: dc-build-and-ctest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build deps (server only)
         run: |
