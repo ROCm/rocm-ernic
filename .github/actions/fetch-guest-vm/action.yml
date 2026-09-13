@@ -41,10 +41,10 @@ runs:
       retry() {
         local rc=0
         for i in 1 2 3; do
-          "$@"
-          rc=$?
-          if [ "$rc" -eq 0 ]; then
+          if "$@"; then
             return 0
+          else
+            rc=$?
           fi
           echo "Command failed (attempt $i/3): $*" >&2
           sleep 5
