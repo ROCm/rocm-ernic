@@ -152,7 +152,6 @@ jobs:
           EOF
           cat > /tmp/ernicctl-release-files.txt <<'EOF'
           bin/ernicctl
-          etc/rocm-ernic
           EOF
           tar -C "${INSTALL_PREFIX}" -czf \
             "dist/rocm-ernic-${version}-linux-${arch}.tar.gz" \
