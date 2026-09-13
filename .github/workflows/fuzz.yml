@@ -51,7 +51,7 @@ jobs:
       FUZZ_SECONDS: ${{ github.event.inputs.fuzz_seconds || '60' }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -103,7 +103,7 @@ jobs:
 
       - name: Upload fuzz report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Logs (which contain the symbolized crash stack when a harness
           # aborts) and any crash inputs — not the whole accumulated corpus.
