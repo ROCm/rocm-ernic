@@ -26,13 +26,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-release-${{ hashFiles('.github/workflows/release.yml') }}
-          restore-keys: apt-${{ runner.os }}-release-
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -107,11 +100,6 @@ jobs:
       - name: Build project
         run: cmake --build build
 
-      - name: Verify release binaries
-        run: |
-          file build/rocm-ernic
-          python3 service/ernicctl --help
-
       - name: Install release tree
         run: cmake --install build
 
@@ -136,6 +124,8 @@ jobs:
             share/rocm-ernic/fetch-ionic-sources.sh; do
             check_path "${path}"
           done
+          file "${INSTALL_PREFIX}/bin/rocm-ernic"
+          python3 "${INSTALL_PREFIX}/bin/ernicctl" --help
 
       - name: Create release archives
         run: |
