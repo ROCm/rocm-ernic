@@ -33,6 +33,11 @@ Releases occur from `main`. Upon release, the tag is created and the minor
 version number is bumped. The major version number will only be bumped on `main`
 when making an API/ABI-breaking change.
 
+Project release tags `vX.Y.Z` publish GitHub release assets for the
+`rocm-ernic` server and `ernicctl`. The Ansible collection uses its own
+`ansible-vX.Y.Z` tags, which are validated against `ansible/galaxy.yml` and
+published separately.
+
 Release branches are created retroactively and only when it is necessary to
 bugfix supported versions. Bugfixing should take place on `main` and be
 cherry-picked to any branches that are being maintained.
