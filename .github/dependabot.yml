@@ -15,16 +15,9 @@ updates:
   # Current Python dependency manifests in this repo live at the top level
   # and under prometheus/.
   - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: weekly
-    groups:
-      python:
-        patterns:
-          - "*"
-
-  - package-ecosystem: pip
-    directory: "/prometheus"
+    directories:
+      - "/"
+      - "/prometheus"
     schedule:
       interval: weekly
     groups:
