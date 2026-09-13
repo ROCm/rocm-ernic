@@ -26,6 +26,12 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Detect release architecture
+        id: arch
+        run: |
+          echo "deb_arch=$(dpkg --print-architecture)" >> "${GITHUB_OUTPUT}"
+          echo "multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "${GITHUB_OUTPUT}"
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -45,10 +51,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            /usr/lib/x86_64-linux-gnu/libvfio-user*
-            /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+            /usr/lib/${{ steps.arch.outputs.multiarch }}/libvfio-user*
+            /usr/lib/${{ steps.arch.outputs.multiarch }}/pkgconfig/libvfio-user.pc
             /usr/include/vfio-user
-          key: libvfio-user-20e9803-${{ runner.os }}
+          key: libvfio-user-20e9803-${{ runner.os }}-${{ steps.arch.outputs.multiarch }}
 
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
@@ -130,7 +136,7 @@ jobs:
       - name: Create release archives
         run: |
           version="${{ steps.version.outputs.version }}"
-          arch="$(dpkg --print-architecture)"
+          arch="${{ steps.arch.outputs.deb_arch }}"
           mkdir -p dist
           cat > /tmp/rocm-ernic-release-files.txt <<'EOF'
           bin/rocm-ernic
@@ -143,12 +149,16 @@ jobs:
           cat > /tmp/ernicctl-release-files.txt <<'EOF'
           bin/ernicctl
           EOF
-          tar -C "${INSTALL_PREFIX}" -czf \
-            "dist/rocm-ernic-${version}-linux-${arch}.tar.gz" \
-            -T /tmp/rocm-ernic-release-files.txt
-          tar -C "${INSTALL_PREFIX}" -czf \
-            "dist/ernicctl-${version}-linux-${arch}.tar.gz" \
-            -T /tmp/ernicctl-release-files.txt
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -C "${INSTALL_PREFIX}" \
+            -cf - -T /tmp/rocm-ernic-release-files.txt \
+            | gzip -n > "dist/rocm-ernic-${version}-linux-${arch}.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -C "${INSTALL_PREFIX}" \
+            -cf - -T /tmp/ernicctl-release-files.txt \
+            | gzip -n > "dist/ernicctl-${version}-linux-${arch}.tar.gz"
           sha256sum dist/*.tar.gz > "dist/SHA256SUMS-${version}.txt"
           ls -lh dist
 
