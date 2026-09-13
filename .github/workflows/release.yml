@@ -115,17 +115,56 @@ jobs:
       - name: Install release tree
         run: cmake --install build
 
+      - name: Verify installed release payload
+        run: |
+          check_path() {
+            if [ ! -e "${INSTALL_PREFIX}/$1" ]; then
+              echo "::error::missing installed path ${INSTALL_PREFIX}/$1"
+              exit 1
+            fi
+          }
+          for path in \
+            bin/rocm-ernic \
+            bin/ernicctl \
+            libexec/rocm-ernic/rocm-ernic-launcher \
+            libexec/rocm-ernic/rocm-ernic-driver-pack \
+            lib/systemd/system/rocm-ernic.service \
+            lib/systemd/system/rocm-ernic-driver-pack.service \
+            etc/rocm-ernic/rocm-ernic.env \
+            share/rocm-ernic/patches \
+            share/rocm-ernic/setup-ionic-dkms.sh \
+            share/rocm-ernic/fetch-ionic-sources.sh; do
+            check_path "${path}"
+          done
+
       - name: Create release archives
         run: |
           version="${{ steps.version.outputs.version }}"
           arch="$(dpkg --print-architecture)"
           mkdir -p dist
+          cat > /tmp/rocm-ernic-release-files.txt <<'EOF'
+          bin/rocm-ernic
+          libexec/rocm-ernic
+          lib/systemd/system/rocm-ernic.service
+          lib/systemd/system/rocm-ernic-driver-pack.service
+          etc/rocm-ernic
+          share/rocm-ernic
+          EOF
+          cat > /tmp/ernicctl-release-files.txt <<'EOF'
+          bin/ernicctl
+          bin/rocm-ernic
+          libexec/rocm-ernic
+          lib/systemd/system/rocm-ernic.service
+          lib/systemd/system/rocm-ernic-driver-pack.service
+          etc/rocm-ernic
+          share/rocm-ernic
+          EOF
           tar -C "${INSTALL_PREFIX}" -czf \
             "dist/rocm-ernic-${version}-linux-${arch}.tar.gz" \
-            bin/rocm-ernic
+            -T /tmp/rocm-ernic-release-files.txt
           tar -C "${INSTALL_PREFIX}" -czf \
             "dist/ernicctl-${version}-linux-${arch}.tar.gz" \
-            bin/ernicctl
+            -T /tmp/ernicctl-release-files.txt
           sha256sum dist/*.tar.gz > "dist/SHA256SUMS-${version}.txt"
           ls -lh dist
 
