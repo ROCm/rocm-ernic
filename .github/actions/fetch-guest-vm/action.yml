@@ -47,10 +47,13 @@ runs:
         local status=0
 
         while true; do
-          if "$@"; then
+          set +e
+          "$@"
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
             return 0
-          else
-            status=$?
           fi
 
           if [ "$attempt" -ge "$max_attempts" ]; then
