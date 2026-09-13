@@ -135,6 +135,7 @@ jobs:
 
       - name: Create release archives
         run: |
+          set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           arch="${{ steps.arch.outputs.deb_arch }}"
           mkdir -p dist
