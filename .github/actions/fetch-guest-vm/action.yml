@@ -38,6 +38,20 @@ runs:
       set -euo pipefail
       REF="${REPO}:${TAG}"
 
+      retry() {
+        local rc=0
+        for i in 1 2 3; do
+          if "$@"; then
+            return 0
+          else
+            rc=$?
+          fi
+          echo "Command failed (attempt $i/3): $*" >&2
+          sleep 5
+        done
+        return "$rc"
+      }
+
       # oras and zstd ship in the builder image; nothing to install, so
       # no apt-get sits on the path to a guest.
       mkdir -p "${DEST}/output"
@@ -46,7 +60,7 @@ runs:
       echo "=== Fetching metadata for ${REF} ==="
       # Referrer first: it is kilobytes, so a bad reference fails in
       # seconds rather than after a 3.7 GB download.
-      DIGEST=$(oras discover --format json "$REF" \
+      DIGEST=$(retry oras discover --format json "$REF" \
         | jq -r --arg t "$INFO_TYPE" \
             '[.referrers[] | select(.artifactType==$t)]
              | sort_by(.annotations["org.opencontainers.image.created"])
@@ -55,7 +69,7 @@ runs:
         echo "✗ ${REF} has no ${INFO_TYPE} referrer"
         exit 1
       fi
-      oras pull "${REPO}@${DIGEST}"
+      retry oras pull "${REPO}@${DIGEST}"
 
       # oras does not preserve modes; OpenSSH refuses a group-readable key.
       # Take the key name from the metadata for the same reason the disk
@@ -71,7 +85,7 @@ runs:
       chmod 600 "$KEY"
 
       echo "=== Fetching disk for ${REF} ==="
-      oras pull "$REF"
+      retry oras pull "$REF"
 
       # Take the disk name from what actually landed rather than pinning
       # it, so a renamed guest fails here instead of in Read VM info.
