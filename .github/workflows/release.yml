@@ -152,10 +152,7 @@ jobs:
           EOF
           cat > /tmp/ernicctl-release-files.txt <<'EOF'
           bin/ernicctl
-          bin/rocm-ernic
           libexec/rocm-ernic
-          lib/systemd/system/rocm-ernic.service
-          lib/systemd/system/rocm-ernic-driver-pack.service
           etc/rocm-ernic
           share/rocm-ernic
           EOF
