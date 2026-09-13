@@ -172,7 +172,9 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.ref_type == 'tag' &&
+      github.ref_name == format('v{0}', needs.build.outputs.version)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
