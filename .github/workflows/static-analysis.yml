@@ -59,7 +59,7 @@ jobs:
       LEVEL: ${{ github.event.inputs.level || 'standard' }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Determinate Systems' installer enables flakes + nix-command by default.
       # Maintainers may pin these to a release tag/SHA per their action policy.
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload analysis report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-analysis-report
           path: analysis-report/
