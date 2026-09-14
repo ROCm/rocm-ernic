@@ -6,6 +6,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Check spelling
       uses: rojopolis/spellcheck-github-actions@0.38.0
       with:

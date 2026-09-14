@@ -10,6 +10,9 @@ name: rocm-ernic - DC mlx5 reference (optional)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   mlx5-dc-reference:
     name: Host mlx5 DC reference (manual)
