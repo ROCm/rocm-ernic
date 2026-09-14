@@ -861,9 +861,15 @@ jobs:
 
           out=$(timeout 90 "$tool" -d "$DEV" -x 1 -s "$sz" -n "$iters" \
             -p "$p" "$@" 127.0.0.1 2>&1) || {
-            echo "  $tool -s $sz failed:" >&2
-            echo "$out" | tail -5 >&2
-            tail -5 /tmp/perf-server.log >&2
+            local rc=$?
+            # Dump both sides whole.  A tail is the wrong end here:
+            # stdout is block-buffered into a capture while stderr is
+            # not, so perftest's failure message lands *above* the test
+            # header it was printed after, and a tail shows the header.
+            echo "  $tool -s $sz failed (rc=$rc); client output:" >&2
+            echo "$out" >&2
+            echo "  server output:" >&2
+            cat /tmp/perf-server.log >&2
             wait "$srv" 2>/dev/null || true
             return 1
           }
