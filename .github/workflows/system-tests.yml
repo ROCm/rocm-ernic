@@ -26,7 +26,7 @@ env:
   # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
   # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
   # the build inputs, so a rebuild from the same sources republishes it.
-  GUEST_ARTIFACT_TAG: 20260911-vm.resolute-ionic-qm.737f735-qcow2
+  GUEST_ARTIFACT_TAG: 20260914-vm.resolute-ionic-qm.737f735-qcow2
 
 jobs:
   system-test-loopback-vm:
