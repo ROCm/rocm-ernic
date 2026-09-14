@@ -277,8 +277,15 @@ fi
 
 # --- verify ---------------------------------------------------
 log_info "Verifying RDMA device..."
-if guest_ssh 'ibv_devices 2>/dev/null | tail -n +3 | grep -qE "rocep|mlx|qedr|rxe"'; then
-    log_info "RDMA device detected in guest"
+# Identify by PCI vendor ID, not by name.  The guest's RDMA device is
+# renamed twice during boot (see scripts/find-rdma-device.sh), and the
+# old rocep|mlx|qedr|rxe pattern matched real hardware that has nothing
+# to do with this driver -- a host with a ConnectX card reported
+# success whether the emulated device came up or not.
+if GUEST_RDMA_DEV=$(guest_ssh 'sh -s' \
+        < "${PROJECT_ROOT}/scripts/find-rdma-device.sh" | tr -d '\r') \
+   && [ -n "$GUEST_RDMA_DEV" ]; then
+    log_info "RDMA device detected in guest: ${GUEST_RDMA_DEV}"
 else
     log_warn "RDMA device not detected; check guest dmesg"
 fi

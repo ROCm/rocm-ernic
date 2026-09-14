@@ -604,7 +604,7 @@ jobs:
         # connection and destabilises the VM.
         #
         # Config-cycling (startup-only, no VM) is covered by the
-        # build-test workflow's test_loopback_ci.sh step.
+        # build-and-test workflow's test_loopback_ci.sh step.
 
         if ! kill -0 "$SERVER_PID" 2>/dev/null; then
           echo "✗ ERNIC server (PID $SERVER_PID) is no longer running"
@@ -613,16 +613,21 @@ jobs:
         fi
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
-        # Device naming depends on the guest's udev policy: persistent
-        # RDMA naming gives rocep<bus>s<slot>, otherwise the ionic
-        # driver's own ionic_<n>.  Match both and discover the name
-        # rather than assuming one, then hand it to the steps below so
-        # they cannot disagree with this one about what the device is
-        # called -- which is how a guest with a working NIC ended up
-        # "skipping" the tests that were supposed to exercise it.
+        # Identify the device by PCI vendor ID rather than by name.  The
+        # name is rewritten twice during boot -- kernel ionic_%d, then
+        # 60-rdma-persistent-naming.rules to rocep<bus>s<slot>, then
+        # 99-rocm-ernic.rules to rocm-rdma-ernic<n> -- so it says nothing
+        # about which driver bound the device, and any name pattern is a
+        # snapshot of one moment in that sequence.  A pattern that
+        # silently stops matching is exactly how a guest with a working
+        # NIC ended up "skipping" the tests meant to exercise it.
+        # scripts/find-rdma-device.sh is the single definition, shared
+        # with the ansible playbooks and the tests' ernic_device.h.
+        #
+        # `|| true` so an absent device reaches the diagnostics below
+        # instead of tripping errexit at the assignment.
         DEVICE=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-          'ibv_devices | awk "NR>2 {print \$1}" | grep -E "rocep|ionic" | head -1' \
-          | tr -d '\r')
+          'sh -s' < scripts/find-rdma-device.sh | tr -d '\r') || true
 
         if [ -z "$DEVICE" ]; then
           echo "✗ RDMA device not found in the guest"
@@ -692,17 +697,19 @@ jobs:
         ssh $SSH_OPTS -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
         scp $SSH_OPTS -P "$SSH_PORT" \
-          tests/test_write_imm.c \
+          tests/test_write_imm.c tests/ernic_device.h \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
 
-        # No skip branch.  "Verify RDMA device with running server" has
-        # already proven $RDMA_DEVICE exists and is PORT_ACTIVE, so a
-        # skip here would mean the test and the workflow disagree about
-        # what the device is called -- which is exactly the bug that let
-        # this step report success without ever running.  Exit 77 from
-        # the binary is now a failure, not a pass.
+        # $RDMA_DEVICE is passed in rather than rediscovered: "Verify
+        # RDMA device with running server" already proved this exact
+        # device is present and PORT_ACTIVE, and two independent
+        # discovery paths disagreeing is the bug that let this step
+        # report success without ever running.  With it set the test
+        # exits 1, not 77, if the device is missing -- so there is no
+        # skip branch here and exit 77 is a failure like any other.
         set +e
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
         gcc -O2 -Wall -Wextra \
@@ -716,10 +723,11 @@ jobs:
         set -e
 
         if [ "$WIMM_EXIT" -eq 77 ]; then
-          echo "✗ test_write_imm found no usable device (exit 77), but"
-          echo "  $RDMA_DEVICE was verified PORT_ACTIVE a step ago."
-          echo "  find_rocm_ernic() in tests/test_write_imm.c and the"
-          echo "  workflow disagree about the device name."
+          echo "✗ test_write_imm skipped (exit 77) despite RDMA_DEVICE"
+          echo "  =$RDMA_DEVICE being set, which should make a missing"
+          echo "  device exit 1.  Either the variable did not survive the"
+          echo "  ssh, or ernic_device.h was not the header it built"
+          echo "  against."
           exit 1
         fi
         if [ "$WIMM_EXIT" -ne 0 ]; then
@@ -727,6 +735,68 @@ jobs:
           exit 1
         fi
         echo "✓ WRITE_WITH_IMM guest smoke passed"
+
+    # These two used to be registered with CTest, where they ran on a host
+    # with no RDMA device, returned 77 and were reported as passes.  They
+    # are no longer registered; this is the only place they run, and here a
+    # device is guaranteed, so exit 77 is a failure like any other.
+    - name: Guest RDMA tests (test_data_transfer, test_rdma_cm)
+      shell: bash
+      run: |
+        echo "=== Guest RDMA tests on $RDMA_DEVICE ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh $SSH_OPTS -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/guest-rdma-tests"
+        scp $SSH_OPTS -P "$SSH_PORT" \
+          tests/test_data_transfer.c tests/test_rdma_cm.c \
+          tests/ernic_device.h \
+          "${VM_USER}@localhost:/tmp/guest-rdma-tests/"
+
+        FAILED=0
+        for T in test_data_transfer test_rdma_cm; do
+          echo ""
+          echo "--- $T ---"
+          set +e
+          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+            "RDMA_DEVICE='$RDMA_DEVICE' bash -s $T" <<'EOFVM'
+        set -e
+        T="$1"
+        cd /tmp/guest-rdma-tests
+        # -D_GNU_SOURCE matches target_compile_definitions() in
+        # tests/CMakeLists.txt; without it test_data_transfer picks up an
+        # implicit declaration of usleep().
+        gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o "$T" "$T.c" \
+          $(pkg-config --cflags --libs libibverbs)
+        set +e
+        timeout 120s "./$T"
+        exit $?
+        EOFVM
+          RC=$?
+          set -e
+
+          if [ "$RC" -eq 77 ]; then
+            echo "✗ $T skipped (exit 77) despite RDMA_DEVICE=$RDMA_DEVICE"
+            echo "  being set, which should make a missing device exit 1."
+            echo "  Either the variable did not survive the ssh, or"
+            echo "  ernic_device.h was not the header it built against."
+            FAILED=1
+          elif [ "$RC" -ne 0 ]; then
+            echo "✗ $T failed (exit $RC)"
+            FAILED=1
+          else
+            echo "✓ $T passed"
+          fi
+        done
+
+        if [ "$FAILED" -ne 0 ]; then
+          echo ""
+          echo "✗ One or more guest RDMA tests failed"
+          exit 1
+        fi
+        echo ""
+        echo "✓ All guest RDMA tests passed"
+
     - name: Show logs
       if: always()
       run: |
@@ -1632,18 +1702,17 @@ jobs:
         echo "=== Verifying RDMA devices ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Discover the device name per guest rather than assuming one.
-        # Persistent RDMA naming gives rocep<bus>s<slot>; without it the
-        # ionic driver's own ionic_<n>.  The old grep also accepted
-        # "rocm-rdma-ernic", which only the deprecated driver produces.
+        # Discover the device per guest by PCI vendor ID rather than by
+        # name -- see the same lookup in the loopback job, and
+        # scripts/find-rdma-device.sh for why the name cannot be relied
+        # on.
         #
         # PORT_ACTIVE is checked as well as presence: a device that
         # enumerates but never trains carries no traffic, and the
         # pingpong below would then fail with a far less obvious error.
         _guest_dev() {
           ssh $SSH_OPTS -p "$1" "${VM_USER}@localhost" \
-            'ibv_devices | awk "NR>2 {print \$1}" | grep -E "rocep|ionic" | head -1' \
-            | tr -d '\r'
+            'sh -s' < scripts/find-rdma-device.sh | tr -d '\r'
         }
 
         FAILED=0
@@ -1652,9 +1721,9 @@ jobs:
           PORT="${spec##*:}"
 
           echo "--- ${LABEL} RDMA device ---"
-          DEV=$(_guest_dev "$PORT")
+          DEV=$(_guest_dev "$PORT") || true
           if [ -z "$DEV" ]; then
-            echo "✗ ${LABEL}: no ionic RDMA device found"
+            echo "✗ ${LABEL}: no RDMA device found"
             ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" \
               'ibv_devices; lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
             FAILED=$((FAILED + 1))

@@ -6,7 +6,7 @@
 #
 # Renames network interfaces and InfiniBand devices
 # created by rocm-ernic to stable names, so guests see
-# the same rocm-ernic0 / rocm-rdma-ernic0 regardless of
+# the same rocm-ernic<n> / rocm-rdma-ernic<n> regardless of
 # which device mode the server runs in:
 #   ionic  (1022:8001) - upstream ionic driver, default
 #   legacy (1022:8000) - deprecated rocm_ernic driver
@@ -40,26 +40,49 @@ SUBSYSTEM=="net", ACTION=="add", \
 # --- InfiniBand device naming ---
 #
 # Renames the RDMA device from the PCI-topology
-# name (e.g. rocep2s0) to rocm-rdma-ernic0.
+# name (e.g. rocep2s0) to rocm-rdma-ernic<n>.
 #
 # The system rule 60-rdma-persistent-naming.rules
 # renames the device from its kernel-registered
-# name (rocm_ernic%d) to a PCI-topology name via
-# rdma_rename before this rule runs, making the
-# %k substitution stale.  Instead of using %k, we
-# look up the current RDMA device name by scanning
-# sysfs for vendor 0x1022.  A 2-second sleep lets
-# rdma_rename and device settling finish first.
+# name (rocm_ernic%d, ionic_%d) to a PCI-topology
+# name via rdma_rename before this rule runs, so
+# %k is stale by the time we see it.  The PCI part
+# of $devpath is not: the sysfs directory moves
+# with the rename but its parent does not, so
+# $pci/infiniband/ always lists the device's
+# current name.  That is also what makes this rule
+# act only on the device the event is about --
+# the old version scanned all of
+# /sys/class/infiniband for vendor 0x1022 and
+# renamed every match to the same hard-coded
+# rocm-rdma-ernic0, so a guest with two emulated
+# devices had the second rename fail.
+#
+# Reading the current name this way also removes
+# the reason for the old "(sleep 2; ...) &": udev
+# runs 60- before 99- within one event, so
+# rdma_rename has already happened and there is
+# nothing to wait for.  Backgrounding it meant the
+# rename completed some seconds after udev settled,
+# which a caller checking for the device could
+# lose a race against.
+#
+# The rocm-rdma-ernic* guard makes this idempotent
+# -- without it a re-triggered event would rename
+# an already-correct device to the next free index.
 
 SUBSYSTEM=="infiniband", ACTION=="add", \
   DRIVERS=="rocm_ernic_eth|ionic|ionic_rdma", \
   ATTRS{vendor}=="0x1022", \
   ATTRS{device}=="0x8000|0x8001", \
-  RUN+="/bin/sh -c '(sleep 2; \
-    for v in /sys/class/infiniband/*/device/vendor; do \
-      [ -f $v ] || continue; \
-      read vid < $v; \
-      [ $vid = 0x1022 ] || continue; \
-      d=${v%%/device/vendor}; n=${d##*/}; \
-      /usr/bin/rdma dev set $n name rocm-rdma-ernic0; \
-    done) &'"
+  RUN+="/bin/sh -c 'pci=/sys$devpath; pci=${pci%/infiniband/*}; \
+    for ibdev in $pci/infiniband/*; do \
+      [ -d $ibdev ] || continue; \
+      cur=${ibdev##*/}; \
+      case $cur in rocm-rdma-ernic*) continue;; esac; \
+      i=0; \
+      while [ -e /sys/class/infiniband/rocm-rdma-ernic$i ]; do \
+        i=$((i+1)); \
+      done; \
+      /usr/bin/rdma dev set $cur name rocm-rdma-ernic$i; \
+    done'"

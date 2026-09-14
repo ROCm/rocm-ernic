@@ -221,6 +221,14 @@ scp -o StrictHostKeyChecking=no -P 2222 -r ${PROJECT_ROOT}/driver stebates@local
 }
 log_info "✓ Driver source copied"
 
+# The device lookup below runs in the guest, so the helper has to go
+# there too rather than being sourced from the repo.
+scp -o StrictHostKeyChecking=no -P 2222 \
+    ${PROJECT_ROOT}/scripts/find-rdma-device.sh stebates@localhost:/tmp/ || {
+    log_error "Failed to copy find-rdma-device.sh to VM"
+    exit 1
+}
+
 # Run automated tests in VM
 log_info ""
 log_info "==================================================================="
@@ -271,9 +279,14 @@ ibv_devices || echo "No RDMA devices found"
 
 echo ""
 echo "=== Device Info ==="
-# Check for device (driver name is rocm_ernic, device name is rocep*)
-if ibv_devices | tail -n +3 | grep -q -E "rocep|mlx|qedr|rxe"; then
-    DEVICE_NAME=$(ibv_devices | tail -n +3 | grep -v "^$" | head -1 | awk '{print $1}')
+# Identify by PCI vendor ID, not by name.  The device is renamed twice
+# during boot (see scripts/find-rdma-device.sh), and the old
+# rocep|mlx|qedr|rxe pattern matched real hardware that has nothing to
+# do with this driver -- so a host with a ConnectX card passed whether
+# the emulated device came up or not.  It also took the first line of
+# ibv_devices rather than the line it had matched.
+DEVICE_NAME=$(sh /tmp/find-rdma-device.sh) || DEVICE_NAME=""
+if [ -n "$DEVICE_NAME" ]; then
     echo "Found RDMA device: $DEVICE_NAME"
     ibv_devinfo -d $DEVICE_NAME || true
     echo ""

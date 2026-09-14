@@ -27,18 +27,19 @@ Public headers ship with the provider build under **infiniband** (for example
 ## CI and tests
 
 - **cmocka**: `ernic_dc_uapi` exercises UAPI struct sizes and opcode constants.
-- **Guest smoke**: `tests/test_dc_loopback.c` is compiled in the VM system
-  test after the custom **librocm_ernic** install; it creates SRQ, DCT, and
-  DCI and posts one DC send.
-- **Optional mlx5**: [dc-mlx5-reference.yml][dc-mlx5-ref] is `workflow_dispatch`
-  only for self-hosted hardware checks; it does not prove wire compatibility.
+  It runs as part of the full `ctest` in
+  [build-and-test.yml](../../.github/workflows/build-and-test.yml).
+
+The provider-linked DC tests (`test_dc_loopback.c`, `test_dc_error_paths.c`)
+have been removed. They linked **librocm_ernic**, the deprecated out-of-tree
+provider, and were gated behind `ERNIC_RDMA_CORE_BUILD=OFF`, so they never
+built in CI. `ernic_dc_uapi` above is the remaining DC coverage; it checks the
+ABI rather than live traffic.
 
 For NVIDIA’s high-level description of DC roles, see [NVIDIA DC QPs][nv-dc].
 
 <!-- References -->
 
 [abi]: ../../driver/rocm_ernic-abi.h
-
-[dc-mlx5-ref]: ../../.github/workflows/dc-mlx5-reference.yml
 
 [nv-dc]: https://docs.nvidia.com/networking/display/rdmacore50/Dynamically+Connected+(DC)+QPs

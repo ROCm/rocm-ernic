@@ -282,8 +282,13 @@ PY
 require_guests_ready() {
     local i ok=0
     for i in $(seq 1 "${ERNIC_INSTANCES}"); do
-        if ! vm_ssh "${i}" 'ibv_devices' 2>/dev/null \
-                | grep -qE 'rocm-rdma-ernic|rocep|ionic'; then
+        # By PCI vendor ID, not by name: the RDMA device is
+        # renamed twice during boot, so any name pattern is a
+        # snapshot of one moment in that sequence.  See
+        # scripts/find-rdma-device.sh.
+        if ! vm_ssh "${i}" 'sh -s' \
+                < "${PROJECT_ROOT}/scripts/find-rdma-device.sh" \
+                >/dev/null 2>&1; then
             log_error "guest ${i}: no RDMA device"
             ok=1
             continue

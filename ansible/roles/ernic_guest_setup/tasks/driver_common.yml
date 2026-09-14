@@ -56,26 +56,26 @@
   register: ernic_ibv_devices_output
   changed_when: false
 
+# Identifies the device by PCI vendor ID rather than by name.  The
+# name is rewritten twice during boot and says nothing about which
+# driver bound the device; the substring test this replaced accepted
+# any line containing "ionic", which on a host with a real Pensando
+# NIC would have passed without the emulated device existing at all.
+# See scripts/find-rdma-device.sh.
+- name: Get the RDMA device name
+  ansible.builtin.script:
+    cmd: "{{ ernic_source_dir }}/scripts/find-rdma-device.sh"
+  register: ernic_rdma_dev_name
+  changed_when: false
+  failed_when: false
+
 - name: Verify the rocm-ernic RDMA device exists
   ansible.builtin.assert:
     that:
-      - >-
-        'rocm-rdma-ernic' in ernic_ibv_devices_output.stdout
-        or 'rocep' in ernic_ibv_devices_output.stdout
-        or 'ionic' in ernic_ibv_devices_output.stdout
+      - ernic_rdma_dev_name.stdout | trim | length > 0
     fail_msg: >-
-      RDMA device not found. ibv_devices output:
+      No RDMA device with PCI vendor 0x1022 found. ibv_devices output:
       {{ ernic_ibv_devices_output.stdout }}
-
-- name: Get the RDMA device name
-  ansible.builtin.shell:
-    executable: /bin/bash
-    cmd: >-
-      set -o pipefail;
-      ibv_devices | grep -E 'rocm-rdma-ernic|rocep|ionic'
-      | awk '{print $1}' | head -1
-  register: ernic_rdma_dev_name
-  changed_when: false
 
 # On the ionic path the IB port state follows the netdev, and nothing
 # else brings that netdev up: there is no matching netplan entry, and
@@ -130,7 +130,7 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
-      DEV=$(ibv_devices | grep -oE 'rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+|ionic_[0-9]+' | head -1)
+      DEV={{ ernic_rdma_dev_name.stdout | quote }}
       [ -z "$DEV" ] && exit 0
       for PORT_DIR in /sys/class/infiniband/"$DEV"/ports/*/; do
         [ -d "$PORT_DIR/hw_counters" ] || continue

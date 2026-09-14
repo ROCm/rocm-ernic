@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - Build Test
+name: rocm-ernic - Build and Test
 
 on:
   pull_request:
@@ -8,9 +8,11 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'service/**'
+      - 'driver/**'
+      - 'rdma-core/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
-      - '.github/workflows/build-test.yml'
+      - '.github/workflows/build-and-test.yml'
   workflow_dispatch:
 
 concurrency:
@@ -35,8 +37,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ matrix.os }}-build-test-${{ hashFiles('.github/workflows/build-test.yml') }}
-          restore-keys: apt-${{ matrix.os }}-build-test-
+          key: apt-${{ matrix.os }}-build-and-test-${{ hashFiles('.github/workflows/build-and-test.yml') }}
+          restore-keys: apt-${{ matrix.os }}-build-and-test-
 
       - name: Install system dependencies
         run: |
@@ -120,37 +122,24 @@ jobs:
           echo "=== test_data_transfer dependencies ==="
           ldd build/tests/test_data_transfer
       
+      # Every registered test runs on a hosted runner now -- the three that
+      # needed a real RDMA device moved into the VM system tests, so a
+      # Skipped line here means something is wrong rather than absent.
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure
-      
+        run: |
+          ctest --test-dir build --output-on-failure \
+            --output-junit build/Testing/ctest-junit.xml
+
       - name: Test loopback backend configurations
         run: |
           echo "=== Testing loopback backend configurations ==="
-          if [ -f tests/test_loopback_ci.sh ]; then
-            SERVER_BIN=build/rocm-ernic \
-            TEST_BIN=build/tests/test_data_transfer \
-            tests/test_loopback_ci.sh
-          else
-            echo "⚠️  test_loopback_ci.sh not found, skipping loopback config tests"
-            # Fallback: test basic loopback startup
-            echo "Testing basic loopback backend..."
-            timeout 10 build/rocm-ernic \
-              --socket /tmp/test-loopback.sock \
-              --backend loopback:mode=preserve \
-              --verbose > /tmp/loopback-test.log 2>&1 &
-            SERVER_PID=$!
-            sleep 2
-            if [ -S /tmp/test-loopback.sock ]; then
-              echo "✓ Loopback backend started successfully"
-              kill $SERVER_PID 2>/dev/null || true
-              rm -f /tmp/test-loopback.sock
-            else
-              echo "✗ Loopback backend failed to start"
-              cat /tmp/loopback-test.log
-              exit 1
-            fi
-          fi
-      
+          # No fallback branch: a missing script used to silently downgrade
+          # this step to a weaker startup check that could not detect a
+          # backend regression.
+          SERVER_BIN=build/rocm-ernic \
+          TEST_BIN=build/tests/test_data_transfer \
+          tests/test_loopback_ci.sh
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7

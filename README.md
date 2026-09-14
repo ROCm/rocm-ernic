@@ -1,7 +1,7 @@
 # rocm-ernic
 
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)][license]
-[![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-test.yml/badge.svg)][ci-build]
+[![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml/badge.svg)][ci-build]
 [![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
 [![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
 [![Spelling](https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml/badge.svg)][ci-spell]
@@ -59,7 +59,7 @@ see [LICENSE.md](LICENSE.md) for details.
 <!-- References -->
 
 [license]: https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md
-[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-test.yml
+[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
 [ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
 [ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
 [ci-spell]: https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml

@@ -87,22 +87,41 @@ jobs:
           --socket /tmp/ernic-wkr.sock &
         sleep 5
 
+    # rocep1s0 used to be hard-coded in every perftest invocation below.
+    # That is only what the container image happened to show once: RDMA
+    # device names come from udev policy, not from the device, so the
+    # name is not a property this job can assume. Detect it by PCI
+    # vendor ID -- see scripts/find-rdma-device.sh.
+    #
+    # This fails the job when no device is present. Previously every
+    # perftest call failed silently into an empty CSV field and the
+    # regression check below skipped on `[ -n "$bw_64k" ]`, so the job
+    # reported success having measured nothing.
+    - name: Detect RDMA device
+      run: |
+        if ! DEV=$(sh scripts/find-rdma-device.sh); then
+          echo "✗ no RDMA device with PCI vendor 0x1022 found"
+          ibv_devices || true
+          exit 1
+        fi
+        echo "RDMA_DEV=$DEV" >> $GITHUB_ENV
+        echo "✓ RDMA device: $DEV"
+
     - name: Bandwidth sweep
       id: bw
       run: |
         SIZES="4096 8192 16384 32768 65536 131072"
         SIZES="$SIZES 262144 524288 1048576 2097152"
-        # rocep1s0 is the RDMA device name as seen inside the CI container image
         echo "size,send_bw,write_bw,read_bw" > bw.csv
         for sz in $SIZES; do
           sbw=$(ib_send_bw -s $sz -n 100 \
-            -d rocep1s0 --report_gbits 2>/dev/null \
+            -d "$RDMA_DEV" --report_gbits 2>/dev/null \
             | tail -1 | awk '{print $4}')
           wbw=$(ib_write_bw -s $sz -n 100 \
-            -d rocep1s0 --report_gbits 2>/dev/null \
+            -d "$RDMA_DEV" --report_gbits 2>/dev/null \
             | tail -1 | awk '{print $4}')
           rbw=$(ib_read_bw -s $sz -n 100 \
-            -d rocep1s0 --report_gbits 2>/dev/null \
+            -d "$RDMA_DEV" --report_gbits 2>/dev/null \
             | tail -1 | awk '{print $4}')
           echo "$sz,$sbw,$wbw,$rbw" >> bw.csv
         done
@@ -116,13 +135,13 @@ jobs:
         echo "size,send_lat,write_lat,read_lat" > lat.csv
         for sz in $SIZES; do
           slat=$(ib_send_lat -s $sz -n 50 \
-            -d rocep1s0 2>/dev/null \
+            -d "$RDMA_DEV" 2>/dev/null \
             | tail -1 | awk '{print $5}')
           wlat=$(ib_write_lat -s $sz -n 50 \
-            -d rocep1s0 2>/dev/null \
+            -d "$RDMA_DEV" 2>/dev/null \
             | tail -1 | awk '{print $5}')
           rlat=$(ib_read_lat -s $sz -n 50 \
-            -d rocep1s0 2>/dev/null \
+            -d "$RDMA_DEV" 2>/dev/null \
             | tail -1 | awk '{print $5}')
           echo "$sz,$slat,$wlat,$rlat" >> lat.csv
         done
