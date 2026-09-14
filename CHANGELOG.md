@@ -67,7 +67,7 @@
   already proven not to wrap. This covers the five memory-region bounds checks:
   the TCP `RDMA_WRITE` and `RDMA_READ_REQ` handlers, `tcp_wr_map_sge()`, the
   local loopback path in `tcp_post_send()`, and `loopback_translate_addr()`.
-  It does not cover every unchecked sum in the datapath -- see "Known issues"
+  It does not cover every unchecked sum in the data path -- see "Known issues"
   below. Both backends take both of their bounds from the same guest-supplied
   registration -- `cmd->start` becomes `mr->start` in `rdma_rm_alloc_mr()` and
   `lmr->guest_start` in the loopback `create_mr()` -- so `start + length` was a
@@ -79,7 +79,7 @@
 * The TCP backend no longer forms host pointers from memory regions that have
   no host mapping. `rdma_rm_alloc_mr()` records `virt = NULL` when the mapping
   fails and `create_mr()` continues anyway, so the region kept the guest's own
-  `start` and `length`. The bounds check was satisfiable by construction and
+  `start` and `length`. The bounds check always passed by construction and
   the offset was then added to `NULL`, turning an out-of-region write into an
   absolute write at a guest-chosen address. The region's backing is now part
   of the bounds check, alongside its extent.
@@ -87,7 +87,7 @@
   64 bits and bounds the result before it reaches the wire. The previous
   32-bit sum sized two heap buffers whose fill loops wrote the full unwrapped
   per-entry lengths, so a wrapped total undersized the allocation rather than
-  merely mis-reporting it. The receive path enforces its ceiling per message
+  merely reporting it incorrectly. The receive path enforces its ceiling per message
   rather than per send, so the bound is applied per branch, against whatever
   that branch actually frames as one message: an RDMA write sends the whole
   sum behind a header, so its total is capped one header below the ceiling; a
@@ -112,7 +112,7 @@
   the header defines for exactly this purpose and which nothing in the tree
   had used. The count is now checked against it, which also caps the mapping
   the caller makes -- previously a guest-chosen count could reserve up to
-  16 TiB and drive a walk of four billion iterations. Widening the product
+  16 * 2^40 bytes and drive a walk of four billion iterations. Widening the product
   above narrowed the mismatch case but left the count unbounded, so this
   completes that fix rather than replacing it.
 
@@ -136,6 +136,6 @@
   with `virt = NULL` and the guest's own `start` and `length`, so that the
   loopback backend can allocate its keys from the metadata alone. Both
   backends now reject such a region at the point of use -- the TCP one in
-  `tcp_mr_range_ok()`, the loopback one by skipping unmapped regions during
+  `tcp_mr_range_ok()`, the loopback one by skipping regions without a mapping during
   translation -- but the registration itself is unchanged, and neither
   `cmd->start` nor `cmd->length` is validated before it.
