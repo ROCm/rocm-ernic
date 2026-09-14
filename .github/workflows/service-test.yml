@@ -22,7 +22,7 @@ jobs:
     name: ernicctl Python syntax and imports
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Check Python syntax
       run: python3 -m py_compile service/ernicctl
@@ -52,7 +52,7 @@ jobs:
     name: Bash script syntax
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Check bash syntax
       run: |
@@ -78,7 +78,7 @@ jobs:
     name: systemd unit file validation
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Validate unit files
       run: |
@@ -92,7 +92,7 @@ jobs:
     name: Environment file validation
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Check env file is sourceable
       run: |
@@ -117,7 +117,7 @@ jobs:
     name: CMake service install targets
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Install build dependencies
       run: |
@@ -212,7 +212,7 @@ jobs:
     name: Launcher script unit tests
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Test MAC generation
       run: |
@@ -270,7 +270,7 @@ jobs:
     name: ernicctl status without service
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: status with no manifest
       run: |
