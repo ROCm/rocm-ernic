@@ -797,6 +797,133 @@ jobs:
         echo ""
         echo "✓ All guest RDMA tests passed"
 
+    # This sweep used to live in benchmark.yml, on a hosted container with
+    # no RDMA device and no perftest installed.  Every ib_*_bw call there
+    # was `command not found`, silenced by 2>/dev/null into an empty CSV
+    # field, and the regression check skipped on `[ -n "$bw_64k" ]` -- so
+    # the job reported success having measured nothing, and uploaded a
+    # header-only CSV to prove it.
+    #
+    # It runs here instead because this job already has what a benchmark
+    # needs: a KVM-accelerated guest whose emulated device has been
+    # asserted PORT_ACTIVE above.  Server and client are both in this one
+    # guest, against the one device -- the loopback backend gives it a
+    # path to itself, which rdma_verify and test_data_transfer already
+    # exercise as an RC pair.
+    - name: Bandwidth and latency sweep (perftest)
+      shell: bash
+      run: |
+        echo "=== perftest sweep on $RDMA_DEVICE ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
+        set -euo pipefail
+        DEV="$RDMA_DEVICE"
+
+        # perftest is expected to come from the golden guest image; no
+        # role installs it.  Assert rather than apt-install on the fly:
+        # installing here would paper over a gap in the image, which is
+        # the same silent-degradation this step exists to remove.
+        for T in ib_send_bw ib_write_bw ib_read_bw \
+                 ib_send_lat ib_write_lat ib_read_lat; do
+          command -v "$T" >/dev/null || {
+            echo "✗ $T not found in the guest"
+            echo "perftest is expected in the golden image; got:"
+            dpkg -l | grep -i perftest || echo "  (no perftest package)"
+            exit 1
+          }
+        done
+
+        # A fresh port per run: perftest's out-of-band listener would
+        # otherwise hit a TIME_WAIT socket from the previous size and
+        # fail in a way that looks like a device problem.
+        PORT=18515
+        next_port() { PORT=$((PORT + 1)); echo "$PORT"; }
+
+        # $1 tool, $2 size, $3 iters, $4 column of the summary line,
+        # $5.. extra args.  Prints the field, or nothing if the pair
+        # did not complete -- the caller decides what an empty field
+        # means.
+        run_pair() {
+          local tool=$1 sz=$2 iters=$3 col=$4; shift 4
+          local p out
+          p=$(next_port)
+
+          timeout 90 "$tool" -d "$DEV" -x 1 -s "$sz" -n "$iters" \
+            -p "$p" "$@" >/tmp/perf-server.log 2>&1 &
+          local srv=$!
+          sleep 1
+
+          out=$(timeout 90 "$tool" -d "$DEV" -x 1 -s "$sz" -n "$iters" \
+            -p "$p" "$@" 127.0.0.1 2>&1) || {
+            echo "  $tool -s $sz failed:" >&2
+            echo "$out" | tail -5 >&2
+            tail -5 /tmp/perf-server.log >&2
+            wait "$srv" 2>/dev/null || true
+            return 1
+          }
+          wait "$srv" 2>/dev/null || true
+
+          # The summary line is the last one carrying a leading byte
+          # count; perftest prints a trailing blank line and, on some
+          # builds, a warning after it.
+          echo "$out" | awk -v c="$col" \
+            '/^[[:space:]]*[0-9]+[[:space:]]/ { v=$c } END { print v }'
+        }
+
+        BW_SIZES="4096 8192 16384 32768 65536 131072"
+        BW_SIZES="$BW_SIZES 262144 524288 1048576 2097152"
+        echo "size,send_bw,write_bw,read_bw" > /tmp/bw.csv
+        for sz in $BW_SIZES; do
+          sbw=$(run_pair ib_send_bw  "$sz" 100 4 --report_gbits)
+          wbw=$(run_pair ib_write_bw "$sz" 100 4 --report_gbits)
+          rbw=$(run_pair ib_read_bw  "$sz" 100 4 --report_gbits)
+          echo "$sz,$sbw,$wbw,$rbw" >> /tmp/bw.csv
+        done
+        cat /tmp/bw.csv
+
+        LAT_SIZES="4096 8192 16384 32768 65536 131072"
+        LAT_SIZES="$LAT_SIZES 262144 524288 1048576"
+        echo "size,send_lat,write_lat,read_lat" > /tmp/lat.csv
+        for sz in $LAT_SIZES; do
+          slat=$(run_pair ib_send_lat  "$sz" 50 5)
+          wlat=$(run_pair ib_write_lat "$sz" 50 5)
+          rlat=$(run_pair ib_read_lat  "$sz" 50 5)
+          echo "$sz,$slat,$wlat,$rlat" >> /tmp/lat.csv
+        done
+        cat /tmp/lat.csv
+        EOFVM
+
+        scp $SSH_OPTS -P "$SSH_PORT" \
+          "${VM_USER}@localhost:/tmp/bw.csv" \
+          "${VM_USER}@localhost:/tmp/lat.csv" .
+
+        echo ""
+        echo "=== Bandwidth regression check ==="
+        MIN_BW_64K=0.5
+        bw_64k=$(grep '^65536,' bw.csv | cut -d, -f2)
+
+        # An empty sample is a failure, not a pass.  The old check read
+        # `if [ -n "$bw_64k" ]`, which made "measured nothing" and
+        # "measured fine" indistinguishable.
+        if [ -z "$bw_64k" ]; then
+          echo "✗ no 64K send bandwidth sample in bw.csv"
+          exit 1
+        fi
+
+        echo "Send BW at 64K: ${bw_64k} Gb/s (threshold: ${MIN_BW_64K})"
+        # awk rather than bc: the old check only invoked bc inside the
+        # branch that never ran, so nothing ever proved bc is in this
+        # image.  awk is used throughout this workflow already.
+        if ! awk -v v="$bw_64k" -v t="$MIN_BW_64K" \
+             'BEGIN { exit !(v >= t) }'; then
+          echo "✗ REGRESSION: bandwidth below threshold"
+          exit 1
+        fi
+        echo "✓ Sweep complete, regression checks passed"
+
     - name: Show logs
       if: always()
       run: |
@@ -821,6 +948,8 @@ jobs:
           /tmp/vfu_server.log
           /tmp/qemu.log
           /tmp/qemu-console.log
+          bw.csv
+          lat.csv
         retention-days: 7
         if-no-files-found: ignore
 
