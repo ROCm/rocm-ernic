@@ -192,5 +192,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: rocm-ernic ${{ needs.build.outputs.version }}
+          make_latest: true
           generate_release_notes: true
           files: dist/*
