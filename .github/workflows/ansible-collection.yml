@@ -23,6 +23,14 @@ name: rocm-ernic - Ansible Collection
     tags:
       - "ansible-v*"
 
+# Read-only: publishing authenticates to Galaxy with GALAXY_API_KEY,
+# not the workflow token, so nothing here needs to write to the repo.
+# actions: read is for actions/download-artifact@v4, which fetches the
+# built collection through the artifact API rather than the workspace.
+permissions:
+  contents: read
+  actions: read
+
 env:
   COLLECTION_DIR: ansible
   COLLECTION_FQCN: sbates130272.rocm_ernic

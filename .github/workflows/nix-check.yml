@@ -20,6 +20,9 @@ on:
       - '.github/workflows/nix-check.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: nix-check-${{ github.ref }}
   cancel-in-progress: true

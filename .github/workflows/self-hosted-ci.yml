@@ -92,6 +92,12 @@ on:
     # thundering herd of every cron job on the fleet.
     - cron: '37 2 * * *'
 
+# Default every job to read-only.  The tiers below run untrusted code
+# on a persistent self-hosted node, so they must not hold a token that
+# can write; the report job re-grants exactly what it needs.
+permissions:
+  contents: read
+
 # One run at a time on the node: concurrent runs would
 # collide on VM ssh ports, the instance manifest and the
 # qcow2 overlays.  Queue rather than cancel so a nightly
