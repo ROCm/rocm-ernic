@@ -16,6 +16,13 @@ concurrency:
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000
+  # The emulated Ethernet segment for the two-server job: one TAP per
+  # instance, both enslaved to one bridge, which is the only way the
+  # guests reach each other on ernic_nic_subnet.  These match the
+  # ernic_host_setup defaults and are passed to it explicitly so the
+  # --tap arguments below cannot drift from what the role created.
+  ERNIC_TAP_BRIDGE: ernicbr0
+  ERNIC_TAP_PREFIX: ernic-tap
   # The guest qcow2 ships as an ORAS artifact -- 3.7 GB zstd rather than
   # the 5.75 GB raw the FROM-scratch payload image carried, and no skopeo.
   # Both jobs pull it through .github/actions/fetch-guest-vm.  The builder
@@ -1005,7 +1012,15 @@ jobs:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
-      options: --device /dev/kvm
+      #
+      # /dev/net/tun and NET_ADMIN are what the emulated Ethernet needs.
+      # In ionic mode guest frames leave through a host TAP, not over the
+      # rocm-ernic TCP mesh -- --backend governs the RDMA data path and
+      # --tap the Ethernet, and they are independent.  Neither the device
+      # node nor the capability is in a container's default set, and
+      # without them ionic_eth_net_send() has no fd, so every frame the
+      # guest transmits is dropped however healthy the RDMA mesh is.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add=NET_ADMIN
 
     steps:
     - name: Checkout code
@@ -1065,12 +1080,16 @@ jobs:
       run: |
         # See the loopback job: everything else in the old list is
         # already in the container image.  iproute2 is what puts `ss`
-        # on PATH for the listener check below.
+        # on PATH for the listener check below, and `ip` for the TAP
+        # setup.  sudo is here because ernic_host_setup's TAP tasks are
+        # `become: true` and the image ships no sudo; the job is already
+        # uid 0, so this only satisfies the become plugin.
         apt-get update
         apt-get install -y \
           libibverbs-dev \
           librdmacm-dev \
-          iproute2
+          iproute2 \
+          sudo
 
     - name: Verify libvfio-user from the image
       run: |
@@ -1283,6 +1302,58 @@ jobs:
         done
         echo "✓ key installed for default-path ssh in $PW_HOME and $HOME"
 
+    - name: Install the Ansible collection dependencies
+      shell: bash
+      run: |
+        echo "=== Installing the Ansible collection dependencies ==="
+        # Both VMs are provisioned by the sbates130272.rocm_ernic
+        # collection in this repo, so these jobs exercise the same role
+        # the self-hosted CI and developers use.
+        #
+        # The container's ansible-core comes from pipx and searches
+        # ~/.ansible/collections, not the dist-packages tree the
+        # "ansible" apt bundle installs into, so installing that
+        # bundle leaves community.general invisible.  Install the
+        # collections the same way a real consumer does instead.
+        #
+        # This runs here rather than after the VMs boot because the TAP
+        # step below is an Ansible play and has to precede the servers.
+        ansible --version
+        ansible-galaxy collection install -r ansible/requirements.yml
+
+    - name: Create the host bridge and per-instance TAPs
+      shell: bash
+      run: |
+        echo "=== Creating ernicbr0 and the per-instance TAPs ==="
+        # ernic_host_setup owns this on the self-hosted path; run the
+        # same role rather than open-coding `ip tuntap` here, which is
+        # the drift this branch exists to remove.  Everything else the
+        # role does -- build, systemd unit, GPU binding -- is off: the
+        # job builds from the checkout and launches the servers itself.
+        #
+        # Order matters and the role says so: the launcher only attaches
+        # an instance to its TAP if the interface already exists, and
+        # rocm-ernic treats a missing --tap as a startup failure.
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
+
+        cd ansible
+        ansible-playbook playbooks/host-setup.yml \
+          -e ernic_project_root="$PROJECT_ROOT" \
+          -e ernic_build=false \
+          -e ernic_install_service=false \
+          -e ernic_gpu_passthrough=false \
+          -e ernic_device_mode=ionic \
+          -e ernic_instances=2 \
+          -e ernic_tap_owner=root \
+          -e ernic_tap_bridge="${ERNIC_TAP_BRIDGE}" \
+          -e ernic_tap_prefix="${ERNIC_TAP_PREFIX}"
+
+        ip -o link show "${ERNIC_TAP_BRIDGE}"
+        for n in 1 2; do
+          ip -o link show "${ERNIC_TAP_PREFIX}${n}"
+        done
+
     - name: Start TCP server 1 (manager)
       shell: bash
       run: |
@@ -1292,10 +1363,14 @@ jobs:
 
         # --ionic is the default; name it so CI can never drift onto
         # the deprecated personality.  See the loopback job.
+        # --backend is the RDMA data path; --tap is the Ethernet one.
+        # Both are needed here: the sanity suite pings and runs iperf3
+        # between the guests before it touches RDMA.
         ./build/rocm-ernic \
           --ionic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
+          --tap "${ERNIC_TAP_PREFIX}1" \
           --verbose > /tmp/server1.log 2>&1 &
         
         SERVER1_PID=$!
@@ -1395,10 +1470,13 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-server2.sock
 
+        # See server 1: the second TAP on the same bridge is what gives
+        # this guest a peer at layer 2.
         ./build/rocm-ernic \
           --ionic \
           --socket /tmp/vfio-user-server2.sock \
           --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \
+          --tap "${ERNIC_TAP_PREFIX}2" \
           --verbose > /tmp/server2.log 2>&1 &
         
         SERVER2_PID=$!
@@ -1726,22 +1804,6 @@ jobs:
 
         wait_for_vm "VM2" 2223 "$QEMU_VM2_PID" \
           /tmp/qemu-vm2-console.log /tmp/qemu-vm2.log /tmp/qmp-vm2.sock
-
-    - name: Install the Ansible collection dependencies
-      shell: bash
-      run: |
-        echo "=== Installing the Ansible collection dependencies ==="
-        # Both VMs are provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so these jobs exercise the same role
-        # the self-hosted CI and developers use.
-        #
-        # The container's ansible-core comes from pipx and searches
-        # ~/.ansible/collections, not the dist-packages tree the
-        # "ansible" apt bundle installs into, so installing that
-        # bundle leaves community.general invisible.  Install the
-        # collections the same way a real consumer does instead.
-        ansible --version
-        ansible-galaxy collection install -r ansible/requirements.yml
 
     - name: Install kernel headers and build tools in VMs (parallel)
       shell: bash
