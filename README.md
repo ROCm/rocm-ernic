@@ -38,6 +38,15 @@ existing deployments but should not be used for new ones. See
 See [INSTALL.md](INSTALL.md) for dependencies, supported platforms, and build
 instructions.
 
+## Releases
+
+Project releases are published from `vX.Y.Z` tags and attach GitHub release
+assets for the `rocm-ernic` server and `ernicctl`; see the
+[Releases page](https://github.com/ROCm/rocm-ernic/releases).
+
+The Ansible collection is published separately from `ansible-vX.Y.Z` tags and
+uses the existing Galaxy release flow under [`ansible/`](ansible/).
+
 ## Documentation
 
 Full documentation lives in the [`docs/`](docs/) directory and covers building,
