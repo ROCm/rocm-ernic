@@ -199,6 +199,23 @@ typedef struct {
     uint32_t data_len;
 } __attribute__((packed)) TcpRdmaOpHeader;
 
+/*
+ * Ceiling on the scatter-gather total of one send, as opposed to
+ * TCP_MAX_PAYLOAD_LEN, which bounds a single wire message. An RDMA write
+ * prepends a TcpRdmaOpHeader to the payload, so a total equal to the message
+ * ceiling would put a message sizeof(TcpRdmaOpHeader) bytes over it -- which
+ * the peer's tcp_recv_message() rejects, tearing the connection down. Leaving
+ * room for the largest header any send branch prepends keeps every branch's
+ * message inside the ceiling the receiver enforces.
+ */
+#define TCP_MAX_SEND_TOTAL_LEN \
+    (TCP_MAX_PAYLOAD_LEN - (uint32_t)sizeof(TcpRdmaOpHeader))
+
+/* The coalesced-send branch prepends sizeof(TcpWR) instead, and relies on
+ * TCP_COALESCE_THRESHOLD rather than the bound above to stay under the
+ * ceiling. TcpWR is declared further down, so this is asserted at its
+ * definition rather than here. */
+
 typedef struct {
     uint32_t num_nodes;
     TcpMeshNodeInfo nodes[64]; /* Max 64 nodes */
@@ -252,6 +269,19 @@ typedef struct {
     enum ibv_wc_opcode wc_opcode;
     TcpSGE sge[32]; /* Max SGEs */
 } TcpWR;
+
+/*
+ * Both send branches that build one contiguous wire message must land inside
+ * the ceiling tcp_recv_message() enforces on receipt; a message over it is
+ * rejected and the connection torn down. The write branch gets its headroom
+ * from TCP_MAX_SEND_TOTAL_LEN, the coalesced branch from the threshold.
+ */
+_Static_assert(sizeof(TcpRdmaOpHeader) + TCP_MAX_SEND_TOTAL_LEN <=
+                   TCP_MAX_PAYLOAD_LEN,
+               "RDMA write payload must fit the receiver's message ceiling");
+_Static_assert(sizeof(TcpWR) + TCP_COALESCE_THRESHOLD <= TCP_MAX_PAYLOAD_LEN,
+               "coalesced send payload must fit the receiver's message "
+               "ceiling");
 
 /* Buffered data waiting for receive WR */
 typedef struct {
@@ -508,7 +538,10 @@ static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
     return (TcpBackendPrivate *)backend_dev->backend_private;
 }
 
-static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint32_t bytes,
+/* `bytes` is 64-bit because the counters it feeds are, and because the
+ * loopback path in tcp_post_send() sums SGE lengths in 64 bits. Callers
+ * passing a uint32_t promote implicitly. */
+static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint64_t bytes,
                                  enum ibv_wc_opcode opcode)
 {
     if (!priv || !priv->backend_dev || !priv->backend_dev->dev)
@@ -533,7 +566,8 @@ static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint32_t bytes,
     }
 }
 
-static void tcp_update_stats(TcpBackendPrivate *priv, uint32_t bytes,
+/* 64-bit for the same reason as tcp_update_dev_stats(), which this wraps. */
+static void tcp_update_stats(TcpBackendPrivate *priv, uint64_t bytes,
                              enum ibv_wc_opcode opcode)
 {
     tcp_update_dev_stats(priv, bytes, opcode);
@@ -575,6 +609,50 @@ void tcp_backend_log_stats(RdmaBackendDev *backend_dev)
                      (unsigned long)priv->tcp_stats.cq_polls,
                      (unsigned long)priv->tcp_stats.reconnect_successes,
                      (unsigned long)priv->tcp_stats.reconnect_attempts);
+}
+
+/*
+ * Overflow-safe memory region bounds check.
+ *
+ * Returns true only when the region is backed by host memory and
+ * [addr, addr + len) lies entirely inside it, i.e. inside
+ * [mr->start, mr->start + mr->length).
+ *
+ * The naive form
+ *     addr < mr->start || addr + len > mr->start + mr->length
+ * relies on unchecked 64-bit arithmetic. Both addr and len come off the wire,
+ * so an addr near UINT64_MAX makes addr + len wrap past 0 and the comparison
+ * succeeds; the host pointer later computed as mr->virt + (addr - mr->start)
+ * then lands outside the region at an attacker-chosen offset. Subtracting
+ * instead of adding keeps every intermediate value inside a range that has
+ * already been proven not to wrap.
+ *
+ * The mr->virt test belongs here rather than at each call site because every
+ * caller forms mr->virt + (addr - mr->start) and dereferences it. A NULL virt
+ * is not an internal inconsistency: rdma_rm_alloc_mr() stores NULL whenever
+ * the host mapping fails, and create_mr() deliberately carries on in that
+ * case so the loopback backend can run on metadata alone -- while still
+ * accepting the guest's own start and length. Without this test those bounds
+ * are satisfiable by construction and the offset is added to NULL, which is
+ * an absolute write at a guest-chosen address rather than an out-of-region
+ * one. Returning false sends such a region down each caller's existing
+ * reject path.
+ */
+static inline bool tcp_mr_range_ok(const RdmaRmMR *mr, uint64_t addr,
+                                   uint64_t len)
+{
+    if (!mr || !mr->virt || addr < mr->start) {
+        return false;
+    }
+
+    /* Cannot wrap: addr >= mr->start was just established. */
+    uint64_t offset = addr - mr->start;
+    if (offset > mr->length) {
+        return false;
+    }
+
+    /* Cannot wrap: offset <= mr->length was just established. */
+    return len <= mr->length - offset;
 }
 
 static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
@@ -625,13 +703,12 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
             continue;
         }
 
-        if (guest_addr < mr->start ||
-            guest_addr + sge[i].length > mr->start + mr->length) {
+        if (!tcp_mr_range_ok(mr, guest_addr, sge[i].length)) {
             rdma_error_report("TCP: SGE %u out of MR bounds addr=0x%lx len=%u "
-                              "mr=[0x%lx..0x%lx]",
+                              "mr=[0x%lx len=%lu]",
                               i, (unsigned long)guest_addr, sge[i].length,
                               (unsigned long)mr->start,
-                              (unsigned long)(mr->start + mr->length));
+                              (unsigned long)mr->length);
             wr->sge[i].length = 0;
             continue;
         }
@@ -2014,14 +2091,13 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                if (raddr < mr->start ||
-                    raddr + dlen > mr->start + mr->length) {
+                if (!tcp_mr_range_ok(mr, raddr, dlen)) {
                     rdma_error_report("TCP: RDMA_WRITE out of bounds "
                                       "addr=0x%lx len=%u "
-                                      "mr=[0x%lx..0x%lx]",
+                                      "mr=[0x%lx len=%lu]",
                                       (unsigned long)raddr, dlen,
                                       (unsigned long)mr->start,
-                                      (unsigned long)(mr->start + mr->length));
+                                      (unsigned long)mr->length);
                     break;
                 }
 
@@ -2093,9 +2169,13 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                if (raddr < mr->start ||
-                    raddr + dlen > mr->start + mr->length) {
-                    rdma_error_report("TCP: RDMA_READ out of bounds");
+                if (!tcp_mr_range_ok(mr, raddr, dlen)) {
+                    rdma_error_report("TCP: RDMA_READ out of bounds "
+                                      "addr=0x%lx len=%u "
+                                      "mr=[0x%lx len=%lu]",
+                                      (unsigned long)raddr, dlen,
+                                      (unsigned long)mr->start,
+                                      (unsigned long)mr->length);
                     break;
                 }
 
@@ -3525,7 +3605,13 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     qemu_mutex_unlock(&priv->lock);
 
     if (dst_node == priv->local_node_id) {
-        uint32_t total_len = 0;
+        /*
+         * Accumulate in 64 bits: 32 SGEs of up to UINT32_MAX bytes each would
+         * wrap a uint32_t sum, which would then pass the bounds check below
+         * while the per-SGE copies still write the full unwrapped length.
+         * The `off` cursor over the same lengths is widened to match.
+         */
+        uint64_t total_len = 0;
         for (uint32_t i = 0; i < num_sge && i < 32; i++)
             total_len += wr->sge[i].length;
 
@@ -3535,13 +3621,13 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         if (is_write && remote_addr && rkey) {
             RdmaRmMR *target_mr =
                 rdma_rm_get_mr(priv->backend_dev->rdma_dev_res, rkey);
-            if (target_mr && target_mr->virt &&
-                remote_addr >= target_mr->start &&
-                remote_addr + total_len <=
-                    target_mr->start + target_mr->length) {
+            /* tcp_mr_range_ok() covers the NULL and NULL-virt cases. */
+            if (tcp_mr_range_ok(target_mr, remote_addr, total_len)) {
                 char *dst =
                     (char *)target_mr->virt + (remote_addr - target_mr->start);
-                uint32_t off = 0;
+                /* Sums a subset of the lengths in total_len, so it is bounded
+                 * by it and stays inside the region the check above cleared. */
+                uint64_t off = 0;
                 for (uint32_t i = 0; i < num_sge && i < 32; i++) {
                     if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
                         memcpy(dst + off, wr->sge[i].host_addr,
@@ -3554,13 +3640,15 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                  total_len);
 
                 rdma_info_report("TCP: Local loopback RDMA_WRITE "
-                                 "%u bytes to rkey=0x%x addr=0x%lx",
-                                 total_len, rkey, (unsigned long)remote_addr);
+                                 "%lu bytes to rkey=0x%x addr=0x%lx",
+                                 (unsigned long)total_len, rkey,
+                                 (unsigned long)remote_addr);
             } else {
                 rdma_error_report("TCP: Local loopback RDMA_WRITE "
                                   "MR bounds error rkey=0x%x "
-                                  "addr=0x%lx len=%u",
-                                  rkey, (unsigned long)remote_addr, total_len);
+                                  "addr=0x%lx len=%lu",
+                                  rkey, (unsigned long)remote_addr,
+                                  (unsigned long)total_len);
             }
         }
 
@@ -3587,29 +3675,98 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         goto fail;
     }
 
-    uint32_t total_len = 0;
+    /*
+     * Accumulate in 64 bits for the same reason as the loopback path above.
+     * Here the sum also sizes the g_malloc() buffers below, whose fill loops
+     * write the full unwrapped per-SGE lengths, so a wrapped sum would
+     * undersize the allocation rather than merely mis-report it.
+     *
+     * Widening alone is not enough: the branches below narrow the sum to
+     * 32-bit wire fields, so an oversized total has to be rejected outright
+     * rather than truncated.
+     *
+     * What the limit is depends on how the branch frames the data, because
+     * the peer's tcp_recv_message() enforces its ceiling per message rather
+     * than per send. Checking one bound against the sum would be wrong for
+     * the branch that never puts the sum on the wire as a single message, so
+     * each branch is checked against the size it actually sends. The checks
+     * sit here, above conn->lock, because the reject path unwinds through
+     * `fail`, which must not run with that lock held.
+     */
+    uint64_t total_len = 0;
     for (uint32_t i = 0; i < num_sge && i < 32; i++)
         total_len += wr->sge[i].length;
 
+    bool is_write = (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
+                     pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM);
+    bool is_read = (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
+                    pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV);
+
+    if (is_write) {
+        /* One message: TcpRdmaOpHeader followed by the whole sum. */
+        if (total_len > TCP_MAX_SEND_TOTAL_LEN) {
+            rdma_error_report("TCP: RDMA write of %lu bytes over QP %u exceeds "
+                              "the %u-byte limit for a single message",
+                              (unsigned long)total_len, qpn,
+                              TCP_MAX_SEND_TOTAL_LEN);
+            goto fail;
+        }
+    } else if (is_read) {
+        /*
+         * The request is header-only; the sum is the size the peer will send
+         * back, as a bare payload with no header of its own. So the ceiling
+         * applies to it whole, not less a header as on the write path.
+         */
+        if (total_len > TCP_MAX_PAYLOAD_LEN) {
+            rdma_error_report("TCP: RDMA read of %lu bytes over QP %u exceeds "
+                              "the %u-byte limit for the peer's response",
+                              (unsigned long)total_len, qpn,
+                              TCP_MAX_PAYLOAD_LEN);
+            goto fail;
+        }
+    } else if (total_len > TCP_COALESCE_THRESHOLD) {
+        /*
+         * Large send: one message per SGE, so the sum is never framed as a
+         * single message and bounding it would reject sends the wire format
+         * has no trouble with. Each SGE is its own message, and the leading
+         * metadata message is sizeof(*wr), asserted against the ceiling at
+         * the TcpWR definition.
+         */
+        for (uint32_t i = 0; i < num_sge && i < 32; i++) {
+            if (wr->sge[i].length > TCP_MAX_PAYLOAD_LEN) {
+                rdma_error_report("TCP: SGE %u of %u bytes over QP %u exceeds "
+                                  "the %u-byte limit for a single message",
+                                  i, wr->sge[i].length, qpn,
+                                  TCP_MAX_PAYLOAD_LEN);
+                goto fail;
+            }
+        }
+    }
+    /*
+     * The remaining case is the coalesced send, whose branch condition caps
+     * the sum at TCP_COALESCE_THRESHOLD; sizeof(*wr) on top of that is
+     * asserted to fit the ceiling at the TcpWR definition.
+     */
+
     qemu_mutex_lock(&conn->lock);
     if (conn->sockfd >= 0) {
-        bool is_write = (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
-                         pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM);
-        bool is_read = (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
-                        pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV);
-
         if (is_write) {
             /*
              * RDMA Write: send header + data in one
              * message.  Receiver writes directly to
              * the MR identified by rkey.
              */
-            uint32_t payload_sz = sizeof(TcpRdmaOpHeader) + total_len;
+            /* Bounded by the is_write check above, which reserves room for
+             * exactly this header, so the sum lands at or under the ceiling
+             * the peer enforces and the narrowing to the 32-bit wire fields
+             * is safe. */
+            uint32_t payload_sz =
+                (uint32_t)(sizeof(TcpRdmaOpHeader) + total_len);
             uint8_t *buf = g_malloc(payload_sz);
             TcpRdmaOpHeader *oh = (TcpRdmaOpHeader *)buf;
             oh->remote_addr = remote_addr;
             oh->rkey = rkey;
-            oh->data_len = total_len;
+            oh->data_len = (uint32_t)total_len;
 
             uint32_t off = sizeof(TcpRdmaOpHeader);
             for (uint32_t i = 0; i < num_sge && i < 32; i++) {
@@ -3634,7 +3791,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             TcpRdmaOpHeader oh;
             oh.remote_addr = remote_addr;
             oh.rkey = rkey;
-            oh.data_len = total_len;
+            oh.data_len = (uint32_t)total_len;
 
             ret = tcp_send_message(conn->sockfd, TCP_MSG_RDMA_READ_REQ, &oh,
                                    sizeof(oh), seq, priv->local_node_id,
@@ -3647,7 +3804,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
              * SGE data into one message to avoid
              * per-SGE syscall overhead.
              */
-            uint32_t payload_sz = sizeof(*wr) + total_len;
+            /* Bounded by TCP_COALESCE_THRESHOLD in the branch condition. */
+            uint32_t payload_sz = (uint32_t)(sizeof(*wr) + total_len);
             uint8_t *buf = g_malloc(payload_sz);
             memcpy(buf, wr, sizeof(*wr));
 

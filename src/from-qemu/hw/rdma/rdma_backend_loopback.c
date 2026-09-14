@@ -898,15 +898,49 @@ static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
 }
 
 /*
- * Translate a guest virtual address to a host
- * virtual address using the MR mapping. Look up
- * the MR by lkey, compute the offset from
- * guest_start, and return virt + offset.
- * Falls back to rdma_pci_dma_map if no MR found.
+ * Overflow-safe containment test for a loopback MR.
+ *
+ * True only when [addr, addr + len) lies entirely inside the region
+ * [start, start + lmr->length). The natural form
+ *     addr >= start && addr + len <= start + lmr->length
+ * has two wrap points, and the guest controls both: start + lmr->length can
+ * wrap for a high guest_start, which arrives unvalidated with the MR
+ * registration as cmd->start, and addr + len can wrap for an addr near
+ * UINT64_MAX, which arrives on a posted WQE. Either one makes a region
+ * falsely claim the address, and the caller then returns
+ * lmr->virt + (addr - start) -- itself a wrapped offset -- straight into a
+ * memcpy. Subtracting instead of adding keeps every intermediate inside a
+ * range already proven not to wrap.
+ *
+ * This mirrors tcp_mr_range_ok() in rdma_backend_tcp.c, which guards the
+ * same two wrap points: rdma_rm_alloc_mr() stores that same cmd->start as
+ * mr->start, so neither backend's base is any more trustworthy than the
+ * other's. The two track their regions in unrelated structs -- LoopbackMR
+ * here, RdmaRmMR there, with differently named bounds -- so each carries its
+ * own copy rather than one being contorted to take both types.
  */
+static inline bool loopback_mr_contains(const LoopbackMR *lmr, uint64_t addr,
+                                        uint64_t len)
+{
+    if (!lmr || addr < lmr->guest_start) {
+        return false;
+    }
+
+    /* Cannot wrap: addr >= guest_start was just established. */
+    uint64_t off = addr - lmr->guest_start;
+    if (off > lmr->length) {
+        return false;
+    }
+
+    /* Cannot wrap: off <= lmr->length was just established. */
+    return len <= lmr->length - off;
+}
+
 /*
- * Iterate all MRs to find one containing the
- * guest virtual address. Returns host_virt + offset.
+ * Translate a guest virtual address to a host virtual address using the MR
+ * mapping. Iterate all MRs to find one containing [guest_addr, guest_addr +
+ * len), compute the offset from guest_start, and return virt + offset.
+ * Falls back to rdma_pci_dma_map if no MR found.
  */
 static void *loopback_translate_addr(PCIDevice *pci_dev, uint64_t guest_addr,
                                      uint64_t len)
@@ -921,10 +955,8 @@ static void *loopback_translate_addr(PCIDevice *pci_dev, uint64_t guest_addr,
         LoopbackMR *lmr = (LoopbackMR *)value;
         if (!lmr->virt)
             continue;
-        uint64_t start = lmr->guest_start;
-        uint64_t end = start + lmr->length;
-        if (guest_addr >= start && guest_addr + len <= end) {
-            uint64_t off = guest_addr - start;
+        if (loopback_mr_contains(lmr, guest_addr, len)) {
+            uint64_t off = guest_addr - lmr->guest_start;
             rdma_info_report("Loopback: translate 0x%lx -> "
                              "MR %u virt+0x%lx",
                              (unsigned long)guest_addr, lmr->handle,
