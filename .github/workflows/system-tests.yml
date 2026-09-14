@@ -839,6 +839,23 @@ jobs:
           }
         done
 
+        # Print the GID table once.  "Failed to modify QP to RTR" says
+        # nothing about which entry the -x index selected, and an index
+        # with no GID behind it fails exactly the same way as a bad
+        # attribute.
+        # Index 0, not the 1 this step inherited from
+        # sanity-tests.yml.  tests/test_data_transfer.c drives this
+        # same device to RTR and back with sgid_index 0, and passes in
+        # the step above; nothing here has ever shown index 1 to be
+        # populated.
+        GIDX=0
+
+        echo "--- GID table for $DEV ---"
+        for G in /sys/class/infiniband/"$DEV"/ports/1/gids/*; do
+          [ -e "$G" ] || continue
+          echo "  $(basename "$G"): $(cat "$G")"
+        done
+
         # A fresh port per run: perftest's out-of-band listener would
         # otherwise hit a TIME_WAIT socket from the previous size and
         # fail in a way that looks like a device problem.
@@ -854,12 +871,12 @@ jobs:
           local p out
           p=$(next_port)
 
-          timeout 90 "$tool" -d "$DEV" -x 1 -s "$sz" -n "$iters" \
+          timeout 90 "$tool" -d "$DEV" -x "$GIDX" -s "$sz" -n "$iters" \
             -p "$p" "$@" >/tmp/perf-server.log 2>&1 &
           local srv=$!
           sleep 1
 
-          out=$(timeout 90 "$tool" -d "$DEV" -x 1 -s "$sz" -n "$iters" \
+          out=$(timeout 90 "$tool" -d "$DEV" -x "$GIDX" -s "$sz" -n "$iters" \
             -p "$p" "$@" 127.0.0.1 2>&1) || {
             local rc=$?
             # Dump both sides whole.  A tail is the wrong end here:
