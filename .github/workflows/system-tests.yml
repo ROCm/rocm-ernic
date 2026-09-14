@@ -191,60 +191,45 @@ jobs:
         echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
     - name: Install dependencies
       run: |
+        # Only what the container image does not already carry.
+        # build-essential, cmake, meson, ninja-build, pkg-config,
+        # libglib2.0-dev, libjson-c-dev and libcmocka-dev are baked
+        # into the image; re-installing them cost an apt round trip
+        # per job for nothing.  These three are genuinely absent, and
+        # iproute2 in particular is what puts `ss` on PATH for the
+        # TCP job's listener check.
         apt-get update
         apt-get install -y \
-          build-essential \
-          cmake \
-          meson \
-          ninja-build \
-          pkg-config \
           libibverbs-dev \
           librdmacm-dev \
-          libglib2.0-dev \
-          libjson-c-dev \
-          libcmocka-dev \
           iproute2
 
-    - name: Cache libvfio-user build
-      id: cache-libvfio-user
-      uses: actions/cache@v6
-      with:
-        path: |
-          /usr/local/lib/x86_64-linux-gnu/libvfio-user*
-          /usr/local/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
-          /usr/local/include/vfio-user
-        key: libvfio-user-20e9803-ubuntu-24.04-container
-
-    - name: Upgrade libvfio-user
-      if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
+    - name: Verify libvfio-user from the image
       run: |
-        # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
-        # This version includes the vfu_setup_device_dma() max_regions
-        # parameter added in f3742ed9 (#835).
-        git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
-        cd /tmp/libvfio-user
-        git checkout 20e9803
-        meson setup build --prefix=/usr/local -Dwarning_level=0
-        ninja -C build
-        ninja -C build install
+        # The image ships libvfio-user under /usr/local, and
+        # CMakeLists.txt falls back to find_library/find_path there
+        # when pkg-config misses, so there is nothing to build here.
+        # What the build actually requires is the max_regions
+        # parameter that f3742ed9 (#835) added to
+        # vfu_setup_device_dma(); assert that rather than assuming
+        # it, so a rebased image fails here with a clear message
+        # instead of part-way through the compile.
+        set -e
         ldconfig
-
-    - name: Reload ldconfig after cache restore
-      if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
-      run: ldconfig
-
-    - name: Cache rdma-core tarball
-      uses: actions/cache@v6
-      with:
-        path: /tmp/rdma-core-62.0.tar.gz
-        key: rdma-core-tarball-62.0
-
-    - name: Download rdma-core tarball
-      run: |
-        if [ ! -f /tmp/rdma-core-62.0.tar.gz ]; then
-          wget -q -O /tmp/rdma-core-62.0.tar.gz \
-            https://github.com/linux-rdma/rdma-core/releases/download/v62.0/rdma-core-62.0.tar.gz
+        HDR=/usr/local/include/vfio-user/libvfio-user.h
+        LIB=$(ls /usr/local/lib/x86_64-linux-gnu/libvfio-user.so* 2>/dev/null | head -1)
+        if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
+          echo "✗ libvfio-user missing from the container image"
+          echo "  header: $HDR"
+          ls -la /usr/local/lib/x86_64-linux-gnu/ /usr/local/include/ || true
+          exit 1
         fi
+        if ! grep -A2 'vfu_setup_device_dma' "$HDR" | grep -q 'max_regions'; then
+          echo "✗ libvfio-user in the image predates the"
+          echo "  vfu_setup_device_dma() max_regions parameter (#835)."
+          exit 1
+        fi
+        echo "✓ libvfio-user present: $LIB"
 
     - name: Build rocm-ernic server
       run: |
@@ -263,9 +248,13 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
 
-        # No mode flag: ionic (1022:8001) is the default, and the guest
-        # below builds the matching upstream ionic + ionic_rdma modules.
+        # --ionic is the default, but name it: CI only ever exercises
+        # the ionic (1022:8001) personality, and the guest below
+        # builds the matching upstream ionic + ionic_rdma modules.
+        # Stating it means a future change to the default cannot
+        # silently move these jobs onto the deprecated path.
         ./build/rocm-ernic \
+          --ionic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback:mode=preserve \
           --verbose > /tmp/vfu_server.log 2>&1 &
@@ -456,33 +445,46 @@ jobs:
           --pid "$QEMU_PID"
         exit 1
     
-    - name: Verify RDMA NIC in VM
+    - name: Verify the ionic PCI function is present in the VM
       shell: bash
       run: |
-        echo "=== Verifying RDMA NIC in VM ==="
+        echo "=== Verifying the emulated PCI function in the VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+
+        # This runs before ernic_guest_setup, so ionic_rdma is not
+        # loaded yet and there is deliberately no verbs check here --
+        # that is "Verify RDMA device with running server", after
+        # provisioning.
+        #
+        # The PCI function itself is a different matter: QEMU attached
+        # the vfio-user device at boot, so 1022:8001 is on the bus from
+        # the first second.  This step used to end every probe in
+        # `|| echo "... not found"`, so a guest that never saw the
+        # device passed it exactly like a guest that did.  Assert it:
+        # if the function is missing, nothing downstream can work and
+        # the failure belongs here, where the cause is still visible.
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
         set -e
-        
-        echo "=== PCI Devices ==="
-        sudo lspci | grep -i amd || echo "AMD device not found yet"
-        sudo lspci -nn | grep -E "1022:8001|AMD.*ERNIC" || echo "ROCm ERNIC device not found"
-        
+
+        echo "=== PCI devices ==="
+        sudo lspci -nn
+
         echo ""
-        echo "=== Checking for RDMA device ==="
-        if command -v ibv_devices &> /dev/null; then
-          ibv_devices || echo "No RDMA devices found"
-        else
-          echo "ibv_devices not available"
+        if ! sudo lspci -nn | grep -q '1022:8001'; then
+          echo "✗ ionic PCI function 1022:8001 not present on the guest bus"
+          echo "  The vfio-user device did not attach.  Check the server"
+          echo "  log and the QEMU console for the vfio-user handshake."
+          exit 1
         fi
-        
+        echo "✓ ionic PCI function 1022:8001 present"
+
         echo ""
-        echo "=== Kernel modules ==="
-        lsmod | grep -E "ib_|rocm" || echo "No IB or ROCm modules loaded"
+        echo "=== Kernel modules (informational, pre-provisioning) ==="
+        lsmod | grep -E 'ionic|ib_' || echo "(none loaded yet, as expected)"
         EOFVM
-    
+
+
     - name: Install the Ansible collection dependencies
       shell: bash
       run: |
@@ -611,89 +613,75 @@ jobs:
         fi
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
-        set +e
-        ssh $SSH_OPTS -p "$SSH_PORT" \
-          "${VM_USER}@localhost" <<-'EOFVM'
-        	if ! ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
-        	  echo "✗ RDMA device not found"
-        	  exit 1
-        	fi
+        # Device naming depends on the guest's udev policy: persistent
+        # RDMA naming gives rocep<bus>s<slot>, otherwise the ionic
+        # driver's own ionic_<n>.  Match both and discover the name
+        # rather than assuming one, then hand it to the steps below so
+        # they cannot disagree with this one about what the device is
+        # called -- which is how a guest with a working NIC ended up
+        # "skipping" the tests that were supposed to exercise it.
+        DEVICE=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          'ibv_devices | awk "NR>2 {print \$1}" | grep -E "rocep|ionic" | head -1' \
+          | tr -d '\r')
 
-        	DEVICE=$(ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" \
-        	         | awk '{print $1}' | head -1)
-        	echo "✓ RDMA device found: $DEVICE"
-        	ibv_devinfo -d "$DEVICE" | head -20 || true
-        EOFVM
-        TEST_EXIT=$?
-        set -e
-
-        if [ $TEST_EXIT -ne 0 ]; then
-          echo "✗ RDMA device verification failed (exit $TEST_EXIT)"
+        if [ -z "$DEVICE" ]; then
+          echo "✗ RDMA device not found in the guest"
+          echo "=== ibv_devices ==="
+          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
+          echo "=== ionic modules ==="
+          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+            'lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
           exit 1
         fi
-        echo "✓ Loopback backend VM test passed"
+        echo "✓ RDMA device found: $DEVICE"
 
-    - name: DC guest smoke (build and run test_dc_loopback)
+        # A device that enumerates but never reaches PORT_ACTIVE
+        # carries no traffic, and every test below would fail in a
+        # less obvious way.  Gate on it here.
+        if ! ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+             "ibv_devinfo -d $DEVICE" | tee /dev/stderr | grep -q 'PORT_ACTIVE'; then
+          echo "✗ $DEVICE never reached PORT_ACTIVE"
+          exit 1
+        fi
+
+        echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
+        echo "✓ Loopback backend VM test passed ($DEVICE, PORT_ACTIVE)"
+
+    - name: RDMA payload verification (rdma_verify)
       shell: bash
       run: |
-        echo "=== DC guest smoke (SRQ + DCT + DCI create) ==="
-        # DC is a rocm_ernic direct-verbs extension, so this needs
-        # librocm_ernic and skips cleanly on the ionic default path.
+        echo "=== RDMA payload verification on $RDMA_DEVICE ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
-        ssh $SSH_OPTS -p "$SSH_PORT" \
-          "${VM_USER}@localhost" "mkdir -p /tmp/dc-smoke"
+
+        # perftest and the ibv_*_pingpong tools report completions,
+        # not correctness: an emulator that posts CQEs without moving
+        # bytes passes every one of them.  tests/rdma_verify.c runs
+        # SEND, RDMA WRITE, WRITE_WITH_IMM and RDMA READ over one RC
+        # pair and compares the bytes that actually landed, which is
+        # the property the loopback backend exists to provide.
+        #
+        # It is plain libibverbs, so unlike the rocm_ernic direct-verbs
+        # smoke tests it replaced it runs on the ionic path rather than
+        # skipping there.
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "mkdir -p /tmp/rdma-verify"
         scp $SSH_OPTS -P "$SSH_PORT" \
-          tests/test_dc_loopback.c \
-          rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
-          "${VM_USER}@localhost:/tmp/dc-smoke/"
-        set +e
-        # Run through 'bash -s' rather than a login shell.
-        # A login shell sources ~/.bash_logout on exit, which
-        # runs clear_console; that fails without a tty, and with
-        # set -e still in effect its status becomes the shell's
-        # exit status. The step would then report failure even
-        # when the test passed.
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+          tests/rdma_verify.c \
+          "${VM_USER}@localhost:/tmp/rdma-verify/"
+
+        # 'bash -s' rather than a login shell: a login shell sources
+        # ~/.bash_logout on exit, which runs clear_console; that fails
+        # without a tty and its status would become the shell's.
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<EOFVM
         set -e
-        cd /tmp/dc-smoke
-        ROCM_LIBDIR=""
-        for d in /usr/lib/x86_64-linux-gnu/libibverbs /usr/lib/libibverbs; do
-          if [ -d "$d" ] && ls "$d"/librocm_ernic*.so >/dev/null 2>&1; then
-            ROCM_LIBDIR="$d"
-            break
-          fi
-        done
-        if [ -z "$ROCM_LIBDIR" ]; then
-          echo "librocm_ernic not found; skipping DC smoke"
-          exit 0
-        fi
-        gcc -O2 -Wall -Wextra -I. \
-          -o test_dc_loopback test_dc_loopback.c \
-          $(pkg-config --cflags --libs libibverbs) \
-          -L"$ROCM_LIBDIR" -lrocm_ernic -Wl,-rpath,"$ROCM_LIBDIR"
-        set +e
-        # Bounded so a hang fails the step in seconds rather
-        # than burning the job's 60-minute budget.
-        timeout 120 ./test_dc_loopback
-        DC_EXIT=$?
-        if [ "$DC_EXIT" -eq 124 ]; then
-          echo "test_dc_loopback timed out after 120s"
-        fi
-        set -e
-        if [ "$DC_EXIT" -eq 77 ]; then
-          echo "No rocm_ernic device found; skipping DC smoke"
-          exit 0
-        fi
-        exit $DC_EXIT
+        cd /tmp/rdma-verify
+        cc -O2 -Wall -Wextra -o rdma_verify rdma_verify.c \$(pkg-config --libs libibverbs)
+        # Bounded so a hang fails the step in seconds rather than
+        # burning the job's 60-minute budget.
+        timeout 120 ./rdma_verify "$RDMA_DEVICE"
         EOFVM
-        DC_EXIT=$?
-        set -e
-        if [ "$DC_EXIT" -ne 0 ]; then
-          echo "✗ DC guest smoke failed (exit $DC_EXIT)"
-          exit 1
-        fi
-        echo "✓ DC guest smoke passed or skipped cleanly"
+        echo "✓ RDMA payload verification passed on $RDMA_DEVICE"
 
     - name: WRITE_WITH_IMM guest smoke (build and run test_write_imm)
       shell: bash
@@ -706,210 +694,39 @@ jobs:
         scp $SSH_OPTS -P "$SSH_PORT" \
           tests/test_write_imm.c \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
+
+        # No skip branch.  "Verify RDMA device with running server" has
+        # already proven $RDMA_DEVICE exists and is PORT_ACTIVE, so a
+        # skip here would mean the test and the workflow disagree about
+        # what the device is called -- which is exactly the bug that let
+        # this step report success without ever running.  Exit 77 from
+        # the binary is now a failure, not a pass.
         set +e
-        # Run via 'bash -s' for the same reason as the DC guest smoke step:
-        # a login shell would source ~/.bash_logout on exit and its failure
-        # could override the test exit status.
         ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
-        if ! ibv_devices 2>/dev/null | grep -qE "rocm-rdma-ernic|rocep|ionic"; then
-          echo "No rocm-ernic device found; skipping WRITE_WITH_IMM smoke"
-          exit 0
-        fi
         gcc -O2 -Wall -Wextra \
           -o test_write_imm test_write_imm.c \
           $(pkg-config --cflags --libs libibverbs)
         set +e
         timeout 30s ./test_write_imm
-        WIMM_EXIT=$?
-        set -e
-        if [ "$WIMM_EXIT" -eq 77 ]; then
-          echo "No rocm-ernic device found; skipping WRITE_WITH_IMM smoke"
-          exit 0
-        fi
-        exit $WIMM_EXIT
+        exit $?
         EOFVM
         WIMM_EXIT=$?
         set -e
+
+        if [ "$WIMM_EXIT" -eq 77 ]; then
+          echo "✗ test_write_imm found no usable device (exit 77), but"
+          echo "  $RDMA_DEVICE was verified PORT_ACTIVE a step ago."
+          echo "  find_rocm_ernic() in tests/test_write_imm.c and the"
+          echo "  workflow disagree about the device name."
+          exit 1
+        fi
         if [ "$WIMM_EXIT" -ne 0 ]; then
           echo "✗ WRITE_WITH_IMM guest smoke failed (exit $WIMM_EXIT)"
           exit 1
         fi
-        echo "✓ WRITE_WITH_IMM guest smoke passed or skipped cleanly"
-
-    - name: DC error path guest smoke (build and run test_dc_error_paths)
-      shell: bash
-      run: |
-        echo "=== DC error path guest smoke (send_in_flight accounting) ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh $SSH_OPTS -p "$SSH_PORT" \
-          "${VM_USER}@localhost" "mkdir -p /tmp/dc-err-smoke"
-        scp $SSH_OPTS -P "$SSH_PORT" \
-          tests/test_dc_error_paths.c \
-          rdma-core/providers/rocm_ernic/rocm_ernic_dc.h \
-          "${VM_USER}@localhost:/tmp/dc-err-smoke/"
-        set +e
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
-        set -e
-        cd /tmp/dc-err-smoke
-        ROCM_LIBDIR=""
-        for d in /usr/lib/x86_64-linux-gnu/libibverbs /usr/lib/libibverbs; do
-          if [ -d "$d" ] && ls "$d"/librocm_ernic*.so >/dev/null 2>&1; then
-            ROCM_LIBDIR="$d"
-            break
-          fi
-        done
-        if [ -z "$ROCM_LIBDIR" ]; then
-          echo "librocm_ernic not found; skipping DC error path smoke"
-          exit 0
-        fi
-        gcc -O2 -Wall -Wextra -I. \
-          -o test_dc_error_paths test_dc_error_paths.c \
-          $(pkg-config --cflags --libs libibverbs) \
-          -L"$ROCM_LIBDIR" -lrocm_ernic -Wl,-rpath,"$ROCM_LIBDIR"
-        set +e
-        timeout 120 ./test_dc_error_paths
-        DCE_EXIT=$?
-        if [ "$DCE_EXIT" -eq 124 ]; then
-          echo "test_dc_error_paths timed out after 120s"
-        fi
-        set -e
-        if [ "$DCE_EXIT" -eq 77 ]; then
-          echo "No rocm_ernic device found; skipping DC error path smoke"
-          exit 0
-        fi
-        exit $DCE_EXIT
-        EOFVM
-        DCE_EXIT=$?
-        set -e
-        if [ "$DCE_EXIT" -ne 0 ]; then
-          echo "✗ DC error path guest smoke failed (exit $DCE_EXIT)"
-          exit 1
-        fi
-        echo "✓ DC error path guest smoke passed or skipped cleanly"
-
-    - name: Sysfs loopback smoke test
-      shell: bash
-      run: |
-        echo "=== Sysfs Loopback Smoke Test ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-
-        # The loopback sysfs attribute is a rocm_ernic driver feature with
-        # no upstream ionic equivalent, so in ionic mode this finds no
-        # attributes and skips with 77.
-
-        # Start a loopback server for the sysfs test
-        ./build/rocm-ernic \
-          --socket /tmp/vfio-user-rocm-ernic-test.sock \
-          --backend loopback \
-          --verbose > /tmp/vfu_server_sysfs.log 2>&1 &
-        SERVER_PID=$!
-        SOCKET_READY=0
-        for i in {1..10}; do
-          if [ -S /tmp/vfio-user-rocm-ernic-test.sock ]; then
-            chmod 666 /tmp/vfio-user-rocm-ernic-test.sock
-            SOCKET_READY=1
-            break
-          fi
-          sleep 0.5
-        done
-        if [ $SOCKET_READY -eq 0 ]; then
-          echo "Server failed to start for sysfs test"
-          tail -20 /tmp/vfu_server_sysfs.log
-          exit 1
-        fi
-
-        set +e
-        ssh $SSH_OPTS -p "$SSH_PORT" \
-          "${VM_USER}@localhost" <<-'EOFVM'
-        	SYSFS_ETH=""
-        	SYSFS_IB=""
-
-        	# Locate the Ethernet loopback attribute
-        	for d in /sys/class/net/rocm_ernic*; do
-        	  if [ -f "$d/device/loopback" ]; then
-        	    SYSFS_ETH="$d/device/loopback"
-        	    break
-        	  fi
-        	done
-
-        	# Locate the IB loopback attribute
-        	for d in /sys/class/infiniband/rocm_ernic*; do
-        	  if [ -f "$d/loopback" ]; then
-        	    SYSFS_IB="$d/loopback"
-        	    break
-        	  fi
-        	done
-
-        	if [ -z "$SYSFS_ETH" ] && [ -z "$SYSFS_IB" ]; then
-        	  echo "No sysfs loopback attributes found"
-        	  exit 77
-        	fi
-
-        	FAIL=0
-
-        	# -- Ethernet attribute --
-        	if [ -n "$SYSFS_ETH" ]; then
-        	  echo "Ethernet attr: $SYSFS_ETH"
-        	  V=$(cat "$SYSFS_ETH")
-        	  echo "  default value: $V"
-        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
-
-        	  echo 1 | sudo tee "$SYSFS_ETH" > /dev/null
-        	  V=$(cat "$SYSFS_ETH")
-        	  echo "  after enable: $V"
-        	  [ "$V" = "1" ] || { echo "  expected 1"; FAIL=1; }
-
-        	  echo 0 | sudo tee "$SYSFS_ETH" > /dev/null
-        	  V=$(cat "$SYSFS_ETH")
-        	  echo "  after disable: $V"
-        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
-        	fi
-
-        	# -- IB attribute --
-        	if [ -n "$SYSFS_IB" ]; then
-        	  echo "IB attr: $SYSFS_IB"
-        	  V=$(cat "$SYSFS_IB")
-        	  echo "  default value: $V"
-        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
-
-        	  echo 1 | sudo tee "$SYSFS_IB" > /dev/null
-        	  V=$(cat "$SYSFS_IB")
-        	  echo "  after enable: $V"
-        	  [ "$V" = "1" ] || { echo "  expected 1"; FAIL=1; }
-
-        	  echo 0 | sudo tee "$SYSFS_IB" > /dev/null
-        	  V=$(cat "$SYSFS_IB")
-        	  echo "  after disable: $V"
-        	  [ "$V" = "0" ] || { echo "  expected 0"; FAIL=1; }
-        	fi
-
-        	if [ $FAIL -ne 0 ]; then
-        	  echo "Sysfs loopback smoke test FAILED"
-        	  exit 1
-        	fi
-        	echo "Sysfs loopback smoke test PASSED"
-        EOFVM
-        TEST_EXIT=$?
-        set -e
-
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
-        rm -f /tmp/vfio-user-rocm-ernic-test.sock
-
-        if [ $TEST_EXIT -eq 0 ]; then
-          echo "Sysfs loopback smoke test passed"
-        elif [ $TEST_EXIT -eq 77 ]; then
-          echo "Sysfs loopback smoke test skipped"
-          echo "(RDMA device not available)"
-        else
-          echo "Sysfs loopback smoke test FAILED"
-          exit 1
-        fi
-    
+        echo "✓ WRITE_WITH_IMM guest smoke passed"
     - name: Show logs
       if: always()
       run: |
@@ -1021,60 +838,33 @@ jobs:
 
     - name: Install dependencies
       run: |
+        # See the loopback job: everything else in the old list is
+        # already in the container image.  iproute2 is what puts `ss`
+        # on PATH for the listener check below.
         apt-get update
         apt-get install -y \
-          build-essential \
-          cmake \
-          meson \
-          ninja-build \
-          pkg-config \
           libibverbs-dev \
           librdmacm-dev \
-          libglib2.0-dev \
-          libjson-c-dev \
-          libcmocka-dev \
           iproute2
 
-    - name: Cache libvfio-user build
-      id: cache-libvfio-user
-      uses: actions/cache@v6
-      with:
-        path: |
-          /usr/local/lib/x86_64-linux-gnu/libvfio-user*
-          /usr/local/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
-          /usr/local/include/vfio-user
-        key: libvfio-user-20e9803-ubuntu-24.04-container
-
-    - name: Upgrade libvfio-user
-      if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
+    - name: Verify libvfio-user from the image
       run: |
-        # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
-        # This version includes the vfu_setup_device_dma() max_regions
-        # parameter added in f3742ed9 (#835).
-        git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
-        cd /tmp/libvfio-user
-        git checkout 20e9803
-        meson setup build --prefix=/usr/local -Dwarning_level=0
-        ninja -C build
-        ninja -C build install
+        # See the loopback job for why this asserts rather than builds.
+        set -e
         ldconfig
-
-    - name: Reload ldconfig after cache restore
-      if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
-      run: ldconfig
-
-    - name: Cache rdma-core tarball
-      uses: actions/cache@v6
-      with:
-        path: /tmp/rdma-core-62.0.tar.gz
-        key: rdma-core-tarball-62.0
-
-    - name: Download rdma-core tarball
-      run: |
-        if [ ! -f /tmp/rdma-core-62.0.tar.gz ]; then
-          wget -q -O /tmp/rdma-core-62.0.tar.gz \
-            https://github.com/linux-rdma/rdma-core/releases/download/v62.0/rdma-core-62.0.tar.gz
+        HDR=/usr/local/include/vfio-user/libvfio-user.h
+        LIB=$(ls /usr/local/lib/x86_64-linux-gnu/libvfio-user.so* 2>/dev/null | head -1)
+        if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
+          echo "✗ libvfio-user missing from the container image"
+          ls -la /usr/local/lib/x86_64-linux-gnu/ /usr/local/include/ || true
+          exit 1
         fi
+        if ! grep -A2 'vfu_setup_device_dma' "$HDR" | grep -q 'max_regions'; then
+          echo "✗ libvfio-user in the image predates the"
+          echo "  vfu_setup_device_dma() max_regions parameter (#835)."
+          exit 1
+        fi
+        echo "✓ libvfio-user present: $LIB"
 
     - name: Build project
       run: |
@@ -1253,6 +1043,21 @@ jobs:
         echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
         echo "✓ SSH_OPTS=$SSH_OPTS"
 
+        # The sanity play builds bare `ssh -p <port> user@localhost`
+        # command lines with no -i, so it can only work if the key is
+        # where OpenSSH looks by default.  That is getpwuid()'s home --
+        # /root here -- not $HOME, which the container job sets to
+        # /github/home.  Install it in both so the play and the direct
+        # probes below agree.
+        PW_HOME=$(getent passwd "$(id -u)" | cut -d: -f6)
+        for d in "$PW_HOME" "$HOME"; do
+          [ -n "$d" ] || continue
+          mkdir -p "$d/.ssh"
+          chmod 700 "$d/.ssh"
+          install -m 600 "$SSH_KEY_PRIVATE" "$d/.ssh/id_rsa"
+        done
+        echo "✓ key installed for default-path ssh in $PW_HOME and $HOME"
+
     - name: Start TCP server 1 (manager)
       shell: bash
       run: |
@@ -1260,7 +1065,10 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
 
+        # --ionic is the default; name it so CI can never drift onto
+        # the deprecated personality.  See the loopback job.
         ./build/rocm-ernic \
+          --ionic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
           --verbose > /tmp/server1.log 2>&1 &
@@ -1316,62 +1124,39 @@ jobs:
     - name: Wait for TCP server 1 to be ready
       shell: bash
       run: |
-        echo "Waiting for TCP server 1 to be ready..."
-        sleep 5
-        
-        # Check if port is listening using available tools
+        echo "Waiting for TCP server 1 to listen on ${{ env.TCP_PORT }}..."
         PORT=${{ env.TCP_PORT }}
-        PORT_LISTENING=0
-        
-        # Try netstat first
-        if command -v netstat &> /dev/null; then
-          if netstat -tlnp 2>/dev/null | grep -q ":$PORT "; then
-            PORT_LISTENING=1
-            echo "✓ Port $PORT is listening (checked via netstat)"
+
+        # bash's /dev/tcp is the probe, not the last resort.  It needs
+        # no package (the image ships neither ss, netstat nor nc -- ss
+        # only arrives with the iproute2 install above), and unlike a
+        # listener-table grep it proves the socket actually accepts a
+        # connection.  /proc/net/tcp is kept as a corroborating read
+        # for the log when the connect fails.
+        #
+        # This used to end in "Assuming server is ready", so on an
+        # image without those tools the step passed without checking
+        # anything and the failure surfaced much later as a VM that
+        # could not reach its peer.
+        for i in $(seq 1 30); do
+          if ! kill -0 "$SERVER1_PID" 2>/dev/null; then
+            echo "✗ Server 1 died while waiting for it to listen"
+            cat /tmp/server1.log
+            exit 1
           fi
-        fi
-        
-        # Try ss if netstat didn't work
-        if [ $PORT_LISTENING -eq 0 ] && command -v ss &> /dev/null; then
-          if ss -tlnp 2>/dev/null | grep -q ":$PORT "; then
-            PORT_LISTENING=1
-            echo "✓ Port $PORT is listening (checked via ss)"
+          if timeout 1 bash -c "echo > /dev/tcp/localhost/$PORT" 2>/dev/null; then
+            echo "✓ Server 1 is accepting connections on port $PORT (attempt $i/30)"
+            exit 0
           fi
-        fi
-        
-        # Try using /proc/net/tcp as fallback
-        if [ $PORT_LISTENING -eq 0 ] && [ -f /proc/net/tcp ]; then
-          HEX_PORT=$(printf "%04X" $PORT)
-          if grep -q ":$HEX_PORT " /proc/net/tcp; then
-            PORT_LISTENING=1
-            echo "✓ Port $PORT is listening (checked via /proc/net/tcp)"
-          fi
-        fi
-        
-        # Try connecting to the port as final check
-        if [ $PORT_LISTENING -eq 0 ]; then
-          if command -v nc &> /dev/null; then
-            if nc -z localhost $PORT 2>/dev/null; then
-              PORT_LISTENING=1
-              echo "✓ Port $PORT is accepting connections (checked via nc)"
-            fi
-          elif command -v timeout &> /dev/null && command -v bash &> /dev/null; then
-            # Use bash built-in TCP connection test
-            if timeout 1 bash -c "echo > /dev/tcp/localhost/$PORT" 2>/dev/null; then
-              PORT_LISTENING=1
-              echo "✓ Port $PORT is accepting connections (checked via /dev/tcp)"
-            fi
-          fi
-        fi
-        
-        if [ $PORT_LISTENING -eq 1 ]; then
-          echo "✓ Server 1 is ready and listening on port $PORT"
-        else
-          echo "⚠️  Could not verify port $PORT is listening (tools not available)"
-          echo "Checking server log for TCP backend initialization..."
-          tail -10 /tmp/server1.log || echo "Server log not available"
-          echo "Assuming server is ready based on successful socket creation"
-        fi
+          sleep 1
+        done
+
+        echo "✗ Server 1 is not accepting connections on port $PORT after 30s"
+        echo "=== listening sockets ==="
+        ss -tlnp 2>/dev/null || awk 'NR>1 {print $2}' /proc/net/tcp
+        echo "=== Server 1 log ==="
+        cat /tmp/server1.log
+        exit 1
 
     - name: Start TCP server 2 (worker)
       shell: bash
@@ -1386,6 +1171,7 @@ jobs:
         rm -f /tmp/vfio-user-server2.sock
 
         ./build/rocm-ernic \
+          --ionic \
           --socket /tmp/vfio-user-server2.sock \
           --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \
           --verbose > /tmp/server2.log 2>&1 &
@@ -1845,62 +1631,147 @@ jobs:
       run: |
         echo "=== Verifying RDMA devices ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        
+
+        # Discover the device name per guest rather than assuming one.
+        # Persistent RDMA naming gives rocep<bus>s<slot>; without it the
+        # ionic driver's own ionic_<n>.  The old grep also accepted
+        # "rocm-rdma-ernic", which only the deprecated driver produces.
+        #
+        # PORT_ACTIVE is checked as well as presence: a device that
+        # enumerates but never trains carries no traffic, and the
+        # pingpong below would then fail with a far less obvious error.
+        _guest_dev() {
+          ssh $SSH_OPTS -p "$1" "${VM_USER}@localhost" \
+            'ibv_devices | awk "NR>2 {print \$1}" | grep -E "rocep|ionic" | head -1' \
+            | tr -d '\r'
+        }
+
         FAILED=0
+        for spec in "VM 1:2222" "VM 2:2223"; do
+          LABEL="${spec%%:*}"
+          PORT="${spec##*:}"
 
-        echo "--- VM 1 RDMA devices ---"
-        if ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
-          DEVICE=$(ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
-          echo "✓ VM 1 RDMA device found: $DEVICE"
-          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
-        else
-          echo "✗ VM 1: RDMA device not found"
-          echo "Checking ibv_devices output:"
-          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
-          FAILED=$((FAILED + 1))
-        fi
+          echo "--- ${LABEL} RDMA device ---"
+          DEV=$(_guest_dev "$PORT")
+          if [ -z "$DEV" ]; then
+            echo "✗ ${LABEL}: no ionic RDMA device found"
+            ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" \
+              'ibv_devices; lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
+            FAILED=$((FAILED + 1))
+            continue
+          fi
 
-        echo ""
-        echo "--- VM 2 RDMA devices ---"
-        if ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -qE "rocm-rdma-ernic|rocep|ionic"'; then
-          DEVICE=$(ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices | grep -E "rocm-rdma-ernic|rocep|ionic" | awk "{print \$1}" | head -1')
-          echo "✓ VM 2 RDMA device found: $DEVICE"
-          ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" "ibv_devinfo -d $DEVICE | head -20" || true
-        else
-          echo "✗ VM 2: RDMA device not found"
-          echo "Checking ibv_devices output:"
-          ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" 'ibv_devices || echo "Command failed"'
-          FAILED=$((FAILED + 1))
-        fi
-        
+          if ! ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" \
+               "ibv_devinfo -d $DEV" | tee /dev/stderr | grep -q 'PORT_ACTIVE'; then
+            echo "✗ ${LABEL}: $DEV never reached PORT_ACTIVE"
+            FAILED=$((FAILED + 1))
+            continue
+          fi
+          echo "✓ ${LABEL} RDMA device: $DEV (PORT_ACTIVE)"
+          echo "RDMA_DEVICE_${PORT}=$DEV" >> $GITHUB_ENV
+        done
+
         if [ $FAILED -gt 0 ]; then
           echo ""
           echo "✗ RDMA device verification failed"
           exit 1
         fi
-        
         echo ""
-        echo "✓ Both VMs have RDMA devices available"
+        echo "✓ Both VMs have active RDMA devices"
 
-    - name: Test TCP backend connection
+    - name: RDMA sanity suite across the TCP mesh (Ansible)
+      shell: bash
       run: |
-        echo "=== Testing TCP backend connection ==="
+        echo "=== Running the sanity play across both guests ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Check server logs for connection activity
-        echo "--- Server 1 recent activity ---"
-        tail -30 /tmp/server1.log | grep -i "tcp\|connect\|send\|recv" || echo "No TCP activity in server 1 log"
+        # The same play ci/jobs/vm-functional.sh runs on the self-hosted
+        # path: ping and a netcat echo over the emulated Ethernet, then
+        # ib_send_bw and ibv_rc_pingpong over RDMA -- all of it between
+        # VM 1 and VM 2, so every byte crosses the TCP mesh joining the
+        # two rocm-ernic servers.  That is the thing this job is named
+        # for and previously never exercised.
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
 
-        echo "--- Server 2 recent activity ---"
-        tail -30 /tmp/server2.log | grep -i "tcp\|connect\|send\|recv" || echo "No TCP activity in server 2 log"
+        cd ansible
+        ansible-playbook ci-site.yml --tags sanity \
+          -e ernic_run_dir=/tmp/ernic-ci \
+          -e ernic_instances=2 \
+          -e ernic_vm_ssh_base_port=2222 \
+          -e ernic_vm_ssh_user="$VM_USER" \
+          -e ernic_device_mode=ionic
 
-        # Verify both servers are still running
-        if ps -p $SERVER1_PID > /dev/null && ps -p $SERVER2_PID > /dev/null; then
-          echo "✓ Both servers are running"
-        else
-          echo "✗ One or both servers have stopped"
+    - name: Test TCP backend connection (end-to-end RC pingpong)
+      shell: bash
+      run: |
+        echo "=== End-to-end RC data transfer across the TCP mesh ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        # The hard gate, mirroring probe_pingpong() in
+        # ci/jobs/vm-functional.sh.  The sanity play above reports
+        # broadly but asserts narrowly, so this repeats the one check
+        # that proves the emulated NICs moved bytes between guests.
+        #
+        # This step used to grep the server logs with
+        # `|| echo "No TCP activity"` and check both PIDs were alive.
+        # Neither can fail for a mesh that is up but carrying nothing,
+        # so the job reported success without ever testing the backend.
+        DEV1="$RDMA_DEVICE_2222"
+        DEV2="$RDMA_DEVICE_2223"
+
+        # The NIC address is assigned by the guest-setup play from
+        # ernic_nic_subnet, so read it back rather than hardcoding it.
+        IP1=$(ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" \
+          "ip -4 -br addr show rocm-ernic0 | awk '{print \$3}' | cut -d/ -f1" \
+          | tr -d '\r')
+
+        if [ -z "$DEV1" ] || [ -z "$DEV2" ] || [ -z "$IP1" ]; then
+          echo "✗ could not discover device/address (dev1=$DEV1 dev2=$DEV2 ip1=$IP1)"
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'ip -4 -br addr' || true
           exit 1
         fi
-    
+        echo "VM1: $DEV1 @ $IP1   VM2: $DEV2"
+
+        ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" \
+          "nohup ibv_rc_pingpong -d $DEV1 -g 1 -n 50 \
+             >/tmp/ci-pingpong.log 2>&1 & echo started" >/dev/null
+        sleep 3
+
+        set +e
+        OUT=$(ssh $SSH_OPTS -p 2223 "${VM_USER}@localhost" \
+          "timeout 60 ibv_rc_pingpong -d $DEV2 -g 1 -n 50 $IP1" 2>&1)
+        PP_EXIT=$?
+        set -e
+        echo "$OUT"
+
+        if [ $PP_EXIT -ne 0 ]; then
+          echo "✗ ibv_rc_pingpong client failed (exit $PP_EXIT)"
+          echo "=== VM1 server log ==="
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'cat /tmp/ci-pingpong.log' || true
+          exit 1
+        fi
+
+        # Both lines must be present: a connected-but-idle QP prints
+        # neither, and a completion count alone would not prove the
+        # payload crossed the mesh.
+        if ! echo "$OUT" | grep -q 'bytes in' || ! echo "$OUT" | grep -q 'iters in'; then
+          echo "✗ pingpong completed but moved no data"
+          echo "=== VM1 server log ==="
+          ssh $SSH_OPTS -p 2222 "${VM_USER}@localhost" 'cat /tmp/ci-pingpong.log' || true
+          exit 1
+        fi
+
+        # A server that died during the run invalidates the result
+        # above it, so name that separately rather than inferring it.
+        if ! ps -p "$SERVER1_PID" > /dev/null || ! ps -p "$SERVER2_PID" > /dev/null; then
+          echo "✗ a rocm-ernic server exited during the test"
+          tail -50 /tmp/server1.log /tmp/server2.log || true
+          exit 1
+        fi
+
+        echo "✓ RDMA traffic carried end-to-end across the TCP backend"
     - name: Cleanup
       if: always()
       run: |

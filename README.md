@@ -29,9 +29,16 @@ ARP, ICMP, and TCP/IP.
 
 `--legacy` (alias `--pvrdma`) selects the older PVRDMA-derived device
 (`1022:8000`) driven by the out-of-tree `rocm_ernic` module in
-[`driver/`](driver/). **That path is deprecated**: it is kept working for
-existing deployments but should not be used for new ones. See
-[`docs/ionic.rst`](docs/ionic.rst) for details.
+[`driver/`](driver/). See [`docs/ionic.rst`](docs/ionic.rst) for details.
+
+> [!WARNING]
+> **The `rocm_ernic` driver path (`--legacy` / `--pvrdma`) is no longer
+> supported and will be removed in an upcoming release.** It is no longer
+> exercised by CI: every job now runs the ionic personality, so regressions
+> on the legacy path will not be caught before release. Migrate existing
+> deployments to the default ionic device (`1022:8001`) with the upstream
+> `ionic` and `ionic_rdma` drivers; [`docs/ionic.rst`](docs/ionic.rst)
+> describes the move. New deployments should not use it at all.
 
 ## Installing and Using rocm-ernic
 

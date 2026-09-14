@@ -47,13 +47,20 @@ static struct ibv_device *find_rocm_ernic(struct ibv_device **list, int n)
             continue;
         name = ibv_get_device_name(list[i]);
         /*
-         * The kernel registers the device as rocm_ernic%d. Systems
-         * with persistent RDMA naming see a PCI-topology name such
-         * as rocep0s4, and the rocm-ernic udev rule renames it to
-         * rocm-rdma-ernic0. Match all three.
+         * On the ionic path the driver registers ionic_%d, and a guest
+         * with persistent RDMA naming sees a PCI-topology name such as
+         * rocep0s4 instead. The deprecated rocm_ernic driver registers
+         * rocm_ernic%d, which the udev rule renames to
+         * rocm-rdma-ernic0. Match all of them.
+         *
+         * ionic_ was missing here while the CI workflow's own shell
+         * grep accepted it, so on an ionic guest the workflow saw the
+         * device, this test did not, and the 77 it returned was
+         * reported as a clean skip -- the step passed without ever
+         * exercising the NIC.
          */
         if (strstr(name, "rocm_ernic") || strstr(name, "rocep") ||
-            strstr(name, "rocm-rdma-ernic"))
+            strstr(name, "rocm-rdma-ernic") || strstr(name, "ionic_"))
             return list[i];
     }
     return NULL;
