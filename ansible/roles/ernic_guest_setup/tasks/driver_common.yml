@@ -77,6 +77,14 @@
       No RDMA device with PCI vendor 0x1022 found. ibv_devices output:
       {{ ernic_ibv_devices_output.stdout }}
 
+# The script module runs over a pty, so stdout arrives with a trailing
+# CRLF.  Trim once here rather than at each use below: a stray \r inside
+# a /sys path fails with "No such file or directory", which reads like a
+# missing device rather than a quoting bug.
+- name: Record the RDMA device name
+  ansible.builtin.set_fact:
+    ernic_rdma_dev: "{{ ernic_rdma_dev_name.stdout | trim }}"
+
 # On the ionic path the IB port state follows the netdev, and nothing
 # else brings that netdev up: there is no matching netplan entry, and
 # the loopback backend gives it no carrier to trigger one.  Left down,
@@ -88,7 +96,7 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
-      DEV={{ ernic_rdma_dev_name.stdout | quote }}
+      DEV={{ ernic_rdma_dev | quote }}
       for NET in /sys/class/infiniband/"$DEV"/device/net/*; do
         [ -e "$NET" ] || continue
         ip link set "$(basename "$NET")" up
@@ -101,7 +109,7 @@
     cmd: |
       set -o pipefail
       awk '{print $2}' \
-        /sys/class/infiniband/{{ ernic_rdma_dev_name.stdout | quote }}/ports/1/state |
+        /sys/class/infiniband/{{ ernic_rdma_dev | quote }}/ports/1/state |
         grep -qx 'ACTIVE'
   register: ernic_rdma_port_active
   until: ernic_rdma_port_active.rc == 0
@@ -114,7 +122,7 @@
     executable: /bin/bash
     cmd: >-
       set -o pipefail;
-      ibv_devinfo -d {{ ernic_rdma_dev_name.stdout }}
+      ibv_devinfo -d {{ ernic_rdma_dev | quote }}
       | head -20
   register: ernic_ibv_devinfo_output
   changed_when: false
@@ -130,7 +138,7 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
-      DEV={{ ernic_rdma_dev_name.stdout | quote }}
+      DEV={{ ernic_rdma_dev | quote }}
       [ -z "$DEV" ] && exit 0
       for PORT_DIR in /sys/class/infiniband/"$DEV"/ports/*/; do
         [ -d "$PORT_DIR/hw_counters" ] || continue

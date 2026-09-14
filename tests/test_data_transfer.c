@@ -77,7 +77,8 @@ static int setup_resources(struct test_context *ctx)
     }
 
     enum ernic_device_result lookup;
-    struct ibv_device *target = ernic_find_device(dev_list, num_devices, &lookup);
+    struct ibv_device *target =
+        ernic_find_device(dev_list, num_devices, &lookup);
 
     if (!target) {
         ernic_report_no_device(lookup);

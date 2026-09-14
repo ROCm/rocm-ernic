@@ -72,9 +72,8 @@ static inline const char *ernic_requested_device(void)
     return (requested && *requested) ? requested : NULL;
 }
 
-static inline struct ibv_device *ernic_find_device(struct ibv_device **list,
-                                                   int count,
-                                                   enum ernic_device_result *result)
+static inline struct ibv_device *ernic_find_device(
+    struct ibv_device **list, int count, enum ernic_device_result *result)
 {
     const char *requested = ernic_requested_device();
 
