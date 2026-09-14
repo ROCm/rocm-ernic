@@ -342,6 +342,32 @@ target_link_directories(test_tcp_mesh_topology PRIVATE
 target_link_libraries(test_tcp_mesh_topology PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# TCP memory-region bounds test. Like the mesh-topology test it #includes the
+# TCP backend translation unit to reach its static helpers and stubs the
+# backend's externals; the wire-driven cases run the real receive thread over
+# a socketpair.
+add_executable(test_tcp_mr_bounds test_tcp_mr_bounds.c)
+target_include_directories(test_tcp_mr_bounds PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_tcp_mr_bounds PRIVATE
+    _GNU_SOURCE)
+# -w: this test #includes the ported TCP backend translation unit, so warnings
+# would come from that ported C rather than the test itself; suppress them
+# to match how the ported sources are compiled in the main build.
+target_compile_options(test_tcp_mr_bounds PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_tcp_mr_bounds PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_tcp_mr_bounds PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_tcp_mr_bounds PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # ---------------------------------------------------------------
 # Register tests with CTest
 # ---------------------------------------------------------------
@@ -465,6 +491,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_tcp_mesh_topology>
 )
 set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# TCP memory-region bounds unit test: asserts that remote addresses whose
+# addr+len wraps 64 bits are rejected rather than resolving to a host pointer
+# below the registered region.
+add_test(
+    NAME tcp-mr-bounds-unit
+    COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
+)
+set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # ionic server smoke test: start server in --ionic mode, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.

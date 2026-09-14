@@ -41,7 +41,9 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
                                 uint32_t nchunks, size_t length)
 {
     uint64_t *dir, *tbl;
-    int tbl_idx, dir_idx, addr_idx;
+    /* Unsigned, to compare against nchunks without a signed/unsigned
+     * conversion. */
+    uint32_t tbl_idx, dir_idx, addr_idx;
     void *host_virt = NULL, *curr_page;
 
     if (!nchunks) {
@@ -49,8 +51,37 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
         return NULL;
     }
 
+    /*
+     * The walk below indexes dir[] once per 512 chunks, but dir is a single
+     * mapped page holding 512 entries, so a count above 512 * 512 reads past
+     * it. PVRDMA_PAGE_DIR_MAX_PAGES is exactly that product -- the page
+     * directory is one level deep ("only one directory for now" in
+     * pvrdma_dev_api.h), which is what caps the walk. Bounding the count here
+     * also bounds the mapping the caller is about to make: without it a
+     * guest-chosen nchunks reserves up to 16 TiB and drives a walk of four
+     * billion iterations. The ring paths (create_cq_ring, create_qp_rings,
+     * create_srq_ring) already bound their own counts; this is the memory
+     * region path, which did not.
+     */
+    if (nchunks > PVRDMA_PAGE_DIR_MAX_PAGES) {
+        rdma_error_report("Got invalid nchunks: %u (max=%u)", nchunks,
+                          (uint32_t)PVRDMA_PAGE_DIR_MAX_PAGES);
+        return NULL;
+    }
+
     length = ROUND_UP(length, PAGE_SIZE);
-    if (nchunks * PAGE_SIZE != length) {
+    /*
+     * Cast before multiplying: nchunks is a uint32_t and PAGE_SIZE an int
+     * literal, so the product would otherwise be computed in unsigned int and
+     * wrap at 2^32 while length is 64-bit -- letting a large count truncate
+     * to match a short length, after which the walk below would run the full
+     * count against a mapping sized from that short length.
+     *
+     * The bound above now rejects any count large enough to wrap this, so the
+     * widening is no longer what stops it. It is kept so the comparison stays
+     * correct on its own terms rather than depending on that bound.
+     */
+    if ((uint64_t)nchunks * PAGE_SIZE != length) {
         rdma_error_report("Invalid nchunks/length (%u, %lu)", nchunks,
                           (unsigned long)length);
         return NULL;
@@ -106,20 +137,24 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
             rdma_pci_dma_unmap(pdev, tbl, PAGE_SIZE);
             tbl = rdma_pci_dma_map(pdev, dir[dir_idx], PAGE_SIZE);
             if (!tbl) {
-                rdma_error_report("Failed to map to page table %d", dir_idx);
+                rdma_error_report("Failed to map to page table %u", dir_idx);
                 goto out_unmap_host_virt;
             }
         }
 
         curr_page = rdma_pci_dma_map(pdev, (dma_addr_t)tbl[tbl_idx], PAGE_SIZE);
         if (!curr_page) {
-            rdma_error_report("Failed to map to page %d, dir %d", tbl_idx,
+            rdma_error_report("Failed to map to page %u, dir %u", tbl_idx,
                               dir_idx);
             goto out_unmap_host_virt;
         }
 
+        /* (size_t) before multiplying, so the offset is computed in pointer
+         * width rather than int. The nchunks bound above caps it at 1 GiB
+         * today, but the cast keeps this correct if that bound is ever
+         * raised. */
         mremap(curr_page, 0, PAGE_SIZE, MREMAP_MAYMOVE | MREMAP_FIXED,
-               host_virt + PAGE_SIZE * addr_idx);
+               (uint8_t *)host_virt + (size_t)PAGE_SIZE * addr_idx);
 
         rdma_pci_dma_unmap(pdev, curr_page, PAGE_SIZE);
 
@@ -130,10 +165,11 @@ static void *pvrdma_map_to_pdir(PCIDevice *pdev, uint64_t pdir_dma,
 
     rdma_info_report("pvrdma_map_to_pdir: verifying %u pages in host_virt=%p",
                      nchunks, host_virt);
-    for (int v = 0; v < (int)nchunks; v++) {
-        volatile uint8_t *probe = (volatile uint8_t *)host_virt + PAGE_SIZE * v;
+    for (uint32_t v = 0; v < nchunks; v++) {
+        volatile uint8_t *probe =
+            (volatile uint8_t *)host_virt + (size_t)PAGE_SIZE * v;
         uint8_t byte = *probe;
-        rdma_info_report("pvrdma_map_to_pdir: page[%d] at %p readable "
+        rdma_info_report("pvrdma_map_to_pdir: page[%u] at %p readable "
                          "(first_byte=0x%02x)",
                          v, probe, byte);
     }
