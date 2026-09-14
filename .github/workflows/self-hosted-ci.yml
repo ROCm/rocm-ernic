@@ -130,7 +130,7 @@ jobs:
       tier: ${{ steps.plan.outputs.tier }}
       kvm: ${{ steps.plan.outputs.kvm }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
 
@@ -184,7 +184,7 @@ jobs:
       matrix:
         build_type: [Release, Debug]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
 
@@ -198,7 +198,7 @@ jobs:
 
       - name: Upload CTest results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ctest-${{ matrix.build_type }}
           path: /var/tmp/ernic-ci-work/results/ctest-junit.xml
@@ -209,7 +209,7 @@ jobs:
     needs: build
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
 
@@ -228,7 +228,7 @@ jobs:
     env:
       CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
 
@@ -244,7 +244,7 @@ jobs:
 
       - name: Upload VM logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vm-logs
           path: /var/tmp/ernic-ci-work/log/
@@ -260,7 +260,7 @@ jobs:
     env:
       CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
 
@@ -276,7 +276,7 @@ jobs:
 
       - name: Upload perf CSVs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-csv
           path: /var/tmp/ernic-ci-work/results/perf-csv/
@@ -287,7 +287,7 @@ jobs:
       # failure is just a wall of FAIL rows.
       - name: Upload server and VM logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-logs
           path: /var/tmp/ernic-ci-work/log/
@@ -315,7 +315,7 @@ jobs:
     if: always()
     runs-on: [self-hosted, linux, x64, rocm-ernic]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
 
@@ -368,7 +368,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-report
           path: |

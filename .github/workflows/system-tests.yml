@@ -42,7 +42,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Select QEMU accelerator and guest size
       shell: bash
@@ -210,7 +210,7 @@ jobs:
 
     - name: Cache libvfio-user build
       id: cache-libvfio-user
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           /usr/local/lib/x86_64-linux-gnu/libvfio-user*
@@ -237,7 +237,7 @@ jobs:
       run: ldconfig
 
     - name: Cache rdma-core tarball
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: /tmp/rdma-core-62.0.tar.gz
         key: rdma-core-tarball-62.0
@@ -930,7 +930,7 @@ jobs:
 
     - name: Upload test logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: loopback-backend-test-logs
         path: |
@@ -970,7 +970,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Select QEMU accelerator and guest size
       shell: bash
@@ -1040,7 +1040,7 @@ jobs:
 
     - name: Cache libvfio-user build
       id: cache-libvfio-user
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           /usr/local/lib/x86_64-linux-gnu/libvfio-user*
@@ -1067,7 +1067,7 @@ jobs:
       run: ldconfig
 
     - name: Cache rdma-core tarball
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: /tmp/rdma-core-62.0.tar.gz
         key: rdma-core-tarball-62.0
@@ -1927,7 +1927,7 @@ jobs:
   
     - name: Upload test logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: tcp-backend-test-logs
         path: |

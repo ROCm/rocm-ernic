@@ -32,10 +32,10 @@ jobs:
     
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Cache apt packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /var/cache/apt/archives
           key: apt-${{ matrix.os }}-build-test-${{ hashFiles('.github/workflows/build-test.yml') }}
@@ -58,7 +58,7 @@ jobs:
 
       - name: Cache libvfio-user build
         id: cache-libvfio-user
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /usr/lib/x86_64-linux-gnu/libvfio-user*
@@ -156,7 +156,7 @@ jobs:
       
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ matrix.os }}
           path: build/Testing/
@@ -164,7 +164,7 @@ jobs:
       
       - name: Upload binaries
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.os }}
           path: |
