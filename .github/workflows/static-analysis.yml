@@ -59,18 +59,18 @@ jobs:
       LEVEL: ${{ github.event.inputs.level || 'standard' }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Determinate Systems' installer enables flakes + nix-command by default.
       # Maintainers may pin these to a release tag/SHA per their action policy.
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       # Optional but recommended: caches the Nix store between runs so the
       # analysis tools and their closure aren't rebuilt every time. Safe to
       # remove (or swap for Cachix/FlakeHub) if the org prefers.
       - name: Nix build cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
 
       - name: Run static analysis
         id: analysis
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload analysis report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-analysis-report
           path: analysis-report/
