@@ -224,10 +224,13 @@ endif()
 
 target_include_directories(rocm-ernic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
 )
 
+# The QEMU-ported header trees should be treated as SYSTEM includes
+# so their warnings stay quiet
 target_include_directories(rocm-ernic SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
