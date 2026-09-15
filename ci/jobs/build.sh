@@ -37,6 +37,17 @@ cmake_args+=(-DERNIC_WERROR=ON)
 run_check build "cmake-configure" cmake "${cmake_args[@]}"
 group_end
 
+# run_check never aborts, and a failed configure leaves
+# whatever the build dir already held.  ninja then has
+# "no work to do", the executable test below passes on a
+# stale binary, and the loopback and perf jobs go on to
+# measure a build from some earlier run.  Configure is
+# the one step where continuing is worse than stopping.
+if ! [ -f "${CI_BUILD_DIR}/build.ninja" ] || \
+   [ "$(check_status build cmake-configure)" = "fail" ]; then
+    die "cmake configure failed; refusing to build or test a stale tree"
+fi
+
 group_start "Build"
 run_check build "ninja-build" \
     cmake --build "${CI_BUILD_DIR}" -- -j "${CI_BUILD_JOBS}"
@@ -47,6 +58,13 @@ group_end
 # cascade of misleading failures.
 if ! [ -x "${CI_BUILD_DIR}/rocm-ernic" ]; then
     die "build produced no rocm-ernic binary; aborting"
+fi
+
+# A binary older than the sources means the build did not
+# actually run, however green ninja looked.
+if [ -n "$(find "${PROJECT_ROOT}/src" "${PROJECT_ROOT}/CMakeLists.txt" \
+              -newer "${CI_BUILD_DIR}/rocm-ernic" -print -quit)" ]; then
+    die "rocm-ernic is older than the sources; the build did not run"
 fi
 
 group_start "CTest"

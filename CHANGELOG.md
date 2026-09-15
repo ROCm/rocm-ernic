@@ -37,6 +37,15 @@
   lines (BAR writes, QP operations, ARP/ICMP packets, TCP mesh events) are
   suppressed in steady state. Use `--log-level info` to restore the previous
   output. `-v` / `--verbose` is now shorthand for `--log-level debug`.
+* `ernic-exporter` now reports its cumulative series with `TYPE counter`
+  instead of `TYPE gauge`, via a custom collector. Metric names are unchanged
+  and `rate()` / `increase()` queries keep working, so the shipped dashboard
+  needs no edit for this.
+* **Breaking:** the two cluster-level gauges lost their misleading `_total`
+  suffix — `ernic_instances_total` is now `ernic_instances` and
+  `ernic_vms_total` is now `ernic_vms`. They count what exists right now, not
+  a running total. The shipped dashboard is updated; hand-written dashboards,
+  alerts and recording rules referring to the old names must be changed.
 
 ### Removed
 
@@ -51,6 +60,13 @@
   removed device; the live ionic numbers are in `docs/perf-trends.rst`.
 
 ### Fixed
+
+* Per-QP opcode lines in the `*.stats` file are emitted with a wide enough
+  field to keep the `" : "` separator that `ernic-exporter` splits on.
+  `MASKED_ATOMIC_CMP_SWP` and `ATOMIC_FETCH_AND_ADD` filled the old 20-column
+  field exactly, so their lines came out as `NAME: 4` and were dropped by the
+  parser. The exporter also no longer attributes a device-level key that
+  appears after the per-QP block to the last QP it saw.
 
 * MSI-X assertions raised while a vector is masked are latched and replayed
   when the driver unmasks, instead of being dropped. Every vector comes out of

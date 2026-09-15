@@ -24,9 +24,12 @@ import time
 
 from prometheus_client import (
     CollectorRegistry,
-    Gauge,
     generate_latest,
     CONTENT_TYPE_LATEST,
+)
+from prometheus_client.core import (
+    CounterMetricFamily,
+    GaugeMetricFamily,
 )
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -164,6 +167,13 @@ def parse_stats_file_with_qps(path):
                     continue
 
                 if " : " not in stripped:
+                    # Any other bare "Section:" header ends the
+                    # current QP.  Without this, a device-level
+                    # key emitted after the per-QP block would be
+                    # silently attributed to the last QP seen.
+                    if stripped.endswith(":"):
+                        current_qp = None
+                        in_opcode_section = False
                     continue
 
                 key, _, val = stripped.partition(" : ")
@@ -213,454 +223,276 @@ def read_all_stats_with_qps():
     return result
 
 
-# ── Prometheus metrics registry ───────────────────
+# ── Prometheus metrics ────────────────────────────
+#
+# This is a custom collector rather than a set of
+# module-level metric objects for two reasons.  Every
+# series is rebuilt from scratch on each scrape, so a
+# departed instance or a destroyed QP simply stops being
+# yielded -- previously that needed pokes at the private
+# ._metrics dict.  And the cumulative series can carry
+# TYPE counter while still being set from the absolute
+# values the server writes: prometheus_client's Counter
+# only exposes inc(), so an exporter that reads totals
+# from a file cannot use it.
+
+INSTANCE_LABELS = ["ernic_id", "role"]
+QP_LABELS = ["ernic_id", "role", "qp"]
+
+# Per-instance counters that map 1:1 onto a key in the
+# .stats file: (metric name, stats key, help).
+INSTANCE_COUNTERS = [
+    ("ernic_ip_bytes_tx_total", "total_ip_bytes_tx",
+     "Total IP/Ethernet bytes transmitted"),
+    ("ernic_ip_bytes_rx_total", "total_ip_bytes_rx",
+     "Total IP/Ethernet bytes received"),
+    ("ernic_rdma_bytes_sent_total", "total_bytes_sent",
+     "Total bytes sent via RDMA SEND operations"),
+    ("ernic_rdma_bytes_received_total",
+     "total_bytes_received",
+     "Total bytes received via RDMA RECV operations"),
+    ("ernic_rdma_bytes_read_total",
+     "total_bytes_rdma_read",
+     "Total bytes transferred via RDMA Read"),
+    ("ernic_rdma_bytes_write_total",
+     "total_bytes_rdma_write",
+     "Total bytes transferred via RDMA Write"),
+    ("ernic_flr_reset_total", "reset_count",
+     "Total FLR/device reset count"),
+    ("ernic_commands_total", "commands",
+     "Total admin queue commands processed"),
+    ("ernic_interrupts_total", "interrupts",
+     "Total interrupts delivered"),
+    ("ernic_mmio_reads_total", "mmio_reads_total",
+     "Total MMIO read operations"),
+    ("ernic_mmio_writes_total", "mmio_writes_total",
+     "Total MMIO write operations"),
+    ("ernic_stats_writes_total", "Write count",
+     "Number of times the server has written stats"),
+]
+
+# Aggregates, summed from INSTANCE_COUNTERS members
+# rather than read directly: (metric, [stats keys], help).
+INSTANCE_AGGREGATES = [
+    ("ernic_rdma_bytes_total",
+     ["total_bytes_sent", "total_bytes_received",
+      "total_bytes_rdma_read", "total_bytes_rdma_write"],
+     "Total RDMA bytes (send+recv+read+write)"),
+    ("ernic_ip_bytes_total",
+     ["total_ip_bytes_tx", "total_ip_bytes_rx"],
+     "Total IP bytes (tx+rx)"),
+]
+
+# Per-QP counters: (metric name, QP stats key, help).
+QP_COUNTERS = [
+    ("ernic_qp_bytes_sent_total", "bytes_sent",
+     "Bytes sent via SEND on this QP"),
+    ("ernic_qp_bytes_received_total", "bytes_received",
+     "Bytes received via RECV on this QP"),
+    ("ernic_qp_bytes_rdma_read_total", "bytes_rdma_read",
+     "Bytes transferred via RDMA Read on this QP"),
+    ("ernic_qp_bytes_rdma_write_total",
+     "bytes_rdma_write",
+     "Bytes transferred via RDMA Write on this QP"),
+    ("ernic_qp_wqes_processed_total", "wqes_processed",
+     "Total WQEs processed on this QP"),
+    ("ernic_qp_cqes_posted_total", "cqes_posted",
+     "Total CQEs posted on this QP"),
+    ("ernic_qp_doorbell_send_total", "doorbell_send",
+     "Send doorbell rings on this QP"),
+    ("ernic_qp_doorbell_recv_total", "doorbell_recv",
+     "Receive doorbell rings on this QP"),
+]
+
+
+def stat_int(stats, key):
+    """Fetch a counter from a parsed stats dict.
+
+    A malformed line parses as a string rather than an
+    int; treat anything non-integer, and anything
+    missing, as zero.
+    """
+    val = stats.get(key, 0)
+    return val if isinstance(val, int) else 0
+
+
+class ErnicCollector:
+    """Reads every data source once per scrape and
+    yields the full metric set."""
+
+    def collect(self):
+        manifest = read_manifest()
+        instances = manifest.get("instances", [])
+        all_stats = read_all_stats_with_qps()
+
+        # Cluster-level gauges.
+        m_instances = GaugeMetricFamily(
+            "ernic_instances",
+            "Number of rocm-ernic server instances",
+        )
+        m_vms = GaugeMetricFamily(
+            "ernic_vms",
+            "Number of attached VMs",
+        )
+
+        # Per-instance gauges.
+        m_up = GaugeMetricFamily(
+            "ernic_instance_up",
+            "Whether instance process is alive"
+            " (1=running, 0=dead)",
+            labels=["ernic_id", "role", "mac"],
+        )
+        m_uptime = GaugeMetricFamily(
+            "ernic_instance_uptime_seconds",
+            "Instance process uptime in seconds",
+            labels=INSTANCE_LABELS,
+        )
+        m_vm_attached = GaugeMetricFamily(
+            "ernic_vm_attached",
+            "Whether a VM is attached to this instance"
+            " (1=yes, 0=no)",
+            labels=["ernic_id", "role", "vm_name"],
+        )
+        m_vm_uptime = GaugeMetricFamily(
+            "ernic_vm_uptime_seconds",
+            "VM uptime in seconds",
+            labels=INSTANCE_LABELS,
+        )
+        m_vm_gpu = GaugeMetricFamily(
+            "ernic_vm_gpu_passthrough",
+            "Whether GPU passthrough is enabled"
+            " (1=yes, 0=no)",
+            labels=INSTANCE_LABELS,
+        )
+        m_conn = GaugeMetricFamily(
+            "ernic_connection_up",
+            "Connection state (1=connected, 0=other)",
+            labels=["ernic_id", "role", "state"],
+        )
+        m_qp_count = GaugeMetricFamily(
+            "ernic_qp_count",
+            "Number of active Queue Pairs",
+            labels=INSTANCE_LABELS,
+        )
+
+        counters = {
+            name: CounterMetricFamily(
+                name, doc, labels=INSTANCE_LABELS,
+            )
+            for name, _, doc in
+            INSTANCE_COUNTERS + INSTANCE_AGGREGATES
+        }
+        counters.update({
+            name: CounterMetricFamily(
+                name, doc, labels=QP_LABELS,
+            )
+            for name, _, doc in QP_COUNTERS
+        })
+
+        m_instances.add_metric([], len(instances))
+        vm_count = 0
+
+        for inst in instances:
+            iid = str(inst["id"])
+            role = inst.get("role", "unknown")
+            mac = inst.get("mac", "")
+            alive = pid_alive(inst["pid"])
+            inst_labels = [iid, role]
+
+            m_up.add_metric(
+                [iid, role, mac], 1 if alive else 0,
+            )
+
+            up = get_uptime(inst["pid"]) if alive else None
+            if up is not None:
+                m_uptime.add_metric(inst_labels, up)
+
+            # VM lifecycle
+            vm = inst.get("vm")
+            has_vm = (
+                vm is not None
+                and isinstance(vm, dict)
+                and vm.get("attached", False)
+            )
+            vm_name = vm.get("vm_name", "") if has_vm else ""
+            m_vm_attached.add_metric(
+                [iid, role, vm_name], 1 if has_vm else 0,
+            )
+
+            if has_vm:
+                vm_count += 1
+                launched = vm.get("launched_at")
+                if launched:
+                    vm_up = time.time() - launched
+                else:
+                    vm_pid = vm.get("vm_pid")
+                    vm_up = (
+                        get_uptime(vm_pid)
+                        if vm_pid else None
+                    )
+                if vm_up is not None:
+                    m_vm_uptime.add_metric(
+                        inst_labels, vm_up,
+                    )
+                gpu = vm.get("gpu", "")
+                m_vm_gpu.add_metric(
+                    inst_labels, 1 if gpu else 0,
+                )
+
+            # Device stats
+            stats_pair = all_stats.get(inst["id"])
+            if stats_pair is None:
+                continue
+            stats, qps = stats_pair
+
+            for name, key, _ in INSTANCE_COUNTERS:
+                counters[name].add_metric(
+                    inst_labels, stat_int(stats, key),
+                )
+            for name, keys, _ in INSTANCE_AGGREGATES:
+                counters[name].add_metric(
+                    inst_labels,
+                    sum(stat_int(stats, k) for k in keys),
+                )
+
+            conn = stats.get("connection", "unknown")
+            if not isinstance(conn, str):
+                conn = str(conn)
+            m_conn.add_metric(
+                [iid, role, conn],
+                1 if conn.startswith("connected") else 0,
+            )
+
+            # Per-QP metrics
+            m_qp_count.add_metric(inst_labels, len(qps))
+            for qp_handle, qp_stats in qps.items():
+                qp_labels = [iid, role, str(qp_handle)]
+                for name, key, _ in QP_COUNTERS:
+                    counters[name].add_metric(
+                        qp_labels,
+                        stat_int(qp_stats, key),
+                    )
+
+        m_vms.add_metric([], vm_count)
+
+        yield m_instances
+        yield m_vms
+        yield m_up
+        yield m_uptime
+        yield m_vm_attached
+        yield m_vm_uptime
+        yield m_vm_gpu
+        yield m_conn
+        yield m_qp_count
+        for name, _, _ in (
+            INSTANCE_COUNTERS + INSTANCE_AGGREGATES
+            + QP_COUNTERS
+        ):
+            yield counters[name]
+
 
 registry = CollectorRegistry()
-
-# Cluster / instance metrics
-ernic_instances_total = Gauge(
-    "ernic_instances_total",
-    "Total number of rocm-ernic server instances",
-    registry=registry,
-)
-ernic_instance_up = Gauge(
-    "ernic_instance_up",
-    "Whether instance process is alive (1=running, 0=dead)",
-    ["ernic_id", "role", "mac"],
-    registry=registry,
-)
-ernic_instance_uptime_seconds = Gauge(
-    "ernic_instance_uptime_seconds",
-    "Instance process uptime in seconds",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-# VM lifecycle metrics
-ernic_vms_total = Gauge(
-    "ernic_vms_total",
-    "Total number of attached VMs",
-    registry=registry,
-)
-ernic_vm_attached = Gauge(
-    "ernic_vm_attached",
-    "Whether a VM is attached to this instance (1=yes, 0=no)",
-    ["ernic_id", "role", "vm_name"],
-    registry=registry,
-)
-ernic_vm_uptime_seconds = Gauge(
-    "ernic_vm_uptime_seconds",
-    "VM uptime in seconds",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_vm_gpu_passthrough = Gauge(
-    "ernic_vm_gpu_passthrough",
-    "Whether GPU passthrough is enabled (1=yes, 0=no)",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-# Network traffic counters (IP)
-ernic_ip_bytes_tx_total = Gauge(
-    "ernic_ip_bytes_tx_total",
-    "Total IP/Ethernet bytes transmitted",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_ip_bytes_rx_total = Gauge(
-    "ernic_ip_bytes_rx_total",
-    "Total IP/Ethernet bytes received",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-# Network traffic counters (RDMA)
-ernic_rdma_bytes_sent_total = Gauge(
-    "ernic_rdma_bytes_sent_total",
-    "Total bytes sent via RDMA SEND operations",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_rdma_bytes_received_total = Gauge(
-    "ernic_rdma_bytes_received_total",
-    "Total bytes received via RDMA RECV operations",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_rdma_bytes_read_total = Gauge(
-    "ernic_rdma_bytes_read_total",
-    "Total bytes transferred via RDMA Read",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_rdma_bytes_write_total = Gauge(
-    "ernic_rdma_bytes_write_total",
-    "Total bytes transferred via RDMA Write",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-# Aggregate convenience metrics
-ernic_rdma_bytes_total = Gauge(
-    "ernic_rdma_bytes_total",
-    "Total RDMA bytes (send+recv+read+write)",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_ip_bytes_total = Gauge(
-    "ernic_ip_bytes_total",
-    "Total IP bytes (tx+rx)",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-# FLR and device events
-ernic_flr_reset_total = Gauge(
-    "ernic_flr_reset_total",
-    "Total FLR/device reset count",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_commands_total = Gauge(
-    "ernic_commands_total",
-    "Total admin queue commands processed",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_interrupts_total = Gauge(
-    "ernic_interrupts_total",
-    "Total interrupts delivered",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_connection_up = Gauge(
-    "ernic_connection_up",
-    "Connection state (1=connected, 0=other)",
-    ["ernic_id", "role", "state"],
-    registry=registry,
-)
-
-# MMIO
-ernic_mmio_reads_total = Gauge(
-    "ernic_mmio_reads_total",
-    "Total MMIO read operations",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_mmio_writes_total = Gauge(
-    "ernic_mmio_writes_total",
-    "Total MMIO write operations",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-# Per-QP metrics
-ernic_qp_count = Gauge(
-    "ernic_qp_count",
-    "Number of active Queue Pairs",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-ernic_qp_bytes_sent_total = Gauge(
-    "ernic_qp_bytes_sent_total",
-    "Bytes sent via SEND on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_bytes_received_total = Gauge(
-    "ernic_qp_bytes_received_total",
-    "Bytes received via RECV on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_bytes_rdma_read_total = Gauge(
-    "ernic_qp_bytes_rdma_read_total",
-    "Bytes transferred via RDMA Read on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_bytes_rdma_write_total = Gauge(
-    "ernic_qp_bytes_rdma_write_total",
-    "Bytes transferred via RDMA Write on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_wqes_processed_total = Gauge(
-    "ernic_qp_wqes_processed_total",
-    "Total WQEs processed on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_cqes_posted_total = Gauge(
-    "ernic_qp_cqes_posted_total",
-    "Total CQEs posted on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_doorbell_send_total = Gauge(
-    "ernic_qp_doorbell_send_total",
-    "Send doorbell rings on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-ernic_qp_doorbell_recv_total = Gauge(
-    "ernic_qp_doorbell_recv_total",
-    "Receive doorbell rings on this QP",
-    ["ernic_id", "role", "qp"],
-    registry=registry,
-)
-
-# Stats write count (meta)
-ernic_stats_writes_total = Gauge(
-    "ernic_stats_writes_total",
-    "Number of times the server has written stats",
-    ["ernic_id", "role"],
-    registry=registry,
-)
-
-
-# ── Metric collection ────────────────────────────
-
-def collect_metrics():
-    """Read all data sources and update Prometheus
-    gauge values."""
-    manifest = read_manifest()
-    instances = manifest.get("instances", [])
-    all_stats = read_all_stats_with_qps()
-
-    ernic_instances_total.set(len(instances))
-
-    # Clear child metrics so stale instances disappear
-    ernic_instance_up._metrics.clear()
-    ernic_instance_uptime_seconds._metrics.clear()
-    ernic_vm_attached._metrics.clear()
-    ernic_vm_uptime_seconds._metrics.clear()
-    ernic_vm_gpu_passthrough._metrics.clear()
-    ernic_ip_bytes_tx_total._metrics.clear()
-    ernic_ip_bytes_rx_total._metrics.clear()
-    ernic_rdma_bytes_sent_total._metrics.clear()
-    ernic_rdma_bytes_received_total._metrics.clear()
-    ernic_rdma_bytes_read_total._metrics.clear()
-    ernic_rdma_bytes_write_total._metrics.clear()
-    ernic_rdma_bytes_total._metrics.clear()
-    ernic_ip_bytes_total._metrics.clear()
-    ernic_flr_reset_total._metrics.clear()
-    ernic_commands_total._metrics.clear()
-    ernic_interrupts_total._metrics.clear()
-    ernic_connection_up._metrics.clear()
-    ernic_mmio_reads_total._metrics.clear()
-    ernic_mmio_writes_total._metrics.clear()
-    ernic_qp_count._metrics.clear()
-    ernic_qp_bytes_sent_total._metrics.clear()
-    ernic_qp_bytes_received_total._metrics.clear()
-    ernic_qp_bytes_rdma_read_total._metrics.clear()
-    ernic_qp_bytes_rdma_write_total._metrics.clear()
-    ernic_qp_wqes_processed_total._metrics.clear()
-    ernic_qp_cqes_posted_total._metrics.clear()
-    ernic_qp_doorbell_send_total._metrics.clear()
-    ernic_qp_doorbell_recv_total._metrics.clear()
-    ernic_stats_writes_total._metrics.clear()
-
-    vm_count = 0
-
-    for inst in instances:
-        iid = str(inst["id"])
-        role = inst.get("role", "unknown")
-        mac = inst.get("mac", "")
-        alive = pid_alive(inst["pid"])
-
-        ernic_instance_up.labels(
-            ernic_id=iid, role=role, mac=mac,
-        ).set(1 if alive else 0)
-
-        up = get_uptime(inst["pid"]) if alive else None
-        if up is not None:
-            ernic_instance_uptime_seconds.labels(
-                ernic_id=iid, role=role,
-            ).set(up)
-
-        # VM lifecycle
-        vm = inst.get("vm")
-        has_vm = (
-            vm is not None
-            and isinstance(vm, dict)
-            and vm.get("attached", False)
-        )
-        vm_name = ""
-        if has_vm:
-            vm_name = vm.get("vm_name", "")
-        ernic_vm_attached.labels(
-            ernic_id=iid, role=role, vm_name=vm_name,
-        ).set(1 if has_vm else 0)
-
-        if has_vm:
-            vm_count += 1
-            launched = vm.get("launched_at")
-            if launched:
-                vm_up = time.time() - launched
-            else:
-                vm_pid = vm.get("vm_pid")
-                vm_up = (
-                    get_uptime(vm_pid)
-                    if vm_pid else None
-                )
-            if vm_up is not None:
-                ernic_vm_uptime_seconds.labels(
-                    ernic_id=iid, role=role,
-                ).set(vm_up)
-            gpu = vm.get("gpu", "")
-            ernic_vm_gpu_passthrough.labels(
-                ernic_id=iid, role=role,
-            ).set(1 if gpu else 0)
-
-        # Device stats
-        stats_pair = all_stats.get(inst["id"])
-        if stats_pair is None:
-            continue
-        stats, qps = stats_pair
-
-        ip_tx = stats.get("total_ip_bytes_tx", 0)
-        ip_rx = stats.get("total_ip_bytes_rx", 0)
-        rdma_sent = stats.get("total_bytes_sent", 0)
-        rdma_recv = stats.get("total_bytes_received", 0)
-        rdma_read = stats.get("total_bytes_rdma_read", 0)
-        rdma_write = stats.get(
-            "total_bytes_rdma_write", 0,
-        )
-
-        if not isinstance(ip_tx, int):
-            ip_tx = 0
-        if not isinstance(ip_rx, int):
-            ip_rx = 0
-        if not isinstance(rdma_sent, int):
-            rdma_sent = 0
-        if not isinstance(rdma_recv, int):
-            rdma_recv = 0
-        if not isinstance(rdma_read, int):
-            rdma_read = 0
-        if not isinstance(rdma_write, int):
-            rdma_write = 0
-
-        ernic_ip_bytes_tx_total.labels(
-            ernic_id=iid, role=role,
-        ).set(ip_tx)
-        ernic_ip_bytes_rx_total.labels(
-            ernic_id=iid, role=role,
-        ).set(ip_rx)
-        ernic_rdma_bytes_sent_total.labels(
-            ernic_id=iid, role=role,
-        ).set(rdma_sent)
-        ernic_rdma_bytes_received_total.labels(
-            ernic_id=iid, role=role,
-        ).set(rdma_recv)
-        ernic_rdma_bytes_read_total.labels(
-            ernic_id=iid, role=role,
-        ).set(rdma_read)
-        ernic_rdma_bytes_write_total.labels(
-            ernic_id=iid, role=role,
-        ).set(rdma_write)
-
-        ernic_rdma_bytes_total.labels(
-            ernic_id=iid, role=role,
-        ).set(rdma_sent + rdma_recv + rdma_read
-              + rdma_write)
-        ernic_ip_bytes_total.labels(
-            ernic_id=iid, role=role,
-        ).set(ip_tx + ip_rx)
-
-        # FLR / events
-        reset_count = stats.get("reset_count", 0)
-        if not isinstance(reset_count, int):
-            reset_count = 0
-        ernic_flr_reset_total.labels(
-            ernic_id=iid, role=role,
-        ).set(reset_count)
-
-        cmds = stats.get("commands", 0)
-        if not isinstance(cmds, int):
-            cmds = 0
-        ernic_commands_total.labels(
-            ernic_id=iid, role=role,
-        ).set(cmds)
-
-        ints = stats.get("interrupts", 0)
-        if not isinstance(ints, int):
-            ints = 0
-        ernic_interrupts_total.labels(
-            ernic_id=iid, role=role,
-        ).set(ints)
-
-        conn = stats.get("connection", "unknown")
-        if not isinstance(conn, str):
-            conn = str(conn)
-        is_connected = 1 if conn.startswith(
-            "connected"
-        ) else 0
-        ernic_connection_up.labels(
-            ernic_id=iid, role=role, state=conn,
-        ).set(is_connected)
-
-        # MMIO
-        mmio_r = stats.get("mmio_reads_total", 0)
-        mmio_w = stats.get("mmio_writes_total", 0)
-        if not isinstance(mmio_r, int):
-            mmio_r = 0
-        if not isinstance(mmio_w, int):
-            mmio_w = 0
-        ernic_mmio_reads_total.labels(
-            ernic_id=iid, role=role,
-        ).set(mmio_r)
-        ernic_mmio_writes_total.labels(
-            ernic_id=iid, role=role,
-        ).set(mmio_w)
-
-        # Stats write count
-        wc = stats.get("Write count", 0)
-        if not isinstance(wc, int):
-            wc = 0
-        ernic_stats_writes_total.labels(
-            ernic_id=iid, role=role,
-        ).set(wc)
-
-        # Per-QP metrics
-        ernic_qp_count.labels(
-            ernic_id=iid, role=role,
-        ).set(len(qps))
-
-        for qp_handle, qp_stats in qps.items():
-            qp_label = str(qp_handle)
-
-            def _qp_int(key):
-                v = qp_stats.get(key, 0)
-                return v if isinstance(v, int) else 0
-
-            ernic_qp_bytes_sent_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("bytes_sent"))
-            ernic_qp_bytes_received_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("bytes_received"))
-            ernic_qp_bytes_rdma_read_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("bytes_rdma_read"))
-            ernic_qp_bytes_rdma_write_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("bytes_rdma_write"))
-            ernic_qp_wqes_processed_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("wqes_processed"))
-            ernic_qp_cqes_posted_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("cqes_posted"))
-            ernic_qp_doorbell_send_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("doorbell_send"))
-            ernic_qp_doorbell_recv_total.labels(
-                ernic_id=iid, role=role, qp=qp_label,
-            ).set(_qp_int("doorbell_recv"))
-
-    ernic_vms_total.set(vm_count)
+registry.register(ErnicCollector())
 
 
 # ── HTTP handler ──────────────────────────────────
@@ -668,7 +500,8 @@ def collect_metrics():
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/metrics":
-            collect_metrics()
+            # generate_latest drives ErnicCollector.collect(),
+            # which re-reads every data source.
             output = generate_latest(registry)
             self.send_response(200)
             self.send_header(

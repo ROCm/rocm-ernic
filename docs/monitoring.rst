@@ -151,6 +151,20 @@ the QP handle.
    metrics carry ``role`` as well, and the shipped
    dashboard filters on both.
 
+Every metric whose name ends in ``_total`` is a counter
+-- a value that only ever climbs, until the server
+restarts and it resets to zero.  Query those with
+``rate()`` or ``increase()``, never as a raw value.
+Everything else is a gauge and can be read directly.
+
+.. note::
+
+   The exporter reads absolute totals out of the
+   ``*.stats`` files, so it builds its counters through
+   a custom collector.  ``prometheus_client``'s own
+   ``Counter`` class only offers ``inc()``, which cannot
+   express "the server says the total is now N".
+
 Cluster and Instance Metrics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -161,9 +175,9 @@ Cluster and Instance Metrics
    * - Metric
      - Type
      - Description
-   * - ``ernic_instances_total``
+   * - ``ernic_instances``
      - Gauge
-     - Total number of rocm-ernic server instances.
+     - Number of rocm-ernic server instances.
    * - ``ernic_instance_up``
      - Gauge
      - Whether each instance process is alive
@@ -184,9 +198,9 @@ VM Lifecycle Metrics
    * - Metric
      - Type
      - Description
-   * - ``ernic_vms_total``
+   * - ``ernic_vms``
      - Gauge
-     - Total number of attached VMs.
+     - Number of attached VMs.
    * - ``ernic_vm_attached``
      - Gauge
      - Whether a VM is attached (1 = yes).
@@ -214,28 +228,28 @@ All per-instance, labelled
      - Type
      - Description
    * - ``ernic_ip_bytes_tx_total``
-     - Gauge
+     - Counter
      - Total IP/Ethernet bytes transmitted.
    * - ``ernic_ip_bytes_rx_total``
-     - Gauge
+     - Counter
      - Total IP/Ethernet bytes received.
    * - ``ernic_rdma_bytes_sent_total``
-     - Gauge
+     - Counter
      - Total bytes sent via RDMA SEND operations.
    * - ``ernic_rdma_bytes_received_total``
-     - Gauge
+     - Counter
      - Total bytes received via RDMA RECV operations.
    * - ``ernic_rdma_bytes_read_total``
-     - Gauge
+     - Counter
      - Total bytes via RDMA Read.
    * - ``ernic_rdma_bytes_write_total``
-     - Gauge
+     - Counter
      - Total bytes via RDMA Write.
    * - ``ernic_rdma_bytes_total``
-     - Gauge
+     - Counter
      - Aggregate: send + recv + read + write.
    * - ``ernic_ip_bytes_total``
-     - Gauge
+     - Counter
      - Aggregate: IP TX + RX.
 
 Device Health and Events
@@ -249,15 +263,15 @@ Device Health and Events
      - Type
      - Description
    * - ``ernic_flr_reset_total``
-     - Gauge
+     - Counter
      - Cumulative FLR / device reset count.
        Labels: ``ernic_id``, ``role``.
    * - ``ernic_commands_total``
-     - Gauge
+     - Counter
      - Total admin queue commands processed.
        Labels: ``ernic_id``, ``role``.
    * - ``ernic_interrupts_total``
-     - Gauge
+     - Counter
      - Total interrupts delivered.
        Labels: ``ernic_id``, ``role``.
    * - ``ernic_connection_up``
@@ -265,15 +279,15 @@ Device Health and Events
      - Connection state (1 = connected).
        Labels: ``ernic_id``, ``role``, ``state``.
    * - ``ernic_mmio_reads_total``
-     - Gauge
+     - Counter
      - Total MMIO read operations.
        Labels: ``ernic_id``, ``role``.
    * - ``ernic_mmio_writes_total``
-     - Gauge
+     - Counter
      - Total MMIO write operations.
        Labels: ``ernic_id``, ``role``.
    * - ``ernic_stats_writes_total``
-     - Gauge
+     - Counter
      - How many times the server has flushed stats.
        Labels: ``ernic_id``, ``role``.
 
@@ -296,28 +310,28 @@ except ``ernic_qp_count``, which has no ``qp`` label:
      - Number of active Queue Pairs.
        Labels: ``ernic_id``, ``role`` (no ``qp``).
    * - ``ernic_qp_bytes_sent_total``
-     - Gauge
+     - Counter
      - Bytes sent via SEND on this QP.
    * - ``ernic_qp_bytes_received_total``
-     - Gauge
+     - Counter
      - Bytes received via RECV on this QP.
    * - ``ernic_qp_bytes_rdma_read_total``
-     - Gauge
+     - Counter
      - RDMA Read bytes on this QP.
    * - ``ernic_qp_bytes_rdma_write_total``
-     - Gauge
+     - Counter
      - RDMA Write bytes on this QP.
    * - ``ernic_qp_wqes_processed_total``
-     - Gauge
+     - Counter
      - Total WQEs processed on this QP.
    * - ``ernic_qp_cqes_posted_total``
-     - Gauge
+     - Counter
      - Total CQEs posted on this QP.
    * - ``ernic_qp_doorbell_send_total``
-     - Gauge
+     - Counter
      - Send doorbell rings on this QP.
    * - ``ernic_qp_doorbell_recv_total``
-     - Gauge
+     - Counter
      - Receive doorbell rings on this QP.
 
 Grafana Dashboard

@@ -196,13 +196,17 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
             fprintf(fp, "    WQEs by opcode:\n");
             for (i = 0; i < 18 && i < (int)G_N_ELEMENTS(opcode_names); i++) {
                 if (qp_stats->wqes_by_opcode[i] > 0) {
-                    fprintf(fp, "      %-20s: %" PRIu64 "\n", opcode_names[i],
+                    /* The width must exceed the longest opcode name, and the
+                     * space before the colon must be explicit: ernic-exporter
+                     * splits on " : ", so a name that fills the field would
+                     * make the line unparsable. */
+                    fprintf(fp, "      %-21s : %" PRIu64 "\n", opcode_names[i],
                             qp_stats->wqes_by_opcode[i]);
                     total_wqes += qp_stats->wqes_by_opcode[i];
                 }
             }
             if (total_wqes != qp_stats->wqes_processed) {
-                fprintf(fp, "      (other opcodes)    : %" PRIu64 "\n",
+                fprintf(fp, "      %-21s : %" PRIu64 "\n", "(other opcodes)",
                         qp_stats->wqes_processed - total_wqes);
             }
             fprintf(fp, "\n");

@@ -146,6 +146,35 @@ sys.stdout.write("\n")
 PY
 }
 
+# Look up the status a named check recorded.  Prints
+# "pass", "fail", or "" when the check has not run.  Lets
+# a job stop after a failure that would make every later
+# check meaningless, without giving up run_check's
+# record-everything behaviour elsewhere.
+check_status() {
+    # check_status <suite> <name>
+    local suite="$1" name="$2"
+    local f="${CI_RESULTS}/${suite}.jsonl"
+    [ -f "$f" ] || return 0
+    python3 - "$f" "$name" <<'PY'
+import json, sys
+path, want = sys.argv[1], sys.argv[2]
+status = ""
+with open(path) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("name") == want:
+            status = rec.get("status", "")
+print(status)
+PY
+}
+
 # Run a named check, time it, and record pass/fail.
 # Never aborts the job: the report is the source of
 # truth and we want every check attempted.

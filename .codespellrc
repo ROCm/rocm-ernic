@@ -4,8 +4,8 @@
 [codespell]
 check-hidden = true
 
-# rdma-core and src/from-qemu are vendored upstream sources. We can't fix
-# typos there without carrying a patch, so don't let them fail CI.
-skip = ./.git,./rdma-core,./src/from-qemu,./.claude/settings.local.json
+# src/from-qemu is vendored upstream source. We can't fix typos there
+# without carrying a patch, so don't let it fail CI.
+skip = ./.git,./src/from-qemu,./.claude/settings.local.json
 
 ignore-words-list = clen,VAs,TRIMed
