@@ -4,6 +4,23 @@ name: rocm-ernic - System Tests
 on:
   pull_request:
     branches: [ main ]
+    # These jobs boot QEMU guests and run an hour of DKMS builds and
+    # RDMA sweeps, so gate them on the things they actually consume.
+    #
+    # Both jobs pin -e ernic_device_mode=ionic, and ernic_guest_setup
+    # only stages driver/ and rdma-core/ in legacy mode, so neither is
+    # listed here.  If a job ever stops pinning ionic, add them back.
+    paths:
+      - 'src/**'                  # the vfio-user server under test
+      - 'tests/**'                # rdma_verify, test_write_imm, ...
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'ansible/**'              # ernic_host_setup / ernic_guest_setup
+      - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
+      - 'patches/**'              # staged into the guest in ionic mode
+      - 'udev/**'                 # driver_common installs these
+      - '.github/workflows/system-tests.yml'
+      - '.github/actions/fetch-guest-vm/**'
   workflow_dispatch:
 
 permissions:
