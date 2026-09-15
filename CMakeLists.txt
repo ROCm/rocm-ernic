@@ -69,6 +69,10 @@ if(NOT VFIO_USER_FOUND)
     # because pkg_check_modules already created INTERNAL cache
     # entries (e.g. VFIO_USER_INCLUDEDIR) that would shadow
     # find_library / find_path results.
+    # No NO_DEFAULT_PATH: the default search also covers
+    # CMAKE_PREFIX_PATH, which is what the failure message below
+    # tells the user to set for a non-standard prefix such as
+    # ~/.local.
     find_library(VFIO_USER_FALLBACK_LIB
         NAMES vfio-user
         HINTS
@@ -76,7 +80,6 @@ if(NOT VFIO_USER_FOUND)
             /usr/local/lib/x86_64-linux-gnu
             /usr/lib
             /usr/lib/x86_64-linux-gnu
-        NO_DEFAULT_PATH
         DOC "Path to libvfio-user library"
     )
     find_path(VFIO_USER_FALLBACK_INC
@@ -84,17 +87,18 @@ if(NOT VFIO_USER_FOUND)
         HINTS
             /usr/local/include
             /usr/include
-        NO_DEFAULT_PATH
         DOC "Path to libvfio-user headers"
     )
     if(NOT VFIO_USER_FALLBACK_LIB OR
        NOT VFIO_USER_FALLBACK_INC)
         message(FATAL_ERROR
-          "libvfio-user not found via pkg-config or in "
-          "/usr/local.\n"
+          "libvfio-user not found via pkg-config, in "
+          "/usr/local, or on CMAKE_PREFIX_PATH.\n"
           "Install it from "
           "https://github.com/nutanix/libvfio-user\n"
-          "or set CMAKE_PREFIX_PATH to its install location."
+          "then either add its pkgconfig dir to "
+          "PKG_CONFIG_PATH or set CMAKE_PREFIX_PATH to its "
+          "install prefix (e.g. -DCMAKE_PREFIX_PATH=$ENV{HOME}/.local)."
         )
     endif()
     set(VFIO_USER_INCLUDE_DIRS
