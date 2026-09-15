@@ -97,6 +97,18 @@ ernic_perf_reliability_size: 65536
 ernic_perf_pingpong_iters: 1
 ernic_perf_pingpong_size: 4096
 
+# ── RDMA tutorial examples ───────────────────────
+ernic_rdma_tutorial_tests: true
+ernic_rdma_tutorial_examples:
+  - name: send-recv
+    commit: 65893ec63c9eb004c310e25112c73a80d026c2c3
+    msg_size: 64
+    num_concurr_msgs: 1
+  - name: write
+    commit: f73736ed7a7d496f9acfc899e5d1997e791718ed
+    msg_size: 64
+    num_concurr_msgs: 1
+
 # ── Stress-test defaults ─────────────────────────
 ernic_stress_multi_qp_counts:
   - 2

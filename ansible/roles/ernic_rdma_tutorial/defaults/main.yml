@@ -1,0 +1,24 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+ernic_rdma_tutorial_tests: true
+ernic_rdma_tutorial_repo: "https://github.com/jcxue/RDMA-Tutorial.git"
+ernic_rdma_tutorial_dir: /tmp/rdma-tutorial
+ernic_rdma_tutorial_config: tutorial.config
+ernic_rdma_tutorial_sock_port_base: 18600
+ernic_rdma_tutorial_timeout: 60
+ernic_rdma_tutorial_server_hostname: saguaro1
+ernic_rdma_tutorial_client_hostname: saguaro2
+ernic_rdma_tutorial_server_ip: "{{ ernic_nic_subnet }}.10"
+ernic_rdma_tutorial_client_ip: "{{ ernic_nic_subnet }}.20"
+ernic_rdma_tutorial_examples:
+  - name: send-recv
+    commit: 65893ec63c9eb004c310e25112c73a80d026c2c3
+    msg_size: 64
+    num_concurr_msgs: 1
+  - name: write
+    commit: f73736ed7a7d496f9acfc899e5d1997e791718ed
+    msg_size: 64
+    num_concurr_msgs: 1

@@ -31,6 +31,7 @@ default ionic mode need resolute, which is what `ernic_vm_release` selects.
 | [`ernic_guest_setup`](roles/ernic_guest_setup/README.md) | guest VM | DKMS driver (ionic or legacy), rdma-core, udev rules, NIC addressing, rocm-xio |
 | [`ernic_host_setup`](roles/ernic_host_setup/README.md) | host | build/install/run the rocm-ernic service, TAP/bridge networking, bind GPUs to vfio-pci, stage rocm-xio |
 | [`ernic_source`](roles/ernic_source/README.md) | controller | resolve or clone the rocm-ernic checkout the others copy from (included automatically) |
+| [`ernic_rdma_tutorial`](roles/ernic_rdma_tutorial/README.md) | controller | clone and run selected [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial) examples across two rocm-ernic VMs |
 
 ## Installing
 

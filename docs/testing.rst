@@ -244,7 +244,7 @@ A single command builds, deploys, and tests everything:
    cd ansible
    ansible-playbook site.yml
 
-This runs four plays in order:
+This runs five plays in order:
 
 1. **host-setup** -- builds the project, installs the
    service and ``ernicctl``, templates the env file, and
@@ -260,6 +260,11 @@ This runs four plays in order:
 4. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.
+5. **tutorial-tests** -- clones
+   ``jcxue/RDMA-Tutorial`` on the two guests, checks out
+   selected example commits, builds them, and runs the
+   corresponding server/client pair over the rocm-ernic
+   RDMA link.
 
 The setup plays are thin wrappers around the roles of the
 ``sbates130272.rocm_ernic`` collection, whose source lives in
@@ -276,6 +281,7 @@ Each play can also be run separately:
    ansible-playbook playbooks/vm-create.yml
    ansible-playbook playbooks/guest-setup.yml
    ansible-playbook playbooks/sanity-tests.yml
+   ansible-playbook playbooks/tutorial-tests.yml
 
 Variable overrides
 ^^^^^^^^^^^^^^^^^^
