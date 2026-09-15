@@ -252,6 +252,21 @@ target_link_directories(test_loopback_sge_copy PRIVATE
 target_link_libraries(test_loopback_sge_copy PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES})
 
+# ionic MSI-X mask/pending test. It #includes the ionic emulator translation
+# unit to reach the per-vector interrupt state and stubs vfu_irq_trigger()
+# with a per-vector counter, so no vfio-user link or live context is needed.
+add_executable(test_ionic_intr_pending test_ionic_intr_pending.c)
+target_include_directories(test_ionic_intr_pending PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_intr_pending PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # TCP mesh-topology broadcast test. It #includes the TCP backend translation
 # unit to reach its static helpers and stubs the backend's externals, so no
 # RDMA subsystem link is needed; the broadcast goes over a socketpair.
@@ -394,6 +409,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_loopback_sge_copy>
 )
 set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# ionic MSI-X mask/pending unit test: asserts an assertion raised on a masked
+# vector is latched and replayed on unmask rather than dropped.
+add_test(
+    NAME ionic-intr-pending-unit
+    COMMAND $<TARGET_FILE:test_ionic_intr_pending>
+)
+set_tests_properties(ionic-intr-pending-unit PROPERTIES TIMEOUT 30)
 
 # TCP mesh-topology broadcast unit test: asserts the unused node slots in the
 # fixed-size payload are zeroed rather than carrying stack contents.

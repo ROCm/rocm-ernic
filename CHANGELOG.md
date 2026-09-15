@@ -57,6 +57,17 @@
 
 ### Fixed
 
+* MSI-X assertions raised while a vector is masked are latched and replayed
+  when the driver unmasks, instead of being dropped. Every vector comes out of
+  reset masked, so an interrupt raised in the window before the guest arms its
+  handler was discarded with no pending state to recover it, and the queue
+  waited forever for an interrupt that would never be sent again. The emulator
+  now records the assertion per vector and delivers it from both unmask paths:
+  a direct write of 0 to the interrupt mask register and an `INTR_CRED_UNMASK`
+  credit return. `tests/test_ionic_intr_pending.c` (CTest
+  `ionic-intr-pending-unit`) covers both paths, mask-on-assert re-latching, and
+  the collapse of repeated assertions into one delivery.
+
 * Memory region bounds checks in the TCP and loopback backends no longer
   overflow. The checks were written as `addr + len > start + length`, whose
   unchecked 64-bit arithmetic a peer could wrap by choosing an `addr` just

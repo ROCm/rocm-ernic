@@ -293,6 +293,8 @@ struct ionic_eth_emu {
     /* Interrupt controller shadow (per-vector: mask, mask-on-assert). */
     uint32_t intr_mask[IONIC_MSIX_MAX_VECTORS];
     uint32_t intr_mask_assert[IONIC_MSIX_MAX_VECTORS];
+    /* Set when a vector asserted while masked; replayed on unmask. */
+    uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
     struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
@@ -423,6 +425,35 @@ void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
 }
 
 /* -------------------------------------------------------------------------
+ * Deliver one MSI-X assertion on an unmasked vector.  Callers must have
+ * established that the vector is in range and currently unmasked.
+ * -------------------------------------------------------------------------
+ */
+static int deliver_irq(struct ionic_eth_emu *emu, int vec)
+{
+    emu->intr_pending[vec] = 0;
+
+    /* Real hardware latches the mask as it asserts when mask_assert is set,
+     * so the driver's NAPI poll runs without a second interrupt racing it. */
+    if (emu->intr_mask_assert[vec])
+        emu->intr_mask[vec] = 1;
+
+    int ret = vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
+    if (!ret)
+        pvrdma_irq_count(emu->pvrdma_handle);
+
+    return ret;
+}
+
+/* Replay an assertion that arrived while the vector was masked. */
+static void unmask_irq(struct ionic_eth_emu *emu, int vec)
+{
+    emu->intr_mask[vec] = 0;
+    if (emu->intr_pending[vec])
+        deliver_irq(emu, vec);
+}
+
+/* -------------------------------------------------------------------------
  * BAR0 access callback
  *
  * The ionic driver accesses BAR0 as 32-bit MMIO registers.  We maintain a
@@ -472,7 +503,10 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 
             switch (rel % INTR_REG_STRIDE) {
             case INTR_MASK_OFF:
-                emu->intr_mask[vec] = val;
+                if (val)
+                    emu->intr_mask[vec] = val;
+                else
+                    unmask_irq(emu, vec);
                 break;
             case INTR_MASK_ASSERT_OFF:
                 emu->intr_mask_assert[vec] = val;
@@ -482,7 +516,7 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
                  * a vector that mask-on-assert disabled.  Ignoring this pins
                  * the mask after the first interrupt and the queue stalls. */
                 if (val & INTR_CRED_UNMASK)
-                    emu->intr_mask[vec] = 0;
+                    unmask_irq(emu, vec);
                 break;
             default:
                 break;
@@ -1535,17 +1569,14 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
 {
     if (vec < 0 || vec >= IONIC_MSIX_MAX_VECTORS)
         return -EINVAL;
-    if (emu->intr_mask[vec])
-        return 0; /* masked */
 
-    /* Real hardware latches the mask as it asserts when mask_assert is set,
-     * so the driver's NAPI poll runs without a second interrupt racing it. */
-    if (emu->intr_mask_assert[vec])
-        emu->intr_mask[vec] = 1;
+    /* Latch rather than drop: every vector starts masked, so an assertion
+     * raised before the driver arms its handler would otherwise be lost and
+     * the queue would wait forever for an interrupt that never comes again. */
+    if (emu->intr_mask[vec]) {
+        emu->intr_pending[vec] = 1;
+        return 0;
+    }
 
-    int ret = vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
-    if (!ret)
-        pvrdma_irq_count(emu->pvrdma_handle);
-
-    return ret;
+    return deliver_irq(emu, vec);
 }
