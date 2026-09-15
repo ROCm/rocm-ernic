@@ -1,12 +1,11 @@
 # codespell config file docs:
 #    https://github.com/codespell-project/codespell#using-a-config-file
 
-# NOTE: The GitHub action does NOT use this file, but instead uses the
-#       .codespellignore file. Keep this updated for running codespell
-#       locally, though.
-
 [codespell]
 check-hidden = true
-skip = ./.git
+
+# rdma-core and src/from-qemu are vendored upstream sources. We can't fix
+# typos there without carrying a patch, so don't let them fail CI.
+skip = ./.git,./rdma-core,./src/from-qemu,.claude/settings.local.json
 
 ignore-words-list = clen,VAs,TRIMed
