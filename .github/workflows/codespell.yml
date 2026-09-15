@@ -4,16 +4,7 @@
 
 name: "rocm-ernic codespell"
 
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'projects/hipfile/**'
-      - '.github/workflows/hipfile-*.yml'
-  pull_request:
-    paths:
-      - 'projects/hipfile/**'
-      - '.github/workflows/hipfile-*.yml'
+on: pull_request
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,12 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          sparse-checkout: |
-            projects/hipfile
-            .github/workflows
       - uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
         with:
           ignore_words_file: |
-            projects/hipfile/.codespellignore
-          skip: "./projects/hipfile/third-party,./projects/hipfile/third-party/*"
+            .codespellignore
