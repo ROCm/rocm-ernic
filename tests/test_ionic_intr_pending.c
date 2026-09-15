@@ -151,14 +151,14 @@ void vfu_sgl_mark_dirty(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, size_t cnt)
 
 static int failures;
 
-#define CHECK(cond, ...)                                                      \
-    do {                                                                      \
-        if (!(cond)) {                                                        \
-            printf("FAIL: %s:%d: ", __func__, __LINE__);                      \
-            printf(__VA_ARGS__);                                              \
-            printf("\n");                                                     \
-            failures++;                                                       \
-        }                                                                     \
+#define CHECK(cond, ...)                                 \
+    do {                                                 \
+        if (!(cond)) {                                   \
+            printf("FAIL: %s:%d: ", __func__, __LINE__); \
+            printf(__VA_ARGS__);                         \
+            printf("\n");                                \
+            failures++;                                  \
+        }                                                \
     } while (0)
 
 /* Write one DWORD to a vector's interrupt-control register, the way the
