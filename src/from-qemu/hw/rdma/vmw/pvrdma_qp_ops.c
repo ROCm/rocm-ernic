@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 #include "qemu/compiler.h" /* For unlikely() */
 #include "../rdma_utils.h"
@@ -319,7 +320,8 @@ void pvrdma_drain_deferred_completions(void)
             RdmaRmQP *qp =
                 rdma_rm_get_qp(&dc->dev->rdma_dev_res, dc->qp_handle);
             if (qp) {
-                __atomic_fetch_sub(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
+                atomic_fetch_sub_explicit(&qp->send_in_flight, 1,
+                                          memory_order_acq_rel);
             }
         }
 
@@ -524,7 +526,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
         CompHandlerCtx *comp_ctx;
         uint32_t pvrdma_opcode = wqe->hdr.opcode;
 
-        if (__atomic_load_n(&qp->send_in_flight, __ATOMIC_ACQUIRE) >=
+        if (atomic_load_explicit(&qp->send_in_flight, memory_order_acquire) >=
             MAX_SEND_IN_FLIGHT) {
             break;
         }
@@ -697,7 +699,7 @@ static gboolean continue_qp_send_processing(gpointer user_data)
             continue;
         }
 
-        __atomic_fetch_add(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
+        atomic_fetch_add_explicit(&qp->send_in_flight, 1, memory_order_acq_rel);
 
         rdma_backend_post_send(&dev->backend_dev, &qp->backend_qp, qp->qp_type,
                                (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge,
@@ -878,7 +880,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
         CompHandlerCtx *comp_ctx;
         uint32_t pvrdma_opcode = wqe->hdr.opcode;
 
-        if (__atomic_load_n(&qp->send_in_flight, __ATOMIC_ACQUIRE) >=
+        if (atomic_load_explicit(&qp->send_in_flight, memory_order_acquire) >=
             MAX_SEND_IN_FLIGHT) {
             break;
         }
@@ -1067,7 +1069,7 @@ void pvrdma_qp_send(PVRDMADev *dev, uint32_t qp_handle)
             }
         }
 
-        __atomic_fetch_add(&qp->send_in_flight, 1, __ATOMIC_ACQ_REL);
+        atomic_fetch_add_explicit(&qp->send_in_flight, 1, memory_order_acq_rel);
 
         rdma_backend_post_send(&dev->backend_dev, &qp->backend_qp, qp->qp_type,
                                (struct ibv_sge *)&wqe->sge[0], wqe->hdr.num_sge,
