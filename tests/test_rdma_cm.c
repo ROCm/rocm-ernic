@@ -6,6 +6,9 @@
  * exposed through query_qp when QPs are auto-paired in loopback mode.
  */
 
+/* usleep() is POSIX, not ISO C */
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

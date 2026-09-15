@@ -29,6 +29,10 @@ project(rocm-ernic
     LANGUAGES C
 )
 
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
 # Set the list of build types for ccmake/CMake GUI
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
   "Debug" "Release" "RelWithDebInfo" "MinSizeRel" "None"
