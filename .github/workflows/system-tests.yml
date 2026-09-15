@@ -1366,11 +1366,20 @@ jobs:
         # --backend is the RDMA data path; --tap is the Ethernet one.
         # Both are needed here: the sanity suite pings and runs iperf3
         # between the guests before it touches RDMA.
+        #
+        # --mac is not optional once two instances share a bridge.  The
+        # emulator's built-in address is a constant, so without it both
+        # guests come up on 02:a0:d1:00:00:01 and ARP can never resolve
+        # -- the ping fails with Destination Host Unreachable however
+        # healthy the TAPs are.  rocm-ernic-launcher passes a distinct
+        # MAC per instance for the same reason; this is that, spelled
+        # out, because the job does not go through the launcher.
         ./build/rocm-ernic \
           --ionic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
           --tap "${ERNIC_TAP_PREFIX}1" \
+          --mac 02:a0:d1:00:00:01 \
           --verbose > /tmp/server1.log 2>&1 &
         
         SERVER1_PID=$!
@@ -1471,12 +1480,14 @@ jobs:
         rm -f /tmp/vfio-user-server2.sock
 
         # See server 1: the second TAP on the same bridge is what gives
-        # this guest a peer at layer 2.
+        # this guest a peer at layer 2, and the MAC is what lets the two
+        # guests tell each other apart on it.
         ./build/rocm-ernic \
           --ionic \
           --socket /tmp/vfio-user-server2.sock \
           --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \
           --tap "${ERNIC_TAP_PREFIX}2" \
+          --mac 02:a0:d1:00:00:02 \
           --verbose > /tmp/server2.log 2>&1 &
         
         SERVER2_PID=$!
