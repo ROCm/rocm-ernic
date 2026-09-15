@@ -67,7 +67,51 @@
   credit return. `tests/test_ionic_intr_pending.c` (CTest
   `ionic-intr-pending-unit`) covers both paths, mask-on-assert re-latching, and
   the collapse of repeated assertions into one delivery.
+* A local loopback RDMA write whose bounds check fails is now reported to the
+  guest as a failure. The check in `tcp_post_send()` correctly refused the
+  copy, but execution then fell through to an unconditional statistics update
+  and an `IBV_WC_SUCCESS` completion, so the guest was told a write that had
+  copied nothing had succeeded and went on reading whatever the target region
+  held before. The same fault on the remote path has always failed the work
+  request; the loopback shortcut now reaches the same verdict without the
+  wire, completing with `IBV_WC_REM_ACCESS_ERR` and zero bytes, and the byte
+  counters are updated only after a copy that actually happened. Reachable
+  from the guest by posting a write to a loopback queue pair with a bad key,
+  a region with no host mapping, or an out-of-range address.
+* `tcp_wr_map_sge()` now refuses a work request whole when any of its
+  scatter-gather entries cannot be mapped, instead of zeroing that entry's
+  length and continuing. Every copy loop downstream walks the entries in order
+  and advances its destination cursor only for entries it actually copies, so
+  a skipped entry did not leave a hole -- it slid all the later data down by
+  that entry's length, writing the right number of bytes to the wrong offsets
+  and completing successfully. Both callers now fail the request with
+  `IBV_WC_LOC_PROT_ERR`.
+* `tcp_wr_map_sge()` now bounds `num_sge` against the 32-entry array it fills.
+  The count was stored in `wr->num_sge` and travels to the peer inside the
+  work request, where receive-side loops iterate to it without re-clamping;
+  this was previously safe only because the PVRDMA command layer rejected
+  larger values first.
+* The local loopback path in `tcp_post_send()` now releases the DMA mappings
+  taken by `tcp_wr_map_sge()` before freeing the work request, and pops the
+  send queue under `priv->lock`. The mappings were leaked on every loopback
+<<<<<<< HEAD
+  send, and the unsynchronized pop raced the two receive-thread sites that pop
+  the same queue.
+=======
+  send, and the pop without the lock raced the two receive-thread sites that
+  pop the same queue.
+* MSI-X assertions raised while a vector is masked are latched and replayed
+  when the driver unmasks, instead of being dropped. Every vector comes out of
+  reset masked, so an interrupt raised in the window before the guest arms its
+  handler was discarded with no pending state to recover it, and the queue
+  waited forever for an interrupt that would never be sent again. The emulator
+  now records the assertion per vector and delivers it from both unmask paths:
+  a direct write of 0 to the interrupt mask register and an `INTR_CRED_UNMASK`
+  credit return. `tests/test_ionic_intr_pending.c` (CTest
+  `ionic-intr-pending-unit`) covers both paths, mask-on-assert re-latching, and
+  the collapse of repeated assertions into one delivery.
 
+>>>>>>> ccb353c (fix(changelog): clear remaining spell check failure)
 * Memory region bounds checks in the TCP and loopback backends no longer
   overflow. The checks were written as `addr + len > start + length`, whose
   unchecked 64-bit arithmetic a peer could wrap by choosing an `addr` just
@@ -139,10 +183,7 @@
   runs well past the payload. The DMA memory-region path in `tcp_wr_map_sge()`
   compounds this: `pci_dma_map()` may map less than was asked for, but its
   in/out length is ignored and the work request keeps the full requested
-  length. `tcp_wr_map_sge()` also stores an unbounded `num_sge` alongside a
-  32-entry array; consumers iterate to `num_sge` without their own bound, which
-  is currently safe only because the PVRDMA command layer rejects larger
-  values.
+  length.
 * `create_mr()` still registers a memory region whose host mapping failed,
   with `virt = NULL` and the guest's own `start` and `length`, so that the
   loopback backend can allocate its keys from the metadata alone. Both

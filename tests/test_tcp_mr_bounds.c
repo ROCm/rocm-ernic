@@ -237,16 +237,41 @@ int eth_rx_inject_frame_mesh_blocking(PVRDMADev *dev, const void *frame_data,
     (void)len;
     return 0;
 }
+/*
+ * Recorded completions.
+ *
+ * A rejected access is only half-handled if it merely declines to copy: the
+ * caller still has to be told it failed. The loopback path used to fall
+ * through from its bounds-check failure to an unconditional IBV_WC_SUCCESS,
+ * so the guest was told a write had landed that never happened. The guard
+ * bands cannot see that -- memory is untouched either way, which is exactly
+ * the bug -- so the completion is captured here and asserted on separately.
+ */
+static struct {
+    unsigned count;
+    enum ibv_wc_status status;
+    uint32_t byte_len;
+    uint32_t qp_num;
+    enum ibv_wc_opcode opcode;
+} last_completion;
+
+static void completions_reset(void)
+{
+    memset(&last_completion, 0, sizeof(last_completion));
+}
+
 void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
                                 uint32_t byte_len, uint32_t qp_num,
                                 enum ibv_wc_opcode opcode, void *ctx)
 {
-    (void)status;
     (void)vendor_err;
-    (void)byte_len;
-    (void)qp_num;
-    (void)opcode;
     (void)ctx;
+
+    last_completion.count++;
+    last_completion.status = status;
+    last_completion.byte_len = byte_len;
+    last_completion.qp_num = qp_num;
+    last_completion.opcode = opcode;
 }
 
 /* ---- Direct table test of the bounds predicate ------------------------- */
@@ -751,9 +776,20 @@ static int test_read_wrap(void)
 /* ---- tcp_wr_map_sge() -------------------------------------------------- */
 
 /*
- * A scatter-gather entry whose address wraps must be neutralised: the entry
- * is zero-length with no host pointer, so nothing downstream copies through
- * it.
+ * A work request containing an unmappable scatter-gather entry must be
+ * refused whole, not mapped down to the entries that happen to be valid.
+ *
+ * Zeroing the bad entry's length and carrying on -- what this did before --
+ * looks safe, since nothing copies through a NULL host pointer. But every
+ * copy loop downstream walks the entries in order and advances its cursor
+ * only for entries it actually copies, so a skipped entry does not leave a
+ * hole: it slides all the later data down by that entry's length. The
+ * request then writes the right number of bytes to the wrong offsets and
+ * reports success. Refusing it is the only answer that keeps the surviving
+ * entries' placement meaningful.
+ *
+ * The valid-entry case is asserted alongside so a fix that simply refuses
+ * everything fails here.
  */
 static int test_sge_wrap(void)
 {
@@ -773,8 +809,8 @@ static int test_sge_wrap(void)
     backend_dev.rdma_dev_res = &dev_res;
     tqp.backend_dev = &backend_dev;
 
-    /* [0] wraps below the region; [1] is a legitimate in-bounds entry, so a
-     * fix that simply rejects everything is caught too. */
+    /* [0] wraps below the region; [1] is a legitimate in-bounds entry. The
+     * valid entry must not rescue the request. */
     memset(sge, 0, sizeof(sge));
     sge[0].addr = wrapped_addr();
     sge[0].length = WRAP_LEN;
@@ -783,19 +819,49 @@ static int test_sge_wrap(void)
     sge[1].length = WRAP_LEN;
     sge[1].lkey = MR_RKEY;
 
-    tcp_wr_map_sge(&tqp, &wr, sge, 2);
-
-    if (wr.sge[0].host_addr != NULL || wr.sge[0].length != 0) {
-        printf("FAIL %-22s: wrapped SGE mapped to %p len %u, expected "
-               "NULL/0 (region base is %p)\n",
-               name, wr.sge[0].host_addr, wr.sge[0].length, test_mr.virt);
+    if (tcp_wr_map_sge(&tqp, &wr, sge, 2)) {
+        printf("FAIL %-22s: request with a wrapped SGE was accepted; entry 0 "
+               "mapped to %p len %u, entry 1 to %p len %u\n",
+               name, wr.sge[0].host_addr, wr.sge[0].length, wr.sge[1].host_addr,
+               wr.sge[1].length);
         fail = 1;
     }
-    if (wr.sge[1].host_addr != test_mr.virt || wr.sge[1].length != WRAP_LEN) {
-        printf("FAIL %-22s: in-bounds SGE mapped to %p len %u, expected "
-               "%p len %u\n",
-               name, wr.sge[1].host_addr, wr.sge[1].length, test_mr.virt,
-               WRAP_LEN);
+    if (wr.sge[0].host_addr != NULL) {
+        printf("FAIL %-22s: wrapped SGE still mapped to %p (region base "
+               "is %p)\n",
+               name, wr.sge[0].host_addr, test_mr.virt);
+        fail = 1;
+    }
+
+    /* An all-valid request is still mapped, entry for entry. */
+    memset(&wr, 0, sizeof(wr));
+    sge[0].addr = MR_START;
+    sge[0].length = WRAP_LEN;
+    if (!tcp_wr_map_sge(&tqp, &wr, sge, 2)) {
+        printf("FAIL %-22s: request with two in-bounds SGEs was refused\n",
+               name);
+        fail = 1;
+    } else if (wr.sge[0].host_addr != test_mr.virt ||
+               wr.sge[1].host_addr != test_mr.virt ||
+               wr.sge[0].length != WRAP_LEN || wr.sge[1].length != WRAP_LEN) {
+        printf("FAIL %-22s: in-bounds SGEs mapped to %p/%p len %u/%u, "
+               "expected %p len %u for both\n",
+               name, wr.sge[0].host_addr, wr.sge[1].host_addr, wr.sge[0].length,
+               wr.sge[1].length, test_mr.virt, WRAP_LEN);
+        fail = 1;
+    }
+
+    /*
+     * More entries than the fixed array holds. max_sge is 32 and the guest's
+     * count is checked upstream, but wr->num_sge travels to the peer inside
+     * TcpWR and bounds receive-side loops, so the backend refuses rather than
+     * trusting that check to stay in place.
+     */
+    memset(&wr, 0, sizeof(wr));
+    if (tcp_wr_map_sge(&tqp, &wr, sge, 33)) {
+        printf("FAIL %-22s: num_sge=33 accepted into a 32-entry array "
+               "(wr.num_sge left at %u)\n",
+               name, wr.num_sge);
         fail = 1;
     }
 
@@ -803,7 +869,8 @@ static int test_sge_wrap(void)
         fail = 1;
     }
     if (!fail) {
-        printf("PASS %-22s: wrapped SGE neutralised, valid SGE mapped\n", name);
+        printf("PASS %-22s: partial mapping refused, valid request mapped\n",
+               name);
     }
     return fail;
 }
@@ -825,13 +892,16 @@ typedef struct {
 } TestCompCtx;
 
 /*
- * The loopback shortcut in tcp_post_send() copies straight into the target
- * region when the destination node is this node, bypassing the wire. It
- * needs the same overflow-safe check as the receive handlers.
+ * Drive one loopback RDMA_WRITE through tcp_post_send() to `raddr` and report
+ * what came back: the completion recorded by the stub and the device's
+ * RDMA-write byte counter.
+ *
+ * The destination node equals the local node, so the request takes the
+ * loopback shortcut that copies straight into the target region instead of
+ * going to the wire.
  */
-static int test_loopback_wrap(void)
+static void run_loopback_write(uint64_t raddr, uint64_t *rdma_write_bytes)
 {
-    const char *name = "loopback-write-wrap";
     RdmaBackendDev backend_dev;
     RdmaDeviceResources dev_res;
     RdmaBackendQP qp;
@@ -839,9 +909,15 @@ static int test_loopback_wrap(void)
     TcpQP tqp;
     TestCompCtx ctx;
     struct ibv_sge sge;
-    uint8_t source[WRAP_LEN];
     const uint32_t qpn = 1;
-    int fail = 0;
+
+    /*
+     * A real device struct, because the byte counters live on it: the stats
+     * helper casts backend_dev.dev to PVRDMADev and would return early on the
+     * NULL this test used to pass, hiding the very update being asserted.
+     * Heap-allocated as it is far too large for a stack frame.
+     */
+    PVRDMADev *dev = g_new0(PVRDMADev, 1);
 
     memset(&backend_dev, 0, sizeof(backend_dev));
     memset(&dev_res, 0, sizeof(dev_res));
@@ -852,6 +928,7 @@ static int test_loopback_wrap(void)
 
     backend_dev.rdma_dev_res = &dev_res;
     backend_dev.backend_private = &priv;
+    backend_dev.dev = (PCIDevice *)dev;
     priv.backend_dev = &backend_dev;
     priv.local_node_id = TEST_LOCAL_NODE;
     priv.qps = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -867,6 +944,50 @@ static int test_loopback_wrap(void)
 
     qp.ibqp = (struct ibv_qp *)(uintptr_t)qpn;
 
+    memset(&sge, 0, sizeof(sge));
+    sge.addr = MR_START + SRC_OFFSET;
+    sge.length = WRAP_LEN;
+    sge.lkey = MR_RKEY;
+
+    ctx.opcode = PVRDMA_WR_RDMA_WRITE;
+    ctx.cqe.opcode = IBV_WC_RDMA_WRITE;
+    ctx.remote_addr = raddr;
+    ctx.rkey = MR_RKEY;
+
+    completions_reset();
+    tcp_post_send(&backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0, 0,
+                  &ctx);
+
+    *rdma_write_bytes = dev->stats.total_bytes_rdma_write;
+
+    g_queue_free_full(tqp.send_queue, g_free);
+    g_queue_free_full(tqp.recv_queue, g_free);
+    g_hash_table_destroy(priv.qps);
+    qemu_mutex_destroy(&priv.lock);
+    g_free(dev);
+}
+
+/*
+ * The loopback shortcut in tcp_post_send() copies straight into the target
+ * region when the destination node is this node, bypassing the wire. It
+ * needs the same overflow-safe check as the receive handlers -- and, having
+ * refused the copy, must say so.
+ *
+ * Rejecting the copy is only half the job. This path used to log the bounds
+ * failure and then fall through to an unconditional statistics update and an
+ * IBV_WC_SUCCESS completion, so a guest whose write was refused was told it
+ * had succeeded and went on reading stale bytes as if they were its own.
+ * Silent data loss is a poor trade for a blocked overflow, and the remote
+ * path in the same function has always failed this request properly, so the
+ * completion and the counter are asserted here alongside the guard bands.
+ */
+static int test_loopback_wrap(void)
+{
+    const char *name = "loopback-write-wrap";
+    uint8_t source[WRAP_LEN];
+    uint64_t bytes = 0;
+    int fail = 0;
+
     /*
      * Source data is read from a valid in-bounds SGE; only the *remote*
      * address wraps. It is placed deep inside the region rather than at the
@@ -877,29 +998,94 @@ static int test_loopback_wrap(void)
     memset(source, ATTACK_BYTE, sizeof(source));
     memcpy((uint8_t *)test_mr.virt + SRC_OFFSET, source, sizeof(source));
 
-    memset(&sge, 0, sizeof(sge));
-    sge.addr = MR_START + SRC_OFFSET;
-    sge.length = WRAP_LEN;
-    sge.lkey = MR_RKEY;
-
-    ctx.opcode = PVRDMA_WR_RDMA_WRITE;
-    ctx.remote_addr = wrapped_addr();
-    ctx.rkey = MR_RKEY;
-
-    tcp_post_send(&backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0, 0,
-                  &ctx);
+    run_loopback_write(wrapped_addr(), &bytes);
 
     if (!guards_intact(name)) {
         fail = 1;
     }
 
-    g_queue_free_full(tqp.send_queue, g_free);
-    g_queue_free_full(tqp.recv_queue, g_free);
-    g_hash_table_destroy(priv.qps);
-    qemu_mutex_destroy(&priv.lock);
+    /* The caller must be told. This is the assertion the guard bands cannot
+     * make: on a rejection memory is untouched either way. */
+    if (last_completion.count != 1) {
+        printf("FAIL %-22s: %u completions posted, expected exactly 1\n", name,
+               last_completion.count);
+        fail = 1;
+    } else if (last_completion.status == IBV_WC_SUCCESS) {
+        printf("FAIL %-22s: rejected write completed IBV_WC_SUCCESS -- the "
+               "guest is told a write that copied nothing succeeded\n",
+               name);
+        fail = 1;
+    } else if (last_completion.byte_len != 0) {
+        printf("FAIL %-22s: rejected write reported %u bytes, expected 0\n",
+               name, last_completion.byte_len);
+        fail = 1;
+    }
+
+    /* And not billed for bytes that were never written. */
+    if (bytes != 0) {
+        printf("FAIL %-22s: rejected write added %" PRIu64 " bytes to the "
+               "RDMA-write counter, expected 0\n",
+               name, bytes);
+        fail = 1;
+    }
 
     if (!fail) {
-        printf("PASS %-22s: wrapped loopback write rejected, guards intact\n",
+        printf("PASS %-22s: wrapped loopback write rejected with an error "
+               "completion, guards intact, stats unchanged\n",
+               name);
+    }
+    return fail;
+}
+
+/*
+ * The mirror of the case above: a legitimate loopback write must still copy,
+ * still complete successfully, and still count. Without this, a "fix" that
+ * failed every loopback write would pass the rejection test.
+ */
+static int test_loopback_ok(void)
+{
+    const char *name = "loopback-write-ok";
+    uint8_t source[WRAP_LEN];
+    uint64_t bytes = 0;
+    int fail = 0;
+
+    memset(source, ATTACK_BYTE, sizeof(source));
+    memcpy((uint8_t *)test_mr.virt + SRC_OFFSET, source, sizeof(source));
+
+    /* Destination at the region's base: in bounds, and clear of the source
+     * at SRC_OFFSET so the copy does not overlap. */
+    run_loopback_write(MR_START, &bytes);
+
+    if (!guards_intact(name)) {
+        fail = 1;
+    }
+
+    if (memcmp(test_mr.virt, source, WRAP_LEN) != 0) {
+        printf("FAIL %-22s: in-bounds loopback write did not land\n", name);
+        fail = 1;
+    }
+
+    if (last_completion.count != 1) {
+        printf("FAIL %-22s: %u completions posted, expected exactly 1\n", name,
+               last_completion.count);
+        fail = 1;
+    } else if (last_completion.status != IBV_WC_SUCCESS) {
+        printf("FAIL %-22s: in-bounds write completed with status %d, "
+               "expected IBV_WC_SUCCESS (%d)\n",
+               name, last_completion.status, IBV_WC_SUCCESS);
+        fail = 1;
+    }
+
+    if (bytes != WRAP_LEN) {
+        printf("FAIL %-22s: in-bounds write added %" PRIu64 " bytes to the "
+               "RDMA-write counter, expected %u\n",
+               name, bytes, WRAP_LEN);
+        fail = 1;
+    }
+
+    if (!fail) {
+        printf("PASS %-22s: in-bounds loopback write landed, completed "
+               "successfully, counted\n",
                name);
     }
     return fail;
@@ -925,6 +1111,9 @@ int main(void)
 
     memset(backing, GUARD_BYTE, BACKING_LEN);
     failures += test_loopback_wrap();
+
+    memset(backing, GUARD_BYTE, BACKING_LEN);
+    failures += test_loopback_ok();
 
     fixture_destroy();
 
