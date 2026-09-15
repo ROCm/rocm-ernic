@@ -199,18 +199,11 @@ jobs:
         check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
         check_file "${PREFIX}/share/rocm-ernic/fetch-ionic-sources.sh"
 
-        echo ""
-        echo "=== Legacy driver source files (deprecated path) ==="
-        ls "${PREFIX}/share/rocm-ernic/driver-legacy/" \
-          | head -20
-        if [ -f \
-          "${PREFIX}/share/rocm-ernic/driver-legacy/rocm_ernic_main.c" \
-        ]; then
-          echo "OK: Legacy driver sources installed"
-        else
-          echo "MISSING: Legacy driver sources"
-          exit 1
-        fi
+        # The deprecated rocm_ernic driver sources under
+        # share/rocm-ernic/driver-legacy/ are deliberately not
+        # checked here any more.  CI is ionic-only, and requiring
+        # those files to be installed would block the removal this
+        # workflow should not be standing in the way of.
 
         echo ""
         echo "All service files installed correctly."

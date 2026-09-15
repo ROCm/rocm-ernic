@@ -103,8 +103,7 @@ group_end
 # the two guests, the functional run has proven nothing.
 
 probe_rdma_device() {
-    vm_ssh "$1" 'ibv_devices' \
-        | grep -qE 'rocm-rdma-ernic|rocep|ionic'
+    [ -n "$(guest_rdma_dev "$1")" ]
 }
 
 probe_port_active() {
@@ -112,14 +111,17 @@ probe_port_active() {
 }
 
 # Device name and NIC address are discovered rather than
-# assumed: the guest names the device from its GUID and
-# the play assigns .10/.20 from ernic_nic_subnet.
+# assumed: the guest renames the RDMA device twice during
+# boot and the play assigns .10/.20 from ernic_nic_subnet.
+#
+# The lookup matches on PCI vendor ID rather than on name.
+# Taking the first line of ibv_devices, as this did, picks
+# up whatever else the guest happens to have; matching on
+# name instead goes stale the next time the udev policy
+# changes.  See scripts/find-rdma-device.sh.
 guest_rdma_dev() {
-    # Single-quoted on purpose: the awk body must reach
-    # the guest shell unexpanded.
-    # shellcheck disable=SC2016
-    vm_ssh "$1" \
-        'ibv_devices | awk "NR>2 {print \$1; exit}"' \
+    vm_ssh "$1" 'sh -s' \
+        < "${PROJECT_ROOT}/scripts/find-rdma-device.sh" \
         | tr -d '\r'
 }
 
@@ -134,9 +136,12 @@ guest_rdma_ip() {
 # NIC carries RDMA traffic.
 probe_pingpong() {
     local dev1 dev2 ip1
-    dev1="$(guest_rdma_dev 1)"
-    dev2="$(guest_rdma_dev 2)"
-    ip1="$(guest_rdma_ip 1)"
+    # `|| true` because the lookup now exits non-zero when there is no
+    # device, and errexit would take that before the empty-check below
+    # could name which of the three came back blank.
+    dev1="$(guest_rdma_dev 1)" || true
+    dev2="$(guest_rdma_dev 2)" || true
+    ip1="$(guest_rdma_ip 1)" || true
 
     if [ -z "${dev1}" ] || [ -z "${dev2}" ] || [ -z "${ip1}" ]; then
         log_error "could not discover RDMA device/address" \

@@ -39,27 +39,37 @@
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
-    rdma_dev: rocm-rdma-ernic0
 
   tasks:
 
+    # Identifies the device by PCI vendor ID rather than by name: the
+    # name is rewritten twice during boot and says nothing about which
+    # driver bound the device.  See scripts/find-rdma-device.sh.
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: >-
-          set -o pipefail;
-          {{ vm1_ssh }}
-          'ibv_devices | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
-          | head -1'
+          {{ vm1_ssh }} 'sh -s'
+          < {{ ernic_project_root }}/scripts/find-rdma-device.sh
       register: rdma_dev_detect
       changed_when: false
       failed_when: false
 
+    # No default here.  Falling back to a hard-coded name hands every
+    # RDMA test below a device that was never there, and they then
+    # fail against it instead of reporting that detection came up
+    # empty.
+    - name: Assert an RDMA device was detected on VM1
+      ansible.builtin.assert:
+        that:
+          - rdma_dev_detect.stdout | trim | length > 0
+        fail_msg: >-
+          No RDMA device with PCI vendor 0x1022 found on VM1, so the
+          driver did not bind or the port never came up.
+
     - name: Set RDMA device name
       ansible.builtin.set_fact:
-        rdma_dev: >-
-          {{ rdma_dev_detect.stdout | trim
-             | default('rocm-rdma-ernic0', true) }}
+        rdma_dev: "{{ rdma_dev_detect.stdout | trim }}"
 
     - name: Skip all tests if requested
       ansible.builtin.meta: end_play
@@ -257,13 +267,22 @@
           - "ib_send_bw:      {{ 'PASS' if bw_pass else 'FAIL' }}"
           - "ibv_rc_pingpong: {{ 'PASS' if pp_pass else 'FAIL' }}"
 
-    - name: Fail if connectivity tests failed
+    # The RDMA results were computed into bw_pass/pp_pass and printed
+    # in the summary above, but were left out of this assert, so a run
+    # where ib_send_bw and ibv_rc_pingpong both failed still reported
+    # the play as passing.  The Ethernet path working says nothing
+    # about whether the emulated NIC carries RDMA.
+    - name: Fail if connectivity or RDMA tests failed
       ansible.builtin.assert:
         that:
           - ping_v1_to_v2.rc == 0
           - ping_v2_to_v1.rc == 0
           - tcp_result.rc == 0
           - "'ERNIC_OK' in tcp_result.stdout"
+          - bw_pass | bool
+          - pp_pass | bool
         fail_msg: >-
-          Connectivity tests failed. Check the output
+          Sanity tests failed (ping={{ ping_pass }},
+          tcp={{ tcp_pass }}, ib_send_bw={{ bw_pass }},
+          ibv_rc_pingpong={{ pp_pass }}). Check the output
           above for details.

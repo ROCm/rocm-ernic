@@ -282,24 +282,30 @@
           rocm-smi failed on VM2. GPU passthrough may
           not be configured.
 
+    # Identifies the device by PCI vendor ID rather than by name: the
+    # name is rewritten twice during boot and says nothing about which
+    # driver bound the device.  See scripts/find-rdma-device.sh.
     - name: Detect RDMA device name
-      ansible.builtin.shell:
-        executable: /bin/bash
-        cmd: >-
-          set -o pipefail;
-          ibv_devices
-          | grep -oE
-          "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
-          | head -1
+      ansible.builtin.script:
+        cmd: "{{ ernic_project_root }}/scripts/find-rdma-device.sh"
       register: rdma_dev_detect
       changed_when: false
       failed_when: false
 
+    # No default here.  Falling back to a hard-coded name hands every
+    # test below a device that does not exist, and they then fail
+    # against it instead of reporting that detection came up empty.
+    - name: Assert an RDMA device was detected
+      ansible.builtin.assert:
+        that:
+          - rdma_dev_detect.stdout | trim | length > 0
+        fail_msg: >-
+          No RDMA device with PCI vendor 0x1022 found. The driver
+          did not bind, or the device never enumerated.
+
     - name: Set RDMA device name
       ansible.builtin.set_fact:
-        rdma_dev: >-
-          {{ rdma_dev_detect.stdout | trim
-             | default('rocm-rdma-ernic0', true) }}
+        rdma_dev: "{{ rdma_dev_detect.stdout | trim }}"
 
     # ── Results setup (on host) ────────────────────
     - name: Create results directory

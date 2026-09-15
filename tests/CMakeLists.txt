@@ -110,71 +110,6 @@ target_link_libraries(test_write_imm PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
-# -- test_dc_loopback (requires libibverbs + installed rocm_ernic provider) -
-# Only built when ERNIC_RDMA_CORE_BUILD=ON so that librocm_ernic and its
-# installed headers (including infiniband/rocm_ernic_dc.h) are available.
-if(ERNIC_RDMA_CORE_BUILD)
-    add_executable(test_dc_loopback
-        test_dc_loopback.c
-    )
-    target_compile_definitions(test_dc_loopback PRIVATE
-        _POSIX_C_SOURCE=200809L
-    )
-    target_include_directories(test_dc_loopback PRIVATE
-        ${ERNIC_IBVERBS_INCLUDE_DIRS}
-        ${CMAKE_SOURCE_DIR}/rdma-core/providers/rocm_ernic
-        ${RDMA_CORE_INCLUDE_DIR}
-    )
-    target_link_directories(test_dc_loopback PRIVATE
-        ${IBVERBS_LIBRARY_DIRS}
-        ${RDMA_CORE_LIB_DIR}
-    )
-    target_link_libraries(test_dc_loopback PRIVATE
-        ${IBVERBS_LIBRARIES}
-        rocm_ernic
-    )
-
-    add_test(
-        NAME dc-loopback-test
-        COMMAND $<TARGET_FILE:test_dc_loopback>
-    )
-    set_tests_properties(dc-loopback-test PROPERTIES
-        TIMEOUT 60
-        RUN_SERIAL TRUE
-        SKIP_RETURN_CODE 77
-    )
-
-    add_executable(test_dc_error_paths
-        test_dc_error_paths.c
-    )
-    target_compile_definitions(test_dc_error_paths PRIVATE
-        _POSIX_C_SOURCE=200809L
-    )
-    target_include_directories(test_dc_error_paths PRIVATE
-        ${IBVERBS_INCLUDE_DIRS}
-        ${CMAKE_SOURCE_DIR}/rdma-core/providers/rocm_ernic
-        ${RDMA_CORE_INCLUDE_DIR}
-    )
-    target_link_directories(test_dc_error_paths PRIVATE
-        ${IBVERBS_LIBRARY_DIRS}
-        ${RDMA_CORE_LIB_DIR}
-    )
-    target_link_libraries(test_dc_error_paths PRIVATE
-        ${IBVERBS_LIBRARIES}
-        rocm_ernic
-    )
-
-    add_test(
-        NAME dc-error-paths-test
-        COMMAND $<TARGET_FILE:test_dc_error_paths>
-    )
-    set_tests_properties(dc-error-paths-test PROPERTIES
-        TIMEOUT 60
-        RUN_SERIAL TRUE
-        SKIP_RETURN_CODE 77
-    )
-endif()
-
 # -- test_ernic_dc_uapi (cmocka + driver ABI header) --------------
 if(CMOCKA_FOUND)
     add_executable(test_ernic_dc_uapi
@@ -385,38 +320,14 @@ set_tests_properties(pci-config-test PROPERTIES
     RUN_SERIAL TRUE
 )
 
-# Data transfer test (may need RDMA device / loopback backend)
-add_test(
-    NAME data-transfer-test
-    COMMAND $<TARGET_FILE:test_data_transfer>
-)
-set_tests_properties(data-transfer-test PROPERTIES
-    TIMEOUT 60
-    RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
-)
-
-# Loopback WRITE_WITH_IMM responder-delivery test
-add_test(
-    NAME write-imm-test
-    COMMAND $<TARGET_FILE:test_write_imm>
-)
-set_tests_properties(write-imm-test PROPERTIES
-    TIMEOUT 60
-    RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
-)
-
-# RDMA Connection Manager emulation test
-add_test(
-    NAME rdma-cm-test
-    COMMAND $<TARGET_FILE:test_rdma_cm>
-)
-set_tests_properties(rdma-cm-test PROPERTIES
-    TIMEOUT 60
-    RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
-)
+# test_data_transfer, test_write_imm and test_rdma_cm are deliberately not
+# registered with CTest. They need a real RDMA device, which no host running
+# ctest has -- hosted runners and the self-hosted pool both run ctest outside
+# the guest. Registered here they returned 77 and CTest reported the skip as
+# a pass, so they looked like coverage while testing nothing. They are built
+# (test_data_transfer is the loopback config step's TEST_BIN) and are run for
+# real inside the VM by the loopback job in system-tests.yml, where a device
+# is guaranteed and exit 77 is treated as a failure.
 
 # rdma_backend_query_port NULL-guard / dispatch unit test
 add_test(

@@ -37,10 +37,18 @@ CI_LOG_DIR="${CI_LOG_DIR:-${CI_WORK}/log}"
 ERNIC_INSTANCES="${ERNIC_INSTANCES:-2}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6420}"
 
-# Device personality under test.  ionic (1022:8001) is the
-# default everywhere; legacy selects the deprecated PVRDMA
-# device and is only reachable via workflow_dispatch.
+# Device personality under test.  CI is ionic-only (1022:8001):
+# the deprecated rocm_ernic/PVRDMA path is no longer exercised
+# here and is slated for removal.  Kept as a variable because
+# the Ansible roles still take ernic_device_mode, but pinned --
+# setting CI_ERNIC_MODE to anything else is refused rather than
+# silently honoured.
 CI_ERNIC_MODE="${CI_ERNIC_MODE:-ionic}"
+if [ "${CI_ERNIC_MODE}" != "ionic" ]; then
+    echo "ci: CI_ERNIC_MODE=${CI_ERNIC_MODE} is not supported;" \
+         "CI runs ionic only (the rocm_ernic driver is deprecated)" >&2
+    exit 2
+fi
 
 # In ionic mode each instance attaches to a TAP enslaved to a
 # shared bridge, which is what carries guest-to-guest IP.  The
@@ -274,8 +282,13 @@ PY
 require_guests_ready() {
     local i ok=0
     for i in $(seq 1 "${ERNIC_INSTANCES}"); do
-        if ! vm_ssh "${i}" 'ibv_devices' 2>/dev/null \
-                | grep -qE 'rocm-rdma-ernic|rocep|ionic'; then
+        # By PCI vendor ID, not by name: the RDMA device is
+        # renamed twice during boot, so any name pattern is a
+        # snapshot of one moment in that sequence.  See
+        # scripts/find-rdma-device.sh.
+        if ! vm_ssh "${i}" 'sh -s' \
+                < "${PROJECT_ROOT}/scripts/find-rdma-device.sh" \
+                >/dev/null 2>&1; then
             log_error "guest ${i}: no RDMA device"
             ok=1
             continue
@@ -303,8 +316,6 @@ require_guests_ready() {
 # them the launcher starts every instance with no Ethernet and
 # each guest-to-guest test fails on its own, far from the cause.
 require_taps() {
-    [ "${CI_ERNIC_MODE}" = "ionic" ] || return 0
-
     local i tap ok=0 uid
     uid="$(id -u)"
     for i in $(seq 1 "${ERNIC_INSTANCES}"); do

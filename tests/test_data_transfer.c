@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <infiniband/verbs.h>
 
+#include "ernic_device.h"
+
 #define BUFFER_SIZE    4096
 #define NUM_ITERATIONS 10
 #define TEST_PATTERN   0xAB
@@ -66,25 +68,23 @@ static int setup_resources(struct test_context *ctx)
     /* Get device list */
     dev_list = ibv_get_device_list(&num_devices);
     if (!dev_list || num_devices == 0) {
-        fprintf(stderr, "No RDMA devices found - skipping test\n");
+        int pinned = ernic_requested_device() != NULL;
+
+        ernic_report_no_device(pinned ? ERNIC_DEVICE_MISMATCH
+                                      : ERNIC_DEVICE_ABSENT);
         ibv_free_device_list(dev_list); /* Free even if NULL is safe */
-        return -2;                      /* Special code to indicate skip */
+        return pinned ? -1 : -2;
     }
 
-    /* Find a rocm_ernic device; skip if none present */
-    struct ibv_device *target = NULL;
-    for (int i = 0; i < num_devices; i++) {
-        const char *name = ibv_get_device_name(dev_list[i]);
-        if (name && (strncmp(name, "rocm_ernic", 10) == 0 ||
-                     strncmp(name, "rocep", 5) == 0)) {
-            target = dev_list[i];
-            break;
-        }
-    }
+    enum ernic_device_result lookup;
+    struct ibv_device *target =
+        ernic_find_device(dev_list, num_devices, &lookup);
+
     if (!target) {
-        fprintf(stderr, "No rocm_ernic device found - skipping test\n");
+        ernic_report_no_device(lookup);
         ibv_free_device_list(dev_list);
-        return -2;
+        /* -2 means skip; a named-but-absent device is an outright error. */
+        return lookup == ERNIC_DEVICE_MISMATCH ? -1 : -2;
     }
 
     ctx->context = ibv_open_device(target);

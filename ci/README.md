@@ -122,7 +122,6 @@ test fails one at a time without saying why, so
 front. Pass `--skip-taps` if the node already has them or
 you would rather run the `ip` commands by hand; without
 passwordless `sudo` the step warns and skips itself.
-Legacy mode (`CI_ERNIC_MODE=legacy`) needs none of this.
 
 This deliberately stops short of registering. Mint a
 registration token at
@@ -279,11 +278,12 @@ needs `actions: write`) right after the push to rebuild Pages.
 
 Each record carries the device mode it was measured in, and
 the script refuses to append a run whose mode differs from
-the previous record unless `--allow-mode-change` is passed
-(the `allow_mode_change` dispatch input). One series that
-silently spans a guest-stack change reads as a regression
-rather than a switch; the switch-over point is annotated on
-the generated page. Legacy runs never publish at all.
+the previous record unless `--allow-mode-change` is passed.
+One series that silently spans a guest-stack change reads as
+a regression rather than a switch; the switch-over point is
+annotated on the generated page. CI is ionic-only, so in
+practice every record is an `ionic` record and the guard only
+fires on history predating the switch.
 
 The same run writes `docs/perf-history/badge-rdma.json` and
 `badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
@@ -344,7 +344,7 @@ Useful overrides:
 | `CI_WORK` | `/var/tmp/ernic-ci-work` | workspace root |
 | `CI_BUILD_TYPE` | `Release` | CMake build type |
 | `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
-| `CI_ERNIC_MODE` | `ionic` | `legacy` for the deprecated driver |
+| `CI_ERNIC_MODE` | `ionic` | pinned; any other value is refused |
 | `CI_TAP_PREFIX` | `ernic-ci-tap` | per-instance TAP name prefix |
 | `CI_TAP_BRIDGE` | `ernic-ci-br0` | bridge the TAPs are enslaved to |
 | `ERNIC_INSTANCES` | `2` | number of VMs |

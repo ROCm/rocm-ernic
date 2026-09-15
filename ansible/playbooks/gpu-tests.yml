@@ -134,24 +134,34 @@
           Ensure guest-setup.yml completed
           successfully with ernic_gpu_passthrough.
 
+    # Identifies the device by PCI vendor ID rather than by name: the
+    # name is rewritten twice during boot and says nothing about which
+    # driver bound the device.  See scripts/find-rdma-device.sh.
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: >-
-          set -o pipefail;
-          {{ vm1_ssh }}
-          'ibv_devices
-          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
-          | head -1'
+          {{ vm1_ssh }} 'sh -s'
+          < {{ ernic_project_root }}/scripts/find-rdma-device.sh
       register: rdma_dev_detect
       changed_when: false
       failed_when: false
 
+    # No default here.  Falling back to a hard-coded name hands every
+    # RDMA test below a device that was never there, and they then
+    # fail against it instead of reporting that detection came up
+    # empty.
+    - name: Assert an RDMA device was detected on VM1
+      ansible.builtin.assert:
+        that:
+          - rdma_dev_detect.stdout | trim | length > 0
+        fail_msg: >-
+          No RDMA device with PCI vendor 0x1022 found on VM1, so the
+          driver did not bind or the port never came up.
+
     - name: Set RDMA device name
       ansible.builtin.set_fact:
-        rdma_dev: >-
-          {{ rdma_dev_detect.stdout | trim
-             | default('rocm-rdma-ernic0', true) }}
+        rdma_dev: "{{ rdma_dev_detect.stdout | trim }}"
 
     # ─────────────────────────────────────────────────
     # xio-tester: loopback on each VM

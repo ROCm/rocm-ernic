@@ -12,11 +12,41 @@
 # exchange) all depend on that.
 
 ---
+# The module exists to provide /dev/net/tun, so the node's presence is
+# the condition, not the module's.  A container is a legitimate host
+# here -- the GitHub jobs run one -- and there modprobe can only fail:
+# there is no /lib/modules to search, and loading modules is not the
+# container's to do.  It gets the node passed in from outside instead,
+# or built into the host kernel, in which case there is no module to
+# load on bare metal either.
+- name: Check for the tun device node
+  ansible.builtin.stat:
+    path: /dev/net/tun
+  register: ernic_tun_node
+
 - name: Load the tun kernel module
   community.general.modprobe:
     name: tun
     state: present
   become: true
+  when: not ernic_tun_node.stat.exists
+
+- name: Re-check the tun device node
+  ansible.builtin.stat:
+    path: /dev/net/tun
+  register: ernic_tun_node
+  when: not ansible_check_mode
+
+- name: Assert the tun device node is available
+  ansible.builtin.assert:
+    that:
+      - ernic_tun_node.stat.exists
+    fail_msg: >-
+      /dev/net/tun is missing and the tun module did not provide it.
+      In a container, pass the node through (--device /dev/net/tun)
+      and grant NET_ADMIN; the emulated NIC has no Ethernet path
+      without it.
+  when: not ansible_check_mode
 
 # Read the real link list even under --check: every task below keys off
 # it, and a skipped read makes them all claim the interfaces are missing.
