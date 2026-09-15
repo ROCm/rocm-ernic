@@ -6,21 +6,18 @@
  * Verifies data integrity and pattern generation
  */
 
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <threads.h>
 #include <time.h>
-#include <unistd.h>
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
 
-#define BUFFER_SIZE    4096
-#define NUM_ITERATIONS 10
-#define TEST_PATTERN   0xABu
+#define BUFFER_SIZE  4096
+#define TEST_PATTERN 0xABu
 
 /* Test pattern types to verify */
 typedef enum {
@@ -268,7 +265,9 @@ static int poll_completions(struct test_context *ctx, int expected_sends,
 
         attempts++;
         if (n == 0) {
-            usleep(100); /* Small delay if no completions */
+            /* Small delay if no completions */
+            const struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000};
+            thrd_sleep(&delay, NULL);
         }
     }
 
