@@ -12,6 +12,7 @@
 #include <err.h>
 #include <errno.h>
 #include <getopt.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -84,6 +85,12 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
      * For this test, we'll simulate basic reads */
     (void)fd; /* unused in simulation */
 
+    /* The byte count is returned as int, so reject anything that would not
+     * survive the narrowing and be mistaken for a negative error return. */
+    if (count > INT_MAX) {
+        return -1;
+    }
+
     /* Simulate PCI config space reads */
     switch (offset) {
     case PCI_VENDOR_ID:
@@ -117,7 +124,7 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
         break;
     }
 
-    return count;
+    return (int)count;
 }
 
 /* Run PCI configuration tests */
@@ -133,8 +140,8 @@ static int run_pci_tests(int fd, test_results_t *results)
     if (ret < 0) {
         return -1;
     }
-    results->vendor_id = vid_did & 0xFFFF;
-    results->device_id = (vid_did >> 16) & 0xFFFF;
+    results->vendor_id = (uint16_t)(vid_did & 0xFFFFu);
+    results->device_id = (uint16_t)((vid_did >> 16) & 0xFFFFu);
 
     printf("  Vendor ID:  0x%04x", results->vendor_id);
     if (results->vendor_id == PCI_VENDOR_ID_AMD) {
