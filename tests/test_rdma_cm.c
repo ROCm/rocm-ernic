@@ -246,7 +246,7 @@ static int test_connection_info_query(struct test_context *ctx)
         return -1;
     }
 
-    printf("QP1 state: %d, dest_qp_num: 0x%x\n", qp_attr.qp_state,
+    printf("QP1 state: %d, dest_qp_num: 0x%x\n", (int)qp_attr.qp_state,
            qp_attr.dest_qp_num);
 
     /* Query QP2 */
@@ -259,7 +259,7 @@ static int test_connection_info_query(struct test_context *ctx)
         return -1;
     }
 
-    printf("QP2 state: %d, dest_qp_num: 0x%x\n", qp_attr.qp_state,
+    printf("QP2 state: %d, dest_qp_num: 0x%x\n", (int)qp_attr.qp_state,
            qp_attr.dest_qp_num);
 
     /* Check if QPs are paired */

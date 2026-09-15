@@ -20,7 +20,7 @@
 
 #define BUFFER_SIZE    4096
 #define NUM_ITERATIONS 10
-#define TEST_PATTERN   0xAB
+#define TEST_PATTERN   0xABu
 
 /* Test pattern types to verify */
 typedef enum {
