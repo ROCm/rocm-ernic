@@ -1,0 +1,239 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Run RDMA tutorial tests
+  when: ernic_rdma_tutorial_tests | bool
+  block:
+    - name: Assert the tutorial role has two VMs to work with
+      ansible.builtin.assert:
+        that:
+          - ernic_instances | int == 2
+          - ernic_rdma_tutorial_examples | length > 0
+        fail_msg: >-
+          ernic_rdma_tutorial requires exactly two rocm-ernic VMs and
+          at least one configured example.
+
+    - name: Build VM SSH commands for tutorial runs
+      ansible.builtin.set_fact:
+        ernic_rdma_tutorial_vm1_ssh: >-
+          ssh -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o BatchMode=yes
+          -o ConnectTimeout=15
+          -o ServerAliveInterval=10
+          -o ServerAliveCountMax=3
+          -p {{ ernic_vm_ssh_base_port | int }}
+          {{ ernic_vm_ssh_user }}@localhost
+        ernic_rdma_tutorial_vm2_ssh: >-
+          ssh -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o BatchMode=yes
+          -o ConnectTimeout=15
+          -o ServerAliveInterval=10
+          -o ServerAliveCountMax=3
+          -p {{ ernic_vm_ssh_base_port | int + 1 }}
+          {{ ernic_vm_ssh_user }}@localhost
+
+    - name: Save the current VM hostnames
+      block:
+        - name: Read VM1 hostname
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm1_ssh }}
+              'hostnamectl --static'
+          register: ernic_rdma_tutorial_vm1_hostname
+          changed_when: false
+
+        - name: Read VM2 hostname
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm2_ssh }}
+              'hostnamectl --static'
+          register: ernic_rdma_tutorial_vm2_hostname
+          changed_when: false
+
+        - name: Install tutorial /etc/hosts aliases on VM1
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+              tmp=$(mktemp)
+              python3 - <<'"'"'"'"'"'"'"'"'PY'"'"'"'"'"'"'"'"' >"${tmp}"
+              from pathlib import Path
+              path = Path("/etc/hosts")
+              marker = "# rocm-ernic-rdma-tutorial"
+              lines = [
+                  line for line in path.read_text().splitlines()
+                  if not line.endswith(marker)
+              ]
+              lines.extend(
+                  {{ [
+                    ernic_rdma_tutorial_server_ip
+                    ~ ' ' ~ ernic_rdma_tutorial_server_hostname
+                    ~ ' # rocm-ernic-rdma-tutorial',
+                    ernic_rdma_tutorial_client_ip
+                    ~ ' ' ~ ernic_rdma_tutorial_client_hostname
+                    ~ ' # rocm-ernic-rdma-tutorial'
+                  ] | to_json }}
+              )
+              print("\n".join(lines) + "\n", end="")
+              PY
+              sudo install -m 0644 "${tmp}" /etc/hosts
+              rm -f "${tmp}"'
+          changed_when: true
+
+        - name: Install tutorial /etc/hosts aliases on VM2
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              {{ ernic_rdma_tutorial_vm2_ssh }} 'set -eu
+              tmp=$(mktemp)
+              python3 - <<'"'"'"'"'"'"'"'"'PY'"'"'"'"'"'"'"'"' >"${tmp}"
+              from pathlib import Path
+              path = Path("/etc/hosts")
+              marker = "# rocm-ernic-rdma-tutorial"
+              lines = [
+                  line for line in path.read_text().splitlines()
+                  if not line.endswith(marker)
+              ]
+              lines.extend(
+                  {{ [
+                    ernic_rdma_tutorial_server_ip
+                    ~ ' ' ~ ernic_rdma_tutorial_server_hostname
+                    ~ ' # rocm-ernic-rdma-tutorial',
+                    ernic_rdma_tutorial_client_ip
+                    ~ ' ' ~ ernic_rdma_tutorial_client_hostname
+                    ~ ' # rocm-ernic-rdma-tutorial'
+                  ] | to_json }}
+              )
+              print("\n".join(lines) + "\n", end="")
+              PY
+              sudo install -m 0644 "${tmp}" /etc/hosts
+              rm -f "${tmp}"'
+          changed_when: true
+
+        - name: Set VM1 hostname for the tutorial examples
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm1_ssh }}
+              'sudo hostnamectl hostname {{ ernic_rdma_tutorial_server_hostname }}'
+          changed_when: true
+
+        - name: Set VM2 hostname for the tutorial examples
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm2_ssh }}
+              'sudo hostnamectl hostname {{ ernic_rdma_tutorial_client_hostname }}'
+          changed_when: true
+
+        - name: Ensure the tutorial checkout exists on VM1
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+              set -o pipefail
+              before=$(mktemp)
+              after=$(mktemp)
+              trap "rm -f ${before} ${after}" EXIT
+              if [ ! -d {{ (ernic_rdma_tutorial_dir ~ '/.git') | to_json }} ]; then
+                echo __ernic_rdma_tutorial_cloned__
+                git clone {{ ernic_rdma_tutorial_repo | to_json }} {{ ernic_rdma_tutorial_dir | to_json }}
+              fi
+              git -C {{ ernic_rdma_tutorial_dir | to_json }} \
+                for-each-ref refs/remotes refs/tags \
+                --format="%(refname):%(objectname)" | sort >"${before}"
+              git -C {{ ernic_rdma_tutorial_dir | to_json }} fetch --all --tags --prune
+              git -C {{ ernic_rdma_tutorial_dir | to_json }} \
+                for-each-ref refs/remotes refs/tags \
+                --format="%(refname):%(objectname)" | sort >"${after}"
+              if ! cmp -s "${before}" "${after}"; then
+                echo __ernic_rdma_tutorial_fetched__
+              fi'
+          register: ernic_rdma_tutorial_vm1_checkout
+          changed_when: >-
+            '__ernic_rdma_tutorial_cloned__'
+            in ernic_rdma_tutorial_vm1_checkout.stdout
+            or '__ernic_rdma_tutorial_fetched__'
+            in ernic_rdma_tutorial_vm1_checkout.stdout
+
+        - name: Ensure the tutorial checkout exists on VM2
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              {{ ernic_rdma_tutorial_vm2_ssh }} 'set -eu
+              set -o pipefail
+              before=$(mktemp)
+              after=$(mktemp)
+              trap "rm -f ${before} ${after}" EXIT
+              if [ ! -d {{ (ernic_rdma_tutorial_dir ~ '/.git') | to_json }} ]; then
+                echo __ernic_rdma_tutorial_cloned__
+                git clone {{ ernic_rdma_tutorial_repo | to_json }} {{ ernic_rdma_tutorial_dir | to_json }}
+              fi
+              git -C {{ ernic_rdma_tutorial_dir | to_json }} \
+                for-each-ref refs/remotes refs/tags \
+                --format="%(refname):%(objectname)" | sort >"${before}"
+              git -C {{ ernic_rdma_tutorial_dir | to_json }} fetch --all --tags --prune
+              git -C {{ ernic_rdma_tutorial_dir | to_json }} \
+                for-each-ref refs/remotes refs/tags \
+                --format="%(refname):%(objectname)" | sort >"${after}"
+              if ! cmp -s "${before}" "${after}"; then
+                echo __ernic_rdma_tutorial_fetched__
+              fi'
+          register: ernic_rdma_tutorial_vm2_checkout
+          changed_when: >-
+            '__ernic_rdma_tutorial_cloned__'
+            in ernic_rdma_tutorial_vm2_checkout.stdout
+            or '__ernic_rdma_tutorial_fetched__'
+            in ernic_rdma_tutorial_vm2_checkout.stdout
+
+        - name: Run the configured RDMA tutorial examples
+          ansible.builtin.include_tasks: run_example.yml
+          loop: "{{ ernic_rdma_tutorial_examples }}"
+          loop_control:
+            loop_var: ernic_rdma_tutorial_example
+            index_var: ernic_rdma_tutorial_example_index
+
+      always:
+        - name: Remove tutorial /etc/hosts aliases from VM1
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm1_ssh }}
+              'sudo sed -i "/# rocm-ernic-rdma-tutorial$/d" /etc/hosts'
+          changed_when: false
+          failed_when: false
+
+        - name: Remove tutorial /etc/hosts aliases from VM2
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm2_ssh }}
+              'sudo sed -i "/# rocm-ernic-rdma-tutorial$/d" /etc/hosts'
+          changed_when: false
+          failed_when: false
+
+        - name: Restore VM1 hostname
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm1_ssh }}
+              'sudo hostnamectl hostname {{ ernic_rdma_tutorial_vm1_hostname.stdout | trim }}'
+          when: ernic_rdma_tutorial_vm1_hostname is defined
+          changed_when: false
+          failed_when: false
+
+        - name: Restore VM2 hostname
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm2_ssh }}
+              'sudo hostnamectl hostname {{ ernic_rdma_tutorial_vm2_hostname.stdout | trim }}'
+          when: ernic_rdma_tutorial_vm2_hostname is defined
+          changed_when: false
+          failed_when: false

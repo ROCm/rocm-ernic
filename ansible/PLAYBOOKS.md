@@ -74,6 +74,9 @@ ansible-playbook playbooks/guest-setup.yml
 # Sanity tests (iperf3 + perftest)
 ansible-playbook playbooks/sanity-tests.yml
 
+# RDMA tutorial examples
+ansible-playbook playbooks/tutorial-tests.yml
+
 # Full performance sweep (BW + latency + reliability)
 ansible-playbook playbooks/performance-tests.yml
 
@@ -135,7 +138,8 @@ ansible/                  # this directory is the collection
 │   ├── ernic_source/         # Resolve/clone the checkout
 │   ├── ernic_image_prep/     # Bake a golden image
 │   ├── ernic_guest_setup/    # Driver + rdma-core + NIC
-│   └── ernic_host_setup/     # Build, service, vfio-pci
+│   ├── ernic_host_setup/     # Build, service, vfio-pci
+│   └── ernic_rdma_tutorial/  # Run RDMA-Tutorial examples
 │                         # ── below: repo-local, build_ignore'd
 ├── ansible.cfg           # Ansible configuration
 ├── PLAYBOOKS.md          # this file
@@ -150,6 +154,7 @@ ansible/                  # this directory is the collection
 │   ├── vm-create.yml          # Golden image + VM launch
 │   ├── guest-setup.yml        # -> ernic_guest_setup
 │   ├── sanity-tests.yml       # iperf3 + perftest
+│   ├── tutorial-tests.yml     # RDMA-Tutorial examples
 │   ├── performance-tests.yml  # Full BW/lat sweeps
 │   └── stress-tests.yml       # Multi-QP, soak, churn
 └── templates/
@@ -181,7 +186,14 @@ ansible/                  # this directory is the collection
    perftest tools (`ib_send_bw`, `ibv_rc_pingpong`) for
    RDMA verification.
 
-5. **performance-tests** runs the full bandwidth and latency
+5. **tutorial-tests** clones the upstream
+   [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial)
+   on the two guests, checks out selected example commits,
+   builds them, and runs the corresponding server/client
+   pair over the rocm-ernic RDMA link. By default it covers
+   Example 1 (send/recv) and Example 2 (RDMA write).
+
+6. **performance-tests** runs the full bandwidth and latency
    sweeps matching the test report format: `ib_send_bw`,
    `ib_write_bw`, `ib_read_bw` across 12 message sizes
    (4 KB to 8 MB), the same for `ib_send_lat`,
@@ -190,7 +202,7 @@ ansible/                  # this directory is the collection
    Timestamped CSV files are written to
    `docs/perf-results/` for easy before/after comparison.
 
-6. **stress-tests** exercises the emulated RDMA device
+7. **stress-tests** exercises the emulated RDMA device
    under conditions the performance sweep never touches.
    Eight test sections run sequentially:
 

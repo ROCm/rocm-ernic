@@ -189,6 +189,9 @@ jobs:
             hosts: localhost
             gather_facts: false
             roles:
+              - role: sbates130272.rocm_ernic.ernic_rdma_tutorial
+                vars:
+                  ernic_rdma_tutorial_tests: false
               - role: sbates130272.rocm_ernic.ernic_image_prep
               - role: sbates130272.rocm_ernic.ernic_guest_setup
               - role: sbates130272.rocm_ernic.ernic_host_setup

@@ -20,7 +20,7 @@
 #       --tags functional
 #
 # Tags:
-#   functional -- guest setup + sanity tests
+#   functional -- guest setup + sanity tests + tutorial examples
 #   perf       -- iperf3 + RDMA perftest sweeps
 
 ---
@@ -35,6 +35,10 @@
 - name: "CI: sanity tests (ping, iperf3, perftest)"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [functional, sanity]
+
+- name: "CI: RDMA tutorial examples"
+  ansible.builtin.import_playbook: playbooks/tutorial-tests.yml
+  tags: [functional, tutorial]
 
 - name: "CI: TCP/IP performance (iperf3)"
   ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
