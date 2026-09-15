@@ -14,8 +14,8 @@ A vfio-user client that connects to the server and performs
 basic PCI configuration space queries:
 
 - Socket connection to server
-- PCI Vendor ID verification (AMD: ``0x1022``)
-- PCI Device ID verification (ROCm ERNIC: ``0x8000``)
+- PCI Vendor ID verification (Pensando: ``0x1dd8``)
+- PCI Device ID verification (ROCm ERNIC: ``0x100a``)
 - PCI Class Code verification (Network Controller)
 - PCI Header Type verification (Type 0)
 - BAR register reads
@@ -36,8 +36,8 @@ Comprehensive RDMA data transfer test using libibverbs:
 - Send / recv operations with varying buffer sizes
   (64 to 4096 bytes)
 
-Requires an RDMA device (via the ``rocm_ernic`` driver or
-real hardware). Skipped if no device is found.
+Requires an RDMA device (via the guest ``ionic_rdma`` driver
+or real hardware). Skipped if no device is found.
 
 test_rdma_cm
 ^^^^^^^^^^^^
@@ -48,18 +48,16 @@ connection setup and teardown paths.
 test_ionic_ci.sh
 ^^^^^^^^^^^^^^^^
 
-Shell test for the ionic personality, registered with CTest
-as ``ionic-ci``. It needs no VM and no RDMA device:
+Shell test for the ionic emulation path, registered with
+CTest as ``ionic-ci``. It needs no VM and no RDMA device:
 
-- Server starts in the default ionic mode on the
-  ``loopback`` and ``none`` backends, with no flag
-- PCI identity is ``0x1022:0x8001``
+- Server starts on the ``loopback`` and ``none`` backends,
+  and with no extra flags at all
+- PCI identity is ``0x1dd8:0x100a``
 - BAR geometry is 64 KB BAR0 (32 KB register window) and
   4 MB BAR2, with 32 MSI-X vectors
 - Clean shutdown on ``SIGTERM``
-- ``--legacy`` announces ``0x1022:0x8000`` and warns that
-  the path is deprecated
-- ``--tap`` is rejected together with ``--legacy``
+- The stats file carries the full counter set
 - ``--tap`` attaches to an existing host TAP
 
 The last check is skipped unless ``ERNIC_TEST_TAP`` names a
@@ -125,7 +123,7 @@ standard RDMA benchmarks over the emulated NICs.
 
 Prerequisites:
 
-1. In the default ionic mode, one host TAP per instance,
+1. One host TAP per instance,
    all enslaved to a shared bridge, so the guests can
    reach each other over IP (see :doc:`ionic`):
 
@@ -253,10 +251,8 @@ This runs four plays in order:
    ``gen-vm`` (skipped if it already exists), launches
    VMs with ``ernicctl vm-launch``, and waits for SSH.
 3. **guest-setup** -- installs rdma-core v62, builds and
-   loads the guest driver (the ionic DKMS package by
-   default, the deprecated ``rocm_ernic`` modules under
-   ``-e ernic_device_mode=legacy``), and assigns IPs to
-   the emulated NICs.
+   loads the guest driver from the ionic DKMS package,
+   and assigns IPs to the emulated NICs.
 4. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.
@@ -358,10 +354,9 @@ from the ``ansible/`` directory.
 Guest Driver CI
 ---------------
 
-``.github/workflows/driver-build.yml`` covers both guest
-drivers. One job builds the legacy modules in ``driver/``
-against the runner's kernel headers. A second job,
-``ionic-patches``, reads ``IONIC_KERNEL_REF`` straight out
+``.github/workflows/driver-build.yml`` covers the guest
+driver. Its ``ionic-patches`` job reads
+``IONIC_KERNEL_REF`` straight out
 of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
 ionic subtrees at that ref, and applies every
 ``patches/*.patch`` with ``git am``, failing the pull

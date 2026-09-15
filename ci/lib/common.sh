@@ -37,20 +37,7 @@ CI_LOG_DIR="${CI_LOG_DIR:-${CI_WORK}/log}"
 ERNIC_INSTANCES="${ERNIC_INSTANCES:-2}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6420}"
 
-# Device personality under test.  CI is ionic-only (1022:8001):
-# the deprecated rocm_ernic/PVRDMA path is no longer exercised
-# here and is slated for removal.  Kept as a variable because
-# the Ansible roles still take ernic_device_mode, but pinned --
-# setting CI_ERNIC_MODE to anything else is refused rather than
-# silently honoured.
-CI_ERNIC_MODE="${CI_ERNIC_MODE:-ionic}"
-if [ "${CI_ERNIC_MODE}" != "ionic" ]; then
-    echo "ci: CI_ERNIC_MODE=${CI_ERNIC_MODE} is not supported;" \
-         "CI runs ionic only (the rocm_ernic driver is deprecated)" >&2
-    exit 2
-fi
-
-# In ionic mode each instance attaches to a TAP enslaved to a
+# Each instance attaches to a TAP enslaved to a
 # shared bridge, which is what carries guest-to-guest IP.  The
 # runner cannot create those unprivileged, so install-runner.sh
 # makes them once as root; ci/doctor.sh checks them.  Distinct
@@ -198,7 +185,6 @@ ernic_env() {
     export ERNIC_LOG_DIR="${CI_LOG_DIR}"
     export ERNIC_INSTANCES
     export ERNIC_TCP_PORT
-    export ERNIC_DEVICE_MODE="${CI_ERNIC_MODE}"
     export ERNIC_TAP_PREFIX="${CI_TAP_PREFIX}"
     export ERNIC_TAP_BRIDGE="${CI_TAP_BRIDGE}"
     export ERNIC_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR}"

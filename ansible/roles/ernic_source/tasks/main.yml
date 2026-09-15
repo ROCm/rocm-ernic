@@ -40,8 +40,6 @@
       become: false
       run_once: true
       loop:
-        - driver/setup-rocm-ernic-dkms.sh
-        - rdma-core/providers/rocm_ernic
         - udev/99-rocm-ernic.rules
         - scripts/fetch-ionic-sources.sh
         - scripts/setup-ionic-dkms.sh

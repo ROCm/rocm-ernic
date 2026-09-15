@@ -161,7 +161,7 @@
         that:
           - rdma_dev_detect.stdout | trim | length > 0
         fail_msg: >-
-          No RDMA device with PCI vendor 0x1022 found on VM1, so the
+          No RDMA device with PCI vendor 0x1dd8 found on VM1, so the
           driver did not bind or the port never came up.
 
     - name: Set RDMA device name

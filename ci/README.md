@@ -111,7 +111,7 @@ Override with `--root` or `CI_RUNNER_ROOT` if your node
 lays out local storage differently.
 
 `install-runner.sh` also creates the TAP interfaces the
-default ionic device mode needs — `ernic-ci-br0` plus one
+emulated ionic device needs — `ernic-ci-br0` plus one
 `ernic-ci-tapN` per instance, owned by the runner user.
 That is the one step needing root, and it needs it once:
 jobs themselves never use `sudo`, and an unprivileged
@@ -276,15 +276,6 @@ fire on it either way, `[skip ci]` or not -- so the report
 job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
 needs `actions: write`) right after the push to rebuild Pages.
 
-Each record carries the device mode it was measured in, and
-the script refuses to append a run whose mode differs from
-the previous record unless `--allow-mode-change` is passed.
-One series that silently spans a guest-stack change reads as
-a regression rather than a switch; the switch-over point is
-annotated on the generated page. CI is ionic-only, so in
-practice every record is an `ionic` record and the guard only
-fires on history predating the switch.
-
 The same run writes `docs/perf-history/badge-rdma.json` and
 `badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
 each for the most recent RDMA (`ib_send_bw`, 1 MiB, peak GB/s)
@@ -344,7 +335,6 @@ Useful overrides:
 | `CI_WORK` | `/var/tmp/ernic-ci-work` | workspace root |
 | `CI_BUILD_TYPE` | `Release` | CMake build type |
 | `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
-| `CI_ERNIC_MODE` | `ionic` | pinned; any other value is refused |
 | `CI_TAP_PREFIX` | `ernic-ci-tap` | per-instance TAP name prefix |
 | `CI_TAP_BRIDGE` | `ernic-ci-br0` | bridge the TAPs are enslaved to |
 | `ERNIC_INSTANCES` | `2` | number of VMs |

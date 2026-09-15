@@ -92,7 +92,8 @@ cov-int/
 wordlist.dic
 dictionary.dic
 
-# Kernel module build artifacts
+# Kernel module build artifacts (never tracked)
+*.ko
 *.mod
 *.mod.c
 *.mod.o
@@ -102,15 +103,6 @@ dictionary.dic
 *.o.d
 Module.symvers
 modules.order
-
-# Kernel module binaries (should never be tracked)
-*.ko
-*.mod
-*.mod.c
-*.o.cmd
-*.ko.cmd
-modules.order
-Module.symvers
 .cursor/
 setup-docs/
 setup-scripts/

@@ -243,7 +243,7 @@ Device Health and Events
        Label: ``instance``.
    * - ``ernic_commands_total``
      - Gauge
-     - Total PVRDMA commands processed.
+     - Total admin queue commands processed.
        Label: ``instance``.
    * - ``ernic_interrupts_total``
      - Gauge

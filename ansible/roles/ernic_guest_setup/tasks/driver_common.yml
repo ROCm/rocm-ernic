@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Load the guest kernel modules and verify the RDMA device
-# registers.  Shared by both device modes; driver_ionic.yml and
-# driver_legacy.yml have already installed the DKMS package by
-# the time this runs.
+# registers.  driver_ionic.yml has already installed the DKMS
+# package by the time this runs.
 
 ---
 # Installed before the modules load, so the devices come up with
@@ -74,7 +73,7 @@
     that:
       - ernic_rdma_dev_name.stdout | trim | length > 0
     fail_msg: >-
-      No RDMA device with PCI vendor 0x1022 found. ibv_devices output:
+      No RDMA device with PCI vendor 0x1dd8 found. ibv_devices output:
       {{ ernic_ibv_devices_output.stdout }}
 
 # The script module runs over a pty, so stdout arrives with a trailing

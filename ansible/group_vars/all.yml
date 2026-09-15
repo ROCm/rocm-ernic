@@ -17,16 +17,10 @@
 # ── Project paths ────────────────────────────────
 ernic_project_root: "{{ playbook_dir }}/../.."
 
-# ── Device mode ──────────────────────────────────
-# ionic (default): the server presents 1022:8001 and the guest
-# drives it with patched upstream ionic.ko / ionic_rdma.ko.  Guest
-# Ethernet leaves through a host TAP on ernic_tap_bridge.
-#
-# The deprecated out-of-tree rocm_ernic driver is still available
-# for one more release:
-#
-#   ansible-playbook site.yml -e ernic_device_mode=legacy
-ernic_device_mode: ionic
+# ── Device ───────────────────────────────────────
+# The server presents 1dd8:100a and the guest drives it with
+# patched upstream ionic.ko / ionic_rdma.ko.  Guest Ethernet
+# leaves through a host TAP on ernic_tap_bridge.
 
 # ── Service / env-file settings ──────────────────
 ernic_run_dir: /run/rocm-ernic
@@ -60,7 +54,7 @@ ernic_golden_ssh_port: 2249
 # noble's debianutils takes one, so the install dies at "missing
 # operand"; and 7.x headers want gcc-15, which noble cannot supply.
 # Both are absent on resolute, which is also what the CI guest image
-# uses.  Set this back to noble only for a legacy-mode image.
+# uses.
 ernic_vm_release: resolute
 ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
 ernic_vm_nvme: 1

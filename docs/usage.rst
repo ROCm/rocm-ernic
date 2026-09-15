@@ -29,32 +29,24 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0
 
-Device Personality
-------------------
+The Emulated Device
+-------------------
 
-No flag is needed: ionic is the default. The server emulates
-an AMD Pensando ionic NIC (``1022:8001``) driven by the
-upstream Linux ``ionic`` and ``ionic_rdma`` modules.
-``--ionic`` (short ``-I``) is still accepted and does
-nothing, so existing scripts keep working.
-
-``--legacy`` (alias ``--pvrdma``) selects the deprecated
-PVRDMA-derived device (``1022:8000``) driven by the companion
-module in ``driver/``, and prints a warning saying so.
+The server emulates an AMD Pensando ionic NIC
+(``1dd8:100a``) driven by the upstream Linux ``ionic`` and
+``ionic_rdma`` modules. There is nothing to select.
 
 ``--tap IFNAME`` (short ``-T``) attaches the emulated
-Ethernet interface to an existing host TAP. It is
-incompatible with ``--legacy``; the server exits with a
-diagnostic if both are given. Create the TAP up front, owned
-by the user running the server:
+Ethernet interface to an existing host TAP. Create the TAP up
+front, owned by the user running the server:
 
 .. code-block:: bash
 
    sudo ip tuntap add dev ernic0 mode tap user "$USER"
 
-The backend selection is independent of the personality:
-``--backend`` governs the RDMA data path, ``--tap`` the
-Ethernet one. See :doc:`ionic` for the full picture.
+The two paths are independent: ``--backend`` governs the RDMA
+data path, ``--tap`` the Ethernet one. See :doc:`ionic` for
+the full picture.
 
 Log Levels
 ----------
@@ -125,22 +117,13 @@ required.
    "socket":{"path":"/tmp/vfio-user-rocm-ernic.sock",\
    "type":"unix"}}'
 
-Inside the guest, load the kernel driver and verify:
-
-.. code-block:: bash
-
-   sudo modprobe rocm_ernic
-   lspci -nn | grep 1022:8000
-   ibv_devices
-
-In ionic mode the guest loads the upstream modules against
-the ``1022:8001`` device instead:
+Inside the guest, load the upstream modules and verify:
 
 .. code-block:: bash
 
    sudo modprobe ionic
    sudo modprobe ionic_rdma
-   lspci -nn | grep 1022:8001
+   lspci -nn | grep 1dd8:100a
    ibv_devices
 
 Statistics Collection

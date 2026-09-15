@@ -36,7 +36,6 @@ DEFAULTS = {
     "ERNIC_MANAGER_IP": "127.0.0.1",
     "ERNIC_VERBOSE": "false",
     "ERNIC_LOG_LEVEL": "warn",
-    "ERNIC_DEVICE_MODE": "ionic",
     "ERNIC_TAP_PREFIX": "ernic-tap",
     "ERNIC_TAP_BRIDGE": "ernicbr0",
     "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/patches",
@@ -92,23 +91,13 @@ LAUNCHER = (
 )
 
 
-def device_mode():
-    """Device personality: ``ionic`` (default) or the deprecated ``legacy``."""
-    mode = (CFG.get("ERNIC_DEVICE_MODE") or "ionic").strip().lower()
-    return "legacy" if mode in ("legacy", "pvrdma") else "ionic"
-
-
 def guest_driver_modules():
-    """Guest kernel modules for the active mode, in unload order."""
-    if device_mode() == "legacy":
-        return ["rocm_ernic_rdma", "rocm_ernic_eth"]
+    """Guest kernel modules, in unload order."""
     return ["ionic_rdma", "ionic"]
 
 
 def server_mode_args(instance_id):
-    """Device-mode command line for the server, matching the launcher."""
-    if device_mode() == "legacy":
-        return ["--legacy"]
+    """Per-instance command line for the server, matching the launcher."""
     tap = f"{CFG['ERNIC_TAP_PREFIX']}{instance_id}"
     if os.path.isdir(f"/sys/class/net/{tap}"):
         return ["--tap", tap]
@@ -873,7 +862,6 @@ def cmd_status(args):
             ) or {}
 
     if args.json:
-        m["device_mode"] = device_mode()
         for inst in m["instances"]:
             iid = inst["id"]
             alive = pid_alive(inst["pid"])
@@ -936,14 +924,10 @@ def cmd_status(args):
               " be running.")
         return
 
-    mode = device_mode()
-    if mode == "legacy":
-        print("Device mode: legacy (PVRDMA 1022:8000, DEPRECATED)")
-    else:
-        print(
-            f"Device mode: ionic (1022:8001, "
-            f"TAP {CFG['ERNIC_TAP_PREFIX']}<id>)"
-        )
+    print(
+        f"Device: ionic 1dd8:100a "
+        f"(TAP {CFG['ERNIC_TAP_PREFIX']}<id>)"
+    )
     print()
 
     fmt = (

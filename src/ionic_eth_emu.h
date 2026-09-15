@@ -85,9 +85,19 @@ int ionic_eth_emu_attach_tap(struct ionic_eth_emu *emu, const char *ifname,
                              char *out_ifname, size_t out_ifname_len);
 
 /*
- * Move any frames waiting on the host backend into the guest's Rx ring.
- * Must be called from the thread that owns the vfio-user context; the
- * server's main loop does this on every iteration.
+ * Hand a received frame to the emulated LIF from a thread that may not DMA
+ * (the TCP mesh receive thread).  The frame is copied onto an internal queue
+ * and delivered to the guest by the next ionic_eth_emu_poll_rx().
+ *
+ * Returns 0 on success, -ENOSPC when the queue is full, or -EINVAL.
+ */
+int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
+                                 size_t len);
+
+/*
+ * Move any frames waiting on the host backend or on the off-thread queue
+ * into the guest's Rx ring.  Must be called from the thread that owns the
+ * vfio-user context; the server's main loop does this on every iteration.
  */
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu);
 

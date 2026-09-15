@@ -1,0 +1,29 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+breaking_changes:
+  - >-
+    ``ernic_device_mode`` is gone from ``ernic_host_setup``,
+    ``ernic_guest_setup``, ``ernic_image_prep`` and ``group_vars/all.yml``,
+    along with ``ERNIC_DEVICE_MODE`` in the service env file.  The ionic
+    device is the only one the collection provisions, so passing
+    ``-e ernic_device_mode=...`` now has no effect.
+  - >-
+    The emulated device moved from ``1022:8001`` to the Pensando vendor id
+    at ``1dd8:100a``, matching the ionic hardware the guest driver is
+    written for.  ``ernic_image_pciids_vendor`` is now ``1dd8`` and
+    ``ernic_image_pciids_entry`` names ``100a``.  A golden image built by
+    an earlier release needs ``ernic_image_prep`` re-run for ``lspci`` to
+    name the device.
+removed_features:
+  - >-
+    The out-of-tree ``rocm_ernic_eth`` / ``rocm_ernic_rdma`` driver path and
+    the ``rocm_ernic`` rdma-core provider, deprecated in the previous
+    release, have been removed.  ``ernic_guest_setup`` no longer stages
+    ``driver/`` or ``rdma-core/``, no longer injects a provider into
+    rdma-core, and no longer builds rocm-xio with ``GDA_ERNIC=ON``.  The
+    variables ``ernic_guest_modules_legacy``, ``ernic_guest_driver_dir``,
+    ``ernic_guest_provider_dir``, ``ernic_rocm_xio_cmake_legacy`` and
+    ``ernic_rocm_xio_stub_dir`` are gone with it.

@@ -22,13 +22,11 @@ rocm-xio is cloned here and staged at `ernic_rocm_xio_tarball`;
 `ernic_guest_setup` unpacks it when it is there and clones for itself when it
 is not.
 
-## Device mode and TAP networking
+## TAP networking
 
-`ernic_device_mode` defaults to `ionic`, so the server presents `1022:8001`
-and each instance attaches to a host TAP. The deprecated legacy PVRDMA path
-is still reachable with `-e ernic_device_mode=legacy`.
+The server presents `1dd8:100a` and each instance attaches to a host TAP.
 
-In ionic mode guest Ethernet leaves through the TAP rather than the rocm-ernic
+Guest Ethernet leaves through the TAP rather than the rocm-ernic
 TCP mesh, so every TAP is enslaved to a shared bridge — otherwise the guests
 cannot reach each other on `ernic_nic_subnet` and every two-VM test fails.
 The TAP phase creates `ernic_tap_bridge` and `ernic_tap_prefix<n>` for
@@ -52,9 +50,7 @@ debugging.
 ## Role Variables
 
 ```yaml
-ernic_device_mode: ionic        # ionic | legacy (deprecated)
-
-ernic_tap_setup: true           # ionic only
+ernic_tap_setup: true
 ernic_tap_prefix: ernic-tap
 ernic_tap_bridge: ernicbr0
 ernic_tap_owner: "{{ ansible_user_id }}"
@@ -72,7 +68,7 @@ ernic_instances: 2
 ernic_tcp_port: 6320
 ernic_manager_ip: 127.0.0.1
 ernic_log_level: warn           # none|error|warn|info|debug
-ernic_verbose: "false"          # legacy shorthand for debug
+ernic_verbose: "false"          # deprecated shorthand for debug
 ernic_debug_mesh: true
 ernic_debug_dma_map: false
 

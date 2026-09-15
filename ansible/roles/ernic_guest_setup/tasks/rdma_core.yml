@@ -2,27 +2,16 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Build and install rdma-core for the active device mode.
+# Build and install rdma-core.
 #
-# ionic mode uses stock rdma-core, whose providers/ionic has been
-# upstream since v61; the only local change is the rocm-xio GDA
-# direct-verbs patch series, applied when the guest has a GPU.
-# Legacy mode injects the out-of-tree rocm_ernic provider.
+# We use stock rdma-core, whose providers/ionic has been upstream
+# since v61; the only local change is the rocm-xio GDA direct-verbs
+# patch series, applied when the guest has a GPU.
 #
 # Rebuild whenever the inputs differ from what is installed, and
 # skip otherwise.  The build takes about seven minutes per guest,
 # so this is worth getting right.
 #
-# This used to stat /usr/lib/libibverbs/librocm_ernic.so.  With
-# CMAKE_INSTALL_PREFIX=/usr the provider actually lands in
-# /usr/lib/<multiarch>/libibverbs/ under its ABI-versioned name,
-# so that path never existed and the build always ran.  Harmless,
-# but it never once skipped, and correcting the path alone would
-# have been worse: a guest whose golden image already carried a
-# provider would then silently skip rebuilding it, and provider
-# changes would stop being tested at all.  Key on the source
-# instead, so "already built" means "built from this source".
-
 ---
 # providers/ionic first shipped in rdma-core v61.
 - name: Assert rdma-core is new enough to carry providers/ionic
@@ -31,31 +20,11 @@
       - ernic_rdma_core_version is version('61', '>=')
     fail_msg: >-
       ernic_rdma_core_version is {{ ernic_rdma_core_version }};
-      providers/ionic needs v61 or newer.  Raise the version, or
-      run with -e ernic_device_mode=legacy.
-  when: ernic_device_mode != 'legacy'
+      providers/ionic needs v61 or newer.  Raise the version.
 
 - name: Fetch rocm-xio for its ionic GDA patches
   ansible.builtin.include_tasks: rocm_xio_fetch.yml
-  when:
-    - ernic_device_mode != 'legacy'
-    - ernic_gpu_passthrough | bool
-
-- name: Hash the rocm_ernic provider source
-  ansible.builtin.shell: |
-    set -o pipefail
-    find "{{ ernic_source_dir }}/rdma-core/providers/rocm_ernic" \
-         "{{ ernic_source_dir }}/rdma-core/rocm-ernic-dv" \
-         -type f -print0 \
-      | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
-  args:
-    executable: /bin/bash
-  delegate_to: localhost
-  become: false
-  run_once: true
-  changed_when: false
-  register: ernic_provider_src_hash
-  when: ernic_device_mode == 'legacy'
+  when: ernic_gpu_passthrough | bool
 
 - name: Hash the ionic GDA patch series
   ansible.builtin.shell: |
@@ -66,9 +35,7 @@
     executable: /bin/bash
   changed_when: false
   register: ernic_gda_patch_hash
-  when:
-    - ernic_device_mode != 'legacy'
-    - ernic_gpu_passthrough | bool
+  when: ernic_gpu_passthrough | bool
 
 - name: Read the installed provider stamp
   ansible.builtin.slurp:
@@ -76,15 +43,13 @@
   register: ernic_provider_stamp
   failed_when: false
 
-# The mode is part of the stamp, so flipping ernic_device_mode or
-# toggling GPU passthrough forces a rebuild instead of silently
-# reusing an rdma-core built for the other one.
+# The GDA patch hash is part of the stamp, so toggling GPU
+# passthrough forces a rebuild instead of silently reusing an
+# rdma-core built for the other one.
 - name: Decide whether rdma-core needs rebuilding
   ansible.builtin.set_fact:
     ernic_provider_want: >-
-      {{ ernic_device_mode }}:{{ ernic_rdma_core_version }}:{{
-         (ernic_provider_src_hash.stdout | default(''))
-         | trim | default('none', true) }}:{{
+      {{ ernic_rdma_core_version }}:{{
          (ernic_gda_patch_hash.stdout | default(''))
          | trim | default('none', true) }}
     ernic_provider_have: >-
@@ -95,9 +60,8 @@
 - name: Report that the installed rdma-core is current
   ansible.builtin.debug:
     msg: >-
-      rdma-core {{ ernic_rdma_core_version }} already built for
-      {{ ernic_device_mode }} mode from these sources; skipping
-      rebuild.
+      rdma-core {{ ernic_rdma_core_version }} already built from
+      these sources; skipping rebuild.
   when: ernic_provider_want == ernic_provider_have
 
 - name: Build and install rdma-core
@@ -138,35 +102,6 @@
         dest: "{{ rc_base }}/"
         remote_src: true
 
-    - name: Inject the rocm_ernic provider
-      ansible.builtin.copy:
-        src: "{{ ernic_guest_provider_dir }}/providers/rocm_ernic/"
-        dest: "{{ rc_src }}/providers/rocm_ernic/"
-        remote_src: true
-        mode: "0755"
-      when: ernic_device_mode == 'legacy'
-
-    - name: Check if the provider is registered
-      ansible.builtin.command:
-        argv:
-          - grep
-          - -q
-          - rocm_ernic
-          - "{{ rc_src }}/CMakeLists.txt"
-      register: ernic_provider_grep
-      failed_when: false
-      changed_when: false
-      when: ernic_device_mode == 'legacy'
-
-    - name: Register the provider in CMakeLists.txt
-      ansible.builtin.lineinfile:
-        path: "{{ rc_src }}/CMakeLists.txt"
-        line: "add_subdirectory(providers/rocm_ernic)"
-        insertafter: EOF
-      when:
-        - ernic_device_mode == 'legacy'
-        - ernic_provider_grep.rc != 0
-
     # The source tree is extracted fresh above, so these apply
     # exactly once and any failure is a real conflict.
     - name: Apply the ionic GDA patches
@@ -187,9 +122,7 @@
             exit 1
           fi
       changed_when: true
-      when:
-        - ernic_device_mode != 'legacy'
-        - ernic_gpu_passthrough | bool
+      when: ernic_gpu_passthrough | bool
 
     - name: Configure the rdma-core build
       ansible.builtin.command:
@@ -236,7 +169,6 @@
           set -o pipefail;
           ls /usr/lib/*/libibverbs/libionic*.so
       changed_when: false
-      when: ernic_device_mode != 'legacy'
 
     - name: Ensure the stamp directory exists
       ansible.builtin.file:

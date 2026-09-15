@@ -51,13 +51,6 @@ on:
           - build          # build + ctest + loopback
           - functional     # ... plus 2-VM RDMA tests
           - full           # ... plus performance sweeps
-      # The device personality input is gone: CI is ionic-only.
-      # The deprecated rocm_ernic/PVRDMA path is no longer
-      # exercised here and is slated for removal, so there is
-      # nothing left to choose between.  allow_mode_change went
-      # with it -- it existed to let the perf trend series cross
-      # the one-time legacy-to-ionic discontinuity, which is now
-      # behind us and cannot recur.
       accel:
         description: 'VM accelerator'
         required: true
@@ -98,9 +91,6 @@ concurrency:
 env:
   CI_WORK: /var/tmp/ernic-ci-work
   CI_VM_ACCEL: ${{ inputs.accel || 'kvm' }}
-  # Pinned: CI is ionic-only.  ci/lib/common.sh refuses any
-  # other value rather than quietly honouring it.
-  CI_ERNIC_MODE: ionic
   # The code under test.  refs/pull/<n>/head resolves for
   # fork pull requests too, which is what makes them
   # testable without granting the fork any other reach.

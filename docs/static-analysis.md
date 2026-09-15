@@ -53,7 +53,7 @@ Triage flagged **184 high-confidence** findings out of **2310** in-scope (across
 
 ## Scope
 
-The **userspace** build only (`src/`). The kernel driver and the rdma-core provider are out of scope. Both our own code (`src/rocm_ernic_*`) and the `src/from-qemu/**` tree are in scope and treated as security-sensitive, because that tree holds the wire-protocol parsers (DHCP, rdma_cm, TCP, Ethernet RX) that handle untrusted input.
+The **userspace** build only (`src/`). Both our own code (`src/rocm_ernic_*`) and the `src/from-qemu/**` tree are in scope and treated as security-sensitive, because that tree holds the wire-protocol parsers (DHCP, rdma_cm, TCP, Ethernet RX) that handle untrusted input.
 
 **A note on `src/from-qemu/`:** despite the directory name, these files are rocm-ernic's own code (Copyright 2025 AMD) — the minimal DHCP server, the loopback CM stub, the TCP mesh backend, and the PVRDMA device model. They are not code carried from upstream QEMU, so findings here are ours to fix, not to forward upstream.
 
@@ -67,7 +67,7 @@ Eight distinct security/stability issues survived validation; one further issue 
 | D2 | OOB read on short DHCP request | `dhcp_server.c:197` | High | fuzz | Live |
 | S1 | NULL-deref in TCP/UDP checksum on empty payload | `net_headers.h:308` | Medium | clang-analyzer + cppcheck | Live |
 | — | NULL-deref in verbs `query_port` fallback | `rdma_backend.c:345` | Medium | clang-analyzer | **Fixed in tree** |
-| S2 | Signed-shift-by-31 undefined behaviour | `rocm_ernic_eth.h:38` + uses | Low | cppcheck | Live |
+| S2 | Signed-shift-by-31 undefined behaviour | imported PVRDMA uAPI headers + uses | Low | cppcheck | Live |
 | S3 | Dead-code guards in loopback SGE copy | `rdma_backend_loopback.c:380` | Low | cppcheck | Live |
 | D3 | DHCP server leaked at shutdown | `rocm_ernic_compat.c:251` | Low | sanitizer | Live |
 | D4 | Leased-IP leak (NULL value destructor) | `dhcp_server.c:46` | Low | sanitizer | Live |
@@ -97,17 +97,20 @@ The caller in `tcp_conn.c` guards the payload **copy** with `if (payload && payl
 
 ### S2. Signed-shift-by-31 undefined behaviour (Low)
 
-`src/rocm_ernic_eth.h:38` (root) and the use sites flagged by **cppcheck** `shiftTooManyBitsSigned` (error severity, 8 sites): `src/from-qemu/hw/rdma/vmw/pvrdma_eth.c:125,132`, `pvrdma_main.c:917,929,949,970,989`, and the imported uAPI header `include/qemu-extra/standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h:360`.
-
-Our own reset-bit macro is defined as a signed shift:
+Sites flagged by **cppcheck** `shiftTooManyBitsSigned` (error severity), all rooted in the imported PVRDMA uAPI headers:
 
 ```c
-#define ROCM_ERNIC_ETH_CTL_RESET     (1 << 31) /* Software Reset */
+/* standard-headers/.../vmw_pvrdma/pvrdma_dev_api.h:360 */
+PVRDMA_CMD_FIRST_RESP = (1 << 31),
+
+/* standard-headers/rdma/vmw_pvrdma-abi.h:57,61 */
+#define PVRDMA_UAR_QP_RECV        (1 << 31)  /* Recv bit. */
+#define PVRDMA_UAR_CQ_POLL        (1 << 31)  /* Poll bit. */
 ```
 
-`1 << 31` shifts into the sign bit of a signed `int`, which is undefined behaviour in C. It works on today's compilers/targets but is a real portability/correctness defect. The `pvrdma_*` use sites are the same class, rooted in mask macros from the imported PVRDMA uAPI headers.
+`1 << 31` shifts into the sign bit of a signed `int`, which is undefined behaviour in C. It works on today's compilers/targets but is a real portability/correctness defect. The `pvrdma_*` use sites in `src/from-qemu/hw/rdma/` inherit it from these macros.
 
-**Fix:** make the shift unsigned — `(1U << 31)` — in `ROCM_ERNIC_ETH_CTL_RESET` (ours to fix directly) and, where practical, in the uAPI mask definitions.
+**Fix:** make the shift unsigned — `(1U << 31)` — in the uAPI mask definitions, accepting the divergence from the imported headers.
 
 ### S3. Dead-code guards in the loopback SGE copy (Low)
 

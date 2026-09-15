@@ -25,9 +25,9 @@
 
 #include <linux/pci_regs.h>
 
-/* AMD ROCm ERNIC device IDs */
-#define PCI_VENDOR_ID_AMD        0x1022u
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000u
+/* Emulated ionic device IDs */
+#define PCI_VENDOR_ID_PENSANDO   0x1dd8u
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x100au
 
 /* Test results */
 typedef struct {
@@ -95,7 +95,7 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
     switch (offset) {
     case PCI_VENDOR_ID:
         if (count >= 2) {
-            *(uint16_t *)buf = PCI_VENDOR_ID_AMD;
+            *(uint16_t *)buf = PCI_VENDOR_ID_PENSANDO;
             if (count >= 4) {
                 *((uint16_t *)buf + 1) = PCI_DEVICE_ID_ROCM_ERNIC;
             }
@@ -144,10 +144,10 @@ static int run_pci_tests(int fd, test_results_t *results)
     results->device_id = (uint16_t)((vid_did >> 16) & 0xFFFFu);
 
     printf("  Vendor ID:  0x%04x", results->vendor_id);
-    if (results->vendor_id == PCI_VENDOR_ID_AMD) {
+    if (results->vendor_id == PCI_VENDOR_ID_PENSANDO) {
         printf(" (AMD) ✓\n");
     } else {
-        printf(" (expected 0x%04x) ✗\n", PCI_VENDOR_ID_AMD);
+        printf(" (expected 0x%04x) ✗\n", PCI_VENDOR_ID_PENSANDO);
     }
 
     printf("  Device ID:  0x%04x", results->device_id);
@@ -236,7 +236,7 @@ static bool validate_results(const test_results_t *results)
 
     printf("Validation:\n");
 
-    if (results->vendor_id != PCI_VENDOR_ID_AMD) {
+    if (results->vendor_id != PCI_VENDOR_ID_PENSANDO) {
         printf("  ✗ Vendor ID mismatch\n");
         passed = false;
     }

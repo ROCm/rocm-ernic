@@ -65,54 +65,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle);
  */
 int pvrdma_device_realize(pvrdma_handle_t handle);
 
-/*
- * Register Access (BAR1)
- */
-
-/**
- * pvrdma_regs_write - Write to PVRDMA register
- * @handle: Device handle
- * @offset: Register offset
- * @value: Value to write
- * @size: Access size (typically 4 for 32-bit)
- */
-void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                       unsigned size);
-
-/**
- * pvrdma_regs_read - Read from PVRDMA register
- * @handle: Device handle
- * @offset: Register offset
- * @size: Access size (typically 4 for 32-bit)
- *
- * Returns: Register value
- */
-uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
-
-/*
- * UAR Access (BAR2)
- */
-
-/**
- * pvrdma_uar_write - Write to User Access Region (doorbell)
- * @handle: Device handle
- * @offset: UAR offset
- * @value: Value to write
- * @size: Access size
- */
-void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                      unsigned size);
-
-/**
- * pvrdma_uar_read - Read from User Access Region
- * @handle: Device handle
- * @offset: UAR offset
- * @size: Access size
- *
- * Returns: UAR value
- */
-uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
-
 /**
  * pvrdma_bar0_mmio_count - Record a BAR0 (MSI-X) MMIO access for statistics
  * @handle: Device handle
@@ -125,8 +77,8 @@ void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
  * @handle: Device handle
  * @is_write: true for write, false for read
  *
- * The legacy UAR and the ionic BAR2 doorbell page are the same thing to these
- * counters, so both personalities share uar_reads/uar_writes.
+ * The ionic BAR2 doorbell page is what these counters see; the names
+ * uar_reads/uar_writes are kept from the PVRDMA UAR they used to count.
  */
 void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
 

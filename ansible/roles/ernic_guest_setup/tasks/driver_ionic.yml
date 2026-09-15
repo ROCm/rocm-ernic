@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Default device mode: build ionic.ko + ionic_rdma.ko from patched
+# Build ionic.ko + ionic_rdma.ko from patched
 # upstream kernel sources and register them with DKMS as the
 # ionic-ernic package.
 #
@@ -27,8 +27,7 @@
     fail_msg: >-
       Guest kernel {{ ansible_kernel }} is older than
       {{ ernic_ionic_min_kernel }}; ionic_rdma cannot be built.
-      Update the guest image, or run with
-      -e ernic_device_mode=legacy.
+      Update the guest image.
 
 # The floor above is necessary but nowhere near sufficient.  The
 # ionic sources track IB-core helpers that move between minor

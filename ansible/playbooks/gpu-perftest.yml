@@ -300,7 +300,7 @@
         that:
           - rdma_dev_detect.stdout | trim | length > 0
         fail_msg: >-
-          No RDMA device with PCI vendor 0x1022 found. The driver
+          No RDMA device with PCI vendor 0x1dd8 found. The driver
           did not bind, or the device never enumerated.
 
     - name: Set RDMA device name

@@ -17,30 +17,25 @@ Compatibility Bridge
 
 .. doxygenfile:: rocm_ernic_compat.h
 
-Ethernet Registers (Userspace)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ionic Emulation
+---------------
 
-.. doxygenfile:: src/rocm_ernic_eth.h
+Ethernet Emulator
+^^^^^^^^^^^^^^^^^
 
-Kernel Driver API
------------------
+.. doxygenfile:: ionic_eth_emu.h
 
-Device API
-^^^^^^^^^^
+RDMA devcmd Handler
+^^^^^^^^^^^^^^^^^^^
 
-.. doxygenfile:: rocm_ernic_dev_api.h
+.. doxygenfile:: ionic_rdma_devcmd.h
 
-ABI Definitions
-^^^^^^^^^^^^^^^
+Admin Queue
+^^^^^^^^^^^
 
-.. doxygenfile:: rocm_ernic-abi.h
+.. doxygenfile:: ionic_adminq.h
 
-Verbs Structures
-^^^^^^^^^^^^^^^^
+Datapath
+^^^^^^^^
 
-.. doxygenfile:: rocm_ernic_verbs.h
-
-PCI Identifiers
-^^^^^^^^^^^^^^^
-
-.. doxygenfile:: rocm_ernic_pci_ids.h
+.. doxygenfile:: ionic_datapath.h

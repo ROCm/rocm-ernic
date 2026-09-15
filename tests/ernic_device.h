@@ -7,13 +7,12 @@
  * Devices are identified by PCI vendor ID, not by name.  An RDMA
  * device's name is whatever the guest's udev policy last set it to,
  * and on our guests it is rewritten twice: the kernel registers
- * ionic_%d (or rocm_ernic%d on the deprecated driver),
- * 60-rdma-persistent-naming.rules rewrites that to rocep<bus>s<slot>
+ * ionic_%d, 60-rdma-persistent-naming.rules rewrites that to rocep<bus>s<slot>
  * via rdma_rename, and udev/99-rocm-ernic.rules rewrites it again to
  * rocm-rdma-ernic<n>.  Any list of name patterns is therefore a
  * snapshot of one moment in a three-step rename, and goes stale
  * silently -- a test that stops matching returns 77 and CTest reports
- * the skip as a pass.  0x1022 holds at every step, and is what
+ * the skip as a pass.  0x1dd8 holds at every step, and is what
  * 99-rocm-ernic.rules itself keys on.
  *
  * When $RDMA_DEVICE is set the caller has already identified the
@@ -30,7 +29,7 @@
 
 #include <infiniband/verbs.h>
 
-#define ERNIC_PCI_VENDOR_ID 0x1022u
+#define ERNIC_PCI_VENDOR_ID 0x1dd8u
 
 /* Overridable only so the lookup can be pointed at a fixture tree. */
 #ifndef ERNIC_SYSFS_INFINIBAND

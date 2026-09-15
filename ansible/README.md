@@ -12,23 +12,20 @@ DKMS kernel driver, rdma-core, udev naming rules, TAP networking, and
 addressing on the emulated NIC. This collection packages that work so it can be
 applied to any image build, not just the test mesh in the rocm-ernic repo.
 
-`ernic_device_mode` selects the device personality and defaults to `ionic`:
-the guest runs the upstream `ionic` and `ionic_rdma` drivers built by DKMS
+The guest runs the upstream `ionic` and `ionic_rdma` drivers built by DKMS
 from a patched upstream kernel tree, with the upstream `providers/ionic` in
 stock rdma-core, and each instance gets a host TAP on a shared bridge so the
-guests can reach each other over IP. Run any play with
-`-e ernic_device_mode=legacy` to get the deprecated out-of-tree `rocm_ernic`
-driver and the patched rdma-core it needs.
+guests can reach each other over IP.
 
-It supports Ubuntu 24.04 LTS (noble) and 26.04 LTS (resolute); guests in the
-default ionic mode need resolute, which is what `ernic_vm_release` selects.
+It supports Ubuntu 24.04 LTS (noble) and 26.04 LTS (resolute); guests need
+resolute, which is what `ernic_vm_release` selects.
 
 ## Roles
 
 | Role | Runs on | Purpose |
 |---|---|---|
 | [`ernic_image_prep`](roles/ernic_image_prep/README.md) | golden image | RDMA userspace, ROCm, build tools, `modules-load.d`, `pci.ids` — everything worth baking in once |
-| [`ernic_guest_setup`](roles/ernic_guest_setup/README.md) | guest VM | DKMS driver (ionic or legacy), rdma-core, udev rules, NIC addressing, rocm-xio |
+| [`ernic_guest_setup`](roles/ernic_guest_setup/README.md) | guest VM | DKMS ionic driver, rdma-core, udev rules, NIC addressing, rocm-xio |
 | [`ernic_host_setup`](roles/ernic_host_setup/README.md) | host | build/install/run the rocm-ernic service, TAP/bridge networking, bind GPUs to vfio-pci, stage rocm-xio |
 | [`ernic_source`](roles/ernic_source/README.md) | controller | resolve or clone the rocm-ernic checkout the others copy from (included automatically) |
 

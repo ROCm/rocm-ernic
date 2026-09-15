@@ -18,7 +18,7 @@
 # Options:
 #   --no-build        Skip the rebuild step
 #   --build-only      Only rebuild; do not cycle the device
-#   --update-driver   Rebuild and reload the guest driver too
+#   --reload-driver   Reload the guest ionic modules too
 #   --backend TYPE    Backend type (default: loopback)
 #   --help            Show this help message
 #
@@ -46,7 +46,7 @@ ROOT_PORT="rp0"
 # Flags
 DO_BUILD=true
 BUILD_ONLY=false
-UPDATE_DRIVER=false
+RELOAD_DRIVER=false
 
 # Colors
 RED='\033[0;31m'
@@ -69,7 +69,7 @@ usage() {
     echo "Options:"
     echo "  --no-build        Skip the rebuild step"
     echo "  --build-only      Only rebuild; don't cycle device"
-    echo "  --update-driver   Rebuild/reload guest driver too"
+    echo "  --reload-driver   Reload the guest ionic modules too"
     echo "  --backend TYPE    Backend type (default: loopback)"
     echo "  --help            Show this help"
     exit 0
@@ -79,7 +79,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-build)     DO_BUILD=false;    shift ;;
         --build-only)   BUILD_ONLY=true;   shift ;;
-        --update-driver) UPDATE_DRIVER=true; shift ;;
+        --reload-driver) RELOAD_DRIVER=true; shift ;;
         --backend)      BACKEND="$2";      shift 2 ;;
         --help)         usage ;;
         *)
@@ -258,22 +258,15 @@ log_info "Device plugged in"
 
 sleep 1
 
-# --- optional: update guest driver ---------------------------
-if [ "$UPDATE_DRIVER" = true ]; then
-    log_info "Updating guest driver..."
-    scp -o StrictHostKeyChecking=no \
-        -P "${SSH_PORT}" -r \
-        "${PROJECT_ROOT}/driver" \
-        "${SSH_USER}@localhost:/tmp/"
-    guest_ssh 'cd /tmp/driver && make clean && make && sudo insmod ./rocm_ernic.ko'
-    log_info "Guest driver rebuilt and loaded"
-else
-    log_info "Loading guest driver..."
-    guest_ssh 'sudo modprobe rocm_ernic' || {
-        log_warn "modprobe failed; trying insmod from /tmp"
-        guest_ssh 'sudo insmod /tmp/driver/rocm_ernic.ko'
-    }
+# --- optional: reload the guest driver -----------------------
+if [ "$RELOAD_DRIVER" = true ]; then
+    log_info "Reloading guest ionic modules..."
+    guest_ssh 'sudo modprobe -r ionic_rdma ionic 2>/dev/null || true'
 fi
+
+log_info "Loading guest driver..."
+guest_ssh 'sudo modprobe ionic && sudo modprobe ionic_rdma' || \
+    log_warn "modprobe of the ionic modules failed"
 
 # --- verify ---------------------------------------------------
 log_info "Verifying RDMA device..."

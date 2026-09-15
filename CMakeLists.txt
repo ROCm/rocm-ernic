@@ -153,13 +153,16 @@ set(RDMA_BACKEND_SOURCES
     src/from-qemu/hw/rdma/rdma_rm.c
 )
 
-# PVRDMA device sources from QEMU port
-set(PVRDMA_DEVICE_SOURCES
-    src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_dev_ring.c
+# RDMA device core from the QEMU PVRDMA port.
+#
+# Only the device-agnostic remainder survives: the completion/CQE
+# machinery and the statistics bookkeeping that the ionic front end
+# and the RDMA backends both call into.  The guest-facing PVRDMA
+# interface (DSR command ring, BAR1 registers, UAR doorbells, its
+# Ethernet descriptor rings) went away with the PVRDMA device mode.
+set(RDMA_DEVICE_CORE_SOURCES
     src/from-qemu/hw/rdma/vmw/pvrdma_main.c
     src/from-qemu/hw/rdma/vmw/pvrdma_qp_ops.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_eth.c
 )
 
 # Utility sources
@@ -183,7 +186,7 @@ set(BRIDGE_SOURCES
     src/rocm_ernic_compat.c
 )
 
-# ionic emulation layer (replaces PVRDMA for the ionic migration path)
+# ionic emulation layer -- the device the guest actually sees
 set(IONIC_EMU_SOURCES
     src/ionic_eth_emu.c
     src/ionic_eth_net.c
@@ -202,7 +205,7 @@ set(ALL_SOURCES
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
     ${RDMA_BACKEND_SOURCES}
-    ${PVRDMA_DEVICE_SOURCES}
+    ${RDMA_DEVICE_CORE_SOURCES}
     ${UTILITY_SOURCES}
     ${QEMU_STUB_SOURCES}
 )
@@ -255,7 +258,7 @@ target_compile_options(rocm-ernic PRIVATE
 # ernic_set_compiler_flags().
 set(QEMU_PORTED_SOURCES
     ${RDMA_BACKEND_SOURCES}
-    ${PVRDMA_DEVICE_SOURCES}
+    ${RDMA_DEVICE_CORE_SOURCES}
     ${UTILITY_SOURCES}
     ${QEMU_STUB_SOURCES}
 )
@@ -301,11 +304,6 @@ include(ErnicInstall)
 include(ErnicKernelModule)
 
 # ---------------------------------------------------------------
-# rdma-core with rocm_ernic provider
-# ---------------------------------------------------------------
-include(ErnicRdmaCore)
-
-# ---------------------------------------------------------------
 # Documentation (optional, requires -DERNIC_BUILD_DOCS=ON)
 # ---------------------------------------------------------------
 include(ErnicDocumentation)
@@ -339,12 +337,6 @@ message("    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
 message("")
 message("  Kernel module (DKMS):")
 message("    ERNIC_BUILD_KMOD : ${ERNIC_BUILD_KMOD}")
-message("")
-message("  rdma-core:")
-message("    ERNIC_RDMA_CORE_BUILD :"
-  " ${ERNIC_RDMA_CORE_BUILD}")
-message("    RDMA_CORE_VERSION     :"
-  " ${RDMA_CORE_VERSION}")
 message("")
 message("  Documentation:")
 message("    Build docs : ${ERNIC_BUILD_DOCS}")

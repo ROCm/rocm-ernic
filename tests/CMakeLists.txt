@@ -110,22 +110,6 @@ target_link_libraries(test_write_imm PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
-# -- test_ernic_dc_uapi (cmocka + driver ABI header) --------------
-if(CMOCKA_FOUND)
-    add_executable(test_ernic_dc_uapi
-        test_ernic_dc_uapi.c
-    )
-    target_include_directories(test_ernic_dc_uapi PRIVATE
-        ${CMAKE_SOURCE_DIR}/driver
-        ${CMOCKA_INCLUDE_DIRS}
-    )
-    target_link_directories(test_ernic_dc_uapi PRIVATE
-        ${CMOCKA_LIBRARY_DIRS}
-    )
-    target_link_libraries(test_ernic_dc_uapi PRIVATE
-        ${CMOCKA_LIBRARIES}
-    )
-endif()
 # net_headers.h checksum helpers are header-only and self-contained. The
 # ported header is a SYSTEM include so its warnings stay quiet while the
 # test source itself is still warning-checked.
@@ -210,13 +194,6 @@ target_link_options(test_dhcp_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN_LIN
 target_link_directories(test_dhcp_server_lifecycle PRIVATE
     ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_dhcp_server_lifecycle PRIVATE ${GLIB2_LIBRARIES})
-
-# ROCM_ERNIC_ETH_CTL_RESET bit-definition test (header-only, project header
-# so warnings stay enabled).
-add_executable(test_eth_ctl_reset test_eth_ctl_reset.c)
-target_include_directories(test_eth_ctl_reset PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_compile_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN})
-target_link_options(test_eth_ctl_reset PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
 # Strict integer parser (parse_int.h) unit test (header-only). The ported
 # header dir is a SYSTEM include so its warnings stay quiet while the test
@@ -353,16 +330,6 @@ add_test(
 )
 set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-if(CMOCKA_FOUND)
-    add_test(
-        NAME ernic_dc_uapi
-        COMMAND $<TARGET_FILE:test_ernic_dc_uapi>
-    )
-    set_tests_properties(ernic_dc_uapi PROPERTIES
-        TIMEOUT 30
-        RUN_SERIAL TRUE
-    )
-endif()
 # TCP/UDP checksum helper unit test (table-driven, ASan-instrumented)
 add_test(
     NAME net-checksum-unit
@@ -390,13 +357,6 @@ add_test(
     COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
 )
 set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
-
-# Ethernet control reset-bit definition unit test
-add_test(
-    NAME eth-ctl-reset-unit
-    COMMAND $<TARGET_FILE:test_eth_ctl_reset>
-)
-set_tests_properties(eth-ctl-reset-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # Strict integer parser unit test (table-driven, ASan-instrumented)
 add_test(
@@ -437,7 +397,7 @@ add_test(
 )
 set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# ionic server smoke test: start server in --ionic mode, verify socket and banner.
+# ionic server smoke test: start the server, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.
 add_test(
     NAME ionic-server-smoke

@@ -15,15 +15,14 @@ Key Features
 ^^^^^^^^^^^^
 
 - Full PCIe device emulation in userspace
-- Two device personalities: the default ionic mode, driven by
-  the upstream Linux ``ionic`` driver, and a deprecated
-  PVRDMA-derived device driven by the companion
-  ``rocm_ernic`` module (see :doc:`ionic`)
+- An AMD Pensando ionic NIC, driven in the guest by the
+  upstream Linux ``ionic`` and ``ionic_rdma`` drivers
+  (see :doc:`ionic`)
 - Memory-mapped BARs (MSI-X, registers, doorbells)
 - MSI-X interrupt support
 - Multiple RDMA backends (loopback, TCP/IP, native verbs)
 - Working Ethernet and TCP/IP to the host via a TAP
-  interface in ionic mode
+  interface
 - Comprehensive statistics collection
 
 Quick Start
@@ -60,7 +59,6 @@ a host TAP:
    ionic
    service
    monitoring
-   driver
    testing
    performance
    perf-trends
@@ -89,6 +87,6 @@ Some files carry different licenses per their SPDX headers:
 
 - Files under ``src/from-qemu/`` are derived from QEMU and are
   licensed under ``GPL-2.0-or-later``.
-- Files under ``driver/`` are Linux kernel driver sources and
-  carry ``GPL-2.0 / BSD-2-Clause`` dual licenses as indicated
-  by their SPDX headers.
+- The kernel patches under ``patches/`` apply to Linux driver
+  sources and carry ``GPL-2.0`` as indicated by their SPDX
+  headers.

@@ -4,10 +4,9 @@ Architecture
 rocm-ernic emulates a complete PCIe RDMA device in userspace
 using the VFIO-User protocol. A kernel driver inside the guest
 VM communicates with the emulated device, providing standard
-InfiniBand verbs to applications. In the default ionic mode
-that driver is the upstream Linux ``ionic`` pair; in the
-deprecated legacy mode it is the companion ``rocm_ernic``
-module in ``driver/``. See :doc:`ionic`.
+InfiniBand verbs to applications. That driver is the upstream
+Linux ``ionic`` and ``ionic_rdma`` pair, with the patches in
+``patches/`` applied. See :doc:`ionic`.
 
 High-Level Overview
 -------------------
@@ -57,7 +56,7 @@ Server (``rocm_ernic_server.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The main entry point. It creates the libvfio-user context,
-sets up the PCI BARs for the selected personality, registers
+sets up the PCI BARs, registers
 MSI-X vectors, and enters the server loop waiting for a QEMU
 client to connect.
 
@@ -81,22 +80,19 @@ synchronization.
 ionic Emulation (``src/ionic_*.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The default front end, used unless ``--legacy`` is given,
-that implements the register and queue protocol of the AMD
+The device front end. It implements the
+register and queue protocol of the AMD
 Pensando ionic NIC so the guest can run the upstream Linux
 ``ionic`` and ``ionic_rdma`` drivers. It provides the device
 command interface and the Ethernet LIF
 (``ionic_eth_emu.c``), a TAP host backend
 (``ionic_eth_net.c``), the admin queue (``ionic_adminq.c``),
 and the RDMA device commands (``ionic_rdma_devcmd.c``). The
-RDMA operations themselves are handed to the same backends
-as the legacy path. See :doc:`ionic`.
+RDMA operations themselves are handed to the backends below.
+See :doc:`ionic`.
 
 PCI BARs
 --------
-
-The legacy personality uses three BARs; the ionic
-personality uses the layout described in :doc:`ionic`.
 
 .. list-table::
    :header-rows: 1
@@ -106,15 +102,14 @@ personality uses the layout described in :doc:`ionic`.
      - Size
      - Purpose
    * - BAR 0
-     - 16 KB
-     - MSI-X table and Pending Bit Array (PBA)
-   * - BAR 1
-     - 256 B (64 DWORDs)
-     - Device registers (version, DSR, control,
-       interrupt cause/mask, MAC address, Ethernet)
+     - 64 KB
+     - 32 KB device register window (device info, device
+       command, interrupt control) plus the MSI-X table and
+       Pending Bit Array above it
    * - BAR 2
-     - 2 MB (512 x 4 KB pages)
-     - User Access Region (UAR) doorbells
+     - 4 MB
+     - Doorbell pages; the offset within a page encodes the
+       queue type, the page index the process ID
 
 Backends
 --------
@@ -186,7 +181,7 @@ Suitable for PCI enumeration and basic driver bring-up tests.
 TAP (Ethernet only)
 ^^^^^^^^^^^^^^^^^^^
 
-Not an RDMA backend: in ionic mode ``--tap`` binds the
+Not an RDMA backend: ``--tap`` binds the
 emulated Ethernet LIF to a host TAP interface, so guest
 frames land on a real host netdev and the host stack handles
 ARP, ICMP, DHCP, and TCP with no protocol emulation in the
