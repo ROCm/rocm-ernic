@@ -655,12 +655,42 @@ static inline bool tcp_mr_range_ok(const RdmaRmMR *mr, uint64_t addr,
     return len <= mr->length - offset;
 }
 
-static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
+/*
+ * Map every scatter-gather entry of a work request to a host pointer.
+ *
+ * All-or-nothing: true only if every entry now has a usable host_addr (or is
+ * legitimately zero-length). This is a contract the copy loops depend on
+ * rather than a mere convenience. Each of them walks the entries in order and
+ * advances its destination cursor only for entries it actually copies, so an
+ * entry skipped for want of a mapping does not leave a hole -- it slides every
+ * later entry down by its length. Tolerating a partial mapping therefore
+ * writes the surviving entries to the *wrong offsets* and reports the byte
+ * count as if nothing were wrong, which is worse than refusing the request.
+ *
+ * On failure some earlier entries may already hold pci_dma_map() mappings, so
+ * a caller that gets false must still run tcp_wr_unmap_sge() before freeing
+ * the request. Entries past the failure point keep the caller's zero
+ * initialisation, which tcp_wr_unmap_sge() skips.
+ */
+static bool tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
                            uint32_t num_sge)
 {
     RdmaDeviceResources *res;
     if (!tqp || !wr || !tqp->backend_dev) {
-        return;
+        return false;
+    }
+
+    /*
+     * The entry array is fixed at 32, which is also the max_sge this backend
+     * advertises, so pvrdma_qp_ops.c rejects anything larger before it reaches
+     * here. Enforce it anyway: num_sge is copied to wr->num_sge, which travels
+     * to the peer inside TcpWR and bounds receive-side loops that do not all
+     * re-clamp it.
+     */
+    if (num_sge > 32) {
+        rdma_error_report("TCP: num_sge %u exceeds the %d supported entries",
+                          num_sge, 32);
+        return false;
     }
 
     res = tqp->backend_dev->rdma_dev_res;
@@ -680,8 +710,7 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
         if (!mr) {
             rdma_error_report("TCP: Invalid lkey 0x%x for SGE %u", sge[i].lkey,
                               i);
-            wr->sge[i].length = 0;
-            continue;
+            return false;
         }
 
         uint64_t guest_addr = sge[i].addr;
@@ -695,8 +724,7 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
                 rdma_error_report("TCP: DMA MR map failed for SGE %u "
                                   "addr=0x%lx len=%u",
                                   i, (unsigned long)guest_addr, sge[i].length);
-                wr->sge[i].length = 0;
-                continue;
+                return false;
             }
             wr->sge[i].host_addr = host;
             wr->sge[i].dma_mapped = true;
@@ -709,12 +737,13 @@ static void tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
                               i, (unsigned long)guest_addr, sge[i].length,
                               (unsigned long)mr->start,
                               (unsigned long)mr->length);
-            wr->sge[i].length = 0;
-            continue;
+            return false;
         }
 
         wr->sge[i].host_addr = (char *)mr->virt + (guest_addr - mr->start);
     }
+
+    return true;
 }
 
 static void tcp_wr_unmap_sge(TcpQP *tqp, TcpWR *wr)
@@ -3599,7 +3628,24 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
     wr->num_sge = 0;
     wr->wc_opcode = wc_opcode;
-    tcp_wr_map_sge(tqp, wr, sge, num_sge);
+
+    /*
+     * Fail the request rather than queue a partially mapped one: the copy
+     * loops below pack the entries they can read contiguously, so a missing
+     * mapping silently shifts every later entry's data to the wrong offset.
+     * Checked before the queue push so the unwind is a plain free -- nothing
+     * downstream has seen this request yet.
+     */
+    if (!tcp_wr_map_sge(tqp, wr, sge, num_sge)) {
+        qemu_mutex_unlock(&priv->lock);
+        rdma_error_report("TCP: Failed to map SGEs for send on QP %u", qpn);
+        tcp_wr_unmap_sge(tqp, wr);
+        g_free(wr);
+        rdma_backend_complete_work(IBV_WC_LOC_PROT_ERR, VENDOR_ERR_INVLKEY, 0,
+                                   qpn, wc_opcode, ctx);
+        return;
+    }
+
     g_queue_push_tail(tqp->send_queue, wr);
     seq = __atomic_fetch_add(&priv->next_seq, 1, __ATOMIC_RELAXED);
     qemu_mutex_unlock(&priv->lock);
@@ -3617,6 +3663,12 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
         bool is_write = (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
                          pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM);
+        /*
+         * Whether the target region rejected the write. The completion below
+         * is shared with the non-write opcodes, which never touch a remote
+         * region and so can never set this.
+         */
+        bool write_failed = false;
 
         if (is_write && remote_addr && rkey) {
             RdmaRmMR *target_mr =
@@ -3649,19 +3701,52 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                   "addr=0x%lx len=%lu",
                                   rkey, (unsigned long)remote_addr,
                                   (unsigned long)total_len);
+                write_failed = true;
             }
         }
 
-        tcp_update_dev_stats(priv, total_len, wc_opcode);
+        /*
+         * Only a copy that happened counts. Updating these unconditionally
+         * would bill the guest for bytes the bounds check just refused to
+         * write, on the one path where the refusal is otherwise invisible.
+         */
+        if (!write_failed)
+            tcp_update_dev_stats(priv, total_len, wc_opcode);
 
+        /*
+         * Under priv->lock, as at the two receive-thread sites that pop this
+         * same queue: a COMPLETION or READ_RESP for this QP arriving on any
+         * connection pops it too, and an unsynchronised pop races those. The
+         * completion is posted after the unlock, also matching those sites.
+         */
+        qemu_mutex_lock(&priv->lock);
         TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
+        bool have_wr = (send_wr != NULL);
+        uint64_t wr_id = 0;
         if (send_wr) {
-            uint64_t wr_id = send_wr->wr_id;
+            wr_id = send_wr->wr_id;
+            /* Releases any pci_dma_map() mappings taken for DMA-MR entries;
+             * this path used to free the request without them. */
+            tcp_wr_unmap_sge(tqp, send_wr);
             g_free(send_wr);
-            rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0, qpn, wc_opcode,
-                                       (void *)wr_id);
         }
-        rdma_info_report("TCP: Local loopback complete for QP %u", qpn);
+        qemu_mutex_unlock(&priv->lock);
+
+        if (have_wr) {
+            /*
+             * A rejected write copied nothing, so completing it as a success
+             * would tell the guest its data had landed and leave it reading
+             * whatever the target region held before. The remote path already
+             * fails such a request through `fail`; this is the same verdict
+             * for the same fault, reached without the wire.
+             */
+            rdma_backend_complete_work(
+                write_failed ? IBV_WC_REM_ACCESS_ERR : IBV_WC_SUCCESS,
+                write_failed ? VENDOR_ERR_FAIL_BACKEND : 0, 0, qpn, wc_opcode,
+                (void *)wr_id);
+        }
+        rdma_info_report("TCP: Local loopback %s for QP %u",
+                         write_failed ? "write rejected" : "complete", qpn);
         return;
     }
 
@@ -3907,7 +3992,21 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
     wr->num_sge = 0;
-    tcp_wr_map_sge(tqp, wr, sge, num_sge);
+
+    /*
+     * As on the send path, a partially mapped request would scatter incoming
+     * data to the wrong offsets. Refuse it instead of posting a buffer that
+     * cannot be filled correctly.
+     */
+    if (!tcp_wr_map_sge(tqp, wr, sge, num_sge)) {
+        qemu_mutex_unlock(&priv->lock);
+        rdma_error_report("TCP: Failed to map SGEs for recv on QP %u", qpn);
+        tcp_wr_unmap_sge(tqp, wr);
+        g_free(wr);
+        rdma_backend_complete_work(IBV_WC_LOC_PROT_ERR, VENDOR_ERR_INVLKEY, 0,
+                                   qpn, IBV_WC_RECV, ctx);
+        return;
+    }
 
     /* Check if there's pending data */
     TcpPendingData *pending = g_queue_pop_head(tqp->pending_data);
