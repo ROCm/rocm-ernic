@@ -110,16 +110,17 @@
   changed_when: false
   failed_when: false
 
-- name: Wait for the tutorial server to exit
+- name: Wait for the tutorial server log to report completion
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm1_ssh }}
       'set -eu;
-      pid=$(cat /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid);
       timeout {{ ernic_rdma_tutorial_example.timeout
                  | default(ernic_rdma_tutorial_timeout) | int }}
-        bash -lc "while kill -0 ${pid} 2>/dev/null; do sleep 1; done"'
+        bash -lc "until grep -q \"Run Finished\"
+        {{ ernic_rdma_tutorial_dir }}/server\\[0\\].log 2>/dev/null;
+        do sleep 1; done"'
   register: ernic_rdma_tutorial_server_wait
   changed_when: false
   failed_when: false
