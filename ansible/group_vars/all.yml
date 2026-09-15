@@ -26,14 +26,47 @@ ernic_project_root: "{{ playbook_dir }}/../.."
 ernic_run_dir: /run/rocm-ernic
 ernic_instances: 2
 
+# ── Prebuilt guest artifact ─────────────────────
+# Where the guest disk comes from.  The image is published as an
+# OCI artifact and is the same one .github/workflows/system-tests.yml
+# pulls, so the VMs launched here are the VMs CI tests.  Keep the tag
+# equal to GUEST_ARTIFACT_TAG there; playbooks/vm-fetch.yml asserts
+# the image's own metadata agrees with the values below.
+#
+# Setting this false falls back to building a golden image locally
+# with gen-vm (see ernic_golden_image).  That path cannot currently
+# produce a guest new enough for the ionic driver: Ubuntu ships no
+# stock kernel >= 6.18, so the image needs a mainline one installed
+# on top, which is what ernic_image_prep exists to do.
+ernic_vm_artifact: true
+ernic_vm_artifact_repo: >-
+  docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+ernic_vm_artifact_tag: 20260914-vm.resolute-ionic-qm.737f735-qcow2
+ernic_vm_artifact_info_type: application/vnd.batesste.vm-info.v1
+# Tag-scoped, so bumping the tag cannot silently reuse the old disk.
+ernic_vm_artifact_dir: >-
+  {{ ernic_vm_image_dir }}/artifacts/{{ ernic_vm_artifact_tag }}
+ernic_vm_artifact_disk: batesste-ci-vm.qcow2
+# drivers/infiniband/hw/ionic was merged for 6.18.  Also an
+# ernic_guest_setup role default, where it gates the same check
+# against the running guest; vm-fetch.yml needs it a play earlier,
+# against the image metadata, and role defaults are not in scope
+# there.
+ernic_ionic_min_kernel: "6.18"
+# The published image is provisioned from a runtime package list and
+# carries no dkms/cmake/ninja, which ernic_guest_setup builds with.
+# On the golden-image path ernic_image_prep bakes those in instead.
+ernic_guest_build_deps: "{{ ernic_vm_artifact | bool }}"
+
 # ── QEMU / VM defaults ──────────────────────────
 ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
 ernic_vm_image_dir: /opt/qemu-images
-ernic_vm_name_base: rocm-ernic-april-16-vm
+ernic_vm_name_base: rocm-ernic-ionic-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
-ernic_vm_ssh_user: ubuntu
+# The artifact bakes its own account; gen-vm takes whatever it is told.
+ernic_vm_ssh_user: "{{ (ernic_vm_artifact | bool) | ternary('batesste', 'ubuntu') }}"
 ernic_vm_ssh_host: local-vm
 # Optional: ssh/scp -F path so sudo ernicctl resolves Host aliases
 # (e.g. /home/youruser/.ssh/config).  Root's /root/.ssh is not used by
@@ -43,9 +76,48 @@ ernic_vm_ssh_config: "{{ ansible_env.HOME }}/.ssh/config"
 # SSH fallback, guest_ssh, etc.). Omit ``ernic_vm_ssh_identity`` entirely in
 # inventory to skip this line in ``rocm-ernic.env`` and let ernicctl pick the
 # first readable key under SUDO_USER's ``.ssh`` (id_rsa, id_ed25519, id_ecdsa).
-ernic_vm_ssh_identity: "{{ ansible_env.HOME }}/.ssh/id_rsa"
-ernic_vm_ssh_pass: password
+ernic_vm_ssh_identity: >-
+  {{ (ernic_vm_artifact | bool)
+     | ternary(ernic_vm_artifact_dir ~ '/id_rsa',
+               lookup('env', 'HOME') ~ '/.ssh/id_rsa') }}
+ernic_vm_ssh_pass: "{{ (ernic_vm_artifact | bool) | ternary('changeme', 'password') }}"
+# gen-vm's input only: the public half baked into a locally built
+# image.  It deliberately does not follow ernic_vm_artifact -- the
+# artifact's public key has its private half on a public registry,
+# so authorising it in a local image would be a real weakening.
 ernic_vm_ssh_key_file: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
+
+# The key the GUEST trusts, used for Ansible's own connection and for
+# the bare-ssh gates.  Distinct from ernic_vm_ssh_identity above, which
+# is the host-side key ernicctl writes into rocm-ernic.env.  Empty
+# means "whatever ssh and ANSIBLE_PRIVATE_KEY_FILE already resolve",
+# which is how the hosted jobs supply it.
+#
+# Gated on the key being on disk, not merely on ernic_vm_artifact.  An
+# inventory ansible_ssh_private_key_file outranks the env var, so a
+# path that only *would* exist after a fetch is worse than no path at
+# all: .github/workflows/system-tests.yml exports
+# ANSIBLE_PRIVATE_KEY_FILE and calls ci-site.yml without ever setting
+# ernic_vm_artifact=false, and would have had its own key taken away
+# and replaced by an /opt/qemu-images path that does not exist on a
+# hosted runner.  The test re-evaluates per reference, so the key
+# starts being used as soon as vm-fetch.yml has pulled it.
+#
+# Defined without ansible_env on purpose: ci-vm-register.yml is
+# gather_facts: false, where a fact-based value silently evaluates to
+# nothing.
+ernic_guest_ssh_identity: >-
+  {{ ernic_vm_artifact_dir ~ '/id_rsa'
+     if ((ernic_vm_artifact | bool)
+         and ((ernic_vm_artifact_dir ~ '/id_rsa') is exists))
+     else '' }}
+# The same key as ssh(1) flags, for the test plays that build their own
+# ssh command line rather than going through an inventory host.  Empty
+# when there is no key, so those plays fall back to the agent and to
+# ~/.ssh defaults exactly as they did before.
+ernic_guest_ssh_id_opts: >-
+  {{ '-i ' ~ ernic_guest_ssh_identity ~ ' -o IdentitiesOnly=yes'
+     if (ernic_guest_ssh_identity | default('') | trim) else '' }}
 ernic_vm_ssh_base_port: 2250
 ernic_golden_ssh_port: 2249
 # resolute (26.04), not noble: installing a mainline kernel on noble
@@ -60,10 +132,19 @@ ernic_vm_packages: "{{ ernic_project_root }}/ansible/templates/packages-ernic"
 ernic_vm_nvme: 1
 ernic_vm_qemu_aio: threads
 
-# Golden backing qcow2 for per-VM overlays.
-# Each VM gets its own overlay; BACKING_SHARED=true
-# is set automatically by ernicctl vm-launch.
-ernic_vm_backing: "{{ ernic_vm_image_dir }}/backing/{{ ernic_vm_name_base }}-backing.qcow2"
+# Backing qcow2 for per-VM overlays.  Each VM gets its own
+# overlay; BACKING_SHARED=true is set automatically by
+# ernicctl vm-launch, so several VMs share one read-only base.
+#
+# Deliberately not derived from ernic_vm_name_base any more: where
+# the disk comes from and what the guests are called are separate
+# things, and conflating them meant a -e ernic_vm_name_base from a
+# CI job silently repointed the image as well.
+ernic_vm_backing: >-
+  {{ (ernic_vm_artifact | bool)
+     | ternary(ernic_vm_artifact_dir ~ '/' ~ ernic_vm_artifact_disk,
+               ernic_vm_image_dir ~ '/backing/'
+               ~ ernic_vm_name_base ~ '-backing.qcow2') }}
 # ernic_vm_mcast_group: "230.0.0.1:1234"
 # ernic_mac_overrides:
 #   1: "aa:bb:cc:dd:ee:01"
@@ -109,7 +190,11 @@ ernic_stress_concurrent_duration: 60
 # Pass a real AMD GPU into each VM via vfio-pci.
 # Requires IOMMU enabled and GPUs unbound from
 # amdgpu on the host (handled by host-setup.yml).
-ernic_gpu_passthrough: true
+# The pinned artifact is flavour "ionic" and ships no ROCm, so the
+# GPU roles have nothing to drive there and vm-fetch.yml refuses the
+# combination.  A GPU rig wants a GPU-flavoured image, or
+# ernic_vm_artifact=false and a locally built one.
+ernic_gpu_passthrough: "{{ not (ernic_vm_artifact | bool) }}"
 ernic_pci_mmio_bridge: true
 ernic_gpu_pci_devices:
   1: "0000:4a:00.0"
@@ -166,7 +251,13 @@ ernic_gpu_exporter_base_port: 9170
 ernic_build: true
 # ernic_debug_mesh / ernic_debug_dma_map are ernic_host_setup
 # role defaults (mesh diagnostics on, pci_dma_map logging off).
-ernic_golden_image: true
+# Build a golden image with gen-vm.  Mutually exclusive with
+# ernic_vm_artifact: with the artifact in place vm-create.yml would
+# skip the build anyway (the disk exists), but stating it means a
+# mistyped artifact path fails loudly instead of quietly dropping
+# into a root qemu-nbd/chroot build whose output lands somewhere
+# ernic_vm_backing no longer names.
+ernic_golden_image: "{{ not (ernic_vm_artifact | bool) }}"
 ernic_tests: true
 ernic_gpu_tests: true
 ernic_gpu_2node_tests: true

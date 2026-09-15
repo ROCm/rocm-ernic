@@ -19,6 +19,14 @@
   ansible.builtin.include_tasks: guest_agent.yml
   when: ernic_guest_agent | bool
 
+- name: Install the build toolchain the guest image does not carry
+  ansible.builtin.include_tasks: build_deps.yml
+  when: ernic_guest_build_deps | bool
+
+- name: Raise the locked-memory limit for RDMA
+  ansible.builtin.include_tasks: memlock.yml
+  when: ernic_guest_memlock | bool
+
 - name: Stage the driver and provider sources
   ansible.builtin.include_tasks: stage_sources.yml
 

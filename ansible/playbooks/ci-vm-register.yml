@@ -64,10 +64,19 @@
         ansible_host: localhost
         ansible_port: "{{ item.vm.ssh_port }}"
         ansible_user: "{{ item.vm.ssh_user }}"
+        # An inventory key outranks ANSIBLE_PRIVATE_KEY_FILE, so this
+        # omits itself unless a key was named -- that is what keeps the
+        # hosted jobs, which set the env var, authoritative.
+        ansible_ssh_private_key_file: >-
+          {{ ernic_guest_ssh_identity
+             if (ernic_guest_ssh_identity | default('') | trim)
+             else omit }}
         ansible_ssh_common_args: >-
           -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o PasswordAuthentication=no
+          {{ '-o IdentitiesOnly=yes'
+             if (ernic_guest_ssh_identity | default('') | trim) else '' }}
         vm_index: "{{ item.id }}"
         vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item.id }}"
       loop: "{{ ernic_manifest.instances }}"

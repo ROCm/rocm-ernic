@@ -50,10 +50,22 @@ brought VMs up unprivileged, and supplies only the
 inventory registration those plays need, via
 `ansible/playbooks/ci-vm-register.yml`.
 
-The golden backing image is treated as a **prebuilt
-input**, not something CI regenerates. Creating one
-needs `qemu-nbd` and root; see
-`ansible/playbooks/vm-create.yml`.
+The guest disk is **pulled from the registry**, not
+regenerated. `vm-up.sh` fetches the artifact named by
+`CI_GUEST_ARTIFACT_TAG` through
+`scripts/fetch-guest-image.sh` and unpacks it under
+`CI_VM_ARTIFACT_DIR`, skipping the download when that tag
+is already present. Needing no root is the point: building
+a golden image locally needs `qemu-nbd` and root, and
+pinning the tag means CI tests the same image the hosted
+workflow does. Keep the tag equal to `GUEST_ARTIFACT_TAG`
+in `.github/workflows/system-tests.yml` and
+`ernic_vm_artifact_tag` in `ansible/group_vars/all.yml`.
+
+The backing qcow2 is never written at runtime -- each VM
+gets its own overlay -- so unlike the VM names and SSH
+ports, the image is deliberately *not* made distinct per
+checkout.
 
 ## Tiers
 
@@ -340,11 +352,20 @@ Useful overrides:
 | `ERNIC_INSTANCES` | `2` | number of VMs |
 | `CI_VM_SSH_BASE_PORT` | `2350` | first guest ssh port |
 | `CI_KEEP_OVERLAYS` | `false` | keep qcow2 after teardown |
+| `CI_GUEST_ARTIFACT_REPO` | see `ci/lib/common.sh` | OCI repo holding the guest image |
+| `CI_GUEST_ARTIFACT_TAG` | see `ci/lib/common.sh` | image tag to pull |
+| `CI_VM_ARTIFACT_DIR` | `${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}` | where it is unpacked |
+| `CI_VM_BACKING` | the artifact's qcow2 | backing disk for the overlays |
+| `CI_VM_SSH_USER` | `batesste` | guest login account |
+| `CI_VM_SSH_IDENTITY` | the artifact's `id_rsa` | key used for guest ssh |
 
 VM names and ports are deliberately distinct from the
 interactive defaults in `/etc/rocm-ernic/rocm-ernic.env`
 so a CI run can never disturb a developer's VMs on the
 same box. Teardown only ever matches VMs it launched.
+The guest image is the exception, for the reason given
+above: it is read-only at runtime, and sharing it is what
+makes CI and the developer path test the same thing.
 
 ## Reports
 

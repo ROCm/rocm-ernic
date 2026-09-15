@@ -11,8 +11,9 @@
 # plays install to /usr/local, drive systemd and build
 # the golden image over qemu-nbd; none of that is
 # available to (or wanted from) an unprivileged CI run.
-# The golden backing image is treated as a prebuilt
-# input instead -- see ci/README.md.
+# The guest disk is pulled from the registry instead, which
+# needs no root and pins CI to the same image the hosted
+# workflow tests -- see ci/README.md.
 #
 # Emits: $CI_RESULTS/vm-up.jsonl
 
@@ -25,8 +26,17 @@ start_suite vm-up
 
 [ -x "${CI_BUILD_DIR}/rocm-ernic" ] || \
     die "no build at ${CI_BUILD_DIR}; run ci/jobs/build.sh first"
+# Produce before consume: the image is a pinned published artifact,
+# so CI fetches it rather than requiring someone to have staged it.
+run_check vm-up "guest-image-fetch" fetch_guest_image
+# check_status reports on stdout and always exits 0, so it has to be
+# compared, not branched on -- as ci/jobs/build.sh does.
+if [ "$(check_status vm-up guest-image-fetch)" = "fail" ]; then
+    die "could not fetch guest image ${CI_GUEST_ARTIFACT_TAG}"
+fi
+
 [ -f "${CI_VM_BACKING}" ] || \
-    die "golden backing image not found: ${CI_VM_BACKING}"
+    die "guest backing image not found: ${CI_VM_BACKING}"
 
 # CI_VM_ACCEL=tcg drops to software emulation so the
 # functional suite can still run without /dev/kvm.

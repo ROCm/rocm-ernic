@@ -5,10 +5,37 @@
 ---
 # ── Phase gates ──────────────────────────────────
 ernic_guest_agent: true
+ernic_guest_build_deps: false
+ernic_guest_memlock: true
 ernic_build_rdma_core: true
 ernic_install_driver: true
 ernic_configure_nic: true
 ernic_set_hostname: true
+
+# ── Build toolchain ──────────────────────────────
+# Only installed when ernic_guest_build_deps is set; see
+# tasks/build_deps.yml for why it is off by default.  This is the
+# set .github/workflows/system-tests.yml installs by hand before
+# calling this role, which is the evidence that it is sufficient.
+ernic_guest_build_deps_packages:
+  - dkms
+  - git
+  - build-essential
+  - cmake
+  - ninja-build
+  - pkg-config
+  - libnl-3-dev
+  - libnl-route-3-dev
+  - libudev-dev
+  - python3-docutils
+  # Not a build dependency: iperf3 is what tcp-performance-tests.yml
+  # measures with, and the artifact image carries no copy, where the
+  # golden image got one from templates/packages-ernic.
+  - iperf3
+# A guest reaching the archive over user-mode NAT routinely races a
+# mirror; the hosted jobs retry for the same reason.
+ernic_guest_build_deps_retries: 3
+ernic_guest_build_deps_delay: 5
 
 # ── Staging paths inside the guest ───────────────
 ernic_guest_stamp_dir: /usr/local/share/rocm-ernic

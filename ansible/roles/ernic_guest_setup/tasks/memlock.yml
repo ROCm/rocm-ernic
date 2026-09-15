@@ -1,0 +1,54 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Raise RLIMIT_MEMLOCK for RDMA.
+#
+# Every verbs resource -- MRs, CQ and QP rings -- is pinned, and the
+# distro default of 8 MiB is small enough that a perftest run at 4 MiB
+# messages (which registers size * 2) exhausts it.  The failure lands
+# on whatever allocation happens to come next rather than on the one
+# that crossed the line, so ib_send_bw reports "Couldn't create CQ"
+# for what is really a locked-memory limit.
+#
+# The distro rdma-core package ships this file; the guest builds
+# rdma-core from source instead, so nothing installs it.  Both halves
+# are needed: limits.d covers login sessions, and system.conf.d covers
+# the transient units the test plays start their servers in, which
+# never go through PAM.
+
+---
+- name: Allow unlimited locked memory for RDMA sessions
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/90-rdma-memlock.conf
+    content: |
+      # Installed by sbates130272.rocm_ernic (ernic_guest_setup).
+      * soft memlock unlimited
+      * hard memlock unlimited
+      root soft memlock unlimited
+      root hard memlock unlimited
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Allow unlimited locked memory for systemd units
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/system.conf.d/90-rdma-memlock.conf
+    content: |
+      # Installed by sbates130272.rocm_ernic (ernic_guest_setup).
+      [Manager]
+      DefaultLimitMEMLOCK=infinity
+    owner: root
+    group: root
+    mode: "0644"
+  register: ernic_memlock_systemd
+
+# systemctl daemon-reexec, not daemon-reload: DefaultLimit* is read by
+# the manager at startup and daemon-reload does not re-read it.
+- name: Re-execute systemd so the new default takes effect
+  become: true
+  ansible.builtin.command: systemctl daemon-reexec
+  changed_when: true
+  when: ernic_memlock_systemd is changed

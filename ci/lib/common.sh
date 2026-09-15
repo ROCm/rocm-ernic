@@ -61,11 +61,31 @@ ERNICCTL="${ERNICCTL:-${PROJECT_ROOT}/service/ernicctl}"
 
 CI_VM_NAME_BASE="${CI_VM_NAME_BASE:-rocm-ernic-ci-vm}"
 CI_VM_SSH_BASE_PORT="${CI_VM_SSH_BASE_PORT:-2350}"
-CI_VM_SSH_USER="${CI_VM_SSH_USER:-ubuntu}"
 CI_VM_VCPUS="${CI_VM_VCPUS:-8}"
 CI_VM_MEM="${CI_VM_MEM:-16384}"
 CI_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR:-/opt/qemu-images}"
-CI_VM_BACKING="${CI_VM_BACKING:-/opt/qemu-images/backing/rocm-ernic-may-27-vm-backing.qcow2}"
+
+# ── Guest image ───────────────────────────────────
+#
+# The same artifact the GitHub jobs pull and the same one
+# ansible/group_vars/all.yml points at, so all three lanes
+# test one guest.  Keep the tag equal to GUEST_ARTIFACT_TAG
+# in .github/workflows/system-tests.yml and to
+# ernic_vm_artifact_tag in ansible/group_vars/all.yml.
+#
+# Unlike the VM name and ssh port above, the image is NOT
+# deliberately distinct: the backing file is never written
+# at runtime (each VM gets a COW overlay and ernicctl sets
+# BACKING_SHARED=true), so sharing one base is safe and is
+# the whole point of following the published image.
+CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic}"
+CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260914-vm.resolute-ionic-qm.737f735-qcow2}"
+CI_VM_ARTIFACT_DIR="${CI_VM_ARTIFACT_DIR:-${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}}"
+CI_VM_BACKING="${CI_VM_BACKING:-${CI_VM_ARTIFACT_DIR}/batesste-ci-vm.qcow2}"
+# The account and key baked into that image.
+CI_VM_SSH_USER="${CI_VM_SSH_USER:-batesste}"
+CI_VM_SSH_IDENTITY="${CI_VM_SSH_IDENTITY:-${CI_VM_ARTIFACT_DIR}/id_rsa}"
+
 CI_QEMU_MINIMAL="${CI_QEMU_MINIMAL:-${HOME}/Projects/qemu-minimal}"
 CI_QEMU_PATH="${CI_QEMU_PATH:-/opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/}"
 
@@ -233,13 +253,27 @@ vm_ssh_port() { echo $(( CI_VM_SSH_BASE_PORT + $1 - 1 )); }
 
 vm_ssh() {
     local n="$1"; shift
+    local id=()
+    # The artifact ships its own key; the guest trusts nothing else.
+    [ -n "${CI_VM_SSH_IDENTITY:-}" ] && [ -f "${CI_VM_SSH_IDENTITY}" ] && \
+        id=(-i "${CI_VM_SSH_IDENTITY}" -o IdentitiesOnly=yes)
     ssh -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o PasswordAuthentication=no \
         -o ConnectTimeout=10 \
         -o LogLevel=ERROR \
+        "${id[@]}" \
         -p "$(vm_ssh_port "$n")" \
         "${CI_VM_SSH_USER}@localhost" "$@"
+}
+
+# Pull the pinned guest image if it is not already on disk.
+# Idempotent and cheap on a hit; see scripts/fetch-guest-image.sh.
+fetch_guest_image() {
+    "${PROJECT_ROOT}/scripts/fetch-guest-image.sh" \
+        --repo "${CI_GUEST_ARTIFACT_REPO}" \
+        --tag "${CI_GUEST_ARTIFACT_TAG}" \
+        --dest "${CI_VM_ARTIFACT_DIR}"
 }
 
 # ── Preflight ─────────────────────────────────────

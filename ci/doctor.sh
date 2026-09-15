@@ -117,11 +117,23 @@ for i in $(seq 1 "${ERNIC_INSTANCES}"); do
     fi
 done
 
+# The tools scripts/fetch-guest-image.sh needs.  vm-up.sh hard-requires
+# them now, so a missing one should surface here rather than as a failed
+# check three minutes into a job.
+for tool in oras jq zstd qemu-img; do
+    if have "$tool"; then
+        ok "$tool: $(command -v "$tool")"
+    else
+        bad "$tool not found (needed to fetch the guest image)"
+    fi
+done
+
 if [ -f "${CI_VM_BACKING}" ]; then
-    ok "golden backing image: ${CI_VM_BACKING} ($(du -h "${CI_VM_BACKING}" | cut -f1))"
+    ok "guest image: ${CI_VM_BACKING} ($(du -h "${CI_VM_BACKING}" | cut -f1))"
 else
-    bad "golden backing image missing: ${CI_VM_BACKING}"
-    echo "         build one with: ansible-playbook ansible/playbooks/vm-create.yml (needs root)"
+    warn "guest image not yet fetched: ${CI_VM_BACKING}"
+    echo "         ci/jobs/vm-up.sh pulls it automatically; to do it now:"
+    echo "         scripts/fetch-guest-image.sh --tag ${CI_GUEST_ARTIFACT_TAG} --dest ${CI_VM_ARTIFACT_DIR}"
 fi
 
 if [ -x "${CI_QEMU_PATH}/qemu-system-x86_64" ]; then

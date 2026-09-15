@@ -148,8 +148,16 @@ probe_pingpong() {
         return 1
     fi
 
-    vm_ssh 1 "nohup ibv_rc_pingpong -d ${dev1} -g 1 -n 50 \
-        >/tmp/ci-pingpong.log 2>&1 & echo ok" >/dev/null
+    # A transient unit, not nohup: the guest image ships
+    # KillUserProcesses=yes, so anything left behind in the login
+    # session dies the moment this ssh returns and the client then
+    # fails to connect.  This is what the Ansible plays already do
+    # for their perftest servers.
+    vm_ssh 1 "systemctl --user stop ci-pingpong 2>/dev/null; \
+        systemd-run --user --collect --unit=ci-pingpong \
+            -p StandardOutput=file:/tmp/ci-pingpong.log \
+            -p StandardError=append:/tmp/ci-pingpong.log \
+            ibv_rc_pingpong -d ${dev1} -g 1 -n 50" >/dev/null
     sleep 3
 
     local out
