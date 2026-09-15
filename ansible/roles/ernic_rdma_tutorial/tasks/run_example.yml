@@ -14,6 +14,15 @@
     ernic_rdma_tutorial_sock_port: >-
       {{ ernic_rdma_tutorial_sock_port_base | int
          + ernic_rdma_tutorial_example_index | int }}
+    ernic_rdma_tutorial_config_content: |
+      servers:
+        {{ ernic_rdma_tutorial_server_hostname }} .. {{ ernic_rdma_tutorial_server_hostname }}
+      clients:
+        {{ ernic_rdma_tutorial_client_hostname }} .. {{ ernic_rdma_tutorial_client_hostname }}
+      num_concurr_msgs:
+        {{ ernic_rdma_tutorial_example.num_concurr_msgs }}
+      msg_size:
+        {{ ernic_rdma_tutorial_example.msg_size }}
 
 - name: Build tutorial example on VM1
   ansible.builtin.shell:
@@ -46,15 +55,9 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
-      cat <<'EOF' | {{ ernic_rdma_tutorial_vm1_ssh }} 'cat > {{ ernic_rdma_tutorial_dir }}/{{ ernic_rdma_tutorial_config }}'
-      servers:
-      	{{ ernic_rdma_tutorial_server_hostname }} .. {{ ernic_rdma_tutorial_server_hostname }}
-      clients:
-      	{{ ernic_rdma_tutorial_client_hostname }} .. {{ ernic_rdma_tutorial_client_hostname }}
-      num_concurr_msgs:
-      	{{ ernic_rdma_tutorial_example.num_concurr_msgs }}
-      msg_size:
-      	{{ ernic_rdma_tutorial_example.msg_size }}
+      cat <<'EOF' | {{ ernic_rdma_tutorial_vm1_ssh }} \
+        'cat > {{ ernic_rdma_tutorial_dir }}/{{ ernic_rdma_tutorial_config }}'
+      {{ ernic_rdma_tutorial_config_content }}
       EOF
   changed_when: false
 
@@ -63,15 +66,9 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
-      cat <<'EOF' | {{ ernic_rdma_tutorial_vm2_ssh }} 'cat > {{ ernic_rdma_tutorial_dir }}/{{ ernic_rdma_tutorial_config }}'
-      servers:
-      	{{ ernic_rdma_tutorial_server_hostname }} .. {{ ernic_rdma_tutorial_server_hostname }}
-      clients:
-      	{{ ernic_rdma_tutorial_client_hostname }} .. {{ ernic_rdma_tutorial_client_hostname }}
-      num_concurr_msgs:
-      	{{ ernic_rdma_tutorial_example.num_concurr_msgs }}
-      msg_size:
-      	{{ ernic_rdma_tutorial_example.msg_size }}
+      cat <<'EOF' | {{ ernic_rdma_tutorial_vm2_ssh }} \
+        'cat > {{ ernic_rdma_tutorial_dir }}/{{ ernic_rdma_tutorial_config }}'
+      {{ ernic_rdma_tutorial_config_content }}
       EOF
   changed_when: false
 
@@ -132,7 +129,7 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm1_ssh }}
-      'cat "{{ ernic_rdma_tutorial_dir }}/server[0].log"'
+      'cat {{ ernic_rdma_tutorial_dir }}/server\[0\].log'
   register: ernic_rdma_tutorial_server_log
   changed_when: false
   failed_when: false
@@ -142,7 +139,7 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm2_ssh }}
-      'cat "{{ ernic_rdma_tutorial_dir }}/client[0].log"'
+      'cat {{ ernic_rdma_tutorial_dir }}/client\[0\].log'
   register: ernic_rdma_tutorial_client_log
   changed_when: false
   failed_when: false

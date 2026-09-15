@@ -78,7 +78,7 @@
 
 - name: "Phase 6b: CPU-based RDMA performance tests (perftest)"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
-  tags: [test, cpu-rdma-perf]
+  tags: [test, perf, cpu-rdma-perf]
 
 - name: "Phase 7a: GPU RDMA tests (xio-tester)"
   ansible.builtin.import_playbook: playbooks/gpu-tests.yml
