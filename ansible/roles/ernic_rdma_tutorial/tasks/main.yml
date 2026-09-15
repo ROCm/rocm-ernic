@@ -141,7 +141,7 @@
               before=$(mktemp)
               after=$(mktemp)
               trap "rm -f ${before} ${after}" EXIT
-              if [ ! -d {{ ernic_rdma_tutorial_dir }}/.git ]; then
+              if [ ! -d {{ (ernic_rdma_tutorial_dir ~ '/.git') | to_json }} ]; then
                 echo __ernic_rdma_tutorial_cloned__
                 git clone {{ ernic_rdma_tutorial_repo | to_json }} {{ ernic_rdma_tutorial_dir | to_json }}
               fi
@@ -171,7 +171,7 @@
               before=$(mktemp)
               after=$(mktemp)
               trap "rm -f ${before} ${after}" EXIT
-              if [ ! -d {{ ernic_rdma_tutorial_dir }}/.git ]; then
+              if [ ! -d {{ (ernic_rdma_tutorial_dir ~ '/.git') | to_json }} ]; then
                 echo __ernic_rdma_tutorial_cloned__
                 git clone {{ ernic_rdma_tutorial_repo | to_json }} {{ ernic_rdma_tutorial_dir | to_json }}
               fi

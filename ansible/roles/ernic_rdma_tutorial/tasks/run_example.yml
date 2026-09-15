@@ -92,9 +92,14 @@
       echo $! >/tmp/{{ ernic_rdma_tutorial_unit }}-server.pid'
   changed_when: true
 
-- name: Wait for the tutorial server to start
-  ansible.builtin.pause:
-    seconds: 3
+- name: Wait for the tutorial server to listen
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+      set -o pipefail
+      timeout 30 bash -lc "until ss -ltn | grep -q ':{{ ernic_rdma_tutorial_sock_port }} '; do sleep 1; done"'
+  changed_when: false
 
 - name: Run the tutorial client on VM2
   ansible.builtin.shell:
