@@ -6,7 +6,7 @@ name: "rocm-ernic codespell"
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
     paths:
       - 'projects/hipfile/**'
       - '.github/workflows/hipfile-*.yml'
