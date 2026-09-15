@@ -1,0 +1,11 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# daemon-reexec, not daemon-reload: DefaultLimit* is read by the manager
+# at startup, and daemon-reload does not re-read it.
+- name: Re-execute systemd
+  become: true
+  ansible.builtin.command: systemctl daemon-reexec
+  changed_when: true

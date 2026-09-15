@@ -7,9 +7,9 @@ on:
     # These jobs boot QEMU guests and run an hour of DKMS builds and
     # RDMA sweeps, so gate them on the things they actually consume.
     #
-    # Both jobs pin -e ernic_device_mode=ionic, and ernic_guest_setup
-    # only stages driver/ and rdma-core/ in legacy mode, so neither is
-    # listed here.  If a job ever stops pinning ionic, add them back.
+    # The guest drivers are the upstream in-tree ionic ones, fetched by
+    # ernic_guest_setup rather than carried here, so there is no
+    # in-repo driver path to list.
     paths:
       - 'src/**'                  # the vfio-user server under test
       - 'tests/**'                # rdma_verify, test_write_imm, ...

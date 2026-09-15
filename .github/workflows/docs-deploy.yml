@@ -17,7 +17,6 @@ on:
     paths:
       - 'docs/**'
       - 'src/**/*.h'
-      - 'driver/**/*.h'
       - 'service/**'
       - 'requirements.txt'
       - '.github/workflows/docs-deploy.yml'

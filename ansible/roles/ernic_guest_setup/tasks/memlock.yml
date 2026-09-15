@@ -43,12 +43,10 @@
     owner: root
     group: root
     mode: "0644"
-  register: ernic_memlock_systemd
+  notify: Re-execute systemd
 
-# systemctl daemon-reexec, not daemon-reload: DefaultLimit* is read by
-# the manager at startup and daemon-reload does not re-read it.
-- name: Re-execute systemd so the new default takes effect
-  become: true
-  ansible.builtin.command: systemctl daemon-reexec
-  changed_when: true
-  when: ernic_memlock_systemd is changed
+# Flushed here rather than at the end of the play: everything the role
+# does after this point, and every transient unit the test plays start,
+# has to inherit the new default.
+- name: Re-execute systemd before anything else starts
+  ansible.builtin.meta: flush_handlers

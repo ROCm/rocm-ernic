@@ -418,17 +418,15 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     if (!dev->bar0_mem)
         err(EXIT_FAILURE, "ionic: Failed to allocate BAR0 MSI-X shadow");
 
-    ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
-                           IONIC_BAR0_TOTAL_SIZE, bar0_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
-                           -1, 0);
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, IONIC_BAR0_TOTAL_SIZE,
+        bar0_access, VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0)
         err(EXIT_FAILURE, "ionic: Failed to setup BAR0");
 
-    ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX,
-                           IONIC_BAR2_DB_SIZE, bar2_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
-                           -1, 0);
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX, IONIC_BAR2_DB_SIZE, bar2_access,
+        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0)
         err(EXIT_FAILURE, "ionic: Failed to setup BAR2");
 

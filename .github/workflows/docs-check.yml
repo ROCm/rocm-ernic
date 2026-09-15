@@ -9,7 +9,6 @@ on:
     paths:
       - 'docs/**'
       - 'src/**/*.h'
-      - 'driver/**/*.h'
       - 'service/**'
       - 'README.md'
       - 'requirements.txt'

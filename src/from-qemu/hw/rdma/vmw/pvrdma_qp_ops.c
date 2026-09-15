@@ -292,4 +292,3 @@ void pvrdma_drain_deferred_completions(void)
         g_free(dc);
     }
 }
-
