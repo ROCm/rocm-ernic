@@ -241,7 +241,7 @@ int main(void)
     printf("seed=%" PRIu32 "\n", seed);
 
     for (it = 0; it < ITERATIONS; it++) {
-        uint64_t recv_wr_id = 0x5245435632494d4dULL + (uint64_t)it;
+        uint64_t recv_wr_id = UINT64_C(0x5245435632494d4d) + (uint64_t)it;
         uint32_t imm = (uint32_t)rand();
         struct ibv_sge rsge, wsge;
         struct ibv_recv_wr rwr;
