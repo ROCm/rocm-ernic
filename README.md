@@ -4,7 +4,6 @@
 [![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml/badge.svg)][ci-build]
 [![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
 [![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
-[![Spelling](https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml/badge.svg)][ci-spell]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-rdma.json)][perf-trends]
 
@@ -58,7 +57,6 @@ see [LICENSE.md](LICENSE.md) for details.
 [ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
 [ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
 [ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
-[ci-spell]: https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
 [libvfio]: https://github.com/nutanix/libvfio-user
 [softroce]: https://man7.org/linux/man-pages/man7/rxe.7.html
