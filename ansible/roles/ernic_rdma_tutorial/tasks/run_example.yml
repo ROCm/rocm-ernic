@@ -78,7 +78,12 @@
     cmd: |
       {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
       cd {{ ernic_rdma_tutorial_dir }}
-      pkill -f "rdma-tutorial {{ ernic_rdma_tutorial_config }} {{ ernic_rdma_tutorial_sock_port }}" 2>/dev/null || true
+      if [ -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid ]; then
+        old_pid=$(cat /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid)
+        kill "${old_pid}" 2>/dev/null || true
+        wait "${old_pid}" 2>/dev/null || true
+        rm -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
+      fi
       rm -f server*.log client*.log /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
       nohup ./rdma-tutorial \
         {{ ernic_rdma_tutorial_config }} \
@@ -112,10 +117,11 @@
     executable: /bin/bash
     cmd: |
       {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+      server_log="{{ ernic_rdma_tutorial_dir }}/server[0].log"
       timeout {{ ernic_rdma_tutorial_example.timeout
                  | default(ernic_rdma_tutorial_timeout) | int }} \
         bash -lc "until grep -q \"Run Finished\" \
-        \"{{ ernic_rdma_tutorial_dir }}/server[0].log\" 2>/dev/null; \
+        \"${server_log}\" 2>/dev/null; \
         do sleep 1; done"'
   register: ernic_rdma_tutorial_server_wait
   changed_when: false
@@ -126,7 +132,8 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm1_ssh }}
-      'cat "{{ ernic_rdma_tutorial_dir }}/server[0].log"'
+      'server_log="{{ ernic_rdma_tutorial_dir }}/server[0].log";
+      cat "${server_log}"'
   register: ernic_rdma_tutorial_server_log
   changed_when: false
   failed_when: false
@@ -136,7 +143,8 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm2_ssh }}
-      'cat "{{ ernic_rdma_tutorial_dir }}/client[0].log"'
+      'client_log="{{ ernic_rdma_tutorial_dir }}/client[0].log";
+      cat "${client_log}"'
   register: ernic_rdma_tutorial_client_log
   changed_when: false
   failed_when: false
