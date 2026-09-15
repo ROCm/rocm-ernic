@@ -24,7 +24,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Detect release architecture
         id: arch
@@ -48,7 +48,7 @@ jobs:
 
       - name: Cache libvfio-user build
         id: cache-libvfio-user
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /usr/lib/${{ steps.arch.outputs.multiarch }}/libvfio-user*
@@ -166,7 +166,7 @@ jobs:
           ls -lh dist
 
       - name: Upload release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: dist/*
@@ -183,13 +183,13 @@ jobs:
       contents: write
     steps:
       - name: Download release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-assets
           path: dist
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: rocm-ernic ${{ needs.build.outputs.version }}
           make_latest: true
