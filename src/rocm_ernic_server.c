@@ -611,7 +611,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
      */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_INTX_IRQ, 1);
     if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %m");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %s",
+                strerror(errno));
         return (int)ret;
     }
 
@@ -653,7 +654,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Add MSI-X capability to PCI config space at automatic position (pos=0) */
     ret = vfu_pci_add_capability(vfu_ctx, 0, 0, &msix_cap);
     if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %m");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %s",
+                strerror(errno));
         return (int)ret;
     }
 
@@ -675,7 +677,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Setup interrupt vector count - libvfio-user will manage table/PBA */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_MSIX_IRQ, nr_intrs);
     if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup MSI-X IRQ count: %m");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup MSI-X IRQ count: %s",
+                strerror(errno));
         return (int)ret;
     }
 
