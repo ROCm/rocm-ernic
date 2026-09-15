@@ -276,6 +276,7 @@ target_include_directories(test_tcp_mesh_topology PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -302,6 +303,7 @@ target_include_directories(test_tcp_mr_bounds PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
