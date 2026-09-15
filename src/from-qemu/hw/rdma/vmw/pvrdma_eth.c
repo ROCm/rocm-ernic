@@ -525,7 +525,7 @@ void pvrdma_eth_rx_frame(PVRDMADev *dev, const void *frame_data, size_t len)
             memcpy(resp_arp->sender_hw_addr, src_mac, 6);
             resp_arp->sender_proto_addr = server_ip;
 
-            /* Target (requestor): use their MAC and IP */
+            /* Target (requester): use their MAC and IP */
             memcpy(resp_arp->target_hw_addr, arp_hdr->sender_hw_addr, 6);
             resp_arp->target_proto_addr = arp_hdr->sender_proto_addr;
 
