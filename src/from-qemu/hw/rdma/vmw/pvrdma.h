@@ -48,11 +48,9 @@
 typedef struct PVRDMAQPStats {
     uint64_t doorbell_send;      /* Send doorbell rings */
     uint64_t doorbell_recv;      /* Receive doorbell rings */
-    uint64_t doorbell_srq;       /* SRQ doorbell rings */
     uint64_t wqes_processed;     /* Total WQEs processed */
     uint64_t wqes_by_opcode[18]; /* WQEs by opcode type (see PVRDMA_WR_*) */
     uint64_t cqes_posted;        /* CQEs posted */
-    uint64_t continuations;      /* Continuation callbacks scheduled */
     uint64_t bytes_sent;         /* Bytes sent via SEND operations */
     uint64_t bytes_received;     /* Bytes received via RECV operations */
     uint64_t bytes_rdma_read;    /* Bytes read via RDMA Read operations */
@@ -61,8 +59,6 @@ typedef struct PVRDMAQPStats {
 
 typedef struct PVRDMADevStats {
     uint64_t commands;
-    uint64_t regs_reads;
-    uint64_t regs_writes;
     uint64_t uar_reads;
     uint64_t uar_writes;
     uint64_t bar0_reads;

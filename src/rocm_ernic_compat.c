@@ -525,6 +525,75 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
     }
 }
 
+void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
+                              bool is_send)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (!qp) {
+        return;
+    }
+
+    if (is_send) {
+        qp->doorbell_send++;
+    } else {
+        qp->doorbell_recv++;
+    }
+}
+
+void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
+                         unsigned int pvrdma_opcode)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (!qp) {
+        return;
+    }
+
+    qp->wqes_processed++;
+    if (pvrdma_opcode < G_N_ELEMENTS(qp->wqes_by_opcode)) {
+        qp->wqes_by_opcode[pvrdma_opcode]++;
+    }
+}
+
+void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (qp) {
+        qp->cqes_posted++;
+    }
+}
+
+void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma || !pvrdma->stats.qp_stats || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -534,7 +603,6 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
  */
 
 void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *regs_reads, uint64_t *regs_writes,
                       uint64_t *uar_writes, uint64_t *interrupts,
                       uint64_t *uar_reads, uint64_t *bar0_reads,
                       uint64_t *bar0_writes)
@@ -547,10 +615,6 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
 
     if (commands)
         *commands = pvrdma->stats.commands;
-    if (regs_reads)
-        *regs_reads = pvrdma->stats.regs_reads;
-    if (regs_writes)
-        *regs_writes = pvrdma->stats.regs_writes;
     if (uar_writes)
         *uar_writes = pvrdma->stats.uar_writes;
     if (interrupts)

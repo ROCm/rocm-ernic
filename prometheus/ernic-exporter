@@ -26,7 +26,6 @@ from prometheus_client import (
     CollectorRegistry,
     Gauge,
     generate_latest,
-    Info,
     CONTENT_TYPE_LATEST,
 )
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -325,7 +324,7 @@ ernic_flr_reset_total = Gauge(
 )
 ernic_commands_total = Gauge(
     "ernic_commands_total",
-    "Total PVRDMA commands processed",
+    "Total admin queue commands processed",
     ["ernic_id", "role"],
     registry=registry,
 )

@@ -138,8 +138,18 @@ Metrics Reference
 -----------------
 
 All metric names start with ``ernic_``.  Labels use
-``instance`` for the numeric server instance ID (1, 2,
-...) and ``qp`` for the QP handle.
+``ernic_id`` for the numeric server instance ID (1, 2,
+...), ``role`` for the instance role, and ``qp`` for
+the QP handle.
+
+.. note::
+
+   The instance label is ``ernic_id``, not ``instance``.
+   Prometheus reserves ``instance`` for the scrape
+   target (``host:port``), so every exporter metric
+   would collide on it.  Nearly all per-instance
+   metrics carry ``role`` as well, and the shipped
+   dashboard filters on both.
 
 Cluster and Instance Metrics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -158,11 +168,11 @@ Cluster and Instance Metrics
      - Gauge
      - Whether each instance process is alive
        (1 = running, 0 = dead).
-       Labels: ``instance``, ``role``, ``mac``.
+       Labels: ``ernic_id``, ``role``, ``mac``.
    * - ``ernic_instance_uptime_seconds``
      - Gauge
      - Process uptime in seconds.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
 
 VM Lifecycle Metrics
 ^^^^^^^^^^^^^^^^^^^^
@@ -180,20 +190,21 @@ VM Lifecycle Metrics
    * - ``ernic_vm_attached``
      - Gauge
      - Whether a VM is attached (1 = yes).
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``, ``vm_name``.
    * - ``ernic_vm_uptime_seconds``
      - Gauge
      - VM uptime in seconds.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
    * - ``ernic_vm_gpu_passthrough``
      - Gauge
      - Whether GPU passthrough is enabled (1 = yes).
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
 
 Network Traffic
 ^^^^^^^^^^^^^^^
 
-All per-instance, labelled ``{instance="<id>"}``:
+All per-instance, labelled
+``{ernic_id="<id>", role="<role>"}``:
 
 .. list-table::
    :header-rows: 1
@@ -240,36 +251,38 @@ Device Health and Events
    * - ``ernic_flr_reset_total``
      - Gauge
      - Cumulative FLR / device reset count.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
    * - ``ernic_commands_total``
      - Gauge
      - Total admin queue commands processed.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
    * - ``ernic_interrupts_total``
      - Gauge
      - Total interrupts delivered.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
    * - ``ernic_connection_up``
      - Gauge
      - Connection state (1 = connected).
-       Labels: ``instance``, ``state``.
+       Labels: ``ernic_id``, ``role``, ``state``.
    * - ``ernic_mmio_reads_total``
      - Gauge
      - Total MMIO read operations.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
    * - ``ernic_mmio_writes_total``
      - Gauge
      - Total MMIO write operations.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
    * - ``ernic_stats_writes_total``
      - Gauge
      - How many times the server has flushed stats.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role``.
 
 Per-QP Metrics
 ^^^^^^^^^^^^^^
 
-All labelled ``{instance="<id>", qp="<handle>"}``:
+All labelled
+``{ernic_id="<id>", role="<role>", qp="<handle>"}``
+except ``ernic_qp_count``, which has no ``qp`` label:
 
 .. list-table::
    :header-rows: 1
@@ -281,7 +294,7 @@ All labelled ``{instance="<id>", qp="<handle>"}``:
    * - ``ernic_qp_count``
      - Gauge
      - Number of active Queue Pairs.
-       Label: ``instance``.
+       Labels: ``ernic_id``, ``role`` (no ``qp``).
    * - ``ernic_qp_bytes_sent_total``
      - Gauge
      - Bytes sent via SEND on this QP.
@@ -322,27 +335,40 @@ Dashboard rows:
 1. **Cluster Overview** -- stat panels for instance
    count, running instances, attached VMs, FLR resets,
    total QPs, and GPU-passthrough VMs; tables showing
-   instance and VM details.
+   server and VM details.
 
 2. **Network Traffic** -- time-series panels for IP and
    RDMA traffic rates; a pie chart comparing RDMA vs
-   IP total bytes; a per-instance traffic totals table.
+   IP total bytes; a per-server traffic totals table.
 
 3. **RDMA Detail** -- separate Send/Recv and Read/Write
    rate panels; a per-QP traffic table.
 
-4. **Device Health** -- FLR reset count over time,
+4. **Server Health** -- FLR reset count over time,
    commands/s, interrupts/s, MMIO read/write rates,
    and stats write count.
 
-5. **VM Lifecycle** -- VM count over time, per-instance
-   attached gauge, VM uptime, and connection state
-   timeline.
+5. **VM Metrics** -- guest-side panels for VM CPU,
+   memory and disk I/O, TCP/IP rates on the
+   ``rocm-ernic0`` and management interfaces, RDMA port
+   data and packet rates, and GPU temperature,
+   utilisation, power, clock and PCIe bandwidth.
 
-The dashboard uses a template variable ``$instance``
-that allows filtering to a specific server instance or
-viewing all instances at once.  Default refresh is 10 s
-with a 1 h time window.
+   Unlike rows 1-4, this row does not read from
+   ``ernic-exporter``.  Its panels query ``node_*``,
+   ``rdma_port_*`` and ``gpu_*`` series from separate
+   ``ernic-vm-node``, ``ernic-vm-rdma`` and
+   ``ernic-vm-gpu`` scrape jobs that run inside the
+   guest, so it stays empty unless those are
+   configured.
+
+The dashboard defines three template variables:
+``$instance`` filters by ``ernic_id``, ``$role`` by
+instance role, and ``$disk_device`` selects the guest
+block device for the VM disk panel.  Every
+``ernic-exporter`` panel filters on both ``$instance``
+and ``$role``, so leaving ``$role`` unset hides all
+data.  Default refresh is 10 s with a 1 h time window.
 
 Useful PromQL Examples
 ----------------------

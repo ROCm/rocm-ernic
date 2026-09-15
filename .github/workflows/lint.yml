@@ -14,6 +14,7 @@ on:
       - '.clang-format'
       - '.cmake-format.py'
       - 'service/**'
+      - 'prometheus/ernic-exporter'
       - '.github/workflows/lint.yml'
   workflow_dispatch:
 
@@ -100,7 +101,7 @@ jobs:
 
       - name: Lint Python files
         run: |
-          flake8 service/ernicctl \
+          flake8 service/ernicctl prometheus/ernic-exporter \
             --max-line-length=80 \
             --extend-ignore=E501
 
