@@ -81,7 +81,7 @@
       if [ -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid ]; then
         old_pid=$(cat /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid)
         kill "${old_pid}" 2>/dev/null || true
-        wait "${old_pid}" 2>/dev/null || true
+        timeout 10 bash -lc "while kill -0 ${old_pid} 2>/dev/null; do sleep 1; done" || true
         rm -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
       fi
       rm -f server*.log client*.log /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
