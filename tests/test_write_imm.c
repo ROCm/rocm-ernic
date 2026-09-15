@@ -290,7 +290,7 @@ int main(void)
         }
         if (wc.status != IBV_WC_SUCCESS || wc.opcode != IBV_WC_RDMA_WRITE) {
             fprintf(stderr, "iter %d: sender wc status=%d opcode=%d\n", it,
-                    wc.status, wc.opcode);
+                    (int)wc.status, (int)wc.opcode);
             goto out;
         }
 
@@ -302,8 +302,8 @@ int main(void)
         }
         printf("iter %d: recv wc status=%d opcode=%d flags=%#x imm=%08" PRIx32
                " bytes=%u wr_id=%" PRIx64 "\n",
-               it, wc.status, wc.opcode, wc.wc_flags, ntohl(wc.imm_data),
-               wc.byte_len, wc.wr_id);
+               it, (int)wc.status, (int)wc.opcode, wc.wc_flags,
+               ntohl(wc.imm_data), wc.byte_len, wc.wr_id);
         if (wc.status != IBV_WC_SUCCESS ||
             wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM ||
             !(wc.wc_flags & IBV_WC_WITH_IMM) || ntohl(wc.imm_data) != imm ||

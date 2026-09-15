@@ -25,8 +25,8 @@
 #include <linux/pci_regs.h>
 
 /* AMD ROCm ERNIC device IDs */
-#define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000
+#define PCI_VENDOR_ID_AMD        0x1022u
+#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000u
 
 /* Test results */
 typedef struct {
