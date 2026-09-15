@@ -124,35 +124,61 @@
     - name: Ensure the tutorial checkout exists on VM1
       ansible.builtin.shell:
         executable: /bin/bash
-        cmd: >-
-          {{ ernic_rdma_tutorial_vm1_ssh }}
-          'set -eu;
+        cmd: |
+          {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+          set -o pipefail
+          before=$(mktemp)
+          after=$(mktemp)
+          trap "rm -f ${before} ${after}" EXIT
           if [ ! -d {{ ernic_rdma_tutorial_dir }}/.git ]; then
-            echo __ernic_rdma_tutorial_cloned__;
-            git clone {{ ernic_rdma_tutorial_repo }}
-              {{ ernic_rdma_tutorial_dir }};
-          fi;
-          git -C {{ ernic_rdma_tutorial_dir }} fetch --all --tags --prune'
+            echo __ernic_rdma_tutorial_cloned__
+            git clone {{ ernic_rdma_tutorial_repo }} {{ ernic_rdma_tutorial_dir }}
+          fi
+          git -C {{ ernic_rdma_tutorial_dir }} \
+            for-each-ref refs/remotes refs/tags \
+            --format="%(refname):%(objectname)" | sort >"${before}"
+          git -C {{ ernic_rdma_tutorial_dir }} fetch --all --tags --prune
+          git -C {{ ernic_rdma_tutorial_dir }} \
+            for-each-ref refs/remotes refs/tags \
+            --format="%(refname):%(objectname)" | sort >"${after}"
+          if ! cmp -s "${before}" "${after}"; then
+            echo __ernic_rdma_tutorial_fetched__
+          fi'
       register: ernic_rdma_tutorial_vm1_checkout
       changed_when: >-
         '__ernic_rdma_tutorial_cloned__'
+        in ernic_rdma_tutorial_vm1_checkout.stdout
+        or '__ernic_rdma_tutorial_fetched__'
         in ernic_rdma_tutorial_vm1_checkout.stdout
 
     - name: Ensure the tutorial checkout exists on VM2
       ansible.builtin.shell:
         executable: /bin/bash
-        cmd: >-
-          {{ ernic_rdma_tutorial_vm2_ssh }}
-          'set -eu;
+        cmd: |
+          {{ ernic_rdma_tutorial_vm2_ssh }} 'set -eu
+          set -o pipefail
+          before=$(mktemp)
+          after=$(mktemp)
+          trap "rm -f ${before} ${after}" EXIT
           if [ ! -d {{ ernic_rdma_tutorial_dir }}/.git ]; then
-            echo __ernic_rdma_tutorial_cloned__;
-            git clone {{ ernic_rdma_tutorial_repo }}
-              {{ ernic_rdma_tutorial_dir }};
-          fi;
-          git -C {{ ernic_rdma_tutorial_dir }} fetch --all --tags --prune'
+            echo __ernic_rdma_tutorial_cloned__
+            git clone {{ ernic_rdma_tutorial_repo }} {{ ernic_rdma_tutorial_dir }}
+          fi
+          git -C {{ ernic_rdma_tutorial_dir }} \
+            for-each-ref refs/remotes refs/tags \
+            --format="%(refname):%(objectname)" | sort >"${before}"
+          git -C {{ ernic_rdma_tutorial_dir }} fetch --all --tags --prune
+          git -C {{ ernic_rdma_tutorial_dir }} \
+            for-each-ref refs/remotes refs/tags \
+            --format="%(refname):%(objectname)" | sort >"${after}"
+          if ! cmp -s "${before}" "${after}"; then
+            echo __ernic_rdma_tutorial_fetched__
+          fi'
       register: ernic_rdma_tutorial_vm2_checkout
       changed_when: >-
         '__ernic_rdma_tutorial_cloned__'
+        in ernic_rdma_tutorial_vm2_checkout.stdout
+        or '__ernic_rdma_tutorial_fetched__'
         in ernic_rdma_tutorial_vm2_checkout.stdout
 
     - name: Run the configured RDMA tutorial examples
