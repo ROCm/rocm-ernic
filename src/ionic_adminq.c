@@ -139,21 +139,21 @@ struct ionic_adminq_ctx {
 
     /* The driver names CQs by its own cqid; rdma_rm hands back its own
      * handles.  CREATE_QP references CQs by cqid, so keep the translation. */
-    struct {
+    struct ionic_cq_map_entry {
         bool valid;
         uint32_t cq_id;
         uint32_t handle;
     } cq_map[MAX_CQ_MAP];
 
     /* Same translation for QPs: the driver's qpid vs the backend's QPN. */
-    struct {
+    struct ionic_qp_map_entry {
         bool valid;
         uint32_t qp_id;
         uint32_t qpn;
     } qp_map[MAX_QP_MAP];
 
     /* And for MRs: the driver's mrid vs the backend's handle. */
-    struct {
+    struct ionic_mr_map_entry {
         bool valid;
         uint32_t mr_id;
         uint32_t handle;
@@ -195,7 +195,7 @@ static void adminq_map_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
 {
     for (int i = 0; i < MAX_CQ_MAP; i++) {
         if (!ctx->cq_map[i].valid || ctx->cq_map[i].cq_id == cq_id) {
-            ctx->cq_map[i] = (typeof(ctx->cq_map[0])){
+            ctx->cq_map[i] = (struct ionic_cq_map_entry){
                 .valid = true, .cq_id = cq_id, .handle = handle};
             return;
         }
@@ -221,7 +221,7 @@ static void adminq_map_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id,
 {
     for (int i = 0; i < MAX_QP_MAP; i++) {
         if (!ctx->qp_map[i].valid || ctx->qp_map[i].qp_id == qp_id) {
-            ctx->qp_map[i] = (typeof(ctx->qp_map[0])){
+            ctx->qp_map[i] = (struct ionic_qp_map_entry){
                 .valid = true, .qp_id = qp_id, .qpn = qpn};
             return;
         }
@@ -254,7 +254,7 @@ static void adminq_map_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
 {
     for (int i = 0; i < MAX_MR_MAP; i++) {
         if (!ctx->mr_map[i].valid || ctx->mr_map[i].mr_id == mr_id) {
-            ctx->mr_map[i] = (typeof(ctx->mr_map[0])){
+            ctx->mr_map[i] = (struct ionic_mr_map_entry){
                 .valid = true, .mr_id = mr_id, .handle = handle};
             return;
         }
