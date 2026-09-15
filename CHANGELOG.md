@@ -77,7 +77,7 @@
   wire, completing with `IBV_WC_REM_ACCESS_ERR` and zero bytes, and the byte
   counters are updated only after a copy that actually happened. Reachable
   from the guest by posting a write to a loopback queue pair with a bad key,
-  an unmapped region, or an out-of-range address.
+  a region with no host mapping, or an out-of-range address.
 * `tcp_wr_map_sge()` now refuses a work request whole when any of its
   scatter-gather entries cannot be mapped, instead of zeroing that entry's
   length and continuing. Every copy loop downstream walks the entries in order
@@ -94,7 +94,7 @@
 * The local loopback path in `tcp_post_send()` now releases the DMA mappings
   taken by `tcp_wr_map_sge()` before freeing the work request, and pops the
   send queue under `priv->lock`. The mappings were leaked on every loopback
-  send, and the unsynchronised pop raced the two receive-thread sites that pop
+  send, and the unsynchronized pop raced the two receive-thread sites that pop
   the same queue.
 * Memory region bounds checks in the TCP and loopback backends no longer
   overflow. The checks were written as `addr + len > start + length`, whose
