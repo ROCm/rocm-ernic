@@ -75,18 +75,15 @@
 - name: Start the tutorial server on VM1
   ansible.builtin.shell:
     executable: /bin/bash
-    cmd: >-
-      {{ ernic_rdma_tutorial_vm1_ssh }}
-      'set -eu;
-      cd {{ ernic_rdma_tutorial_dir }};
-      pkill -f "rdma-tutorial {{ ernic_rdma_tutorial_config }}
-      {{ ernic_rdma_tutorial_sock_port }}" 2>/dev/null || true;
-      rm -f server*.log client*.log
-        /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid;
-      nohup ./rdma-tutorial {{ ernic_rdma_tutorial_config }}
-        {{ ernic_rdma_tutorial_sock_port }}
-        >/tmp/{{ ernic_rdma_tutorial_unit }}-server.stdout 2>&1
-        </dev/null &
+    cmd: |
+      {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+      cd {{ ernic_rdma_tutorial_dir }}
+      pkill -f "rdma-tutorial {{ ernic_rdma_tutorial_config }} {{ ernic_rdma_tutorial_sock_port }}" 2>/dev/null || true
+      rm -f server*.log client*.log /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
+      nohup ./rdma-tutorial \
+        {{ ernic_rdma_tutorial_config }} \
+        {{ ernic_rdma_tutorial_sock_port }} \
+        >/tmp/{{ ernic_rdma_tutorial_unit }}-server.stdout 2>&1 </dev/null &
       echo $! >/tmp/{{ ernic_rdma_tutorial_unit }}-server.pid'
   changed_when: true
 
@@ -97,14 +94,14 @@
 - name: Run the tutorial client on VM2
   ansible.builtin.shell:
     executable: /bin/bash
-    cmd: >-
-      {{ ernic_rdma_tutorial_vm2_ssh }}
-      'set -eu;
-      cd {{ ernic_rdma_tutorial_dir }};
-      rm -f server*.log client*.log;
+    cmd: |
+      {{ ernic_rdma_tutorial_vm2_ssh }} 'set -eu
+      cd {{ ernic_rdma_tutorial_dir }}
+      rm -f server*.log client*.log
       timeout {{ ernic_rdma_tutorial_example.timeout
-                 | default(ernic_rdma_tutorial_timeout) | int }}
-        ./rdma-tutorial {{ ernic_rdma_tutorial_config }}
+                 | default(ernic_rdma_tutorial_timeout) | int }} \
+        ./rdma-tutorial \
+        {{ ernic_rdma_tutorial_config }} \
         {{ ernic_rdma_tutorial_sock_port }}'
   register: ernic_rdma_tutorial_client_result
   changed_when: false
@@ -113,13 +110,12 @@
 - name: Wait for the tutorial server log to report completion
   ansible.builtin.shell:
     executable: /bin/bash
-    cmd: >-
-      {{ ernic_rdma_tutorial_vm1_ssh }}
-      'set -eu;
+    cmd: |
+      {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
       timeout {{ ernic_rdma_tutorial_example.timeout
-                 | default(ernic_rdma_tutorial_timeout) | int }}
-        bash -lc "until grep -q \"Run Finished\"
-        {{ ernic_rdma_tutorial_dir }}/server\\[0\\].log 2>/dev/null;
+                 | default(ernic_rdma_tutorial_timeout) | int }} \
+        bash -lc "until grep -q \"Run Finished\" \
+        \"{{ ernic_rdma_tutorial_dir }}/server[0].log\" 2>/dev/null; \
         do sleep 1; done"'
   register: ernic_rdma_tutorial_server_wait
   changed_when: false
@@ -130,7 +126,7 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm1_ssh }}
-      'cat {{ ernic_rdma_tutorial_dir }}/server\[0\].log'
+      'cat "{{ ernic_rdma_tutorial_dir }}/server[0].log"'
   register: ernic_rdma_tutorial_server_log
   changed_when: false
   failed_when: false
@@ -140,7 +136,7 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm2_ssh }}
-      'cat {{ ernic_rdma_tutorial_dir }}/client\[0\].log'
+      'cat "{{ ernic_rdma_tutorial_dir }}/client[0].log"'
   register: ernic_rdma_tutorial_client_log
   changed_when: false
   failed_when: false
