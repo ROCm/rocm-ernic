@@ -21,6 +21,7 @@
 
 #include <infiniband/verbs.h>
 
+#include "hw/pci/pci.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend_ops.h"
 #include "rdma_backend.h"
