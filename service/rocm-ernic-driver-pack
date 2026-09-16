@@ -68,19 +68,26 @@ else
     exit 1
 fi
 
-# Generate the in-VM installer script from the
-# installed template.
-TEMPLATE="/usr/local/share/rocm-ernic/vm-driver-install.sh.in"
-if [ -f "${TEMPLATE}" ]; then
-    cp "${TEMPLATE}" "${DEST}/vm-driver-install.sh"
-    chmod +x "${DEST}/vm-driver-install.sh"
-else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    if [ -f "${SCRIPT_DIR}/vm-driver-install.sh.in" ]; then
-        cp "${SCRIPT_DIR}/vm-driver-install.sh.in" \
-            "${DEST}/vm-driver-install.sh"
+# Generate the in-VM installer script from the installed
+# template.  ERNIC_SHARE_DIR first: hardcoding a prefix here
+# packed whatever an older install had left at /usr/local
+# rather than the tree this run was configured against.  The
+# script's own directory is the fallback so the pack still
+# works from a source checkout.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+for template in "${ERNIC_SHARE_DIR}/vm-driver-install.sh.in" \
+                "${SCRIPT_DIR}/vm-driver-install.sh.in"; do
+    if [ -f "${template}" ]; then
+        cp "${template}" "${DEST}/vm-driver-install.sh"
         chmod +x "${DEST}/vm-driver-install.sh"
+        break
     fi
+done
+# Without it the tarball is inert, so do not ship one quietly.
+if [ ! -f "${DEST}/vm-driver-install.sh" ]; then
+    log_error "Missing vm-driver-install.sh.in in" \
+        "${ERNIC_SHARE_DIR} or ${SCRIPT_DIR}"
+    exit 1
 fi
 
 log_info "Creating tarball ${ERNIC_DRIVER_TARBALL}..."
