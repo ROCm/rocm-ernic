@@ -142,19 +142,24 @@
 
     - name: Assert the README kernel badge matches the image
       vars:
+        # regex_search returns None on no match, and `first` raises on
+        # None before a trailing default() is ever reached -- hence the
+        # default([], true) in the middle rather than at the end.
         ernic_readme_kver: >-
           {{ ernic_readme_raw.content | b64decode
-             | regex_search('CI%20guest%20kernel-([0-9][0-9.]*)-',
-                            '\1') | first | default('') }}
+             | regex_search('CI%20guest%20kernel-([0-9][0-9.]*)-', '\1')
+             | default([], true) | first
+             | default('(badge not found)', true) }}
       ansible.builtin.assert:
         that:
           - ernic_readme_kver == ernic_vm_info.kernel_release.split('-')[0]
         fail_msg: >-
-          README.md advertises CI guest kernel
-          {{ ernic_readme_kver | default('(badge not found)') }}, but
-          {{ ernic_vm_artifact_tag }} ships
-          {{ ernic_vm_info.kernel_release }}. Update the badge in
-          README.md, and docs/performance.rst with it.
+          README.md advertises CI guest kernel {{ ernic_readme_kver }},
+          but {{ ernic_vm_artifact_tag }} ships
+          {{ ernic_vm_info.kernel_release }}. Update the badge on
+          README.md line 9.  Leave docs/performance.rst alone: its
+          Reference Measurements are a historical record of a run on
+          the old guest, not a live statement about this one.
         success_msg: >-
           README kernel badge agrees with the image:
           {{ ernic_readme_kver }}

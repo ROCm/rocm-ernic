@@ -19,6 +19,7 @@ on:
       - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
       - 'patches/**'              # staged into the guest in ionic mode
       - 'udev/**'                 # driver_common installs these
+      - 'ci/lib/common.sh'        # carries a third copy of the guest tag
       - '.github/workflows/system-tests.yml'
       - '.github/actions/fetch-guest-vm/**'
   workflow_dispatch:
@@ -216,6 +217,23 @@ jobs:
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
         echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
+
+        # README.md line 9 hardcodes the guest kernel in a shields.io
+        # badge, because shields.io has no way to read the image.  This
+        # job is the only lane holding vm-info.json, so it is the only
+        # place the badge and the image can be compared.  Only the
+        # loopback job carries this: both jobs run on identical
+        # triggers, so a second copy would buy nothing.
+        README_KVER="$(sed -n \
+          's/.*CI%20guest%20kernel-\([0-9][0-9.]*\)-.*/\1/p' \
+          "$GITHUB_WORKSPACE/README.md")"
+        if [ "$README_KVER" != "${KERNEL_RELEASE%%-*}" ]; then
+          echo "✗ README.md advertises CI guest kernel '${README_KVER:-none}',"
+          echo "  but $GUEST_ARTIFACT_TAG ships $KERNEL_RELEASE."
+          echo "  Update the badge on README.md line 9."
+          exit 1
+        fi
+        echo "✓ README kernel badge agrees with the image: $README_KVER"
     - name: Install dependencies
       run: |
         # Only what the container image does not already carry.
