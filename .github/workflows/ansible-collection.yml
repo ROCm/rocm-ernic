@@ -121,9 +121,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ansible-core
-        run: python3 -m pip install ansible-core
-
+      # ansible-galaxy comes from the image's preinstalled ansible-core,
+      # and building a tarball is this job's only use of it.
       - name: Build the collection
         run: >-
           ansible-galaxy collection build ${{ env.COLLECTION_DIR }}

@@ -32,19 +32,16 @@ jobs:
           echo "deb_arch=$(dpkg --print-architecture)" >> "${GITHUB_OUTPUT}"
           echo "multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "${GITHUB_OUTPUT}"
 
+      # build-essential, cmake, ninja-build and pkg-config are preinstalled
+      # on the hosted image -- the arch step above already relies on that,
+      # since dpkg-architecture runs before this step.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            cmake \
-            meson \
-            ninja-build \
-            pkg-config \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev \
-            libjson-c-dev
+            libglib2.0-dev
 
       - name: Cache libvfio-user build
         id: cache-libvfio-user
@@ -59,6 +56,9 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
+          # Only the from-source build needs these, and the cache key is
+          # static, so the cache-hit path should not pay for them.
+          sudo apt-get install -y meson libjson-c-dev
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
           git checkout 20e9803

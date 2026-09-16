@@ -559,7 +559,7 @@ jobs:
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
             ${HEADER_PKG} dkms git build-essential cmake ninja-build \
-            pkg-config libnl-3-dev libnl-route-3-dev libudev-dev python3-docutils && break
+            pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
@@ -1853,7 +1853,7 @@ jobs:
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
             ${HEADER_PKG} dkms git build-essential cmake ninja-build \
-            pkg-config libnl-3-dev libnl-route-3-dev libudev-dev python3-docutils && break
+            pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
         done
