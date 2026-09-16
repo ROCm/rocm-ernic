@@ -19,6 +19,11 @@ Start the server with a UNIX socket and the desired backend:
      --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
      --log-level info
 
+   # In-process NVMe-oF controller the guest can connect to
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend nvmeof:size=1G,bs=4096 --tap ernic0
+
    # No backend (minimal stubs)
    ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
@@ -47,6 +52,11 @@ front, owned by the user running the server:
 The two paths are independent: ``--backend`` governs the RDMA
 data path, ``--tap`` the Ethernet one. See :doc:`ionic` for
 the full picture.
+
+``nvmeof`` is the odd one out: rather than carrying guest
+RDMA traffic somewhere, it answers it, presenting an NVMe
+over Fabrics target the guest connects to with stock
+``nvme connect -t rdma``. See :doc:`nvmeof`.
 
 Log Levels
 ----------

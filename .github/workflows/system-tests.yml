@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 name: rocm-ernic - System Tests
 
 on:
@@ -20,6 +21,7 @@ on:
       - 'udev/**'                 # driver_common installs these
       - 'ci/lib/common.sh'        # carries a third copy of the guest tag
       - '.github/workflows/system-tests.yml'
+      - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
       - '.github/actions/fetch-guest-vm/**'
   workflow_dispatch:
 
@@ -534,10 +536,18 @@ jobs:
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
         # "ansible" apt bundle installs into, so installing that
-        # bundle leaves community.general invisible.  Install the
-        # collections the same way a real consumer does instead.
+        # bundle leaves community.general invisible.
+        #
+        # community.general only, not ansible/requirements.yml: that
+        # file is the consumer contract and resolves to six
+        # collections and ~29M, because sbates130272.batesste drags in
+        # amazon.aws and community.libvirt.  Nothing here runs the one
+        # role that uses batesste (ernic_image_prep), and the only
+        # module these plays reach for is community.general.modprobe.
+        # Six galaxy round trips is six chances to hit the 500 that
+        # has already reddened runs; one is one.
         ansible --version
-        ansible-galaxy collection install -r ansible/requirements.yml
+        ansible-galaxy collection install community.general
 
     - name: Install kernel headers and build tools in VM
       shell: bash
@@ -1030,6 +1040,25 @@ jobs:
         rm -f /tmp/vfio-user-rocm-ernic*.sock
         echo "✓ Cleanup complete"
 
+  system-test-nvmeof:
+    # GitHub always prefixes a called workflow's job name with the
+    # caller's name -- or, with no name:, the caller's job id, which is
+    # how this check used to read "system-test-nvmeof / NVMe-oF Backend
+    # System Tests".  The prefix cannot be suppressed, so name the
+    # caller the way the sibling lanes are named and let the inner job
+    # carry only the configuration, giving "NVMe-oF Backend System
+    # Tests / Single Server" alongside "TCP Backend System Tests (Two
+    # Servers)".
+    name: NVMe-oF Backend System Tests
+    # The lane itself lives in its own reusable workflow because the
+    # nightly perf run needs the identical steps; see
+    # .github/workflows/nvmeof-lane.yml.  publish stays false here:
+    # a pull request's numbers describe the pull request, not main,
+    # and this job's token is read-only.
+    uses: ./.github/workflows/nvmeof-lane.yml
+    with:
+      publish: false
+
   system-test-tcp:
     name: TCP Backend System Tests (Two Servers)
     runs-on: ubuntu-24.04
@@ -1340,13 +1369,21 @@ jobs:
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
         # "ansible" apt bundle installs into, so installing that
-        # bundle leaves community.general invisible.  Install the
-        # collections the same way a real consumer does instead.
+        # bundle leaves community.general invisible.
+        #
+        # community.general only, not ansible/requirements.yml: that
+        # file is the consumer contract and resolves to six
+        # collections and ~29M, because sbates130272.batesste drags in
+        # amazon.aws and community.libvirt.  Nothing here runs the one
+        # role that uses batesste (ernic_image_prep), and the only
+        # module these plays reach for is community.general.modprobe.
+        # Six galaxy round trips is six chances to hit the 500 that
+        # has already reddened runs; one is one.
         #
         # This runs here rather than after the VMs boot because the TAP
         # step below is an Ansible play and has to precede the servers.
         ansible --version
-        ansible-galaxy collection install -r ansible/requirements.yml
+        ansible-galaxy collection install community.general
 
     - name: Create the host bridge and per-instance TAPs
       shell: bash

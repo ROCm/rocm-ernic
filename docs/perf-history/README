@@ -1,5 +1,11 @@
-# Published by ci/report/publish-perf.py on the nightly run.
+# Published by ci/report/publish-perf.py on the nightly runs.
 # history.jsonl accumulates one JSON object per run.
-# badge-rdma.json and badge-tcp.json are shields.io endpoint
-# badges regenerated each run; README.md links to them via the
-# GitHub Pages build (see docs/conf.py html_static_path).
+# badge-rdma.json, badge-tcp.json and badge-nvmeof.json are
+# shields.io endpoint badges regenerated each run; README.md links
+# to them via the GitHub Pages build (see docs/conf.py
+# html_static_path).
+#
+# Two workflows write here, into separate series:
+#   self-hosted-ci.yml   perftest and iperf3, on the self-hosted node
+#   nvmeof-nightly.yml   the NVMe-oF fio sweep, on a hosted runner
+# Hosted numbers are noisier and are only comparable with each other.

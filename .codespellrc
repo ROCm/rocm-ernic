@@ -6,6 +6,9 @@ check-hidden = true
 
 # src/from-qemu is vendored upstream source. We can't fix typos there
 # without carrying a patch, so don't let it fail CI.
-skip = ./.git,./src/from-qemu,./.claude/settings.local.json
+# ansible/.ansible is a local collection install, not ours and not in git;
+# CI never sees it, so skipping keeps a local run honest.
+skip = ./.git,./src/from-qemu,./.claude/settings.local.json,./ansible/.ansible
 
-ignore-words-list = clen,VAs,TRIMed
+# AER is the NVMe Asynchronous Event Request, not a misspelling of "are".
+ignore-words-list = clen,VAs,TRIMed,AER

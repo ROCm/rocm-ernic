@@ -90,11 +90,17 @@
         path: "{{ rc_src }}"
         state: absent
 
+    # The release CDN returns a 500 often enough to fail a CI run on its
+    # own, and every other fetch in this collection already retries.
     - name: Download the rdma-core tarball
       ansible.builtin.get_url:
         url: "{{ ernic_rdma_core_url }}"
         dest: "{{ rc_tar }}"
         mode: "0644"
+      register: ernic_rdma_core_tarball
+      retries: "{{ ernic_guest_build_deps_retries }}"
+      delay: "{{ ernic_guest_build_deps_delay }}"
+      until: ernic_rdma_core_tarball is success
 
     - name: Extract the rdma-core tarball
       ansible.builtin.unarchive:

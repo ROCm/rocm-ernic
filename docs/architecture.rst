@@ -172,6 +172,16 @@ Forwards operations to a real InfiniBand HCA via libibverbs.
 Requires an RDMA-capable NIC on the host (for example,
 ``mlx5_0``).
 
+NVMe-oF
+^^^^^^^
+
+Not a transport but a peer: an NVMe over Fabrics target
+running inside the server, answering IB CM and NVMe command
+capsules from the guest. It hooks into ``ionic_datapath.c``
+rather than this vtable, because that is the path the guest
+``ionic_rdma`` driver actually drives. One VM and one server
+instance are then a complete fabric. See :doc:`nvmeof`.
+
 None
 ^^^^
 

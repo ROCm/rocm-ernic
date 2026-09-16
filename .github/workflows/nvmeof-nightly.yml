@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: MIT
+name: rocm-ernic - NVMe-oF Nightly
+
+# Runs the NVMe-oF lane on a schedule and publishes what it measured to
+# docs/perf-history, which docs-deploy.yml serves from GitHub Pages and
+# the README shield reads back through shields.io's endpoint badge.
+#
+# Hosted, not self-hosted, and deliberately a separate series from the
+# perftest numbers in self-hosted-ci.yml: a GitHub runner has noisy
+# neighbours and no fixed CPU, so these figures are only comparable
+# with each other over time.  That is what a trend chart is for.
+#
+# The lane body is shared with the pull-request run; the only
+# difference is publish: true and the write scopes below.
+
+on:
+  schedule:
+    # 03:41 UTC.  Off the hour on purpose -- the top of the hour is
+    # when every cron on GitHub fires at once and queue times spike.
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Record the result in docs/perf-history'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never let two nightlies race to commit the same history file.
+  group: nvmeof-nightly
+  cancel-in-progress: false
+
+jobs:
+  nvmeof:
+    name: NVMe-oF lane
+    # Write lives on the calling job, not in the reusable workflow, so
+    # the pull-request caller cannot inherit it.
+    permissions:
+      contents: write
+      # Dispatching docs-deploy after the publish commit: a push made
+      # with this job's own GITHUB_TOKEN is exempt from triggering
+      # other workflows, so Pages would otherwise never rebuild.
+      actions: write
+    uses: ./.github/workflows/nvmeof-lane.yml
+    with:
+      # A scheduled run always publishes; a manual one does whatever
+      # the dispatch asked for, so the lane can be exercised without
+      # touching the history.
+      publish: >-
+        ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}

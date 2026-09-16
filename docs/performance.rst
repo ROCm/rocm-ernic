@@ -70,6 +70,15 @@ which appends one record per run to
 ``docs/perf-history/history.jsonl`` and regenerates the charts,
 the trend tables, and the shields.io badges.
 
+A third series comes from the NVMe-oF lane rather than from
+perftest: :file:`.github/workflows/nvmeof-nightly.yml` sweeps
+fio across the same three block sizes against an in-process
+NVMe-oF controller and publishes it as the ``nvmeof`` series.
+It is kept separate because it is measured on a GitHub-hosted
+runner rather than the self-hosted node, so it is comparable
+with itself over time but not with the numbers on this page.
+See the *Performance* section of :doc:`nvmeof`.
+
 Interpreting the Results
 ------------------------
 

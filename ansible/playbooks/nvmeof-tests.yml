@@ -1,0 +1,453 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# NVMe over Fabrics tests against the in-process
+# controller in the rocm-ernic server.
+#
+# Unlike the sanity and performance plays this needs only
+# ONE guest: the server instance it is attached to runs the
+# NVMe-oF target itself, so a single VM and a single server
+# are a complete fabric.  It therefore runs per host in
+# ernic_vms rather than pairing VM1 with VM2.
+#
+# It requires the instance to have been started on the
+# nvmeof backend:
+#
+#   rocm-ernic --backend nvmeof:size=256M,bs=4096 ...
+#
+# The guest steps mirror the nvme_of_setup role in
+# batesste-ansible: load nvme-rdma, discover, connect, use
+# the namespace, disconnect.
+
+---
+- name: NVMe-oF tests against the in-process controller
+  hosts: ernic_vms
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    # udev/99-rocm-ernic.rules renames the emulated interface to
+    # rocm-ernic%n by device ID, so the name is fixed for any
+    # guest ernic_guest_setup has provisioned -- which is why
+    # ci/jobs/vm-nvmeof.sh, vm-functional.sh and ci/lib/common.sh
+    # all just write the literal.
+    #
+    # ernic_nic_name is an ernic_guest_setup role default, and a
+    # role default is scoped to the role: guest-setup is a
+    # separate play, so the name never reaches this one.  The
+    # default() is therefore the normal path, not a fallback; the
+    # variable is honoured only so -e can still override it.
+    ernic_nvmeof_nic_name: "{{ ernic_nic_name | default('rocm-ernic0') }}"
+
+  tasks:
+
+    # fio is installed here, not left to the image: the fio leg is on
+    # by default and a guest without it skips silently, which reads
+    # as a pass.
+    - name: Install nvme-cli and fio
+      ansible.builtin.apt:
+        name:
+          - nvme-cli
+          - fio
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      register: ernic_nvme_cli
+      retries: 3
+      delay: 10
+      until: ernic_nvme_cli is succeeded
+
+    # nvme-rdma pulls in nvme-fabrics and the rdma_cm stack.
+    # Naming both makes the failure say which one is missing
+    # rather than reporting the dependent.
+    - name: Load the NVMe fabrics modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - nvme-fabrics
+        - nvme-rdma
+
+    - name: Check the emulated NIC carries an IPv4 address
+      ansible.builtin.command:
+        cmd: "ip -4 -br addr show {{ ernic_nvmeof_nic_name }}"
+      register: ernic_nvmeof_nic
+      changed_when: false
+      failed_when: false
+
+    # Without an IPv4 address on the NIC the driver populates
+    # no RoCEv2 GID, rdma_resolve_addr() has no source to bind
+    # to, and the connect fails with a bare ENETUNREACH that
+    # says nothing about why.  Guest setup must have run with
+    # ernic_configure_nic enabled.
+    - name: Fail when the NIC has no address
+      ansible.builtin.assert:
+        that:
+          - ernic_nvmeof_nic.rc == 0
+          - ernic_nvmeof_nic.stdout is search('[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        fail_msg: >-
+          {{ ernic_nvmeof_nic_name }} has no IPv4 address, so there is no
+          RoCEv2 GID to connect from.  Re-run guest setup with
+          ernic_configure_nic=true.
+
+    # rdma_resolve_addr() turns the controller address into a
+    # route and then a neighbour before the CM exchange starts.
+    # The controller is not a host on the segment and nothing
+    # answers ARP for it, so the entry is seeded by hand.  Any
+    # link-layer address will do: the emulator routes the
+    # connection by queue pair, not by MAC.
+    - name: Seed the neighbour entry for the controller
+      ansible.builtin.command:
+        argv:
+          - ip
+          - neigh
+          - replace
+          - "{{ ernic_nvmeof_traddr }}"
+          - lladdr
+          - "{{ ernic_nvmeof_lladdr }}"
+          - dev
+          - "{{ ernic_nvmeof_nic_name }}"
+          - nud
+          - permanent
+      changed_when: true
+
+    - name: Discover the subsystem
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - discover
+          - -t
+          - rdma
+          - -a
+          - "{{ ernic_nvmeof_traddr }}"
+          - -s
+          - "{{ ernic_nvmeof_trsvcid | string }}"
+      register: ernic_nvmeof_discover
+      changed_when: false
+      failed_when: false
+
+    - name: Show the discovery log
+      ansible.builtin.debug:
+        var: ernic_nvmeof_discover.stdout_lines
+
+    # Discovery is the first thing that exercises the whole
+    # path -- CM exchange, admin queue, Get Log Page -- so a
+    # failure here localises the problem far better than a
+    # failed connect would.
+    - name: Fail when the subsystem was not discovered
+      ansible.builtin.assert:
+        that:
+          - ernic_nvmeof_discover.rc == 0
+          - ernic_nvmeof_discover.stdout is search('subnqn:\s*' ~ (ernic_nvmeof_nqn | regex_escape))
+        fail_msg: >-
+          Discovery did not report subnqn {{ ernic_nvmeof_nqn }}.
+          rc={{ ernic_nvmeof_discover.rc }}
+          stderr={{ ernic_nvmeof_discover.stderr }}
+
+    - name: Connect to the subsystem
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - connect
+          - -t
+          - rdma
+          - -a
+          - "{{ ernic_nvmeof_traddr }}"
+          - -s
+          - "{{ ernic_nvmeof_trsvcid | string }}"
+          - -n
+          - "{{ ernic_nvmeof_nqn }}"
+      register: ernic_nvmeof_connect
+      changed_when: true
+
+    # The controller appears as a new nvme subsystem.  Match it in
+    # sysfs rather than with "nvme list-subsys <nqn>": list-subsys
+    # takes a DEVICE as its positional argument, so an NQN there is
+    # rejected outright -- nvme-cli 2.8 answers "Invalid device name
+    # nvmet-test" with rc=1 and no stdout.  Every controller exports
+    # its subsystem NQN at /sys/class/nvme/nvmeN/subsysnqn, and an
+    # exact compare is also what keeps the dd below off any NVMe
+    # disk the guest image carries of its own.
+    - name: Resolve the controller that was just connected
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          for s in /sys/class/nvme/nvme*; do
+            [ -r "$s/subsysnqn" ] || continue
+            if [ "$(cat "$s/subsysnqn")" = {{ ernic_nvmeof_nqn | quote }} ]; then
+              basename "$s"
+              exit 0
+            fi
+          done
+          exit 1
+      register: ernic_nvmeof_ctrl
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when no controller appeared
+      ansible.builtin.assert:
+        that:
+          - ernic_nvmeof_ctrl.stdout | trim | length > 0
+        fail_msg: >-
+          nvme connect returned success but no controller with
+          subsysnqn {{ ernic_nvmeof_nqn }} appeared under
+          /sys/class/nvme.
+
+    - name: Name the namespace block device
+      ansible.builtin.set_fact:
+        ernic_nvmeof_dev: >-
+          /dev/{{ ernic_nvmeof_ctrl.stdout | trim }}n{{ ernic_nvmeof_nsid }}
+
+    - name: Wait for the namespace to appear
+      ansible.builtin.wait_for:
+        path: "{{ ernic_nvmeof_dev }}"
+        state: present
+        timeout: 30
+
+    - name: Check the namespace is a block device
+      ansible.builtin.stat:
+        path: "{{ ernic_nvmeof_dev }}"
+      register: ernic_nvmeof_stat
+
+    - name: Fail when the namespace is not a block device
+      ansible.builtin.assert:
+        that:
+          - ernic_nvmeof_stat.stat.exists
+          - ernic_nvmeof_stat.stat.isblk | default(false)
+        fail_msg: "{{ ernic_nvmeof_dev }} is not a block device"
+
+    - name: Identify the controller
+      ansible.builtin.command:
+        cmd: "nvme id-ctrl {{ ernic_nvmeof_dev }}"
+      register: ernic_nvmeof_idctrl
+      changed_when: false
+
+    - name: Show the controller identity
+      ansible.builtin.debug:
+        msg: >-
+          {{ ernic_nvmeof_idctrl.stdout_lines
+             | select('search', '^(mn|sn|fr|nn|subnqn|ioccsz|sgls)')
+             | list }}
+
+    # The reported capacity is the first end-to-end check of
+    # Identify Namespace: a wrong nsze or flbas shows up here
+    # as a device of the wrong size rather than as a corrupt
+    # read much later.
+    - name: Read back the namespace geometry
+      ansible.builtin.command:
+        cmd: "blockdev --getsize64 {{ ernic_nvmeof_dev }}"
+      register: ernic_nvmeof_bytes
+      changed_when: false
+
+    - name: Show the namespace capacity
+      ansible.builtin.debug:
+        msg: >-
+          {{ ernic_nvmeof_dev }} is
+          {{ ernic_nvmeof_bytes.stdout | trim | int }} bytes
+
+    - name: Fail when the namespace is empty
+      ansible.builtin.assert:
+        that:
+          - ernic_nvmeof_bytes.stdout | trim | int > 0
+        fail_msg: >-
+          {{ ernic_nvmeof_dev }} reports zero capacity; Identify
+          Namespace is wrong.
+
+    # This is the check that proves the command capsules and
+    # the RDMA transfers behind them actually moved the bytes.
+    # O_DIRECT on both sides so the page cache cannot satisfy
+    # the read from what the write left behind -- without it a
+    # controller that dropped every write would still pass.
+    - name: Write a known pattern and read it back
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          src=/tmp/ernic-nvmeof-src.bin
+          dst=/tmp/ernic-nvmeof-dst.bin
+          trap 'rm -f "$src" "$dst"' EXIT
+          dd if=/dev/urandom of="$src" bs=1M \
+             count={{ ernic_nvmeof_verify_mb }} status=none
+          dd if="$src" of={{ ernic_nvmeof_dev }} bs=1M \
+             oflag=direct conv=fsync status=none
+          dd if={{ ernic_nvmeof_dev }} of="$dst" bs=1M \
+             count={{ ernic_nvmeof_verify_mb }} iflag=direct status=none
+          s=$(md5sum "$src" | awk '{print $1}')
+          d=$(md5sum "$dst" | awk '{print $1}')
+          echo "src=$s dst=$d"
+          [ "$s" = "$d" ]
+      register: ernic_nvmeof_integrity
+      changed_when: true
+
+    - name: Show the digest comparison
+      ansible.builtin.debug:
+        var: ernic_nvmeof_integrity.stdout
+
+    # Name the namespace explicitly.  nvme-cli's flush leaves
+    # --namespace-id at the broadcast value when it is not given, and
+    # the controller's exec_io() rejects any NSID that is not the one
+    # it was configured with (src/nvmeof_target.c:1163) before the
+    # opcode is even looked at -- so the un-flagged form tests
+    # nothing but the NSID check.
+    - name: Flush the namespace
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - flush
+          - "{{ ernic_nvmeof_dev }}"
+          - -n
+          - "{{ ernic_nvmeof_nsid | string }}"
+      register: ernic_nvmeof_flush
+      changed_when: true
+      failed_when: false
+
+    # An unasserted flush is a flush that can never turn CI red.
+    - name: Fail when the flush was rejected
+      ansible.builtin.assert:
+        that:
+          - ernic_nvmeof_flush.rc == 0
+        fail_msg: >-
+          nvme flush on {{ ernic_nvmeof_dev }} failed with
+          rc={{ ernic_nvmeof_flush.rc }}
+          stderr={{ ernic_nvmeof_flush.stderr | default('') }}
+
+    # Must be the shell module: "command -v" is a shell builtin with
+    # no executable behind it, so ansible.builtin.command cannot exec
+    # it and returns rc=2 whether or not fio is present -- which made
+    # the fio leg skip on every run.  A PATH lookup rather than a
+    # stat on /usr/bin/fio, because the fio_devel role installs to
+    # /opt/fio.
+    - name: Check whether fio is installed  # noqa: command-instead-of-shell
+      ansible.builtin.shell:
+        cmd: command -v fio
+      register: ernic_nvmeof_fio_bin
+      changed_when: false
+      failed_when: false
+      when: ernic_nvmeof_fio | bool
+
+    - name: Mixed random I/O with fio
+      ansible.builtin.command:
+        argv:
+          - fio
+          - --name=nvmeof
+          - "--filename={{ ernic_nvmeof_dev }}"
+          - --rw=randrw
+          - --bs=4k
+          - "--size={{ ernic_nvmeof_fio_size }}"
+          - --iodepth=8
+          - --ioengine=libaio
+          - --direct=1
+          - "--runtime={{ ernic_nvmeof_fio_runtime }}"
+          - --time_based
+          - --group_reporting
+      register: ernic_nvmeof_fio_run
+      changed_when: true
+      when:
+        - ernic_nvmeof_fio | bool
+        - ernic_nvmeof_fio_bin.rc | default(1) == 0
+
+    - name: Show the fio result
+      ansible.builtin.debug:
+        msg: >-
+          {{ ernic_nvmeof_fio_run.stdout_lines
+             | select('search', 'IOPS=') | list }}
+      when: ernic_nvmeof_fio_run is not skipped
+
+    # A silently absent fio reads as "the I/O test passed" in a green
+    # run, and the apt task above is supposed to have put it there,
+    # so treat the skip as the failure it is.  ci/jobs/vm-nvmeof.sh
+    # makes the same call in probe_fio.
+    - name: Fail when fio never ran
+      ansible.builtin.fail:
+        msg: >-
+          fio was not found on PATH in the guest
+          (probe rc={{ ernic_nvmeof_fio_bin.rc | default('unset') }});
+          the mixed random I/O check did not run.
+      when:
+        - ernic_nvmeof_fio | bool
+        - ernic_nvmeof_fio_bin.rc | default(1) != 0
+
+    # ── Block-size sweep for the trend chart ─────────
+    # Random reads, so the controller RDMA-WRITEs into guest memory:
+    # that is the direction the README shield speaks for, and mixing
+    # it with writes would make both numbers mean half of something.
+    # The write direction already has the digest round trip above.
+    - name: Sweep fio across the tracked block sizes
+      ansible.builtin.command:
+        argv:
+          - fio
+          - "--name=nvmeof-{{ item.bs }}"
+          - "--filename={{ ernic_nvmeof_dev }}"
+          - --rw=randread
+          - "--bs={{ item.bs }}"
+          - "--size={{ ernic_nvmeof_perf_size }}"
+          - "--iodepth={{ ernic_nvmeof_perf_iodepth | string }}"
+          - --ioengine=libaio
+          - --direct=1
+          - "--runtime={{ ernic_nvmeof_perf_runtime | string }}"
+          - --time_based
+          - --group_reporting
+          - --output-format=json
+      loop: "{{ ernic_nvmeof_perf_sweep }}"
+      loop_control:
+        label: "{{ item.bs }}"
+      register: ernic_nvmeof_sweep
+      changed_when: true
+      when: ernic_nvmeof_perf_csv | length > 0
+
+    # fio reports bw_max in KiB/s and bw_bytes in bytes/s; the CSV
+    # wants GB/s and millions of IOPS.  Written on the controller,
+    # not in the guest, because it is ci/report/gen-report.py that
+    # has to find it.
+    - name: Write the sweep CSV on the controller
+      ansible.builtin.copy:
+        dest: "{{ ernic_nvmeof_perf_csv }}"
+        mode: "0644"
+        content: |
+          verb,size,bw_peak_GBs,bw_avg_GBs,msg_rate_mpps
+          {% for r in ernic_nvmeof_sweep.results %}
+          {%- set d = (r.stdout | from_json).jobs[0].read %}
+          {%- set pk = d.bw_max | default(0) | float * 1024 / 1000000000 %}
+          {%- set av = d.bw_bytes | default(0) | float / 1000000000 %}
+          {%- set io = d.iops | default(0) | float / 1000000 %}
+          nvmeof,{{ r.item.bytes }},{{ '%.6f' % pk }},{{ '%.6f' % av }},{{ '%.6f' % io }}
+          {% endfor %}
+      become: false
+      delegate_to: localhost
+      when: ernic_nvmeof_perf_csv | length > 0
+
+    - name: Disconnect from the subsystem
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - disconnect
+          - -n
+          - "{{ ernic_nvmeof_nqn }}"
+      register: ernic_nvmeof_disconnect
+      changed_when: true
+
+    - name: Show the disconnect result
+      ansible.builtin.debug:
+        var: ernic_nvmeof_disconnect.stdout
+
+    - name: Wait for the namespace to go away
+      ansible.builtin.wait_for:
+        path: "{{ ernic_nvmeof_dev }}"
+        state: absent
+        timeout: 30
+
+    # Teardown is not cosmetic: the CM DREQ/DREP exchange and
+    # the queue free path only ever run here, so a leak or a
+    # use-after-free in them is invisible unless the
+    # disconnect is asserted.
+    - name: Report the result
+      ansible.builtin.debug:
+        msg: >-
+          NVMe-oF over the emulated fabric passed on
+          {{ inventory_hostname }}:
+          discovered, connected, verified
+          {{ ernic_nvmeof_verify_mb }} MiB round trip on
+          {{ ernic_nvmeof_dev }}, and disconnected cleanly.

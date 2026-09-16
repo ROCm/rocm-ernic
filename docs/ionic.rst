@@ -305,12 +305,21 @@ Working:
   ICMP, and bulk TCP in both directions
 - RC, UC, and UD queue pairs (``ib_*_pingpong`` and the
   in-tree ``rdma_verify`` payload checks)
+- Fast registration: ``IB_WR_REG_MR`` and
+  ``IB_WR_LOCAL_INV`` as local work requests, which is what
+  a stock ``nvme-rdma`` initiator uses to produce the keys
+  in its keyed SGLs
 
 Not yet working:
 
-- ``rdma_cm`` connection establishment, and therefore
-  ``rping``: only the link-local GID is populated, and GSI
-  traffic is not routed correctly by the loopback data path
+- ``rdma_cm`` connection establishment between two guests,
+  and therefore ``rping``: only the link-local GID is
+  populated, and GSI traffic is not forwarded between
+  endpoints. The ``nvmeof`` backend sidesteps this by
+  answering the CM exchange inside the server rather than
+  routing it to a peer, so ``nvme connect -t rdma`` has a
+  responder even though guest-to-guest ``rdma_cm`` does not
+  (see :doc:`nvmeof`)
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
 - The PCI Express capability is not advertised, so the guest

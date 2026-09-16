@@ -21,6 +21,8 @@ Key Features
 - Memory-mapped BARs (MSI-X, registers, doorbells)
 - MSI-X interrupt support
 - Multiple RDMA backends (loopback, TCP/IP, native verbs)
+- An in-process NVMe-oF target, so one VM and one server
+  are a complete fabric (see :doc:`nvmeof`)
 - Working Ethernet and TCP/IP to the host via a TAP
   interface
 - Comprehensive statistics collection
@@ -57,6 +59,7 @@ a host TAP:
    architecture
    usage
    ionic
+   nvmeof
    service
    monitoring
    testing

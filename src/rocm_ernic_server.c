@@ -40,6 +40,10 @@
 #include "rocm_ernic_compat.h"
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
+#include "ionic_datapath.h"
+#include "nvmeof_target.h"
+
+static const char *get_backend_type_base(const char *backend_str);
 
 /* PCI identity presented over vfio-user.
  *
@@ -358,6 +362,27 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         return -1;
     }
 
+    if (!strcmp(get_backend_type_base(dev->backend_type_str), "nvmeof")) {
+        struct nvmeof_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        nvmeof_target_cfg_defaults(&cfg);
+        if (!nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                     sizeof(err)) ||
+            !ionic_datapath_attach_nvmeof(dev->ionic_dp, &cfg, err,
+                                          sizeof(err))) {
+            fprintf(stderr, "nvmeof backend: %s\n", err);
+            ionic_datapath_destroy(dev->ionic_dp);
+            ionic_rdma_devcmd_destroy(dev->ionic_rdma);
+            ionic_eth_emu_destroy(dev->ionic_emu);
+            dev->ionic_dp = NULL;
+            dev->ionic_emu = NULL;
+            dev->ionic_rdma = NULL;
+            return -1;
+        }
+    }
+
     /* Wire the datapath into the eth emulator's BAR2 handler */
     ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
 
@@ -543,8 +568,8 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
-    fprintf(stderr,
-            "  -b, --backend TYPE   RDMA backend: none|loopback|verbs|tcp\n");
+    fprintf(stderr, "  -b, --backend TYPE   RDMA backend: "
+                    "none|loopback|verbs|tcp|nvmeof\n");
     fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -L, --log-level LEVEL Log verbosity: "
                     "none|error|warn|info|debug\n");
@@ -641,6 +666,33 @@ static void usage(const char *progname)
                     "- Start manager on port 5000\n");
     fprintf(stderr, "                        tcp:worker:192.168.1.100:5000    "
                     "- Worker connects to manager\n");
+    fprintf(stderr, "  nvmeof: in-process NVMe-oF controller the guest can "
+                    "`nvme connect` to\n");
+    fprintf(stderr, "                    Options (comma-separated):\n");
+    fprintf(stderr, "                      size=BYTES   - Namespace size, "
+                    "K/M/G/T suffixes (default: 64M)\n");
+    fprintf(stderr, "                      file=PATH    - Back the namespace "
+                    "with a file instead of RAM\n");
+    fprintf(stderr,
+            "                      bs=NUM       - Block size (default: 512)\n");
+    fprintf(stderr, "                      nqn=NAME     - Subsystem NQN "
+                    "(default: nvmet-test)\n");
+    fprintf(stderr, "                      ip=ADDR      - Target address the "
+                    "guest connects to\n");
+    fprintf(stderr, "                                     (default: "
+                    "192.168.200.1)\n");
+    fprintf(
+        stderr,
+        "                      port=NUM     - Service id (default: 4420)\n");
+    fprintf(stderr, "                      queues=NUM   - Maximum I/O queues "
+                    "(default: 8)\n");
+    fprintf(stderr, "                    Examples:\n");
+    fprintf(stderr, "                      nvmeof                          - "
+                    "64 MiB RAM namespace\n");
+    fprintf(stderr, "                      nvmeof:size=1G,bs=4096          - "
+                    "1 GiB, 4 KiB blocks\n");
+    fprintf(stderr, "                      nvmeof:file=/tmp/ns0.img,size=1G - "
+                    "File-backed namespace\n");
 }
 
 /**
@@ -661,6 +713,9 @@ static const char *get_backend_type_base(const char *backend_str)
     }
     if (!strncmp(backend_str, "tcp", 3)) {
         return "tcp";
+    }
+    if (!strncmp(backend_str, "nvmeof", 6)) {
+        return "nvmeof";
     }
     return "none";
 }
@@ -823,6 +878,23 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
             dev->backend_eth_device = NULL;
         }
         dev->backend_port_num = 1;
+    }
+
+    /* Reject a malformed namespace spec now rather than after the guest has
+     * already attached and the failure looks like a device problem. */
+    if (!strcmp(backend_type, "nvmeof")) {
+        struct nvmeof_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        nvmeof_target_cfg_defaults(&cfg);
+        if (!nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                     sizeof(err))) {
+            fprintf(stderr, "Error: nvmeof backend: %s\n", err);
+            fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
+                            "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
+            return -1;
+        }
     }
 
     return 0;

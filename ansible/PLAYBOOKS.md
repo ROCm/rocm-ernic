@@ -78,6 +78,11 @@ ansible-playbook playbooks/guest-setup.yml
 # Sanity tests (iperf3 + perftest)
 ansible-playbook playbooks/sanity-tests.yml
 
+# NVMe-oF against the in-process controller.  Needs only one
+# guest, and the instance must have been started on the
+# nvmeof backend (--backend nvmeof:size=256M,bs=4096).
+ansible-playbook playbooks/nvmeof-tests.yml
+
 # Full performance sweep (BW + latency + reliability)
 ansible-playbook playbooks/performance-tests.yml
 
@@ -182,6 +187,7 @@ ansible/                  # this directory is the collection
 │   ├── vm-create.yml          # Golden image + VM launch
 │   ├── guest-setup.yml        # -> ernic_guest_setup
 │   ├── sanity-tests.yml       # iperf3 + perftest
+│   ├── nvmeof-tests.yml       # NVMe-oF, one guest
 │   ├── performance-tests.yml  # Full BW/lat sweeps
 │   └── stress-tests.yml       # Multi-QP, soak, churn
 └── templates/
@@ -222,6 +228,24 @@ ansible/                  # this directory is the collection
    emulated Ethernet NICs for TCP/IP validation, then runs
    perftest tools (`ib_send_bw`, `ibv_rc_pingpong`) for
    RDMA verification.
+
+   **nvmeof-tests** is the odd one out, and is numbered with
+   no phase of its own because it is not part of the
+   sequence: it needs a single guest, not a pair. The rocm-ernic instance it is attached
+   to must have been started with `--backend nvmeof`, which
+   runs an NVMe over Fabrics target inside the server, so one
+   guest and one server are a complete fabric. The play loads
+   `nvme-rdma`, seeds the neighbour entry the controller has
+   no way to answer ARP for, discovers and connects, checks a
+   digest round trip through `O_DIRECT`, runs fio, then
+   disconnects and asserts the namespace went away. It is not
+   part of the `functional`/`test` tag sets, because against
+   the usual two-VM mesh there is no controller to connect to
+   -- ask for it by name with `--tags nvmeof`. Only
+   `ci-site.yml` imports it, since that is always invoked
+   with `--tags`; `site.yml` is run bare, where an import
+   would run it unconditionally. Developers run the play
+   directly.
 
 5. **performance-tests** runs the full bandwidth and latency
    sweeps matching the test report format: `ib_send_bw`,

@@ -163,6 +163,46 @@ ernic_iperf_bandwidth: "0"
 ernic_iperf_stress_bandwidth: "1G"
 ernic_iperf_duration: 60
 
+# ── NVMe-oF test defaults ────────────────────────
+# These describe the in-process NVMe over Fabrics controller
+# the nvmeof backend runs, and must match the --backend
+# options the instance was started with.  The address
+# deliberately sits on ernic_nic_subnet, which is where the
+# guest NIC is addressed from.
+ernic_nvmeof_traddr: "{{ ernic_nic_subnet }}.1"
+ernic_nvmeof_trsvcid: 4420
+ernic_nvmeof_nqn: "nvmet-test"
+ernic_nvmeof_nsid: 1
+# Nothing answers ARP for the controller, so the guest seeds a
+# permanent neighbour entry.  The value is arbitrary: the
+# emulator routes the connection by queue pair, not by MAC.
+ernic_nvmeof_lladdr: "02:00:00:00:c0:01"
+# Written and read back through O_DIRECT, then compared by
+# digest.  Keep it well under the namespace size.
+ernic_nvmeof_verify_mb: 16
+ernic_nvmeof_fio: true
+ernic_nvmeof_fio_size: "32M"
+ernic_nvmeof_fio_runtime: 20
+
+# The block-size sweep behind the NVMe-oF trend chart and the
+# README IOPS shield.  Off by default: it costs three more fio
+# runs and only the nightly has a use for the numbers.  Set
+# ernic_nvmeof_perf_csv to a path on the controller to turn it
+# on -- the play writes one bandwidth CSV there, in the schema
+# ci/report/gen-report.py already dispatches on.
+#
+# The sizes are not free-form: they must stay equal to
+# TRACKED_SIZES in ci/report/publish-perf.py, or the chart
+# silently drops a series.
+ernic_nvmeof_perf_csv: ""
+ernic_nvmeof_perf_sweep:
+  - {bs: "4k", bytes: 4096}
+  - {bs: "64k", bytes: 65536}
+  - {bs: "1M", bytes: 1048576}
+ernic_nvmeof_perf_size: "64M"
+ernic_nvmeof_perf_runtime: 10
+ernic_nvmeof_perf_iodepth: 32
+
 # ── Performance sweep defaults ───────────────────
 ernic_perf_bw_iters: 1000
 ernic_perf_lat_iters: 50

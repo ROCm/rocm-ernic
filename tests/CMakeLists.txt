@@ -235,6 +235,34 @@ target_include_directories(test_parse_int SYSTEM PRIVATE
 target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# NVMe-oF controller test. The controller core takes its DMA through a
+# callback pair, so the test links the real translation unit and stands a
+# byte array in for guest memory -- no VM, no RDMA device, no server.
+add_executable(test_nvmeof_target
+    test_nvmeof_target.c
+    ${CMAKE_SOURCE_DIR}/src/nvmeof_target.c
+)
+target_include_directories(test_nvmeof_target PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(test_nvmeof_target PRIVATE _GNU_SOURCE)
+target_compile_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# IB CM responder test. Feeds it the CM MADs a guest running rdma_cm
+# emits and dissects the replies; no MAD ever reaches a wire.
+add_executable(test_nvmeof_cm
+    test_nvmeof_cm.c
+    ${CMAKE_SOURCE_DIR}/src/nvmeof_cm.c
+    ${CMAKE_SOURCE_DIR}/src/nvmeof_target.c
+)
+target_include_directories(test_nvmeof_cm PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(test_nvmeof_cm PRIVATE _GNU_SOURCE)
+target_compile_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # Loopback SGE-copy test. It #includes the loopback translation unit to
 # reach its static helpers and stubs the DMA layer with an identity
 # mapping, so no RDMA subsystem link is needed.
@@ -281,6 +309,28 @@ target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
 target_compile_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# ionic CQ arm-semantics test. It #includes the datapath translation unit to
+# reach the private CQ state and counts the event callback in-process, so no
+# vfio-user link or guest memory is needed.
+add_executable(test_ionic_cq_arm test_ionic_cq_arm.c)
+target_include_directories(test_ionic_cq_arm PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_cq_arm PRIVATE _GNU_SOURCE)
+target_compile_options(test_ionic_cq_arm PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_cq_arm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+# libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
+# the real library is cheaper than stubbing its ABI. Everything the datapath
+# needs from the rest of this project is stubbed in the test itself.
+target_link_libraries(test_ionic_cq_arm PRIVATE
+    ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
 # TCP mesh-topology broadcast test. It #includes the TCP backend translation
 # unit to reach its static helpers and stubs the backend's externals, so no
@@ -468,6 +518,22 @@ add_test(
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
 
+# NVMe-oF controller unit test: drives the capsule sequence a real
+# nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
+add_test(
+    NAME nvmeof-target-unit
+    COMMAND $<TARGET_FILE:test_nvmeof_target>
+)
+set_tests_properties(nvmeof-target-unit PROPERTIES TIMEOUT 30)
+
+# IB CM responder unit test: REQ/REP/RTU/DREQ, plus every rejection path
+# a misaddressed or mismatched "nvme connect" can take.
+add_test(
+    NAME nvmeof-cm-unit
+    COMMAND $<TARGET_FILE:test_nvmeof_cm>
+)
+set_tests_properties(nvmeof-cm-unit PROPERTIES TIMEOUT 30)
+
 # Loopback SGE-copy boundary-walking unit test
 add_test(
     NAME loopback-sge-copy-unit
@@ -482,6 +548,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_intr_pending>
 )
 set_tests_properties(ionic-intr-pending-unit PROPERTIES TIMEOUT 30)
+
+# ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
+# raises the event immediately, rather than waiting for a CQE that never comes.
+add_test(
+    NAME ionic-cq-arm-unit
+    COMMAND $<TARGET_FILE:test_ionic_cq_arm>
+)
+set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
 
 # TCP mesh-topology broadcast unit test: asserts the unused node slots in the
 # fixed-size payload are zeroed rather than carrying stack contents.

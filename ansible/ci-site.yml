@@ -36,6 +36,15 @@
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [functional, sanity]
 
+# Single-VM lane: the instance runs the NVMe-oF controller
+# itself, so this is NOT part of the `functional` tag -- it
+# would fail against the two-VM mesh, which runs a transport
+# backend and has no controller to connect to.  Ask for it by
+# name with --tags nvmeof.
+- name: "CI: NVMe-oF tests (in-process controller)"
+  ansible.builtin.import_playbook: playbooks/nvmeof-tests.yml
+  tags: [nvmeof]
+
 - name: "CI: TCP/IP performance (iperf3)"
   ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
   tags: [perf, tcp-perf]
