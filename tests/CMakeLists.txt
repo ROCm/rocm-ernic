@@ -310,6 +310,28 @@ target_compile_definitions(test_ionic_intr_pending PRIVATE
 target_compile_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# ionic CQ arm-semantics test. It #includes the datapath translation unit to
+# reach the private CQ state and counts the event callback in-process, so no
+# vfio-user link or guest memory is needed.
+add_executable(test_ionic_cq_arm test_ionic_cq_arm.c)
+target_include_directories(test_ionic_cq_arm PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_cq_arm PRIVATE _GNU_SOURCE)
+target_compile_options(test_ionic_cq_arm PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_cq_arm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+# libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
+# the real library is cheaper than stubbing its ABI. Everything the datapath
+# needs from the rest of this project is stubbed in the test itself.
+target_link_libraries(test_ionic_cq_arm PRIVATE
+    ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
+
 # TCP mesh-topology broadcast test. It #includes the TCP backend translation
 # unit to reach its static helpers and stubs the backend's externals, so no
 # RDMA subsystem link is needed; the broadcast goes over a socketpair.
@@ -526,6 +548,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_intr_pending>
 )
 set_tests_properties(ionic-intr-pending-unit PROPERTIES TIMEOUT 30)
+
+# ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
+# raises the event immediately, rather than waiting for a CQE that never comes.
+add_test(
+    NAME ionic-cq-arm-unit
+    COMMAND $<TARGET_FILE:test_ionic_cq_arm>
+)
+set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
 
 # TCP mesh-topology broadcast unit test: asserts the unused node slots in the
 # fixed-size payload are zeroed rather than carrying stack contents.

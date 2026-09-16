@@ -217,6 +217,7 @@ struct ionic_cq_ring {
     uint32_t depth;
     uint8_t stride_log2;
     uint32_t prod;
+    uint32_t cons; /* guest's consumer index, wrapped, from its ring-0 db */
     bool color;
     bool armed;
     uint32_t eq_id;
@@ -721,6 +722,7 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
     c->depth = 1u << ring->depth_log2;
     c->stride_log2 = stride_log2;
     c->prod = 0;
+    c->cons = 0;
     c->color = true; /* the driver's cq->color also starts true */
     c->armed = false;
     c->eq_id = eq_id;
@@ -1067,6 +1069,26 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
  * -------------------------------------------------------------------------
  */
 
+/*
+ * Raise the CQ's event, if it is armed.  Arming has to behave as a level and
+ * not an edge: the driver's ib_req_notify_cq() reports no missed events, so it
+ * will not re-poll on its own, and a CQE that landed while the CQ was disarmed
+ * would wake nobody.  That is reachable whenever the guest posts more work
+ * from inside its own completion handler -- nvme-rdma does exactly that, with
+ * the LOCAL_INV it issues on the Connect response.
+ */
+static void cq_fire_event(struct ionic_datapath *dp, struct ionic_cq_ring *c,
+                          uint32_t cq_id)
+{
+    if (!c->armed)
+        return;
+    c->armed = false;
+    if (dp->cq_event_fn)
+        dp->cq_event_fn(dp->cq_event_opaque, c->eq_id, cq_id);
+    else if (dp->eth_emu)
+        ionic_eth_emu_trigger_irq(dp->eth_emu, (int)c->eq_id);
+}
+
 static int cq_write(struct ionic_datapath *dp, struct ionic_cq_ring *c,
                     uint64_t off, const uint8_t *src, size_t len)
 {
@@ -1131,13 +1153,7 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     if (c->prod % c->depth == 0)
         c->color = !c->color;
 
-    if (c->armed) {
-        c->armed = false;
-        if (dp->cq_event_fn)
-            dp->cq_event_fn(dp->cq_event_opaque, c->eq_id, cq_id);
-        else if (dp->eth_emu)
-            ionic_eth_emu_trigger_irq(dp->eth_emu, (int)c->eq_id);
-    }
+    cq_fire_event(dp, c, cq_id);
 }
 
 static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
@@ -2530,10 +2546,24 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
             qtype, qid, ring, p_index);
 
     switch (qtype) {
-    case DP_QTYPE_CQ:
-        if (qid < dp->cq_count && dp->cq[qid].valid && (ring == 1 || ring == 2))
-            dp->cq[qid].armed = true;
+    case DP_QTYPE_CQ: {
+        if (qid >= dp->cq_count || !dp->cq[qid].valid)
+            return;
+        struct ionic_cq_ring *c = &dp->cq[qid];
+        /*
+         * ring 0 carries the consumer index; rings 1 and 2 are arm-any and
+         * arm-solicited.  The arm doorbell's own index is the driver's
+         * arm_any_prod, not a consumer index, so only ring 0 may update cons.
+         */
+        if (ring == 0) {
+            c->cons = p_index % c->depth;
+        } else if (ring == 1 || ring == 2) {
+            c->armed = true;
+            if (c->prod % c->depth != c->cons)
+                cq_fire_event(dp, c, qid);
+        }
         return;
+    }
 
     case DP_QTYPE_RQ:
         if (qid < dp->qp_count && dp->qp[qid].valid) {
