@@ -30,21 +30,28 @@ jobs:
         os: [ubuntu-24.04]
         compiler: [gcc, clang]
         # `asan` builds with -DERNIC_USE_SANITIZERS=ON, which turns on
-        # ASan + LSan + UBSan together (see cmake/ErnicSanitizers.cmake).
-        # TSan is deliberately absent: it is mutually exclusive with this
-        # set, and the hosted runners' ASLR entropy makes it abort before
-        # main() without a `setarch -R` wrapper.
-        sanitizer: [ 'off', asan ]
+        # ASan + LSan + UBSan together; `tsan` builds with
+        # -DERNIC_USE_THREAD_SANITIZER=ON. The two are mutually exclusive
+        # (cmake/ErnicSanitizers.cmake makes that a hard error), hence one
+        # leg each rather than a combined build.
+        sanitizer: [ 'off', asan, tsan ]
 
     # UBSan's default is to print a diagnostic and keep going with a zero
     # exit status, so without halt_on_error the asan legs would report
     # success over real undefined behaviour. ASan and LSan already exit
     # non-zero on a finding; detect_leaks is spelled out rather than left
-    # to the platform default. Ignored by the non-sanitizer legs, which
-    # have no sanitizer runtime to read them.
+    # to the platform default.
+    #
+    # TSan already fails the run on a race (exitcode defaults to 66), so
+    # halt_on_error only changes *when* it stops -- at the first race rather
+    # than after the test finishes. Set for a faster, less noisy failure,
+    # not because the leg would otherwise pass over a race.
+    #
+    # Each is ignored by the legs with no matching runtime to read it.
     env:
       ASAN_OPTIONS: detect_leaks=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      TSAN_OPTIONS: halt_on_error=1
 
     steps:
       - name: Check out code
@@ -104,16 +111,32 @@ jobs:
         env:
           SANITIZER: ${{ matrix.sanitizer }}
         run: |
-          san=OFF
-          if [ "$SANITIZER" = "asan" ]; then
-            san=ON
-          fi
+          asan=OFF
+          tsan=OFF
+          # Debug is -O0, which makes a weaker tsan leg than it looks: the
+          # compiler does not reorder or cache enough to expose the races a
+          # production build will hit. Measured against the reintroduced
+          # recv_thread_running race, gcc reports 1 race at -O0 but 2 at
+          # -Og, so this is not theoretical.
+          #
+          # -Og rather than -O1 because it is the level designed to pair
+          # with -g, and it detects identically here -- the same comparison
+          # gives -Og and -O1 the same race count on both compilers.
+          # (profiler-hub-sanitizers.yml in rocm-systems uses -O1 for the
+          # same underlying reason.)
+          debug_flags="-g"
+          case "$SANITIZER" in
+            asan) asan=ON ;;
+            tsan) tsan=ON; debug_flags="-g -Og" ;;
+          esac
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER=${{ matrix.compiler }} \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS_DEBUG="$debug_flags" \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DERNIC_WERROR=ON \
-            -DERNIC_USE_SANITIZERS=$san
+            -DERNIC_USE_SANITIZERS=$asan \
+            -DERNIC_USE_THREAD_SANITIZER=$tsan
       
       - name: Build project
         run: cmake --build build
@@ -150,20 +173,46 @@ jobs:
       # Every registered test runs on a hosted runner now -- the three that
       # needed a real RDMA device moved into the VM system tests, so a
       # Skipped line here means something is wrong rather than absent.
+      #
+      # TEST_WRAP is the ASLR workaround for the tsan legs: TSan maps a large
+      # fixed shadow region at startup and aborts with "unexpected memory
+      # mapping" when the loader has already randomised something into it.
+      # Ubuntu 24.04 ships 32 bits of mmap entropy, which is enough for that
+      # to happen on essentially every run -- unwrapped, 13 of 14 tests die
+      # before main().
+      #
+      # `setarch -R` is used rather than `sysctl -w vm.mmap_rnd_bits=28`
+      # because it needs no privileges. The sysctl is the other standard fix
+      # and is what rocprofiler-sdk uses, but vm.* sysctls are not namespaced
+      # and not every runner grants passwordless sudo, so it has to be
+      # arranged out-of-band on the host; hipfile-sanitizers.yml carries a
+      # note about exactly that. Empty on the non-tsan legs.
       - name: Run tests
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
         run: |
-          ctest --test-dir build --output-on-failure \
+          TEST_WRAP=""
+          if [ "$SANITIZER" = "tsan" ]; then
+            TEST_WRAP="setarch $(uname -m) -R"
+          fi
+          $TEST_WRAP ctest --test-dir build --output-on-failure \
             --output-junit build/Testing/ctest-junit.xml
 
       - name: Test loopback backend configurations
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
         run: |
           echo "=== Testing loopback backend configurations ==="
+          TEST_WRAP=""
+          if [ "$SANITIZER" = "tsan" ]; then
+            TEST_WRAP="setarch $(uname -m) -R"
+          fi
           # No fallback branch: a missing script used to silently downgrade
           # this step to a weaker startup check that could not detect a
           # backend regression.
           SERVER_BIN=build/rocm-ernic \
           TEST_BIN=build/tests/test_data_transfer \
-          tests/test_loopback_ci.sh
+          $TEST_WRAP tests/test_loopback_ci.sh
 
       - name: Upload test results
         if: always()
