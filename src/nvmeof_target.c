@@ -41,6 +41,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
 #include "nvmeof_target.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
@@ -297,8 +298,17 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "queues") == 0) {
             uint32_t v;
-            if (!parse_u32(val, &v) || v == 0 || v > 64) {
-                set_err(err, errlen, "queues must be 1..64 (got '%s')", val);
+            if (!parse_u32(val, &v) || v == 0 || v > IONIC_MAX_MR_QUEUES) {
+                /* The ceiling is the memory-region budget, not the NVMe spec:
+                 * the initiator pre-allocates IONIC_MR_PER_QUEUE regions per
+                 * queue at connect time.  Refusing here turns what was a bare
+                 * "invalid arguments/configuration" from nvme connect, long
+                 * after startup, into a message that names the real limit. */
+                set_err(err, errlen,
+                        "queues must be 1..%d, one per %d memory regions in a "
+                        "table of %d (got '%s')",
+                        IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR,
+                        val);
                 ok = false;
             } else {
                 cfg->max_queues = (uint16_t)v;

@@ -171,7 +171,9 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 
 #define MAX_QP  (1u << 15)
 #define MAX_CQ  (1u << 16)
-#define MAX_MR  1024
+/* Sized with the rdma_rm table and the admin queue's map; see
+ * IONIC_MAX_MR in ionic_datapath.h for why they have to agree. */
+#define MAX_MR  IONIC_MAX_MR
 #define MAX_SGE 32
 
 /* In-flight work requests waiting for a peer instance to answer. */

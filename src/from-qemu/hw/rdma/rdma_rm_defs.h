@@ -31,7 +31,14 @@
 #define MAX_QP              1024
 #define MAX_SGE             32
 #define MAX_CQ              2048
-#define MAX_MR              1024
+/*
+ * Must stay equal to IONIC_MAX_MR in src/ionic_datapath.h, which explains the
+ * value; this header is QEMU-derived and cannot include that one.  It was
+ * 1024, which is exactly the 8 * 128 regions an nvme-rdma initiator
+ * pre-allocates for the default eight NVMe-oF I/O queues -- leaving none for
+ * the admin queue, so the connect failed on the last queue with -ENOMEM.
+ */
+#define MAX_MR              2048
 #define MAX_PD              1024
 #define MAX_QP_RD_ATOM      16
 #define MAX_QP_INIT_RD_ATOM 16

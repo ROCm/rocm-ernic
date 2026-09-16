@@ -23,9 +23,9 @@ pairs, the memory keys, and the RDMA READ/WRITE engine in a
 single VM.
 
 Measured throughput and latency are on a page of their own:
-see :doc:`nvmeof-performance`, which also documents why
-``queues=`` cannot be left at its default of 8 on a guest with
-eight or more CPUs (:ref:`nvmeof-mr-budget`).
+see :doc:`nvmeof-performance`, which also documents the
+memory-region budget that caps ``queues=`` at 15
+(:ref:`nvmeof-mr-budget`).
 
 Starting the Server
 -------------------
@@ -83,7 +83,11 @@ The backend string is ``nvmeof`` optionally followed by
      - Transport service ID.
    * - ``queues=``
      - ``8``
-     - Maximum I/O queues, 1..64.
+     - Maximum I/O queues, 1..15. The ceiling is the
+       emulator's memory-region table, not the NVMe
+       spec: an ``nvme-rdma`` initiator pre-allocates
+       128 regions per queue at connect time, admin
+       queue included, out of a table of 2048.
    * - ``nsid=``
      - ``1``
      - Namespace identifier.

@@ -101,7 +101,15 @@ enum ionic_v1_admin_op {
 #define MAX_AQ     4
 #define MAX_CQ_MAP 256
 #define MAX_QP_MAP 256
-#define MAX_MR_MAP 256
+/*
+ * One entry per region the rdma_rm table can hold.  At 256 against a
+ * 1024-entry table, every MR past the 256th was created successfully and then
+ * had no map entry, so DESTROY_MR could not resolve its handle and silently
+ * dropped it -- leaking the resource for the lifetime of the process.  An
+ * nvme-rdma connect allocates 128 regions per queue, so that ceiling was
+ * reached two queues in.
+ */
+#define MAX_MR_MAP IONIC_MAX_MR
 
 /* enum ionic_mrf_bits: the low 12 bits are IB access flags. */
 #define IONIC_MRF_ACCESS_MASK 0x0fffu
@@ -249,18 +257,24 @@ static void adminq_unmap_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id)
             ctx->qp_map[i].valid = false;
 }
 
-static void adminq_map_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
+/*
+ * Returns false when there is no room.  The caller must then fail the command
+ * and release the resource it just allocated: an unmapped MR cannot be found
+ * again by DESTROY_MR, so keeping it would leak it permanently.
+ */
+static bool adminq_map_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
                           uint32_t handle)
 {
     for (int i = 0; i < MAX_MR_MAP; i++) {
         if (!ctx->mr_map[i].valid || ctx->mr_map[i].mr_id == mr_id) {
             ctx->mr_map[i] = (struct ionic_mr_map_entry){
                 .valid = true, .mr_id = mr_id, .handle = handle};
-            return;
+            return true;
         }
     }
     vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: MR map full, mr_id=%u",
             mr_id);
+    return false;
 }
 
 static bool adminq_lookup_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
@@ -837,7 +851,15 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
-        adminq_map_mr(ctx, mr_id, mr_handle);
+        /* Give the resource straight back rather than reporting a success the
+         * guest can never undo.  The driver surfaces this as the -ENOMEM its
+         * ib_alloc_mr() already knows how to unwind. */
+        if (!adminq_map_mr(ctx, mr_id, mr_handle)) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_MR %u: MR map full, rejecting", mr_id);
+            ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
+            return 1;
+        }
 
         uint64_t va, length, dma_addr;
         uint32_t map_count;
@@ -867,8 +889,15 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         mrid = le32toh(mrid);
         uint32_t mr_id = mrid & 0x00ffffffu;
         ionic_datapath_unregister_mr(ctx->dp, mrid);
-        if (!adminq_lookup_mr(ctx, mr_id, &mr_handle))
-            return 0;
+        /* A miss now means the resource is stranded: nothing else holds the
+         * handle.  It used to be reported as success, which is how the table
+         * filled up without a single line in the log. */
+        if (!adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
+            vfu_log(ctx->vfu_ctx, LOG_WARNING,
+                    "ionic_adminq DESTROY_MR %u: no mapping; resource leaked",
+                    mr_id);
+            return 1;
+        }
         ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
         adminq_unmap_mr(ctx, mr_id);
         return 0;

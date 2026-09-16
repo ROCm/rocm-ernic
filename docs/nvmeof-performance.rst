@@ -186,26 +186,47 @@ The MR budget caps the queue count
 This is the one to know about before changing ``queues=``.
 
 A stock ``nvme-rdma`` initiator runs with ``register_always``,
-and allocates a pool of **128 memory regions per queue**. The
-emulator's resource table is ``MAX_MR`` = 1024
-(:file:`src/from-qemu/hw/rdma/rdma_rm_defs.h`, and again in
-:file:`src/ionic_datapath.c`). Eight I/O queues therefore need
-1024 MRs for the I/O queues alone, leaving nothing for the admin
-queue, and the connect fails on the last one::
+and allocates a pool of **128 memory regions per queue** at
+connect time -- admin queue included -- rather than per I/O. An
+N-queue controller therefore needs ``(N + 1) * 128`` regions
+before the first capsule moves, and the emulator's table is a
+fixed ``IONIC_MAX_MR`` = 2048 (:file:`src/ionic_datapath.h`,
+which also sizes ``MAX_MR`` in
+:file:`src/from-qemu/hw/rdma/rdma_rm_defs.h` and in
+:file:`src/ionic_datapath.c`). That puts the ceiling at 15 I/O
+queues, which ``nvmeof_parse_backend()`` enforces at startup:
+
+.. code-block:: text
+
+   Error: nvmeof backend: queues must be 1..15, one per 128
+   memory regions in a table of 2048 (got '16')
+
+The table is not sized for the NVMe maximum of 64 queues on
+purpose: ``dp_reg_mr()`` walks the whole table on every fast
+registration -- that is, on every command -- so the constant is
+a per-I/O cost as well as a ceiling.
+
+The measurements above predate that change and were taken at
+``queues=4``. They are not affected by it: the MR budget governs
+whether a connect succeeds, not the cost of an I/O once it has.
+
+Historical note
+"""""""""""""""
+
+Before the memory-region budget was reworked, ``MAX_MR`` was
+1024 -- exactly the 8 * 128 regions the default ``queues=8`` needs for
+its I/O queues, leaving nothing for the admin queue. The connect
+died on the last one::
 
    nvme nvme0: creating 8 I/O queues.
    ionic 0000:01:00.0 rocm-rdma-ernic0: opcode 3 error 16777216
    nvme nvme0: failed to initialize MR pool sized 128 for QID 8
    nvme nvme0: rdma connection establishment failed (-22)
 
-The default ``queues=8`` is thus exactly one queue too many on a
-guest with eight or more CPUs. ``queues=4`` needs 512 MRs and
-connects reliably; that is what the measurements above use.
-
-Worse, the MRs from a failed connect are not reclaimed, so the
-budget shrinks with each attempt -- a second try fails earlier
-than the first, at QID 2 rather than QID 8. Restarting the
-server instance is currently the only way to recover the table.
-
-Both of these are emulator bugs rather than configuration
-errors, and neither is fixed as of this writing.
+Compounding it, the admin queue's driver-id-to-handle map held
+only 256 entries, so every region past the 256th was created
+successfully and then had no map entry. ``CREATE_MR`` still
+reported success, ``DESTROY_MR`` could not resolve the handle
+and silently returned 0, and the regions leaked for the life of
+the process -- which is why a second connect attempt failed
+earlier than the first, at QID 2 rather than QID 8.
