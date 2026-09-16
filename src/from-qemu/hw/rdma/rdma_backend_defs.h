@@ -76,7 +76,17 @@ struct ib_user_mad {
         uint16_t pkey_index;
         uint8_t reserved[6];
     } addr;
-    uint8_t data[0];
+    /*
+     * The kernel's struct ib_user_mad ends in a ``data[]`` flexible
+     * array member.  This stub is only ever embedded in
+     * struct backend_umad, which supplies its own fixed-size ``mad``
+     * buffer, and nothing reads ``data``, so the member is omitted
+     * entirely.  A trailing ``data[0]`` would be a zero-length array,
+     * which is a GNU extension, and a C99 ``data[]`` cannot appear in
+     * a struct that is itself embedded in another struct.  Omitting it
+     * leaves both sizeof() and the offset of backend_umad::mad
+     * unchanged.
+     */
 };
 
 /* Forward declare backend_umad (defined in rdma_backend.c) */

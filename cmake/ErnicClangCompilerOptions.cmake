@@ -22,6 +22,20 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         # Don't bake gcc-isms into the code
         -Wgnu
 
+        # ...with one exception.  The QEMU-ported headers use the GNU
+        # ``, ##__VA_ARGS__`` comma-swallowing extension in the
+        # rdma_*_report() macros.  Those headers are added with
+        # target_include_directories(SYSTEM), but that only suppresses
+        # warnings for the include *spelling* that goes through the
+        # system search path: our code includes
+        # "from-qemu/hw/rdma/vmw/pvrdma.h", which then reaches
+        # rdma_utils.h via a quoted relative include that resolves
+        # next-to-the-includer and so stays non-system.  Warnings
+        # therefore surface in our own translation units, where -w on
+        # the ported .c files does not reach.  Rather than patch
+        # vendored code, drop just this one sub-warning of -Wgnu.
+        -Wno-gnu-zero-variadic-macro-arguments
+
         -Wdeprecated
 
         # Thread-safety analysis

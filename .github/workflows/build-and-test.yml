@@ -22,14 +22,15 @@ concurrency:
 
 jobs:
   build-test:
-    name: Build and Test on ${{ matrix.os }}
+    name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }})
     runs-on: ${{ matrix.os }}
-    
+
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04]
-    
+        compiler: [gcc, clang]
+
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,8 +39,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ matrix.os }}-build-and-test-${{ hashFiles('.github/workflows/build-and-test.yml') }}
-          restore-keys: apt-${{ matrix.os }}-build-and-test-
+          key: apt-${{ matrix.os }}-${{ matrix.compiler }}-build-and-test-${{ hashFiles('.github/workflows/build-and-test.yml') }}
+          restore-keys: apt-${{ matrix.os }}-${{ matrix.compiler }}-build-and-test-
 
       # build-essential, cmake, ninja-build and pkg-config are preinstalled
       # on the hosted image, so only the things it does not ship are listed.
@@ -87,6 +88,7 @@ jobs:
       - name: Configure project with CMake
         run: |
           cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER=${{ matrix.compiler }} \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DERNIC_WERROR=ON
@@ -145,7 +147,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}
           path: build/Testing/
           retention-days: 7
       
@@ -153,7 +155,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: binaries-${{ matrix.os }}
+          name: binaries-${{ matrix.os }}-${{ matrix.compiler }}
           path: |
             build/rocm-ernic
             build/tests/test_pci_client
