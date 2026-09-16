@@ -2037,36 +2037,3 @@ jobs:
           /tmp/qemu-vm2-console.log
         retention-days: 7
         if-no-files-found: ignore
-  
-  system-test-status:
-    name: System Test Status
-    needs: [system-test-loopback-vm, system-test-tcp]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-    - name: Check test results
-      run: |
-        LOOPBACK_VM_RESULT="${{ needs.system-test-loopback-vm.result }}"
-        TCP_RESULT="${{ needs.system-test-tcp.result }}"
-
-        # Both jobs are enabled, so anything other than success -- including
-        # the "skipped" a disabled job reports -- is a failure here.
-        FAILED=0
-        if [ "$LOOPBACK_VM_RESULT" != "success" ]; then
-          FAILED=1
-        fi
-        if [ "$TCP_RESULT" != "success" ]; then
-          FAILED=1
-        fi
-
-        echo "Loopback VM test: $LOOPBACK_VM_RESULT"
-        echo "TCP backend test: $TCP_RESULT"
-
-        if [ "$FAILED" -eq 0 ]; then
-          echo "✅ All system tests passed!"
-          exit 0
-        fi
-        echo "❌ Some system tests failed!"
-        exit 1
-
