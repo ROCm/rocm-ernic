@@ -263,6 +263,17 @@ rebase it and refresh the file in ``patches/``. The
 of the cmake file and fails the pull request if any patch
 stops applying, so the two cannot drift apart.
 
+The pin is also what the driver pack records for guests: the
+install rules write it to
+``share/rocm-ernic/ionic-kernel-ref``, and
+``rocm-ernic-driver-pack`` copies that file into the tarball
+so the guest builds from the same baseline the patches
+beside it were generated against. Because it is captured at
+install time, a bump needs ``cmake --install`` re-run on the
+host before the next ``driver-pack``; neither script carries
+a fallback, so a pack assembled without that file fails
+immediately rather than guessing a ref.
+
 Testing
 -------
 

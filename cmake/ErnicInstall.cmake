@@ -92,4 +92,21 @@ if(ERNIC_INSTALL_SERVICE)
         ${CMAKE_SOURCE_DIR}/scripts/fetch-ionic-sources.sh
         DESTINATION ${ERNIC_SHARE_DIR}
     )
+
+    # The pinned ionic ref, materialised so the driver pack ships the
+    # baseline the host was configured with rather than a second
+    # hardcoded copy of it.
+    if(NOT IONIC_KERNEL_REF)
+        message(FATAL_ERROR
+            "IONIC_KERNEL_REF is not set; include ErnicKernelModule "
+            "before ErnicInstall")
+    endif()
+    file(GENERATE
+        OUTPUT ${CMAKE_BINARY_DIR}/ionic-kernel-ref
+        CONTENT "${IONIC_KERNEL_REF}\n"
+    )
+    install(FILES
+        ${CMAKE_BINARY_DIR}/ionic-kernel-ref
+        DESTINATION ${ERNIC_SHARE_DIR}
+    )
 endif()

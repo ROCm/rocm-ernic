@@ -58,7 +58,14 @@ if [ ! -x "${SCRIPT_DIR}/fetch-ionic-sources.sh" ]; then
     exit 1
 fi
 
-KREF="$(cat "${SCRIPT_DIR}/ionic-kernel-ref" 2>/dev/null || echo v7.2.4)"
+# No fallback on purpose: guessing a ref would build ionic from a
+# different baseline than the patches in this same tarball were
+# generated against, which fails at module load rather than here.
+if [ ! -f "${SCRIPT_DIR}/ionic-kernel-ref" ]; then
+    log_error "ionic-kernel-ref missing from the driver pack."
+    exit 1
+fi
+KREF="$(cat "${SCRIPT_DIR}/ionic-kernel-ref")"
 SRC="${SCRIPT_DIR}/ionic-kernel-src"
 
 log_info "Fetching upstream ionic sources at ${KREF}..."

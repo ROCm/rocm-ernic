@@ -2,7 +2,7 @@
 # https://github.com/codespell-project/codespell
 # https://github.com/codespell-project/actions-codespell
 
-name: "rocm-ernic codespell"
+name: "rocm-ernic - Codespell"
 
 on: pull_request
 

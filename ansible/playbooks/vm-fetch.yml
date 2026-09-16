@@ -128,6 +128,43 @@
         - ernic_vm_artifact | bool
         - ernic_ionic_kver | length > 0
 
+    # README.md carries a "CI guest kernel" badge, and shields.io has
+    # no way to read the image, so the value is hardcoded there.  That
+    # makes it the one copy of the kernel version with nothing tying it
+    # to the tag -- bump ernic_vm_artifact_tag and the front page keeps
+    # advertising the old kernel indefinitely.  Compare the two here so
+    # a tag bump fails in this play instead of rotting on the README.
+    - name: Read the README kernel badge
+      ansible.builtin.slurp:
+        src: "{{ ernic_project_root }}/README.md"
+      register: ernic_readme_raw
+      when: ernic_vm_artifact | bool
+
+    - name: Assert the README kernel badge matches the image
+      vars:
+        # regex_search returns None on no match, and `first` raises on
+        # None before a trailing default() is ever reached -- hence the
+        # default([], true) in the middle rather than at the end.
+        ernic_readme_kver: >-
+          {{ ernic_readme_raw.content | b64decode
+             | regex_search('CI%20guest%20kernel-([0-9][0-9.]*)-', '\1')
+             | default([], true) | first
+             | default('(badge not found)', true) }}
+      ansible.builtin.assert:
+        that:
+          - ernic_readme_kver == ernic_vm_info.kernel_release.split('-')[0]
+        fail_msg: >-
+          README.md advertises CI guest kernel {{ ernic_readme_kver }},
+          but {{ ernic_vm_artifact_tag }} ships
+          {{ ernic_vm_info.kernel_release }}. Update the badge on
+          README.md line 9.  Leave docs/performance.rst alone: its
+          Reference Measurements are a historical record of a run on
+          the old guest, not a live statement about this one.
+        success_msg: >-
+          README kernel badge agrees with the image:
+          {{ ernic_readme_kver }}
+      when: ernic_vm_artifact | bool
+
     # flavour is what the image was provisioned for.  An ionic image
     # carries no ROCm, so the GPU roles would fail deep in rocm-smi.
     - name: Assert the image flavour carries a GPU stack

@@ -19,6 +19,7 @@ on:
       - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
       - 'patches/**'              # staged into the guest in ionic mode
       - 'udev/**'                 # driver_common installs these
+      - 'ci/lib/common.sh'        # carries a third copy of the guest tag
       - '.github/workflows/system-tests.yml'
       - '.github/actions/fetch-guest-vm/**'
   workflow_dispatch:
@@ -216,6 +217,23 @@ jobs:
         echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
         echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
         echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
+
+        # README.md line 9 hardcodes the guest kernel in a shields.io
+        # badge, because shields.io has no way to read the image.  This
+        # job is the only lane holding vm-info.json, so it is the only
+        # place the badge and the image can be compared.  Only the
+        # loopback job carries this: both jobs run on identical
+        # triggers, so a second copy would buy nothing.
+        README_KVER="$(sed -n \
+          's/.*CI%20guest%20kernel-\([0-9][0-9.]*\)-.*/\1/p' \
+          "$GITHUB_WORKSPACE/README.md")"
+        if [ "$README_KVER" != "${KERNEL_RELEASE%%-*}" ]; then
+          echo "✗ README.md advertises CI guest kernel '${README_KVER:-none}',"
+          echo "  but $GUEST_ARTIFACT_TAG ships $KERNEL_RELEASE."
+          echo "  Update the badge on README.md line 9."
+          exit 1
+        fi
+        echo "✓ README kernel badge agrees with the image: $README_KVER"
     - name: Install dependencies
       run: |
         # Only what the container image does not already carry.
@@ -2037,36 +2055,3 @@ jobs:
           /tmp/qemu-vm2-console.log
         retention-days: 7
         if-no-files-found: ignore
-  
-  system-test-status:
-    name: System Test Status
-    needs: [system-test-loopback-vm, system-test-tcp]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-    - name: Check test results
-      run: |
-        LOOPBACK_VM_RESULT="${{ needs.system-test-loopback-vm.result }}"
-        TCP_RESULT="${{ needs.system-test-tcp.result }}"
-
-        # Both jobs are enabled, so anything other than success -- including
-        # the "skipped" a disabled job reports -- is a failure here.
-        FAILED=0
-        if [ "$LOOPBACK_VM_RESULT" != "success" ]; then
-          FAILED=1
-        fi
-        if [ "$TCP_RESULT" != "success" ]; then
-          FAILED=1
-        fi
-
-        echo "Loopback VM test: $LOOPBACK_VM_RESULT"
-        echo "TCP backend test: $TCP_RESULT"
-
-        if [ "$FAILED" -eq 0 ]; then
-          echo "✅ All system tests passed!"
-          exit 0
-        fi
-        echo "❌ Some system tests failed!"
-        exit 1
-

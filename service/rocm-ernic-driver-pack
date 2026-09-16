@@ -59,24 +59,35 @@ for helper in fetch-ionic-sources.sh setup-ionic-dkms.sh; do
         exit 1
     fi
 done
-# Record the pinned ref so the guest fetches the same baseline the
-# host was built against.
-echo "${ERNIC_IONIC_KERNEL_REF:-v7.2.4}" \
-    > "${DEST}/ionic-kernel-ref"
-
-# Generate the in-VM installer script from the
-# installed template.
-TEMPLATE="/usr/local/share/rocm-ernic/vm-driver-install.sh.in"
-if [ -f "${TEMPLATE}" ]; then
-    cp "${TEMPLATE}" "${DEST}/vm-driver-install.sh"
-    chmod +x "${DEST}/vm-driver-install.sh"
+# Ship the ref the host was configured with, so the guest fetches
+# the same baseline the patches beside it were generated against.
+if [ -f "${ERNIC_SHARE_DIR}/ionic-kernel-ref" ]; then
+    cp "${ERNIC_SHARE_DIR}/ionic-kernel-ref" "${DEST}/"
 else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    if [ -f "${SCRIPT_DIR}/vm-driver-install.sh.in" ]; then
-        cp "${SCRIPT_DIR}/vm-driver-install.sh.in" \
-            "${DEST}/vm-driver-install.sh"
+    log_error "Missing ${ERNIC_SHARE_DIR}/ionic-kernel-ref"
+    exit 1
+fi
+
+# Generate the in-VM installer script from the installed
+# template.  ERNIC_SHARE_DIR first: hardcoding a prefix here
+# packed whatever an older install had left at /usr/local
+# rather than the tree this run was configured against.  The
+# script's own directory is the fallback so the pack still
+# works from a source checkout.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+for template in "${ERNIC_SHARE_DIR}/vm-driver-install.sh.in" \
+                "${SCRIPT_DIR}/vm-driver-install.sh.in"; do
+    if [ -f "${template}" ]; then
+        cp "${template}" "${DEST}/vm-driver-install.sh"
         chmod +x "${DEST}/vm-driver-install.sh"
+        break
     fi
+done
+# Without it the tarball is inert, so do not ship one quietly.
+if [ ! -f "${DEST}/vm-driver-install.sh" ]; then
+    log_error "Missing vm-driver-install.sh.in in" \
+        "${ERNIC_SHARE_DIR} or ${SCRIPT_DIR}"
+    exit 1
 fi
 
 log_info "Creating tarball ${ERNIC_DRIVER_TARBALL}..."

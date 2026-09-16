@@ -294,14 +294,16 @@ endif()
 add_subdirectory(tests)
 
 # ---------------------------------------------------------------
-# Install
-# ---------------------------------------------------------------
-include(ErnicInstall)
-
-# ---------------------------------------------------------------
 # Kernel module (DKMS)
 # ---------------------------------------------------------------
 include(ErnicKernelModule)
+
+# ---------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------
+# Must follow ErnicKernelModule: the install rules record
+# IONIC_KERNEL_REF, which is defined there.
+include(ErnicInstall)
 
 # ---------------------------------------------------------------
 # Documentation (optional, requires -DERNIC_BUILD_DOCS=ON)

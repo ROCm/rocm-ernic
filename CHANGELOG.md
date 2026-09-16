@@ -61,6 +61,16 @@
 
 ### Fixed
 
+* The driver pack recorded a hardcoded `v7.2.4` as the ionic baseline
+  regardless of `IONIC_KERNEL_REF`, so bumping the cmake pin left guests
+  fetching the old sources while the patches shipped beside them came from the
+  new ones. The pin is now written to `share/rocm-ernic/ionic-kernel-ref` at
+  install time and copied into the tarball from there. The undocumented
+  `ERNIC_IONIC_KERNEL_REF` environment hook — referenced once, assigned
+  nowhere — is removed rather than kept as an override, and neither
+  `rocm-ernic-driver-pack` nor `vm-driver-install.sh` falls back to a literal
+  version any more: a pack without the ref file fails instead of building from
+  a baseline its patches do not match.
 * Per-QP opcode lines in the `*.stats` file are emitted with a wide enough
   field to keep the `" : "` separator that `ernic-exporter` splits on.
   `MASKED_ATOMIC_CMP_SWP` and `ATOMIC_FETCH_AND_ADD` filled the old 20-column
@@ -105,24 +115,8 @@
 * The local loopback path in `tcp_post_send()` now releases the DMA mappings
   taken by `tcp_wr_map_sge()` before freeing the work request, and pops the
   send queue under `priv->lock`. The mappings were leaked on every loopback
-<<<<<<< HEAD
-  send, and the unsynchronized pop raced the two receive-thread sites that pop
-  the same queue.
-=======
   send, and the pop without the lock raced the two receive-thread sites that
   pop the same queue.
-* MSI-X assertions raised while a vector is masked are latched and replayed
-  when the driver unmasks, instead of being dropped. Every vector comes out of
-  reset masked, so an interrupt raised in the window before the guest arms its
-  handler was discarded with no pending state to recover it, and the queue
-  waited forever for an interrupt that would never be sent again. The emulator
-  now records the assertion per vector and delivers it from both unmask paths:
-  a direct write of 0 to the interrupt mask register and an `INTR_CRED_UNMASK`
-  credit return. `tests/test_ionic_intr_pending.c` (CTest
-  `ionic-intr-pending-unit`) covers both paths, mask-on-assert re-latching, and
-  the collapse of repeated assertions into one delivery.
-
->>>>>>> ccb353c (fix(changelog): clear remaining spell check failure)
 * Memory region bounds checks in the TCP and loopback backends no longer
   overflow. The checks were written as `addr + len > start + length`, whose
   unchecked 64-bit arithmetic a peer could wrap by choosing an `addr` just
