@@ -4,7 +4,7 @@
  * This file implements the wrapper functions that isolate QEMU code from
  * our libvfio-user server. Only this file includes QEMU headers.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

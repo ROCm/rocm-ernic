@@ -5,7 +5,7 @@
  * garbage, and out-of-range values instead of silently truncating or
  * returning 0. Header-only so they can be unit-tested directly.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

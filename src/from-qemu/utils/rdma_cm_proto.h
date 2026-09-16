@@ -5,7 +5,7 @@
  * Not used by the TCP mesh backend; see pvrdma_eth.c
  * for the forwarding path used in multi-VM mode.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
