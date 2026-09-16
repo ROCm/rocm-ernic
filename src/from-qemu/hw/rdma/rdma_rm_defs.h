@@ -31,19 +31,24 @@
 #define MAX_QP              1024
 #define MAX_SGE             32
 #define MAX_CQ              2048
+#define MAX_PD              1024
+#define MAX_QP_RD_ATOM      16
+#define MAX_QP_INIT_RD_ATOM 16
+#define MAX_AH              64
+#define MAX_SRQ             512
+
 /*
  * Must stay equal to IONIC_MAX_MR in src/ionic_datapath.h, which explains the
  * value; this header is QEMU-derived and cannot include that one.  It was
  * 1024, which is exactly the 8 * 128 regions an nvme-rdma initiator
  * pre-allocates for the default eight NVMe-oF I/O queues -- leaving none for
  * the admin queue, so the connect failed on the last queue with -ENOMEM.
+ *
+ * Kept out of the block above so that block stays byte-identical to the QEMU
+ * original: a comment in the middle of it splits clang-format's alignment run
+ * and reflows ten upstream lines.
  */
-#define MAX_MR              2048
-#define MAX_PD              1024
-#define MAX_QP_RD_ATOM      16
-#define MAX_QP_INIT_RD_ATOM 16
-#define MAX_AH              64
-#define MAX_SRQ             512
+#define MAX_MR 2048
 
 /* Paravirt queue pair types for rocm_ernic Dynamic Connection (software DC) */
 #define ROCM_ERNIC_PVRDMA_QPT_DCT 240U
