@@ -24,6 +24,7 @@
 #include "../../utils/eth_rx_inject.h"
 #include "../../utils/parse_int.h"
 #include <errno.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <glib.h>
 #include <stdio.h>
@@ -381,7 +382,21 @@ typedef struct {
     uint16_t remote_port;
     QemuThread recv_thread;
     bool is_connected;
-    bool recv_thread_running;
+    /*
+     * Stop flag for recv_thread, polled by tcp_recv_thread_per_conn() while
+     * a teardown path clears it from another thread. Atomic because a plain
+     * bool read and written concurrently is a data race: the compiler is
+     * free to hoist the load out of the poll loop, in which case the thread
+     * never sees the stop and the matching join hangs.
+     *
+     * The plain assignments below are sequentially consistent, which is
+     * stronger than this flag needs -- it guards no data of its own, and the
+     * qemu_thread_create()/qemu_thread_join() pair bracketing the thread's
+     * life supplies the actual memory barriers. At a 100ms poll interval the
+     * difference is not worth spelling out explicit relaxed accesses at
+     * every site.
+     */
+    _Atomic bool recv_thread_running;
     QemuMutex lock;
     TcpBackendPrivate *priv;
 } TcpConnection;
