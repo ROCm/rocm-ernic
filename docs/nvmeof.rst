@@ -22,6 +22,11 @@ NVMe-oF usable as a day-to-day smoke test of the queue
 pairs, the memory keys, and the RDMA READ/WRITE engine in a
 single VM.
 
+Measured throughput and latency are on a page of their own:
+see :doc:`nvmeof-performance`, which also documents why
+``queues=`` cannot be left at its default of 8 on a guest with
+eight or more CPUs (:ref:`nvmeof-mr-budget`).
+
 Starting the Server
 -------------------
 

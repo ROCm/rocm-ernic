@@ -64,6 +64,7 @@ a host TAP:
    monitoring
    testing
    performance
+   nvmeof-performance
    perf-trends
 
 .. toctree::
