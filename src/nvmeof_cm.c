@@ -146,6 +146,16 @@ enum {
     NVME_RDMA_CM_REP_SIZE = 32,
 };
 
+/*
+ * Both ULP payloads sit behind the cma_hdr in the CM private data, so the
+ * private data has to be big enough for either. These are all constants, so
+ * the check belongs to the build rather than to the REQ path.
+ */
+_Static_assert(CMA_HDR_SIZE + NVME_RDMA_CM_REQ_SIZE <= CM_REQ_PRIVATE_SIZE,
+               "CM REQ private data cannot hold cma_hdr + nvme_rdma_cm_req");
+_Static_assert(CMA_HDR_SIZE + NVME_RDMA_CM_REP_SIZE <= CM_REQ_PRIVATE_SIZE,
+               "CM REQ private data cannot hold cma_hdr + nvme_rdma_cm_rep");
+
 enum {
     NVME_RDMA_CM_FMT_1_0 = 0x0,
     NVME_RDMA_CM_INVALID_LEN = 0x01,
@@ -398,10 +408,6 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     uint16_t hrqsize = get_le16(nvme + NVME_RDMA_CM_REQ_HRQSIZE_OFF);
     uint16_t hsqsize = get_le16(nvme + NVME_RDMA_CM_REQ_HSQSIZE_OFF);
 
-    if (CMA_HDR_SIZE + NVME_RDMA_CM_REQ_SIZE > CM_REQ_PRIVATE_SIZE) {
-        return build_rej(rsp, req, 0, IB_CM_REJ_CONSUMER_DEFINED,
-                         NVME_RDMA_CM_INVALID_LEN);
-    }
     if (recfmt != NVME_RDMA_CM_FMT_1_0) {
         return build_rej(rsp, req, 0, IB_CM_REJ_CONSUMER_DEFINED,
                          NVME_RDMA_CM_INVALID_RECFMT);

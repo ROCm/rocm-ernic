@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 name: rocm-ernic - Service Tooling Tests
 
 on:

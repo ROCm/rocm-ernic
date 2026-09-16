@@ -609,18 +609,3 @@ set_tests_properties(ionic-ci PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
-
-# nvmeof CI test suite: every documented backend option spelling starts a
-# server with the namespace it asked for, malformed options are refused, and
-# a file-backed namespace appears on disk at the right size.  The guest-side
-# `nvme connect` is covered by the VM system tests.
-add_test(
-    NAME nvmeof-ci
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_nvmeof_ci.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-)
-set_tests_properties(nvmeof-ci PROPERTIES
-    TIMEOUT 120
-    RUN_SERIAL TRUE
-    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
-)

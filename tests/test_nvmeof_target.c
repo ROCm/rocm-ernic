@@ -765,6 +765,25 @@ static void test_discovery(void)
     check("discovery", rsp_status(rsp) == 0,
           "Connect to the discovery subsystem failed");
 
+    /*
+     * Identify Controller over a discovery association. The host cross-checks
+     * CNTRLTYPE against this SUBNQN and fails the whole connect with EINVAL if
+     * they disagree, so the two have to be asserted together.
+     */
+    memset(h->buf, 0xa5, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 39);
+    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    check("discovery", rsp_status(rsp) == 0,
+          "Identify Controller on the discovery association failed");
+    check("discovery", h->buf[111] == 2,
+          "cntrltype does not report a discovery controller");
+    check("discovery", strcmp((char *)h->buf + 768, NVMEOF_DISCOVERY_NQN) == 0,
+          "Identify Controller names the subsystem, not the discovery NQN");
+    check("discovery", nvme_get_le32(h->buf + 516) == 0,
+          "a discovery controller must report nn as zero");
+
     const size_t want = NVMEOF_DISC_HDR_SIZE + NVMEOF_DISC_ENTRY_SIZE;
     memset(h->buf, 0xcc, want);
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, 40);

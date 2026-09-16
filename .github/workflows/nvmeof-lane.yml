@@ -35,7 +35,9 @@ env:
 
 jobs:
   system-test-nvmeof:
-    name: NVMe-oF Backend System Tests
+    # Only the configuration, not the lane name: every caller's name is
+    # prefixed onto this one, and the callers already say NVMe-oF.
+    name: Single Server
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -519,10 +521,18 @@ jobs:
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
         # "ansible" apt bundle installs into, so installing that
-        # bundle leaves community.general invisible.  Install the
-        # collections the same way a real consumer does instead.
+        # bundle leaves community.general invisible.
+        #
+        # community.general only, not ansible/requirements.yml: that
+        # file is the consumer contract and resolves to six
+        # collections and ~29M, because sbates130272.batesste drags in
+        # amazon.aws and community.libvirt.  Nothing here runs the one
+        # role that uses batesste (ernic_image_prep), and the only
+        # module these plays reach for is community.general.modprobe.
+        # Six galaxy round trips is six chances to hit the 500 that
+        # has already reddened runs; one is one.
         ansible --version
-        ansible-galaxy collection install -r ansible/requirements.yml
+        ansible-galaxy collection install community.general
 
     - name: Install kernel headers and build tools in VM
       shell: bash

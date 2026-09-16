@@ -641,7 +641,14 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
      */
     nvme_put_le32(buf + 536, (1u << 0) | (1u << 2) | (1u << 20));
 
-    snprintf((char *)buf + 768, 256, "%s", c->subnqn);
+    /*
+     * A discovery association has to name the discovery NQN here.  Linux
+     * builds subsys->subnqn from this field and then rejects the controller
+     * outright -- "Subsystem %s is not a discovery controller", EINVAL -- if
+     * it says CNTRLTYPE is discovery while the NQN is an ordinary subsystem's.
+     */
+    snprintf((char *)buf + 768, 256, "%s",
+             t->ctrl.discovery ? NVMEOF_DISCOVERY_NQN : c->subnqn);
 
     nvme_put_le32(buf + 1792, 4); /* ioccsz: 64 bytes, no in-capsule data */
     nvme_put_le32(buf + 1796, 1); /* iorcsz: 16 bytes */

@@ -52,7 +52,8 @@ html_theme_options = {
 }
 html_title = f"rocm-ernic {version}"
 # docs/perf-history holds the nightly perf charts and the
-# shields.io endpoint badges (badge-rdma.json, badge-tcp.json)
+# shields.io endpoint badges (badge-rdma.json, badge-tcp.json,
+# badge-nvmeof.json)
 # that README.md points at. Publishing it as html_static_path
 # copies its contents into the built site's _static/, so once
 # docs-deploy pushes the build to GitHub Pages the badges are
