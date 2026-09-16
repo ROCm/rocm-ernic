@@ -41,20 +41,15 @@ jobs:
           key: apt-${{ matrix.os }}-build-and-test-${{ hashFiles('.github/workflows/build-and-test.yml') }}
           restore-keys: apt-${{ matrix.os }}-build-and-test-
 
+      # build-essential, cmake, ninja-build and pkg-config are preinstalled
+      # on the hosted image, so only the things it does not ship are listed.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            cmake \
-            meson \
-            ninja-build \
-            pkg-config \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev \
-            libjson-c-dev \
-            libcmocka-dev
+            libglib2.0-dev
 
       - name: Cache libvfio-user build
         id: cache-libvfio-user
@@ -69,6 +64,11 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
+          # meson and libjson-c-dev build libvfio-user and libcmocka-dev
+          # builds its tests; nothing else in this job needs them, and the
+          # cache key is static, so installing them here keeps them off the
+          # steady-state cache-hit path.
+          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
           # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
           # This version includes the vfu_setup_device_dma() max_regions
           # parameter added in f3742ed9 (#835).

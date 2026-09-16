@@ -63,10 +63,10 @@ jobs:
         bash -n service/vm-driver-install.sh.in
         echo "vm-driver-install.sh.in: OK"
 
+    # shellcheck is preinstalled on the hosted image, so this job needs no
+    # apt work at all.
     - name: Shellcheck service scripts
       run: |
-        sudo apt-get update
-        sudo apt-get install -y shellcheck
         shellcheck \
           -e SC2086,SC2154,SC2024,SC2034 \
           -e SC2164,SC2181,SC2317 \
@@ -119,11 +119,13 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+    # cmake, ninja-build and pkg-config are preinstalled on the hosted
+    # image.  Unlike the other workflows the libvfio-user build below is
+    # not cached, so meson and libjson-c-dev are needed on every run.
     - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          cmake ninja-build pkg-config \
           libibverbs-dev librdmacm-dev \
           libglib2.0-dev libjson-c-dev meson \
           libcmocka-dev
