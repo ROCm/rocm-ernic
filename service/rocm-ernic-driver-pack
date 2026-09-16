@@ -59,10 +59,14 @@ for helper in fetch-ionic-sources.sh setup-ionic-dkms.sh; do
         exit 1
     fi
 done
-# Record the pinned ref so the guest fetches the same baseline the
-# host was built against.
-echo "${ERNIC_IONIC_KERNEL_REF:-v7.2.4}" \
-    > "${DEST}/ionic-kernel-ref"
+# Ship the ref the host was configured with, so the guest fetches
+# the same baseline the patches beside it were generated against.
+if [ -f "${ERNIC_SHARE_DIR}/ionic-kernel-ref" ]; then
+    cp "${ERNIC_SHARE_DIR}/ionic-kernel-ref" "${DEST}/"
+else
+    log_error "Missing ${ERNIC_SHARE_DIR}/ionic-kernel-ref"
+    exit 1
+fi
 
 # Generate the in-VM installer script from the
 # installed template.

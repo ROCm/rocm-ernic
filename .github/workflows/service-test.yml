@@ -200,6 +200,18 @@ jobs:
         fi
         check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
         check_file "${PREFIX}/share/rocm-ernic/fetch-ionic-sources.sh"
+        check_file "${PREFIX}/share/rocm-ernic/ionic-kernel-ref"
+
+        # The pin is captured at install time, so a stale or empty file
+        # here would silently build the guest from the wrong baseline.
+        PIN=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+          cmake/ErnicKernelModule.cmake)
+        GOT=$(cat "${PREFIX}/share/rocm-ernic/ionic-kernel-ref")
+        if [ "$PIN" != "$GOT" ]; then
+          echo "MISMATCH: cmake pins ${PIN}, installed ref is ${GOT}"
+          exit 1
+        fi
+        echo "OK: installed ionic ref matches the cmake pin (${GOT})"
 
         echo ""
         echo "All service files installed correctly."

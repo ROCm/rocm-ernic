@@ -134,10 +134,18 @@ The guest disk is a published OCI artifact by default:
 and asserts that the image's own `vm-info.json` agrees with
 `group_vars/all.yml` -- login account, disk name, release,
 and a guest kernel that is at least 6.18 and matches the
-`IONIC_KERNEL_REF` pin to major.minor. Keep
-`ernic_vm_artifact_tag` equal to `GUEST_ARTIFACT_TAG` in
-`.github/workflows/system-tests.yml` so the VMs launched
-here are the VMs CI tests.
+`IONIC_KERNEL_REF` pin to major.minor. It also checks the
+kernel against the hardcoded `CI guest kernel` badge on line
+9 of `README.md`, so a tag bump cannot leave the front page
+advertising a kernel nothing ships. That badge check also
+runs on every pull request, in the loopback job of
+`.github/workflows/system-tests.yml`.
+
+Keep `ernic_vm_artifact_tag` equal to `GUEST_ARTIFACT_TAG`
+in `.github/workflows/system-tests.yml` and to
+`CI_GUEST_ARTIFACT_TAG` in `ci/lib/common.sh`, so the VMs
+launched here are the VMs CI tests. Nothing compares those
+three to each other.
 
 `group_vars/all.yml` holds the site configuration for this
 repo.

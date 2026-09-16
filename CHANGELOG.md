@@ -61,6 +61,16 @@
 
 ### Fixed
 
+* The driver pack recorded a hardcoded `v7.2.4` as the ionic baseline
+  regardless of `IONIC_KERNEL_REF`, so bumping the cmake pin left guests
+  fetching the old sources while the patches shipped beside them came from the
+  new ones. The pin is now written to `share/rocm-ernic/ionic-kernel-ref` at
+  install time and copied into the tarball from there. The undocumented
+  `ERNIC_IONIC_KERNEL_REF` environment hook — referenced once, assigned
+  nowhere — is removed rather than kept as an override, and neither
+  `rocm-ernic-driver-pack` nor `vm-driver-install.sh` falls back to a literal
+  version any more: a pack without the ref file fails instead of building from
+  a baseline its patches do not match.
 * Per-QP opcode lines in the `*.stats` file are emitted with a wide enough
   field to keep the `" : "` separator that `ernic-exporter` splits on.
   `MASKED_ATOMIC_CMP_SWP` and `ATOMIC_FETCH_AND_ADD` filled the old 20-column

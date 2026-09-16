@@ -333,9 +333,23 @@ name, the release, and that the guest kernel is at least
 6.18 and matches the ``IONIC_KERNEL_REF`` pin to
 major.minor. A mismatch stops the run before any VM is
 launched rather than surfacing as a build failure inside the
-guest. Keep ``ernic_vm_artifact_tag`` equal to
+guest.
+
+A final assert compares the kernel against the ``CI guest
+kernel`` badge on line 9 of ``README.md``. That badge has to
+be hardcoded -- shields.io cannot read the image -- so
+without the check a tag bump would leave the front page
+advertising a kernel nothing ships. The same comparison runs
+in the ``Read VM info`` step of the loopback job in
+``.github/workflows/system-tests.yml``, which is what
+catches it on a pull request; this play only covers the
+lab-host path.
+
+Keep ``ernic_vm_artifact_tag`` equal to
 ``GUEST_ARTIFACT_TAG`` in
-``.github/workflows/system-tests.yml``.
+``.github/workflows/system-tests.yml`` *and* to
+``CI_GUEST_ARTIFACT_TAG`` in ``ci/lib/common.sh``. Nothing
+compares those three to each other.
 
 The pinned image is flavour ``ionic`` and carries no ROCm,
 so ``ernic_gpu_passthrough`` defaults off alongside it and
