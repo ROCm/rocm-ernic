@@ -4,7 +4,7 @@
  * Forwards DHCP requests from VM's netdev to manager via TCP socket.
  * Used by TCP backend worker nodes.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

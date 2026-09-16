@@ -4,7 +4,7 @@
  * Minimal DHCP server implementation for IP address allocation.
  * Used by loopback mode and TCP backend manager.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

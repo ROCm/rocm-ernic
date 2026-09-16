@@ -5,7 +5,7 @@
  * ionic_rdma.ko, dispatches to rdma_rm / rdma_backend, and posts
  * ionic_v1_cqe completions to the paired admin CQ.
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

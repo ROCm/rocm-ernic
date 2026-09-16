@@ -4,7 +4,7 @@
  * This header provides a clean wrapper API that isolates QEMU header
  * dependencies. Only vfu_compat_bridge.c sees QEMU internals.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

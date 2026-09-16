@@ -18,7 +18,7 @@
  * - IB Architecture Spec, Vol 1, Ch 15 (SA)
  * - RFC 5040 (RDMA Protocol Specification)
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

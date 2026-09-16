@@ -4,7 +4,7 @@
  * This header defines our main device structure without including QEMU headers.
  * We use opaque handles to hide QEMU types.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

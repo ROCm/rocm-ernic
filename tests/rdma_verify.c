@@ -12,7 +12,7 @@
  *   cc -o rdma_verify rdma_verify.c -libverbs
  *   ./rdma_verify <device>
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

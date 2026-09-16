@@ -11,7 +11,7 @@
  *
  * Wire formats are defined in ionic_fw.h (kernel-tools pinned ref).
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

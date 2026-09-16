@@ -25,7 +25,7 @@
  *   5. After adminq/notifyq init, ionic.ko calls ionic_auxbus_register() which
  *      creates the ionic.rdma auxiliary device -> ionic_rdma.ko probes it.
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
