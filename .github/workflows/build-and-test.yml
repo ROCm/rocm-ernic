@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   build-test:
-    name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }})
+    name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }}, ${{ matrix.sanitizer }})
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -29,6 +29,22 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         compiler: [gcc, clang]
+        # `asan` builds with -DERNIC_USE_SANITIZERS=ON, which turns on
+        # ASan + LSan + UBSan together (see cmake/ErnicSanitizers.cmake).
+        # TSan is deliberately absent: it is mutually exclusive with this
+        # set, and the hosted runners' ASLR entropy makes it abort before
+        # main() without a `setarch -R` wrapper.
+        sanitizer: [ 'off', asan ]
+
+    # UBSan's default is to print a diagnostic and keep going with a zero
+    # exit status, so without halt_on_error the asan legs would report
+    # success over real undefined behaviour. ASan and LSan already exit
+    # non-zero on a finding; detect_leaks is spelled out rather than left
+    # to the platform default. Ignored by the non-sanitizer legs, which
+    # have no sanitizer runtime to read them.
+    env:
+      ASAN_OPTIONS: detect_leaks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
     steps:
       - name: Check out code
@@ -85,12 +101,19 @@ jobs:
         run: sudo ldconfig
       
       - name: Configure project with CMake
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
         run: |
+          san=OFF
+          if [ "$SANITIZER" = "asan" ]; then
+            san=ON
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER=${{ matrix.compiler }} \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_INSTALL_PREFIX=/usr \
-            -DERNIC_WERROR=ON
+            -DERNIC_WERROR=ON \
+            -DERNIC_USE_SANITIZERS=$san
       
       - name: Build project
         run: cmake --build build
@@ -146,12 +169,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}
+          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.sanitizer }}
           path: build/Testing/
           retention-days: 7
       
+      # Only the uninstrumented legs, whose binaries are the ones anyone
+      # would want to download; a sanitizer build is a check, not an
+      # artifact, and it cannot run without its runtime anyway.
       - name: Upload binaries
-        if: success()
+        if: success() && matrix.sanitizer == 'off'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.compiler }}
