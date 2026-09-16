@@ -6,11 +6,6 @@
 # per-VM overlays do not re-download it.
 
 ---
-# Device mode the image is prepared for: ionic (default) or the
-# deprecated legacy rocm_ernic path.  Decides which modules load
-# at boot and which device ID lands in pci.ids.
-ernic_device_mode: ionic
-
 # Install RDMA userspace and tooling via
 # sbates130272.batesste.rdma_setup.
 ernic_image_rdma: true
@@ -40,18 +35,14 @@ ernic_image_logind_keep_processes: true
 # Load the rocm-ernic modules at boot so a rebooted overlay
 # comes back with its RDMA device.
 ernic_image_modules_load: true
-ernic_image_boot_modules: >-
-  {{ ['rocm_ernic_eth', 'rocm_ernic_rdma']
-     if ernic_device_mode == 'legacy'
-     else ['ionic', 'ionic_rdma'] }}
+ernic_image_boot_modules:
+  - ionic
+  - ionic_rdma
 
 # Add the emulated NIC to the system pci.ids so lspci names it.
 ernic_image_pciids: true
-ernic_image_pciids_vendor: "1022"
-ernic_image_pciids_entry: >-
-  {{ '8000  ROCm Emulated RDMA NIC'
-     if ernic_device_mode == 'legacy'
-     else '8001  ROCm Emulated ionic RDMA NIC' }}
+ernic_image_pciids_vendor: "1dd8"
+ernic_image_pciids_entry: "100a  ROCm Emulated ionic RDMA NIC"
 
 # ── Mainline kernel ──────────────────────────────
 # The ionic RDMA driver needs a kernel matching the sources pinned
@@ -59,7 +50,7 @@ ernic_image_pciids_entry: >-
 # (in-tree ionic starts at 6.18, noble HWE is 6.17, resolute GA is
 # 7.0).  Install one from the Ubuntu mainline PPA alongside the
 # distro kernel, which stays as a fallback.
-ernic_image_kernel_mainline: "{{ ernic_device_mode != 'legacy' }}"
+ernic_image_kernel_mainline: true
 # Empty means "derive from the ionic ref": v7.2.4 -> 7.2.4.
 ernic_image_kernel_version: ""
 ernic_image_kernel_mainline_url: "https://kernel.ubuntu.com/mainline"

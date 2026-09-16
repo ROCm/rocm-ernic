@@ -58,10 +58,17 @@
         ansible_port: >-
           {{ ernic_vm_ssh_base_port | int + item - 1 }}
         ansible_user: "{{ ernic_vm_ssh_user }}"
+        # See the note in ci-vm-register.yml.
+        ansible_ssh_private_key_file: >-
+          {{ ernic_guest_ssh_identity
+             if (ernic_guest_ssh_identity | default('') | trim)
+             else omit }}
         ansible_ssh_common_args: >-
           -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o PasswordAuthentication=no
+          {{ '-o IdentitiesOnly=yes'
+             if (ernic_guest_ssh_identity | default('') | trim) else '' }}
         vm_index: "{{ item }}"
         vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
       loop: [1, 2]
@@ -300,7 +307,7 @@
         that:
           - rdma_dev_detect.stdout | trim | length > 0
         fail_msg: >-
-          No RDMA device with PCI vendor 0x1022 found. The driver
+          No RDMA device with PCI vendor 0x1dd8 found. The driver
           did not bind, or the device never enumerated.
 
     - name: Set RDMA device name

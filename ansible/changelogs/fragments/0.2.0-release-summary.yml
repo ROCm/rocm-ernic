@@ -4,12 +4,11 @@
 
 ---
 release_summary: >-
-  The collection now provisions the ionic device mode by
-  default: guests run the patched upstream ``ionic`` and
-  ``ionic_rdma`` modules against the ``1022:8001`` device,
-  with stock rdma-core and its upstream ``providers/ionic``,
-  and reach each other over a host bridge and per-instance
-  TAP created by ``ernic_host_setup``.  The out-of-tree
-  ``rocm_ernic`` path is deprecated but still selectable with
-  ``-e ernic_device_mode=legacy``.  Device names and inventory
-  variables are unchanged, so existing playbooks need no edits.
+  The collection now provisions only the ionic device: guests
+  run the patched upstream ``ionic`` and ``ionic_rdma`` modules
+  against the ``1dd8:100a`` device, with stock rdma-core and its
+  upstream ``providers/ionic``, and reach each other over a host
+  bridge and per-instance TAP created by ``ernic_host_setup``.
+  The out-of-tree ``rocm_ernic`` driver path has been removed
+  along with ``ernic_device_mode``.  Device names and the
+  remaining inventory variables are unchanged.

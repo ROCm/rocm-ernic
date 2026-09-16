@@ -34,7 +34,8 @@
     # a bare ssh to a healthy guest can block indefinitely, and one
     # did -- a 25-minute hang on a two-second command.
     vm1_ssh: >-
-      ssh -o StrictHostKeyChecking=no
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
       -o BatchMode=yes
       -o ConnectTimeout=15
@@ -43,7 +44,8 @@
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
-      ssh -o StrictHostKeyChecking=no
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
       -o BatchMode=yes
       -o ConnectTimeout=15
@@ -161,7 +163,7 @@
         that:
           - rdma_dev_detect.stdout | trim | length > 0
         fail_msg: >-
-          No RDMA device with PCI vendor 0x1022 found on VM1, so the
+          No RDMA device with PCI vendor 0x1dd8 found on VM1, so the
           driver did not bind or the port never came up.
 
     - name: Set RDMA device name

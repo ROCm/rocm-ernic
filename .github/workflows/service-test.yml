@@ -199,12 +199,6 @@ jobs:
         check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
         check_file "${PREFIX}/share/rocm-ernic/fetch-ionic-sources.sh"
 
-        # The deprecated rocm_ernic driver sources under
-        # share/rocm-ernic/driver-legacy/ are deliberately not
-        # checked here any more.  CI is ionic-only, and requiring
-        # those files to be installed would block the removal this
-        # workflow should not be standing in the way of.
-
         echo ""
         echo "All service files installed correctly."
 

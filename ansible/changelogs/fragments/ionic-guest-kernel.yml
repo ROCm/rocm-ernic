@@ -9,7 +9,7 @@ minor_changes:
     ``ernic_image_kernel_version`` overrides it, the four ``amd64`` packages
     are read out of the mainline ``CHECKSUMS`` manifest and verified by
     sha256, and the distro kernel stays installed as a fallback.  New
-    variables ``ernic_image_kernel_mainline`` (on except in legacy mode),
+    variables ``ernic_image_kernel_mainline`` (on by default),
     ``ernic_image_kernel_version``, ``ernic_image_kernel_mainline_url``,
     ``ernic_image_kernel_deb_re``, ``ernic_image_kernel_reboot`` and
     ``ernic_image_kernel_reboot_timeout``.

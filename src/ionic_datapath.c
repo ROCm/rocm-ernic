@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <limits.h>
 #include <syslog.h>
 #include <endian.h>
 #include <pthread.h>
@@ -56,6 +57,30 @@
 #define IONIC_V1_OP_RDMA_WRITE_IMM 5
 #define IONIC_V1_OP_ATOMIC_CS      6
 #define IONIC_V1_OP_ATOMIC_FA      7
+
+/*
+ * The per-QP wqes_by_opcode histogram is indexed by PVRDMA_WR_*, whose
+ * numbering is a different permutation of the same operations than
+ * enum ionic_v1_op above, so the two spaces need an explicit translation.
+ * Every ionic opcode has exactly one PVRDMA counterpart; the reverse does
+ * not hold (LSO and the indices above SEND_WITH_INV are unreachable here).
+ */
+static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
+{
+    static const uint8_t map[] = {
+        [IONIC_V1_OP_SEND] = 2,           /* PVRDMA_WR_SEND */
+        [IONIC_V1_OP_SEND_INV] = 8,       /* PVRDMA_WR_SEND_WITH_INV */
+        [IONIC_V1_OP_SEND_IMM] = 3,       /* PVRDMA_WR_SEND_WITH_IMM */
+        [IONIC_V1_OP_RDMA_READ] = 4,      /* PVRDMA_WR_RDMA_READ */
+        [IONIC_V1_OP_RDMA_WRITE] = 0,     /* PVRDMA_WR_RDMA_WRITE */
+        [IONIC_V1_OP_RDMA_WRITE_IMM] = 1, /* PVRDMA_WR_RDMA_WRITE_WITH_IMM */
+        [IONIC_V1_OP_ATOMIC_CS] = 5,      /* PVRDMA_WR_ATOMIC_CMP_AND_SWP */
+        [IONIC_V1_OP_ATOMIC_FA] = 6,      /* PVRDMA_WR_ATOMIC_FETCH_AND_ADD */
+    };
+
+    /* Out of range counts toward the QP total but no histogram bucket. */
+    return op < sizeof(map) / sizeof(map[0]) ? map[op] : UINT_MAX;
+}
 
 /* enum ionic_v1_flag (be16 at WQE byte 10) */
 #define IONIC_V1_FLAG_INL 0x0004u
@@ -1006,6 +1031,8 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
         return;
     }
 
+    pvrdma_qp_cqe_count(dp->pvrdma_handle, qid);
+
     c->prod++;
     if (c->prod % c->depth == 0)
         c->color = !c->color;
@@ -1606,6 +1633,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     memcpy(&wqe_id, wqe + 0, 8);
 
     uint8_t op = wqe[8];
+    pvrdma_qp_wqe_count(dp->pvrdma_handle, qp_id, ionic_op_to_pvrdma_wr(op));
+
     uint16_t flags;
     memcpy(&flags, wqe + 10, 2);
     flags = be16toh(flags);
@@ -2184,10 +2213,12 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
         return;
 
     case DP_QTYPE_RQ:
-        if (qid < dp->qp_count && dp->qp[qid].valid)
+        if (qid < dp->qp_count && dp->qp[qid].valid) {
             dp->qp[qid].rq_prod +=
                 (uint32_t)(uint16_t)(p_index -
                                      (uint16_t)(dp->qp[qid].rq_prod & 0xffffu));
+            pvrdma_qp_doorbell_count(dp->pvrdma_handle, qid, false);
+        }
         return;
 
     case DP_QTYPE_SQ:
@@ -2199,6 +2230,8 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
 
     if (qid >= dp->qp_count || !dp->qp[qid].valid)
         return;
+
+    pvrdma_qp_doorbell_count(dp->pvrdma_handle, qid, true);
 
     struct ionic_qp_ring *q = &dp->qp[qid];
 

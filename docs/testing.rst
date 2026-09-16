@@ -14,8 +14,8 @@ A vfio-user client that connects to the server and performs
 basic PCI configuration space queries:
 
 - Socket connection to server
-- PCI Vendor ID verification (AMD: ``0x1022``)
-- PCI Device ID verification (ROCm ERNIC: ``0x8000``)
+- PCI Vendor ID verification (Pensando: ``0x1dd8``)
+- PCI Device ID verification (ROCm ERNIC: ``0x100a``)
 - PCI Class Code verification (Network Controller)
 - PCI Header Type verification (Type 0)
 - BAR register reads
@@ -36,8 +36,8 @@ Comprehensive RDMA data transfer test using libibverbs:
 - Send / recv operations with varying buffer sizes
   (64 to 4096 bytes)
 
-Requires an RDMA device (via the ``rocm_ernic`` driver or
-real hardware). Skipped if no device is found.
+Requires an RDMA device (via the guest ``ionic_rdma`` driver
+or real hardware). Skipped if no device is found.
 
 test_rdma_cm
 ^^^^^^^^^^^^
@@ -48,18 +48,16 @@ connection setup and teardown paths.
 test_ionic_ci.sh
 ^^^^^^^^^^^^^^^^
 
-Shell test for the ionic personality, registered with CTest
-as ``ionic-ci``. It needs no VM and no RDMA device:
+Shell test for the ionic emulation path, registered with
+CTest as ``ionic-ci``. It needs no VM and no RDMA device:
 
-- Server starts in the default ionic mode on the
-  ``loopback`` and ``none`` backends, with no flag
-- PCI identity is ``0x1022:0x8001``
+- Server starts on the ``loopback`` and ``none`` backends,
+  and with no extra flags at all
+- PCI identity is ``0x1dd8:0x100a``
 - BAR geometry is 64 KB BAR0 (32 KB register window) and
   4 MB BAR2, with 32 MSI-X vectors
 - Clean shutdown on ``SIGTERM``
-- ``--legacy`` announces ``0x1022:0x8000`` and warns that
-  the path is deprecated
-- ``--tap`` is rejected together with ``--legacy``
+- The stats file carries the full counter set
 - ``--tap`` attaches to an existing host TAP
 
 The last check is skipped unless ``ERNIC_TEST_TAP`` names a
@@ -125,7 +123,7 @@ standard RDMA benchmarks over the emulated NICs.
 
 Prerequisites:
 
-1. In the default ionic mode, one host TAP per instance,
+1. One host TAP per instance,
    all enslaved to a shared bridge, so the guests can
    reach each other over IP (see :doc:`ionic`):
 
@@ -244,20 +242,24 @@ A single command builds, deploys, and tests everything:
    cd ansible
    ansible-playbook site.yml
 
-This runs four plays in order:
+This runs five plays in order:
 
-1. **host-setup** -- builds the project, installs the
+1. **vm-fetch** -- pulls the published guest image from the
+   OCI registry and verifies it, so the VMs launched here
+   are the VMs CI tests. The image is the same artifact
+   ``.github/workflows/system-tests.yml`` uses; see
+   :ref:`ansible-guest-image` below.
+2. **host-setup** -- builds the project, installs the
    service and ``ernicctl``, templates the env file, and
    starts the service.
-2. **vm-create** -- creates a golden backing image via
-   ``gen-vm`` (skipped if it already exists), launches
-   VMs with ``ernicctl vm-launch``, and waits for SSH.
-3. **guest-setup** -- installs rdma-core v62, builds and
-   loads the guest driver (the ionic DKMS package by
-   default, the deprecated ``rocm_ernic`` modules under
-   ``-e ernic_device_mode=legacy``), and assigns IPs to
-   the emulated NICs.
-4. **sanity-tests** -- runs ``iperf3`` between two VMs
+3. **vm-create** -- launches VMs with ``ernicctl
+   vm-launch`` and waits for SSH. With
+   ``ernic_vm_artifact=false`` it first builds a golden
+   backing image via ``gen-vm`` instead.
+4. **guest-setup** -- installs rdma-core v62, builds and
+   loads the guest driver from the ionic DKMS package,
+   and assigns IPs to the emulated NICs.
+5. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.
 
@@ -272,6 +274,7 @@ Each play can also be run separately:
 
 .. code-block:: bash
 
+   ansible-playbook playbooks/vm-fetch.yml
    ansible-playbook playbooks/host-setup.yml
    ansible-playbook playbooks/vm-create.yml
    ansible-playbook playbooks/guest-setup.yml
@@ -291,15 +294,17 @@ Override any default from ``group_vars/all.yml`` with
    # Skip the build (use existing install)
    ansible-playbook site.yml -e ernic_build=false
 
-   # Skip golden image creation
-   ansible-playbook site.yml \
-     -e ernic_golden_image=false
-
    # Skip sanity tests
    ansible-playbook site.yml -e ernic_tests=false
 
-   # Provide a golden backing image
+   # Build the guest locally with gen-vm instead of
+   # pulling the published image
    ansible-playbook site.yml \
+     -e ernic_vm_artifact=false
+
+   # Use a backing image you staged yourself
+   ansible-playbook site.yml \
+     -e ernic_vm_artifact=false \
      -e ernic_vm_backing=/path/to/backing.qcow2
 
 ``group_vars/all.yml`` holds the site configuration for this
@@ -308,6 +313,41 @@ repo; the per-role defaults live in each role's
 Anything set in ``group_vars/all.yml`` wins over a role
 default. See ``ansible/PLAYBOOKS.md`` for additional usage
 notes.
+
+.. _ansible-guest-image:
+
+The guest image
+^^^^^^^^^^^^^^^
+
+By default the guests come from a published OCI artifact
+rather than being built locally. ``playbooks/vm-fetch.yml``
+calls ``scripts/fetch-guest-image.sh``, which pulls the
+image and its ``vm-info.json`` metadata with ``oras``,
+decompresses the qcow2 and runs ``qemu-img check`` over it.
+The download is skipped when the tag is already unpacked, so
+re-running ``site.yml`` costs nothing.
+
+The play then asserts that the image's own metadata agrees
+with ``group_vars/all.yml`` -- the login account, the disk
+name, the release, and that the guest kernel is at least
+6.18 and matches the ``IONIC_KERNEL_REF`` pin to
+major.minor. A mismatch stops the run before any VM is
+launched rather than surfacing as a build failure inside the
+guest. Keep ``ernic_vm_artifact_tag`` equal to
+``GUEST_ARTIFACT_TAG`` in
+``.github/workflows/system-tests.yml``.
+
+The pinned image is flavour ``ionic`` and carries no ROCm,
+so ``ernic_gpu_passthrough`` defaults off alongside it and
+the play refuses the combination outright. A GPU rig needs a
+GPU-flavoured image, or ``ernic_vm_artifact=false`` and a
+locally built one.
+
+Setting ``ernic_vm_artifact=false`` restores the older
+behaviour: ``ernic_image_prep`` builds a golden image with
+``gen-vm`` over ``qemu-nbd``, which needs root and, because
+Ubuntu ships no stock kernel new enough for the in-tree
+ionic driver, must install a mainline kernel on top.
 
 .. _ansible-collection:
 
@@ -358,10 +398,9 @@ from the ``ansible/`` directory.
 Guest Driver CI
 ---------------
 
-``.github/workflows/driver-build.yml`` covers both guest
-drivers. One job builds the legacy modules in ``driver/``
-against the runner's kernel headers. A second job,
-``ionic-patches``, reads ``IONIC_KERNEL_REF`` straight out
+``.github/workflows/driver-build.yml`` covers the guest
+driver. Its ``ionic-patches`` job reads
+``IONIC_KERNEL_REF`` straight out
 of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
 ionic subtrees at that ref, and applies every
 ``patches/*.patch`` with ``git am``, failing the pull

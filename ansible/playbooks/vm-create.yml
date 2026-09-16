@@ -460,23 +460,27 @@
         state: started
       loop: "{{ range(1, ernic_instances | int + 1) | list }}"
 
+    # Without the identity these gates burn 30 x 10s and fail before
+    # any add_host runs, reported as a boot timeout rather than the
+    # auth error it is.
+    - name: Build the guest ssh identity arguments
+      ansible.builtin.set_fact:
+        ernic_guest_ssh_id_args: >-
+          {{ ['-i', ernic_guest_ssh_identity, '-o', 'IdentitiesOnly=yes']
+             if (ernic_guest_ssh_identity | default('') | trim) else [] }}
+
     - name: Wait for SSH authentication to be ready
       ansible.builtin.command:
-        argv:
-          - ssh
-          - -o
-          - StrictHostKeyChecking=no
-          - -o
-          - UserKnownHostsFile=/dev/null
-          - -o
-          - PasswordAuthentication=no
-          - -o
-          - ConnectTimeout=5
-          - -p
-          - "{{ (ernic_vm_ssh_base_port | int + item - 1) | string }}"
-          - "{{ ernic_vm_ssh_user }}@localhost"
-          - echo
-          - ready
+        argv: >-
+          {{ ['ssh',
+              '-o', 'StrictHostKeyChecking=no',
+              '-o', 'UserKnownHostsFile=/dev/null',
+              '-o', 'PasswordAuthentication=no',
+              '-o', 'ConnectTimeout=5']
+             + ernic_guest_ssh_id_args
+             + ['-p', (ernic_vm_ssh_base_port | int + item - 1) | string,
+                ernic_vm_ssh_user ~ '@localhost',
+                'echo', 'ready'] }}
       register: ssh_check
       until: ssh_check.rc == 0
       retries: 30
@@ -492,10 +496,18 @@
         ansible_host: localhost
         ansible_port: "{{ ernic_vm_ssh_base_port | int + item - 1 }}"
         ansible_user: "{{ ernic_vm_ssh_user }}"
+        # See the note in ci-vm-register.yml: omitted unless a key is
+        # named, so ANSIBLE_PRIVATE_KEY_FILE keeps winning where it is set.
+        ansible_ssh_private_key_file: >-
+          {{ ernic_guest_ssh_identity
+             if (ernic_guest_ssh_identity | default('') | trim)
+             else omit }}
         ansible_ssh_common_args: >-
           -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o PasswordAuthentication=no
+          {{ '-o IdentitiesOnly=yes'
+             if (ernic_guest_ssh_identity | default('') | trim) else '' }}
         vm_index: "{{ item }}"
         vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item }}"
       loop: "{{ range(1, ernic_instances | int + 1) | list }}"

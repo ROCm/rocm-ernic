@@ -897,6 +897,9 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         memcpy(&qp_id, body, 4);
         qp_id = le32toh(qp_id);
         ionic_datapath_unregister_qp(ctx->dp, qp_id);
+        /* Per-QP stats are keyed on the driver-side qp_id, not the resource
+         * manager's qpn, so drop them here while qp_id is still in hand. */
+        pvrdma_qp_stats_forget(ctx->pvrdma_handle, qp_id);
         if (!adminq_lookup_qp(ctx, qp_id, &qpn))
             return 0;
         ionic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);

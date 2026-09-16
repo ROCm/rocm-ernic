@@ -13,7 +13,7 @@ distributing the kernel driver to guests.
 Overview
 --------
 
-The service replaces the legacy ``setup-rocm-ernic``
+The service replaces the older ``setup-rocm-ernic``
 script with a production-grade systemd unit.  Key
 capabilities:
 
@@ -71,7 +71,8 @@ This installs:
    * - ``/etc/rocm-ernic/``
      - ``rocm-ernic.env``
    * - ``/usr/local/share/rocm-ernic/``
-     - ``vm-driver-install.sh.in``, ``driver/``
+     - ``vm-driver-install.sh``, ``patches/``,
+       ``fetch-ionic-sources.sh``, ``setup-ionic-dkms.sh``
    * - ``/usr/lib/systemd/system/``
      - ``rocm-ernic.service``,
        ``rocm-ernic-driver-pack.service``
@@ -126,16 +127,11 @@ Server settings
        ``none|error|warn|info|debug``
    * - ``ERNIC_VERBOSE``
      - ``false``
-     - Legacy shorthand for
+     - Deprecated shorthand for
        ``ERNIC_LOG_LEVEL=debug``
-   * - ``ERNIC_DEVICE_MODE``
-     - ``ionic``
-     - Device personality: ``ionic`` or the deprecated
-       ``legacy``.  ``legacy`` adds ``--legacy`` to every
-       instance; see :doc:`ionic`
    * - ``ERNIC_TAP_PREFIX``
      - ``ernic-tap``
-     - ionic mode only.  Instance *n* is started with
+     - Instance *n* is started with
        ``--tap ${ERNIC_TAP_PREFIX}n``; a missing interface
        is a warning and the instance starts without
        Ethernet
@@ -234,10 +230,7 @@ Driver settings
      - Description
    * - ``ERNIC_DRIVER_SOURCE``
      - ``/usr/share/rocm-ernic/patches``
-     - Driver sources to pack for the guest.  The default
-       suits ionic mode; in ``legacy`` mode it falls back
-       to ``/usr/share/rocm-ernic/driver-legacy`` when
-       unset
+     - Patched ionic sources to pack for the guest
    * - ``ERNIC_DRIVER_TARBALL``
      - ``/tmp/rocm-ernic-driver.tar.gz``
      - Path to the built tarball
@@ -261,14 +254,14 @@ Or use ``ernicctl`` which wraps ``systemctl``:
    ernicctl status
    sudo ernicctl stop
 
-The ``ernicctl status`` command reports the active device
-mode, then a table of all instances with their PID, MAC,
+The ``ernicctl status`` command reports the emulated
+device, then a table of all instances with their PID, MAC,
 socket, VM attachment, IP and RDMA byte counts (TX/RX),
 liveness state, uptime, and log file path:
 
 .. code-block:: text
 
-   Device mode: ionic (1022:8001, TAP ernic-tap<id>)
+   Device: ionic 1dd8:100a (TAP ernic-tap<id>)
 
    ID  ROLE      PID    STATE      UPTIME     MAC                SOCKET                         VM           IP (TX/RX)      RDMA (TX/RX)    LOG
    1   manager   12345  running    2h15m      02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         67890:2222   1.2K/3.4K       45M/12M         /var/log/rocm-ernic/1.log
@@ -435,26 +428,19 @@ guest VMs:
 The tarball extracts to ``/tmp/rocm-ernic-driver/`` on
 the guest and includes ``vm-driver-install.sh`` which:
 
-1. Builds ``rocm_ernic_eth.ko`` and
-   ``rocm_ernic_rdma.ko`` against the running kernel.
-2. Loads ``ib_core`` and ``ib_uverbs``.
-3. Inserts both driver modules.
+1. Fetches the upstream ionic sources at the pinned
+   ``ionic-kernel-ref`` and applies ``patches/``.
+2. Builds and installs ``ionic`` and ``ionic_rdma``
+   via DKMS.
+3. Loads ``ib_core``, ``ib_uverbs``, ``ionic`` and
+   ``ionic_rdma``.
 4. Verifies the RDMA device appears via
    ``ibv_devices``.
 
 The install script also supports ``--unload`` to remove
-the modules, ``--build-only`` to compile without
-loading, and ``--dkms`` to use DKMS instead of
-``insmod``.
-
-.. note::
-
-   Driver distribution covers the legacy modules in
-   ``driver/`` only. A guest attached to a server running
-   with ``--ionic`` uses the upstream ``ionic`` and
-   ``ionic_rdma`` modules instead, installed from the
-   patched sources by the DKMS targets described in
-   :doc:`ionic`.
+the modules and ``--build-only`` to build without
+loading.  See :doc:`ionic` for the sources and patches
+it uses.
 
 Manifest
 --------

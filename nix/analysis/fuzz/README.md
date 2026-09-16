@@ -28,13 +28,14 @@ length.
 
 ## Not yet fuzzed (device-fixture required)
 
-`eth_rx_inject_frame()` and the pvrdma command handlers in
-`hw/rdma/vmw/pvrdma_cmd.c` are **not** fuzzed here. They are not
-byte-buffer parsers: they move guest data through `rdma_pci_dma_map()` and
-operate on the RDMA resource manager, so a faithful harness needs a
-fully-wired `PVRDMADev` (PCI config + DMA + backend) rather than a raw
-buffer. A device-emulation harness that maps a fake DMA region and drives
-the command ring is the way to reach them; that is future work.
+`eth_rx_inject_frame()` and the ionic devcmd and datapath handlers in
+`src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c` are **not** fuzzed
+here. They are not byte-buffer parsers: they move guest data through
+`rdma_pci_dma_map()` and operate on the RDMA resource manager, so a
+faithful harness needs a fully-wired device (PCI config + DMA + backend)
+rather than a raw buffer. A device-emulation harness that maps a fake DMA
+region and drives the admin and doorbell rings is the way to reach them;
+that is future work.
 
 ## Extending a corpus
 

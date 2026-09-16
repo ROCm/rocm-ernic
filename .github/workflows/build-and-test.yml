@@ -8,8 +8,6 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'service/**'
-      - 'driver/**'
-      - 'rdma-core/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/build-and-test.yml'

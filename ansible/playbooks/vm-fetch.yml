@@ -1,0 +1,151 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Play 0: Fetch the prebuilt guest qcow2 from the artifact
+# registry, so the VMs this collection launches are the same
+# guests the GitHub jobs test against.
+#
+# This runs before host-setup, not beside vm-create: the disk
+# path reaches ernicctl through ERNIC_VM_BACKING in
+# /etc/rocm-ernic/rocm-ernic.env, which phase 1 renders.
+#
+# The image is the source of truth for what is inside it, but
+# not for where it lands -- ernic_vm_backing has to resolve
+# before this play runs, so the metadata is used to *assert*
+# agreement with group_vars rather than to supply it.  Drift
+# then surfaces here in seconds instead of as an SSH timeout
+# three plays later.
+
+---
+- name: VM fetch -- pull the prebuilt guest image
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    - name: Fetch the guest image and its metadata
+      ansible.builtin.command:
+        argv:
+          - "{{ ernic_project_root }}/scripts/fetch-guest-image.sh"
+          - --repo
+          - "{{ ernic_vm_artifact_repo }}"
+          - --tag
+          - "{{ ernic_vm_artifact_tag }}"
+          - --dest
+          - "{{ ernic_vm_artifact_dir }}"
+          - --info-type
+          - "{{ ernic_vm_artifact_info_type }}"
+      register: ernic_artifact_fetch
+      changed_when: >-
+        'already present' not in ernic_artifact_fetch.stderr
+      when: ernic_vm_artifact | bool
+
+    - name: Read the image metadata
+      ansible.builtin.slurp:
+        src: "{{ ernic_vm_artifact_dir }}/vm-info.json"
+      register: ernic_vm_info_raw
+      when: ernic_vm_artifact | bool
+
+    - name: Parse the image metadata
+      ansible.builtin.set_fact:
+        ernic_vm_info: "{{ ernic_vm_info_raw.content | b64decode | from_json }}"
+      when: ernic_vm_artifact | bool
+
+    # Resolves ernic_ionic_kver from IONIC_KERNEL_REF in
+    # cmake/ErnicKernelModule.cmake, the same way ernic_image_prep
+    # does, so the kernel check below cannot drift from the pin.
+    - name: Resolve the rocm-ernic source checkout
+      ansible.builtin.include_role:
+        name: ernic_source
+      vars:
+        # As host-setup.yml and guest-setup.yml do.  The role default
+        # is empty, which makes it clone rocm-ernic main from GitHub;
+        # the pin we are about to assert against has to come from the
+        # working tree, not from whatever main happens to say.
+        ernic_source_dir: "{{ ernic_project_root }}"
+      when: ernic_vm_artifact | bool
+
+    - name: Assert the image matches the site configuration
+      ansible.builtin.assert:
+        that:
+          - ernic_vm_info.username == ernic_vm_ssh_user
+          - ernic_vm_info.image_path | basename == ernic_vm_artifact_disk
+          - ernic_vm_info.ssh_keys.private_key_path | basename == 'id_rsa'
+          - ernic_vm_info.release == ernic_vm_release
+        fail_msg: |-
+          {{ ernic_vm_artifact_tag }} does not match group_vars/all.yml:
+
+            username      image {{ ernic_vm_info.username }}
+                          vs ernic_vm_ssh_user {{ ernic_vm_ssh_user }}
+            disk          image {{ ernic_vm_info.image_path | basename }}
+                          vs ernic_vm_artifact_disk {{ ernic_vm_artifact_disk }}
+            release       image {{ ernic_vm_info.release }}
+                          vs ernic_vm_release {{ ernic_vm_release }}
+            private key   {{ ernic_vm_info.ssh_keys.private_key_path | basename }}
+
+          Update those values, or pin a tag whose image matches.
+        success_msg: >-
+          {{ ernic_vm_artifact_tag }}: {{ ernic_vm_info.release }},
+          kernel {{ ernic_vm_info.kernel_release }},
+          user {{ ernic_vm_info.username }},
+          flavour {{ ernic_vm_info.flavour }}
+      when: ernic_vm_artifact | bool
+
+    # The same two comparisons ernic_guest_setup makes against the
+    # running guest, made here against the metadata.  A tag bump to an
+    # image the pinned ionic sources cannot build is then a five-second
+    # failure rather than a DKMS build failure after a full boot.
+    - name: Assert the image kernel is new enough for ionic_rdma
+      ansible.builtin.assert:
+        that:
+          - >-
+            ernic_vm_info.kernel_release.split('-')[0]
+            is version(ernic_ionic_min_kernel, '>=', version_type='loose')
+        fail_msg: >-
+          Image kernel {{ ernic_vm_info.kernel_release }} is older than
+          {{ ernic_ionic_min_kernel }}, so it carries no
+          drivers/infiniband/hw/ionic and cannot build ionic_rdma.
+      when: ernic_vm_artifact | bool
+
+    # Guarded on kver being resolvable for the same reason
+    # driver_ionic.yml guards its copy: ernic_ionic_kernel_ref may be
+    # pinned to a SHA, which carries no version to compare against.
+    - name: Assert the image kernel matches the pinned ionic sources
+      ansible.builtin.assert:
+        that:
+          - >-
+            ernic_vm_info.kernel_release.split('-')[0].split('.')[0:2]
+            | join('.')
+            == ernic_ionic_kver.split('.')[0:2] | join('.')
+        fail_msg: >-
+          Image kernel {{ ernic_vm_info.kernel_release }} does not match the
+          ionic sources pinned at v{{ ernic_ionic_kver }}; ionic_rdma needs a
+          {{ ernic_ionic_kver.split('.')[0:2] | join('.') }}.x kernel.
+      when:
+        - ernic_vm_artifact | bool
+        - ernic_ionic_kver | length > 0
+
+    # flavour is what the image was provisioned for.  An ionic image
+    # carries no ROCm, so the GPU roles would fail deep in rocm-smi.
+    - name: Assert the image flavour carries a GPU stack
+      ansible.builtin.assert:
+        that:
+          - ernic_vm_info.flavour != 'ionic'
+        fail_msg: >-
+          ernic_gpu_passthrough is true but {{ ernic_vm_artifact_tag }} is
+          flavour '{{ ernic_vm_info.flavour }}', which ships no ROCm.  Set
+          ernic_gpu_passthrough=false, or use a GPU-flavoured image.
+      when:
+        - ernic_vm_artifact | bool
+        - ernic_gpu_passthrough | bool
+
+    # oras does not preserve modes.  The script chmods the key it
+    # pulls; this keeps it correct on a directory populated by hand.
+    - name: Ensure the guest private key is not group-readable
+      ansible.builtin.file:
+        path: "{{ ernic_vm_artifact_dir }}/id_rsa"
+        mode: "0600"
+      when: ernic_vm_artifact | bool

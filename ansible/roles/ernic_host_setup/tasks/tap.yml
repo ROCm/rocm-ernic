@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Create the host bridge and the per-instance TAP interfaces the ionic
-# device mode needs.
+# Create the host bridge and the per-instance TAP interfaces the
+# emulated ionic device needs.
 #
-# In ionic mode the guest's Ethernet leaves through a TAP rather than the
+# The guest's Ethernet leaves through a TAP rather than the
 # rocm-ernic TCP mesh, so the guests can only reach each other on
 # ernic_nic_subnet if every TAP is enslaved to a common bridge.  The
 # playbooks in this collection (ping, iperf3, and the perftest out-of-band

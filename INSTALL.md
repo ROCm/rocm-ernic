@@ -38,8 +38,8 @@ Verify the build by starting the server with the loopback backend:
   --backend loopback --verbose
 ```
 
-That starts the default ionic personality (`1022:8001`); add `--legacy` for
-the deprecated PVRDMA device.
+That presents the emulated ionic device (`1dd8:100a`) to any client that
+connects to the socket.
 
 ## Building rocm-ernic
 
@@ -75,8 +75,7 @@ Supported platforms: Linux (tested on Ubuntu 24.04)
 
 ### Guest ionic modules
 
-ionic is the default device mode, so this is the driver every new guest
-needs. The guest runs the upstream Linux `ionic` and `ionic_rdma` drivers
+The guest runs the upstream Linux `ionic` and `ionic_rdma` drivers
 with the patches in `patches/` applied, against a kernel >= 6.18. Configure
 with `-DERNIC_BUILD_KMOD=ON` and run these targets inside the guest:
 
@@ -87,9 +86,7 @@ sudo cmake --build build --target install-ionic-dkms
 ```
 
 The `sbates130272.rocm_ernic` Ansible collection does all of this for you;
-see [ansible/README.md](ansible/README.md). The deprecated `rocm_ernic`
-guest driver in [driver/](driver/) is only needed when running the server
-with `--legacy`.
+see [ansible/README.md](ansible/README.md).
 
 See [docs/ionic.rst](docs/ionic.rst) for details.
 

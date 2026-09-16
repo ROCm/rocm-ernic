@@ -12,8 +12,8 @@ performs basic PCI configuration space queries.
 
 **Tests Performed:**
 - Socket connection to server
-- PCI Vendor ID verification (AMD: 0x1022)
-- PCI Device ID verification (ROCm ERNIC: 0x8000)
+- PCI Vendor ID verification (Pensando: 0x1dd8)
+- PCI Device ID verification (ROCm ERNIC: 0x100a)
 - PCI Class Code verification (Network Controller, Ethernet:
   0x02 00 00)
 - PCI Header Type verification (Type 0)
@@ -55,16 +55,15 @@ is found.
 
 ### test_ionic_ci.sh
 
-Shell test for the `--ionic` device personality, registered with CTest
-as `ionic-ci`. Needs neither a VM nor an RDMA device.
+Shell test for the emulated ionic device, registered with CTest as
+`ionic-ci`. Needs neither a VM nor an RDMA device.
 
 **Tests Performed:**
-- Server starts in `--ionic` mode on the `loopback` and `none` backends
-- PCI Device ID verification (ionic ERNIC: `0x1022:0x8001`)
+- Server starts on the `loopback` and `none` backends
+- PCI Device ID verification (ionic ERNIC: `0x1dd8:0x100a`)
 - BAR geometry (64K BAR0 with a 32K register window, 4M BAR2)
 - MSI-X vector count (32)
 - Clean shutdown on `SIGTERM`
-- `--tap` is rejected without `--ionic`
 - `--tap` attaches to an existing host TAP interface
 
 **Requirements:**

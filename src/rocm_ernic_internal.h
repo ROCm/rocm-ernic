@@ -104,19 +104,16 @@ struct rocm_ernic_dev {
     /* libvfio-user context */
     vfu_ctx_t *vfu_ctx;
 
-    /* Opaque handle to legacy PVRDMA device (used during ionic migration) */
+    /* Opaque handle to the RDMA device core (resource manager + backend) */
     pvrdma_handle_t pvrdma_handle;
 
-    /* ionic emulation layer (replaces PVRDMA when ionic_mode is true) */
+    /* ionic emulation layer -- the device the guest actually sees */
     struct ionic_eth_emu *ionic_emu;
     struct ionic_rdma_devcmd_state *ionic_rdma;
     struct ionic_datapath *ionic_dp;
-    bool ionic_mode; /* true = use ionic path */
 
     /* BAR memory backing stores */
-    void *bar0_mem; /* MSI-X table/PBA (legacy) or ionic BAR0 shadow */
-    void *bar1_mem; /* Registers (legacy PVRDMA only) */
-    void *bar2_mem; /* UAR (legacy) or ionic doorbell pages */
+    void *bar0_mem; /* MSI-X table/PBA shadow, above the ionic register block */
 
     /* Backend device configuration */
     char *backend_type_str;    /* Backend type: none, loopback, verbs:device */

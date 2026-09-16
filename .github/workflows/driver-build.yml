@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - Driver Build
+name: rocm-ernic - ionic Driver Patches
 
 on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'driver/**'
       - 'patches/**'
       - 'scripts/setup-ionic-dkms.sh'
       - 'cmake/ErnicKernelModule.cmake'
@@ -20,110 +19,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  driver-build:
-    name: Build Deprecated rocm_ernic Driver on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    
-    strategy:
-      matrix:
-        os: [ubuntu-24.04]
-      fail-fast: false
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    
-    - name: Install kernel headers and build tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          linux-headers-$(uname -r) \
-          build-essential \
-          kmod
-    
-    - name: Display build environment
-      run: |
-        echo "=== Kernel Version ==="
-        uname -r
-        echo ""
-        echo "=== Kernel Headers ==="
-        ls -la /lib/modules/$(uname -r)/build || echo "Headers not found"
-        echo ""
-        echo "=== GCC Version ==="
-        gcc --version
-        echo ""
-        echo "=== Make Version ==="
-        make --version
-    
-    - name: Build driver module
-      run: |
-        cd driver
-        echo "=== Building driver modules ==="
-        make KDIR=/lib/modules/$(uname -r)/build 2>&1 | tee build.log
-        BUILD_EXIT_CODE=${PIPESTATUS[0]}
-        if [ $BUILD_EXIT_CODE -ne 0 ]; then
-          echo "❌ Driver build failed with exit code $BUILD_EXIT_CODE"
-          echo "=== Build log ==="
-          cat build.log
-          exit $BUILD_EXIT_CODE
-        fi
-        echo "✅ Driver build completed"
-    
-    - name: Verify driver build
-      run: |
-        cd driver
-        echo "=== Verifying driver modules ==="
-        if [ ! -f rocm_ernic_eth.ko ] || [ ! -f rocm_ernic_rdma.ko ]; then
-          echo "❌ Driver modules not found!"
-          echo "Expected: rocm_ernic_eth.ko and rocm_ernic_rdma.ko"
-          echo "=== Files in driver directory ==="
-          ls -lh *.ko 2>/dev/null || echo "No .ko files found"
-          echo ""
-          echo "=== Build log (last 50 lines) ==="
-          tail -50 build.log 2>/dev/null || echo "No build.log found"
-          exit 1
-        fi
-        echo "✅ Driver modules built successfully"
-        ls -lh rocm_ernic_eth.ko rocm_ernic_rdma.ko
-        file rocm_ernic_eth.ko rocm_ernic_rdma.ko
-        modinfo rocm_ernic_eth.ko
-        modinfo rocm_ernic_rdma.ko
-    
-    - name: Check for build warnings
-      run: |
-        cd driver
-        if [ -f build.log ]; then
-          if grep -i "warning:" build.log; then
-            echo "⚠️  Build warnings detected (non-fatal)"
-          else
-            echo "✅ No build warnings"
-          fi
-        else
-          echo "⚠️  build.log not found, cannot check warnings"
-        fi
-    
-    - name: Upload driver artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: rocm_ernic-${{ matrix.os }}-$(uname -r)
-        path: |
-          driver/rocm_ernic_eth.ko
-          driver/rocm_ernic_rdma.ko
-        retention-days: 7
-    
-    - name: Clean build artifacts
-      run: |
-        cd driver
-        rm -f *.o *.ko *.mod *.mod.c *.mod.o .*.cmd Module.symvers \
-          modules.order build.log
-
-  # The ionic path does not ship a driver of its own: it runs the upstream
+  # rocm-ernic does not ship a driver of its own: it runs the upstream
   # Linux ionic.ko and ionic_rdma.ko with the patches in patches/ applied.
   # What CI can check on a hosted runner is that the pinned upstream ref still
   # exists and that every patch still applies to it -- the modules themselves
   # need kernel >= 6.18 headers, which hosted runners do not have.
   ionic-patches:
-    name: Apply ionic Driver Patches (default path)
+    name: Apply ionic Driver Patches
     runs-on: ubuntu-24.04
 
     steps:
@@ -203,25 +105,17 @@ jobs:
 
   driver-build-status:
     name: Driver Build Status
-    needs: [driver-build, ionic-patches]
+    needs: [ionic-patches]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
     - name: Check build result
       run: |
-        rc=0
         if [ "${{ needs.ionic-patches.result }}" = "success" ]; then
-          echo "✅ ionic patches apply cleanly (default driver path)"
+          echo "✅ ionic patches apply cleanly"
         else
-          echo "❌ ionic patches do not apply (default driver path)"
-          rc=1
+          echo "❌ ionic patches do not apply"
+          exit 1
         fi
-        if [ "${{ needs.driver-build.result }}" = "success" ]; then
-          echo "✅ rocm_ernic driver build succeeded (deprecated path)"
-        else
-          echo "❌ rocm_ernic driver build failed (deprecated path)"
-          rc=1
-        fi
-        exit $rc
 

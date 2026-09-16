@@ -65,54 +65,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle);
  */
 int pvrdma_device_realize(pvrdma_handle_t handle);
 
-/*
- * Register Access (BAR1)
- */
-
-/**
- * pvrdma_regs_write - Write to PVRDMA register
- * @handle: Device handle
- * @offset: Register offset
- * @value: Value to write
- * @size: Access size (typically 4 for 32-bit)
- */
-void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                       unsigned size);
-
-/**
- * pvrdma_regs_read - Read from PVRDMA register
- * @handle: Device handle
- * @offset: Register offset
- * @size: Access size (typically 4 for 32-bit)
- *
- * Returns: Register value
- */
-uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
-
-/*
- * UAR Access (BAR2)
- */
-
-/**
- * pvrdma_uar_write - Write to User Access Region (doorbell)
- * @handle: Device handle
- * @offset: UAR offset
- * @value: Value to write
- * @size: Access size
- */
-void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                      unsigned size);
-
-/**
- * pvrdma_uar_read - Read from User Access Region
- * @handle: Device handle
- * @offset: UAR offset
- * @size: Access size
- *
- * Returns: UAR value
- */
-uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
-
 /**
  * pvrdma_bar0_mmio_count - Record a BAR0 (MSI-X) MMIO access for statistics
  * @handle: Device handle
@@ -125,8 +77,8 @@ void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
  * @handle: Device handle
  * @is_write: true for write, false for read
  *
- * The legacy UAR and the ionic BAR2 doorbell page are the same thing to these
- * counters, so both personalities share uar_reads/uar_writes.
+ * The ionic BAR2 doorbell page is what these counters see; the names
+ * uar_reads/uar_writes are kept from the PVRDMA UAR they used to count.
  */
 void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
 
@@ -174,6 +126,46 @@ enum pvrdma_stat_op {
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
                              uint64_t bytes, enum pvrdma_stat_op op);
 
+/**
+ * pvrdma_qp_doorbell_count - Record one doorbell ring against a QP
+ * @handle: Device handle
+ * @qp_id: QP the doorbell targets
+ * @is_send: true for the send queue, false for the receive queue
+ *
+ * One increment per ring, not per WQE the ring drains.
+ */
+void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
+                              bool is_send);
+
+/**
+ * pvrdma_qp_wqe_count - Record one processed send WQE against a QP
+ * @handle: Device handle
+ * @qp_id: QP that owns the WQE
+ * @pvrdma_opcode: PVRDMA_WR_* index, or >= 18 to count only the total
+ *
+ * Callers on the ionic path must translate their own opcode space first; see
+ * ionic_op_to_pvrdma_wr() in ionic_datapath.c.
+ */
+void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
+                         unsigned int pvrdma_opcode);
+
+/**
+ * pvrdma_qp_cqe_count - Record one completion posted to a QP's CQ
+ * @handle: Device handle
+ * @qp_id: QP the completion belongs to
+ */
+void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id);
+
+/**
+ * pvrdma_qp_stats_forget - Drop the per-QP counters for a destroyed QP
+ * @handle: Device handle
+ * @qp_id: QP being destroyed
+ *
+ * pvrdma_get_qp_stats() inserts lazily and never evicts, so without this the
+ * exported QP count only ever grows and destroyed QPs keep reporting.
+ */
+void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
+
 /*
  * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */
@@ -186,8 +178,6 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
  * pvrdma_get_stats - Get device statistics
  * @handle: Device handle
  * @commands: Pointer to receive command count (optional)
- * @regs_reads: Pointer to receive register read count (optional)
- * @regs_writes: Pointer to receive register write count (optional)
  * @uar_writes: Pointer to receive UAR write count (optional)
  * @interrupts: Pointer to receive interrupt count (optional)
  * @uar_reads: Pointer to receive UAR read count (optional)
@@ -195,7 +185,6 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
  * @bar0_writes: Pointer to receive BAR0 write count (optional)
  */
 void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *regs_reads, uint64_t *regs_writes,
                       uint64_t *uar_writes, uint64_t *interrupts,
                       uint64_t *uar_reads, uint64_t *bar0_reads,
                       uint64_t *bar0_writes);

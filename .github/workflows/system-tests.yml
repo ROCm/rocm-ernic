@@ -7,9 +7,9 @@ on:
     # These jobs boot QEMU guests and run an hour of DKMS builds and
     # RDMA sweeps, so gate them on the things they actually consume.
     #
-    # Both jobs pin -e ernic_device_mode=ionic, and ernic_guest_setup
-    # only stages driver/ and rdma-core/ in legacy mode, so neither is
-    # listed here.  If a job ever stops pinning ionic, add them back.
+    # The guest drivers are the upstream in-tree ionic ones, fetched by
+    # ernic_guest_setup rather than carried here, so there is no
+    # in-repo driver path to list.
     paths:
       - 'src/**'                  # the vfio-user server under test
       - 'tests/**'                # rdma_verify, test_write_imm, ...
@@ -275,13 +275,7 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
 
-        # --ionic is the default, but name it: CI only ever exercises
-        # the ionic (1022:8001) personality, and the guest below
-        # builds the matching upstream ionic + ionic_rdma modules.
-        # Stating it means a future change to the default cannot
-        # silently move these jobs onto the deprecated path.
         ./build/rocm-ernic \
-          --ionic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback:mode=preserve \
           --verbose > /tmp/vfu_server.log 2>&1 &
@@ -485,7 +479,7 @@ jobs:
         # provisioning.
         #
         # The PCI function itself is a different matter: QEMU attached
-        # the vfio-user device at boot, so 1022:8001 is on the bus from
+        # the vfio-user device at boot, so 1dd8:100a is on the bus from
         # the first second.  This step used to end every probe in
         # `|| echo "... not found"`, so a guest that never saw the
         # device passed it exactly like a guest that did.  Assert it:
@@ -498,13 +492,13 @@ jobs:
         sudo lspci -nn
 
         echo ""
-        if ! sudo lspci -nn | grep -q '1022:8001'; then
-          echo "✗ ionic PCI function 1022:8001 not present on the guest bus"
+        if ! sudo lspci -nn | grep -q '1dd8:100a'; then
+          echo "✗ ionic PCI function 1dd8:100a not present on the guest bus"
           echo "  The vfio-user device did not attach.  Check the server"
           echo "  log and the QEMU console for the vfio-user handshake."
           exit 1
         fi
-        echo "✓ ionic PCI function 1022:8001 present"
+        echo "✓ ionic PCI function 1dd8:100a present"
 
         echo ""
         echo "=== Kernel modules (informational, pre-provisioning) ==="
@@ -611,7 +605,6 @@ jobs:
           -e ernic_instances=1 \
           -e ernic_vm_ssh_base_port="$SSH_PORT" \
           -e ernic_vm_ssh_user="$VM_USER" \
-          -e ernic_device_mode=ionic \
           -e ernic_gpu_passthrough=false \
           -e ernic_guest_agent=false \
           -e ernic_set_hostname=false \
@@ -1360,7 +1353,6 @@ jobs:
           -e ernic_build=false \
           -e ernic_install_service=false \
           -e ernic_gpu_passthrough=false \
-          -e ernic_device_mode=ionic \
           -e ernic_instances=2 \
           -e ernic_tap_owner=root \
           -e ernic_tap_bridge="${ERNIC_TAP_BRIDGE}" \
@@ -1378,8 +1370,6 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-server1.sock
 
-        # --ionic is the default; name it so CI can never drift onto
-        # the deprecated personality.  See the loopback job.
         # --backend is the RDMA data path; --tap is the Ethernet one.
         # Both are needed here: the sanity suite pings and runs iperf3
         # between the guests before it touches RDMA.
@@ -1392,7 +1382,6 @@ jobs:
         # MAC per instance for the same reason; this is that, spelled
         # out, because the job does not go through the launcher.
         ./build/rocm-ernic \
-          --ionic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
           --tap "${ERNIC_TAP_PREFIX}1" \
@@ -1500,7 +1489,6 @@ jobs:
         # this guest a peer at layer 2, and the MAC is what lets the two
         # guests tell each other apart on it.
         ./build/rocm-ernic \
-          --ionic \
           --socket /tmp/vfio-user-server2.sock \
           --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \
           --tap "${ERNIC_TAP_PREFIX}2" \
@@ -1936,7 +1924,6 @@ jobs:
           -e ernic_instances=2 \
           -e ernic_vm_ssh_base_port=2222 \
           -e ernic_vm_ssh_user="$VM_USER" \
-          -e ernic_device_mode=ionic \
           -e ernic_gpu_passthrough=false \
           -e ernic_guest_agent=false \
           -e ernic_set_hostname=false
@@ -2013,8 +2000,7 @@ jobs:
           -e ernic_run_dir=/tmp/ernic-ci \
           -e ernic_instances=2 \
           -e ernic_vm_ssh_base_port=2222 \
-          -e ernic_vm_ssh_user="$VM_USER" \
-          -e ernic_device_mode=ionic
+          -e ernic_vm_ssh_user="$VM_USER"
 
     - name: Cleanup
       if: always()

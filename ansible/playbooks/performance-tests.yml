@@ -36,7 +36,8 @@
     # a bare ssh to a healthy guest can block indefinitely, and one
     # did -- a 25-minute hang on a two-second command.
     vm1_ssh: >-
-      ssh -o StrictHostKeyChecking=no
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
       -o BatchMode=yes
       -o ConnectTimeout=15
@@ -45,7 +46,8 @@
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
-      ssh -o StrictHostKeyChecking=no
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
       -o BatchMode=yes
       -o ConnectTimeout=15
@@ -170,7 +172,7 @@
         that:
           - rdma_dev_detect.stdout | trim | length > 0
         fail_msg: >-
-          No RDMA device with PCI vendor 0x1022 found on VM1, so the
+          No RDMA device with PCI vendor 0x1dd8 found on VM1, so the
           driver did not bind or the port never came up.
 
     - name: Set RDMA device name
@@ -351,9 +353,15 @@
             exit 0
           fi
 
-          TMIN=$(echo "$LINE"  | awk '{print $4}')
+          # perftest column order is
+          #   bytes iters t_min t_max t_typical t_avg t_stdev 99% 99.9%
+          # so the minimum is $3 and the maximum is $4.  Reading $4/$5/$6
+          # as min/typical/max put t_max in the lat_min_us column and
+          # t_avg in lat_max_us, which is why every published row had a
+          # "minimum" larger than its "typical".
+          TMIN=$(echo "$LINE"  | awk '{print $3}')
+          TMAX=$(echo "$LINE"  | awk '{print $4}')
           TTYP=$(echo "$LINE"  | awk '{print $5}')
-          TMAX=$(echo "$LINE"  | awk '{print $6}')
 
           echo "{{ item.0.label }},$SZ,$TMIN,$TTYP,$TMAX" \
             >> "{{ lat_csv }}"

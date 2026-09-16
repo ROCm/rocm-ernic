@@ -1,0 +1,41 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# This role builds rdma-core with cmake/ninja and the ionic driver
+# with DKMS, but installs neither toolchain.  On the golden-image
+# path ernic_image_prep bakes them in.  On the artifact path nothing
+# does -- the published image is provisioned from a package list that
+# stops at the runtime, which is why the hosted jobs apt-install this
+# same set by hand before calling the role.
+#
+# Reaching the archive from inside the guest on every run is the cost
+# of that gap, so this is gated off by default.  The right fix is
+# upstream, in the image's package list; then this can go.
+
+---
+# The same dpkg-lock race guest_agent.yml documents: on a freshly
+# booted guest unattended-upgrades holds the lock for the first minute.
+- name: Wait for unattended-upgrades to release the dpkg lock
+  ansible.builtin.shell: |
+    for _ in $(seq 1 {{ (ernic_dpkg_lock_wait | int / 5) | round | int }}); do
+      fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || exit 0
+      sleep 5
+    done
+    echo "dpkg lock still held after {{ ernic_dpkg_lock_wait }}s" >&2
+    fuser -v /var/lib/dpkg/lock-frontend >&2 || true
+    exit 1
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Install the build toolchain the guest image does not carry
+  ansible.builtin.apt:
+    name: "{{ ernic_guest_build_deps_packages }}"
+    state: present
+    update_cache: true
+    lock_timeout: "{{ ernic_dpkg_lock_wait }}"
+  register: ernic_guest_build_deps_result
+  retries: "{{ ernic_guest_build_deps_retries }}"
+  delay: "{{ ernic_guest_build_deps_delay }}"
+  until: ernic_guest_build_deps_result is success

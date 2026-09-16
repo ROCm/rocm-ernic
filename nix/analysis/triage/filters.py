@@ -19,7 +19,7 @@ from finding import Finding
 
 # Truly non-actionable third-party trees. rocm-ernic vendors nothing under
 # src/ that we want to hide, so this stays empty; the is_third_party()
-# fallback still drops anything outside src/ (driver/, build artifacts).
+# fallback still drops anything outside src/ (tests, build artifacts).
 THIRD_PARTY_PATTERNS = []
 
 # Generated files — rocm-ernic has no code-generation step, so none.
@@ -77,7 +77,7 @@ def is_third_party(path: str) -> bool:
     for pat in THIRD_PARTY_PATTERNS:
         if pat in path:
             return True
-    # Files not under src/ are outside the analysis scope (driver/, build).
+    # Files not under src/ are outside the analysis scope (tests, build).
     return not path.startswith('src/')
 
 

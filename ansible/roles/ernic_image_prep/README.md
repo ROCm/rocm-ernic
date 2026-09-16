@@ -19,11 +19,7 @@ and applies the static configuration that has to be present before first boot:
 `KillUserProcesses=no`, `modules-load.d` entries for the guest RDMA modules
 and `rocm-xio`, and a `pci.ids` entry so `lspci` names the emulated NIC.
 
-Both of those follow `ernic_device_mode`, which defaults to `ionic`: the image
-loads `ionic` / `ionic_rdma` and names `1022:8001`. With
-`-e ernic_device_mode=legacy` it loads `rocm_ernic_eth` / `rocm_ernic_rdma`
-and names `1022:8000` instead. Prepare the image for the mode the guests will
-actually run.
+The image loads `ionic` / `ionic_rdma` and names `1dd8:100a`.
 
 ### The mainline kernel
 
@@ -79,16 +75,15 @@ ernic_image_packages:           # see defaults/main.yml for the full list
 ernic_image_logind_keep_processes: true
 ernic_image_modules_load: true
 ernic_image_pciids: true
-ernic_image_pciids_vendor: "1022"
-# Both default to the ionic values; see defaults/main.yml.
+ernic_image_pciids_vendor: "1dd8"
 ernic_image_boot_modules: [ionic, ionic_rdma]
-ernic_image_pciids_entry: "8001  ROCm Emulated ionic RDMA NIC"
+ernic_image_pciids_entry: "100a  ROCm Emulated ionic RDMA NIC"
 ernic_image_clean_apt: true
 ernic_image_apt_retries: 3
 ernic_image_apt_delay: 10
 
-# Mainline kernel.  Defaults on in ionic mode, off in legacy.
-ernic_image_kernel_mainline: "{{ ernic_device_mode != 'legacy' }}"
+# Mainline kernel.
+ernic_image_kernel_mainline: true
 ernic_image_kernel_version: ""   # empty = derive from IONIC_KERNEL_REF
 ernic_image_kernel_mainline_url: "https://kernel.ubuntu.com/mainline"
 ernic_image_kernel_reboot: false

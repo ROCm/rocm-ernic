@@ -62,10 +62,14 @@ ansible-playbook site.yml
 ## Running Individual Plays
 
 ```bash
+# Fetch and verify the published guest image
+ansible-playbook playbooks/vm-fetch.yml
+
 # Host setup only (build + install + configure service)
 ansible-playbook playbooks/host-setup.yml
 
-# Create golden image + launch VMs
+# Launch VMs (builds a golden image first when
+# ernic_vm_artifact=false)
 ansible-playbook playbooks/vm-create.yml
 
 # Guest provisioning (driver, rdma-core, NIC config)
@@ -111,10 +115,29 @@ ansible-playbook playbooks/stress-tests.yml \
 ansible-playbook playbooks/stress-tests.yml \
   -e ernic_stress_high_iters=50000
 
-# Specify a golden backing image for overlays
+# Build the guest locally with gen-vm instead of pulling
+# the published image
+ansible-playbook site.yml -e ernic_vm_artifact=false
+
+# Specify a backing image for overlays yourself
 ansible-playbook site.yml \
+  -e ernic_vm_artifact=false \
   -e ernic_vm_backing=/path/to/backing.qcow2
+
+# Pin a different published image
+ansible-playbook site.yml \
+  -e ernic_vm_artifact_tag=<tag>
 ```
+
+The guest disk is a published OCI artifact by default:
+`playbooks/vm-fetch.yml` pulls it with `oras`, verifies it,
+and asserts that the image's own `vm-info.json` agrees with
+`group_vars/all.yml` -- login account, disk name, release,
+and a guest kernel that is at least 6.18 and matches the
+`IONIC_KERNEL_REF` pin to major.minor. Keep
+`ernic_vm_artifact_tag` equal to `GUEST_ARTIFACT_TAG` in
+`.github/workflows/system-tests.yml` so the VMs launched
+here are the VMs CI tests.
 
 `group_vars/all.yml` holds the site configuration for this
 repo.
@@ -146,6 +169,7 @@ ansible/                  # this directory is the collection
 ├── inventory/
 │   └── hosts.yml         # Static inventory
 ├── playbooks/
+│   ├── vm-fetch.yml           # Pull the published guest image
 │   ├── host-setup.yml         # -> ernic_host_setup
 │   ├── vm-create.yml          # Golden image + VM launch
 │   ├── guest-setup.yml        # -> ernic_guest_setup
@@ -158,18 +182,28 @@ ansible/                  # this directory is the collection
 
 ## How It Works
 
+0. **vm-fetch** pulls the pinned guest qcow2 and its
+   `vm-info.json` from the artifact registry via
+   `scripts/fetch-guest-image.sh`, verifies the disk, and
+   asserts the image's metadata agrees with
+   `group_vars/all.yml`. It is a no-op once the tag is on
+   disk, and is skipped entirely with
+   `ernic_vm_artifact=false`.
+
 1. **host-setup** runs `ernic_host_setup`: builds the
    rocm-ernic server, installs the systemd service and
    ernicctl, templates the env file from Ansible variables,
    starts the service, binds GPUs to vfio-pci and stages a
    rocm-xio tarball for the guests.
 
-2. **vm-create** checks for an existing golden backing qcow2.
-   If absent, it runs `gen-vm` to create one via cloud-init,
-   boots it once and applies `ernic_image_prep` to bake in
-   RDMA userspace, ROCm and the build toolchain. It then calls
-   `ernicctl vm-launch` for each instance and waits for SSH
-   readiness.
+2. **vm-create** calls `ernicctl vm-launch` for each
+   instance and waits for SSH readiness. On the default
+   artifact path the backing qcow2 is already there from
+   phase 0. With `ernic_vm_artifact=false` it first checks
+   for a golden backing qcow2 and, if absent, runs `gen-vm`
+   to create one via cloud-init, boots it once and applies
+   `ernic_image_prep` to bake in RDMA userspace, ROCm and
+   the build toolchain.
 
 3. **guest-setup** runs `ernic_guest_setup`: builds the custom
    rdma-core with the rocm_ernic provider, builds and loads

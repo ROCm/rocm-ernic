@@ -38,6 +38,7 @@
 #include <syslog.h>
 #include <endian.h>
 #include <sys/mman.h>
+#include <pthread.h>
 
 #include <vfio-user/libvfio-user.h>
 
@@ -306,6 +307,27 @@ struct ionic_eth_emu {
     struct ionic_eth_net *net;
     /* Staging buffer for one frame in either direction. */
     uint8_t frame[IONIC_ETH_NET_MTU_MAX];
+
+    /*
+     * Frames handed over by threads that may not DMA -- today only the TCP
+     * mesh receive thread.  Producers append under @inbox_lock; the main
+     * loop drains the queue from ionic_eth_emu_poll_rx().
+     */
+    struct eth_inbox_frame *inbox_head;
+    struct eth_inbox_frame *inbox_tail;
+    unsigned inbox_count;
+    pthread_mutex_t inbox_lock;
+};
+
+/* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
+ * blocking producer stalls above this, which back-pressures the mesh TCP
+ * connection the same way the old PVRDMA Rx ring did. */
+#define ETH_INBOX_MAX_FRAMES 256
+
+struct eth_inbox_frame {
+    struct eth_inbox_frame *next;
+    size_t len;
+    uint8_t data[];
 };
 
 /* -------------------------------------------------------------------------
@@ -354,6 +376,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
         free(emu);
         return NULL;
     }
+    pthread_mutex_init(&emu->inbox_lock, NULL);
 
     /* Initialise dev_info_regs in BAR0 shadow.
      * ionic.ko reads signature at offset 0 to confirm the device is alive,
@@ -390,8 +413,45 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     if (!emu)
         return;
     ionic_eth_net_close(emu->net);
+    while (emu->inbox_head) {
+        struct eth_inbox_frame *f = emu->inbox_head;
+        emu->inbox_head = f->next;
+        free(f);
+    }
+    emu->inbox_tail = NULL;
+    pthread_mutex_destroy(&emu->inbox_lock);
     free(emu->bar2);
     free(emu);
+}
+
+int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
+                                 size_t len)
+{
+    if (!emu || !frame || len == 0 || len > IONIC_ETH_NET_MTU_MAX)
+        return -EINVAL;
+
+    struct eth_inbox_frame *f = malloc(sizeof(*f) + len);
+    if (!f)
+        return -ENOMEM;
+    f->next = NULL;
+    f->len = len;
+    memcpy(f->data, frame, len);
+
+    pthread_mutex_lock(&emu->inbox_lock);
+    if (emu->inbox_count >= ETH_INBOX_MAX_FRAMES) {
+        pthread_mutex_unlock(&emu->inbox_lock);
+        free(f);
+        return -ENOSPC;
+    }
+    if (emu->inbox_tail)
+        emu->inbox_tail->next = f;
+    else
+        emu->inbox_head = f;
+    emu->inbox_tail = f;
+    emu->inbox_count++;
+    pthread_mutex_unlock(&emu->inbox_lock);
+
+    return 0;
 }
 
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
@@ -1507,7 +1567,7 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
 
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 {
-    if (!emu || !emu->net)
+    if (!emu)
         return;
 
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][0];
@@ -1516,7 +1576,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 
     /* Bounded per poll so a busy tap cannot starve the RDMA admin queue. */
     bool delivered = false;
-    for (unsigned n = 0; n < 64; n++) {
+    for (unsigned n = 0; emu->net && n < 64; n++) {
         ssize_t len =
             ionic_eth_net_recv(emu->net, emu->frame, sizeof(emu->frame));
         if (len <= 0)
@@ -1525,6 +1585,38 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0) {
             delivered = true;
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
+        }
+    }
+
+    /* Frames queued by off-thread producers (TCP mesh).  A frame that the
+     * guest has no buffer for is put back at the head so ordering holds and
+     * the producer keeps seeing back-pressure. */
+    for (unsigned n = 0; n < 64; n++) {
+        pthread_mutex_lock(&emu->inbox_lock);
+        struct eth_inbox_frame *f = emu->inbox_head;
+        if (f) {
+            emu->inbox_head = f->next;
+            if (!emu->inbox_head)
+                emu->inbox_tail = NULL;
+            emu->inbox_count--;
+        }
+        pthread_mutex_unlock(&emu->inbox_lock);
+        if (!f)
+            break;
+
+        if (eth_rx_deliver(emu, q, f->data, f->len) == 0) {
+            delivered = true;
+            pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)f->len, false);
+            free(f);
+        } else {
+            pthread_mutex_lock(&emu->inbox_lock);
+            f->next = emu->inbox_head;
+            emu->inbox_head = f;
+            if (!emu->inbox_tail)
+                emu->inbox_tail = f;
+            emu->inbox_count++;
+            pthread_mutex_unlock(&emu->inbox_lock);
+            break;
         }
     }
 

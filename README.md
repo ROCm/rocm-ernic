@@ -4,7 +4,6 @@
 [![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml/badge.svg)][ci-build]
 [![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
 [![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
-[![Spelling](https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml/badge.svg)][ci-spell]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-rdma.json)][perf-trends]
 
@@ -19,26 +18,13 @@ requiring physical RDMA hardware or an in-guest software stack such as
 (multi-node without hardware), and native verbs (real InfiniBand HCA
 pass-through).
 
-The server can present two device personalities. By default it emulates an
-AMD Pensando ionic NIC (`1022:8001`), so the guest runs the upstream Linux
-`ionic` and `ionic_rdma` drivers with only the small device-ID and UC
-address-handle patches in [`patches/`](patches/) applied, and the upstream
-`providers/ionic` in rdma-core. `--tap IFNAME` attaches the emulated Ethernet
-interface to a host TAP, giving the guest a real routable segment with working
-ARP, ICMP, and TCP/IP.
-
-`--legacy` (alias `--pvrdma`) selects the older PVRDMA-derived device
-(`1022:8000`) driven by the out-of-tree `rocm_ernic` module in
-[`driver/`](driver/). See [`docs/ionic.rst`](docs/ionic.rst) for details.
-
-> [!WARNING]
-> **The `rocm_ernic` driver path (`--legacy` / `--pvrdma`) is no longer
-> supported and will be removed in an upcoming release.** It is no longer
-> exercised by CI: every job now runs the ionic personality, so regressions
-> on the legacy path will not be caught before release. Migrate existing
-> deployments to the default ionic device (`1022:8001`) with the upstream
-> `ionic` and `ionic_rdma` drivers; [`docs/ionic.rst`](docs/ionic.rst)
-> describes the move. New deployments should not use it at all.
+The server emulates an AMD Pensando ionic NIC (`1dd8:100a`), so the guest runs
+the upstream Linux `ionic` and `ionic_rdma` drivers with only the small
+device-ID and UC address-handle patches in [`patches/`](patches/) applied, and
+the upstream `providers/ionic` in rdma-core. `--tap IFNAME` attaches the
+emulated Ethernet interface to a host TAP, giving the guest a real routable
+segment with working ARP, ICMP, and TCP/IP. See
+[`docs/ionic.rst`](docs/ionic.rst) for details.
 
 ## Installing and Using rocm-ernic
 
@@ -71,7 +57,6 @@ see [LICENSE.md](LICENSE.md) for details.
 [ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
 [ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
 [ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
-[ci-spell]: https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
 [libvfio]: https://github.com/nutanix/libvfio-user
 [softroce]: https://man7.org/linux/man-pages/man7/rxe.7.html

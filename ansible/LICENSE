@@ -28,8 +28,5 @@ individual SPDX headers:
 
 * Files under `src/from-qemu/` are derived from the QEMU project and are
   licensed under `GPL-2.0-or-later`.
-* Files under `driver/` are Linux kernel driver sources and carry either
-  `GPL-2.0` (with Linux-syscall-note), dual `GPL-2.0 / BSD-2-Clause`, or
-  `Dual BSD/GPL` licenses as indicated by their SPDX headers.
 
 The per-file SPDX header takes precedence for any file that contains one.

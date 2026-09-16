@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Smoke-test: start rocm-ernic in --ionic mode, verify the socket appears,
+# Smoke-test: start rocm-ernic, verify the socket appears,
 # and check the server log for the expected ionic startup banner.
 # Exit 0 = pass, exit 1 = fail, exit 77 = skip.
 
@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "=== ionic server smoke test ==="
-"$SERVER" --ionic --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
+"$SERVER" --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
 SERVER_PID=$!
 
 # Wait up to 5 seconds for the socket to appear
@@ -56,7 +56,7 @@ fi
 
 # Verify ionic mode banner in the log
 if grep -q "ionic emulation initialized" "$LOG" && \
-   grep -q "VID:DID 0x1022:0x8001" "$LOG"; then
+   grep -q "VID:DID 0x1dd8:0x100a" "$LOG"; then
     echo "✓ ionic banner found in server log"
 else
     echo "✗ ionic banner missing from log"

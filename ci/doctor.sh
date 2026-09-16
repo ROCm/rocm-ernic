@@ -86,46 +86,54 @@ else
     echo "         or:  run VM jobs with CI_VM_ACCEL=tcg (functional only, no valid perf)"
 fi
 
-# ionic mode carries guest-to-guest IP over these; without
-# them ping, iperf3 and the perftest out-of-band exchange all
-# fail one at a time and none of them says why.
-if [ "${CI_ERNIC_MODE}" = "ionic" ]; then
-    if [ -d "/sys/class/net/${CI_TAP_BRIDGE}" ]; then
-        ok "bridge ${CI_TAP_BRIDGE} present"
-    else
-        bad "bridge ${CI_TAP_BRIDGE} missing"
-        echo "         fix: sudo ip link add ${CI_TAP_BRIDGE} type bridge && sudo ip link set ${CI_TAP_BRIDGE} up"
-    fi
-
-    for i in $(seq 1 "${ERNIC_INSTANCES}"); do
-        tap="${CI_TAP_PREFIX}${i}"
-        if [ ! -d "/sys/class/net/${tap}" ]; then
-            bad "TAP ${tap} missing"
-            echo "         fix: sudo ip tuntap add dev ${tap} mode tap user $(id -un)"
-            echo "         and: sudo ip link set ${tap} master ${CI_TAP_BRIDGE} up"
-            continue
-        fi
-        tap_owner="$(cat "/sys/class/net/${tap}/owner" 2>/dev/null || echo '?')"
-        tap_master="$(basename "$(readlink -f "/sys/class/net/${tap}/master" 2>/dev/null)" 2>/dev/null || echo none)"
-        if [ "${tap_owner}" != "$(id -u)" ]; then
-            bad "TAP ${tap} owned by uid ${tap_owner}, not $(id -u)"
-            echo "         fix: sudo ip link del ${tap} && sudo ip tuntap add dev ${tap} mode tap user $(id -un)"
-        elif [ "${tap_master}" != "${CI_TAP_BRIDGE}" ]; then
-            bad "TAP ${tap} enslaved to '${tap_master}', not ${CI_TAP_BRIDGE}"
-            echo "         fix: sudo ip link set ${tap} master ${CI_TAP_BRIDGE} up"
-        else
-            ok "TAP ${tap} up, owned by $(id -un), on ${CI_TAP_BRIDGE}"
-        fi
-    done
+# These carry guest-to-guest IP; without them ping, iperf3 and
+# the perftest out-of-band exchange all fail one at a time and
+# none of them says why.
+if [ -d "/sys/class/net/${CI_TAP_BRIDGE}" ]; then
+    ok "bridge ${CI_TAP_BRIDGE} present"
 else
-    ok "device mode is ${CI_ERNIC_MODE}; TAP interfaces not required"
+    bad "bridge ${CI_TAP_BRIDGE} missing"
+    echo "         fix: sudo ip link add ${CI_TAP_BRIDGE} type bridge && sudo ip link set ${CI_TAP_BRIDGE} up"
 fi
 
+for i in $(seq 1 "${ERNIC_INSTANCES}"); do
+    tap="${CI_TAP_PREFIX}${i}"
+    if [ ! -d "/sys/class/net/${tap}" ]; then
+        bad "TAP ${tap} missing"
+        echo "         fix: sudo ip tuntap add dev ${tap} mode tap user $(id -un)"
+        echo "         and: sudo ip link set ${tap} master ${CI_TAP_BRIDGE} up"
+        continue
+    fi
+    tap_owner="$(cat "/sys/class/net/${tap}/owner" 2>/dev/null || echo '?')"
+    tap_master="$(basename "$(readlink -f "/sys/class/net/${tap}/master" 2>/dev/null)" 2>/dev/null || echo none)"
+    if [ "${tap_owner}" != "$(id -u)" ]; then
+        bad "TAP ${tap} owned by uid ${tap_owner}, not $(id -u)"
+        echo "         fix: sudo ip link del ${tap} && sudo ip tuntap add dev ${tap} mode tap user $(id -un)"
+    elif [ "${tap_master}" != "${CI_TAP_BRIDGE}" ]; then
+        bad "TAP ${tap} enslaved to '${tap_master}', not ${CI_TAP_BRIDGE}"
+        echo "         fix: sudo ip link set ${tap} master ${CI_TAP_BRIDGE} up"
+    else
+        ok "TAP ${tap} up, owned by $(id -un), on ${CI_TAP_BRIDGE}"
+    fi
+done
+
+# The tools scripts/fetch-guest-image.sh needs.  vm-up.sh hard-requires
+# them now, so a missing one should surface here rather than as a failed
+# check three minutes into a job.
+for tool in oras jq zstd qemu-img; do
+    if have "$tool"; then
+        ok "$tool: $(command -v "$tool")"
+    else
+        bad "$tool not found (needed to fetch the guest image)"
+    fi
+done
+
 if [ -f "${CI_VM_BACKING}" ]; then
-    ok "golden backing image: ${CI_VM_BACKING} ($(du -h "${CI_VM_BACKING}" | cut -f1))"
+    ok "guest image: ${CI_VM_BACKING} ($(du -h "${CI_VM_BACKING}" | cut -f1))"
 else
-    bad "golden backing image missing: ${CI_VM_BACKING}"
-    echo "         build one with: ansible-playbook ansible/playbooks/vm-create.yml (needs root)"
+    warn "guest image not yet fetched: ${CI_VM_BACKING}"
+    echo "         ci/jobs/vm-up.sh pulls it automatically; to do it now:"
+    echo "         scripts/fetch-guest-image.sh --tag ${CI_GUEST_ARTIFACT_TAG} --dest ${CI_VM_ARTIFACT_DIR}"
 fi
 
 if [ -x "${CI_QEMU_PATH}/qemu-system-x86_64" ]; then

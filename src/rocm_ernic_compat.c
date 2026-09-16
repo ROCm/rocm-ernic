@@ -47,10 +47,6 @@
 #include "from-qemu/include/qemu-extra/hw/pci/pci.h"
 #pragma GCC diagnostic pop
 
-/* Forward declaration -- defined later in this file,
- * also referenced via extern in pvrdma_main.c. */
-void pvrdma_dsr_flush(void *handle);
-
 /*
  * DMA Mapping Tracking
  * We must track SGL/iovec pairs to properly call vfu_sgl_put().
@@ -225,10 +221,6 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
         rdma_info_report("  max_srq_wr=%d", pvrdma->dev_attr.max_srq_wr);
     }
 
-    /* Initialize DSR info */
-    pvrdma->dsr_info.dsr = NULL;
-    pvrdma->dsr_info.dma = 0;
-
     /* Initialize stats */
     memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
     pvrdma->stats.qp_stats =
@@ -244,9 +236,6 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
 
     return (pvrdma_handle_t)pvrdma;
 }
-
-/* Forward declaration */
-void free_dsr(PVRDMADev *dev);
 
 void pvrdma_device_destroy(pvrdma_handle_t handle)
 {
@@ -283,9 +272,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         pvrdma->stats.stats_fp = NULL;
     }
 
-    /* Free DSR and all DMA mappings properly */
-    free_dsr(pvrdma);
-
     /* Free device names */
     free(pvrdma->backend_device_name);
     free(pvrdma->backend_eth_device_name);
@@ -316,14 +302,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     if (!pvrdma) {
         return -EINVAL;
     }
-
-    /* Initialize registers - must be done before driver probes */
-    /* Use set_reg_val() for proper address-to-index conversion */
-    set_reg_val(pvrdma, PVRDMA_REG_VERSION, PVRDMA_HW_VERSION);
-    set_reg_val(pvrdma, PVRDMA_REG_ERR, 0xFFFF);
-
-    rdma_info_report("PVRDMA version register initialized to %d",
-                     PVRDMA_HW_VERSION);
 
     /* Initialize RDMA backend with selected backend type */
     const char *backend_config =
@@ -393,9 +371,9 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         }
         rdma_info_report("DHCP server initialized for TCP manager mode");
     }
-    /* Note: DHCP proxy for TCP worker mode is initialized lazily in
-     * pvrdma_eth.c when the first DHCP request is received, since the manager
-     * connection may not be ready at device realize time */
+    /* Note: DHCP proxy for TCP worker mode is initialized lazily when the
+     * first DHCP request is received, since the manager connection may not
+     * be ready at device realize time */
 
     /* Query device capabilities from backend to populate dev_attr */
     if (pvrdma->backend_dev.backend_ops &&
@@ -441,80 +419,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     rdma_info_report("PVRDMA device realized successfully");
 
     return 0;
-}
-
-/*
- * Register Access (BAR1)
- */
-
-void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                       unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    /* Forward to QEMU register write implementation */
-    pvrdma_regs_write_impl(pvrdma, offset, value, size);
-}
-
-uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    uint32_t val = 0;
-
-    if (!pvrdma) {
-        rdma_warn_report("pvrdma_regs_read: handle is NULL, returning 0");
-        return 0;
-    }
-
-    /* Forward to QEMU register read implementation */
-    val = (uint32_t)pvrdma_regs_read_impl(pvrdma, offset, size);
-
-    /* Ensure we never return an error value that could be misinterpreted */
-    /* If the implementation returns an error (negative), return 0 instead */
-    if ((int32_t)val < 0) {
-        rdma_warn_report("pvrdma_regs_read: implementation returned error "
-                         "value %d for offset 0x%lx, returning 0",
-                         (int32_t)val, offset);
-        return 0;
-    }
-
-    return val;
-}
-
-/*
- * UAR Access (BAR2)
- */
-
-void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                      unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        rdma_error_report(">>> WRAPPER: pvrdma handle is NULL!");
-        return;
-    }
-
-    /* Forward to QEMU UAR write implementation */
-    pvrdma_uar_write_impl(pvrdma, offset, value, size);
-}
-
-uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    uint32_t val = 0;
-
-    if (!pvrdma) {
-        return 0;
-    }
-
-    val = (uint32_t)pvrdma_uar_read_impl(pvrdma, offset, size);
-
-    return val;
 }
 
 void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
@@ -621,6 +525,75 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
     }
 }
 
+void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
+                              bool is_send)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (!qp) {
+        return;
+    }
+
+    if (is_send) {
+        qp->doorbell_send++;
+    } else {
+        qp->doorbell_recv++;
+    }
+}
+
+void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
+                         unsigned int pvrdma_opcode)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (!qp) {
+        return;
+    }
+
+    qp->wqes_processed++;
+    if (pvrdma_opcode < G_N_ELEMENTS(qp->wqes_by_opcode)) {
+        qp->wqes_by_opcode[pvrdma_opcode]++;
+    }
+}
+
+void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (qp) {
+        qp->cqes_posted++;
+    }
+}
+
+void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma || !pvrdma->stats.qp_stats || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -630,7 +603,6 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
  */
 
 void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *regs_reads, uint64_t *regs_writes,
                       uint64_t *uar_writes, uint64_t *interrupts,
                       uint64_t *uar_reads, uint64_t *bar0_reads,
                       uint64_t *bar0_writes)
@@ -643,10 +615,6 @@ void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
 
     if (commands)
         *commands = pvrdma->stats.commands;
-    if (regs_reads)
-        *regs_reads = pvrdma->stats.regs_reads;
-    if (regs_writes)
-        *regs_writes = pvrdma->stats.regs_writes;
     if (uar_writes)
         *uar_writes = pvrdma->stats.uar_writes;
     if (interrupts)
@@ -867,43 +835,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     DMA_MAP_UNLOCK();
 
     return host_addr;
-}
-
-/*
- * Helper: Flush DSR writes by doing put/get cycle
- * This ensures cache coherency and notifies libvfio-user/QEMU of changes.
- */
-void pvrdma_dsr_flush(void *handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    dma_addr_t dsr_guest_addr = pvrdma->dsr_info.dma;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-
-    GHashTableIter iter;
-    gpointer key, value;
-    g_hash_table_iter_init(&iter, dma_map_table);
-
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        dma_mapping_t *mapping = (dma_mapping_t *)value;
-
-        if (mapping->guest_addr == dsr_guest_addr) {
-            if (mapping->vfu_ctx && mapping->sg) {
-                vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-            }
-
-            mapping->host_addr = NULL;
-            mapping->iov.iov_base = NULL;
-            mapping->iov.iov_len = 0;
-
-            DMA_MAP_UNLOCK();
-            return;
-        }
-    }
-
-    DMA_MAP_UNLOCK();
-    rdma_error_report("pvrdma_dsr_flush: ERROR - DSR mapping not found!");
 }
 
 /*

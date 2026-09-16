@@ -5,6 +5,7 @@
 # Master playbook for rocm-ernic integration testing.
 #
 # Imports all plays in order:
+#   0.  VM fetch      -- pull the prebuilt guest qcow2
 #   1.  Host setup    -- build, install, configure service
 #   2.  VM creation   -- golden image, launch VMs
 #   3.  Guest setup   -- driver, rdma-core, NIC config
@@ -35,8 +36,9 @@
 #   ansible-playbook site.yml --skip-tags stress
 #
 # Available tags:
-#   setup      -- all setup phases (host-setup,
+#   setup      -- all setup phases (vm-fetch, host-setup,
 #                 vm-create, guest-setup)
+#   vm-fetch   -- phase 0 only
 #   host-setup -- phase 1 only
 #   vm-create  -- phase 2 only
 #   guest-setup -- phase 3 only
@@ -50,6 +52,10 @@
 #   stress     -- phase 7 only
 
 ---
+- name: "Phase 0: Fetch the prebuilt guest image"
+  ansible.builtin.import_playbook: playbooks/vm-fetch.yml
+  tags: [setup, vm-fetch]
+
 - name: "Phase 1: Host setup"
   ansible.builtin.import_playbook: playbooks/host-setup.yml
   tags: [setup, host-setup]
