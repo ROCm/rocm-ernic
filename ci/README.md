@@ -72,7 +72,7 @@ checkout.
 | Tier | Job | Needs KVM |
 |---|---|---|
 | 1 | build, ctest, loopback backend | no |
-| 2 | two-VM RDMA functional | yes |
+| 2 | two-VM RDMA functional, one-VM NVMe-oF | yes |
 | 3 | performance sweeps | yes |
 
 Tier 1 is fully self-contained and is the gate for
@@ -222,7 +222,7 @@ usable from any pull request or issue:
 
 | Command | Runs |
 |---|---|
-| `/run-ci` | build, loopback and two-VM RDMA functional |
+| `/run-ci` | build, loopback, two-VM RDMA and NVMe-oF functional |
 | `/run-ci build` | build, ctest and loopback only |
 | `/run-ci functional` | same as bare `/run-ci` |
 | `/run-ci full` | functional plus performance sweeps |
@@ -288,21 +288,35 @@ fire on it either way, `[skip ci]` or not -- so the report
 job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
 needs `actions: write`) right after the push to rebuild Pages.
 
-The same run writes `docs/perf-history/badge-rdma.json` and
-`badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
-each for the most recent RDMA (`ib_send_bw`, 1 MiB, peak GB/s)
-and TCP/IP (`iperf3`, sustained GB/s) bandwidth, falling back to
-the latest prior run that has a value so one bad sweep does not
-grey out a badge. `docs/conf.py` publishes the whole of
-`docs/perf-history` (charts, history, badges, this file) as
-`html_static_path`, so once Pages rebuilds the badges are
-reachable at
-`https://rocm.github.io/rocm-ernic/_static/badge-rdma.json` and
-`.../badge-tcp.json`. README.md links the RDMA one; the TCP
-badge is not linked yet since no nightly has produced a real
-number for it, and a "no data" badge on the front page reads as
-a broken project rather than a pending measurement -- link it
-once the first nightly with TCP data has published.
+The same run writes one shields.io [endpoint badge][shields-endpoint]
+per transport into `docs/perf-history/`, each falling back to the
+latest prior run that has a value so one bad sweep does not grey a
+badge out:
+
+| File | Metric | Written by |
+| --- | --- | --- |
+| `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `self-hosted-ci.yml` |
+| `badge-tcp.json` | `iperf3`, sustained GB/s | `self-hosted-ci.yml` |
+| `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `nvmeof-nightly.yml` |
+
+`docs/conf.py` publishes the whole of `docs/perf-history` (charts,
+history, badges, this file) as `html_static_path`, so once Pages
+rebuilds each badge is reachable at
+`https://rocm.github.io/rocm-ernic/_static/badge-<name>.json`.
+
+README.md links the RDMA and NVMe-oF badges. The TCP badge is not
+linked: no nightly has produced a real number for it, and a "no
+data" badge on the front page reads as a broken project rather than
+a pending measurement -- link it once the first nightly with TCP
+data has published.
+
+The NVMe-oF badge is a deliberate exception to that rule. It ships
+linked with a committed `"no data"` placeholder, because the lane
+that feeds it is new and the shield is part of announcing it. The
+placeholder matters: without a file at that URL shields.io renders
+an *error*, which looks far worse than a grey "no data". Expect the
+first real number after the first green `nvmeof-nightly` run on
+`main`.
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
@@ -336,8 +350,26 @@ bash ci/jobs/build.sh          # configure, build, ctest
 bash ci/jobs/loopback.sh       # loopback backend suite
 bash ci/jobs/vm-up.sh          # boot the CI VMs
 bash ci/jobs/vm-functional.sh  # RDMA functional tests
+bash ci/jobs/vm-nvmeof.sh      # NVMe-oF functional tests
 bash ci/jobs/perf.sh           # performance sweeps
 bash ci/jobs/vm-down.sh        # tear down
+```
+
+`vm-nvmeof.sh` is the one lane that needs a different VM
+bring-up: the controller lives inside the instance, so a
+single guest talking to a single server is a complete
+fabric and the instances have to be started on the nvmeof
+backend.
+
+Export both, rather than prefixing a single command: all
+three scripts read them, and `ERNIC_INSTANCES` defaults to 2.
+
+```bash
+export ERNIC_INSTANCES=1
+export ERNIC_BACKEND=nvmeof:size=256M,bs=4096
+bash ci/jobs/vm-up.sh
+bash ci/jobs/vm-nvmeof.sh
+bash ci/jobs/vm-down.sh
 ```
 
 Useful overrides:

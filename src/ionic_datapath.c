@@ -25,6 +25,7 @@
  */
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
@@ -41,6 +42,8 @@
 
 #include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
+#include "nvmeof_cm.h"
+#include "nvmeof_target.h"
 #include "rocm_ernic_compat.h"
 
 /* -------------------------------------------------------------------------
@@ -57,6 +60,8 @@
 #define IONIC_V1_OP_RDMA_WRITE_IMM 5
 #define IONIC_V1_OP_ATOMIC_CS      6
 #define IONIC_V1_OP_ATOMIC_FA      7
+#define IONIC_V1_OP_REG_MR         8
+#define IONIC_V1_OP_LOCAL_INV      9
 
 /*
  * The per-QP wqes_by_opcode histogram is indexed by PVRDMA_WR_*, whose
@@ -76,6 +81,8 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
         [IONIC_V1_OP_RDMA_WRITE_IMM] = 1, /* PVRDMA_WR_RDMA_WRITE_WITH_IMM */
         [IONIC_V1_OP_ATOMIC_CS] = 5,      /* PVRDMA_WR_ATOMIC_CMP_AND_SWP */
         [IONIC_V1_OP_ATOMIC_FA] = 6,      /* PVRDMA_WR_ATOMIC_FETCH_AND_ADD */
+        [IONIC_V1_OP_REG_MR] = 11,        /* PVRDMA_WR_FAST_REG_MR */
+        [IONIC_V1_OP_LOCAL_INV] = 10,     /* PVRDMA_WR_LOCAL_INV */
     };
 
     /* Out of range counts toward the QP total but no histogram bucket. */
@@ -112,6 +119,16 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 
 /* struct ionic_v1_atomic_bdy shares the first three fields with the rdma body
  * and then carries its operands and a single fixed 8-byte result SGE. */
+/* ionic_v1_reg_mr_bdy, after the 16-byte base header: be64 va, be64 length,
+ * be64 offset, be64 dma_addr, be32 map_count, be16 flags, u8 dir_size_log2,
+ * u8 page_size_log2. */
+#define WQE_REG_MR_VA_OFF         16
+#define WQE_REG_MR_LENGTH_OFF     24
+#define WQE_REG_MR_DMA_ADDR_OFF   40
+#define WQE_REG_MR_MAP_COUNT_OFF  48
+#define WQE_REG_MR_PAGE_SZ_L2_OFF 55
+#define WQE_REG_MR_MIN_SZ         56
+
 #define WQE_ATOMIC_SWAP_ADD_OFF 28
 #define WQE_ATOMIC_COMPARE_OFF  36
 #define WQE_ATOMIC_SGE_OFF      48
@@ -130,6 +147,7 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 #define CQE_RECV_OP_SEND_INV 1
 #define CQE_RECV_OP_SEND_IMM 2
 #define CQE_RECV_OP_RDMA_IMM 3
+#define CQE_RECV_IS_IPV4     (1u << (7 + CQE_RECV_OP_SHIFT))
 
 /*
  * enum ionic_status from the guest driver's ionic_fw.h, which runs these
@@ -320,6 +338,12 @@ struct ionic_datapath {
 
     ionic_dp_cq_event_fn_t cq_event_fn;
     void *cq_event_opaque;
+
+    /* In-process NVMe-oF controller, NULL unless --backend nvmeof. */
+    struct nvmeof_target *nvmeof;
+    struct nvmeof_cm *nvmeof_cm;
+    uint8_t nvmeof_sgid[16]; /* controller GID, learned from the CM REQ */
+    uint8_t nvmeof_dgid[16]; /* the guest's own GID                    */
 
     struct ionic_qp_ring *qp; /* indexed by driver qp_id */
     struct ionic_cq_ring *cq; /* indexed by driver cq_id */
@@ -558,6 +582,34 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
 static void dp_mesh_recv(void *opaque, uint32_t src_node, const void *buf,
                          size_t len);
 
+bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
+                                  const struct nvmeof_target_cfg *cfg,
+                                  char *err, size_t errlen)
+{
+    if (!dp || !cfg)
+        return false;
+
+    dp->nvmeof = nvmeof_target_create(cfg, err, errlen);
+    if (!dp->nvmeof)
+        return false;
+
+    dp->nvmeof_cm = nvmeof_cm_create(dp->nvmeof, cfg->traddr, cfg->trsvcid);
+    if (!dp->nvmeof_cm) {
+        nvmeof_target_destroy(dp->nvmeof);
+        dp->nvmeof = NULL;
+        snprintf(err, errlen, "out of memory");
+        return false;
+    }
+
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: nvmeof target '%s' %" PRIu64
+            " bytes bs=%u at %u.%u.%u.%u:%u",
+            cfg->subnqn, cfg->size, cfg->block_size, cfg->traddr >> 24,
+            (cfg->traddr >> 16) & 0xff, (cfg->traddr >> 8) & 0xff,
+            cfg->traddr & 0xff, cfg->trsvcid);
+    return true;
+}
+
 void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle)
 {
     uint32_t node;
@@ -603,6 +655,9 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
 
     if (dp->pvrdma_handle)
         ionic_mesh_set_recv_cb(dp->pvrdma_handle, NULL, NULL);
+
+    nvmeof_cm_destroy(dp->nvmeof_cm);
+    nvmeof_target_destroy(dp->nvmeof);
 
     pthread_mutex_lock(&dp->rx_lock);
     for (struct dp_inmsg *m = dp->rx_head; m;) {
@@ -725,6 +780,8 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
     if (!dp || qp_id >= dp->qp_count)
         return;
+    if (dp->nvmeof_cm)
+        nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
     buf_release(&dp->qp[qp_id].sq_buf);
     buf_release(&dp->qp[qp_id].rq_buf);
     dp->qp[qp_id].valid = false;
@@ -791,7 +848,9 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     m->length = length;
     m->valid = true;
 
-    vfu_log(dp->vfu_ctx, LOG_INFO,
+    /* DEBUG, not INFO: fast registration re-binds an MR per I/O, so this
+     * fires once per NVMe command on the nvmeof path. */
+    vfu_log(dp->vfu_ctx, LOG_DEBUG,
             "ionic_datapath: MR lkey=%#x va=%#lx len=%lu pages=%u pgsz=2^%u",
             lkey, (unsigned long)va, (unsigned long)length, m->buf.npages,
             m->buf.page_size_log2);
@@ -804,6 +863,41 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
         return;
     buf_release(&m->buf);
     m->valid = false;
+}
+
+/*
+ * Fast registration (IB_WR_REG_MR).  CREATE_MR allocated the MR but left it
+ * unbound; this work request carries the page table and a freshly rotated
+ * key.  A stock nvme-rdma initiator posts one of these ahead of every command
+ * -- register_always defaults on -- so without it the keyed SGLs the NVMe-oF
+ * controller relies on never name a mapped region.
+ *
+ * ib_update_fast_reg_key() rotates only the top byte, so the previous key for
+ * the same MR id has to be dropped or the table fills one rotation at a time.
+ */
+static void dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
+                      uint32_t key)
+{
+    for (int i = 0; i < MAX_MR; i++) {
+        if (dp->mr[i].valid && dp->mr[i].lkey != key &&
+            (dp->mr[i].lkey & 0x00ffffffu) == (key & 0x00ffffffu))
+            ionic_datapath_unregister_mr(dp, dp->mr[i].lkey);
+    }
+
+    uint64_t va, length, dma_addr;
+    uint32_t map_count;
+    memcpy(&va, wqe + WQE_REG_MR_VA_OFF, 8);
+    memcpy(&length, wqe + WQE_REG_MR_LENGTH_OFF, 8);
+    memcpy(&dma_addr, wqe + WQE_REG_MR_DMA_ADDR_OFF, 8);
+    memcpy(&map_count, wqe + WQE_REG_MR_MAP_COUNT_OFF, 4);
+
+    struct ionic_dp_buf_desc buf = {
+        .dma_addr = be64toh(dma_addr),
+        .map_count = be32toh(map_count),
+        .page_size_log2 = wqe[WQE_REG_MR_PAGE_SZ_L2_OFF],
+    };
+
+    ionic_datapath_register_mr(dp, key, be64toh(va), be64toh(length), &buf);
 }
 
 /* -------------------------------------------------------------------------
@@ -1049,7 +1143,7 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
 static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
                          uint32_t qid, uint64_t rq_wqe_id, uint32_t src_qpn,
                          uint8_t recv_op, uint32_t imm_be, uint32_t byte_len,
-                         bool error)
+                         bool error, const uint8_t *src_mac)
 {
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
@@ -1057,8 +1151,19 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
     /* recv.wqe_id is a native u64 the driver indexes rq_meta with. */
     memcpy(body + 0, &rq_wqe_id, 8);
 
-    uint32_t qpn_op = htobe32(((uint32_t)recv_op << CQE_RECV_OP_SHIFT) |
-                              (src_qpn & 0xffffffu));
+    uint32_t qpn_op =
+        ((uint32_t)recv_op << CQE_RECV_OP_SHIFT) | (src_qpn & 0xffffffu);
+    /*
+     * A UD or GSI completion is only usable if it also names the sender's
+     * link layer: the driver turns src_mac and the IPv4 bit into
+     * IB_WC_WITH_SMAC and a network_hdr_type, and ib_cm refuses a MAD whose
+     * work completion has neither.
+     */
+    if (src_mac) {
+        qpn_op |= CQE_RECV_IS_IPV4;
+        memcpy(body + 12, src_mac, 6);
+    }
+    qpn_op = htobe32(qpn_op);
     memcpy(body + 8, &qpn_op, 4);
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
 
@@ -1169,6 +1274,24 @@ static uint32_t dp_scatter(struct ionic_datapath *dp,
 }
 
 /*
+ * Synthesize the source MAC reported with a UD/GSI completion.  There is no
+ * Ethernet frame behind any of this, so the address only has to be stable and
+ * locally administered; deriving it from the sending QP keeps peers apart in
+ * a guest-side trace.
+ */
+static void dp_src_mac(struct ionic_datapath *dp, uint32_t src_qp_id,
+                       uint8_t mac[6])
+{
+    (void)dp;
+    mac[0] = 0x02;
+    mac[1] = 0x00;
+    mac[2] = (uint8_t)(src_qp_id >> 24);
+    mac[3] = (uint8_t)(src_qp_id >> 16);
+    mac[4] = (uint8_t)(src_qp_id >> 8);
+    mac[5] = (uint8_t)src_qp_id;
+}
+
+/*
  * Deliver a SEND payload into the destination QP's next posted receive.
  * Returns the number of bytes delivered, or -1 if no receive was available.
  *
@@ -1262,10 +1385,16 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     pvrdma_rdma_bytes_count(dp->pvrdma_handle, dst_qp_id, copied,
                             PVRDMA_STAT_RECV);
 
+    /* GSI (1) and UD (4) receives carry a source MAC; nothing else does. */
+    uint8_t smac[6];
+    bool ud = dq->ib_qp_type == 1 || dq->ib_qp_type == 4;
+    if (ud)
+        dp_src_mac(dp, src_qp_id, smac);
+
     cq_post_recv(
         dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op, imm_be,
         truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR) : copied,
-        truncated);
+        truncated, ud ? smac : NULL);
 
     return copied;
 }
@@ -1616,6 +1745,168 @@ out:
     return ok;
 }
 
+/* -------------------------------------------------------------------------
+ * In-process NVMe-oF controller
+ * -------------------------------------------------------------------------
+ */
+
+/*
+ * The controller reaches guest memory the same way a peer's RDMA READ or
+ * WRITE would: through the rkey the initiator put in the command's keyed
+ * SGL.  Here that key resolves in the same MR table as any lkey, because one
+ * guest owns every registration this emulator holds.
+ */
+static uint32_t dp_nvmeof_from_host(void *ctx, uint32_t key, uint64_t addr,
+                                    void *dst, uint32_t len)
+{
+    return dp_sge_to_host(ctx, key, addr, dst, len);
+}
+
+static uint32_t dp_nvmeof_to_host(void *ctx, uint32_t key, uint64_t addr,
+                                  const void *src, uint32_t len)
+{
+    return dp_host_to_sge(ctx, key, addr, src, len);
+}
+
+static const struct nvmeof_dma_ops dp_nvmeof_dma_ops = {
+    .from_host = dp_nvmeof_from_host,
+    .to_host = dp_nvmeof_to_host,
+};
+
+/* Build the global route header a UD receive is expected to carry. */
+static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
+                          uint32_t paylen)
+{
+    memset(grh, 0, IB_GRH_SIZE);
+    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
+    uint16_t pl = htobe16((uint16_t)paylen);
+    memcpy(grh + 4, &pl, 2);
+    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
+    grh[7] = 64;
+    memcpy(grh + 8, dp->nvmeof_sgid, 16);  /* controller */
+    memcpy(grh + 24, dp->nvmeof_dgid, 16); /* guest */
+}
+
+/*
+ * Remember which GIDs the guest is using.  A CM REQ names both ends of the
+ * path it wants, and it is the only MAD that does, so the GRH on every reply
+ * after it is built from what the REQ said.
+ */
+static void dp_nvmeof_learn_gids(struct ionic_datapath *dp, const uint8_t *mad)
+{
+    uint16_t attr;
+    memcpy(&attr, mad + 16, 2);
+    if (be16toh(attr) != 0x0010) /* CM_ATTR_REQ */
+        return;
+    memcpy(dp->nvmeof_dgid, mad + 80, 16); /* primary local  = guest */
+    memcpy(dp->nvmeof_sgid, mad + 96, 16); /* primary remote = us    */
+}
+
+/*
+ * A CM MAD the guest put on its GSI QP.  Returns true once the responder has
+ * claimed it, whether or not a reply went back, so the caller does not also
+ * try to deliver it to a peer QP that does not exist.
+ */
+static bool dp_nvmeof_gsi(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                          uint32_t qp_id, const struct dp_sge_list *src)
+{
+    if (!dp->nvmeof_cm || src->total < IB_MAD_SIZE)
+        return false;
+
+    uint8_t mad[IB_MAD_SIZE];
+    if (dp_gather(dp, src, mad, IB_MAD_SIZE) != IB_MAD_SIZE)
+        return false;
+
+    uint8_t rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    if (!nvmeof_cm_handle_mad(dp->nvmeof_cm, mad, IB_MAD_SIZE, rsp, &res))
+        return false;
+
+    dp_nvmeof_learn_gids(dp, mad);
+
+    switch (res.action) {
+    case NVMEOF_CM_ACT_BIND:
+        vfu_log(dp->vfu_ctx, LOG_INFO,
+                "ionic_datapath: nvmeof queue %u bound to QP %u (ctrl QP %u)",
+                res.nvme_qid, res.guest_qpn, res.local_qpn);
+        break;
+    case NVMEOF_CM_ACT_UNBIND:
+        vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: nvmeof released QP %u",
+                res.guest_qpn);
+        break;
+    case NVMEOF_CM_ACT_NONE:
+    case NVMEOF_CM_ACT_ESTABLISHED:
+    default:
+        break;
+    }
+
+    if (!res.rsp_len)
+        return true;
+
+    uint8_t buf[IB_GRH_SIZE + IB_MAD_SIZE];
+    dp_nvmeof_grh(dp, buf, (uint32_t)res.rsp_len);
+    memcpy(buf + IB_GRH_SIZE, rsp, res.rsp_len);
+
+    struct dp_sge_list in = {.count = 0,
+                             .total = (uint32_t)(IB_GRH_SIZE + res.rsp_len)};
+    if (deliver_recv(dp, q, qp_id, 1 /* the peer's GSI QP is also QP1 */, &in,
+                     buf, CQE_RECV_OP_SEND, 0) < 0)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: nvmeof CM reply dropped, no GSI receive");
+    return true;
+}
+
+/*
+ * An NVMe command capsule on a QP the CM handshake bound to a controller
+ * queue.  The controller executes it synchronously -- pulling or pushing data
+ * through the command's own keyed SGL -- and the response capsule goes back
+ * as a SEND into the initiator's next posted receive.
+ */
+static bool dp_nvmeof_rc_send(struct ionic_datapath *dp,
+                              struct ionic_qp_ring *q, uint32_t qp_id,
+                              const struct dp_sge_list *src)
+{
+    if (!dp->nvmeof || !q->dest_valid ||
+        !nvmeof_cm_is_target_qpn(q->dest_qp_id))
+        return false;
+
+    struct nvmeof_queue *nq = nvmeof_target_find_queue(dp->nvmeof, qp_id);
+    if (!nq) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u has no nvmeof queue", qp_id);
+        return true;
+    }
+
+    /* Only the admin Connect ever needs room past the SQE, and only if the
+     * host ignores the ioccsz we advertise and sends its data in capsule. */
+    uint8_t capsule[NVME_SQE_SIZE + 1024];
+    uint32_t len =
+        src->total < sizeof(capsule) ? src->total : (uint32_t)sizeof(capsule);
+    if (dp_gather(dp, src, capsule, len) != len) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u capsule fetch failed", qp_id);
+        return true;
+    }
+
+    uint8_t rsp[NVME_CQE_SIZE];
+    int r = nvmeof_queue_exec(nq, capsule, len, &dp_nvmeof_dma_ops, dp, rsp);
+    if (r == NVMEOF_EXEC_HELD)
+        return true; /* an AER: answered only when an event occurs */
+    if (r < 0) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u bad capsule (%u bytes)", qp_id, len);
+        return true;
+    }
+
+    struct dp_sge_list in = {.count = 0, .total = NVME_CQE_SIZE};
+    if (deliver_recv(dp, q, qp_id, q->dest_qp_id, &in, rsp, CQE_RECV_OP_SEND,
+                     0) < 0)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u has no receive for a response capsule",
+                qp_id);
+    return true;
+}
+
 static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
@@ -1641,6 +1932,27 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     uint32_t imm_be;
     memcpy(&imm_be, wqe + 12, 4);
+
+    /*
+     * REG_MR and LOCAL_INV are local operations: they never reach the wire, so
+     * they are handled ahead of the remote-QP dispatch, and they complete by
+     * SQ index whether or not the WQE asked to be signalled -- the driver's
+     * poll_send() will not advance sq.cons past a local op until its NPG
+     * completion lands.  num_sge_key is the key, not an SGE count, so this
+     * must also come before parse_sges().
+     */
+    if (op == IONIC_V1_OP_REG_MR || op == IONIC_V1_OP_LOCAL_INV) {
+        if (op != IONIC_V1_OP_REG_MR)
+            ionic_datapath_unregister_mr(dp, be32toh(imm_be));
+        else if (read_sz >= WQE_REG_MR_MIN_SZ)
+            dp_reg_mr(dp, wqe, be32toh(imm_be));
+        else
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
+                    qp_id, read_sz);
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+        return;
+    }
 
     struct dp_sge_list src;
     if (flags & IONIC_V1_FLAG_INL) {
@@ -1689,6 +2001,17 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         uint8_t recv_op = op == IONIC_V1_OP_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
                           : op == IONIC_V1_OP_SEND_INV ? CQE_RECV_OP_SEND_INV
                                                        : CQE_RECV_OP_SEND;
+
+        /*
+         * With a controller attached the guest is talking to something that
+         * lives in this process, not to another QP: the CM handshake arrives
+         * on GSI and every command capsule after it on the QP that handshake
+         * bound.  Both are answered here and never reach the peer lookup.
+         */
+        if (q->ib_qp_type == 1 /* GSI */ && dp_nvmeof_gsi(dp, q, qp_id, &src))
+            break;
+        if (remote && dp_nvmeof_rc_send(dp, q, qp_id, &src))
+            break;
 
         uint32_t dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
         struct ionic_qp_ring *dq = dst_id < dp->qp_count && dp->qp[dst_id].valid

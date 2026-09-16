@@ -195,6 +195,12 @@ set(IONIC_EMU_SOURCES
     src/ionic_datapath.c
 )
 
+# In-process NVMe-oF controller reached over the emulated fabric
+set(NVMEOF_SOURCES
+    src/nvmeof_target.c
+    src/nvmeof_cm.c
+)
+
 # Main server implementation
 set(SERVER_SOURCES
     src/rocm_ernic_server.c
@@ -204,6 +210,7 @@ set(ALL_SOURCES
     ${SERVER_SOURCES}
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
+    ${NVMEOF_SOURCES}
     ${RDMA_BACKEND_SOURCES}
     ${RDMA_DEVICE_CORE_SOURCES}
     ${UTILITY_SOURCES}

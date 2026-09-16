@@ -32,6 +32,12 @@ static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
     [RDMA_BACKEND_TYPE_LOOPBACK] = &rdma_backend_ops_loopback,
     [RDMA_BACKEND_TYPE_VERBS] = NULL, /* TODO: &rdma_backend_ops_verbs */
     [RDMA_BACKEND_TYPE_TCP] = &rdma_backend_ops_tcp,
+    /*
+     * The NVMe-oF controller is not a transport: it terminates the guest's
+     * queue pairs inside this process, on top of the same local resource
+     * management the loopback backend uses.
+     */
+    [RDMA_BACKEND_TYPE_NVMEOF] = &rdma_backend_ops_loopback,
 };
 
 /**
@@ -80,6 +86,10 @@ RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str)
         return RDMA_BACKEND_TYPE_TCP;
     }
 
+    if (!strncmp(backend_str, "nvmeof:", 7) || !strcmp(backend_str, "nvmeof")) {
+        return RDMA_BACKEND_TYPE_NVMEOF;
+    }
+
     rdma_warn_report("Unknown backend '%s', using 'none'", backend_str);
     return RDMA_BACKEND_TYPE_NONE;
 }
@@ -101,6 +111,8 @@ const char *rdma_backend_type_to_string(RdmaBackendType type)
         return "verbs";
     case RDMA_BACKEND_TYPE_TCP:
         return "tcp";
+    case RDMA_BACKEND_TYPE_NVMEOF:
+        return "nvmeof";
     default:
         return "unknown";
     }

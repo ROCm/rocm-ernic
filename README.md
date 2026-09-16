@@ -8,6 +8,7 @@
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-rdma.json)][perf-trends]
+[![NVMe-oF 4K read](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-nvmeof.json)][perf-trends]
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running
@@ -17,8 +18,10 @@ Userspace emulated RDMA NIC for virtual machines, built on
 [libvfio-user][libvfio]. Provides full RDMA functionality to guest VMs without
 requiring physical RDMA hardware or an in-guest software stack such as
 [Soft-RoCE][softroce]. Backends include loopback (for testing and CI), TCP/IP
-(multi-node without hardware), and native verbs (real InfiniBand HCA
-pass-through).
+(multi-node without hardware), native verbs (real InfiniBand HCA
+pass-through), and nvmeof (an in-process NVMe over Fabrics target, so a single
+VM and a single server instance are a complete fabric — see
+[`docs/nvmeof.rst`](docs/nvmeof.rst)).
 
 The server emulates an AMD Pensando ionic NIC (`1dd8:100a`), so the guest runs
 the upstream Linux `ionic` and `ionic_rdma` drivers with only the small

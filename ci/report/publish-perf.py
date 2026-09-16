@@ -34,6 +34,12 @@ import textwrap
 TRACKED_SIZES = ("4096", "65536", "1048576")
 SIZE_LABEL = {"4096": "4 KiB", "65536": "64 KiB", "1048576": "1 MiB"}
 
+# "key" names the series in history.jsonl and the chart-<key>.html
+# fragment.  "section" is the summary["perf"] section the rows come
+# from; it defaults to "key", which is why the first two entries omit
+# it.  They are separate because more than one chart can be drawn from
+# the same section -- the NVMe-oF sweep lands in "bandwidth" alongside
+# the RDMA one and is told apart by "verb".
 CHARTS = (
     {
         "key": "bandwidth",
@@ -50,6 +56,15 @@ CHARTS = (
         "title": "Send latency over time",
         "unit": "µs",
         "higher_is_better": False,
+    },
+    {
+        "key": "nvmeof",
+        "section": "bandwidth",
+        "metric": "bw_avg_GBs",
+        "verb": "nvmeof",
+        "title": "NVMe-oF read bandwidth over time",
+        "unit": "GB/s",
+        "higher_is_better": True,
     },
 )
 
@@ -93,7 +108,8 @@ def extract(summary):
     }
     for chart in CHARTS:
         got = {}
-        for row in summary.get("perf", {}).get(chart["key"], []):
+        section = chart.get("section", chart["key"])
+        for row in summary.get("perf", {}).get(section, []):
             if (row.get("verb") == chart["verb"]
                     and row.get("metric") == chart["metric"]
                     and str(row.get("size")) in TRACKED_SIZES
@@ -114,6 +130,13 @@ def extract(summary):
         metric="bw_peak_GBs")
     rec["badges"]["tcp_bw_GBs"] = _find_median(
         bw_rows, verb="tcp", size="stream", metric="bw_avg_GBs")
+    # NVMe-oF headlines IOPS at the smallest tracked size, where the
+    # capsule and completion path dominates and the bandwidth number
+    # says least. The sweep records it as msg_rate_mpps so that it
+    # rides the bandwidth schema gen-report.py already knows.
+    rec["badges"]["nvmeof_iops_M"] = _find_median(
+        bw_rows, verb="nvmeof", size=TRACKED_SIZES[0],
+        metric="msg_rate_mpps")
     return rec
 
 
@@ -328,9 +351,11 @@ def build_page(history, docs_dir):
         # A table of the same numbers: the accessible reading,
         # and the relief the palette check asks for, since
         # light-mode aqua sits below 3:1 on the surface.
+        # .get, not [] -- history records written before a chart was
+        # added carry no key for it at all.
         sizes = [z for z in TRACKED_SIZES
-                 if any(h["series"][chart["key"]].get(z) is not None
-                        for h in history)]
+                 if any(h["series"].get(chart["key"], {}).get(z)
+                        is not None for h in history)]
         head = ["Run"] + [SIZE_LABEL[z] for z in sizes]
         rows = []
         for h in history[-10:]:
@@ -355,21 +380,44 @@ def build_page(history, docs_dir):
 
 # README badges: shields.io "endpoint" schema
 # (https://shields.io/badges/endpoint-badge). One JSON file per
-# transport; both are copied to the built docs site's _static/
+# transport; each is copied to the built docs site's _static/
 # (see docs/conf.py) so a shields.io endpoint badge in
 # README.md can point at them from GitHub Pages.
+def _fmt_rate(value, unit):
+    return f"{value:.2f} {unit}"
+
+
+def _fmt_iops(value, unit):
+    """Render a millions-per-second figure at a human scale."""
+    n = value * 1e6
+    if n >= 1e6:
+        return f"{n / 1e6:.2f}M {unit}"
+    if n >= 1e3:
+        return f"{n / 1e3:.0f}k {unit}"
+    return f"{n:.0f} {unit}"
+
+
 BADGES = (
     {
         "key": "rdma_bw_GBs",
         "file": "badge-rdma.json",
         "label": "RDMA bandwidth",
         "unit": "GB/s",
+        "format": _fmt_rate,
     },
     {
         "key": "tcp_bw_GBs",
         "file": "badge-tcp.json",
         "label": "TCP/IP bandwidth",
         "unit": "GB/s",
+        "format": _fmt_rate,
+    },
+    {
+        "key": "nvmeof_iops_M",
+        "file": "badge-nvmeof.json",
+        "label": "NVMe-oF 4K read",
+        "unit": "IOPS",
+        "format": _fmt_iops,
     },
 )
 
@@ -401,7 +449,8 @@ def write_badges(rec, history, docs_dir):
             message = "no data"
             color = "lightgrey"
         else:
-            message = f"{value:.2f} {badge['unit']}"
+            message = badge.get("format", _fmt_rate)(value,
+                                                     badge["unit"])
             if source is not rec:
                 date = (source.get("generated") or "").split(" ")[0]
                 if date:

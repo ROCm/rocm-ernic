@@ -20,6 +20,7 @@ on:
       - 'udev/**'                 # driver_common installs these
       - 'ci/lib/common.sh'        # carries a third copy of the guest tag
       - '.github/workflows/system-tests.yml'
+      - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
       - '.github/actions/fetch-guest-vm/**'
   workflow_dispatch:
 
@@ -1029,6 +1030,17 @@ jobs:
         # Clean up
         rm -f /tmp/vfio-user-rocm-ernic*.sock
         echo "✓ Cleanup complete"
+
+  system-test-nvmeof:
+    name: NVMe-oF Backend System Tests
+    # The lane itself lives in its own reusable workflow because the
+    # nightly perf run needs the identical steps; see
+    # .github/workflows/nvmeof-lane.yml.  publish stays false here:
+    # a pull request's numbers describe the pull request, not main,
+    # and this job's token is read-only.
+    uses: ./.github/workflows/nvmeof-lane.yml
+    with:
+      publish: false
 
   system-test-tcp:
     name: TCP Backend System Tests (Two Servers)

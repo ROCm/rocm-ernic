@@ -15,6 +15,28 @@
   TCP/IP.
 * `tests/test_ionic_ci.sh` (CTest `ionic-ci`) covers the ionic device
   identity, BAR geometry, shutdown, and `--tap` handling without needing a VM.
+* The ionic data path now executes the fast-registration work requests
+  `IONIC_V1_OP_REG_MR` and `IONIC_V1_OP_LOCAL_INV`. They are local
+  operations, so they complete by SQ index whether or not the work request
+  asked to be signalled. A stock `nvme-rdma` initiator posts a REG_MR ahead
+  of every command, so without these the keys in its keyed SGLs named
+  nothing and the QP went to error on the first I/O.
+* `--backend nvmeof[:size=...,bs=...,file=...,nqn=...,ip=...,port=...]` runs an
+  NVMe over Fabrics target inside the server, reachable from the guest with a
+  stock `nvme connect -t rdma`. One VM and one server instance are then a
+  complete fabric: the backend answers the IB CM exchange on GSI and executes
+  NVMe command capsules, moving data with RDMA READ/WRITE against the guest's
+  memory keys. The namespace is anonymous memory by default, or a file with
+  `file=PATH`. Documented in `docs/nvmeof.rst`.
+* `tests/test_nvmeof_target.c` (CTest `nvmeof-target-unit`),
+  `tests/test_nvmeof_cm.c` (`nvmeof-cm-unit`) and `tests/test_nvmeof_ci.sh`
+  (`nvmeof-ci`) cover the controller without needing a VM;
+  `ansible/playbooks/nvmeof-tests.yml` covers the guest side -- discover,
+  connect, an `O_DIRECT` digest round trip, fio, disconnect -- and is run by
+  the hosted `system-test-nvmeof` job, by the `vm-nvmeof` self-hosted job via
+  `ci/jobs/vm-nvmeof.sh`, and by hand with `--tags nvmeof`.
+* `ERNIC_BACKEND` in `service/rocm-ernic.env` overrides the backend the
+  launcher picks per instance, which is what selects `nvmeof` for that lane.
 * CI job `ionic-patches` verifies that every patch in `patches/` still applies
   to the pinned `IONIC_KERNEL_REF`.
 

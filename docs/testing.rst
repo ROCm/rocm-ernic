@@ -69,6 +69,26 @@ needs ``CAP_NET_ADMIN``:
    sudo ip tuntap add dev ernic-ci0 mode tap user "$USER"
    ERNIC_TEST_TAP=ernic-ci0 ctest --test-dir build -R ionic-ci
 
+NVMe-oF tests
+^^^^^^^^^^^^^
+
+Three tests cover the in-process NVMe-oF controller without
+needing a VM: ``nvmeof-target-unit`` (capsule handling and
+the command set), ``nvmeof-cm-unit`` (the IB CM state
+machine) and ``nvmeof-ci`` (a shell test that starts the
+real server once per documented option spelling and checks
+what it reports, including that bad options are refused).
+
+.. code-block:: bash
+
+   ctest --test-dir build -R nvmeof
+
+The guest-side connect needs a VM. It lives in
+``ansible/playbooks/nvmeof-tests.yml``, which the hosted
+``system-test-nvmeof`` job runs end to end and which
+``ci/jobs/vm-nvmeof.sh`` mirrors check-by-check for the
+self-hosted lane. See :doc:`nvmeof`.
+
 Running Tests
 -------------
 

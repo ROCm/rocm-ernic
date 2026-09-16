@@ -28,6 +28,10 @@ ERNIC_RUN_DIR="${ERNIC_RUN_DIR:-/run/rocm-ernic}"
 ERNIC_LOG_DIR="${ERNIC_LOG_DIR:-/var/log/rocm-ernic}"
 ERNIC_INSTANCES="${ERNIC_INSTANCES:-4}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6320}"
+# Overrides the TCP mesh entirely: every instance runs this backend
+# instead.  Set to nvmeof[:opts] to hand each guest its own in-process
+# NVMe-oF controller rather than wiring the instances to each other.
+ERNIC_BACKEND="${ERNIC_BACKEND:-}"
 ERNIC_MANAGER_IP="${ERNIC_MANAGER_IP:-127.0.0.1}"
 ERNIC_VERBOSE="${ERNIC_VERBOSE:-false}"
 ERNIC_LOG_LEVEL="${ERNIC_LOG_LEVEL:-warn}"
@@ -174,7 +178,9 @@ start_instance() {
     fi
 
     local backend
-    if [ "${role}" = "manager" ]; then
+    if [ -n "${ERNIC_BACKEND}" ]; then
+        backend="${ERNIC_BACKEND}"
+    elif [ "${role}" = "manager" ]; then
         backend="tcp:manager:listen:${ERNIC_TCP_PORT}"
     else
         backend="tcp:worker:${ERNIC_MANAGER_IP}:${ERNIC_TCP_PORT}"

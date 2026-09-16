@@ -84,6 +84,20 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey);
 
 /*
+ * Attach the in-process NVMe-oF controller.  Once attached the data path
+ * answers IB CM MADs on the guest's GSI QP and serves NVMe command capsules
+ * sent to the QP numbers that handshake hands out, so a guest running stock
+ * `nvme connect -t rdma` reaches a target without a second node.
+ *
+ * Returns false and fills @err on failure.  The data path owns the controller
+ * from then on and tears it down in ionic_datapath_destroy().
+ */
+struct nvmeof_target_cfg;
+bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
+                                  const struct nvmeof_target_cfg *cfg,
+                                  char *err, size_t errlen);
+
+/*
  * Set the pvrdma handle so the datapath can post sends via the backend.
  * Call this once after ionic_device_init() and pvrdma_device_realize().
  * @handle: pvrdma_handle_t (void *) from pvrdma_device_create().

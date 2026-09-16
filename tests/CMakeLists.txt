@@ -235,6 +235,34 @@ target_include_directories(test_parse_int SYSTEM PRIVATE
 target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# NVMe-oF controller test. The controller core takes its DMA through a
+# callback pair, so the test links the real translation unit and stands a
+# byte array in for guest memory -- no VM, no RDMA device, no server.
+add_executable(test_nvmeof_target
+    test_nvmeof_target.c
+    ${CMAKE_SOURCE_DIR}/src/nvmeof_target.c
+)
+target_include_directories(test_nvmeof_target PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(test_nvmeof_target PRIVATE _GNU_SOURCE)
+target_compile_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# IB CM responder test. Feeds it the CM MADs a guest running rdma_cm
+# emits and dissects the replies; no MAD ever reaches a wire.
+add_executable(test_nvmeof_cm
+    test_nvmeof_cm.c
+    ${CMAKE_SOURCE_DIR}/src/nvmeof_cm.c
+    ${CMAKE_SOURCE_DIR}/src/nvmeof_target.c
+)
+target_include_directories(test_nvmeof_cm PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(test_nvmeof_cm PRIVATE _GNU_SOURCE)
+target_compile_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # Loopback SGE-copy test. It #includes the loopback translation unit to
 # reach its static helpers and stubs the DMA layer with an identity
 # mapping, so no RDMA subsystem link is needed.
@@ -468,6 +496,22 @@ add_test(
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
 
+# NVMe-oF controller unit test: drives the capsule sequence a real
+# nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
+add_test(
+    NAME nvmeof-target-unit
+    COMMAND $<TARGET_FILE:test_nvmeof_target>
+)
+set_tests_properties(nvmeof-target-unit PROPERTIES TIMEOUT 30)
+
+# IB CM responder unit test: REQ/REP/RTU/DREQ, plus every rejection path
+# a misaddressed or mismatched "nvme connect" can take.
+add_test(
+    NAME nvmeof-cm-unit
+    COMMAND $<TARGET_FILE:test_nvmeof_cm>
+)
+set_tests_properties(nvmeof-cm-unit PROPERTIES TIMEOUT 30)
+
 # Loopback SGE-copy boundary-walking unit test
 add_test(
     NAME loopback-sge-copy-unit
@@ -533,5 +577,20 @@ set_tests_properties(ionic-ci PROPERTIES
     TIMEOUT 60
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
+    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
+
+# nvmeof CI test suite: every documented backend option spelling starts a
+# server with the namespace it asked for, malformed options are refused, and
+# a file-backed namespace appears on disk at the right size.  The guest-side
+# `nvme connect` is covered by the VM system tests.
+add_test(
+    NAME nvmeof-ci
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_nvmeof_ci.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_tests_properties(nvmeof-ci PROPERTIES
+    TIMEOUT 120
+    RUN_SERIAL TRUE
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
