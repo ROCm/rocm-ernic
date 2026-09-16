@@ -60,6 +60,25 @@ if(NOT ERNIC_USE_THREAD_SANITIZER)
     set(ERNIC_UNIT_TEST_SAN_LINK -fsanitize=address,undefined,leak)
 endif()
 
+# QEMU-ported sources that tests compile as separate translation units.
+# Suppressing warnings per-source rather than per-target keeps the ported
+# C quiet (matching the main build) while the test's own source is still
+# warning-checked -- a target-wide -w would disable warnings everywhere,
+# since GCC honours -w regardless of where it appears in the flag list.
+set(ERNIC_TEST_PORTED_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_backend.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_utils.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_rm.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/rdma_cm_proto.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_stubs.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_type_stubs.c
+)
+set_source_files_properties(${ERNIC_TEST_PORTED_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "-w"
+)
+
 # rdma_backend_query_port test. Links the backend TU plus the utility /
 # resource-manager / qemu-stub sources it depends on; the query_port paths
 # under test never reach libibverbs or the DMA layer.
@@ -74,6 +93,11 @@ add_executable(test_rdma_backend_query_port
 )
 target_include_directories(test_rdma_backend_query_port PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+# The ported header trees are SYSTEM includes so their warnings stay quiet
+# while the test source itself is still warning-checked. The ported .c files
+# are silenced per-source via ERNIC_TEST_PORTED_SOURCES.
+target_include_directories(test_rdma_backend_query_port SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
@@ -82,11 +106,8 @@ target_include_directories(test_rdma_backend_query_port PRIVATE
 )
 target_compile_definitions(test_rdma_backend_query_port PRIVATE
     _GNU_SOURCE)
-# -w: this test links the ported RDMA-backend translation units, so warnings
-# would come from that ported C rather than the test itself; suppress them
-# to match how the ported sources are compiled in the main build.
 target_compile_options(test_rdma_backend_query_port PRIVATE
-    -w ${ERNIC_UNIT_TEST_SAN})
+    ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_rdma_backend_query_port PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 target_link_directories(test_rdma_backend_query_port PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
@@ -138,15 +159,18 @@ add_executable(test_rdma_cm_proto
 )
 target_include_directories(test_rdma_cm_proto PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+# Ported header trees are SYSTEM includes; the ported .c files are silenced
+# per-source via ERNIC_TEST_PORTED_SOURCES.
+target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
-# QEMU-ported sources are compiled -w here, matching the main build.
 target_compile_options(test_rdma_cm_proto PRIVATE
-    -w ${ERNIC_PARSER_TEST_SAN})
+    ${ERNIC_PARSER_TEST_SAN})
 target_link_options(test_rdma_cm_proto PRIVATE ${ERNIC_PARSER_TEST_SAN})
 target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
@@ -158,15 +182,18 @@ add_executable(test_dhcp_server_process
 )
 target_include_directories(test_dhcp_server_process PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+# Ported header trees are SYSTEM includes; the ported .c files are silenced
+# per-source via ERNIC_TEST_PORTED_SOURCES.
+target_include_directories(test_dhcp_server_process SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_dhcp_server_process PRIVATE _GNU_SOURCE)
-# QEMU-ported sources are compiled -w here, matching the main build.
 target_compile_options(test_dhcp_server_process PRIVATE
-    -w ${ERNIC_PARSER_TEST_SAN})
+    ${ERNIC_PARSER_TEST_SAN})
 target_link_options(test_dhcp_server_process PRIVATE ${ERNIC_PARSER_TEST_SAN})
 target_link_directories(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARIES})
@@ -181,15 +208,18 @@ add_executable(test_dhcp_server_lifecycle
 )
 target_include_directories(test_dhcp_server_lifecycle PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+# Ported header trees are SYSTEM includes; the ported .c files are silenced
+# per-source via ERNIC_TEST_PORTED_SOURCES.
+target_include_directories(test_dhcp_server_lifecycle SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_dhcp_server_lifecycle PRIVATE _GNU_SOURCE)
-# QEMU-ported sources are compiled -w here, matching the main build.
 target_compile_options(test_dhcp_server_lifecycle PRIVATE
-    -w ${ERNIC_UNIT_TEST_SAN})
+    ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_dhcp_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 target_link_directories(test_dhcp_server_lifecycle PRIVATE
     ${GLIB2_LIBRARY_DIRS})
@@ -220,7 +250,10 @@ target_compile_definitions(test_loopback_sge_copy PRIVATE
     _GNU_SOURCE)
 # -w: this test #includes the ported loopback translation unit, so warnings
 # would come from that ported C rather than the test itself; suppress them
-# to match how the ported sources are compiled in the main build.
+# to match how the ported sources are compiled in the main build. This is
+# target-wide because the ported C is part of this test's own translation
+# unit, so it cannot be silenced per-source; the test's own code is
+# consequently not warning-checked.
 target_compile_options(test_loopback_sge_copy PRIVATE
     -w ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_loopback_sge_copy PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -235,9 +268,14 @@ target_link_libraries(test_loopback_sge_copy PRIVATE
 add_executable(test_ionic_intr_pending test_ionic_intr_pending.c)
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+# Third-party headers are SYSTEM includes, matching the main target, so
+# their warnings stay quiet while the ionic sources under test are still
+# warning-checked.
+target_include_directories(test_ionic_intr_pending SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
@@ -261,7 +299,10 @@ target_compile_definitions(test_tcp_mesh_topology PRIVATE
     _GNU_SOURCE)
 # -w: this test #includes the ported TCP backend translation unit, so warnings
 # would come from that ported C rather than the test itself; suppress them
-# to match how the ported sources are compiled in the main build.
+# to match how the ported sources are compiled in the main build. This is
+# target-wide because the ported C is part of this test's own translation
+# unit, so it cannot be silenced per-source; the test's own code is
+# consequently not warning-checked.
 target_compile_options(test_tcp_mesh_topology PRIVATE
     -w ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_tcp_mesh_topology PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -288,7 +329,10 @@ target_compile_definitions(test_tcp_mr_bounds PRIVATE
     _GNU_SOURCE)
 # -w: this test #includes the ported TCP backend translation unit, so warnings
 # would come from that ported C rather than the test itself; suppress them
-# to match how the ported sources are compiled in the main build.
+# to match how the ported sources are compiled in the main build. This is
+# target-wide because the ported C is part of this test's own translation
+# unit, so it cannot be silenced per-source; the test's own code is
+# consequently not warning-checked.
 target_compile_options(test_tcp_mr_bounds PRIVATE
     -w ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_tcp_mr_bounds PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -296,6 +340,35 @@ target_link_directories(test_tcp_mr_bounds PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_tcp_mr_bounds PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
+# ---------------------------------------------------------------
+# Apply the project warning / hardening flags to every test target
+# ---------------------------------------------------------------
+set(ERNIC_TEST_TARGETS
+    test_pci_client
+    test_data_transfer
+    test_rdma_cm
+    test_rdma_backend_query_port
+    test_write_imm
+    test_net_checksum
+    test_rdma_cm_proto
+    test_dhcp_server_process
+    test_dhcp_server_lifecycle
+    test_parse_int
+    test_loopback_sge_copy
+    test_ionic_intr_pending
+    test_tcp_mesh_topology
+    test_tcp_mr_bounds
+)
+
+foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
+    ernic_set_compiler_flags(${ernic_test_target})
+    # Match the main target: CI configures with ERNIC_WERROR=ON, and without
+    # this a new warning in test code would scroll past instead of failing.
+    if(ERNIC_WERROR)
+        target_compile_options(${ernic_test_target} PRIVATE -Werror)
+    endif()
+endforeach()
 
 # ---------------------------------------------------------------
 # Register tests with CTest
