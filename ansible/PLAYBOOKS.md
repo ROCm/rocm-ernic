@@ -128,12 +128,24 @@ in `.github/workflows/system-tests.yml` and to
 launched here are the VMs CI tests. Nothing compares those
 three to each other.
 
-`scripts/fetch-guest-image.sh` also checks the guest kernel
-against the hardcoded `CI guest kernel` badge on line 9 of
-`README.md`, so a tag bump cannot leave the front page
-advertising a kernel nothing ships. That check runs on every
-pull request, in the loopback job of
-`.github/workflows/system-tests.yml`.
+`scripts/fetch-guest-image.sh` does check the image against
+this checkout before it caches it. The image's own
+`vm-info.json` has to report a kernel at or above 6.18 --
+below that there is no `drivers/infiniband/hw/ionic` to build
+against -- sharing a `major.minor` with `IONIC_KERNEL_REF` in
+`cmake/ErnicKernelModule.cmake`, and matching the hardcoded
+`CI guest kernel` badge on line 9 of `README.md`, so a tag
+bump cannot leave the front page advertising a kernel nothing
+ships. Callers can add `--expect-user`, `--expect-disk`,
+`--expect-release` and `--expect-flavour`; `ci/lib/common.sh`
+passes all four. These assertions used to live in
+`playbooks/vm-fetch.yml`, which 0.2.0 removed.
+
+The hosted jobs do not run that script -- they pull through
+`.github/actions/fetch-guest-vm` and carry their own inline
+copy of the badge comparison in the `Read VM info` step of
+`.github/workflows/system-tests.yml`. Deleting either copy
+drops coverage of a path the other does not reach.
 
 `group_vars/all.yml` holds the site configuration for this
 repo.

@@ -61,6 +61,19 @@ the tag means CI tests the same image the hosted workflow
 does. The image itself is built elsewhere, by the `ionic`
 flavour of [batesste-ci-images][ref-ci-images].
 
+The fetch is also the gate. `fetch_guest_image` in
+`lib/common.sh` passes the login account, disk name, release
+and flavour the artifact is known to ship, and the script
+rejects an image whose `vm-info.json` disagrees, or whose
+kernel is below 6.18, skewed from `IONIC_KERNEL_REF`, or
+different from the badge on `README.md`. Those checks run
+after the kilobyte metadata pull and before the 3.7 GB disk
+pull, so a wrong image fails in seconds rather than forty
+minutes into a lane. The expectations come from
+`CI_GUEST_IMAGE_USER` and `CI_GUEST_IMAGE_DISK`, not from
+`CI_VM_SSH_USER` and `CI_VM_BACKING`, so overriding either of
+those knobs still fetches.
+
 Keep the tag equal to `GUEST_ARTIFACT_TAG`
 in `.github/workflows/system-tests.yml` and
 `ernic_vm_artifact_tag` in `ansible/group_vars/all.yml`.

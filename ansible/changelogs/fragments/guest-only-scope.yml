@@ -55,6 +55,18 @@ removed_features:
     published image is now the only path, so passing ``-e
     ernic_vm_artifact=false`` has no effect.
   - >-
+    ``vm-fetch.yml``'s assertions have moved into
+    ``scripts/fetch-guest-image.sh`` rather than going away with the play.
+    The script now refuses an image whose ``vm-info.json`` reports a kernel
+    below ``6.18``, one whose ``major.minor`` differs from
+    ``IONIC_KERNEL_REF``, or one that disagrees with the ``CI guest kernel``
+    badge on ``README.md``; new ``--expect-user``, ``--expect-disk``,
+    ``--expect-release`` and ``--expect-flavour`` flags carry the site
+    expectations the play used to read from ``group_vars/all.yml``, and
+    ``--no-verify`` opts out.  Checking in the script rather than the play
+    means every caller is covered, including ``ci/jobs/vm-up.sh``, which
+    never ran the play.
+  - >-
     ``playbooks/ci-vm-register.yml`` is now ``playbooks/vm-register.yml``.
     It was never CI-specific --- its only input is the launcher's
     ``instances.json`` --- so it is the single registration play for both

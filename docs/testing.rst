@@ -362,22 +362,49 @@ skipped when the tag is already unpacked. ``ci/jobs/vm-up.sh``
 calls the same script, so the lab host and CI land the same
 bytes in the same layout.
 
-The kernel floor is two-sided.
+It also checks the image's ``vm-info.json`` against this
+checkout and refuses the image when they disagree. That
+happens between the metadata pull and the disk pull, so a
+rejection costs kilobytes rather than the 3.7 GB it would
+cost after -- and every assertion reads either the metadata
+or a file in this checkout, so pulling the disk first could
+not change the verdict anyway. Verification reruns on the
+cached path too, because repinning ``IONIC_KERNEL_REF``
+invalidates a directory that was correct when it was pulled.
+``--no-verify`` skips the lot.
+
+The kernel floor it enforces is two-sided.
 ``drivers/infiniband/hw/ionic`` merged in 6.18, which
-``ernic_ionic_min_kernel`` asserts against the running
+``ernic_ionic_min_kernel`` also asserts against the running
 guest; and ``ionic-ernic`` calls ``ib_umem_get_va``, which
-landed after 7.0, so a 7.0 guest passes the floor check and
-then fails the DKMS build. ``ernic_guest_setup`` compares
-the guest kernel's major.minor against ``IONIC_KERNEL_REF``
-before it starts that build.
+landed after 7.0, so a 7.0 guest clears the floor and then
+fails the DKMS build. The script compares the image kernel's
+major.minor against ``IONIC_KERNEL_REF`` in
+``cmake/ErnicKernelModule.cmake`` -- as does
+``ernic_guest_setup``, against the kernel the guest actually
+booted, before it starts that build.
 
 The ``CI guest kernel`` badge on line 9 of ``README.md`` has
 to be hardcoded -- shields.io cannot read the image -- so
 without a check a tag bump would leave the front page
-advertising a kernel nothing ships. That comparison runs in
-the ``Read VM info`` step of the loopback job in
+advertising a kernel nothing ships. Two independent
+implementations compare them: the fetch script, on the
+self-hosted and manual paths, and an inline copy in the
+``Read VM info`` step of the loopback job in
 ``.github/workflows/system-tests.yml``, on every pull
-request.
+request. The hosted jobs pull through
+``.github/actions/fetch-guest-vm``, not this script, so
+neither copy is redundant.
+
+Four more properties are site expectations rather than
+repo-derivable facts, so the caller supplies them:
+``--expect-user``, ``--expect-disk``, ``--expect-release``
+and ``--expect-flavour``. ``ci/lib/common.sh`` passes all
+four, which is what catches a ``gpu``-flavour image reaching
+a lane whose roles want the ionic userspace. These
+assertions used to live in ``playbooks/vm-fetch.yml``, which
+0.2.0 removed; in the script they cover every caller, not
+just the one that ran a play.
 
 Keep ``ernic_vm_artifact_tag`` equal to
 ``GUEST_ARTIFACT_TAG`` in
