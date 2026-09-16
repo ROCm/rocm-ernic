@@ -144,8 +144,22 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
 
     qemu_mutex_lock(&tbl->lock);
 
+    /*
+     * find_first_zero_bit() returns the size it was given when every bit is
+     * set, so tbl_sz itself means "full" -- it is one past the last valid
+     * handle, not a usable one. The comparison must be >=; with > the
+     * full-table case falls through to the set_bit()/memset() below.
+     *
+     * The memset is then always out of bounds, since tbl->tbl is sized
+     * tbl_sz * res_sz exactly. What set_bit() hits depends on the size:
+     * bitmap_new() rounds up to whole words, so it lands past the end of
+     * the bitmap only when tbl_sz is a multiple of 64, and otherwise sets
+     * a bit in the allocated padding, marking a nonexistent handle as
+     * taken. Every table here is currently word-aligned, but this helper
+     * is generic and must stay correct for any size.
+     */
     *handle = find_first_zero_bit(tbl->bitmap, tbl->tbl_sz);
-    if (*handle > tbl->tbl_sz) {
+    if (*handle >= tbl->tbl_sz) {
         rdma_error_report("Table %s, failed to allocate, bitmap is full",
                           tbl->name);
         qemu_mutex_unlock(&tbl->lock);

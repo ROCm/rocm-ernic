@@ -341,6 +341,36 @@ target_link_directories(test_tcp_mr_bounds PRIVATE
 target_link_libraries(test_tcp_mr_bounds PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# RDMA resource-table allocator test. It #includes the resource-manager
+# translation unit to reach its static inline allocator and stubs the backend
+# entry points it calls, so no RDMA subsystem link is needed.
+add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma/rdma_utils.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_stubs.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_type_stubs.c
+)
+target_include_directories(test_rdma_res_tbl PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/from-qemu
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_rdma_res_tbl PRIVATE
+    _GNU_SOURCE)
+# -w: this test #includes the ported resource-manager translation unit, so
+# warnings would come from that ported C rather than the test itself; suppress
+# them to match how the ported sources are compiled in the main build.
+target_compile_options(test_rdma_res_tbl PRIVATE
+    -w ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_rdma_res_tbl PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_rdma_res_tbl PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_rdma_res_tbl PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
 # ---------------------------------------------------------------
@@ -469,6 +499,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
 )
 set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# RDMA resource-table allocator unit test: asserts a full table refuses the
+# next allocation rather than handing back a handle one past the end.
+add_test(
+    NAME rdma-res-tbl-unit
+    COMMAND $<TARGET_FILE:test_rdma_res_tbl>
+)
+set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # ionic server smoke test: start the server, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.
