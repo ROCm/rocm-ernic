@@ -25,8 +25,8 @@
       - ernic_guest_vm_ip | trim | length > 0
     fail_msg: >-
       ernic_guest_vm_ip is empty.  Set it (or the vm_ip host var
-      that vm-create.yml / ci-vm-register.yml supply) to the
-      address this guest should take on {{ ernic_nic_name }}.
+      that vm-register.yml supplies) to the address this guest
+      should take on {{ ernic_nic_name }}.
 
 - name: Check that the emulated NIC exists
   ansible.builtin.command:

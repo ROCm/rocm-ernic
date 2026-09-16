@@ -5,10 +5,10 @@
 # Master playbook for the self-hosted CI.
 #
 # site.yml is the developer-facing entry point: it
-# builds, installs, creates the golden image and
-# launches VMs, all of which need root.  ci-site.yml
-# assumes ci/jobs/vm-up.sh has already brought VMs up
-# unprivileged, and runs only the test phases.
+# builds, installs and drives systemd, all of which need
+# root.  ci-site.yml assumes ci/jobs/vm-up.sh has already
+# brought VMs up unprivileged, and runs only guest setup
+# and the test phases.
 #
 # Usage (normally via ci/jobs/vm-functional.sh and
 # ci/jobs/perf.sh, not by hand):
@@ -25,7 +25,7 @@
 
 ---
 - name: "CI: register running VMs"
-  ansible.builtin.import_playbook: playbooks/ci-vm-register.yml
+  ansible.builtin.import_playbook: playbooks/vm-register.yml
   tags: [always]
 
 - name: "CI: guest setup (driver, rdma-core, NIC config)"

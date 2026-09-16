@@ -1,7 +1,7 @@
 ---
 major_changes:
-  - The collection now provisions the ionic device.  ``ernic_host_setup``,
-    ``ernic_guest_setup`` and ``ernic_image_prep`` build a guest that runs
+  - The collection now provisions the ionic device.  ``ernic_host_setup``
+    and ``ernic_guest_setup`` build a guest that runs
     patched upstream ``ionic.ko`` and ``ionic_rdma.ko`` from the
     ``ionic-ernic`` DKMS package against the ``1dd8:100a`` device, with
     stock rdma-core and its upstream ``providers/ionic``.  udev keeps the

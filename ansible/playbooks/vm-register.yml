@@ -2,23 +2,18 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Register already-running CI VMs into the ernic_vms
+# Register already-running VMs into the ernic_vms
 # inventory group.
 #
-# vm-create.yml normally does this via add_host at the
-# end of its run, but it also builds the golden image
-# and launches VMs -- both of which need root.  The
-# self-hosted CI brings VMs up unprivileged in
-# ci/jobs/vm-up.sh, so this play supplies just the
-# inventory registration that the downstream test plays
-# (guest-setup, sanity, performance) depend on.
-#
-# The host vars below intentionally mirror vm-create.yml
-# exactly; if that play's add_host contract changes,
-# change it here too.
+# The only input is the launcher's own instance manifest,
+# so this works for both entry points: ci/jobs/vm-up.sh
+# brings VMs up unprivileged for the self-hosted CI, and
+# the rocm-ernic service does it on the developer path.
+# Everything downstream (guest-setup, sanity, performance)
+# depends on the group this builds.
 
 ---
-- name: "CI: register running VMs in inventory"
+- name: Register running VMs in inventory
   hosts: localhost
   gather_facts: false
   vars_files:

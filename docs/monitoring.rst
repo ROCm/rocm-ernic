@@ -62,18 +62,14 @@ Quick Start
    # 3. Verify
    curl -s http://localhost:9840/metrics | head -20
 
-**Ansible (recommended):**
+.. note::
 
-.. code-block:: bash
-
-   cd ansible
-   ansible-playbook playbooks/monitoring-setup.yml
-
-The playbook creates the venv, installs the dependency,
-configures a systemd override so the exporter runs
-under the venv Python, writes a Prometheus
-``file_sd`` scrape config, and copies the Grafana
-dashboard JSON into the provisioning directory.
+   ``ansible/`` used to carry a ``monitoring-setup.yml``
+   play that did the above, plus a Prometheus ``file_sd``
+   scrape config and the Grafana dashboard JSON. It was
+   removed in 0.2.0 along with the rest of the automation
+   that was not on the guest-setup path. The manual steps
+   above are the supported route.
 
 Configuration
 -------------

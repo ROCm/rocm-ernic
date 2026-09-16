@@ -7,8 +7,8 @@ producing functional and performance reports.
 
 The GitHub-hosted workflows in `.github/workflows/` can
 only build and unit-test. Everything that needs KVM, a
-golden VM image or two guests talking RDMA to each other
-runs here instead.
+provisioned guest image or two guests talking RDMA to
+each other runs here instead.
 
 ## Design
 
@@ -43,22 +43,25 @@ performance sweeps, and the CI drives those plays
 directly through `ansible/ci-site.yml`.
 
 `site.yml` is the developer entry point and needs root:
-it installs to `/usr/local`, drives systemd, and builds
-the golden image over `qemu-nbd`. `ci-site.yml` skips
-all of that. It assumes `ci/jobs/vm-up.sh` has already
-brought VMs up unprivileged, and supplies only the
-inventory registration those plays need, via
-`ansible/playbooks/ci-vm-register.yml`.
+it installs to `/usr/local`, drives systemd, and binds
+devices to `vfio-pci`. `ci-site.yml` skips all of that.
+It assumes `ci/jobs/vm-up.sh` has already brought VMs up
+unprivileged, and supplies only the inventory registration
+those plays need, via `ansible/playbooks/vm-register.yml`
+-- the same play the developer path uses.
 
 The guest disk is **pulled from the registry**, not
 regenerated. `vm-up.sh` fetches the artifact named by
 `CI_GUEST_ARTIFACT_TAG` through
 `scripts/fetch-guest-image.sh` and unpacks it under
 `CI_VM_ARTIFACT_DIR`, skipping the download when that tag
-is already present. Needing no root is the point: building
-a golden image locally needs `qemu-nbd` and root, and
-pinning the tag means CI tests the same image the hosted
-workflow does. Keep the tag equal to `GUEST_ARTIFACT_TAG`
+is already present. Needing no root is the point: baking a
+guest image locally needs `qemu-nbd` and root, and pinning
+the tag means CI tests the same image the hosted workflow
+does. The image itself is built elsewhere, by the `ionic`
+flavour of [batesste-ci-images][ref-ci-images].
+
+Keep the tag equal to `GUEST_ARTIFACT_TAG`
 in `.github/workflows/system-tests.yml` and
 `ernic_vm_artifact_tag` in `ansible/group_vars/all.yml`.
 
@@ -463,3 +466,5 @@ whichever way the noise happened to fall. The baseline
 lives under `$CI_WORK`, not in git, because it describes
 one host: numbers from this node are not meaningful on
 another. Rebuilding a node means recapturing it.
+
+[ref-ci-images]: https://github.com/sbates130272/batesste-ci-images

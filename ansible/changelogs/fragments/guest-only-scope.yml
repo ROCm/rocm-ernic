@@ -1,0 +1,62 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+breaking_changes:
+  - >-
+    ``ernic_image_prep`` has been removed.  The collection no longer builds
+    a guest image; it turns an already-prepared guest into a rocm-ernic
+    RDMA node.  In this repo that guest is the published ``ionic`` flavour
+    of `batesste-ci-images
+    <https://github.com/sbates130272/batesste-ci-images>`__, which pins
+    mainline 7.2.3 on Ubuntu 26.04 and bakes the RDMA userspace, the DKMS
+    toolchain and ``perftest``.  Everything the role used to do --- the
+    mainline kernel, the ``pci.ids`` entry, ``modules-load.d``, masking
+    ``unattended-upgrades`` --- is the image's business now.  Its
+    ``ernic_image_*`` variables are gone with it.
+  - >-
+    ``sbates130272.batesste`` and ``ansible.posix`` are no longer
+    dependencies.  ``ernic_image_prep`` was batesste's only consumer, and
+    ``vm-create.yml`` was ansible.posix's.  ``requirements.yml`` now
+    resolves to one collection, ``community.general``, rather than six and
+    ~29M --- batesste pulled in ``amazon.aws`` and ``community.libvirt``.
+    ``community.general >= 13.3.0`` is what sets the ``ansible-core
+    >= 2.18`` floor in ``meta/runtime.yml``; that floor was previously
+    inherited through batesste and is now chosen directly.
+  - >-
+    ``ernic_rdma_core_version`` defaults to ``61.0`` rather than ``62.0``.
+    Ubuntu 26.04 packages ``61.0-2ubuntu3``, whose stock
+    ``ibverbs-providers`` already carries ``libionic`` at the same
+    ``rdmav59`` ABI a 62.0 source build produces, and the guest image
+    writes a ``provider.stamp`` saying so --- so ``rdma_core.yml`` skips
+    the roughly seven-minute build entirely.  Building at job time made
+    every lane of every run depend on the GitHub release CDN, which
+    returned 500 for the 62.0 tarball and failed a run.  Raise it only for
+    a provider genuinely newer than the archive's, and bring the apt holds
+    in ``ernic_rdma_core_hold_packages`` back with it.
+removed_features:
+  - >-
+    The repo-local plays ``vm-create.yml``, ``vm-fetch.yml``,
+    ``gpu-tests.yml``, ``gpu-perftest.yml``, ``stress-tests.yml`` and
+    ``monitoring-setup.yml`` have been removed, along with the stray
+    ``run-*.sh`` scripts and ``templates/packages-ernic``.  VMs are brought
+    up by ``ernicctl vm-launch`` or ``ci/jobs/vm-up.sh`` and the image is
+    fetched by ``scripts/fetch-guest-image.sh``; neither needs a play.  The
+    variables those plays owned are gone from ``group_vars/all.yml``:
+    ``ernic_vm_artifact``, ``ernic_golden_image``, ``ernic_vm_release``,
+    ``ernic_vm_packages``, ``ernic_vm_nvme``, ``ernic_vm_qemu_aio``,
+    ``ernic_vm_ssh_key_file``, ``ernic_vm_ssh_pass``,
+    ``ernic_golden_ssh_port``, ``ernic_perftest_source``,
+    ``ernic_gpu_tests``, ``ernic_force_vm_cleanup`` and every
+    ``ernic_stress_*``, ``ernic_gpu_2node_*``, ``ernic_gpu_perftest_*`` and
+    monitoring variable.  ``ernic_vm_artifact`` in particular was a
+    toggle between the published image and a locally built one; the
+    published image is now the only path, so passing ``-e
+    ernic_vm_artifact=false`` has no effect.
+  - >-
+    ``playbooks/ci-vm-register.yml`` is now ``playbooks/vm-register.yml``.
+    It was never CI-specific --- its only input is the launcher's
+    ``instances.json`` --- so it is the single registration play for both
+    entry points, and ``site.yml`` imports it where ``vm-create.yml`` used
+    to run.

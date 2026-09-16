@@ -3,11 +3,10 @@
 # SPDX-License-Identifier: MIT
 #
 # This role builds rdma-core with cmake/ninja and the ionic driver
-# with DKMS, but installs neither toolchain.  On the golden-image
-# path ernic_image_prep bakes them in.  On the artifact path nothing
-# does -- the published image is provisioned from a package list that
-# stops at the runtime, which is why the hosted jobs apt-install this
-# same set by hand before calling the role.
+# with DKMS, but installs neither toolchain.  The `ionic` flavour
+# of the guest image bakes them in (packages/ionic.txt), which is why
+# this is off by default.  Turn it on for an image that does not --
+# the hosted jobs apt-install this same set by hand for that reason.
 #
 # Reaching the archive from inside the guest on every run is the cost
 # of that gap, so this is gated off by default.  The right fix is

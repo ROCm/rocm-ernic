@@ -60,7 +60,7 @@ esac
 #
 # vm-down.sh deletes the qcow2 overlay at the end of every
 # job, so the VM vm-up.sh just booted is a pristine clone of
-# the golden image: no ionic_rdma built for the running
+# the backing image: no ionic_rdma built for the running
 # kernel, no nvme-cli, and no address on rocm-ernic0 -- and
 # without that address the driver populates no RoCEv2 GID,
 # so rdma_resolve_addr() has nothing to bind to.  Every
@@ -97,7 +97,6 @@ _ci_ansible_run() {
         -e "ernic_vm_ssh_base_port=${CI_VM_SSH_BASE_PORT}" \
         -e "ernic_vm_ssh_user=${CI_VM_SSH_USER}" \
         -e "ernic_vm_name_base=${CI_VM_NAME_BASE}" \
-        -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
         "$@" </dev/null
@@ -231,7 +230,7 @@ probe_fio() {
 
     # A skip must not read as a pass: run_check has no skip
     # state, so a silently absent fio would land in the report
-    # as a green check that never ran.  The golden image is
+    # as a green check that never ran.  The guest image is
     # supposed to carry fio, so its absence is a failure.
     if ! vm_ssh "${n}" 'command -v fio' >/dev/null 2>&1; then
         echo "fio is not installed in guest ${n}"

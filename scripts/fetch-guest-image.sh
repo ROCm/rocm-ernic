@@ -7,9 +7,12 @@
 # fetch-guest-image.sh
 #
 # Pulls the prebuilt guest qcow2 and its metadata from the ORAS artifact
-# registry.  Used by the Ansible vm-fetch play, by ci/lib/common.sh and
-# by hand, so all three land the same bytes in the same layout as
-# .github/actions/fetch-guest-vm, which does this for the hosted jobs.
+# registry.  Used by ci/lib/common.sh and by hand, so both land the
+# same bytes in the same layout as .github/actions/fetch-guest-vm,
+# which does this for the hosted jobs.
+#
+# The image is the "ionic" flavour published by
+# https://github.com/sbates130272/batesste-ci-images.
 #
 # On success DEST holds the decompressed qcow2, vm-info.json, id_rsa and
 # id_rsa.pub, and k=v lines naming them are written to stdout.

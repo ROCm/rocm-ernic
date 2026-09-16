@@ -28,9 +28,9 @@ ernic_guest_build_deps_packages:
   - libnl-route-3-dev
   - libudev-dev
   - python3-docutils
-  # Not a build dependency: iperf3 is what tcp-performance-tests.yml
-  # measures with, and the artifact image carries no copy, where the
-  # golden image got one from templates/packages-ernic.
+  # Not a build dependency, and the reason this gate is on at all in
+  # this repo: iperf3 is what tcp-performance-tests.yml measures
+  # with, and the ionic image's packages/ionic.txt does not list it.
   - iperf3
 # A guest reaching the archive over user-mode NAT routinely races a
 # mirror; the hosted jobs retry for the same reason.
@@ -49,7 +49,7 @@ ernic_guest_ionic_dir: /tmp/ionic
 ernic_ionic_source_dir: /var/tmp/ionic-src
 # The kernel ref itself (ernic_ionic_kernel_ref, defaulting to the
 # IONIC_KERNEL_REF pin in cmake/ErnicKernelModule.cmake) is owned
-# by the ernic_source role, which ernic_image_prep shares.
+# by the ernic_source role.
 # drivers/infiniband/hw/ionic was merged for 6.18; older guest
 # kernels cannot build the RDMA half.
 ernic_ionic_min_kernel: "6.18"
@@ -62,7 +62,16 @@ ernic_dkms_pkg_version: >-
   0.2.0-p{{ lookup('pipe', 'date +%s') }}
 
 # ── rdma-core provider build ─────────────────────
-ernic_rdma_core_version: "62.0"
+# 61.0 is what resolute packages (61.0-2ubuntu3), and its stock
+# ibverbs-providers already carries libionic at the same rdmav59
+# ABI a 62.0 source build produces.  The ionic guest image writes
+# a provider.stamp saying so, so rdma_core.yml skips the build
+# entirely -- which is the point: building at job time made every
+# lane of every run depend on the GitHub release CDN, and that CDN
+# returned 500 for the 62.0 tarball on 2026-09-16 and failed a run.
+# Raise this only for a provider genuinely newer than the archive's,
+# and bring the apt holds back with it.
+ernic_rdma_core_version: "61.0"
 ernic_rdma_core_url: >-
   https://github.com/linux-rdma/rdma-core/releases/download/v{{
   ernic_rdma_core_version }}/rdma-core-{{
@@ -89,7 +98,7 @@ ernic_guest_modules:
 # ── Guest NIC ────────────────────────────────────
 ernic_nic_name: rocm-ernic0
 ernic_nic_prefix: 24
-# Per-host values.  vm-create.yml / ci-vm-register.yml supply
+# Per-host values.  vm-register.yml supplies
 # vm_index and vm_ip via add_host; a static inventory can set
 # these directly instead.
 ernic_guest_vm_index: "{{ vm_index | default(1) }}"

@@ -324,7 +324,7 @@ PY
 # Verify each guest is actually provisioned: RDMA device
 # present, port active, and an address on the emulated NIC.
 #
-# The perf job clones fresh guests from the golden image, so
+# The perf job clones fresh guests from the backing image, so
 # skipping guest-setup leaves them with no driver and no
 # address.  Every measurement then records FAIL, which reads
 # like a device regression rather than a setup mistake.

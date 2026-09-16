@@ -44,9 +44,8 @@
 
 * The emulated device now identifies as `1dd8:100a` — the Pensando vendor ID
   the upstream driver already claims, with a device ID outside the range real
-  hardware uses — rather than `1022:8001`. Guest images prepared with an older
-  `ernic_image_prep` run need to be re-prepared so the udev rules and
-  `pci.ids` entry match.
+  hardware uses — rather than `1022:8001`. A guest image built for an older
+  release needs its udev rules and `pci.ids` entry updated to match.
 * Guest Ethernet leaves through a host TAP, so each instance needs its own TAP
   enslaved to a shared bridge for guest-to-guest IP. The `ernic_host_setup`
   role creates them from `ERNIC_TAP_PREFIX` / `ERNIC_TAP_BRIDGE`, and

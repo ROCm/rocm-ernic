@@ -16,11 +16,11 @@ authors:
   - Stephen Bates <stephen@raithlin.com>
 
 description: >-
-  Ansible roles that prepare Ubuntu hosts and VM images for
-  rocm-ernic: the patched upstream ionic kernel modules as a DKMS
-  package, rdma-core with its upstream ionic provider, host TAP
-  and bridge networking, udev naming rules, emulated NIC
-  addressing, rocm-xio, and the rocm-ernic systemd service.
+  Ansible roles that turn a prepared Ubuntu guest into a
+  rocm-ernic RDMA node: the patched upstream ionic kernel modules
+  as a DKMS package, rdma-core with its upstream ionic provider,
+  emulated NIC addressing and rocm-xio -- plus the host side, TAP
+  and bridge networking and the rocm-ernic systemd service.
 
 license:
   - MIT
@@ -33,17 +33,17 @@ tags:
   - qemu
   - virtualization
 
-# ansible.posix is deliberately absent: no shipped role uses it.
-# The only consumer is playbooks/vm-create.yml, which does not
-# ship, so it is declared in requirements.yml instead.
+# sbates130272.batesste was a dependency through 0.1.0 and is not
+# one now: ernic_image_prep was its only consumer, and the golden
+# image that role built has been replaced by a published guest
+# artifact (batesste-ci-images, flavour "ionic").  Declaring it
+# would cost a consumer amazon.aws and community.libvirt for
+# nothing.  ansible.posix went the same way with vm-create.yml.
 #
-# These floors are a chain, not three independent choices:
-# batesste 2.3.0 requires community.general >=13.3.0, which
-# requires ansible-core >=2.18.  Lowering any one of them without
-# the others gives a set the resolver cannot satisfy.  See
-# requires_ansible in meta/runtime.yml.
+# community.general is the sole remaining dependency and the thing
+# that sets the ansible-core >=2.18 floor in meta/runtime.yml --
+# directly now, rather than inherited through batesste.
 dependencies:
-  sbates130272.batesste: ">=2.3.0"
   community.general: ">=13.3.0"
 
 repository: https://github.com/ROCm/rocm-ernic
@@ -74,5 +74,7 @@ build_ignore:
   - playbooks
   - group_vars
   - inventory
+  # No top-level *.sh or templates/ exist today.  Both are kept as
+  # standing denies so re-adding one does not quietly publish it.
   - templates
   - "*.sh"

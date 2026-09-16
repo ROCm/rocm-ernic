@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 # Resolve the upstream kernel tag the ionic driver sources come
-# from.  Both ernic_guest_setup (which builds the DKMS package)
-# and ernic_image_prep (which installs a kernel new enough to
-# build it) need this, so it lives in the shared source role.
+# from.  ernic_guest_setup builds the DKMS package from it, and
+# driver_ionic.yml asserts the guest kernel can carry it: the
+# image pins mainline 7.2.3 and this ref must stay within a point
+# release of that, since below 7.2 the build fails on
+# ib_umem_get_va.
 
 ---
 - name: Read the pinned ionic kernel ref from cmake

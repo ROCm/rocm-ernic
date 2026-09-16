@@ -4,8 +4,9 @@
 #
 # Provision a guest VM with the rocm-ernic kernel driver, the
 # custom rdma-core provider, and IP addresses on the emulated
-# NICs.  Base packages come from ernic_image_prep, which runs
-# once against the golden image.
+# NICs.  Base packages, the pinned mainline kernel and the RDMA
+# userspace come baked into the guest image -- the `ionic` flavour
+# of batesste-ci-images -- not from anything here.
 
 ---
 # Short name, not the FQCN: it resolves against the containing
