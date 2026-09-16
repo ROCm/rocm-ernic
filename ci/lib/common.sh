@@ -79,7 +79,7 @@ CI_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR:-/opt/qemu-images}"
 # BACKING_SHARED=true), so sharing one base is safe and is
 # the whole point of following the published image.
 CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic}"
-CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260914-vm.resolute-ionic-qm.737f735-qcow2}"
+CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2}"
 CI_VM_ARTIFACT_DIR="${CI_VM_ARTIFACT_DIR:-${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}}"
 # What the artifact itself ships, as distinct from the CI_VM_* knobs
 # below, which are overridable and say what this lane should use.

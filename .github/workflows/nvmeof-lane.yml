@@ -31,7 +31,7 @@ env:
   # in a caller's `with:`, so passing it would mean a literal copy in
   # every caller.  system-tests.yml keeps its own copy for the other
   # two lanes; keep the two in step.
-  GUEST_ARTIFACT_TAG: 20260914-vm.resolute-ionic-qm.737f735-qcow2
+  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 
 jobs:
   system-test-nvmeof:

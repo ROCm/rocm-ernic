@@ -40,7 +40,7 @@ ernic_instances: 2
 # .github/workflows/system-tests.yml so all lanes test one guest.
 ernic_vm_artifact_repo: >-
   docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
-ernic_vm_artifact_tag: 20260914-vm.resolute-ionic-qm.737f735-qcow2
+ernic_vm_artifact_tag: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 ernic_vm_artifact_info_type: application/vnd.batesste.vm-info.v1
 # Tag-scoped, so bumping the tag cannot silently reuse the old disk.
 ernic_vm_artifact_dir: >-
