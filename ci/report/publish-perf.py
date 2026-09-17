@@ -34,6 +34,24 @@ import textwrap
 TRACKED_SIZES = ("4096", "65536", "1048576")
 SIZE_LABEL = {"4096": "4 KiB", "65536": "64 KiB", "1048576": "1 MiB"}
 
+# The class of machine a record was measured on.  A GitHub-hosted
+# runner has noisy neighbours and no fixed CPU; the lab node has
+# neither.  Numbers from the two are only comparable within their own
+# class, so they are charted and badged as separate series rather than
+# appended to one line.  Records written before this field existed all
+# came from the lab node, which is why DEFAULT_RUNNER is what it is.
+RUNNERS = ("github-hosted", "self-hosted")
+DEFAULT_RUNNER = "self-hosted"
+RUNNER_LABEL = {
+    "github-hosted": "GitHub-hosted runners",
+    "self-hosted": "the self-hosted lab node",
+}
+
+
+def runner_of(rec):
+    return rec.get("runner") or DEFAULT_RUNNER
+
+
 # "key" names the series in history.jsonl and the chart-<key>.html
 # fragment.  "section" is the summary["perf"] section the rows come
 # from; it defaults to "key", which is why the first two entries omit
@@ -96,13 +114,14 @@ def _find_median(rows, verb, size, metric):
     return None
 
 
-def extract(summary):
+def extract(summary, runner=DEFAULT_RUNNER):
     """Pull the tracked medians out of a run summary."""
     rec = {
         "generated": summary["meta"].get("generated"),
         "sha": (summary["meta"].get("sha") or "")[:8],
         "run_id": summary["meta"].get("run_id"),
         "node": summary["meta"].get("node"),
+        "runner": runner,
         "series": {},
         "badges": {},
     }
@@ -283,10 +302,10 @@ Performance trends
 
 No published measurements yet.
 
-The nightly full-tier run on the lab node appends its medians
-here and regenerates this page, so charts appear after the
-first successful nightly. Pull request runs never publish:
-their numbers describe the pull request, not ``main``.
+The nightly runs append their medians here and regenerate this
+page, so charts appear after the first successful nightly. Pull
+request runs never publish: their numbers describe the pull
+request, not ``main``.
 """
 
 
@@ -316,10 +335,16 @@ def build_page(history, docs_dir):
         "",
     ]
     lines += textwrap.wrap(
-        f"Medians from the nightly full-tier run on "
-        f"``{latest.get('node', 'the lab node')}``, oldest run at the "
-        f"left. Latest: ``{latest['sha']}`` at "
+        f"Medians from the nightly runs, oldest at the left. Latest: "
+        f"``{latest['sha']}`` on {RUNNER_LABEL[runner_of(latest)]} at "
         f"{latest.get('generated', 'an unknown time')}.", 72)
+    lines.append("")
+    lines += textwrap.wrap(
+        "Each runner class is charted on its own axes and never "
+        "joined into one line. A GitHub-hosted runner has noisy "
+        "neighbours and no fixed CPU, so its figures are comparable "
+        "with each other over time but not with the lab node's. The "
+        "README shields read the GitHub-hosted series.", 72)
     lines.append("")
     lines += textwrap.wrap(
         "Each panel carries one message size on its own scale. "
@@ -330,9 +355,19 @@ def build_page(history, docs_dir):
         "are likewise never combined: they share no scale.", 72)
     lines.append("")
 
+    # Runner classes that actually carry records, in RUNNERS order so
+    # the series the README shields read leads every section.
+    present = [r for r in RUNNERS
+               if any(runner_of(h) == r for h in history)]
+
     for ci_, chart in enumerate(CHARTS):
-        svg = svg_chart(chart, history, f"c{ci_}")
-        if not svg:
+        drawn = []
+        for r in present:
+            sub = [h for h in history if runner_of(h) == r]
+            svg = svg_chart(chart, sub, f"c{ci_}-{r}")
+            if svg:
+                drawn.append((r, sub, svg))
+        if not drawn:
             continue
         better = ("higher is better" if chart["higher_is_better"]
                   else "lower is better")
@@ -340,42 +375,55 @@ def build_page(history, docs_dir):
         lines += textwrap.wrap(
             f"Median ``{chart['metric']}`` for ``{chart['verb']}`` "
             f"({better}).", 72)
-        # One fragment per chart, so each sits with its own
-        # table rather than all the charts stacking up top.
-        name = f"chart-{chart['key']}.html"
-        (frag.parent / name).write_text(
-            f'{CSS.strip()}\n<div class="vizwrap">\n{svg}\n</div>\n')
-        lines += ["", ".. raw:: html",
-                  f"   :file: perf-history/{name}", ""]
 
-        # A table of the same numbers: the accessible reading,
-        # and the relief the palette check asks for, since
-        # light-mode aqua sits below 3:1 on the surface.
-        # .get, not [] -- history records written before a chart was
-        # added carry no key for it at all.
-        sizes = [z for z in TRACKED_SIZES
-                 if any(h["series"].get(chart["key"], {}).get(z)
-                        is not None for h in history)]
-        head = ["Run"] + [SIZE_LABEL[z] for z in sizes]
-        rows = []
-        for h in history[-10:]:
-            got = h["series"].get(chart["key"], {})
-            rows.append([h["sha"] or "?"] + [
-                (f"{got[z]:g}" if got.get(z) is not None else "--")
-                for z in sizes])
-        w = [max(len(r[i]) for r in [head] + rows)
-             for i in range(len(head))]
-        sep = " ".join("=" * x for x in w)
-        lines += [f"Last {len(rows)} runs, in {chart['unit']}:", "", sep,
-                  " ".join(c.ljust(x) for c, x in zip(head, w)).rstrip(),
-                  sep]
-        for r in rows:
-            lines.append(" ".join(c.ljust(x)
-                                  for c, x in zip(r, w)).rstrip())
-        lines += [sep, ""]
+        for r, sub, svg in drawn:
+            # One fragment per chart per runner class, so each sits
+            # with its own table rather than all the charts stacking
+            # up top, and so the two classes are never drawn on one
+            # pair of axes.
+            name = f"chart-{chart['key']}-{r}.html"
+            (frag.parent / name).write_text(
+                f'{CSS.strip()}\n<div class="vizwrap">\n{svg}\n</div>\n')
+            lines += ["", f"Measured on {RUNNER_LABEL[r]}:", "",
+                      ".. raw:: html",
+                      f"   :file: perf-history/{name}", ""]
+            lines += _table_lines(chart, sub)
 
     out.write_text("\n".join(lines) + "\n")
     return out
+
+
+def _table_lines(chart, history):
+    """A table of the same numbers the chart draws.
+
+    The accessible reading, and the relief the palette check asks
+    for, since light-mode aqua sits below 3:1 on the surface.
+    """
+    # .get, not [] -- history records written before a chart was
+    # added carry no key for it at all.
+    sizes = [z for z in TRACKED_SIZES
+             if any(h["series"].get(chart["key"], {}).get(z)
+                    is not None for h in history)]
+    head = ["Run"] + [SIZE_LABEL[z] for z in sizes]
+    rows = []
+    for h in history[-10:]:
+        got = h["series"].get(chart["key"], {})
+        rows.append([h["sha"] or "?"] + [
+            (f"{got[z]:g}" if got.get(z) is not None else "--")
+            for z in sizes])
+    w = [max(len(r[i]) for r in [head] + rows)
+         for i in range(len(head))]
+    sep = " ".join("=" * x for x in w)
+    n = len(rows)
+    head_line = (f"The one run so far, in {chart['unit']}:" if n == 1
+                 else f"Last {n} runs, in {chart['unit']}:")
+    lines = [head_line, "", sep,
+             " ".join(c.ljust(x) for c, x in zip(head, w)).rstrip(),
+             sep]
+    for r in rows:
+        lines.append(" ".join(c.ljust(x)
+                              for c, x in zip(r, w)).rstrip())
+    return lines + [sep, ""]
 
 
 # README badges: shields.io "endpoint" schema
@@ -433,13 +481,19 @@ def write_badges(rec, history, docs_dir):
     last entry) back to front and use the most recent run that
     actually measured this transport; label it as stale if
     that is not the current run.
+
+    Only this record's own runner class is walked. Falling back
+    across classes would put a lab-node number behind a label the
+    README presents as a GitHub-hosted one, which is a subtler
+    wrong answer than "no data".
     """
     out_dir = docs_dir / "perf-history"
     out_dir.mkdir(parents=True, exist_ok=True)
+    mine = [h for h in history if runner_of(h) == runner_of(rec)]
     for badge in BADGES:
         value = None
         source = None
-        for h in reversed(history):
+        for h in reversed(mine):
             v = h.get("badges", {}).get(badge["key"])
             if v is not None:
                 value = v
@@ -469,7 +523,9 @@ def main():
     ap.add_argument("--summary", required=True)
     ap.add_argument("--docs-dir", default="docs")
     ap.add_argument("--max-runs", type=int, default=60,
-                    help="how many runs of history to keep")
+                    help="how many runs of history to keep per runner")
+    ap.add_argument("--runner", choices=RUNNERS, default=DEFAULT_RUNNER,
+                    help="class of machine these numbers were measured on")
     args = ap.parse_args()
 
     docs = pathlib.Path(args.docs_dir)
@@ -477,19 +533,28 @@ def main():
     hist_path.parent.mkdir(parents=True, exist_ok=True)
 
     summary = json.load(open(args.summary))
-    rec = extract(summary)
+    rec = extract(summary, args.runner)
     if not any(rec["series"].values()) and not any(
             rec["badges"].values()):
         print("no tracked medians in this run; nothing published")
         return 0
 
     history = load_history(hist_path)
-    if history and history[-1].get("run_id") == rec["run_id"]:
+    # Per runner class: the other class publishes on its own cadence,
+    # so a global "is this the last record" check would miss a repeat.
+    mine = [h for h in history if runner_of(h) == args.runner]
+    if mine and mine[-1].get("run_id") == rec["run_id"]:
         print(f"run {rec['run_id']} already recorded; nothing to do")
         return 0
 
     history.append(rec)
-    history = history[-args.max_runs:]
+    # Trim per class as well, so a busy series cannot evict another's
+    # history out from under its chart.
+    drop = set()
+    for name in RUNNERS:
+        idx = [i for i, h in enumerate(history) if runner_of(h) == name]
+        drop.update(idx[:-args.max_runs])
+    history = [h for i, h in enumerate(history) if i not in drop]
     hist_path.write_text(
         "".join(json.dumps(h, sort_keys=True) + "\n" for h in history))
 

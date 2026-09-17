@@ -332,9 +332,11 @@ than the numbers themselves:
 
 - They come from a **GitHub-hosted runner** -- shared
   vCPUs, noisy neighbours, no pinning. Treat them as a
-  trend, not a benchmark. They are deliberately kept in
-  their own ``nvmeof`` series, separate from the perftest
-  figures the self-hosted node publishes.
+  trend, not a benchmark. Everything published is measured
+  on that class of machine now, but these stay in their own
+  ``nvmeof`` series: a fio sweep against an in-process
+  controller and a perftest sweep across two guests share
+  no scale.
 - The namespace is RAM by default, so nothing here
   measures storage. What is being measured is the capsule
   and RDMA path: command capsules in by SEND, data out by
