@@ -736,12 +736,14 @@ than the one that crossed the line, so it reads as
 <code class="docutils literal notranslate"><span class="pre">limits.d</span></code> drop-in and the systemd <code class="docutils literal notranslate"><span class="pre">DefaultLimitMEMLOCK</span></code>
 that the distro <code class="docutils literal notranslate"><span class="pre">rdma-core</span></code> package would have provided; a
 guest provisioned by hand needs both.</p></li>
-<li><p><strong>iperf3 rate cap:</strong> the Ansible stress default
-<code class="docutils literal notranslate"><span class="pre">ernic_iperf_bandwidth</span></code> is passed to <code class="docutils literal notranslate"><span class="pre">iperf3</span> <span class="pre">-b</span></code> verbatim
-and caps the reported TCP row well below what the link does
-unthrottled. Very low values on TCP (for example <code class="docutils literal notranslate"><span class="pre">10K</span></code>) are
-not useful at all: intervals round to zero and the connection
-can stall. Use a Mbit/s-scale cap or <code class="docutils literal notranslate"><span class="pre">-u</span></code> for a clean one.</p></li>
+<li><p><strong>iperf3 rate cap:</strong> <code class="docutils literal notranslate"><span class="pre">ernic_iperf_bandwidth</span></code> is passed to
+<code class="docutils literal notranslate"><span class="pre">iperf3</span> <span class="pre">-b</span></code> verbatim. It defaults to <code class="docutils literal notranslate"><span class="pre">&quot;0&quot;</span></code> – unlimited –
+because a cap is indistinguishable in the results from the link
+running that slowly, and the TCP row is published as a trend.
+Set it only when you are deliberately shaping, and then not to
+very low values on TCP (for example <code class="docutils literal notranslate"><span class="pre">10K</span></code>): intervals round to
+zero and the connection can stall. Use a Mbit/s-scale cap or
+<code class="docutils literal notranslate"><span class="pre">-u</span></code> for a clean one.</p></li>
 <li><p><strong>No Ethernet offloads:</strong> the emulated LIF advertises no
 checksum, TSO, or scatter-gather offload, so the guest stack
 always hands down linear skbs. This costs transmit

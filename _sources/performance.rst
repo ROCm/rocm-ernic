@@ -213,12 +213,14 @@ Known Limitations
   that the distro ``rdma-core`` package would have provided; a
   guest provisioned by hand needs both.
 
-- **iperf3 rate cap:** the Ansible stress default
-  ``ernic_iperf_bandwidth`` is passed to ``iperf3 -b`` verbatim
-  and caps the reported TCP row well below what the link does
-  unthrottled. Very low values on TCP (for example ``10K``) are
-  not useful at all: intervals round to zero and the connection
-  can stall. Use a Mbit/s-scale cap or ``-u`` for a clean one.
+- **iperf3 rate cap:** ``ernic_iperf_bandwidth`` is passed to
+  ``iperf3 -b`` verbatim. It defaults to ``"0"`` -- unlimited --
+  because a cap is indistinguishable in the results from the link
+  running that slowly, and the TCP row is published as a trend.
+  Set it only when you are deliberately shaping, and then not to
+  very low values on TCP (for example ``10K``): intervals round to
+  zero and the connection can stall. Use a Mbit/s-scale cap or
+  ``-u`` for a clean one.
 
 - **No Ethernet offloads:** the emulated LIF advertises no
   checksum, TSO, or scatter-gather offload, so the guest stack
