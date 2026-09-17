@@ -14,7 +14,7 @@
  * both are checked, because getting either wrong shows up in the guest as
  * a connect that hangs rather than one that fails.
  *
- * Copyright (C) 2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
