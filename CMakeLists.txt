@@ -141,42 +141,37 @@ endif()
 # Source file groups
 # ---------------------------------------------------------------
 
-# RDMA backend sources from QEMU port
-# Note: rdma.c excluded -- only contains QEMU type registration
-set(RDMA_BACKEND_SOURCES
+# Upstream QEMU/VMware code, under Oracle / Red Hat copyright.
+# Not ours to fix
+#
+# Note: rdma.c is deliberately absent -- it only contains QEMU type
+# registration, which this project does not use.
+set(ERNIC_VENDORED_SOURCES
     src/from-qemu/hw/rdma/rdma_backend.c
+    src/from-qemu/hw/rdma/rdma_rm.c
+    src/from-qemu/hw/rdma/rdma_utils.c
+    src/from-qemu/hw/rdma/vmw/pvrdma_qp_ops.c
+)
+
+# AMD-authored code that happens to sit under src/from-qemu/.  Ours to
+# maintain; folds into the src/ file lists once the vendored files move
+# out.
+#
+# pvrdma_main.c is here despite its Oracle / Red Hat header: only the
+# statistics bookkeeping and device-agnostic completion machinery
+# survive from upstream, and it is maintained locally.
+set(ERNIC_FROM_QEMU_AMD_SOURCES
     src/from-qemu/hw/rdma/rdma_backend_core.c
     src/from-qemu/hw/rdma/rdma_backend_none.c
     src/from-qemu/hw/rdma/rdma_backend_loopback.c
     src/from-qemu/hw/rdma/rdma_backend_tcp.c
-    src/from-qemu/hw/rdma/rdma_utils.c
-    src/from-qemu/hw/rdma/rdma_rm.c
-)
-
-# RDMA device core from the QEMU PVRDMA port.
-#
-# Only the device-agnostic remainder survives: the completion/CQE
-# machinery and the statistics bookkeeping that the ionic front end
-# and the RDMA backends both call into.  The guest-facing PVRDMA
-# interface (DSR command ring, BAR1 registers, UAR doorbells, its
-# Ethernet descriptor rings) went away with the PVRDMA device mode.
-set(RDMA_DEVICE_CORE_SOURCES
     src/from-qemu/hw/rdma/vmw/pvrdma_main.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_qp_ops.c
-)
-
-# Utility sources
-set(UTILITY_SOURCES
     src/from-qemu/utils/error-report.c
     src/from-qemu/utils/dhcp_server.c
     src/from-qemu/utils/dhcp_proxy.c
     src/from-qemu/utils/eth_rx_inject.c
     src/from-qemu/utils/tcp_conn.c
     src/from-qemu/utils/rdma_cm_proto.c
-)
-
-# QEMU stub implementations
-set(QEMU_STUB_SOURCES
     src/from-qemu/qemu-stubs/qemu_stubs.c
     src/from-qemu/qemu-stubs/qemu_type_stubs.c
 )
@@ -211,10 +206,8 @@ set(ALL_SOURCES
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
     ${NVMEOF_SOURCES}
-    ${RDMA_BACKEND_SOURCES}
-    ${RDMA_DEVICE_CORE_SOURCES}
-    ${UTILITY_SOURCES}
-    ${QEMU_STUB_SOURCES}
+    ${ERNIC_VENDORED_SOURCES}
+    ${ERNIC_FROM_QEMU_AMD_SOURCES}
 )
 
 # ---------------------------------------------------------------
@@ -257,19 +250,13 @@ target_compile_options(rocm-ernic PRIVATE
     -g
 )
 
-# Suppress strict warnings for QEMU-ported upstream code.
-# These files are derived from QEMU and will not be
-# modified to fix sign-conversion, format, packed,
-# switch-enum, etc. warnings.  Our own code (src/*.c,
-# tests/) still gets full warnings via
-# ernic_set_compiler_flags().
-set(QEMU_PORTED_SOURCES
-    ${RDMA_BACKEND_SOURCES}
-    ${RDMA_DEVICE_CORE_SOURCES}
-    ${UTILITY_SOURCES}
-    ${QEMU_STUB_SOURCES}
-)
-set_source_files_properties(${QEMU_PORTED_SOURCES}
+# Suppress strict warnings under src/from-qemu/.
+#
+# Vendored code is not ours to fix.  The AMD-authored code is, and its
+# -w is temporary: drop ERNIC_FROM_QEMU_AMD_SOURCES from the call below
+# to see those warnings.
+set_source_files_properties(
+    ${ERNIC_VENDORED_SOURCES} ${ERNIC_FROM_QEMU_AMD_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 
