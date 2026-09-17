@@ -19,6 +19,20 @@
 #include <errno.h>
 
 /*
+ * The headers declaring the stubs defined below.  Including them is what
+ * checks each definition against the prototype the rest of the tree sees.
+ */
+#include "qemu/atomic.h"
+#include "qemu/thread.h"
+#include "qemu/bitmap.h"
+#include "qemu/bswap.h"
+#include "qemu/cutils.h"
+#include "qemu/timer.h"
+#include "chardev/char-fe.h"
+#include "qapi/qapi-events-rdma.h"
+#include "hw/rdma/rdma.h"
+
+/*
  * Atomic Operations
  * For standalone mode, we use simple non-atomic operations since we're
  * single-threaded in the device logic.
@@ -57,18 +71,6 @@ void __qatomic_sub_impl(int *ptr, int val)
 /*
  * Thread Operations
  */
-
-typedef struct QemuThread {
-    pthread_t thread;
-} QemuThread;
-
-typedef struct QemuMutex {
-    pthread_mutex_t lock;
-} QemuMutex;
-
-typedef struct QemuCond {
-    pthread_cond_t cond;
-} QemuCond;
 
 int qemu_thread_create(QemuThread *thread, const char *name,
                        void *(*start_routine)(void *), void *arg, int mode)
@@ -203,18 +205,6 @@ uint64_t ROUND_UP(uint64_t n, uint64_t align)
     return ((n + align - 1) / align) * align;
 }
 
-/* Get bit at position */
-uint64_t BIT(int n)
-{
-    return 1ULL << n;
-}
-
-/* Get array size */
-size_t ARRAY_SIZE_impl(size_t n)
-{
-    return n;
-}
-
 /*
  * Polling
  */
@@ -236,8 +226,6 @@ int qemu_poll_ns(struct pollfd *fds, nfds_t nfds, int64_t timeout_ns)
 /*
  * Character Device Stubs (for MAD multiplexer - not used in standalone mode)
  */
-
-typedef struct CharBackend CharBackend;
 
 bool qemu_chr_fe_backend_connected(CharBackend *be)
 {
