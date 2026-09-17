@@ -264,7 +264,8 @@ jobs:
         echo "=== Building rocm-ernic server ==="
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_INSTALL_PREFIX=/usr
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DERNIC_WERROR=ON
         cmake --build build
         ls -lh build/rocm-ernic
         echo "✓ Server built successfully"

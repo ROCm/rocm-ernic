@@ -57,6 +57,12 @@ Build Options
    * - ``CMAKE_BUILD_TYPE``
      - ``Debug``
      - Build type (Debug, Release, RelWithDebInfo, etc.)
+   * - ``ERNIC_WERROR``
+     - ``OFF``
+     - Treat compiler warnings as errors for project code.
+       Off by default so a build with an unfamiliar compiler
+       is never broken by a new warning; CI turns it on
+       (see :ref:`werror-policy`)
    * - ``ERNIC_USE_SANITIZERS``
      - ``OFF``
      - Enable ASAN / LSAN / UBSAN
@@ -81,6 +87,35 @@ Build Options
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix
+
+.. _werror-policy:
+
+Warnings as Errors
+------------------
+
+``ERNIC_WERROR`` adds ``-Werror`` to the project's own
+sources and to the test targets. The QEMU-ported sources
+under ``src/from-qemu/`` are compiled with ``-w`` regardless,
+so the flag only governs code this project maintains.
+
+It defaults to ``OFF`` so that a packager or downstream
+consumer building with a compiler version we have not tested
+is never blocked by a newly-introduced warning. That
+tolerance is not extended to our own CI: every lane that
+compiles the project configures with ``-DERNIC_WERROR=ON``,
+so a new warning fails the build before it can merge.
+
+Developers should build with it on, matching CI:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DERNIC_WERROR=ON
+
+The ``nix`` static-analysis, dynamic-analysis, and fuzz
+builds are the one exception; they configure with it off
+because gcc 15 and current clang emit warnings on the
+QEMU-ported headers that these builds cannot suppress.
+Those lanes are informational and do not gate merges.
 
 Guest ionic Modules
 -------------------

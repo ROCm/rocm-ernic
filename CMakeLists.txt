@@ -287,9 +287,13 @@ target_link_libraries(rocm-ernic PRIVATE
 
 ernic_set_compiler_flags(rocm-ernic)
 
+# Off by default so a downstream or distro build is never broken by a
+# warning from a compiler version we have not seen. CI passes
+# -DERNIC_WERROR=ON on every lane that compiles the project, so new
+# warnings still fail the build where it matters.
 option(ERNIC_WERROR
   "Treat compiler warnings as errors for project code"
-  ON)
+  OFF)
 
 if(ERNIC_WERROR)
     target_compile_options(rocm-ernic PRIVATE -Werror)
