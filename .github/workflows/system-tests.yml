@@ -52,7 +52,7 @@ env:
   # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
   # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
   # the build inputs, so a rebuild from the same sources republishes it.
-  GUEST_ARTIFACT_TAG: 20260914-vm.resolute-ionic-qm.737f735-qcow2
+  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 
 jobs:
   system-test-loopback-vm:
@@ -539,14 +539,14 @@ jobs:
         # "ansible" apt bundle installs into, so installing that
         # bundle leaves community.general invisible.
         #
-        # community.general only, not ansible/requirements.yml: that
-        # file is the consumer contract and resolves to six
-        # collections and ~29M, because sbates130272.batesste drags in
-        # amazon.aws and community.libvirt.  Nothing here runs the one
-        # role that uses batesste (ernic_image_prep), and the only
-        # module these plays reach for is community.general.modprobe.
-        # Six galaxy round trips is six chances to hit the 500 that
-        # has already reddened runs; one is one.
+        # community.general by name rather than -r requirements.yml:
+        # since 0.2.0 that file resolves to this one collection
+        # anyway, so the two are equivalent and this needs no
+        # checkout.  Through 0.1.0 it was six collections and ~29M --
+        # sbates130272.batesste dragged in amazon.aws and
+        # community.libvirt for ernic_image_prep, which no longer
+        # exists -- and six galaxy round trips was six chances to hit
+        # the 500 that has already reddened runs.
         ansible --version
         ansible-galaxy collection install community.general
 
@@ -560,10 +560,10 @@ jobs:
         set -e
         KVER=$(uname -r)
 
-        # ernic_image_prep bakes these into the golden image on the
-        # self-hosted path.  These jobs run against a prebuilt CI qcow2
-        # instead, so the build toolchain is installed here.  The kernel
-        # version itself is the image's business, and ernic_guest_setup
+        # The ionic flavour of the guest image bakes these in, but
+        # these jobs run against a generic prebuilt CI qcow2, so the
+        # build toolchain is installed here.  The kernel version
+        # itself is the image's business, and ernic_guest_setup
         # asserts it matches the pinned ionic sources.
         #
         # Headers are a check, not an install.  A guest on a mainline
@@ -604,7 +604,7 @@ jobs:
         ERNIC_RUN_DIR=/tmp/ernic-ci
         mkdir -p "$ERNIC_RUN_DIR"
 
-        # ci-vm-register.yml turns this manifest into the ernic_vms
+        # vm-register.yml turns this manifest into the ernic_vms
         # inventory group; on the self-hosted path ernicctl writes it.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
@@ -870,7 +870,7 @@ jobs:
         set -euo pipefail
         DEV="$RDMA_DEVICE"
 
-        # perftest is expected to come from the golden guest image; no
+        # perftest is expected to come from the guest image; no
         # role installs it.  Assert rather than apt-install on the fly:
         # installing here would paper over a gap in the image, which is
         # the same silent-degradation this step exists to remove.
@@ -878,7 +878,7 @@ jobs:
                  ib_send_lat ib_write_lat ib_read_lat; do
           command -v "$T" >/dev/null || {
             echo "✗ $T not found in the guest"
-            echo "perftest is expected in the golden image; got:"
+            echo "perftest is expected in the guest image; got:"
             dpkg -l | grep -i perftest || echo "  (no perftest package)"
             exit 1
           }
@@ -1277,7 +1277,7 @@ jobs:
         set -euo pipefail
         echo "=== Creating per-VM overlays ==="
         # Overlays, not copies.  The fetched qcow2 is 5.75 GB, and both
-        # guests boot the same golden image and diverge only in what they
+        # guests boot the same backing image and diverge only in what they
         # write, so cp spent a minute and 5.75 GB to reproduce something
         # qemu-img create does instantly.
         #
@@ -1373,14 +1373,14 @@ jobs:
         # "ansible" apt bundle installs into, so installing that
         # bundle leaves community.general invisible.
         #
-        # community.general only, not ansible/requirements.yml: that
-        # file is the consumer contract and resolves to six
-        # collections and ~29M, because sbates130272.batesste drags in
-        # amazon.aws and community.libvirt.  Nothing here runs the one
-        # role that uses batesste (ernic_image_prep), and the only
-        # module these plays reach for is community.general.modprobe.
-        # Six galaxy round trips is six chances to hit the 500 that
-        # has already reddened runs; one is one.
+        # community.general by name rather than -r requirements.yml:
+        # since 0.2.0 that file resolves to this one collection
+        # anyway, so the two are equivalent and this needs no
+        # checkout.  Through 0.1.0 it was six collections and ~29M --
+        # sbates130272.batesste dragged in amazon.aws and
+        # community.libvirt for ernic_image_prep, which no longer
+        # exists -- and six galaxy round trips was six chances to hit
+        # the 500 that has already reddened runs.
         #
         # This runs here rather than after the VMs boot because the TAP
         # step below is an Ansible play and has to precede the servers.
@@ -1883,9 +1883,9 @@ jobs:
         echo "=== Installing kernel headers and build tools in both VMs ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # ernic_image_prep bakes these into the golden image on the
-        # self-hosted path.  These jobs run against a prebuilt CI qcow2,
-        # so the build toolchain goes in here.  The kernel version itself
+        # The ionic flavour of the guest image bakes these in, but
+        # these jobs run against a generic prebuilt CI qcow2, so the
+        # build toolchain goes in here.  The kernel version itself
         # is the image's business, and ernic_guest_setup asserts it
         # matches the pinned ionic sources.
         #
@@ -1942,7 +1942,7 @@ jobs:
         ERNIC_RUN_DIR=/tmp/ernic-ci
         mkdir -p "$ERNIC_RUN_DIR"
 
-        # ci-vm-register.yml turns this manifest into the ernic_vms
+        # vm-register.yml turns this manifest into the ernic_vms
         # inventory group; on the self-hosted path ernicctl writes it.
         # Ansible then drives both guests in parallel by itself.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON

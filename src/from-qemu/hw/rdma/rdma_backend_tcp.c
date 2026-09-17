@@ -3178,7 +3178,10 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
     attr->max_sge = 32;
     attr->max_cq = 1024;
     attr->max_cqe = 8192;
-    attr->max_mr = 1024;
+    /* As in the loopback backend: this sizes rdma_rm's MR table, and
+     * a literal below MAX_MR silently caps it under what an
+     * nvme-rdma connect registers up front. */
+    attr->max_mr = MAX_MR;
     attr->max_pd = 1024;
     attr->max_mr_size = 0xFFFFFFFF;
     attr->atomic_cap = IBV_ATOMIC_HCA;

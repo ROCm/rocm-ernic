@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# GPU passthrough path.  ROCm and the build tools come from
-# ernic_image_prep; only the rocm-xio build and load happen here.
+# GPU passthrough path.  ROCm and the build tools come from the
+# guest image; only the rocm-xio build and load happen here.
 #
 # rocm-xio builds its GDA_IONIC backend against the system
 # rdma-core that rdma_core.yml has already installed with the ionic

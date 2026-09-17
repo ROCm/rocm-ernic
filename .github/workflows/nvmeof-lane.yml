@@ -31,7 +31,7 @@ env:
   # in a caller's `with:`, so passing it would mean a literal copy in
   # every caller.  system-tests.yml keeps its own copy for the other
   # two lanes; keep the two in step.
-  GUEST_ARTIFACT_TAG: 20260914-vm.resolute-ionic-qm.737f735-qcow2
+  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 
 jobs:
   system-test-nvmeof:
@@ -55,7 +55,7 @@ jobs:
       NVMEOF_BS: 4096
       NVMEOF_NQN: nvmet-test
       # Must sit on ernic_nic_subnet, which is where
-      # ci-vm-register.yml addresses the guest NIC from.
+      # vm-register.yml addresses the guest NIC from.
       NVMEOF_TRADDR: 192.168.200.1
       NVMEOF_TRSVCID: 4420
       # Where the play drops the block-size sweep when publishing.
@@ -524,14 +524,14 @@ jobs:
         # "ansible" apt bundle installs into, so installing that
         # bundle leaves community.general invisible.
         #
-        # community.general only, not ansible/requirements.yml: that
-        # file is the consumer contract and resolves to six
-        # collections and ~29M, because sbates130272.batesste drags in
-        # amazon.aws and community.libvirt.  Nothing here runs the one
-        # role that uses batesste (ernic_image_prep), and the only
-        # module these plays reach for is community.general.modprobe.
-        # Six galaxy round trips is six chances to hit the 500 that
-        # has already reddened runs; one is one.
+        # community.general by name rather than -r requirements.yml:
+        # since 0.2.0 that file resolves to this one collection
+        # anyway, so the two are equivalent and this needs no
+        # checkout.  Through 0.1.0 it was six collections and ~29M --
+        # sbates130272.batesste dragged in amazon.aws and
+        # community.libvirt for ernic_image_prep, which no longer
+        # exists -- and six galaxy round trips was six chances to hit
+        # the 500 that has already reddened runs.
         ansible --version
         ansible-galaxy collection install community.general
 
@@ -545,10 +545,10 @@ jobs:
         set -e
         KVER=$(uname -r)
 
-        # ernic_image_prep bakes these into the golden image on the
-        # self-hosted path.  These jobs run against a prebuilt CI qcow2
-        # instead, so the build toolchain is installed here.  The kernel
-        # version itself is the image's business, and ernic_guest_setup
+        # The ionic flavour of the guest image bakes these in, but
+        # these jobs run against a generic prebuilt CI qcow2, so the
+        # build toolchain is installed here.  The kernel version
+        # itself is the image's business, and ernic_guest_setup
         # asserts it matches the pinned ionic sources.
         #
         # Headers are a check, not an install.  A guest on a mainline
@@ -589,7 +589,7 @@ jobs:
         ERNIC_RUN_DIR=/tmp/ernic-ci
         mkdir -p "$ERNIC_RUN_DIR"
 
-        # ci-vm-register.yml turns this manifest into the ernic_vms
+        # vm-register.yml turns this manifest into the ernic_vms
         # inventory group; on the self-hosted path ernicctl writes it.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
@@ -625,7 +625,7 @@ jobs:
         # (true), unlike the loopback job.  The guest needs an IPv4
         # address on the emulated NIC or ionic_rdma populates no RoCEv2
         # GID, rdma_resolve_addr() has no source to bind to, and the
-        # connect fails with a bare ENETUNREACH.  ci-vm-register.yml
+        # connect fails with a bare ENETUNREACH.  vm-register.yml
         # gives instance 1 the .10 address on ernic_nic_subnet, the
         # same segment the controller answers on.
     

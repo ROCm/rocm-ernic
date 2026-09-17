@@ -19,10 +19,14 @@ AMD Pensando ionic NIC, so the guest runs a driver that is
 already in mainline Linux rather than one that only exists
 here. The driver source is near-stock --- two small patches,
 one of them a device-ID addition --- but the guest itself is
-not a stock cloud image: it needs a mainline kernel matching
-``IONIC_KERNEL_REF`` and the headers to build against, which
-is what the ``ernic_image_prep`` role provides. See the
-warning below.
+**not** a stock cloud image. It needs a mainline kernel
+matching ``IONIC_KERNEL_REF`` and the headers to build
+against, which no Ubuntu release ships. Nothing in this repo
+bakes such an image either: the guest is the published
+``ionic`` flavour of `batesste-ci-images
+<https://github.com/sbates130272/batesste-ci-images>`_,
+fetched by ``scripts/fetch-guest-image.sh``. See the warning
+below.
 
 The Pensando vendor ID ``0x1dd8`` is kept, because that is
 what the upstream driver claims, but device ID ``0x100a``
@@ -215,9 +219,9 @@ DKMS package is registered as ``ionic-ernic``.
    ``ib_respond_udata`` --- so the default ``v7.2.4`` needs a
    7.2.x guest. A point-release gap (``v7.2.4`` sources on
    7.2.3) is fine. No Ubuntu stock kernel qualifies today:
-   noble HWE is 6.17 and resolute GA is 7.0, so
-   ``ernic_image_prep`` installs a matching kernel from the
-   Ubuntu mainline PPA when it builds the golden image, and
+   noble HWE is 6.17 and resolute GA is 7.0, so the guest
+   image bakes a mainline kernel from the Ubuntu mainline
+   PPA --- the ``ionic`` flavour pins 7.2.3 --- and
    ``ernic_guest_setup`` asserts the match before it starts
    the DKMS build.
 

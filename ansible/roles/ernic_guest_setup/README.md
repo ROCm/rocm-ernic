@@ -21,8 +21,10 @@ The floor is not enough on its own. The ionic sources track IB-core helpers
 that move between minor releases, so the guest kernel's major.minor must also
 match `IONIC_KERNEL_REF`: `v7.2.4` sources build on a 7.2.3 kernel but not on a
 7.0 one. The role asserts this before the DKMS build rather than letting it
-fail as a wall of implicit-declaration errors. `ernic_image_prep` installs a
-matching mainline kernel when it builds the golden image.
+fail as a wall of implicit-declaration errors. Supplying a matching kernel is
+the base image's job — in this repo, the `ionic` flavour of
+[batesste-ci-images](https://github.com/sbates130272/batesste-ci-images), which
+pins mainline 7.2.3.
 
 ## Overview
 
@@ -49,8 +51,9 @@ it is skipped when `provider.stamp` shows it was built from the same version
 and source hashes. The stamp is written last, so an interrupted build
 is not mistaken for a complete one.
 
-Run `ernic_image_prep` first — this role assumes RDMA userspace, ROCm and the
-build toolchain are already present. That includes `perftest`: the rocm-xio
+This role assumes RDMA userspace, ROCm and the build toolchain are already
+present in the base image; `ernic_guest_build_deps` installs them when they
+are not. That includes `perftest`: the rocm-xio
 fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
 `ib_*_bw` binaries a CI perf sweep measures with are the distro package
 (24.01.0, reporting `Version: 6.20`) rather than the fork.
@@ -84,11 +87,11 @@ ernic_pci_mmio_bridge: true
 # so the packages it overwrites are held: only this build has
 # an ionic provider, and an apt upgrade that restored the
 # packaged libraries would take the RDMA device away.
-ernic_rdma_core_version: "62.0"
+ernic_rdma_core_version: "61.0"
 ernic_rdma_core_prefix: /usr
 ernic_rdma_core_hold: true
 
-# NIC. vm_index / vm_ip host vars (set by vm-create.yml) are
+# NIC. vm_index / vm_ip host vars (set by vm-register.yml) are
 # picked up automatically; set these directly for a static
 # inventory.
 ernic_nic_name: rocm-ernic0

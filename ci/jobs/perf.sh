@@ -70,7 +70,6 @@ _ci_ansible_run() {
         -e "ernic_vm_ssh_base_port=${CI_VM_SSH_BASE_PORT}" \
         -e "ernic_vm_ssh_user=${CI_VM_SSH_USER}" \
         -e "results_dir=${PERF_CSV_DIR}" \
-        -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
         "$@" </dev/null
@@ -80,7 +79,7 @@ cd "${ANSIBLE_DIR}"
 
 # The perf job brings up its own VMs, and vm-down.sh deleted
 # the overlays the functional job left behind, so these guests
-# are freshly cloned from the golden image: no driver loaded
+# are freshly cloned from the backing image: no driver loaded
 # and no address on the emulated NIC.  Without this the very
 # first check fails with "Ping failed between VMs" and every
 # subsequent measurement records FAIL.

@@ -822,7 +822,12 @@ static int loopback_query_device(RdmaBackendDev *backend_dev,
     attr->max_sge = 32;
     attr->max_cq = 1024;
     attr->max_cqe = 8192;
-    attr->max_mr = 1024;
+    /* Sizes rdma_rm's MR table, so it has to be the real ceiling and
+     * not a literal: an nvme-rdma initiator registers queue_size
+     * regions per queue up front, and 8 queues alone want
+     * 8 * 128 + 32 = 1056.  A 1024 here shadowed MAX_MR and failed
+     * the connect at QID 8. */
+    attr->max_mr = MAX_MR;
     attr->max_pd = 1024;
     attr->max_mr_size = 0xFFFFFFFF;
     attr->atomic_cap = IBV_ATOMIC_HCA;

@@ -16,6 +16,33 @@ struct ionic_eth_emu;
 struct ionic_datapath;
 
 /*
+ * Memory-region budget.
+ *
+ * A stock nvme-rdma initiator runs with register_always, so it pre-allocates
+ * a pool of IONIC_MR_PER_QUEUE regions for every queue it creates -- admin
+ * queue included -- at connect time rather than per I/O.  An N-queue
+ * controller therefore needs (N + 1) * IONIC_MR_PER_QUEUE regions to be
+ * reachable before the first capsule moves.
+ *
+ * IONIC_MAX_MR sizes three tables that all have to hold that many: the
+ * rdma_rm resource table (MAX_MR in from-qemu/hw/rdma/rdma_rm_defs.h, which
+ * cannot include this header), the data path's own dp_mr array, and the admin
+ * queue's driver-id-to-handle map.  Whichever is smallest is the real
+ * ceiling, so they are kept equal deliberately.
+ *
+ * It is not sized for the maximum 64 queues: dp_reg_mr() walks the whole
+ * table on every fast registration -- that is, on every NVMe command -- so
+ * the constant is also a per-I/O cost, and 2048 covers the default 8 queues
+ * with headroom without doubling that walk again.  nvmeof_parse_backend()
+ * rejects a queue count that would not fit.
+ */
+#define IONIC_MR_PER_QUEUE 128
+#define IONIC_MAX_MR       2048
+
+/* Largest max_queues that fits the budget, admin queue included. */
+#define IONIC_MAX_MR_QUEUES ((IONIC_MAX_MR / IONIC_MR_PER_QUEUE) - 1)
+
+/*
  * Description of a guest-resident ring or memory region as the driver hands
  * it to us: either a direct DMA address (map_count <= 1) or the address of a
  * page table of map_count le64 page addresses.

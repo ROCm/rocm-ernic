@@ -4,11 +4,16 @@
 
 ---
 release_summary: >-
-  The collection now provisions only the ionic device: guests
-  run the patched upstream ``ionic`` and ``ionic_rdma`` modules
-  against the ``1dd8:100a`` device, with stock rdma-core and its
-  upstream ``providers/ionic``, and reach each other over a host
-  bridge and per-instance TAP created by ``ernic_host_setup``.
-  The out-of-tree ``rocm_ernic`` driver path has been removed
-  along with ``ernic_device_mode``.  Device names and the
-  remaining inventory variables are unchanged.
+  The collection now provisions only the ionic device, and only
+  the guest: guests run the patched upstream ``ionic`` and
+  ``ionic_rdma`` modules against the ``1dd8:100a`` device, with
+  stock rdma-core and its upstream ``providers/ionic``, and reach
+  each other over a host bridge and per-instance TAP created by
+  ``ernic_host_setup``.  The out-of-tree ``rocm_ernic`` driver
+  path has been removed along with ``ernic_device_mode``.
+  Building the guest image is no longer in scope --- the base
+  image is expected to supply the mainline kernel and the RDMA
+  userspace --- so ``ernic_image_prep`` is gone and with it the
+  ``sbates130272.batesste`` and ``ansible.posix`` dependencies.
+  Device names and the remaining inventory variables are
+  unchanged.

@@ -79,11 +79,17 @@ CI_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR:-/opt/qemu-images}"
 # BACKING_SHARED=true), so sharing one base is safe and is
 # the whole point of following the published image.
 CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic}"
-CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260914-vm.resolute-ionic-qm.737f735-qcow2}"
+CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2}"
 CI_VM_ARTIFACT_DIR="${CI_VM_ARTIFACT_DIR:-${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}}"
-CI_VM_BACKING="${CI_VM_BACKING:-${CI_VM_ARTIFACT_DIR}/batesste-ci-vm.qcow2}"
+# What the artifact itself ships, as distinct from the CI_VM_* knobs
+# below, which are overridable and say what this lane should use.
+# fetch_guest_image asserts the image against these two, so overriding
+# CI_VM_BACKING to relocate the overlays does not reject the fetch.
+CI_GUEST_IMAGE_DISK="batesste-ci-vm.qcow2"
+CI_GUEST_IMAGE_USER="batesste"
+CI_VM_BACKING="${CI_VM_BACKING:-${CI_VM_ARTIFACT_DIR}/${CI_GUEST_IMAGE_DISK}}"
 # The account and key baked into that image.
-CI_VM_SSH_USER="${CI_VM_SSH_USER:-batesste}"
+CI_VM_SSH_USER="${CI_VM_SSH_USER:-${CI_GUEST_IMAGE_USER}}"
 CI_VM_SSH_IDENTITY="${CI_VM_SSH_IDENTITY:-${CI_VM_ARTIFACT_DIR}/id_rsa}"
 
 CI_QEMU_MINIMAL="${CI_QEMU_MINIMAL:-${HOME}/Projects/qemu-minimal}"
@@ -269,11 +275,24 @@ vm_ssh() {
 
 # Pull the pinned guest image if it is not already on disk.
 # Idempotent and cheap on a hit; see scripts/fetch-guest-image.sh.
+#
+# The --expect-* values are the ones this file hardcodes alongside the
+# tag, so they are the ones that can drift away from it.  They come from
+# CI_GUEST_IMAGE_* rather than CI_VM_SSH_USER and CI_VM_BACKING, which
+# are documented overrides: pointing the overlays at a different backing
+# disk is a lane decision and says nothing about what the registry
+# shipped.  The script checks the guest kernel against IONIC_KERNEL_REF
+# and the README badge on its own.
 fetch_guest_image() {
     "${PROJECT_ROOT}/scripts/fetch-guest-image.sh" \
         --repo "${CI_GUEST_ARTIFACT_REPO}" \
         --tag "${CI_GUEST_ARTIFACT_TAG}" \
-        --dest "${CI_VM_ARTIFACT_DIR}"
+        --dest "${CI_VM_ARTIFACT_DIR}" \
+        --project-root "${PROJECT_ROOT}" \
+        --expect-user "${CI_GUEST_IMAGE_USER}" \
+        --expect-disk "${CI_GUEST_IMAGE_DISK}" \
+        --expect-release resolute \
+        --expect-flavour ionic
 }
 
 # ── Preflight ─────────────────────────────────────
@@ -324,7 +343,7 @@ PY
 # Verify each guest is actually provisioned: RDMA device
 # present, port active, and an address on the emulated NIC.
 #
-# The perf job clones fresh guests from the golden image, so
+# The perf job clones fresh guests from the backing image, so
 # skipping guest-setup leaves them with no driver and no
 # address.  Every measurement then records FAIL, which reads
 # like a device regression rather than a setup mistake.

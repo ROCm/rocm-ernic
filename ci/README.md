@@ -7,8 +7,8 @@ producing functional and performance reports.
 
 The GitHub-hosted workflows in `.github/workflows/` can
 only build and unit-test. Everything that needs KVM, a
-golden VM image or two guests talking RDMA to each other
-runs here instead.
+provisioned guest image or two guests talking RDMA to
+each other runs here instead.
 
 ## Design
 
@@ -43,22 +43,38 @@ performance sweeps, and the CI drives those plays
 directly through `ansible/ci-site.yml`.
 
 `site.yml` is the developer entry point and needs root:
-it installs to `/usr/local`, drives systemd, and builds
-the golden image over `qemu-nbd`. `ci-site.yml` skips
-all of that. It assumes `ci/jobs/vm-up.sh` has already
-brought VMs up unprivileged, and supplies only the
-inventory registration those plays need, via
-`ansible/playbooks/ci-vm-register.yml`.
+it installs to `/usr/local`, drives systemd, and binds
+devices to `vfio-pci`. `ci-site.yml` skips all of that.
+It assumes `ci/jobs/vm-up.sh` has already brought VMs up
+unprivileged, and supplies only the inventory registration
+those plays need, via `ansible/playbooks/vm-register.yml`
+-- the same play the developer path uses.
 
 The guest disk is **pulled from the registry**, not
 regenerated. `vm-up.sh` fetches the artifact named by
 `CI_GUEST_ARTIFACT_TAG` through
 `scripts/fetch-guest-image.sh` and unpacks it under
 `CI_VM_ARTIFACT_DIR`, skipping the download when that tag
-is already present. Needing no root is the point: building
-a golden image locally needs `qemu-nbd` and root, and
-pinning the tag means CI tests the same image the hosted
-workflow does. Keep the tag equal to `GUEST_ARTIFACT_TAG`
+is already present. Needing no root is the point: baking a
+guest image locally needs `qemu-nbd` and root, and pinning
+the tag means CI tests the same image the hosted workflow
+does. The image itself is built elsewhere, by the `ionic`
+flavour of [batesste-ci-images][ref-ci-images].
+
+The fetch is also the gate. `fetch_guest_image` in
+`lib/common.sh` passes the login account, disk name, release
+and flavour the artifact is known to ship, and the script
+rejects an image whose `vm-info.json` disagrees, or whose
+kernel is below 6.18, skewed from `IONIC_KERNEL_REF`, or
+different from the badge on `README.md`. Those checks run
+after the kilobyte metadata pull and before the 3.7 GB disk
+pull, so a wrong image fails in seconds rather than forty
+minutes into a lane. The expectations come from
+`CI_GUEST_IMAGE_USER` and `CI_GUEST_IMAGE_DISK`, not from
+`CI_VM_SSH_USER` and `CI_VM_BACKING`, so overriding either of
+those knobs still fetches.
+
+Keep the tag equal to `GUEST_ARTIFACT_TAG`
 in `.github/workflows/system-tests.yml` and
 `ernic_vm_artifact_tag` in `ansible/group_vars/all.yml`.
 
@@ -361,6 +377,24 @@ single guest talking to a single server is a complete
 fabric and the instances have to be started on the nvmeof
 backend.
 
+It aims the connect at the controller's queue ceiling -- `-i
+$NVMEOF_QUEUES -W $NVMEOF_QUEUES` -- and then asserts that
+`/sys/class/nvme/nvmeN/queue_count` agrees. Unpinned,
+`nvme-rdma` asks for one I/O queue per online CPU, so the lane
+would cover whatever the runner happened to have rather than
+what the controller advertises. Both flags are needed: each of
+`-i`, `-W` and `-P` is clamped to the CPU count separately and
+then summed, so `-i 8` on its own tops out at the vCPU count.
+
+`NVMEOF_QUEUES` defaults to the `queues=` key of
+`ERNIC_BACKEND` -- eight when the key is absent, which is the
+server's own default -- so the documented `queues=4`
+reproduction in `docs/nvmeof-performance.rst` asserts against
+five queues rather than nine. The expectation is computed as
+`min(2 * min(queues, nproc), queues) + 1`; a guest with fewer
+than half the ceiling in vCPUs cannot reach it, and that is
+logged rather than failed.
+
 Export both, rather than prefixing a single command: all
 three scripts read them, and `ERNIC_INSTANCES` defaults to 2.
 
@@ -390,6 +424,8 @@ Useful overrides:
 | `CI_VM_BACKING` | the artifact's qcow2 | backing disk for the overlays |
 | `CI_VM_SSH_USER` | `batesste` | guest login account |
 | `CI_VM_SSH_IDENTITY` | the artifact's `id_rsa` | key used for guest ssh |
+| `CI_VM_VCPUS` | `8` | guest vCPUs |
+| `NVMEOF_QUEUES` | `ERNIC_BACKEND`'s `queues=`, else `8` | queue ceiling the connect aims at |
 
 VM names and ports are deliberately distinct from the
 interactive defaults in `/etc/rocm-ernic/rocm-ernic.env`
@@ -463,3 +499,5 @@ whichever way the noise happened to fall. The baseline
 lives under `$CI_WORK`, not in git, because it describes
 one host: numbers from this node are not meaningful on
 another. Rebuilding a node means recapturing it.
+
+[ref-ci-images]: https://github.com/sbates130272/batesste-ci-images

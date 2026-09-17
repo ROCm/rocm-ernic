@@ -235,16 +235,20 @@ Ansible-Based Testing
 ---------------------
 
 The ``ansible/`` directory contains playbooks that automate
-the entire multi-VM test workflow: building the server,
-installing the systemd service, creating golden VM images,
-launching VMs, provisioning them with the driver and custom
-rdma-core, and running iperf3 and perftest sanity tests.
+the multi-VM test workflow: building the server, installing
+the systemd service, provisioning already-running guests
+with the driver and the ionic rdma-core provider, and
+running iperf3, perftest and NVMe-oF tests against them. The
+guest disk is not built here; see :ref:`ansible-guest-image`.
 
 Prerequisites
 ^^^^^^^^^^^^^
 
-- Ansible 2.16+ (``sudo apt install ansible``)
-- The ``sbates130272.batesste`` Galaxy collection
+- ``ansible-core`` 2.18+, which is what ``community.general``
+  13 needs. Ubuntu 24.04's ``ansible`` package ships 2.16;
+  use ``pipx install ansible-core`` or the Ansible PPA.
+- The ``community.general`` Galaxy collection, which is all
+  ``requirements.yml`` resolves to
 
 .. code-block:: bash
 
@@ -262,26 +266,30 @@ A single command builds, deploys, and tests everything:
    cd ansible
    ansible-playbook site.yml
 
-This runs five plays in order:
+The guests themselves are not created here. Bring them up
+first with ``ernicctl vm-launch`` (or ``ci/jobs/vm-up.sh``),
+having fetched the published guest image once with
+``scripts/fetch-guest-image.sh``; see
+:ref:`ansible-guest-image` below.
 
-1. **vm-fetch** -- pulls the published guest image from the
-   OCI registry and verifies it, so the VMs launched here
-   are the VMs CI tests. The image is the same artifact
-   ``.github/workflows/system-tests.yml`` uses; see
-   :ref:`ansible-guest-image` below.
-2. **host-setup** -- builds the project, installs the
+This then runs five plays in order:
+
+1. **host-setup** -- builds the project, installs the
    service and ``ernicctl``, templates the env file, and
    starts the service.
-3. **vm-create** -- launches VMs with ``ernicctl
-   vm-launch`` and waits for SSH. With
-   ``ernic_vm_artifact=false`` it first builds a golden
-   backing image via ``gen-vm`` instead.
-4. **guest-setup** -- installs rdma-core v62, builds and
-   loads the guest driver from the ionic DKMS package,
-   and assigns IPs to the emulated NICs.
-5. **sanity-tests** -- runs ``iperf3`` between two VMs
+2. **vm-register** -- reads the launcher's
+   ``instances.json`` and adds each running VM to the
+   ``ernic_vms`` group with its SSH port, user and NIC
+   address. Everything below depends on it.
+3. **guest-setup** -- installs the ionic rdma-core
+   provider when the image does not already carry a
+   matching one, builds and loads the guest driver from
+   the ionic DKMS package, and assigns IPs to the
+   emulated NICs.
+4. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.
+5. **performance-tests** -- the TCP and RDMA sweeps.
 
 The setup plays are thin wrappers around the roles of the
 ``sbates130272.rocm_ernic`` collection, whose source lives in
@@ -294,11 +302,12 @@ Each play can also be run separately:
 
 .. code-block:: bash
 
-   ansible-playbook playbooks/vm-fetch.yml
    ansible-playbook playbooks/host-setup.yml
-   ansible-playbook playbooks/vm-create.yml
+   ansible-playbook playbooks/vm-register.yml
    ansible-playbook playbooks/guest-setup.yml
    ansible-playbook playbooks/sanity-tests.yml
+   ansible-playbook playbooks/nvmeof-tests.yml
+   ansible-playbook playbooks/performance-tests.yml
 
 Variable overrides
 ^^^^^^^^^^^^^^^^^^
@@ -317,14 +326,12 @@ Override any default from ``group_vars/all.yml`` with
    # Skip sanity tests
    ansible-playbook site.yml -e ernic_tests=false
 
-   # Build the guest locally with gen-vm instead of
-   # pulling the published image
+   # Pin a different published image
    ansible-playbook site.yml \
-     -e ernic_vm_artifact=false
+     -e ernic_vm_artifact_tag=<tag>
 
    # Use a backing image you staged yourself
    ansible-playbook site.yml \
-     -e ernic_vm_artifact=false \
      -e ernic_vm_backing=/path/to/backing.qcow2
 
 ``group_vars/all.yml`` holds the site configuration for this
@@ -339,31 +346,65 @@ notes.
 The guest image
 ^^^^^^^^^^^^^^^
 
-By default the guests come from a published OCI artifact
-rather than being built locally. ``playbooks/vm-fetch.yml``
-calls ``scripts/fetch-guest-image.sh``, which pulls the
-image and its ``vm-info.json`` metadata with ``oras``,
-decompresses the qcow2 and runs ``qemu-img check`` over it.
-The download is skipped when the tag is already unpacked, so
-re-running ``site.yml`` costs nothing.
+Nothing in ``ansible/`` builds a guest image. The guests
+come from a published OCI artifact: the ``ionic`` flavour of
+`batesste-ci-images
+<https://github.com/sbates130272/batesste-ci-images>`_,
+which pins mainline kernel 7.2.3 on Ubuntu 26.04 (resolute)
+and bakes the RDMA userspace, the DKMS toolchain,
+``perftest`` and a distro rdma-core 61.0 carrying the ionic
+provider.
 
-The play then asserts that the image's own metadata agrees
-with ``group_vars/all.yml`` -- the login account, the disk
-name, the release, and that the guest kernel is at least
-6.18 and matches the ``IONIC_KERNEL_REF`` pin to
-major.minor. A mismatch stops the run before any VM is
-launched rather than surfacing as a build failure inside the
-guest.
+``scripts/fetch-guest-image.sh`` pulls the image and its
+``vm-info.json`` metadata with ``oras``, decompresses the
+qcow2 and runs ``qemu-img check`` over it. The download is
+skipped when the tag is already unpacked. ``ci/jobs/vm-up.sh``
+calls the same script, so the lab host and CI land the same
+bytes in the same layout.
 
-A final assert compares the kernel against the ``CI guest
-kernel`` badge on line 9 of ``README.md``. That badge has to
-be hardcoded -- shields.io cannot read the image -- so
-without the check a tag bump would leave the front page
-advertising a kernel nothing ships. The same comparison runs
-in the ``Read VM info`` step of the loopback job in
-``.github/workflows/system-tests.yml``, which is what
-catches it on a pull request; this play only covers the
-lab-host path.
+It also checks the image's ``vm-info.json`` against this
+checkout and refuses the image when they disagree. That
+happens between the metadata pull and the disk pull, so a
+rejection costs kilobytes rather than the 3.7 GB it would
+cost after -- and every assertion reads either the metadata
+or a file in this checkout, so pulling the disk first could
+not change the verdict anyway. Verification reruns on the
+cached path too, because repinning ``IONIC_KERNEL_REF``
+invalidates a directory that was correct when it was pulled.
+``--no-verify`` skips the lot.
+
+The kernel floor it enforces is two-sided.
+``drivers/infiniband/hw/ionic`` merged in 6.18, which
+``ernic_ionic_min_kernel`` also asserts against the running
+guest; and ``ionic-ernic`` calls ``ib_umem_get_va``, which
+landed after 7.0, so a 7.0 guest clears the floor and then
+fails the DKMS build. The script compares the image kernel's
+major.minor against ``IONIC_KERNEL_REF`` in
+``cmake/ErnicKernelModule.cmake`` -- as does
+``ernic_guest_setup``, against the kernel the guest actually
+booted, before it starts that build.
+
+The ``CI guest kernel`` badge on line 9 of ``README.md`` has
+to be hardcoded -- shields.io cannot read the image -- so
+without a check a tag bump would leave the front page
+advertising a kernel nothing ships. Two independent
+implementations compare them: the fetch script, on the
+self-hosted and manual paths, and an inline copy in the
+``Read VM info`` step of the loopback job in
+``.github/workflows/system-tests.yml``, on every pull
+request. The hosted jobs pull through
+``.github/actions/fetch-guest-vm``, not this script, so
+neither copy is redundant.
+
+Four more properties are site expectations rather than
+repo-derivable facts, so the caller supplies them:
+``--expect-user``, ``--expect-disk``, ``--expect-release``
+and ``--expect-flavour``. ``ci/lib/common.sh`` passes all
+four, which is what catches a ``gpu``-flavour image reaching
+a lane whose roles want the ionic userspace. These
+assertions used to live in ``playbooks/vm-fetch.yml``, which
+0.2.0 removed; in the script they cover every caller, not
+just the one that ran a play.
 
 Keep ``ernic_vm_artifact_tag`` equal to
 ``GUEST_ARTIFACT_TAG`` in
@@ -372,16 +413,8 @@ Keep ``ernic_vm_artifact_tag`` equal to
 compares those three to each other.
 
 The pinned image is flavour ``ionic`` and carries no ROCm,
-so ``ernic_gpu_passthrough`` defaults off alongside it and
-the play refuses the combination outright. A GPU rig needs a
-GPU-flavoured image, or ``ernic_vm_artifact=false`` and a
-locally built one.
-
-Setting ``ernic_vm_artifact=false`` restores the older
-behaviour: ``ernic_image_prep`` builds a golden image with
-``gen-vm`` over ``qemu-nbd``, which needs root and, because
-Ubuntu ships no stock kernel new enough for the in-tree
-ionic driver, must install a mainline kernel on top.
+so ``ernic_gpu_passthrough`` defaults off alongside it. A
+GPU rig needs a GPU-flavoured image.
 
 .. _ansible-collection:
 
@@ -389,13 +422,9 @@ The rocm_ernic Ansible collection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The reusable parts of the automation are packaged as the
-``sbates130272.rocm_ernic`` Galaxy collection, so a VM image
-can be built for rocm-ernic without the playbooks here:
-
-``ernic_image_prep``
-   Bakes RDMA userspace, ROCm, the build toolchain,
-   ``modules-load.d`` entries and the ``pci.ids`` entry into a
-   golden image.
+``sbates130272.rocm_ernic`` Galaxy collection, so any
+suitable guest can be turned into a rocm-ernic RDMA node
+without the playbooks here:
 
 ``ernic_guest_setup``
    Installs the DKMS driver, builds rdma-core with the
@@ -421,7 +450,7 @@ the roles by their fully qualified name:
 .. code-block:: yaml
 
    roles:
-     - role: sbates130272.rocm_ernic.ernic_image_prep
+     - role: sbates130272.rocm_ernic.ernic_guest_setup
 
 Playbooks in this repo instead reach the same roles by short
 name through ``roles_path`` in ``ansible/ansible.cfg``, so they
@@ -451,7 +480,7 @@ collection itself --- ``ansible-playbook ci-site.yml --tags
 guest-setup`` against a generated ``instances.json`` ---
 rather than by copying sources in over ``ssh``. The role is
 therefore exercised on every pull request, and the guest
-build in CI is the same one a ``vm-create.yml`` run
+build in CI is the same one a ``site.yml`` run
 produces. The workflow installs only kernel headers and the
 build toolchain before handing over; the mainline kernel
 itself must already be in the guest image, and
@@ -462,8 +491,8 @@ Self-Hosted CI
 --------------
 
 The GitHub-hosted workflows can only build and unit-test.
-Anything needing KVM, a golden VM image, or two guests
-exchanging RDMA traffic runs on a self-hosted runner
+Anything needing KVM, a provisioned guest image, or two
+guests exchanging RDMA traffic runs on a self-hosted runner
 instead, driven by the harness in ``ci/``.
 
 It runs in three tiers:

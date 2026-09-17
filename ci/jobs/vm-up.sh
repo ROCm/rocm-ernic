@@ -7,10 +7,10 @@
 # and the CI VMs attached to them.
 #
 # This replaces the root-requiring parts of
-# ansible/playbooks/{host-setup,vm-create}.yml.  Those
-# plays install to /usr/local, drive systemd and build
-# the golden image over qemu-nbd; none of that is
-# available to (or wanted from) an unprivileged CI run.
+# ansible/playbooks/host-setup.yml, which installs to
+# /usr/local, drives systemd and binds devices to
+# vfio-pci; none of that is available to (or wanted
+# from) an unprivileged CI run.
 # The guest disk is pulled from the registry instead, which
 # needs no root and pins CI to the same image the hosted
 # workflow tests -- see ci/README.md.

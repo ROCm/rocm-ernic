@@ -22,6 +22,11 @@ NVMe-oF usable as a day-to-day smoke test of the queue
 pairs, the memory keys, and the RDMA READ/WRITE engine in a
 single VM.
 
+Measured throughput and latency are on a page of their own:
+see :doc:`nvmeof-performance`, which also documents the
+memory-region budget that caps ``queues=`` at 15
+(:ref:`nvmeof-mr-budget`).
+
 Starting the Server
 -------------------
 
@@ -78,7 +83,11 @@ The backend string is ``nvmeof`` optionally followed by
      - Transport service ID.
    * - ``queues=``
      - ``8``
-     - Maximum I/O queues, 1..64.
+     - Maximum I/O queues, 1..15. The ceiling is the
+       emulator's memory-region table, not the NVMe
+       spec: an ``nvme-rdma`` initiator pre-allocates
+       128 regions per queue at connect time, admin
+       queue included, out of a table of 2048.
    * - ``nsid=``
      - ``1``
      - Namespace identifier.
@@ -282,6 +291,23 @@ variables (``ernic_nvmeof_traddr``, ``ernic_nvmeof_trsvcid``,
 ``ernic_nvmeof_nqn`` and friends in
 :file:`ansible/group_vars/all.yml`); they have to match the
 ``--backend`` options the instance was started with.
+
+Both lanes aim the connect at the controller's queue ceiling
+rather than leaving it to the initiator, which would otherwise
+ask for one queue per online CPU and make the lane's coverage a
+property of the runner rather than of the controller. The
+ceiling is the ``queues=`` key of the ``--backend`` string, or
+eight when the key is absent: ``ci/jobs/vm-nvmeof.sh`` reads it
+out of ``ERNIC_BACKEND`` (override with ``NVMEOF_QUEUES``),
+and the play takes it from ``ernic_nvmeof_queues``, which like
+the variables above has to be told what the instance was
+started with. Both then read
+:file:`/sys/class/nvme/nvmeN/queue_count` back and fail unless
+it matches, because too few queues is not an error to
+``nvme-cli``. A guest with fewer vCPUs than half the ceiling
+cannot reach it -- see :ref:`nvmeof-mr-budget` -- so the
+expected count is computed from the guest's CPU count, and
+falling short of the ceiling is reported rather than failed.
 
 Performance
 -----------
