@@ -245,6 +245,9 @@ add_executable(test_nvmeof_target
 target_include_directories(test_nvmeof_target PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
+target_include_directories(test_nvmeof_target SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+)
 target_compile_definitions(test_nvmeof_target PRIVATE _GNU_SOURCE)
 target_compile_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -258,6 +261,9 @@ add_executable(test_nvmeof_cm
 )
 target_include_directories(test_nvmeof_cm PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_nvmeof_cm SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
 )
 target_compile_definitions(test_nvmeof_cm PRIVATE _GNU_SOURCE)
 target_compile_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN})
@@ -329,6 +335,8 @@ target_link_options(test_ionic_cq_arm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
 # the real library is cheaper than stubbing its ABI. Everything the datapath
 # needs from the rest of this project is stubbed in the test itself.
+target_link_directories(test_ionic_cq_arm PRIVATE
+    ${VFIO_USER_LIBRARY_DIRS} ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_cq_arm PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
