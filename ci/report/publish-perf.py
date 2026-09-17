@@ -104,6 +104,39 @@ def load_history(path):
     return out
 
 
+def merge_into(prior, rec):
+    """Fold another lane's measurements into this run's record.
+
+    Both publishing lanes of one workflow run share a
+    GITHUB_RUN_ID and measure different subjects -- the two-VM
+    lane knows the RDMA and TCP numbers, the NVMe-oF lane the fio
+    ones -- and they finish minutes apart. Treating the second to
+    arrive as a duplicate threw its measurements away, which is
+    how run 35282938069 passed while publishing no RDMA or TCP
+    figure at all. One run is one record that every lane
+    contributes to.
+
+    Only gaps are filled: a value already recorded is never
+    overwritten, so a lane that re-runs and measures nothing
+    cannot blank a number its sibling published. Returns whether
+    anything was added, which is what still lets a genuine re-run
+    stop early.
+    """
+    changed = False
+    for key, sizes in rec.get("series", {}).items():
+        cur = prior.setdefault("series", {}).setdefault(key, {})
+        for size, value in sizes.items():
+            if value is not None and cur.get(size) is None:
+                cur[size] = value
+                changed = True
+    badges = prior.setdefault("badges", {})
+    for key, value in rec.get("badges", {}).items():
+        if value is not None and badges.get(key) is None:
+            badges[key] = value
+            changed = True
+    return changed
+
+
 def _find_median(rows, verb, size, metric):
     for row in rows:
         if (row.get("verb") == verb
@@ -432,6 +465,13 @@ def _table_lines(chart, history):
 # (see docs/conf.py) so a shields.io endpoint badge in
 # README.md can point at them from GitHub Pages.
 def _fmt_rate(value, unit):
+    # iperf3 across the emulated TAP bridge sustains single-digit
+    # MB/s, and a fixed "%.2f GB/s" renders that as "0.00 GB/s" --
+    # a shield that reads as a broken measurement rather than a
+    # slow link.  Only the badges format through here, so scaling
+    # cannot disturb the trend tables.
+    if unit == "GB/s" and value < 1:
+        return f"{value * 1000:.1f} MB/s"
     return f"{value:.2f} {unit}"
 
 
@@ -562,26 +602,34 @@ def main():
     # Per runner class: the other class publishes on its own cadence,
     # so a global "is this the last record" check would miss a repeat.
     mine = [h for h in history if runner_of(h) == args.runner]
-    if mine and mine[-1].get("run_id") == rec["run_id"]:
-        print(f"run {rec['run_id']} already recorded; nothing to do")
+    prior = next((h for h in reversed(mine)
+                  if h.get("run_id") == rec["run_id"]), None)
+
+    if prior is None:
+        history.append(rec)
+        # Trim per class as well, so a busy series cannot evict
+        # another's history out from under its chart.
+        drop = set()
+        for name in RUNNERS:
+            idx = [i for i, h in enumerate(history)
+                   if runner_of(h) == name]
+            drop.update(idx[:-args.max_runs])
+        history = [h for i, h in enumerate(history) if i not in drop]
+        verb = f"recorded run {rec['run_id']} ({rec['sha']})"
+    elif merge_into(prior, rec):
+        rec = prior
+        verb = f"merged a second lane into run {rec['run_id']}"
+    else:
+        print(f"run {rec['run_id']} adds nothing new; nothing to do")
         return 0
 
-    history.append(rec)
-    # Trim per class as well, so a busy series cannot evict another's
-    # history out from under its chart.
-    drop = set()
-    for name in RUNNERS:
-        idx = [i for i, h in enumerate(history) if runner_of(h) == name]
-        drop.update(idx[:-args.max_runs])
-    history = [h for i, h in enumerate(history) if i not in drop]
     hist_path.write_text(
         "".join(json.dumps(h, sort_keys=True) + "\n" for h in history))
 
     write_badges(rec, history, docs)
 
     page = build_page(history, docs)
-    print(f"recorded run {rec['run_id']} ({rec['sha']}); "
-          f"{len(history)} runs in history")
+    print(f"{verb}; {len(history)} runs in history")
     print(f"wrote {page}")
     return 0
 
