@@ -16,9 +16,21 @@
 #   3. Sanity tests -- ping, netcat, perftest
 #   4. Performance  -- iperf3 and RDMA perftest sweeps
 #
+# The guests are not created here and must already be running
+# by phase 2.  Phase 1 also stops any that are running, unless
+# ernic_restart_existing is false, so launching them and then
+# running this playbook plain would destroy them: install the
+# service first, launch the VMs with it, then run the rest with
+# the teardown turned off.
+#
 # Usage:
 #   cd ansible
-#   ansible-playbook site.yml
+#   ansible-playbook site.yml --tags host-setup
+#   sudo ernicctl vm-launch 1     # once per instance
+#   ansible-playbook site.yml -e ernic_restart_existing=false
+#
+# VMs brought up by ci/jobs/vm-up.sh are the CI path; drive
+# those with ci-site.yml, which imports no host-setup play.
 #
 # Override variables with -e:
 #   ansible-playbook site.yml -e ernic_instances=4

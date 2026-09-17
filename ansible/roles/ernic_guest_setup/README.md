@@ -51,6 +51,12 @@ it is skipped when `provider.stamp` shows it was built from the same version
 and source hashes. The stamp is written last, so an interrupted build
 is not mistaken for a complete one.
 
+A stamp match is not provenance: the guest image ships a `provider.stamp`
+for a provider that came from the archive, which is the usual path in CI.
+So a build into `/usr` also writes `source-built.stamp`
+(`ernic_guest_source_stamp`), and that marker — not the stamp, and not
+`ernic_rdma_core_prefix` — decides whether the apt holds are applied.
+
 This role assumes RDMA userspace, ROCm and the build toolchain are already
 present in the base image; `ernic_guest_build_deps` installs them when they
 are not. That includes `perftest`: the rocm-xio
@@ -83,10 +89,11 @@ ernic_set_hostname: true
 ernic_gpu_passthrough: true
 ernic_pci_mmio_bridge: true
 
-# rdma-core.  The build installs over the distro's rdma-core,
-# so the packages it overwrites are held: only this build has
-# an ionic provider, and an apt upgrade that restored the
-# packaged libraries would take the RDMA device away.
+# rdma-core.  A source build installs over the distro's
+# rdma-core, so the packages it overwrites are held: only that
+# build has an ionic provider, and an apt upgrade that restored
+# the packaged libraries would take the RDMA device away.  A
+# guest whose provider came from the archive is left unheld.
 ernic_rdma_core_version: "61.0"
 ernic_rdma_core_prefix: /usr
 ernic_rdma_core_hold: true

@@ -76,9 +76,11 @@ needs to be reproducible.
 `ernic_rdma_core_version` defaults to `61.0`, which Ubuntu 26.04 packages. The
 role writes a provider stamp and skips the source build when the installed
 provider already matches, so on resolute nothing is built and nothing
-`dpkg`-owned is overwritten. Raise it only for a provider genuinely newer than
-the archive's — the apt holds in `ernic_rdma_core_hold_packages` come back with
-it.
+`dpkg`-owned is overwritten — and because nothing is overwritten, the packages
+in `ernic_rdma_core_hold_packages` are left unheld and keep taking archive
+updates. Raise it only for a provider genuinely newer than the archive's; the
+source build that follows records itself in the guest, and the holds come back
+with it on that run and on every later one.
 
 ## Requirements
 
