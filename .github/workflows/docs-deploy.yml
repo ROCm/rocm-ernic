@@ -2,10 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Deploy Sphinx documentation to GitHub Pages.
+# Build the Sphinx documentation and publish it to the gh-pages branch.
 #
 # Prerequisites (one-time, requires repo-admin access):
-#   Settings > Pages > Source = "GitHub Actions"
+#   Settings > Pages > Source = "Deploy from a branch", gh-pages / (root)
+#
+# gh-pages holds the site at its root and the performance record under
+# perf/.  Only the perf lanes write perf/; only this workflow writes the
+# rest.  The rsync below is what keeps those two halves from clobbering
+# each other.
 
 name: rocm-ernic - Docs Deploy
 
@@ -21,10 +26,10 @@ on:
       - 'requirements.txt'
       - '.github/workflows/docs-deploy.yml'
 
-# Serialise deploys to Pages.  Unlike the pull request workflows this does
-# NOT cancel in progress: a half-finished deploy would leave the published
-# site in whatever state actions/deploy-pages had reached, so a superseded
-# run queues behind the current one and then publishes the newer docs.
+# Serialise deploys.  Unlike the pull request workflows this does NOT
+# cancel in progress: a half-finished deploy would leave gh-pages in
+# whatever state rsync had reached, so a superseded run queues behind
+# the current one and then publishes the newer docs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -36,6 +41,8 @@ jobs:
   build:
     name: sphinx-build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
     - name: Check out code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,6 +51,26 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y doxygen
+
+    # docs/perf-history/history.jsonl is committed to main as an empty
+    # placeholder so a local or PR build still renders a complete site.
+    # The real record lives on gh-pages, written by the perf lanes, and
+    # has to be present *before* Sphinx runs: perf-trends is a page in
+    # the toctree, not an artifact of the build.
+    - name: Fetch the published performance history
+      run: |
+        set -euo pipefail
+        if git fetch --quiet --depth 1 origin gh-pages 2>/dev/null \
+           && git show FETCH_HEAD:perf/history.jsonl \
+                > docs/perf-history/history.jsonl 2>/dev/null; then
+          echo "using $(wc -l < docs/perf-history/history.jsonl) published runs"
+        else
+          echo "::notice::no published history on gh-pages; rendering the placeholder"
+        fi
+
+    - name: Render the trend page
+      run: |
+        python3 ci/report/publish-perf.py --render-only --docs-dir docs
 
     - name: Configure docs-only build
       run: |
@@ -54,22 +81,53 @@ jobs:
     - name: Build documentation
       run: cmake --build build --target sphinx-html
 
-    - name: Upload Pages artifact
-      uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-      with:
-        path: build/docs/html
+    - name: Publish to gh-pages
+      run: |
+        set -euo pipefail
 
-  deploy:
-    name: deploy
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        git config user.name  "rocm-ernic-ci"
+        git config user.email "rocm-ernic-ci@users.noreply.github.com"
+        git config commit.gpgSign false
+
+        git fetch --quiet origin gh-pages
+        git worktree add --quiet --detach ../gh-pages FETCH_HEAD
+
+        # A perf lane can land a perf/ commit while this build runs --
+        # it is what dispatched us, moments earlier.  Concurrency only
+        # serialises this workflow against itself, so on a rejected
+        # push take their tip and re-apply the site on top.
+        for attempt in 1 2 3; do
+          # --exclude perf/ is load-bearing: --delete would otherwise
+          # take the performance record with it on every site rebuild,
+          # and it is the one thing on this branch that cannot be
+          # regenerated.
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude 'perf/' \
+            build/docs/html/ ../gh-pages/
+
+          # sphinx.ext.githubpages emits this, but a branch source that
+          # ever loses it runs Jekyll and strips _static/, which costs
+          # the whole site its CSS.  Cheap to assert.
+          touch ../gh-pages/.nojekyll
+
+          git -C ../gh-pages add -A
+          if git -C ../gh-pages diff --cached --quiet; then
+            echo "site unchanged"
+            exit 0
+          fi
+          git -C ../gh-pages commit \
+            -m "docs: publish site from ${GITHUB_SHA}" \
+            -m "Built by docs-deploy.yml. [skip ci]"
+
+          if git -C ../gh-pages push origin HEAD:gh-pages; then
+            echo "published"
+            exit 0
+          fi
+          echo "push rejected (attempt ${attempt}); refreshing and retrying"
+          sleep $((attempt * 5))
+          git fetch --quiet origin gh-pages
+          git -C ../gh-pages reset --hard FETCH_HEAD
+        done
+        echo "::error::could not push the site after 3 attempts"
+        exit 1

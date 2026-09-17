@@ -1,11 +1,22 @@
-# Published by ci/report/publish-perf.py on the nightly runs.
-# history.jsonl accumulates one JSON object per run.
-# badge-rdma.json, badge-tcp.json and badge-nvmeof.json are
-# shields.io endpoint badges regenerated each run; README.md links
-# to them via the GitHub Pages build (see docs/conf.py
-# html_static_path).
+# Scratch space for ci/report/publish-perf.py.  Nothing durable
+# lives here: the record of the scheduled runs is kept at
+# perf/history.jsonl on the gh-pages branch, and the badges the
+# README links to are its siblings, perf/badge-*.json.
 #
-# Two workflows write here, into separate series:
-#   self-hosted-ci.yml   perftest and iperf3, on the self-hosted node
-#   nvmeof-nightly.yml   the NVMe-oF fio sweep, on a hosted runner
-# Hosted numbers are noisier and are only comparable with each other.
+# What is committed on main is a placeholder -- an empty
+# history.jsonl and three "no data" badges -- so that a local or
+# pull request docs build still renders a complete site.  The
+# chart-*.html fragments are generated, and git-ignored.
+#
+# During a publishing run, and during the docs-deploy build, the
+# real history is copied in here first and the tools work against
+# it as if it had always been local.
+#
+# One workflow writes the record: system-tests.yml, whose two
+# publishing lanes both go through .github/actions/publish-perf.
+#   two-VM lane      perftest and iperf3   -> badge-rdma, badge-tcp
+#   NVMe-oF lane     the fio sweep         -> badge-nvmeof
+#
+# Every record carries a "runner" field.  Numbers are only comparable
+# within a class, so each class is charted and badged as its own
+# series; the self-hosted records predate the move to hosted runners.

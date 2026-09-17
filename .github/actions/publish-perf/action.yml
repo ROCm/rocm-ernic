@@ -1,0 +1,192 @@
+# SPDX-License-Identifier: MIT
+name: Publish performance trends
+description: >-
+  Turn a lane's sweep CSVs into a history record, refresh the
+  shields.io badges, commit both to the gh-pages branch and ask Pages
+  to rebuild.
+
+# One copy of the publish handoff for every lane that measures
+# something.  It used to be pasted into nvmeof-lane.yml and
+# system-tests.yml, which is how `gh: command not found` came to sit in
+# both at once: the container image these jobs run in has no GitHub
+# CLI, so the Pages dispatch failed on a run that had otherwise
+# published perfectly and left the site showing the previous numbers.
+#
+# Nothing here may fail the calling job.  By the time this runs the
+# lane has already measured everything it was asked to; a trend that
+# cannot be committed is worth a warning, not a red tick.
+
+inputs:
+  results:
+    description: >-
+      Results directory holding perf-csv/*.csv, as gen-report.py
+      expects it.
+    required: true
+  subject:
+    description: >-
+      What this lane measured, for the commit subject, e.g.
+      "NVMe-oF" or "RDMA and TCP".
+    required: true
+  runner-class:
+    description: >-
+      Class of machine these numbers came from.  Numbers are only
+      comparable within a class, so this keeps each class on its own
+      series and its own badge.
+    required: false
+    default: github-hosted
+  token:
+    description: >-
+      Token with contents: write (to push gh-pages) and
+      actions: write (to dispatch docs-deploy).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Record the trends and refresh the shields
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        RESULTS: ${{ inputs.results }}
+        SUBJECT: ${{ inputs.subject }}
+        RUNNER_CLASS: ${{ inputs.runner-class }}
+      run: |
+        set -euo pipefail
+
+        if ! compgen -G "$RESULTS/perf-csv/"'*.csv' >/dev/null; then
+          echo "::warning::no sweep CSVs under $RESULTS/perf-csv; nothing to publish"
+          exit 0
+        fi
+
+        python3 ci/report/gen-report.py \
+          --results "$RESULTS" \
+          --out "$RESULTS/report" \
+          --no-fail
+
+        # gen-report.py records only what it measured; stamp the run
+        # identity on so the history entry can be traced back.
+        python3 - "$RESULTS/report/summary.json" <<'PY'
+        import json, os, sys
+        p = sys.argv[1]
+        d = json.load(open(p))
+        d.setdefault("meta", {}).update({
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "sha": os.environ["GITHUB_SHA"],
+            "node": os.environ["RUNNER_CLASS"],
+        })
+        json.dump(d, open(p, "w"))
+        PY
+
+        bail() { echo "::warning::$1; trends not published"; exit 0; }
+
+        remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+        # These lanes run in a container, so anything git touches
+        # arrives owned by a different uid than the one running this
+        # step and git disowns the repository.  actions/checkout's
+        # safe.directory entry goes into a *temporary* global config
+        # that is not in scope here, which is how run 35179534860
+        # reached "fatal: not in a git directory" and failed a lane
+        # that had passed.
+        git config --global --add safe.directory '*' || true
+        git config --global user.name  "rocm-ernic-ci" || bail "could not configure git"
+        git config --global user.email "rocm-ernic-ci@users.noreply.github.com" || bail "could not configure git"
+        git config --global commit.gpgSign false || bail "could not configure git"
+
+        # main never receives a CI commit.  The durable record lives at
+        # perf/history.jsonl on gh-pages, alongside the badges the
+        # README points at, so a shield is correct the moment this push
+        # lands -- it no longer waits on a Sphinx build that might fail.
+        pages="$(mktemp -d)"
+        git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
+          || bail "could not clone gh-pages (has it been seeded?)"
+
+        # Seed the working copy from the published history, not from
+        # the placeholder committed to main, or every run would append
+        # to an empty file and the trend would be one point long.
+        mkdir -p docs/perf-history
+        cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+
+        python3 ci/report/publish-perf.py \
+          --summary "$RESULTS/report/summary.json" \
+          --docs-dir docs \
+          --runner "$RUNNER_CLASS"
+
+        # Lanes in the same run publish independently and finish at
+        # whatever time their sweep takes, so two of them can reach
+        # this push moments apart.  The loser of that race is not
+        # broken, it is merely stale by one commit: take the winner's
+        # history, re-append this run's record to it and try again.
+        pushed=""
+        for attempt in 1 2 3; do
+          mkdir -p "$pages/perf"
+          cp docs/perf-history/history.jsonl "$pages/perf/" || bail "could not stage the history"
+          cp docs/perf-history/badge-*.json "$pages/perf/" || bail "could not stage the badges"
+
+          git -C "$pages" add perf || bail "could not stage perf/"
+          if git -C "$pages" diff --cached --quiet; then
+            echo "no change to publish"
+            exit 0
+          fi
+          # [skip ci] is belt and braces: a push made with this job's
+          # own GITHUB_TOKEN never starts another workflow anyway,
+          # which is why Pages is rebuilt by the explicit dispatch
+          # below rather than by a push trigger.
+          git -C "$pages" commit \
+            -m "perf: publish ${SUBJECT} trends from run ${GITHUB_RUN_ID}" \
+            -m "Generated by ci/report/publish-perf.py. [skip ci]" \
+            || bail "could not commit the trends"
+
+          if git -C "$pages" push origin HEAD:gh-pages; then
+            pushed=yes
+            break
+          fi
+          echo "push rejected (attempt ${attempt}); refreshing and retrying"
+          sleep $((attempt * 5))
+
+          # Rebasing would replay a commit built from the stale
+          # history; regenerating from the winner's file is what
+          # actually merges the two runs.
+          git -C "$pages" reset --hard HEAD~1 || bail "could not unwind the rejected commit"
+          git -C "$pages" fetch --quiet --depth 1 origin gh-pages \
+            || bail "could not refresh gh-pages"
+          git -C "$pages" reset --hard FETCH_HEAD || bail "could not refresh gh-pages"
+          cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+          python3 ci/report/publish-perf.py \
+            --summary "$RESULTS/report/summary.json" \
+            --docs-dir docs \
+            --runner "$RUNNER_CLASS"
+        done
+        [ -n "$pushed" ] || bail "could not push after 3 attempts"
+        echo "published"
+
+        # Not `gh`: the container image these lanes run in does not
+        # carry the CLI, and a container job sees the container's
+        # filesystem rather than the runner's.  python3 is already a
+        # hard dependency three steps up.
+        if python3 - <<'PY'
+        import json, os, sys, urllib.error, urllib.request
+        req = urllib.request.Request(
+            "https://api.github.com/repos/%s/actions/workflows/"
+            "docs-deploy.yml/dispatches" % os.environ["GITHUB_REPOSITORY"],
+            data=json.dumps({"ref": "main"}).encode(),
+            headers={
+                "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req).read()
+        except urllib.error.HTTPError as e:
+            # Deliberately not the body: it is echoed into a public log.
+            print("dispatch rejected: HTTP %s" % e.code, file=sys.stderr)
+            sys.exit(1)
+        PY
+        then
+          echo "docs-deploy dispatched; Pages will rebuild"
+        else
+          echo "::warning::could not dispatch docs-deploy; Pages is stale"
+        fi

@@ -520,17 +520,36 @@ def write_badges(rec, history, docs_dir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--summary", required=True)
+    ap.add_argument("--summary")
     ap.add_argument("--docs-dir", default="docs")
     ap.add_argument("--max-runs", type=int, default=60,
                     help="how many runs of history to keep per runner")
     ap.add_argument("--runner", choices=RUNNERS, default=DEFAULT_RUNNER,
                     help="class of machine these numbers were measured on")
+    ap.add_argument("--render-only", action="store_true",
+                    help="rebuild the trend page from the history already "
+                         "on disk, without recording a run")
     args = ap.parse_args()
+
+    if not args.render_only and not args.summary:
+        ap.error("--summary is required unless --render-only is given")
 
     docs = pathlib.Path(args.docs_dir)
     hist_path = docs / "perf-history" / "history.jsonl"
     hist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # The docs build renders the page from whatever history it was
+    # handed; only a measuring run may add to that history.  Keeping
+    # the two apart is what lets the site rebuild as often as it likes
+    # without inventing data points.
+    if args.render_only:
+        history = load_history(hist_path)
+        if not history:
+            print(f"no history at {hist_path}; nothing to render")
+            return 0
+        page = build_page(history, docs)
+        print(f"rendered {page} from {len(history)} runs")
+        return 0
 
     summary = json.load(open(args.summary))
     rec = extract(summary, args.runner)

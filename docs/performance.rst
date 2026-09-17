@@ -3,9 +3,10 @@ Performance
 
 This page describes how rocm-ernic performance is measured and
 what the current numbers mean. The tracked numbers are published
-by CI rather than written here: see :doc:`perf-trends`, which the
-scheduled GitHub-hosted runs regenerate from
-``docs/perf-history/history.jsonl``. `Reference Measurements`_
+by CI rather than written here: see :doc:`perf-trends`, which is
+rendered at build time from the record the scheduled
+GitHub-hosted runs keep at ``perf/history.jsonl`` on the
+``gh-pages`` branch. `Reference Measurements`_
 below records one full sweep in prose, because the trend page
 tracks three message sizes and says nothing about the shape of
 the curve between them.
@@ -72,18 +73,22 @@ benchmarks CI runs:
 Both plays are driven for the published trend by the scheduled
 run of :file:`.github/workflows/system-tests.yml`, which hands
 the results to ``ci/report/publish-perf.py``. That appends one
-record per run to ``docs/perf-history/history.jsonl`` and
-regenerates the charts, the trend tables, and the shields.io
-badges. ``ci/jobs/perf.sh`` drives the same two plays on the
+record per run to ``perf/history.jsonl`` on the ``gh-pages``
+branch and refreshes the shields.io badges beside it; the charts
+and the trend tables are rendered from that record when the site
+is next built. Nothing CI writes lands on ``main``.
+``ci/jobs/perf.sh`` drives the same two plays on the
 self-hosted node, but that lane no longer publishes: it sweeps,
 reports and gates regressions, and its numbers stay in the run's
 artifacts.
 
 Everything published is therefore measured on a GitHub-hosted
-runner, including the ``nvmeof`` series that
-:file:`.github/workflows/nvmeof-nightly.yml` sweeps with fio
-against an in-process NVMe-oF controller (see the *Performance*
-section of :doc:`nvmeof`). A GitHub runner has noisy neighbours
+runner, including the ``nvmeof`` series that the same workflow
+sweeps with fio against an in-process NVMe-oF controller (see the
+*Performance* section of :doc:`nvmeof`). All three badges are fed
+by one scheduled run, and both publishing lanes hand off to the
+same composite action,
+:file:`.github/actions/publish-perf`. A GitHub runner has noisy neighbours
 and no fixed CPU, so these figures are comparable with each
 other over time but not with a dedicated machine's. That is a
 deliberate trade: one class of machine keeps the trend line

@@ -577,9 +577,13 @@
           - "Reliability runs: {{ bw_verbs | length * (rel_runs | int) + (rel_runs | int) }}"
           - "Failures:         {{ fail_count.stdout | default('0') }}"
 
+    # `column` is not in every image these plays run in -- the CI
+    # container has no bsdmainutils -- and this is a pretty-printer.
+    # Falling back to the raw CSV keeps a formatting gap from failing
+    # a job that has already measured everything it was asked to.
     - name: Display bandwidth CSV
       ansible.builtin.shell:
-        cmd: "column -t -s, {{ bw_csv }}"
+        cmd: "column -t -s, {{ bw_csv }} 2>/dev/null || cat {{ bw_csv }}"
       register: bw_table
       changed_when: false
 
@@ -589,7 +593,7 @@
 
     - name: Display latency CSV
       ansible.builtin.shell:
-        cmd: "column -t -s, {{ lat_csv }}"
+        cmd: "column -t -s, {{ lat_csv }} 2>/dev/null || cat {{ lat_csv }}"
       register: lat_table
       changed_when: false
 
@@ -599,7 +603,7 @@
 
     - name: Display reliability CSV
       ansible.builtin.shell:
-        cmd: "column -t -s, {{ rel_csv }}"
+        cmd: "column -t -s, {{ rel_csv }} 2>/dev/null || cat {{ rel_csv }}"
       register: rel_table
       changed_when: false
 
