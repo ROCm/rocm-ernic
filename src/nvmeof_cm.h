@@ -11,7 +11,7 @@
  * Like nvmeof_target.c it touches neither guest memory nor the wire: MADs
  * in, MADs out, so the whole handshake is exercised in CTest.
  *
- * Copyright (C) 2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

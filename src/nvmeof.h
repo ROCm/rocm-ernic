@@ -9,7 +9,7 @@
  * guest memory, so the accessors below are the only sanctioned way to
  * read them.
  *
- * Copyright (C) 2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
