@@ -377,6 +377,24 @@ single guest talking to a single server is a complete
 fabric and the instances have to be started on the nvmeof
 backend.
 
+It aims the connect at the controller's queue ceiling -- `-i
+$NVMEOF_QUEUES -W $NVMEOF_QUEUES` -- and then asserts that
+`/sys/class/nvme/nvmeN/queue_count` agrees. Unpinned,
+`nvme-rdma` asks for one I/O queue per online CPU, so the lane
+would cover whatever the runner happened to have rather than
+what the controller advertises. Both flags are needed: each of
+`-i`, `-W` and `-P` is clamped to the CPU count separately and
+then summed, so `-i 8` on its own tops out at the vCPU count.
+
+`NVMEOF_QUEUES` defaults to the `queues=` key of
+`ERNIC_BACKEND` -- eight when the key is absent, which is the
+server's own default -- so the documented `queues=4`
+reproduction in `docs/nvmeof-performance.rst` asserts against
+five queues rather than nine. The expectation is computed as
+`min(2 * min(queues, nproc), queues) + 1`; a guest with fewer
+than half the ceiling in vCPUs cannot reach it, and that is
+logged rather than failed.
+
 Export both, rather than prefixing a single command: all
 three scripts read them, and `ERNIC_INSTANCES` defaults to 2.
 
@@ -406,6 +424,8 @@ Useful overrides:
 | `CI_VM_BACKING` | the artifact's qcow2 | backing disk for the overlays |
 | `CI_VM_SSH_USER` | `batesste` | guest login account |
 | `CI_VM_SSH_IDENTITY` | the artifact's `id_rsa` | key used for guest ssh |
+| `CI_VM_VCPUS` | `8` | guest vCPUs |
+| `NVMEOF_QUEUES` | `ERNIC_BACKEND`'s `queues=`, else `8` | queue ceiling the connect aims at |
 
 VM names and ports are deliberately distinct from the
 interactive defaults in `/etc/rocm-ernic/rocm-ernic.env`

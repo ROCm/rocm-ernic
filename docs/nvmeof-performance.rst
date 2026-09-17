@@ -210,6 +210,43 @@ The measurements above predate that change and were taken at
 ``queues=4``. They are not affected by it: the MR budget governs
 whether a connect succeeds, not the cost of an I/O once it has.
 
+Both CI lanes now aim the connect at the controller's ceiling
+rather than letting the initiator choose. ``nvme-rdma`` defaults
+``nr_io_queues`` to ``num_online_cpus()``, so before the change
+the hosted lane -- a 4-vCPU guest -- negotiated four queues and
+needed only 544 regions, comfortably inside even the old
+1024-entry table. That is why the lane stayed green through the
+first failure described below and never covered it. It did not
+escape the second: 544 regions overran the 256-entry handle map,
+so the four-queue lane was leaking regions silently the whole
+time. The connect sites therefore pass ``-i`` *and* ``-W``:
+``nvmf_nr_io_queues()`` is the sum of ``nr_io_queues``,
+``nr_write_queues`` and ``nr_poll_queues``, each separately
+clamped to ``num_online_cpus()``, and ``nvmf_parse_options()``
+clamps ``-i`` to the CPU count a second time on its own, so
+``-i 8`` alone cannot lift a 4-vCPU guest past four. Eight of
+each reaches eight there, and on a larger guest the controller's
+Set Features NUMBER_OF_QUEUES reply brings the total back down
+to eight. Both lanes then read
+:file:`/sys/class/nvme/nvmeN/queue_count` back and fail if it
+does not match, because too few queues is not an error to
+``nvme-cli`` and the shortfall would otherwise be invisible.
+
+What they match against is ``min(2 * min(C, cpus), C) + 1``,
+where ``C`` is the ``queues=`` the instance was started with,
+not a hard-coded nine: at the same ``queues=4`` this page was
+measured at the lane should expect five, and a guest with fewer
+than ``C / 2`` vCPUs cannot reach ``C`` however the flags are
+spent. Coming up short is legitimate and is logged rather than
+failed -- but it does mean that run is not covering the full
+memory-region budget.
+
+One correction to the arithmetic above, in the safe direction:
+the pool is sized ``queue->queue_size``, and the admin queue's
+is ``NVME_AQ_DEPTH`` = 32, not 128. The real demand is
+``N * 128 + 32``, so ``(N + 1) * 128`` over-counts by 96 and the
+2048-entry table and its 15-queue ceiling remain sound.
+
 Historical note
 """""""""""""""
 

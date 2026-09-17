@@ -1,0 +1,33 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``nvmeof-tests.yml`` now aims the connect at the controller's
+    queue ceiling rather than leaving the count to the initiator,
+    via the new ``ernic_nvmeof_queues`` variable (default 8,
+    ``NVMEOF_DEFAULT_QUEUES`` in the emulator), which like
+    ``ernic_nvmeof_traddr`` and friends has to match the
+    ``--backend`` options the instance was started with. Left to
+    ``nvme-rdma`` the request is one I/O queue per online CPU, so
+    the play covered whatever the runner was sized at rather than
+    what the controller advertises.
+  - >-
+    The connect passes both ``-i`` and ``-W`` at that ceiling.
+    ``nvmf_nr_io_queues()`` sums ``nr_io_queues``,
+    ``nr_write_queues`` and ``nr_poll_queues`` with each clamped
+    to ``num_online_cpus()`` separately, and ``-i`` is clamped a
+    second time at option-parse time, so ``-i 8`` alone cannot
+    lift a four-vCPU guest above four queues.
+  - >-
+    ``nvmeof-tests.yml`` reads ``/sys/class/nvme/nvmeN/queue_count``
+    back and fails unless it is
+    ``min(2 * min(queues, nproc), queues) + 1`` -- the I/O queues
+    the guest can actually reach, plus the admin queue. Too few
+    queues is not an error to ``nvme-cli``, so without the check a
+    silent fallback to one queue per vCPU would leave the job
+    green. A guest with fewer than half the ceiling in vCPUs
+    cannot reach it however the flags are spent; that case is
+    reported rather than failed.

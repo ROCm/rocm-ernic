@@ -147,6 +147,16 @@
           rc={{ ernic_nvmeof_discover.rc }}
           stderr={{ ernic_nvmeof_discover.stderr }}
 
+    # -W as well as -i, and both at the ceiling.
+    # nvmf_nr_io_queues() is min(nr_io_queues, nproc) +
+    # min(nr_write_queues, nproc) + min(nr_poll_queues, nproc), and
+    # nvmf_parse_options() has already clamped -i to nproc on its
+    # own, so "-i 8" alone cannot lift a 4-vCPU guest above four.
+    # Asking for eight of each makes the sum reach 8 there, and on
+    # a larger guest the controller's Set Features NUMBER_OF_QUEUES
+    # reply brings the request back down to 8 -- so the play lands
+    # on the ceiling whatever the guest was sized at, as long as it
+    # has at least half as many vCPUs.
     - name: Connect to the subsystem
       ansible.builtin.command:
         argv:
@@ -160,6 +170,10 @@
           - "{{ ernic_nvmeof_trsvcid | string }}"
           - -n
           - "{{ ernic_nvmeof_nqn }}"
+          - -i
+          - "{{ ernic_nvmeof_queues | string }}"
+          - -W
+          - "{{ ernic_nvmeof_queues | string }}"
       register: ernic_nvmeof_connect
       changed_when: true
 
@@ -195,6 +209,64 @@
           nvme connect returned success but no controller with
           subsysnqn {{ ernic_nvmeof_nqn }} appeared under
           /sys/class/nvme.
+
+    # The connect above succeeds whatever it negotiates -- too few
+    # queues is not an error to nvme-cli -- so read back the count
+    # that was actually created.  Without this the play silently
+    # falls back to one queue per vCPU if the flags are ever
+    # dropped or the initiator stops honouring them, and the
+    # memory-region budget that the full count needs goes untested
+    # while the job stays green.
+    #
+    # The expectation is computed, not the ceiling: a guest with
+    # fewer than half the controller's queues in vCPUs cannot reach
+    # it however the flags are spent, and nailing the assert to the
+    # ceiling would fail such a guest for being small rather than
+    # for being broken.  -i and -W are each min()'d against nproc
+    # and summed, then the controller's Set Features reply caps the
+    # total -- so the count is min(2 * min(cap, nproc), cap).
+    - name: Read the guest CPU count
+      ansible.builtin.command: nproc
+      register: ernic_nvmeof_nproc
+      changed_when: false
+
+    - name: Work out the queue count this guest can reach
+      ansible.builtin.set_fact:
+        ernic_nvmeof_io_expected: >-
+          {{ [2 * [ernic_nvmeof_queues | int,
+                   ernic_nvmeof_nproc.stdout | trim | int] | min,
+              ernic_nvmeof_queues | int] | min }}
+
+    # queue_count is ctrl->queue_count, which counts the admin
+    # queue as well.
+    - name: Read the negotiated queue count
+      ansible.builtin.slurp:
+        src: >-
+          /sys/class/nvme/{{ ernic_nvmeof_ctrl.stdout | trim }}/queue_count
+      register: ernic_nvmeof_queue_count
+
+    - name: Fail when the controller did not negotiate the expected queue count
+      ansible.builtin.assert:
+        that:
+          - (ernic_nvmeof_queue_count.content | b64decode | trim | int)
+            == (ernic_nvmeof_io_expected | int) + 1
+        fail_msg: >-
+          {{ ernic_nvmeof_ctrl.stdout | trim }} has
+          {{ ernic_nvmeof_queue_count.content | b64decode | trim }}
+          queues, expected {{ (ernic_nvmeof_io_expected | int) + 1 }}
+          ({{ ernic_nvmeof_io_expected }} I/O plus the admin queue)
+          for a {{ ernic_nvmeof_nproc.stdout | trim }}-CPU guest
+          against a {{ ernic_nvmeof_queues }}-queue controller.
+
+    # Legitimate, but it means this run is not covering the full
+    # memory-region budget, so say so rather than passing silently.
+    - name: Warn when the guest is too small to reach the ceiling
+      ansible.builtin.debug:
+        msg: >-
+          {{ ernic_nvmeof_io_expected }} I/O queues, short of the
+          controller's {{ ernic_nvmeof_queues }}: this guest has
+          only {{ ernic_nvmeof_nproc.stdout | trim }} vCPUs.
+      when: (ernic_nvmeof_io_expected | int) < (ernic_nvmeof_queues | int)
 
     - name: Name the namespace block device
       ansible.builtin.set_fact:

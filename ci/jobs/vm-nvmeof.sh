@@ -47,6 +47,23 @@ NVMEOF_NQN="${NVMEOF_NQN:-nvmet-test}"
 # rdma_resolve_addr() has a neighbour to resolve to -- nothing
 # on the wire answers ARP for the controller.
 NVMEOF_LLADDR="${NVMEOF_LLADDR:-02:00:00:00:c0:01}"
+# The controller's queue ceiling, which is what the connect below
+# aims at.  Derived from the queues= key of the backend string
+# rather than repeated here: a second copy would drift, and the
+# queues=4 recipe in docs/nvmeof-performance.rst would then fail a
+# check that had assumed 8.  Absent the key the server uses
+# NVMEOF_DEFAULT_QUEUES, which is 8.
+_backend_queues() {
+    local v
+    case "${ERNIC_BACKEND:-}" in
+    *queues=*)
+        v="${ERNIC_BACKEND##*queues=}"
+        echo "${v%%,*}"
+        ;;
+    *) echo 8 ;;
+    esac
+}
+NVMEOF_QUEUES="${NVMEOF_QUEUES:-$(_backend_queues)}"
 
 case "${ERNIC_BACKEND:-}" in
 nvmeof*) ;;
@@ -140,10 +157,78 @@ nvme_discover() {
     grep -q "subnqn:[[:space:]]*${NVMEOF_NQN}" <<<"${out}"
 }
 
+# -W as well as -i, and both at the controller's ceiling.  Left to
+# itself nvme-rdma asks for one I/O queue per online CPU, so the
+# lane would cover whatever the runner happened to have -- four on
+# the hosted guest, never the eight the target advertises, which is
+# the case that overran the MR tables.  "-i" alone cannot fix that:
+# nvmf_parse_options() clamps it to num_online_cpus() at parse
+# time, and nvmf_nr_io_queues() is min(nr_io_queues, nproc) +
+# min(nr_write_queues, nproc) + min(nr_poll_queues, nproc), so the
+# only way past the CPU count is to spend more than one of the
+# three.  Two of them at the ceiling reaches it whenever the guest
+# has at least half that many CPUs.
 nvme_connect() {
     vm_ssh "$1" "sudo nvme connect -t rdma \
-        -a ${NVMEOF_TRADDR} -s ${NVMEOF_TRSVCID} -n ${NVMEOF_NQN}" \
+        -a ${NVMEOF_TRADDR} -s ${NVMEOF_TRSVCID} -n ${NVMEOF_NQN} \
+        -i ${NVMEOF_QUEUES} -W ${NVMEOF_QUEUES}" \
         >/dev/null
+}
+
+# What the connect above should have produced, by the same
+# arithmetic the initiator uses: each of -i and -W is clamped to
+# the guest's CPU count and the two are summed, then the
+# controller's Set Features NUMBER_OF_QUEUES reply caps the total
+# at its own ceiling.  Computing it rather than asserting a
+# constant keeps the check honest for any queues= the server was
+# started with, and on any guest size.
+expected_io_queues() {
+    local nproc n
+    nproc="$(vm_ssh "$1" nproc 2>/dev/null | tr -d '\r')"
+    [ -n "${nproc}" ] || return 1
+    n=$((2 * (NVMEOF_QUEUES < nproc ? NVMEOF_QUEUES : nproc)))
+    [ "${n}" -le "${NVMEOF_QUEUES}" ] || n="${NVMEOF_QUEUES}"
+    echo "${n}"
+}
+
+# The connect succeeds whatever it negotiates -- too few queues is
+# not an error to nvme-cli -- so read back the count that was
+# actually created.  Without this the lane silently falls back to
+# one queue per vCPU if the flags are ever dropped or stop being
+# honoured, and the MR budget this exists to exercise goes untested
+# while the job stays green.  queue_count is ctrl->queue_count,
+# which counts the admin queue as well.
+probe_io_queues() {
+    local ctrl io want got
+    ctrl="$(guest_ns_dev_by_subsys "$1")"
+    if [ -z "${ctrl}" ]; then
+        log_error "guest $1: no controller for ${NVMEOF_NQN}"
+        return 1
+    fi
+    io="$(expected_io_queues "$1")" || {
+        log_error "guest $1: could not read the guest CPU count"
+        return 1
+    }
+    want=$((io + 1))
+    got="$(vm_ssh "$1" "cat /sys/class/nvme/${ctrl}/queue_count" \
+        2>/dev/null | tr -d '\r')"
+    if [ "${got}" != "${want}" ]; then
+        # Context first, verdict last: run_check records the tail of
+        # the output into the JSONL, so a dump after the log_error
+        # would be what survives and the reason would not.
+        vm_ssh "$1" 'dmesg | grep -i "I/O queues" | tail -3' 2>&1 || true
+        log_error "guest $1: ${ctrl} has ${got:-<unreadable>} queues, expected ${want} (${io} I/O + admin)"
+        return 1
+    fi
+    # Short of the ceiling is legitimate -- a guest with fewer than
+    # half the controller's queues in CPUs cannot reach it however
+    # the flags are spent -- but it means this run is not covering
+    # the full MR budget, so say so rather than passing silently.
+    if [ "${io}" -lt "${NVMEOF_QUEUES}" ]; then
+        log_warn "guest $1: ${io} I/O queues, short of the controller's" \
+            "${NVMEOF_QUEUES}; too few vCPUs to reach it"
+    fi
+    log_info "guest $1: ${ctrl} negotiated ${io} I/O queues"
 }
 
 # The block device the connect produced, e.g. /dev/nvme1n1.
@@ -346,6 +431,7 @@ for i in $(seq 1 "${ERNIC_INSTANCES}"); do
     run_check vm-nvmeof "vm-${i}-neighbour" seed_neighbour "${i}"
     run_check vm-nvmeof "vm-${i}-discover" nvme_discover "${i}"
     run_check vm-nvmeof "vm-${i}-connect" nvme_connect "${i}"
+    run_check vm-nvmeof "vm-${i}-io-queues" probe_io_queues "${i}"
     run_check vm-nvmeof "vm-${i}-namespace" probe_namespace_present "${i}"
     run_check vm-nvmeof "vm-${i}-data-integrity" probe_data_integrity "${i}"
     run_check vm-nvmeof "vm-${i}-fio" probe_fio "${i}"

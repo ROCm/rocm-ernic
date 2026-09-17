@@ -144,6 +144,15 @@ ernic_nvmeof_nsid: 1
 # permanent neighbour entry.  The value is arbitrary: the
 # emulator routes the connection by queue pair, not by MAC.
 ernic_nvmeof_lladdr: "02:00:00:00:c0:01"
+# The controller's queue ceiling: the queues= key of the same
+# --backend string, which the play cannot see and so has to be
+# told.  Eight is NVMEOF_DEFAULT_QUEUES, what the server uses when
+# the key is absent.  The connect aims at this rather than letting
+# nvme-rdma default nr_io_queues to num_online_cpus(), which would
+# make the test cover whatever the guest was sized at -- four on
+# the hosted runner, never the eight the controller advertises, so
+# never the memory-region budget that eight needs.
+ernic_nvmeof_queues: 8
 # Written and read back through O_DIRECT, then compared by
 # digest.  Keep it well under the namespace size.
 ernic_nvmeof_verify_mb: 16
