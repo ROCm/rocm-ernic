@@ -18,6 +18,14 @@
 #include "qom/object.h"
 
 /*
+ * Declares the type-system and PCI stubs defined below, so each
+ * definition is checked against the prototype its callers see.
+ * Included after pci_device.h so struct PCIDevice is already at
+ * file scope.
+ */
+#include "hw/pci/pci_regs.h"
+
+/*
  * QEMU Type Casting Macros - Implemented as Functions
  */
 

@@ -99,6 +99,9 @@ uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev);
 uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
                                    const union ibv_gid *dgid);
 
+/* Dump the mesh's cumulative traffic counters at info level. */
+void tcp_backend_log_stats(RdmaBackendDev *backend_dev);
+
 /* Legacy verbs backend init (for compatibility) */
 int rdma_backend_init(RdmaBackendDev *backend_dev, PCIDevice *pdev,
                       RdmaDeviceResources *rdma_dev_res,
