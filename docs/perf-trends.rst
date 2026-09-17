@@ -4,8 +4,13 @@
 Performance trends
 ==================
 
-Medians from the nightly full-tier run on ``hpe-rack-15``, oldest run at
-the left. Latest: ``5e0516af`` at 2026-09-09 03:08:46 UTC.
+Medians from the nightly runs, oldest at the left. Latest: ``b66fdca9``
+on GitHub-hosted runners at 2026-09-17 20:24:35 UTC.
+
+Each runner class is charted on its own axes and never joined into one
+line. A GitHub-hosted runner has noisy neighbours and no fixed CPU, so
+its figures are comparable with each other over time but not with the
+lab node's. The README shields read the GitHub-hosted series.
 
 Each panel carries one message size on its own scale. Bandwidth at 4 KiB
 and at 1 MiB differ by more than an order of magnitude, so a shared axis
@@ -18,8 +23,10 @@ Send bandwidth over time
 
 Median ``bw_peak_GBs`` for ``send`` (higher is better).
 
+Measured on the self-hosted lab node:
+
 .. raw:: html
-   :file: perf-history/chart-bandwidth.html
+   :file: perf-history/chart-bandwidth-self-hosted.html
 
 Last 3 runs, in GB/s:
 
@@ -36,8 +43,10 @@ Send latency over time
 
 Median ``lat_typical_us`` for ``send`` (lower is better).
 
+Measured on the self-hosted lab node:
+
 .. raw:: html
-   :file: perf-history/chart-latency.html
+   :file: perf-history/chart-latency-self-hosted.html
 
 Last 3 runs, in µs:
 
@@ -48,4 +57,22 @@ Run      4 KiB  64 KiB 1 MiB
 9a44f18e 244.11 328.34 474.77
 5e0516af 242.48 247.64 393.74
 ======== ====== ====== ======
+
+NVMe-oF read bandwidth over time
+--------------------------------
+
+Median ``bw_avg_GBs`` for ``nvmeof`` (higher is better).
+
+Measured on GitHub-hosted runners:
+
+.. raw:: html
+   :file: perf-history/chart-nvmeof-github-hosted.html
+
+The one run so far, in GB/s:
+
+======== ======== ======== =======
+Run      4 KiB    64 KiB   1 MiB
+======== ======== ======== =======
+b66fdca9 0.055195 0.828823 1.42307
+======== ======== ======== =======
 
