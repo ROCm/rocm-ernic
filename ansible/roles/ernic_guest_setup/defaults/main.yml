@@ -39,6 +39,13 @@ ernic_guest_build_deps_delay: 5
 
 # ── Staging paths inside the guest ───────────────
 ernic_guest_stamp_dir: /usr/local/share/rocm-ernic
+# Written only by a source build that installed into /usr, and the
+# only durable evidence that dpkg's own files were overwritten.  The
+# provider stamp cannot serve: the guest image writes one for a
+# provider that came from the archive, so a stamp records which
+# provider is installed, not where it came from.
+ernic_guest_source_stamp: >-
+  {{ ernic_guest_stamp_dir }}/source-built.stamp
 
 # ── ionic kernel modules ─────────────────────────
 # The patches and the two helper scripts are staged here; the
@@ -69,8 +76,9 @@ ernic_dkms_pkg_version: >-
 # entirely -- which is the point: building at job time made every
 # lane of every run depend on the GitHub release CDN, and that CDN
 # returned 500 for the 62.0 tarball on 2026-09-16 and failed a run.
-# Raise this only for a provider genuinely newer than the archive's,
-# and bring the apt holds back with it.
+# Raise this only for a provider genuinely newer than the archive's.
+# The apt holds follow the source build rather than this version, so
+# they come back on their own once one happens.
 ernic_rdma_core_version: "61.0"
 ernic_rdma_core_url: >-
   https://github.com/linux-rdma/rdma-core/releases/download/v{{
@@ -78,9 +86,12 @@ ernic_rdma_core_url: >-
   ernic_rdma_core_version }}.tar.gz
 ernic_rdma_core_build_dir: /tmp/rdma-core-build
 ernic_rdma_core_prefix: /usr
-# The build above installs over the distro's rdma-core, so apt must
-# not be allowed to put the packaged libraries back -- only our
-# build has an ionic provider.  Ignored unless the prefix is /usr.
+# A source build installs over the distro's rdma-core, so apt must
+# not be allowed to put the packaged libraries back -- only that
+# build has an ionic provider.  Ignored unless the prefix is /usr,
+# and applied only to a guest this role actually built from source:
+# a guest running the archive's own provider is left unheld, so it
+# keeps taking security updates.
 ernic_rdma_core_hold: true
 ernic_rdma_core_hold_packages:
   - rdma-core

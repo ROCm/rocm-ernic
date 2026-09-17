@@ -259,20 +259,49 @@ Prerequisites
 Running the full workflow
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A single command builds, deploys, and tests everything:
+**The guests must be up and running before you start.**
+``site.yml`` provisions and tests VMs; it never creates them,
+and every play after the first one fails without them.
+
+It is not quite a single command, because of the order the
+phases impose. Phase 1 installs the service that launches the
+guests, so it has to run before there are any; and it also
+*stops* whatever is running, unless ``ernic_restart_existing``
+is false. Launching the VMs and then running ``site.yml``
+plain therefore tears down the guests the run needs, and
+``vm-register`` fails with no VM attached to any instance.
+
+Fetch the published guest image once with
+``scripts/fetch-guest-image.sh`` (see
+:ref:`ansible-guest-image` below), then:
 
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook site.yml
 
-The guests themselves are not created here. Bring them up
-first with ``ernicctl vm-launch`` (or ``ci/jobs/vm-up.sh``),
-having fetched the published guest image once with
-``scripts/fetch-guest-image.sh``; see
-:ref:`ansible-guest-image` below.
+   # 1. Build, install the service and ernicctl.
+   ansible-playbook site.yml --tags host-setup
 
-This then runs five plays in order:
+   # 2. Attach a VM to each instance.
+   sudo ernicctl vm-launch 1
+
+   # 3. Provision the guests and run the tests, leaving
+   #    the VMs from step 2 alone.
+   ansible-playbook site.yml -e ernic_restart_existing=false
+
+On later runs, steps 1 and 3 collapse back into the single
+``ansible-playbook site.yml -e ernic_restart_existing=false``
+for as long as the guests stay up. Dropping the override is
+what you want when you *do* mean to recycle the mesh --- it
+stops the VMs and restarts the service, after which step 2
+has to be repeated.
+
+VMs brought up by ``ci/jobs/vm-up.sh`` are the CI path and
+run unprivileged. Drive those with ``ci-site.yml``, which
+imports no host-setup play and so neither tears them down nor
+touches the systemd service.
+
+``site.yml`` runs five plays in order:
 
 1. **host-setup** -- builds the project, installs the
    service and ``ernicctl``, templates the env file, and

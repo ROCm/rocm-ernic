@@ -168,6 +168,24 @@
         cmd: ldconfig
       changed_when: true
 
+    - name: Ensure the stamp directory exists
+      ansible.builtin.file:
+        path: "{{ ernic_guest_stamp_dir }}"
+        state: directory
+        mode: "0755"
+
+    # Written as soon as the install has happened, and before the
+    # verification below, because by this point dpkg's files are
+    # already overwritten whether or not the rest of the run
+    # succeeds -- which is exactly the condition the holds exist
+    # for.
+    - name: Record that this guest's rdma-core came from source
+      ansible.builtin.copy:
+        content: "{{ ernic_provider_want }}\n"
+        dest: "{{ ernic_guest_source_stamp }}"
+        mode: "0644"
+      when: ernic_rdma_core_prefix == '/usr'
+
     - name: Verify the ionic provider installed
       ansible.builtin.shell:
         executable: /bin/bash
@@ -175,12 +193,6 @@
           set -o pipefail;
           ls /usr/lib/*/libibverbs/libionic*.so
       changed_when: false
-
-    - name: Ensure the stamp directory exists
-      ansible.builtin.file:
-        path: "{{ ernic_guest_stamp_dir }}"
-        state: directory
-        mode: "0755"
 
     # Written last, so an interrupted build is not
     # mistaken for a complete one on the next run.
@@ -190,13 +202,28 @@
         dest: "{{ ernic_guest_stamp_dir }}/provider.stamp"
         mode: "0644"
 
-# ernic_rdma_core_prefix is /usr, so the build above overwrites the
-# distro's rdma-core in place while dpkg still believes its own
-# version is installed.  Only our build ships an ionic provider, so
-# an apt upgrade that restores the packaged libraries takes the
-# device away entirely -- and does it long after the fact, with
-# nothing to connect the failure to its cause.  Held outside the
-# build block so re-runs that skip the rebuild still reapply it.
+- name: Look for a record of a source build in this guest
+  ansible.builtin.stat:
+    path: "{{ ernic_guest_source_stamp }}"
+  register: ernic_source_build_marker
+
+# A source build into /usr overwrites the distro's rdma-core in
+# place while dpkg still believes its own version is installed.
+# Only that build ships an ionic provider, so an apt upgrade that
+# restores the packaged libraries takes the device away entirely --
+# and does it long after the fact, with nothing to connect the
+# failure to its cause.  Held outside the build block so re-runs
+# that skip the rebuild still reapply it, which is why the gate is
+# the marker rather than the block: the prefix says where a build
+# would install, not whether one ever did, and the provider stamp
+# cannot tell us either because the ionic guest image writes one
+# for a provider that came from the archive.  Holding that guest
+# would pin the distro's RDMA userspace against its own security
+# updates to protect a build that never happened.
+#
+# Guests source-built before the marker existed have none, and need
+# no migration: dpkg_selections clears nothing by absence, so the
+# hold an earlier run put on them is still there.
 - name: Hold the packages our rdma-core build overwrites
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
@@ -206,3 +233,4 @@
   when:
     - ernic_rdma_core_hold | bool
     - ernic_rdma_core_prefix == '/usr'
+    - ernic_source_build_marker.stat.exists

@@ -19,7 +19,43 @@
   vars_files:
     - ../group_vars/all.yml
 
+  vars:
+    # Three different failures below all mean "no running VMs", and
+    # all have the same recovery, so it is written once.  The trap
+    # worth naming is that site.yml's own phase 1 stops running
+    # guests whenever ernic_restart_existing is true -- its default
+    # -- so launching them and then running site.yml destroys the
+    # very guests this play needs.
+    ernic_vm_guidance: >-
+      The VMs must be up and running before this point; neither
+      site.yml nor ci-site.yml launches them.  On the developer
+      path the service has to be installed before it can launch
+      anything, so the order is: "ansible-playbook site.yml --tags
+      host-setup", then "sudo ernicctl vm-launch <id>" once per
+      instance, then "ansible-playbook site.yml -e
+      ernic_restart_existing=false".  Without that last override
+      phase 1 stops the guests again before this play runs.  VMs
+      brought up by ci/jobs/vm-up.sh are the CI path: drive those
+      with ci-site.yml, which imports no host-setup play.
+
   tasks:
+
+    # Slurping a missing path fails with a bare module error naming
+    # a file under /run, which tells the operator nothing about how
+    # to fix it.  Stat first so this case gets the same guidance as
+    # the other two.
+    - name: Check for the instance manifest
+      ansible.builtin.stat:
+        path: "{{ ernic_run_dir }}/instances.json"
+      register: ernic_manifest_stat
+
+    - name: Fail if the instance manifest is missing
+      ansible.builtin.fail:
+        msg: >-
+          No instance manifest at
+          {{ ernic_run_dir }}/instances.json, so no rocm-ernic
+          VMs are running.  {{ ernic_vm_guidance }}
+      when: not ernic_manifest_stat.stat.exists
 
     - name: Read the instance manifest
       ansible.builtin.slurp:
@@ -39,7 +75,7 @@
         fail_msg: >-
           No rocm-ernic instances in
           {{ ernic_run_dir }}/instances.json.
-          Run ci/jobs/vm-up.sh first.
+          {{ ernic_vm_guidance }}
 
     - name: Fail if any instance has no VM attached
       ansible.builtin.assert:
@@ -47,7 +83,9 @@
           - item.vm is defined
           - item.vm is not none
         fail_msg: >-
-          Instance {{ item.id }} has no VM attached.
+          Instance {{ item.id }} has no VM attached in
+          {{ ernic_run_dir }}/instances.json.
+          {{ ernic_vm_guidance }}
       loop: "{{ ernic_manifest.instances }}"
       loop_control:
         label: "instance {{ item.id }}"

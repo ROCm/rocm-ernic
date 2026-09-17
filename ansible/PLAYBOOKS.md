@@ -62,12 +62,28 @@ roles:
 
 ## Quick Start
 
-Run the full end-to-end workflow (build, provision, test):
+The guests must be up and running first: `site.yml` provisions
+and tests VMs, it never creates them. Phase 1 installs the
+service that launches them, and also stops any that are already
+running unless `ernic_restart_existing` is false — so the order
+is host setup, launch, then everything else:
 
 ```bash
 cd ansible
-ansible-playbook site.yml
+
+# 1. Build, install the service and ernicctl.
+ansible-playbook site.yml --tags host-setup
+
+# 2. Attach a VM to each instance.
+sudo ernicctl vm-launch 1
+
+# 3. Provision and test, leaving those VMs alone.
+ansible-playbook site.yml -e ernic_restart_existing=false
 ```
+
+While the guests stay up, step 3 on its own is the full
+end-to-end workflow. Dropping the override recycles the mesh,
+after which step 2 has to be repeated.
 
 ## Running Individual Plays
 
