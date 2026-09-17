@@ -18,6 +18,10 @@ release = version
 
 extensions = [
     "breathe",
+    # Emits .nojekyll into the build.  Pages serves this site from a
+    # branch, so without it Jekyll runs and strips _static/ -- the
+    # whole site loses its CSS.
+    "sphinx.ext.githubpages",
 ]
 
 # -- Breathe (Doxygen XML import) --------------------------------

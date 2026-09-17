@@ -290,19 +290,66 @@ their outcome is the run's own status and the job summary.
 
 ## Publishing performance trends
 
-The nightlies publish their medians to the docs site at
+The scheduled run publishes its medians to the docs site at
 <https://rocm.github.io/rocm-ernic/>, under *Performance
 trends*.
 
-`ci/report/publish-perf.py` appends one record per run to
-`docs/perf-history/history.jsonl`, regenerates
-`docs/perf-trends.rst`, and commits both to `main`. That
-commit is pushed with the job's own `GITHUB_TOKEN`, which
-GitHub's loop-prevention rule exempts from starting other
-workflow runs -- `docs-deploy`'s `push` trigger would not
-fire on it either way, `[skip ci]` or not -- so the publishing
-job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
-needs `actions: write`) right after the push to rebuild Pages.
+All three badges are fed on identical terms. `system-tests.yml`
+is the single entry point, and both of its publishing lanes --
+the two-VM one for `perftest`/`iperf3`, the NVMe-oF one for the
+fio sweep -- hand off to the same composite action,
+`.github/actions/publish-perf`. There is one copy of the commit,
+push and Pages-dispatch logic, so a bug in it is fixed once rather
+than per lane.
+
+### Nothing CI writes lands on `main`
+
+`main` is source only. The published site and the data behind it
+live on the orphan `gh-pages` branch, which is also what GitHub
+Pages serves (Settings > Pages > "Deploy from a branch",
+`gh-pages` / root):
+
+```
+/                    built Sphinx HTML
+/.nojekyll
+/perf/history.jsonl  the durable record, one JSON object per run
+/perf/badge-*.json   the shields the README points at
+```
+
+`perf/` has no leading underscore deliberately, so it is served
+even if `.nojekyll` is ever lost.
+
+A publishing lane clones `gh-pages`, copies `perf/history.jsonl`
+into `docs/perf-history/`, runs `ci/report/publish-perf.py` to
+append its record and refresh the badges, copies both back into
+`perf/` and pushes. It never touches the built HTML, so a perf
+run cannot disturb the site.
+
+That push is made with the job's own `GITHUB_TOKEN`, which
+GitHub's loop-prevention rule exempts from starting other workflow
+runs, so the lane then dispatches `docs-deploy.yml` explicitly
+(`workflow_dispatch`, needs `actions: write`) to rebuild the site.
+`docs-deploy` fetches `perf/history.jsonl` back off `gh-pages`,
+renders the trend page from it (`publish-perf.py --render-only`),
+builds Sphinx and `rsync -a --delete --exclude perf/`s the result
+onto `gh-pages`. The exclusion is what keeps the two halves of the
+branch from clobbering each other.
+
+The badges are therefore correct the moment a lane pushes: they no
+longer wait on a Sphinx build, which is what left run `35270045274`
+publishing a real number behind a stale shield.
+
+`docs/perf-history/history.jsonl` is committed to `main` **empty**,
+with `"no data"` badges and a stub `docs/perf-trends.rst`, so a
+local `make docs` or a pull request build still renders a complete
+site with no toctree warnings. To see the real page locally, fetch
+the history first:
+
+```sh
+git show origin/gh-pages:perf/history.jsonl \
+    > docs/perf-history/history.jsonl
+python3 ci/report/publish-perf.py --render-only --docs-dir docs
+```
 
 ### Only GitHub-hosted runs publish
 
@@ -338,12 +385,12 @@ bad sweep does not grey a badge out:
 | --- | --- | --- |
 | `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `system-tests.yml` |
 | `badge-tcp.json` | `iperf3`, sustained GB/s | `system-tests.yml` |
-| `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `nvmeof-nightly.yml` |
+| `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `system-tests.yml` |
 
-`docs/conf.py` publishes the whole of `docs/perf-history` (charts,
-history, badges, this file) as `html_static_path`, so once Pages
-rebuilds each badge is reachable at
-`https://rocm.github.io/rocm-ernic/_static/badge-<name>.json`.
+The lane copies them to `perf/` on `gh-pages`, so each badge is
+reachable at
+`https://rocm.github.io/rocm-ernic/perf/badge-<name>.json` as soon
+as that push lands -- no doc build in between.
 
 README.md links all three. All three currently ship with a
 committed `"no data"` placeholder: the `github-hosted` series
@@ -352,32 +399,34 @@ came off the lab node, so continuing to show them under these
 labels would be a wrong answer rather than a stale one. The
 placeholder matters -- without a file at that URL shields.io
 renders an *error*, which looks far worse than a grey "no data".
-Expect real numbers after the first green `system-tests` and
-`nvmeof-nightly` runs on `main`, whether scheduled or dispatched
-by hand.
+Expect real numbers after the first green `system-tests` run on
+`main`, whether scheduled or dispatched by hand.
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
 ### Publishing on demand
 
-Waiting for 03:41 and 04:23 UTC is optional. Both lanes take a
+Waiting for 04:23 UTC is optional. `system-tests.yml` takes a
 `workflow_dispatch` with a `publish` boolean (default true), so a
-manual run against `main` fills the shields immediately:
+manual run against `main` fills all three shields:
 
 ```bash
-gh workflow run nvmeof-nightly.yml --ref main
-gh workflow run system-tests.yml   --ref main
+gh workflow run system-tests.yml --ref main
 ```
 
-Pass `-f publish=false` to exercise a lane without touching the
-history -- useful when the sweep itself is what you are testing.
-Dispatching anything other than `--ref main` sweeps but never
-publishes, by the same rule below.
+Pass `-f publish=false` to exercise the sweeps without touching
+the history -- useful when the sweep itself is what you are
+testing. Dispatching anything other than `--ref main` sweeps but
+never publishes, by the same rule below.
 
-`system-tests.yml` does not cancel in-progress runs on `main`, so
-a dispatch will not kill a nightly part-way through its push; the
-two queue instead. `nvmeof-nightly.yml` already serialised on a
-fixed concurrency group for the same reason.
+Budget for it: the two-VM lane boots two guests and runs for the
+best part of an hour, so this is not a quick way to refresh a
+badge. The NVMe-oF lane finishes much sooner and pushes as soon
+as it does, rather than waiting for its slower sibling.
+
+The workflow does not cancel in-progress runs on `main`, so a
+dispatch will not kill a scheduled run part-way through its push;
+the two queue instead.
 
 Only a green run on `main` publishes. Pull request runs never do -- a pull request's numbers describe the pull
 request, not `main` -- and on `system-tests.yml` they do not

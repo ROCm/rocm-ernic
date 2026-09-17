@@ -7,9 +7,9 @@
 [![System Tests](https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml/badge.svg)][ci-system-tests]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
-[![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-rdma.json)][perf-trends]
-[![TCP/IP bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-tcp.json)][perf-trends]
-[![NVMe-oF 4K read](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-nvmeof.json)][perf-trends]
+[![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-rdma.json)][perf-trends]
+[![TCP/IP bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-tcp.json)][perf-trends]
+[![NVMe-oF 4K read](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-nvmeof.json)][perf-trends]
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running

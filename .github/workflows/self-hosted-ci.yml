@@ -317,12 +317,11 @@ jobs:
     # back on a pull request.  The tiers that actually run
     # untrusted code keep the default read-only token.
     #
-    # It no longer writes contents.  The published perf history
-    # and the README shields are fed by the GitHub-hosted lanes
-    # (system-tests.yml and nvmeof-nightly.yml) so that every
-    # published number comes off the same class of machine; this
-    # node still sweeps, reports and gates regressions, but its
-    # figures stay in the run's artifacts.
+    # It no longer writes contents.  The published perf history and
+    # the README shields are fed by the GitHub-hosted lanes in
+    # system-tests.yml so that every published number comes off the
+    # same class of machine; this node still sweeps, reports and
+    # gates regressions, but its figures stay in the run's artifacts.
     permissions:
       # A job-level block replaces the workflow default outright,
       # so contents has to be restated or checkout loses its read.

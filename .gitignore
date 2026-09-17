@@ -121,3 +121,7 @@ ansible/changelogs/.plugin-cache.yaml
 
 # Working notes, not part of the tree
 overnight.md
+
+# Rendered by ci/report/publish-perf.py from the history on gh-pages.
+# The history itself is committed empty; see docs/perf-trends.rst.
+docs/perf-history/chart-*.html

@@ -276,12 +276,11 @@ build, boot a guest, provision it, connect -- in
 :file:`.github/workflows/nvmeof-lane.yml`, which is the
 cheapest end-to-end RDMA test in the matrix precisely
 because it needs only one VM. That lane is a reusable
-workflow with a single ``publish`` input, called twice: by
-:file:`.github/workflows/system-tests.yml` on a pull
-request with ``publish: false``, and by
-:file:`.github/workflows/nvmeof-nightly.yml` on a schedule
-with ``publish: true``. The steps are the same either way,
-so a green pull request and a nightly mean the same thing.
+workflow with a single ``publish`` input, called by
+:file:`.github/workflows/system-tests.yml`: false on a pull
+request, true on a scheduled or dispatched run against
+``main``. The steps are the same either way, so a green pull
+request and a scheduled run mean the same thing.
 The ``vm-nvmeof`` job in
 :file:`.github/workflows/self-hosted-ci.yml` runs the
 self-hosted lane at the functional tier and above.
@@ -312,9 +311,12 @@ falling short of the ceiling is reported rather than failed.
 Performance
 -----------
 
-:file:`.github/workflows/nvmeof-nightly.yml` sweeps fio
+The scheduled run of
+:file:`.github/workflows/system-tests.yml` sweeps fio
 across three block sizes against the connected namespace
-and publishes what it measured. The numbers land on the
+and publishes what it measured, on the same terms and
+through the same code path as the RDMA and TCP/IP
+figures. The numbers land on the
 `trend page <https://rocm.github.io/rocm-ernic/perf-trends.html>`_
 as the *NVMe-oF read bandwidth over time* chart, and the
 4 KiB figure becomes the ``NVMe-oF 4K read`` shield on the
