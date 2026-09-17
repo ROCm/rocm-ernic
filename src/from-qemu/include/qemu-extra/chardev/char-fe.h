@@ -4,6 +4,11 @@
  * We don't use this feature
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_CHAR_FE_H
 #define QEMU_CHAR_FE_H
 

@@ -3,6 +3,11 @@
  * PVRDMA has a shutdown_notifier field that we don't use
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_NOTIFY_H
 #define QEMU_NOTIFY_H
 

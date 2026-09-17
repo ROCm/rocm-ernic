@@ -2,6 +2,11 @@
  * QEMU compiler macros stub
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_COMPILER_H
 #define QEMU_COMPILER_H
 

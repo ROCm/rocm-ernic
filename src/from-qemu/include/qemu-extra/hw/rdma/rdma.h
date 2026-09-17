@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef HW_RDMA_RDMA_H
 #define HW_RDMA_RDMA_H
 

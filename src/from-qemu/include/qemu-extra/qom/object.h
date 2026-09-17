@@ -3,6 +3,11 @@
  * Not used in standalone - just for compilation
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QOM_OBJECT_H
 #define QOM_OBJECT_H
 

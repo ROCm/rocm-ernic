@@ -3,6 +3,11 @@
  * RDMA backend uses mutexes for thread safety
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_THREAD_H
 #define QEMU_THREAD_H
 

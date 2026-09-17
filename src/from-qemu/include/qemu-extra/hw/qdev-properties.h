@@ -4,6 +4,11 @@
  * system
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QDEV_PROPERTIES_H
 #define QDEV_PROPERTIES_H
 

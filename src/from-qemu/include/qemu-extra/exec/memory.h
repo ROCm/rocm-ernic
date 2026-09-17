@@ -3,6 +3,11 @@
  * PVRDMA uses MemoryRegion for BARs, but libvfio-user handles this
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_MEMORY_H
 #define QEMU_MEMORY_H
 

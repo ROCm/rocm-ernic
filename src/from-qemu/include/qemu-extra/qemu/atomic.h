@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_ATOMIC_H
 #define QEMU_ATOMIC_H
 

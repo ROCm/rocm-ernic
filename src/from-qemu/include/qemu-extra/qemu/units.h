@@ -2,6 +2,11 @@
  * QEMU unit conversions stub
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_UNITS_H
 #define QEMU_UNITS_H
 

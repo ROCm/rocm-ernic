@@ -5,6 +5,11 @@
  * and object model functions needed by the PVRDMA device code.
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
