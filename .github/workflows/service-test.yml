@@ -151,7 +151,8 @@ jobs:
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_INSTALL_PREFIX=/tmp/install-test \
-          -DERNIC_INSTALL_SERVICE=ON
+          -DERNIC_INSTALL_SERVICE=ON \
+          -DERNIC_WERROR=ON
 
     - name: Build
       run: cmake --build build
