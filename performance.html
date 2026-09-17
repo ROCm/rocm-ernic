@@ -1,0 +1,872 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Performance &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'performance';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="NVMe-oF Performance" href="nvmeof-performance.html" />
+    <link rel="prev" title="Testing" href="testing.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/performance.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Performance</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-environment">Test Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-benchmarks">Running the Benchmarks</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interpreting-the-results">Interpreting the Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-measurements">Reference Measurements</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#repeatability">Repeatability</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="performance">
+<h1>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h1>
+<p>This page describes how rocm-ernic performance is measured and
+what the current numbers mean. The tracked numbers are published
+by CI rather than written here: see <a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a>, which is
+rendered at build time from the record the scheduled
+GitHub-hosted runs keep at <code class="docutils literal notranslate"><span class="pre">perf/history.jsonl</span></code> on the
+<code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> branch. <a class="reference internal" href="#reference-measurements">Reference Measurements</a>
+below records one full sweep in prose, because the trend page
+tracks three message sizes and says nothing about the shape of
+the curve between them.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The milestone-by-milestone results that used to live on this
+page were measured against the removed PVRDMA-derived device
+and its out-of-tree guest driver. They no longer describe
+anything this repository builds, so they were dropped when
+that device was removed; they remain in the git history.</p>
+</div>
+<nav class="contents local" id="sections">
+<p class="topic-title">Sections</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#test-environment" id="id1">Test Environment</a></p></li>
+<li><p><a class="reference internal" href="#running-the-benchmarks" id="id2">Running the Benchmarks</a></p></li>
+<li><p><a class="reference internal" href="#interpreting-the-results" id="id3">Interpreting the Results</a></p></li>
+<li><p><a class="reference internal" href="#reference-measurements" id="id4">Reference Measurements</a></p>
+<ul>
+<li><p><a class="reference internal" href="#repeatability" id="id5">Repeatability</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#known-limitations" id="id6">Known Limitations</a></p></li>
+</ul>
+</nav>
+<section id="test-environment">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">Test Environment</a><a class="headerlink" href="#test-environment" title="Link to this heading">#</a></h2>
+<p>The reference environment is the self-hosted CI node,
+<strong>hpe-rack-15.adc.amd.com</strong> (AMD EPYC 7513, 128 threads), with
+the TCP mesh backend: a manager and a worker server instance on
+one host, each attached to a guest VM over localhost loopback.</p>
+<p>This is the environment for the <a class="reference internal" href="#reference-measurements">Reference Measurements</a> below
+only. The tracked trend on <a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a> is measured on
+GitHub-hosted runners and will read lower throughout; the two
+are not comparable, and neither is wrong.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Emulated device</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> (ionic)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Guest driver</p></td>
+<td><p>upstream <code class="docutils literal notranslate"><span class="pre">ionic</span></code> + <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code>
+(DKMS, <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>rdma-core</p></td>
+<td><p>v62.0, upstream <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>MTU</p></td>
+<td><p>1024 bytes active (4096 max)</p></td>
+</tr>
+<tr class="row-even"><td><p>GID index</p></td>
+<td><p>1 (IPv4-mapped, 192.168.200.x/24)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Connection type</p></td>
+<td><p>RC (Reliable Connected)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The active MTU follows the Ethernet MTU of the emulated LIF,
+which nothing raises from the 1500-byte default, so it settles
+at the largest IB value that fits. The device advertises 4096.</p>
+<p>Guest-to-guest IP runs over one host TAP per instance on a
+shared bridge, not over the RDMA mesh; see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>.</p>
+</section>
+<section id="running-the-benchmarks">
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">Running the Benchmarks</a><a class="headerlink" href="#running-the-benchmarks" title="Link to this heading">#</a></h2>
+<p>The Ansible playbooks in <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/</span></code> drive the same
+benchmarks CI runs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># RDMA: ib_send_bw / ib_write_bw / ib_read_bw and the</span>
+<span class="c1"># latency variants, plus ibv_rc_pingpong</span>
+ansible-playbook<span class="w"> </span>playbooks/performance-tests.yml
+
+<span class="c1"># Ethernet: iperf3 between the two guests over the TAP bridge</span>
+ansible-playbook<span class="w"> </span>playbooks/tcp-performance-tests.yml
+</pre></div>
+</div>
+<p>Both plays are driven for the published trend by the scheduled
+run of <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>, which hands
+the results to <code class="docutils literal notranslate"><span class="pre">ci/report/publish-perf.py</span></code>. That appends one
+record per run to <code class="docutils literal notranslate"><span class="pre">perf/history.jsonl</span></code> on the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code>
+branch and refreshes the shields.io badges beside it; the charts
+and the trend tables are rendered from that record when the site
+is next built. Nothing CI writes lands on <code class="docutils literal notranslate"><span class="pre">main</span></code>.
+<code class="docutils literal notranslate"><span class="pre">ci/jobs/perf.sh</span></code> drives the same two plays on the
+self-hosted node, but that lane no longer publishes: it sweeps,
+reports and gates regressions, and its numbers stay in the run’s
+artifacts.</p>
+<p>Everything published is therefore measured on a GitHub-hosted
+runner, including the <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> series that the same workflow
+sweeps with fio against an in-process NVMe-oF controller (see the
+<em>Performance</em> section of <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>). All three badges are fed
+by one scheduled run, and both publishing lanes hand off to the
+same composite action,
+<code class="file docutils literal notranslate"><span class="pre">.github/actions/publish-perf</span></code>. A GitHub runner has noisy neighbours
+and no fixed CPU, so these figures are comparable with each
+other over time but not with a dedicated machine’s. That is a
+deliberate trade: one class of machine keeps the trend line
+about the code rather than about which host answered.</p>
+<p>Records are tagged with the class they came from, and
+<a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a> charts each class on its own axes, so the
+earlier self-hosted measurements remain readable alongside
+without ever being joined into one line.</p>
+</section>
+<section id="interpreting-the-results">
+<h2><a class="toc-backref" href="#id3" role="doc-backlink">Interpreting the Results</a><a class="headerlink" href="#interpreting-the-results" title="Link to this heading">#</a></h2>
+<p>Bandwidth and latency are reported per message size and never
+plotted on a shared axis: 4 KiB and 1 MiB bandwidth differ by
+more than an order of magnitude, so one scale would hide the
+small sizes entirely.</p>
+<p>Latency is dominated by the emulation path, not by the wire.
+Every doorbell is a vfio-user round trip into the server
+process, so the floor is set by scheduling and by the poll
+intervals in the server and in QEMU rather than by the message
+size, and the small-message latency numbers should be read as a
+property of the emulator.</p>
+</section>
+<section id="reference-measurements">
+<h2><a class="toc-backref" href="#id4" role="doc-backlink">Reference Measurements</a><a class="headerlink" href="#reference-measurements" title="Link to this heading">#</a></h2>
+<p>One full <code class="docutils literal notranslate"><span class="pre">ci/jobs/perf.sh</span></code> run on the reference node above,
+against <code class="docutils literal notranslate"><span class="pre">rocm-ernic</span></code> at 59d5b73 and a resolute guest running
+7.2.3-070203-generic with the ionic sources pinned at v7.2.4.
+The guests were freshly launched from the published image
+immediately before the sweep. These are point measurements from
+a single run; see <a class="reference internal" href="#repeatability">Repeatability</a> for the spread.</p>
+<p>Bandwidth, GB/s (<code class="docutils literal notranslate"><span class="pre">ib_send_bw</span></code>, <code class="docutils literal notranslate"><span class="pre">ib_write_bw</span></code>, <code class="docutils literal notranslate"><span class="pre">ib_read_bw</span></code>,
+<code class="docutils literal notranslate"><span class="pre">-n</span> <span class="pre">1000</span></code>, averaged column):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Message size</p></th>
+<th class="head"><p>send</p></th>
+<th class="head"><p>write</p></th>
+<th class="head"><p>read</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4 KiB</p></td>
+<td><p>0.19</p></td>
+<td><p>0.28</p></td>
+<td><p>0.32</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 KiB</p></td>
+<td><p>0.31</p></td>
+<td><p>0.54</p></td>
+<td><p>0.59</p></td>
+</tr>
+<tr class="row-even"><td><p>16 KiB</p></td>
+<td><p>0.56</p></td>
+<td><p>0.96</p></td>
+<td><p>1.12</p></td>
+</tr>
+<tr class="row-odd"><td><p>32 KiB</p></td>
+<td><p>1.08</p></td>
+<td><p>1.71</p></td>
+<td><p>2.01</p></td>
+</tr>
+<tr class="row-even"><td><p>64 KiB</p></td>
+<td><p>1.61</p></td>
+<td><p>2.50</p></td>
+<td><p>2.74</p></td>
+</tr>
+<tr class="row-odd"><td><p>128 KiB</p></td>
+<td><p>2.30</p></td>
+<td><p>3.49</p></td>
+<td><p>4.14</p></td>
+</tr>
+<tr class="row-even"><td><p>256 KiB</p></td>
+<td><p>3.41</p></td>
+<td><p>4.63</p></td>
+<td><p>4.57</p></td>
+</tr>
+<tr class="row-odd"><td><p>512 KiB</p></td>
+<td><p>5.02</p></td>
+<td><p>5.34</p></td>
+<td><p>4.65</p></td>
+</tr>
+<tr class="row-even"><td><p>1 MiB</p></td>
+<td><p>6.07</p></td>
+<td><p>5.13</p></td>
+<td><p>4.83</p></td>
+</tr>
+<tr class="row-odd"><td><p>2 MiB</p></td>
+<td><p>6.08</p></td>
+<td><p>5.40</p></td>
+<td><p>4.74</p></td>
+</tr>
+<tr class="row-even"><td><p>4 MiB</p></td>
+<td><p>5.60</p></td>
+<td><p>5.56</p></td>
+<td><p>4.52</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 MiB</p></td>
+<td><p>3.41</p></td>
+<td><p>3.24</p></td>
+<td><p>2.81</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Throughput climbs to roughly 6 GB/s at 1-4 MiB and falls back at
+8 MiB, where a single message no longer fits comfortably in the
+server’s staging path and the transfer is split.</p>
+<p>Latency, microseconds (<code class="docutils literal notranslate"><span class="pre">ib_send_lat</span></code>, <code class="docutils literal notranslate"><span class="pre">ib_write_lat</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ib_read_lat</span></code>, <code class="docutils literal notranslate"><span class="pre">-n</span> <span class="pre">50</span></code>, typical column):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Message size</p></th>
+<th class="head"><p>send</p></th>
+<th class="head"><p>write</p></th>
+<th class="head"><p>read</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4 KiB</p></td>
+<td><p>245.65</p></td>
+<td><p>243.75</p></td>
+<td><p>325.96</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 KiB</p></td>
+<td><p>243.65</p></td>
+<td><p>242.76</p></td>
+<td><p>326.40</p></td>
+</tr>
+<tr class="row-even"><td><p>16 KiB</p></td>
+<td><p>246.96</p></td>
+<td><p>245.23</p></td>
+<td><p>479.19</p></td>
+</tr>
+<tr class="row-odd"><td><p>32 KiB</p></td>
+<td><p>253.33</p></td>
+<td><p>254.43</p></td>
+<td><p>327.44</p></td>
+</tr>
+<tr class="row-even"><td><p>64 KiB</p></td>
+<td><p>257.33</p></td>
+<td><p>330.99</p></td>
+<td><p>338.30</p></td>
+</tr>
+<tr class="row-odd"><td><p>128 KiB</p></td>
+<td><p>338.92</p></td>
+<td><p>265.25</p></td>
+<td><p>491.46</p></td>
+</tr>
+<tr class="row-even"><td><p>256 KiB</p></td>
+<td><p>357.91</p></td>
+<td><p>354.33</p></td>
+<td><p>526.78</p></td>
+</tr>
+<tr class="row-odd"><td><p>512 KiB</p></td>
+<td><p>467.02</p></td>
+<td><p>484.83</p></td>
+<td><p>528.99</p></td>
+</tr>
+<tr class="row-even"><td><p>1 MiB</p></td>
+<td><p>673.38</p></td>
+<td><p>688.01</p></td>
+<td><p>732.60</p></td>
+</tr>
+<tr class="row-odd"><td><p>2 MiB</p></td>
+<td><p>1053.88</p></td>
+<td><p>1087.62</p></td>
+<td><p>1136.33</p></td>
+</tr>
+<tr class="row-even"><td><p>4 MiB</p></td>
+<td><p>2022.79</p></td>
+<td><p>1986.61</p></td>
+<td><p>2094.55</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 MiB</p></td>
+<td><p>4455.15</p></td>
+<td><p>5450.70</p></td>
+<td><p>5099.79</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Below about 128 KiB the curve is flat at roughly 245 us for send
+and write and 330 us for read: that is the emulation round trip,
+not the message. Above it the numbers scale with size, which is
+where the transfer itself starts to dominate. Read costs one
+extra round trip at every size.</p>
+<p>TCP/IP over the emulated Ethernet LIF, for comparison:
+<code class="docutils literal notranslate"><span class="pre">iperf3</span></code> sustains 0.34 GB/s (2.7 Gbit/s) guest to guest,
+roughly an order of magnitude below RDMA at the same sizes. The
+LIF advertises no offloads, so the guest stack hands down linear
+skbs and every byte is copied.</p>
+<section id="repeatability">
+<h3><a class="toc-backref" href="#id5" role="doc-backlink">Repeatability</a><a class="headerlink" href="#repeatability" title="Link to this heading">#</a></h3>
+<p>A five-run reliability sweep at 64 KiB, averaged column:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Verb</p></th>
+<th class="head"><p>Range, GB/s</p></th>
+<th class="head"><p>Mean, GB/s</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>send</p></td>
+<td><p>0.73 - 1.00</p></td>
+<td><p>0.82</p></td>
+</tr>
+<tr class="row-odd"><td><p>write</p></td>
+<td><p>0.62 - 0.85</p></td>
+<td><p>0.73</p></td>
+</tr>
+<tr class="row-even"><td><p>read</p></td>
+<td><p>0.78 - 0.90</p></td>
+<td><p>0.85</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The reliability sweep runs with a much shorter iteration count
+than the bandwidth sweep, which is why its absolute numbers sit
+below the 64 KiB row above; it is measuring run-to-run variation,
+not throughput. Treat differences below about 20% between runs as
+noise. <code class="docutils literal notranslate"><span class="pre">ernic_perf_reliability_runs</span></code> defaults to 1 in CI and
+was set to 5 for this measurement.</p>
+</section>
+</section>
+<section id="known-limitations">
+<h2><a class="toc-backref" href="#id6" role="doc-backlink">Known Limitations</a><a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Locked memory:</strong> every verbs resource is pinned, and the
+distro default <code class="docutils literal notranslate"><span class="pre">RLIMIT_MEMLOCK</span></code> of 8 MiB is too small for a
+4 MiB perftest run, which registers twice the message size.
+The failure surfaces on whatever allocation comes next rather
+than the one that crossed the line, so it reads as
+<code class="docutils literal notranslate"><span class="pre">Couldn't</span> <span class="pre">create</span> <span class="pre">CQ</span></code>. <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> installs the
+<code class="docutils literal notranslate"><span class="pre">limits.d</span></code> drop-in and the systemd <code class="docutils literal notranslate"><span class="pre">DefaultLimitMEMLOCK</span></code>
+that the distro <code class="docutils literal notranslate"><span class="pre">rdma-core</span></code> package would have provided; a
+guest provisioned by hand needs both.</p></li>
+<li><p><strong>iperf3 rate cap:</strong> the Ansible stress default
+<code class="docutils literal notranslate"><span class="pre">ernic_iperf_bandwidth</span></code> is passed to <code class="docutils literal notranslate"><span class="pre">iperf3</span> <span class="pre">-b</span></code> verbatim
+and caps the reported TCP row well below what the link does
+unthrottled. Very low values on TCP (for example <code class="docutils literal notranslate"><span class="pre">10K</span></code>) are
+not useful at all: intervals round to zero and the connection
+can stall. Use a Mbit/s-scale cap or <code class="docutils literal notranslate"><span class="pre">-u</span></code> for a clean one.</p></li>
+<li><p><strong>No Ethernet offloads:</strong> the emulated LIF advertises no
+checksum, TSO, or scatter-gather offload, so the guest stack
+always hands down linear skbs. This costs transmit
+throughput.</p></li>
+<li><p><strong>Host sysctl required:</strong> large-message bidirectional traffic
+over the TCP mesh needs <code class="docutils literal notranslate"><span class="pre">net.core.wmem_max</span></code> and
+<code class="docutils literal notranslate"><span class="pre">net.core.rmem_max</span></code> raised to at least 16 MB on the host.</p></li>
+<li><p><strong>GPU CQ/SQ in system memory:</strong> GPU VRAM buffers would need a
+vfio-user DMA proxy for GPU BAR regions, which does not
+exist. System memory buffers registered with
+<code class="docutils literal notranslate"><span class="pre">hipHostRegister</span></code> work.</p></li>
+<li><p><strong>~1 ms GPU latency floor:</strong> GPU-initiated work goes through
+the QEMU pci-mmio-bridge, whose default poll interval is
+1 ms. Lowering <code class="docutils literal notranslate"><span class="pre">poll-interval-ns</span></code> trades CPU for latency.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="testing.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Testing</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="nvmeof-performance.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">NVMe-oF Performance</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-environment">Test Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-benchmarks">Running the Benchmarks</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interpreting-the-results">Interpreting the Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-measurements">Reference Measurements</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#repeatability">Repeatability</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

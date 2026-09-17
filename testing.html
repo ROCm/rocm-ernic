@@ -1,0 +1,1091 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Testing &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'testing';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Performance" href="performance.html" />
+    <link rel="prev" title="Prometheus Monitoring and Grafana Dashboard" href="monitoring.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/testing.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Testing</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-programs">Test Programs</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-pci-client">test_pci_client</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-data-transfer">test_data_transfer</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-tests">Running Tests</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-local-test">Quick Local Test</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-testing">Manual Testing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ctest">CTest</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-vm-rdma-testing">Multi-VM RDMA Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ibv-rc-pingpong">ibv_rc_pingpong</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ib-send-bw">ib_send_bw</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-connectivity">Ethernet Connectivity</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansible-based-testing">Ansible-Based Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-full-workflow">Running the full workflow</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-individual-plays">Running individual plays</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#variable-overrides">Variable overrides</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-image">The guest image</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm_ernic Ansible collection</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#self-hosted-ci">Self-Hosted CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-new-tests">Adding New Tests</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="testing">
+<h1>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h1>
+<p>rocm-ernic ships with several test programs and a CTest
+integration that can be run from the build directory.</p>
+<section id="test-programs">
+<h2>Test Programs<a class="headerlink" href="#test-programs" title="Link to this heading">#</a></h2>
+<section id="test-pci-client">
+<h3>test_pci_client<a class="headerlink" href="#test-pci-client" title="Link to this heading">#</a></h3>
+<p>A vfio-user client that connects to the server and performs
+basic PCI configuration space queries:</p>
+<ul class="simple">
+<li><p>Socket connection to server</p></li>
+<li><p>PCI Vendor ID verification (Pensando: <code class="docutils literal notranslate"><span class="pre">0x1dd8</span></code>)</p></li>
+<li><p>PCI Device ID verification (ROCm ERNIC: <code class="docutils literal notranslate"><span class="pre">0x100a</span></code>)</p></li>
+<li><p>PCI Class Code verification (Network Controller)</p></li>
+<li><p>PCI Header Type verification (Type 0)</p></li>
+<li><p>BAR register reads</p></li>
+<li><p>Interrupt configuration reads</p></li>
+</ul>
+<p>Exit codes: <code class="docutils literal notranslate"><span class="pre">0</span></code> = pass, <code class="docutils literal notranslate"><span class="pre">1</span></code> = failure.</p>
+</section>
+<section id="test-data-transfer">
+<h3>test_data_transfer<a class="headerlink" href="#test-data-transfer" title="Link to this heading">#</a></h3>
+<p>Comprehensive RDMA data transfer test using libibverbs:</p>
+<ul class="simple">
+<li><p>RDMA device discovery and opening</p></li>
+<li><p>Protection Domain allocation</p></li>
+<li><p>Completion Queue creation</p></li>
+<li><p>Queue Pair creation and state transitions</p></li>
+<li><p>Memory Region registration</p></li>
+<li><p>Send / recv operations with varying buffer sizes
+(64 to 4096 bytes)</p></li>
+</ul>
+<p>Requires an RDMA device (via the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver
+or real hardware). Skipped if no device is found.</p>
+</section>
+<section id="test-rdma-cm">
+<h3>test_rdma_cm<a class="headerlink" href="#test-rdma-cm" title="Link to this heading">#</a></h3>
+<p>RDMA Connection Manager test using libibverbs. Validates
+connection setup and teardown paths.</p>
+</section>
+<section id="test-ionic-ci-sh">
+<h3>test_ionic_ci.sh<a class="headerlink" href="#test-ionic-ci-sh" title="Link to this heading">#</a></h3>
+<p>Shell test for the ionic emulation path, registered with
+CTest as <code class="docutils literal notranslate"><span class="pre">ionic-ci</span></code>. It needs no VM and no RDMA device:</p>
+<ul class="simple">
+<li><p>Server starts on the <code class="docutils literal notranslate"><span class="pre">loopback</span></code> and <code class="docutils literal notranslate"><span class="pre">none</span></code> backends,
+and with no extra flags at all</p></li>
+<li><p>PCI identity is <code class="docutils literal notranslate"><span class="pre">0x1dd8:0x100a</span></code></p></li>
+<li><p>BAR geometry is 64 KB BAR0 (32 KB register window) and
+4 MB BAR2, with 32 MSI-X vectors</p></li>
+<li><p>Clean shutdown on <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code></p></li>
+<li><p>The stats file carries the full counter set</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--tap</span></code> attaches to an existing host TAP</p></li>
+</ul>
+<p>The last check is skipped unless <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_TAP</span></code> names a
+TAP interface owned by the current user, since creating one
+needs <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ip<span class="w"> </span>tuntap<span class="w"> </span>add<span class="w"> </span>dev<span class="w"> </span>ernic-ci0<span class="w"> </span>mode<span class="w"> </span>tap<span class="w"> </span>user<span class="w"> </span><span class="s2">"</span><span class="nv">$USER</span><span class="s2">"</span>
+<span class="nv">ERNIC_TEST_TAP</span><span class="o">=</span>ernic-ci0<span class="w"> </span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-ci
+</pre></div>
+</div>
+</section>
+<section id="nvme-of-tests">
+<h3>NVMe-oF tests<a class="headerlink" href="#nvme-of-tests" title="Link to this heading">#</a></h3>
+<p>Three tests cover the in-process NVMe-oF controller without
+needing a VM: <code class="docutils literal notranslate"><span class="pre">nvmeof-target-unit</span></code> (capsule handling and
+the command set), <code class="docutils literal notranslate"><span class="pre">nvmeof-cm-unit</span></code> (the IB CM state
+machine) and <code class="docutils literal notranslate"><span class="pre">nvmeof-ci</span></code> (a shell test that starts the
+real server once per documented option spelling and checks
+what it reports, including that bad options are refused).</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>nvmeof
+</pre></div>
+</div>
+<p>The guest-side connect needs a VM. It lives in
+<code class="docutils literal notranslate"><span class="pre">ansible/playbooks/nvmeof-tests.yml</span></code>, which the hosted
+<code class="docutils literal notranslate"><span class="pre">system-test-nvmeof</span></code> job runs end to end and which
+<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> mirrors check-by-check for the
+self-hosted lane. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+</section>
+</section>
+<section id="running-tests">
+<h2>Running Tests<a class="headerlink" href="#running-tests" title="Link to this heading">#</a></h2>
+<section id="quick-local-test">
+<h3>Quick Local Test<a class="headerlink" href="#quick-local-test" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./scripts/run-local-tests.sh
+</pre></div>
+</div>
+<p>This script builds the project (if needed), starts the
+server, runs the test client, and cleans up automatically.</p>
+</section>
+<section id="manual-testing">
+<h3>Manual Testing<a class="headerlink" href="#manual-testing" title="Link to this heading">#</a></h3>
+<p>Build and start the server in one terminal:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Debug
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+
+./build/rocm-ernic<span class="w"> </span>/tmp/test.sock
+</pre></div>
+</div>
+<p>Run the test client in another terminal:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/tests/test_pci_client<span class="w"> </span>--socket<span class="w"> </span>/tmp/test.sock
+</pre></div>
+</div>
+</section>
+<section id="ctest">
+<h3>CTest<a class="headerlink" href="#ctest" title="Link to this heading">#</a></h3>
+<p>Run all registered tests via CTest:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build
+</pre></div>
+</div>
+<p>With verbose output on failure:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>--output-on-failure
+</pre></div>
+</div>
+</section>
+</section>
+<section id="multi-vm-rdma-testing">
+<h2>Multi-VM RDMA Testing<a class="headerlink" href="#multi-vm-rdma-testing" title="Link to this heading">#</a></h2>
+<p>With two VMs launched via <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, you can run
+standard RDMA benchmarks over the emulated NICs.</p>
+<p>Prerequisites:</p>
+<ol class="arabic">
+<li><p>One host TAP per instance,
+all enslaved to a shared bridge, so the guests can
+reach each other over IP (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span>add<span class="w"> </span>ernicbr0<span class="w"> </span><span class="nb">type</span><span class="w"> </span>bridge
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ernicbr0<span class="w"> </span>up
+<span class="k">for</span><span class="w"> </span>n<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span>sudo<span class="w"> </span>ip<span class="w"> </span>tuntap<span class="w"> </span>add<span class="w"> </span>dev<span class="w"> </span><span class="s2">"ernic-tap</span><span class="si">${</span><span class="nv">n</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>mode<span class="w"> </span>tap<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>user<span class="w"> </span><span class="s2">"</span><span class="nv">$USER</span><span class="s2">"</span>
+<span class="w">  </span>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">"ernic-tap</span><span class="si">${</span><span class="nv">n</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>master<span class="w"> </span>ernicbr0<span class="w"> </span>up
+<span class="k">done</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">ernic_host_setup</span></code> Ansible role does this for you.</p>
+</li>
+<li><p>Start the rocm-ernic service and launch two VMs
+(see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>).</p></li>
+<li><p>Install the guest drivers and rdma-core v62 in both VMs
+(see <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">driver-push</span></code>).</p></li>
+<li><p>Configure IP addresses on the rocm-ernic NICs
+(<code class="docutils literal notranslate"><span class="pre">enp1s0</span></code>) in both VMs.</p></li>
+</ol>
+<section id="ibv-rc-pingpong">
+<h3>ibv_rc_pingpong<a class="headerlink" href="#ibv-rc-pingpong" title="Link to this heading">#</a></h3>
+<p>Latency test using RC (Reliable Connection) QPs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1 (server):</span>
+<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span>
+
+<span class="c1"># VM 2 (client, use multicast NIC for OOB):</span>
+<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">192</span>.168.100.10
+</pre></div>
+</div>
+<p>Expected output (TCP mesh backend):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">40960</span> <span class="nb">bytes</span> <span class="ow">in</span> <span class="mf">0.37</span> <span class="n">seconds</span> <span class="o">=</span> <span class="mf">0.89</span> <span class="n">Mbit</span><span class="o">/</span><span class="n">sec</span>
+<span class="mi">5</span> <span class="n">iters</span> <span class="ow">in</span> <span class="mf">0.37</span> <span class="n">seconds</span> <span class="o">=</span> <span class="mf">73960.40</span> <span class="n">usec</span><span class="o">/</span><span class="nb">iter</span>
+</pre></div>
+</div>
+</section>
+<section id="ib-send-bw">
+<h3>ib_send_bw<a class="headerlink" href="#ib-send-bw" title="Link to this heading">#</a></h3>
+<p>Bandwidth test using the perftest suite:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1 (server):</span>
+<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--report_gbits
+
+<span class="c1"># VM 2 (client):</span>
+<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--report_gbits<span class="w"> </span><span class="m">192</span>.168.100.10
+</pre></div>
+</div>
+<p>Expected output:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1">#bytes  #iterations  BW peak[Gb/sec]  BW average[Gb/sec]</span>
+<span class="mi">65536</span>   <span class="mi">10</span>           <span class="mf">0.79</span>             <span class="mf">0.12</span>
+</pre></div>
+</div>
+</section>
+<section id="ethernet-connectivity">
+<h3>Ethernet Connectivity<a class="headerlink" href="#ethernet-connectivity" title="Link to this heading">#</a></h3>
+<p>The emulated NICs support IP over Ethernet via frame
+forwarding through the TCP mesh.  Ping between VMs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1:</span>
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>enp1s0<span class="w"> </span>up
+sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.200.10/24<span class="w"> </span>dev<span class="w"> </span>enp1s0
+
+<span class="c1"># VM 2:</span>
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>enp1s0<span class="w"> </span>up
+sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.200.20/24<span class="w"> </span>dev<span class="w"> </span>enp1s0
+
+<span class="c1"># From VM 1:</span>
+ping<span class="w"> </span><span class="m">192</span>.168.200.20
+</pre></div>
+</div>
+</section>
+</section>
+<section id="ansible-based-testing">
+<h2>Ansible-Based Testing<a class="headerlink" href="#ansible-based-testing" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">ansible/</span></code> directory contains playbooks that automate
+the multi-VM test workflow: building the server, installing
+the systemd service, provisioning already-running guests
+with the driver and the ionic rdma-core provider, and
+running iperf3, perftest and NVMe-oF tests against them. The
+guest disk is not built here; see <a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a>.</p>
+<section id="prerequisites">
+<h3>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible-core</span></code> 2.18+, which is what <code class="docutils literal notranslate"><span class="pre">community.general</span></code>
+13 needs. Ubuntu 24.04’s <code class="docutils literal notranslate"><span class="pre">ansible</span></code> package ships 2.16;
+use <code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">ansible-core</span></code> or the Ansible PPA.</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">community.general</span></code> Galaxy collection, which is all
+<code class="docutils literal notranslate"><span class="pre">requirements.yml</span></code> resolves to</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-galaxy<span class="w"> </span>collection<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-r<span class="w"> </span>requirements.yml
+</pre></div>
+</div>
+</section>
+<section id="running-the-full-workflow">
+<h3>Running the full workflow<a class="headerlink" href="#running-the-full-workflow" title="Link to this heading">#</a></h3>
+<p><strong>The guests must be up and running before you start.</strong>
+<code class="docutils literal notranslate"><span class="pre">site.yml</span></code> provisions and tests VMs; it never creates them,
+and every play after the first one fails without them.</p>
+<p>It is not quite a single command, because of the order the
+phases impose. Phase 1 installs the service that launches the
+guests, so it has to run before there are any; and it also
+<em>stops</em> whatever is running, unless <code class="docutils literal notranslate"><span class="pre">ernic_restart_existing</span></code>
+is false. Launching the VMs and then running <code class="docutils literal notranslate"><span class="pre">site.yml</span></code>
+plain therefore tears down the guests the run needs, and
+<code class="docutils literal notranslate"><span class="pre">vm-register</span></code> fails with no VM attached to any instance.</p>
+<p>Fetch the published guest image once with
+<code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code> (see
+<a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a> below), then:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+
+<span class="c1"># 1. Build, install the service and ernicctl.</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span>--tags<span class="w"> </span>host-setup
+
+<span class="c1"># 2. Attach a VM to each instance.</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">1</span>
+
+<span class="c1"># 3. Provision the guests and run the tests, leaving</span>
+<span class="c1">#    the VMs from step 2 alone.</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span>-e<span class="w"> </span><span class="nv">ernic_restart_existing</span><span class="o">=</span><span class="nb">false</span>
+</pre></div>
+</div>
+<p>On later runs, steps 1 and 3 collapse back into the single
+<code class="docutils literal notranslate"><span class="pre">ansible-playbook</span> <span class="pre">site.yml</span> <span class="pre">-e</span> <span class="pre">ernic_restart_existing=false</span></code>
+for as long as the guests stay up. Dropping the override is
+what you want when you <em>do</em> mean to recycle the mesh — it
+stops the VMs and restarts the service, after which step 2
+has to be repeated.</p>
+<p>VMs brought up by <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-up.sh</span></code> are the CI path and
+run unprivileged. Drive those with <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which
+imports no host-setup play and so neither tears them down nor
+touches the systemd service.</p>
+<p><code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs five plays in order:</p>
+<ol class="arabic simple">
+<li><p><strong>host-setup</strong> – builds the project, installs the
+service and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, templates the env file, and
+starts the service.</p></li>
+<li><p><strong>vm-register</strong> – reads the launcher’s
+<code class="docutils literal notranslate"><span class="pre">instances.json</span></code> and adds each running VM to the
+<code class="docutils literal notranslate"><span class="pre">ernic_vms</span></code> group with its SSH port, user and NIC
+address. Everything below depends on it.</p></li>
+<li><p><strong>guest-setup</strong> – installs the ionic rdma-core
+provider when the image does not already carry a
+matching one, builds and loads the guest driver from
+the ionic DKMS package, and assigns IPs to the
+emulated NICs.</p></li>
+<li><p><strong>sanity-tests</strong> – runs <code class="docutils literal notranslate"><span class="pre">iperf3</span></code> between two VMs
+for TCP/IP validation and <code class="docutils literal notranslate"><span class="pre">ib_send_bw</span></code> /
+<code class="docutils literal notranslate"><span class="pre">ibv_rc_pingpong</span></code> for RDMA verification.</p></li>
+<li><p><strong>performance-tests</strong> – the TCP and RDMA sweeps.</p></li>
+</ol>
+<p>The setup plays are thin wrappers around the roles of the
+<code class="docutils literal notranslate"><span class="pre">sbates130272.rocm_ernic</span></code> collection, whose source lives in
+<code class="docutils literal notranslate"><span class="pre">ansible/roles/</span></code>; see <a class="reference internal" href="#ansible-collection"><span class="std std-ref">The rocm_ernic Ansible collection</span></a> below.</p>
+</section>
+<section id="running-individual-plays">
+<h3>Running individual plays<a class="headerlink" href="#running-individual-plays" title="Link to this heading">#</a></h3>
+<p>Each play can also be run separately:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/host-setup.yml
+ansible-playbook<span class="w"> </span>playbooks/vm-register.yml
+ansible-playbook<span class="w"> </span>playbooks/guest-setup.yml
+ansible-playbook<span class="w"> </span>playbooks/sanity-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/performance-tests.yml
+</pre></div>
+</div>
+</section>
+<section id="variable-overrides">
+<h3>Variable overrides<a class="headerlink" href="#variable-overrides" title="Link to this heading">#</a></h3>
+<p>Override any default from <code class="docutils literal notranslate"><span class="pre">group_vars/all.yml</span></code> with
+<code class="docutils literal notranslate"><span class="pre">-e</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Four instances instead of two</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span>-e<span class="w"> </span><span class="nv">ernic_instances</span><span class="o">=</span><span class="m">4</span>
+
+<span class="c1"># Skip the build (use existing install)</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span>-e<span class="w"> </span><span class="nv">ernic_build</span><span class="o">=</span><span class="nb">false</span>
+
+<span class="c1"># Skip sanity tests</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span>-e<span class="w"> </span><span class="nv">ernic_tests</span><span class="o">=</span><span class="nb">false</span>
+
+<span class="c1"># Pin a different published image</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_vm_artifact_tag</span><span class="o">=</span>&lt;tag&gt;
+
+<span class="c1"># Use a backing image you staged yourself</span>
+ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_vm_backing</span><span class="o">=</span>/path/to/backing.qcow2
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">group_vars/all.yml</span></code> holds the site configuration for this
+repo; the per-role defaults live in each role’s
+<code class="docutils literal notranslate"><span class="pre">defaults/main.yml</span></code> under the collection described below.
+Anything set in <code class="docutils literal notranslate"><span class="pre">group_vars/all.yml</span></code> wins over a role
+default. See <code class="docutils literal notranslate"><span class="pre">ansible/PLAYBOOKS.md</span></code> for additional usage
+notes.</p>
+</section>
+<section id="the-guest-image">
+<span id="ansible-guest-image"></span><h3>The guest image<a class="headerlink" href="#the-guest-image" title="Link to this heading">#</a></h3>
+<p>Nothing in <code class="docutils literal notranslate"><span class="pre">ansible/</span></code> builds a guest image. The guests
+come from a published OCI artifact: the <code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour of
+<a class="reference external" href="https://github.com/sbates130272/batesste-ci-images">batesste-ci-images</a>,
+which pins mainline kernel 7.2.3 on Ubuntu 26.04 (resolute)
+and bakes the RDMA userspace, the DKMS toolchain,
+<code class="docutils literal notranslate"><span class="pre">perftest</span></code> and a distro rdma-core 61.0 carrying the ionic
+provider.</p>
+<p><code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code> pulls the image and its
+<code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> metadata with <code class="docutils literal notranslate"><span class="pre">oras</span></code>, decompresses the
+qcow2 and runs <code class="docutils literal notranslate"><span class="pre">qemu-img</span> <span class="pre">check</span></code> over it. The download is
+skipped when the tag is already unpacked. <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-up.sh</span></code>
+calls the same script, so the lab host and CI land the same
+bytes in the same layout.</p>
+<p>It also checks the image’s <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> against this
+checkout and refuses the image when they disagree. That
+happens between the metadata pull and the disk pull, so a
+rejection costs kilobytes rather than the 3.7 GB it would
+cost after – and every assertion reads either the metadata
+or a file in this checkout, so pulling the disk first could
+not change the verdict anyway. Verification reruns on the
+cached path too, because repinning <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code>
+invalidates a directory that was correct when it was pulled.
+<code class="docutils literal notranslate"><span class="pre">--no-verify</span></code> skips the lot.</p>
+<p>The kernel floor it enforces is two-sided.
+<code class="docutils literal notranslate"><span class="pre">drivers/infiniband/hw/ionic</span></code> merged in 6.18, which
+<code class="docutils literal notranslate"><span class="pre">ernic_ionic_min_kernel</span></code> also asserts against the running
+guest; and <code class="docutils literal notranslate"><span class="pre">ionic-ernic</span></code> calls <code class="docutils literal notranslate"><span class="pre">ib_umem_get_va</span></code>, which
+landed after 7.0, so a 7.0 guest clears the floor and then
+fails the DKMS build. The script compares the image kernel’s
+major.minor against <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> in
+<code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code> – as does
+<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code>, against the kernel the guest actually
+booted, before it starts that build.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">guest</span> <span class="pre">kernel</span></code> badge on line 9 of <code class="docutils literal notranslate"><span class="pre">README.md</span></code> has
+to be hardcoded – shields.io cannot read the image – so
+without a check a tag bump would leave the front page
+advertising a kernel nothing ships. Two independent
+implementations compare them: the fetch script, on the
+self-hosted and manual paths, and an inline copy in the
+<code class="docutils literal notranslate"><span class="pre">Read</span> <span class="pre">VM</span> <span class="pre">info</span></code> step of the loopback job in
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>, on every pull
+request. The hosted jobs pull through
+<code class="docutils literal notranslate"><span class="pre">.github/actions/fetch-guest-vm</span></code>, not this script, so
+neither copy is redundant.</p>
+<p>Four more properties are site expectations rather than
+repo-derivable facts, so the caller supplies them:
+<code class="docutils literal notranslate"><span class="pre">--expect-user</span></code>, <code class="docutils literal notranslate"><span class="pre">--expect-disk</span></code>, <code class="docutils literal notranslate"><span class="pre">--expect-release</span></code>
+and <code class="docutils literal notranslate"><span class="pre">--expect-flavour</span></code>. <code class="docutils literal notranslate"><span class="pre">ci/lib/common.sh</span></code> passes all
+four, which is what catches a <code class="docutils literal notranslate"><span class="pre">gpu</span></code>-flavour image reaching
+a lane whose roles want the ionic userspace. These
+assertions used to live in <code class="docutils literal notranslate"><span class="pre">playbooks/vm-fetch.yml</span></code>, which
+0.2.0 removed; in the script they cover every caller, not
+just the one that ran a play.</p>
+<p>Keep <code class="docutils literal notranslate"><span class="pre">ernic_vm_artifact_tag</span></code> equal to
+<code class="docutils literal notranslate"><span class="pre">GUEST_ARTIFACT_TAG</span></code> in
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> <em>and</em> to
+<code class="docutils literal notranslate"><span class="pre">CI_GUEST_ARTIFACT_TAG</span></code> in <code class="docutils literal notranslate"><span class="pre">ci/lib/common.sh</span></code>. Nothing
+compares those three to each other.</p>
+<p>The pinned image is flavour <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and carries no ROCm,
+so <code class="docutils literal notranslate"><span class="pre">ernic_gpu_passthrough</span></code> defaults off alongside it. A
+GPU rig needs a GPU-flavoured image.</p>
+</section>
+<section id="the-rocm-ernic-ansible-collection">
+<span id="ansible-collection"></span><h3>The rocm_ernic Ansible collection<a class="headerlink" href="#the-rocm-ernic-ansible-collection" title="Link to this heading">#</a></h3>
+<p>The reusable parts of the automation are packaged as the
+<code class="docutils literal notranslate"><span class="pre">sbates130272.rocm_ernic</span></code> Galaxy collection, so any
+suitable guest can be turned into a rocm-ernic RDMA node
+without the playbooks here:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code></dt><dd><p>Installs the DKMS driver, builds rdma-core with the
+<code class="docutils literal notranslate"><span class="pre">rocm_ernic</span></code> provider, applies the udev rules, addresses
+the emulated NIC and builds rocm-xio.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ernic_host_setup</span></code></dt><dd><p>Builds, installs and starts the rocm-ernic service, binds
+GPUs to <code class="docutils literal notranslate"><span class="pre">vfio-pci</span></code> and stages rocm-xio for the guests.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ernic_source</span></code></dt><dd><p>Resolves the rocm-ernic checkout the others copy from,
+cloning it on the controller when <code class="docutils literal notranslate"><span class="pre">ernic_source_dir</span></code> is
+not set.</p>
+</dd>
+</dl>
+<p>Consumers outside this repo install it from Galaxy and address
+the roles by their fully qualified name:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-galaxy<span class="w"> </span>collection<span class="w"> </span>install<span class="w"> </span>sbates130272.rocm_ernic
+</pre></div>
+</div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sbates130272.rocm_ernic.ernic_guest_setup</span>
+</pre></div>
+</div>
+<p>Playbooks in this repo instead reach the same roles by short
+name through <code class="docutils literal notranslate"><span class="pre">roles_path</span></code> in <code class="docutils literal notranslate"><span class="pre">ansible/ansible.cfg</span></code>, so they
+always run against this checkout rather than a published
+version. Because that path is relative, run <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span></code>
+from the <code class="docutils literal notranslate"><span class="pre">ansible/</span></code> directory.</p>
+</section>
+</section>
+<section id="guest-driver-ci">
+<h2>Guest Driver CI<a class="headerlink" href="#guest-driver-ci" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/driver-build.yml</span></code> covers the guest
+driver. Its <code class="docutils literal notranslate"><span class="pre">ionic-patches</span></code> job reads
+<code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> straight out
+of <code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code>, sparse-clones the two
+ionic subtrees at that ref, and applies every
+<code class="docutils literal notranslate"><span class="pre">patches/*.patch</span></code> with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">am</span></code>, failing the pull
+request if one no longer applies. The ionic modules
+themselves are not built there: they need headers matching
+<code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> — the sources track IB-core helpers
+that move between minor releases, so the guest kernel’s
+major.minor must equal the ref’s, and no hosted runner
+carries such a kernel.</p>
+<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> boots guests under
+KVM on hosted runners and provisions them by running the
+collection itself — <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span> <span class="pre">ci-site.yml</span> <span class="pre">--tags</span>
+<span class="pre">guest-setup</span></code> against a generated <code class="docutils literal notranslate"><span class="pre">instances.json</span></code> —
+rather than by copying sources in over <code class="docutils literal notranslate"><span class="pre">ssh</span></code>. The role is
+therefore exercised on every pull request, and the guest
+build in CI is the same one a <code class="docutils literal notranslate"><span class="pre">site.yml</span></code> run
+produces. The workflow installs only kernel headers and the
+build toolchain before handing over; the mainline kernel
+itself must already be in the guest image, and
+<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> asserts that it matches the pinned ref
+before it starts the DKMS build.</p>
+</section>
+<section id="self-hosted-ci">
+<h2>Self-Hosted CI<a class="headerlink" href="#self-hosted-ci" title="Link to this heading">#</a></h2>
+<p>The GitHub-hosted workflows can only build and unit-test.
+Anything needing KVM, a provisioned guest image, or two
+guests exchanging RDMA traffic runs on a self-hosted runner
+instead, driven by the harness in <code class="docutils literal notranslate"><span class="pre">ci/</span></code>.</p>
+<p>It runs in three tiers:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tier</p></th>
+<th class="head"><p>Scope</p></th>
+<th class="head"><p>Needs KVM</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>build, ctest, loopback backend</p></td>
+<td><p>no</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>two-VM RDMA functional</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>performance sweeps</p></td>
+<td><p>yes</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Tiers 2 and 3 are scheduled onto runners carrying the
+<code class="docutils literal notranslate"><span class="pre">kvm</span></code> label, so a node without KVM access stops
+attracting those jobs rather than failing them.</p>
+<p>The harness runs entirely unprivileged. The launcher and
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> are environment-driven, so the control plane
+is redirected under a workspace the CI user owns rather
+than <code class="docutils literal notranslate"><span class="pre">/run</span></code>, <code class="docutils literal notranslate"><span class="pre">/var/log</span></code> and <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>.</p>
+<p>Test logic is not duplicated: <code class="docutils literal notranslate"><span class="pre">ansible/ci-site.yml</span></code>
+drives the same guest-setup, sanity and performance plays
+described above, supplying only the inventory
+registration that <code class="docutils literal notranslate"><span class="pre">site.yml</span></code> would normally provide.</p>
+<p>Check whether a node is ready:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ci/doctor.sh
+</pre></div>
+</div>
+<p>Run any tier by hand:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>bash<span class="w"> </span>ci/jobs/build.sh
+bash<span class="w"> </span>ci/jobs/loopback.sh
+bash<span class="w"> </span>ci/jobs/vm-up.sh
+bash<span class="w"> </span>ci/jobs/vm-functional.sh
+bash<span class="w"> </span>ci/jobs/perf.sh
+bash<span class="w"> </span>ci/jobs/vm-down.sh
+</pre></div>
+</div>
+<p>Results are merged into a functional and performance
+report by <code class="docutils literal notranslate"><span class="pre">ci/report/gen-report.py</span></code>, which also checks
+medians against a stored baseline and exits non-zero on
+regressions. See <code class="docutils literal notranslate"><span class="pre">ci/README.md</span></code> for node setup,
+registration and the security notes that apply because
+this is a public repository.</p>
+</section>
+<section id="adding-new-tests">
+<h2>Adding New Tests<a class="headerlink" href="#adding-new-tests" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p>Create a test source file in <code class="docutils literal notranslate"><span class="pre">tests/</span></code>.</p></li>
+<li><p>Add the executable to <code class="docutils literal notranslate"><span class="pre">tests/CMakeLists.txt</span></code>.</p></li>
+<li><p>Register the test with <code class="docutils literal notranslate"><span class="pre">add_test()</span></code>.</p></li>
+</ol>
+<p>Example:</p>
+<div class="highlight-cmake notranslate"><div class="highlight"><pre><span></span><span class="nb">add_executable</span><span class="p">(</span><span class="s">test_new_feature</span>
+<span class="w">    </span><span class="s">test_new_feature.c</span>
+<span class="p">)</span>
+
+<span class="nb">add_test</span><span class="p">(</span>
+<span class="w">    </span><span class="s">NAME</span><span class="w"> </span><span class="s">new-feature-test</span>
+<span class="w">    </span><span class="s">COMMAND</span><span class="w"> </span><span class="o">${</span><span class="nv">CMAKE_CURRENT_SOURCE_DIR</span><span class="o">}</span><span class="s">/run-test.sh</span>
+<span class="w">        </span><span class="o">$&lt;</span><span class="nv">TARGET_FILE:test_new_feature</span><span class="o">&gt;</span>
+<span class="w">        </span><span class="o">$&lt;</span><span class="nv">TARGET_FILE:rocm-ernic</span><span class="o">&gt;</span>
+<span class="p">)</span>
+<span class="nb">set_tests_properties</span><span class="p">(</span><span class="s">new-feature-test</span><span class="w"> </span><span class="s">PROPERTIES</span>
+<span class="w">    </span><span class="s">TIMEOUT</span><span class="w"> </span><span class="s">30</span>
+<span class="w">    </span><span class="s">RUN_SERIAL</span><span class="w"> </span><span class="s">TRUE</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="monitoring.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Prometheus Monitoring and Grafana Dashboard</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="performance.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Performance</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-programs">Test Programs</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-pci-client">test_pci_client</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-data-transfer">test_data_transfer</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-tests">Running Tests</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-local-test">Quick Local Test</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-testing">Manual Testing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ctest">CTest</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-vm-rdma-testing">Multi-VM RDMA Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ibv-rc-pingpong">ibv_rc_pingpong</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ib-send-bw">ib_send_bw</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-connectivity">Ethernet Connectivity</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansible-based-testing">Ansible-Based Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-full-workflow">Running the full workflow</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-individual-plays">Running individual plays</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#variable-overrides">Variable overrides</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-image">The guest image</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm_ernic Ansible collection</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#self-hosted-ci">Self-Hosted CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-new-tests">Adding New Tests</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

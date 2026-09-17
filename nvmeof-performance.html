@@ -1,0 +1,923 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>NVMe-oF Performance &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'nvmeof-performance';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Performance trends" href="perf-trends.html" />
+    <link rel="prev" title="Performance" href="performance.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/nvmeof-performance.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>NVMe-oF Performance</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-environment">Test Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#block-size-sweep">Block-size sweep</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#access-patterns">Access patterns</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sequential">Sequential</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#queue-depth-sweep">Queue-depth sweep</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#data-integrity">Data integrity</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limits">Known Limits</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sub-block-i-o-is-rejected">Sub-block I/O is rejected</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-mr-budget-caps-the-queue-count">The MR budget caps the queue count</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#historical-note">Historical note</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="nvme-of-performance">
+<h1>NVMe-oF Performance<a class="headerlink" href="#nvme-of-performance" title="Link to this heading">#</a></h1>
+<p>This page records what the in-process NVMe-oF controller
+(<a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>) actually delivers, measured with <code class="docutils literal notranslate"><span class="pre">fio</span></code> from
+inside a single guest. It complements <a class="reference internal" href="performance.html"><span class="doc">Performance</span></a>, which
+covers the RDMA verbs path over the TCP mesh, and
+<a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a>, which tracks the 4 KiB random-read number
+over time from the nightly run.</p>
+<p>The numbers here are not storage numbers. Nothing is measured
+against a real SSD: the namespace is host memory or a host file,
+and every command capsule and RDMA transfer is emulated in
+userspace. What the sweep measures is the <em>emulator</em> – the
+capsule round trip, the fast-registration path, and the RDMA
+READ/WRITE engine in <code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>. Treat a
+regression here as a regression in that code, not in any disk.</p>
+<nav class="contents local" id="sections">
+<p class="topic-title">Sections</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#test-environment" id="id1">Test Environment</a></p></li>
+<li><p><a class="reference internal" href="#reproducing" id="id2">Reproducing</a></p></li>
+<li><p><a class="reference internal" href="#results" id="id3">Results</a></p>
+<ul>
+<li><p><a class="reference internal" href="#block-size-sweep" id="id4">Block-size sweep</a></p></li>
+<li><p><a class="reference internal" href="#access-patterns" id="id5">Access patterns</a></p></li>
+<li><p><a class="reference internal" href="#sequential" id="id6">Sequential</a></p></li>
+<li><p><a class="reference internal" href="#queue-depth-sweep" id="id7">Queue-depth sweep</a></p></li>
+<li><p><a class="reference internal" href="#data-integrity" id="id8">Data integrity</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#known-limits" id="id9">Known Limits</a></p>
+<ul>
+<li><p><a class="reference internal" href="#sub-block-i-o-is-rejected" id="id10">Sub-block I/O is rejected</a></p></li>
+<li><p><a class="reference internal" href="#the-mr-budget-caps-the-queue-count" id="id11">The MR budget caps the queue count</a></p></li>
+</ul>
+</li>
+</ul>
+</nav>
+<section id="test-environment">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">Test Environment</a><a class="headerlink" href="#test-environment" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Host</p></td>
+<td><p>hpe-rack-15.adc.amd.com
+(AMD EPYC 7513, 128 threads)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Host kernel</p></td>
+<td><p>6.8.0-124-generic</p></td>
+</tr>
+<tr class="row-even"><td><p>Guest</p></td>
+<td><p>Ubuntu 26.04 LTS, kernel 7.2.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>Guest vCPUs / memory</p></td>
+<td><p>16 / 32 GiB</p></td>
+</tr>
+<tr class="row-even"><td><p>Emulated device</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> (ionic)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Active MTU</p></td>
+<td><p>1024 bytes</p></td>
+</tr>
+<tr class="row-even"><td><p>Backend</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">nvmeof:size=8G,bs=4096,</span></code>
+<code class="docutils literal notranslate"><span class="pre">file=/var/tmp/ernic-ns0.img,queues=4</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Namespace</p></td>
+<td><p>8 GiB, file-backed, 4 KiB blocks</p></td>
+</tr>
+<tr class="row-even"><td><p>fio</p></td>
+<td><p>3.41</p></td>
+</tr>
+<tr class="row-odd"><td><p>nvme-cli</p></td>
+<td><p>2.16</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The controller reports <code class="docutils literal notranslate"><span class="pre">mdts=5</span></code> – a 128 KiB maximum transfer
+– and <code class="docutils literal notranslate"><span class="pre">ioccsz=4</span></code>, so every command carries a keyed SGL rather
+than in-capsule data. <code class="docutils literal notranslate"><span class="pre">maxcmd</span></code> is 128.</p>
+</section>
+<section id="reproducing">
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">Reproducing</a><a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># One server, one guest -- a complete fabric.</span>
+<span class="nv">ERNIC_INSTANCES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">ERNIC_BACKEND</span><span class="o">=</span><span class="s1">'nvmeof:size=8G,bs=4096,queues=4'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>bash<span class="w"> </span>ci/jobs/vm-up.sh
+bash<span class="w"> </span>ci/jobs/vm-nvmeof.sh
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> provisions the guest, connects, and runs
+the short sweep that feeds the trend chart. The longer sweep
+below was driven by hand against the resulting
+<code class="docutils literal notranslate"><span class="pre">/dev/nvme0n1</span></code>; each run is <code class="docutils literal notranslate"><span class="pre">--direct=1</span> <span class="pre">--time_based</span>
+<span class="pre">--runtime=15</span></code> with <code class="docutils literal notranslate"><span class="pre">libaio</span></code>.</p>
+</section>
+<section id="results">
+<h2><a class="toc-backref" href="#id3" role="doc-backlink">Results</a><a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
+<section id="block-size-sweep">
+<h3><a class="toc-backref" href="#id4" role="doc-backlink">Block-size sweep</a><a class="headerlink" href="#block-size-sweep" title="Link to this heading">#</a></h3>
+<p>Random read, queue depth 32, 4 jobs.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Block size</p></th>
+<th class="head"><p>IOPS</p></th>
+<th class="head"><p>GB/s</p></th>
+<th class="head"><p>Mean (us)</p></th>
+<th class="head"><p>p99 (us)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4 KiB</p></td>
+<td><p>43,113</p></td>
+<td><p>0.177</p></td>
+<td><p>2913.4</p></td>
+<td><p>5603.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>16 KiB</p></td>
+<td><p>45,353</p></td>
+<td><p>0.743</p></td>
+<td><p>2748.7</p></td>
+<td><p>9633.8</p></td>
+</tr>
+<tr class="row-even"><td><p>64 KiB</p></td>
+<td><p>41,397</p></td>
+<td><p>2.713</p></td>
+<td><p>3055.7</p></td>
+<td><p>5275.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>256 KiB</p></td>
+<td><p>15,034</p></td>
+<td><p>3.941</p></td>
+<td><p>8345.6</p></td>
+<td><p>13959.2</p></td>
+</tr>
+<tr class="row-even"><td><p>1 MiB</p></td>
+<td><p>3,552</p></td>
+<td><p>3.725</p></td>
+<td><p>34829.0</p></td>
+<td><p>68681.7</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>IOPS is flat from 4 KiB to 64 KiB: below 64 KiB the cost is
+per-capsule, not per-byte, so shrinking the transfer buys
+nothing. Bandwidth peaks at 256 KiB and then <em>falls</em> at 1 MiB,
+which is the <code class="docutils literal notranslate"><span class="pre">mdts=5</span></code> cap showing through – the guest splits
+anything over 128 KiB, so a 1 MiB request becomes eight round
+trips and pays the per-capsule cost eight times.</p>
+</section>
+<section id="access-patterns">
+<h3><a class="toc-backref" href="#id5" role="doc-backlink">Access patterns</a><a class="headerlink" href="#access-patterns" title="Link to this heading">#</a></h3>
+<p>4 KiB, queue depth 32, 4 jobs.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Pattern</p></th>
+<th class="head"><p>IOPS</p></th>
+<th class="head"><p>GB/s</p></th>
+<th class="head"><p>Mean (us)</p></th>
+<th class="head"><p>p99 (us)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Random read</p></td>
+<td><p>45,283</p></td>
+<td><p>0.185</p></td>
+<td><p>2753.2</p></td>
+<td><p>5472.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>Random write</p></td>
+<td><p>42,317</p></td>
+<td><p>0.173</p></td>
+<td><p>2952.9</p></td>
+<td><p>8159.2</p></td>
+</tr>
+<tr class="row-even"><td><p>Random 70/30</p></td>
+<td><p>41,824</p></td>
+<td><p>0.171</p></td>
+<td><p>2991.0</p></td>
+<td><p>6062.1</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Writes land within 7% of reads. The two directions run different
+code – a read makes the controller issue RDMA WRITE into guest
+memory, a write makes it issue RDMA READ out of it – so the
+symmetry is the useful result: neither direction carries an
+extra copy or an extra round trip the other avoids.</p>
+</section>
+<section id="sequential">
+<h3><a class="toc-backref" href="#id6" role="doc-backlink">Sequential</a><a class="headerlink" href="#sequential" title="Link to this heading">#</a></h3>
+<p>1 MiB, queue depth 16, 4 jobs.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Pattern</p></th>
+<th class="head"><p>IOPS</p></th>
+<th class="head"><p>GB/s</p></th>
+<th class="head"><p>Mean (us)</p></th>
+<th class="head"><p>p99 (us)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Read</p></td>
+<td><p>3,398</p></td>
+<td><p>3.563</p></td>
+<td><p>18008.4</p></td>
+<td><p>32374.8</p></td>
+</tr>
+<tr class="row-odd"><td><p>Write</p></td>
+<td><p>2,359</p></td>
+<td><p>2.474</p></td>
+<td><p>26115.1</p></td>
+<td><p>103284.7</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Sequential read reaches roughly the same ceiling as the 256 KiB
+random case, confirming the limit is per-transfer overhead
+rather than locality. The sequential write p99 of 103 ms is the
+file-backed namespace reaching host writeback; a RAM-backed
+namespace does not show it.</p>
+</section>
+<section id="queue-depth-sweep">
+<h3><a class="toc-backref" href="#id7" role="doc-backlink">Queue-depth sweep</a><a class="headerlink" href="#queue-depth-sweep" title="Link to this heading">#</a></h3>
+<p>4 KiB random read, single job – the latency curve.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Queue depth</p></th>
+<th class="head"><p>IOPS</p></th>
+<th class="head"><p>Mean (us)</p></th>
+<th class="head"><p>p99 (us)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>2,867</p></td>
+<td><p>334.3</p></td>
+<td><p>378.9</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>7,204</p></td>
+<td><p>263.6</p></td>
+<td><p>403.5</p></td>
+</tr>
+<tr class="row-even"><td><p>4</p></td>
+<td><p>11,237</p></td>
+<td><p>337.5</p></td>
+<td><p>411.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>20,191</p></td>
+<td><p>379.0</p></td>
+<td><p>493.6</p></td>
+</tr>
+<tr class="row-even"><td><p>16</p></td>
+<td><p>39,036</p></td>
+<td><p>394.3</p></td>
+<td><p>733.2</p></td>
+</tr>
+<tr class="row-odd"><td><p>32</p></td>
+<td><p>46,042</p></td>
+<td><p>678.8</p></td>
+<td><p>1155.1</p></td>
+</tr>
+<tr class="row-even"><td><p>64</p></td>
+<td><p>43,713</p></td>
+<td><p>1445.7</p></td>
+<td><p>2408.4</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>This is the most diagnostic table on the page. Queue depth 1
+gives the unloaded round trip: <strong>334 us</strong> for a 4 KiB read,
+covering the capsule SEND, the controller’s RDMA WRITE, and the
+response capsule. Throughput then scales close to linearly to
+depth 16 while latency stays near flat, so the pipeline is
+genuinely parallel rather than serialised behind one lock.</p>
+<p>Saturation is at depth 32, around <strong>46,000 IOPS</strong>. Past that the
+curve inverts: depth 64 delivers <em>fewer</em> IOPS at twice the
+latency, so 32 is the useful operating point and deeper queues
+only add waiting.</p>
+</section>
+<section id="data-integrity">
+<h3><a class="toc-backref" href="#id8" role="doc-backlink">Data integrity</a><a class="headerlink" href="#data-integrity" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">--verify=crc32c</span> <span class="pre">--verify_fatal=1</span></code> pass over 512 MiB of
+4 KiB random writes completed with <strong>zero</strong> verification
+errors, at 28,519 write IOPS. Combined with the digest round
+trip in <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/nvmeof-tests.yml</span></code>, this is the
+check that the keyed-SGL path moves the right bytes and not
+merely the right number of bytes.</p>
+</section>
+</section>
+<section id="known-limits">
+<h2><a class="toc-backref" href="#id9" role="doc-backlink">Known Limits</a><a class="headerlink" href="#known-limits" title="Link to this heading">#</a></h2>
+<section id="sub-block-i-o-is-rejected">
+<h3><a class="toc-backref" href="#id10" role="doc-backlink">Sub-block I/O is rejected</a><a class="headerlink" href="#sub-block-i-o-is-rejected" title="Link to this heading">#</a></h3>
+<p>With the namespace formatted at 4 KiB, 512-byte and 1 KiB
+requests fail:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">fio</span><span class="p">:</span> <span class="n">io_u</span> <span class="n">error</span> <span class="n">on</span> <span class="n">file</span> <span class="o">/</span><span class="n">dev</span><span class="o">/</span><span class="n">nvme0n1</span><span class="p">:</span> <span class="n">Invalid</span> <span class="n">argument</span><span class="p">:</span>
+     <span class="n">read</span> <span class="n">offset</span><span class="o">=</span><span class="mi">2098144256</span><span class="p">,</span> <span class="n">buflen</span><span class="o">=</span><span class="mi">512</span>
+</pre></div>
+</div>
+<p>That is correct behaviour, not a defect – the block layer
+refuses I/O below the logical block size. Use <code class="docutils literal notranslate"><span class="pre">bs=512</span></code> on the
+backend to measure the small-block path.</p>
+</section>
+<section id="the-mr-budget-caps-the-queue-count">
+<span id="nvmeof-mr-budget"></span><h3><a class="toc-backref" href="#id11" role="doc-backlink">The MR budget caps the queue count</a><a class="headerlink" href="#the-mr-budget-caps-the-queue-count" title="Link to this heading">#</a></h3>
+<p>This is the one to know about before changing <code class="docutils literal notranslate"><span class="pre">queues=</span></code>.</p>
+<p>A stock <code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> initiator runs with <code class="docutils literal notranslate"><span class="pre">register_always</span></code>,
+and allocates a pool of <strong>128 memory regions per queue</strong> at
+connect time – admin queue included – rather than per I/O. An
+N-queue controller therefore needs <code class="docutils literal notranslate"><span class="pre">(N</span> <span class="pre">+</span> <span class="pre">1)</span> <span class="pre">*</span> <span class="pre">128</span></code> regions
+before the first capsule moves, and the emulator’s table is a
+fixed <code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code> = 2048 (<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.h</span></code>,
+which also sizes <code class="docutils literal notranslate"><span class="pre">MAX_MR</span></code> in
+<code class="file docutils literal notranslate"><span class="pre">src/from-qemu/hw/rdma/rdma_rm_defs.h</span></code> and in
+<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>). That puts the ceiling at 15 I/O
+queues, which <code class="docutils literal notranslate"><span class="pre">nvmeof_parse_backend()</span></code> enforces at startup:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: nvmeof backend: queues must be 1..15, one per 128
+memory regions in a table of 2048 (got '16')
+</pre></div>
+</div>
+<p>The table is not sized for the NVMe maximum of 64 queues on
+purpose: <code class="docutils literal notranslate"><span class="pre">dp_reg_mr()</span></code> walks the whole table on every fast
+registration – that is, on every command – so the constant is
+a per-I/O cost as well as a ceiling.</p>
+<p>The measurements above predate that change and were taken at
+<code class="docutils literal notranslate"><span class="pre">queues=4</span></code> against the old 1024-entry table. They have not been
+rerun. The change does not alter protocol behaviour once a connect
+has succeeded, but it is not free either: <code class="docutils literal notranslate"><span class="pre">dp_reg_mr()</span></code> walks the
+whole table on every fast registration, as above, so doubling the
+constant doubles that walk. Treat the figures as a baseline for the
+1024-entry table rather than as current numbers.</p>
+<p>Both CI lanes now aim the connect at the controller’s ceiling
+rather than letting the initiator choose. <code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> defaults
+<code class="docutils literal notranslate"><span class="pre">nr_io_queues</span></code> to <code class="docutils literal notranslate"><span class="pre">num_online_cpus()</span></code>, so before the change
+the hosted lane – a 4-vCPU guest – negotiated four queues and
+needed only 544 regions, comfortably inside even the old
+1024-entry table. That is why the lane stayed green through the
+first failure described below and never covered it. It did not
+escape the second: 544 regions overran the 256-entry handle map,
+so the four-queue lane was leaking regions silently the whole
+time. The connect sites therefore pass <code class="docutils literal notranslate"><span class="pre">-i</span></code> <em>and</em> <code class="docutils literal notranslate"><span class="pre">-W</span></code>:
+<code class="docutils literal notranslate"><span class="pre">nvmf_nr_io_queues()</span></code> is the sum of <code class="docutils literal notranslate"><span class="pre">nr_io_queues</span></code>,
+<code class="docutils literal notranslate"><span class="pre">nr_write_queues</span></code> and <code class="docutils literal notranslate"><span class="pre">nr_poll_queues</span></code>, each separately
+clamped to <code class="docutils literal notranslate"><span class="pre">num_online_cpus()</span></code>, and <code class="docutils literal notranslate"><span class="pre">nvmf_parse_options()</span></code>
+clamps <code class="docutils literal notranslate"><span class="pre">-i</span></code> to the CPU count a second time on its own, so
+<code class="docutils literal notranslate"><span class="pre">-i</span> <span class="pre">8</span></code> alone cannot lift a 4-vCPU guest past four. Eight of
+each reaches eight there, and on a larger guest the controller’s
+Set Features NUMBER_OF_QUEUES reply brings the total back down
+to eight. Both lanes then read
+<code class="file docutils literal notranslate"><span class="pre">/sys/class/nvme/nvmeN/queue_count</span></code> back and fail if it
+does not match, because too few queues is not an error to
+<code class="docutils literal notranslate"><span class="pre">nvme-cli</span></code> and the shortfall would otherwise be invisible.</p>
+<p>What they match against is <code class="docutils literal notranslate"><span class="pre">min(2</span> <span class="pre">*</span> <span class="pre">min(C,</span> <span class="pre">cpus),</span> <span class="pre">C)</span> <span class="pre">+</span> <span class="pre">1</span></code>,
+where <code class="docutils literal notranslate"><span class="pre">C</span></code> is the <code class="docutils literal notranslate"><span class="pre">queues=</span></code> the instance was started with,
+not a hard-coded nine: at the same <code class="docutils literal notranslate"><span class="pre">queues=4</span></code> this page was
+measured at the lane should expect five, and a guest with fewer
+than <code class="docutils literal notranslate"><span class="pre">C</span> <span class="pre">/</span> <span class="pre">2</span></code> vCPUs cannot reach <code class="docutils literal notranslate"><span class="pre">C</span></code> however the flags are
+spent. Coming up short is legitimate and is logged rather than
+failed – but it does mean that run is not covering the full
+memory-region budget.</p>
+<p>One correction to the arithmetic above, in the safe direction:
+the pool is sized <code class="docutils literal notranslate"><span class="pre">queue-&gt;queue_size</span></code>, and the admin queue’s
+is <code class="docutils literal notranslate"><span class="pre">NVME_AQ_DEPTH</span></code> = 32, not 128. The real demand is
+<code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">*</span> <span class="pre">128</span> <span class="pre">+</span> <span class="pre">32</span></code>, so <code class="docutils literal notranslate"><span class="pre">(N</span> <span class="pre">+</span> <span class="pre">1)</span> <span class="pre">*</span> <span class="pre">128</span></code> over-counts by 96 and the
+2048-entry table and its 15-queue ceiling remain sound.</p>
+<section id="historical-note">
+<h4>Historical note<a class="headerlink" href="#historical-note" title="Link to this heading">#</a></h4>
+<p>Before the memory-region budget was reworked, <code class="docutils literal notranslate"><span class="pre">MAX_MR</span></code> was
+1024 – exactly the 8 * 128 regions the default <code class="docutils literal notranslate"><span class="pre">queues=8</span></code> needs for
+its I/O queues, leaving nothing for the admin queue. The connect
+died on the last one:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">nvme</span> <span class="n">nvme0</span><span class="p">:</span> <span class="n">creating</span> <span class="mi">8</span> <span class="n">I</span><span class="o">/</span><span class="n">O</span> <span class="n">queues</span><span class="o">.</span>
+<span class="n">ionic</span> <span class="mi">0000</span><span class="p">:</span><span class="mi">01</span><span class="p">:</span><span class="mf">00.0</span> <span class="n">rocm</span><span class="o">-</span><span class="n">rdma</span><span class="o">-</span><span class="n">ernic0</span><span class="p">:</span> <span class="n">opcode</span> <span class="mi">3</span> <span class="n">error</span> <span class="mi">16777216</span>
+<span class="n">nvme</span> <span class="n">nvme0</span><span class="p">:</span> <span class="n">failed</span> <span class="n">to</span> <span class="n">initialize</span> <span class="n">MR</span> <span class="n">pool</span> <span class="n">sized</span> <span class="mi">128</span> <span class="k">for</span> <span class="n">QID</span> <span class="mi">8</span>
+<span class="n">nvme</span> <span class="n">nvme0</span><span class="p">:</span> <span class="n">rdma</span> <span class="n">connection</span> <span class="n">establishment</span> <span class="n">failed</span> <span class="p">(</span><span class="o">-</span><span class="mi">22</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Compounding it, the admin queue’s driver-id-to-handle map held
+only 256 entries, so every region past the 256th was created
+successfully and then had no map entry. <code class="docutils literal notranslate"><span class="pre">CREATE_MR</span></code> still
+reported success, <code class="docutils literal notranslate"><span class="pre">DESTROY_MR</span></code> could not resolve the handle
+and silently returned 0, and the regions leaked for the life of
+the process – which is why a second connect attempt failed
+earlier than the first, at QID 2 rather than QID 8.</p>
+</section>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="performance.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Performance</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="perf-trends.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Performance trends</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-environment">Test Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#block-size-sweep">Block-size sweep</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#access-patterns">Access patterns</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sequential">Sequential</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#queue-depth-sweep">Queue-depth sweep</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#data-integrity">Data integrity</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limits">Known Limits</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sub-block-i-o-is-rejected">Sub-block I/O is rejected</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-mr-budget-caps-the-queue-count">The MR budget caps the queue count</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#historical-note">Historical note</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

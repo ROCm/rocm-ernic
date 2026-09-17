@@ -1,0 +1,726 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Architecture &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'architecture';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Usage" href="usage.html" />
+    <link rel="prev" title="Building and Installing" href="building.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/architecture.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Architecture</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#high-level-overview">High-Level Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components">Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-rocm-ernic-server-c">Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-bridge-rocm-ernic-compat-c">Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-src-from-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ionic-emulation-src-ionic-c">ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pci-bars">PCI BARs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loopback">Loopback</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tcp-ip">TCP/IP</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#userspace-data-path">Userspace Data Path</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-verbs">RDMA / Verbs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of">NVMe-oF</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#none">None</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tap-ethernet-only">TAP (Ethernet only)</a></li>
+</ul>
+</li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="architecture">
+<h1>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h1>
+<p>rocm-ernic emulates a complete PCIe RDMA device in userspace
+using the VFIO-User protocol. A kernel driver inside the guest
+VM communicates with the emulated device, providing standard
+InfiniBand verbs to applications. That driver is the upstream
+Linux <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> pair, with the patches in
+<code class="docutils literal notranslate"><span class="pre">patches/</span></code> applied. See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>.</p>
+<section id="high-level-overview">
+<h2>High-Level Overview<a class="headerlink" href="#high-level-overview" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌──────────────────────────────────────────────┐
+│          Virtual Machine (Guest)             │
+│  ┌────────────────────────────────────┐      │
+│  │  Linux ionic + ionic_rdma Drivers  │      │
+│  └─────────────┬──────────────────────┘      │
+│                │ PCI Interface               │
+└────────────────┼─────────────────────────────┘
+                 │ VFIO-User Protocol
+┌────────────────┼─────────────────────────────┐
+│                ▼                             │
+│  ┌──────────────────────────────────────┐    │
+│  │    rocm_ernic Server                 │    │
+│  │  ┌───────────────────────┐           │    │
+│  │  │  RDMA Device Logic    │           │    │
+│  │  │  (adapted from QEMU)  │           │    │
+│  │  └──────────┬────────────┘           │    │
+│  │    ┌────────┴────────┬──────┐        │    │
+│  │    ▼                 ▼      ▼        │    │
+│  │  ┌──────┐  ┌──────────┐  ┌──────┐   │    │
+│  │  │Loop- │  │ TCP/IP   │  │RDMA/ │   │    │
+│  │  │back  │  │ Backend  │  │Verbs │   │    │
+│  │  └──────┘  └────┬─────┘  └──┬───┘   │    │
+│  └─────────────────┼───────────┼────────┘    │
+│                    │           │             │
+│         ┌──────────┘           │             │
+│         ▼                      ▼             │
+│  ┌──────────────┐    ┌──────────────┐        │
+│  │Another       │    │  libibverbs  │        │
+│  │rocm_ernic    │    └──────┬───────┘        │
+│  │Server        │           ▼                │
+│  └──────────────┘    ┌──────────────┐        │
+│                      │ InfiniBand   │        │
+│                      │ Hardware     │        │
+│                      └──────────────┘        │
+└──────────────────────────────────────────────┘
+</pre></div>
+</div>
+</section>
+<section id="components">
+<h2>Components<a class="headerlink" href="#components" title="Link to this heading">#</a></h2>
+<section id="server-rocm-ernic-server-c">
+<h3>Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)<a class="headerlink" href="#server-rocm-ernic-server-c" title="Link to this heading">#</a></h3>
+<p>The main entry point. It creates the libvfio-user context,
+sets up the PCI BARs, registers
+MSI-X vectors, and enters the server loop waiting for a QEMU
+client to connect.</p>
+</section>
+<section id="compatibility-bridge-rocm-ernic-compat-c">
+<h3>Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)<a class="headerlink" href="#compatibility-bridge-rocm-ernic-compat-c" title="Link to this heading">#</a></h3>
+<p>An isolation layer between the QEMU-derived RDMA device logic
+and the libvfio-user transport. The bridge exposes a clean
+C API (<code class="docutils literal notranslate"><span class="pre">pvrdma_device_create</span></code>, <code class="docutils literal notranslate"><span class="pre">pvrdma_regs_write</span></code>, etc.)
+so that the server never includes QEMU headers directly.</p>
+</section>
+<section id="rdma-device-logic-src-from-qemu">
+<h3>RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code>)<a class="headerlink" href="#rdma-device-logic-src-from-qemu" title="Link to this heading">#</a></h3>
+<p>Adapted from the QEMU PVRDMA device implementation. This code
+handles the command ring, doorbell processing, queue-pair
+management, and completion-queue posting. It is intentionally
+kept close to the upstream QEMU source to simplify future
+synchronization.</p>
+</section>
+<section id="ionic-emulation-src-ionic-c">
+<h3>ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)<a class="headerlink" href="#ionic-emulation-src-ionic-c" title="Link to this heading">#</a></h3>
+<p>The device front end. It implements the
+register and queue protocol of the AMD
+Pensando ionic NIC so the guest can run the upstream Linux
+<code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> drivers. It provides the device
+command interface and the Ethernet LIF
+(<code class="docutils literal notranslate"><span class="pre">ionic_eth_emu.c</span></code>), a TAP host backend
+(<code class="docutils literal notranslate"><span class="pre">ionic_eth_net.c</span></code>), the admin queue (<code class="docutils literal notranslate"><span class="pre">ionic_adminq.c</span></code>),
+and the RDMA device commands (<code class="docutils literal notranslate"><span class="pre">ionic_rdma_devcmd.c</span></code>). The
+RDMA operations themselves are handed to the backends below.
+See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>.</p>
+</section>
+</section>
+<section id="pci-bars">
+<h2>PCI BARs<a class="headerlink" href="#pci-bars" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 10.0%" />
+<col style="width: 25.0%" />
+<col style="width: 65.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>BAR</p></th>
+<th class="head"><p>Size</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>BAR 0</p></td>
+<td><p>64 KB</p></td>
+<td><p>32 KB device register window (device info, device
+command, interrupt control) plus the MSI-X table and
+Pending Bit Array above it</p></td>
+</tr>
+<tr class="row-odd"><td><p>BAR 2</p></td>
+<td><p>4 MB</p></td>
+<td><p>Doorbell pages; the offset within a page encodes the
+queue type, the page index the process ID</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="backends">
+<h2>Backends<a class="headerlink" href="#backends" title="Link to this heading">#</a></h2>
+<section id="loopback">
+<h3>Loopback<a class="headerlink" href="#loopback" title="Link to this heading">#</a></h3>
+<p>In-memory emulation with no external dependencies. Send and
+receive operations complete immediately within the same
+process. Ideal for driver development and CI testing.</p>
+</section>
+<section id="tcp-ip">
+<h3>TCP/IP<a class="headerlink" href="#tcp-ip" title="Link to this heading">#</a></h3>
+<p>Connects two or more rocm-ernic server instances over TCP
+in a manager/worker mesh.  The protocol serializes RDMA work
+requests, data payloads, and completions across the network.
+Instance 1 acts as the mesh manager; instances 2..N connect
+as workers.</p>
+<p>The TCP backend also forwards raw Ethernet frames between
+nodes, enabling IP connectivity (ping, ARP) over the
+emulated NIC.  Frames that the server’s Ethernet handler
+does not process locally (ARP for non-server IPs, ICMP,
+arbitrary IP traffic) are broadcast to all mesh peers via
+<code class="docutils literal notranslate"><span class="pre">TCP_MSG_ETH_FRAME</span></code> messages.  The manager acts as a hub,
+re-broadcasting frames from one worker to all others.</p>
+<section id="userspace-data-path">
+<h4>Userspace Data Path<a class="headerlink" href="#userspace-data-path" title="Link to this heading">#</a></h4>
+<p>On kernels 6.14 and later, the write-based uverbs handlers
+for <code class="docutils literal notranslate"><span class="pre">POST_SEND</span></code>, <code class="docutils literal notranslate"><span class="pre">POST_RECV</span></code>, and <code class="docutils literal notranslate"><span class="pre">POLL_CQ</span></code> are no
+longer available.  The rdma-core provider implements these
+operations as direct reads and writes to shared-memory ring
+buffers:</p>
+<ul class="simple">
+<li><p><strong>post_send / post_recv</strong>: write WQE headers and SGEs
+into the mmap’d QP ring buffer, advance the producer
+tail index, and ring the UAR doorbell (a BAR2 write
+trapped by libvfio-user).</p></li>
+<li><p><strong>poll_cq</strong>: read CQE entries from the mmap’d CQ buffer
+using the shared ring state (producer/consumer atomics
+in the CQ header page).</p></li>
+</ul>
+<p>The QP and CQ buffers are allocated by the provider via
+<code class="docutils literal notranslate"><span class="pre">mmap(MAP_PRIVATE</span> <span class="pre">|</span> <span class="pre">MAP_ANONYMOUS)</span></code> and pinned by the
+kernel driver via <code class="docutils literal notranslate"><span class="pre">ib_umem_get</span></code>.  The server accesses the
+same physical pages through DMA mapping
+(<code class="docutils literal notranslate"><span class="pre">rdma_pci_dma_map</span></code>).  Ring state synchronization uses
+<code class="docutils literal notranslate"><span class="pre">_Atomic</span> <span class="pre">uint32_t</span></code> on the provider side and
+<code class="docutils literal notranslate"><span class="pre">qatomic_read/set</span></code> on the server side, both backed by
+the same shared page.</p>
+</section>
+</section>
+<section id="rdma-verbs">
+<h3>RDMA / Verbs<a class="headerlink" href="#rdma-verbs" title="Link to this heading">#</a></h3>
+<p>Forwards operations to a real InfiniBand HCA via libibverbs.
+Requires an RDMA-capable NIC on the host (for example,
+<code class="docutils literal notranslate"><span class="pre">mlx5_0</span></code>).</p>
+</section>
+<section id="nvme-of">
+<h3>NVMe-oF<a class="headerlink" href="#nvme-of" title="Link to this heading">#</a></h3>
+<p>Not a transport but a peer: an NVMe over Fabrics target
+running inside the server, answering IB CM and NVMe command
+capsules from the guest. It hooks into <code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>
+rather than this vtable, because that is the path the guest
+<code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver actually drives. One VM and one server
+instance are then a complete fabric. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+</section>
+<section id="none">
+<h3>None<a class="headerlink" href="#none" title="Link to this heading">#</a></h3>
+<p>Minimal stubs that accept but do not process work requests.
+Suitable for PCI enumeration and basic driver bring-up tests.</p>
+</section>
+<section id="tap-ethernet-only">
+<h3>TAP (Ethernet only)<a class="headerlink" href="#tap-ethernet-only" title="Link to this heading">#</a></h3>
+<p>Not an RDMA backend: <code class="docutils literal notranslate"><span class="pre">--tap</span></code> binds the
+emulated Ethernet LIF to a host TAP interface, so guest
+frames land on a real host netdev and the host stack handles
+ARP, ICMP, DHCP, and TCP with no protocol emulation in the
+server. The TAP fd is non-blocking and drained from the
+server’s existing poll loop, because only the thread owning
+the vfio-user context may DMA into guest memory.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="building.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Building and Installing</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="usage.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Usage</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#high-level-overview">High-Level Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components">Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-rocm-ernic-server-c">Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-bridge-rocm-ernic-compat-c">Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-src-from-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ionic-emulation-src-ionic-c">ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pci-bars">PCI BARs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loopback">Loopback</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tcp-ip">TCP/IP</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#userspace-data-path">Userspace Data Path</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-verbs">RDMA / Verbs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of">NVMe-oF</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#none">None</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tap-ethernet-only">TAP (Ethernet only)</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

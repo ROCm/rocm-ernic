@@ -1,0 +1,847 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>The ionic Device &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'ionic';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="NVMe-oF Controller" href="nvmeof.html" />
+    <link rel="prev" title="Usage" href="usage.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/ionic.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>The ionic Device</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bar-layout">BAR Layout</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-and-installing">Building and Installing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loading-and-verifying">Loading and Verifying</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#userspace-the-upstream-provider">Userspace: the Upstream Provider</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bumping-the-upstream-baseline">Bumping the Upstream Baseline</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-status">Current Status</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="the-ionic-device">
+<h1>The ionic Device<a class="headerlink" href="#the-ionic-device" title="Link to this heading">#</a></h1>
+<p>rocm-ernic presents a single PCIe device to the guest:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 80.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>VID:DID</p></th>
+<th class="head"><p>Guest driver</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code></p></td>
+<td><p>Upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> + <code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code>,
+with the patches in <code class="docutils literal notranslate"><span class="pre">patches/</span></code> applied, and the
+upstream <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> in rdma-core</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The server emulates the register and queue protocol of the
+AMD Pensando ionic NIC, so the guest runs a driver that is
+already in mainline Linux rather than one that only exists
+here. The driver source is near-stock — two small patches,
+one of them a device-ID addition — but the guest itself is
+<strong>not</strong> a stock cloud image. It needs a mainline kernel
+matching <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> and the headers to build
+against, which no Ubuntu release ships. Nothing in this repo
+bakes such an image either: the guest is the published
+<code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour of <a class="reference external" href="https://github.com/sbates130272/batesste-ci-images">batesste-ci-images</a>,
+fetched by <code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code>. See the warning
+below.</p>
+<p>The Pensando vendor ID <code class="docutils literal notranslate"><span class="pre">0x1dd8</span></code> is kept, because that is
+what the upstream driver claims, but device ID <code class="docutils literal notranslate"><span class="pre">0x100a</span></code>
+sits outside the range real hardware uses (<code class="docutils literal notranslate"><span class="pre">0x1002</span></code> and
+<code class="docutils literal notranslate"><span class="pre">0x1003</span></code>) so an emulated device can never be confused with
+a physical DSC on the same host.</p>
+<section id="starting-the-server">
+<h2>Starting the Server<a class="headerlink" href="#starting-the-server" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tap<span class="w"> </span>ernic0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--log-level<span class="w"> </span>info
+</pre></div>
+</div>
+<p>There is no flag to select the device. <code class="docutils literal notranslate"><span class="pre">--tap</span></code> (short
+<code class="docutils literal notranslate"><span class="pre">-T</span></code>) attaches the emulated Ethernet LIF to a host TAP
+interface.</p>
+<p>All the RDMA backends (<code class="docutils literal notranslate"><span class="pre">loopback</span></code>, <code class="docutils literal notranslate"><span class="pre">tcp</span></code>, <code class="docutils literal notranslate"><span class="pre">verbs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">none</span></code>) work the same way: the backend choice governs the
+RDMA data path, while <code class="docutils literal notranslate"><span class="pre">--tap</span></code> governs the Ethernet data
+path.</p>
+<section id="bar-layout">
+<h3>BAR Layout<a class="headerlink" href="#bar-layout" title="Link to this heading">#</a></h3>
+<p>The BAR layout matches what <code class="docutils literal notranslate"><span class="pre">ionic_dev_setup()</span></code> in the
+upstream driver expects:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 10.0%" />
+<col style="width: 20.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>BAR</p></th>
+<th class="head"><p>Size</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>BAR 0</p></td>
+<td><p>64 KB</p></td>
+<td><p>32 KB device register window (device info, device
+command, interrupt control) plus the MSI-X table and
+PBA above it</p></td>
+</tr>
+<tr class="row-odd"><td><p>BAR 2</p></td>
+<td><p>4 MB</p></td>
+<td><p>Doorbell pages; the offset within a page encodes the
+queue type, the page index the process ID</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>32 MSI-X vectors are advertised.</p>
+</section>
+</section>
+<section id="ethernet-and-tcp-ip">
+<h2>Ethernet and TCP/IP<a class="headerlink" href="#ethernet-and-tcp-ip" title="Link to this heading">#</a></h2>
+<p>The emulated LIF is a working Ethernet NIC. A
+Linux TAP interface is used as the host-side backend, which
+is the cheapest way to give the guest a real, routable
+Ethernet segment: the host end is an ordinary netdev, so ARP,
+ICMP, DHCP, and TCP all work against the host network stack
+with no protocol emulation inside the server.</p>
+<p>Create a persistent TAP owned by the user that will run the
+server, then address it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ip<span class="w"> </span>tuntap<span class="w"> </span>add<span class="w"> </span>dev<span class="w"> </span>ernic0<span class="w"> </span>mode<span class="w"> </span>tap<span class="w"> </span>user<span class="w"> </span><span class="s2">"</span><span class="nv">$USER</span><span class="s2">"</span>
+sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.77.1/24<span class="w"> </span>dev<span class="w"> </span>ernic0
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ernic0<span class="w"> </span>up
+</pre></div>
+</div>
+<p>Start the server with <code class="docutils literal notranslate"><span class="pre">--tap</span> <span class="pre">ernic0</span></code>, boot the guest, and
+configure the guest end of the segment:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># in the guest</span>
+sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.77.2/24<span class="w"> </span>dev<span class="w"> </span>enp0s4
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>enp0s4<span class="w"> </span>up
+ping<span class="w"> </span><span class="m">192</span>.168.77.1
+</pre></div>
+</div>
+<section id="two-guests-on-one-bridge">
+<h3>Two Guests on One Bridge<a class="headerlink" href="#two-guests-on-one-bridge" title="Link to this heading">#</a></h3>
+<p>A single TAP with an address on it is enough for host-to-guest
+traffic, but every two-VM test in <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/</span></code> needs
+guest-to-guest IP on <code class="docutils literal notranslate"><span class="pre">192.168.200.x</span></code>: <code class="docutils literal notranslate"><span class="pre">sanity-tests.yml</span></code>
+pings it, <code class="docutils literal notranslate"><span class="pre">tcp-performance-tests.yml</span></code> runs iperf3 over it,
+and <code class="docutils literal notranslate"><span class="pre">performance-tests.yml</span></code> uses it for the out-of-band
+exchange in perftest. That traffic leaves through the TAP
+rather than through the rocm-ernic TCP mesh, so each instance
+needs its own TAP and all of them need to share one host
+bridge:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span>add<span class="w"> </span>ernicbr0<span class="w"> </span><span class="nb">type</span><span class="w"> </span>bridge
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ernicbr0<span class="w"> </span>up
+<span class="k">for</span><span class="w"> </span>n<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span>sudo<span class="w"> </span>ip<span class="w"> </span>tuntap<span class="w"> </span>add<span class="w"> </span>dev<span class="w"> </span><span class="s2">"ernic-tap</span><span class="si">${</span><span class="nv">n</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>mode<span class="w"> </span>tap<span class="w"> </span>user<span class="w"> </span><span class="s2">"</span><span class="nv">$USER</span><span class="s2">"</span>
+<span class="w">  </span>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">"ernic-tap</span><span class="si">${</span><span class="nv">n</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>master<span class="w"> </span>ernicbr0<span class="w"> </span>up
+<span class="k">done</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">ernic_host_setup</span></code> role does this from
+<code class="docutils literal notranslate"><span class="pre">tasks/tap.yml</span></code> using <code class="docutils literal notranslate"><span class="pre">ernic_tap_prefix</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ernic_tap_bridge</span></code> and <code class="docutils literal notranslate"><span class="pre">ernic_tap_owner</span></code>; the launcher
+then passes <code class="docutils literal notranslate"><span class="pre">--tap</span> <span class="pre">${ERNIC_TAP_PREFIX}${id}</span></code> to each
+instance. A missing TAP is a warning rather than an error
+there, so a loopback-only host still starts — but the guest
+comes up with no Ethernet, which is why <code class="docutils literal notranslate"><span class="pre">ci/doctor.sh</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-up.sh</span></code> check for the interfaces up front.</p>
+<p>The bridge carries no IP of its own by default; the guests
+address each other directly across it. Set
+<code class="docutils literal notranslate"><span class="pre">ernic_tap_bridge_ip</span></code> if the host needs to join the segment
+for debugging.</p>
+<p>The transmit path gathers the head fragment plus any
+scatter-gather elements out of guest memory and writes the
+frame to the TAP file descriptor. The receive path drains the
+TAP from the server’s main loop and DMAs each frame into a
+descriptor the guest has posted on the receive queue. Both
+directions run on the thread that owns the vfio-user context,
+because that is the only thread permitted to DMA into guest
+memory; no extra thread is created.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The emulated LIF advertises no checksum, TSO, or
+scatter-gather offloads, so the guest stack always hands
+down linear skbs. This keeps the descriptor handling
+simple at the cost of transmit throughput.</p>
+</div>
+</section>
+</section>
+<section id="guest-driver-patched-upstream-ionic">
+<h2>Guest Driver: Patched Upstream ionic<a class="headerlink" href="#guest-driver-patched-upstream-ionic" title="Link to this heading">#</a></h2>
+<p>The guest driver is <em>not</em> built from this repository. The
+build fetches a pinned upstream Linux tree, applies the
+patches in <code class="docutils literal notranslate"><span class="pre">patches/</span></code>, and hands the result to DKMS.</p>
+<p>Patches currently carried:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 55.0%" />
+<col style="width: 45.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Patch</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0001-ionic-add-AMD-emulated-ionic-device-id.patch</span></code></p></td>
+<td><p>Adds <code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> to the ionic PCI ID table so the
+upstream driver binds to the emulated device.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch</span></code></p></td>
+<td><p>Allocates an address handle for UC queue pairs, which
+the upstream RDMA driver otherwise omits.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<section id="building-and-installing">
+<h3>Building and Installing<a class="headerlink" href="#building-and-installing" title="Link to this heading">#</a></h3>
+<p>Configure with <code class="docutils literal notranslate"><span class="pre">-DERNIC_BUILD_KMOD=ON</span></code> and use the
+generated targets. These run inside the <em>guest</em>, where the
+modules are needed:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DERNIC_BUILD_KMOD<span class="o">=</span>ON
+cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>fetch-ionic-sources
+cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>build-ionic-dkms
+sudo<span class="w"> </span>cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>install-ionic-dkms
+
+<span class="c1"># and to back it out again</span>
+sudo<span class="w"> </span>cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>remove-ionic-dkms
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">fetch-ionic-sources</span></code> sparse-clones only the two ionic
+subtrees — <code class="docutils literal notranslate"><span class="pre">drivers/net/ethernet/pensando/ionic</span></code> and
+<code class="docutils literal notranslate"><span class="pre">drivers/infiniband/hw/ionic</span></code> — from
+<code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> (default <code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code>) and applies
+<code class="docutils literal notranslate"><span class="pre">patches/*.patch</span></code> in filename order with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">am</span></code>. The
+DKMS package is registered as <code class="docutils literal notranslate"><span class="pre">ionic-ernic</span></code>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> must be at least <code class="docutils literal notranslate"><span class="pre">v6.18</span></code>:
+<code class="docutils literal notranslate"><span class="pre">drivers/infiniband/hw/ionic</span></code> was merged for 6.18, so
+older refs cannot supply the RDMA half of the stack.</p>
+<p>The guest kernel’s <em>major.minor</em> must also match the ref.
+The ionic sources track IB-core helpers that move between
+minor releases — <code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code> sources on a 7.0 kernel fail
+on <code class="docutils literal notranslate"><span class="pre">ib_umem_get_va</span></code>, <code class="docutils literal notranslate"><span class="pre">ib_copy_validate_udata_in</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ib_respond_udata</span></code> — so the default <code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code> needs a
+7.2.x guest. A point-release gap (<code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code> sources on
+7.2.3) is fine. No Ubuntu stock kernel qualifies today:
+noble HWE is 6.17 and resolute GA is 7.0, so the guest
+image bakes a mainline kernel from the Ubuntu mainline
+PPA — the <code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour pins 7.2.3 — and
+<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> asserts the match before it starts
+the DKMS build.</p>
+</div>
+</section>
+<section id="loading-and-verifying">
+<h3>Loading and Verifying<a class="headerlink" href="#loading-and-verifying" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic
+sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic_rdma
+
+lspci<span class="w"> </span>-nn<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>1dd8:100a
+ip<span class="w"> </span>link<span class="w">                  </span><span class="c1"># the LIF appears as a normal netdev</span>
+ibv_devices<span class="w">              </span><span class="c1"># the RDMA device appears here</span>
+</pre></div>
+</div>
+</section>
+<section id="userspace-the-upstream-provider">
+<h3>Userspace: the Upstream Provider<a class="headerlink" href="#userspace-the-upstream-provider" title="Link to this heading">#</a></h3>
+<p>No patched rdma-core is needed:
+<code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> landed upstream in rdma-core
+v61, and the guest role installs v62.0. The
+<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> role therefore skips the provider
+injection and registration steps entirely and only verifies
+that <code class="docutils literal notranslate"><span class="pre">libionic*.so</span></code> landed in <code class="docutils literal notranslate"><span class="pre">libibverbs/</span></code>.</p>
+<p>The one exception is GPU work. With
+<code class="docutils literal notranslate"><span class="pre">ernic_gpu_passthrough</span></code> on, the role applies
+<code class="docutils literal notranslate"><span class="pre">rdma-core/ionic-gda/*.patch</span></code> from the guest’s rocm-xio
+checkout before configuring, so the installed provider
+exposes the direct-verbs symbols the <code class="docutils literal notranslate"><span class="pre">GDA_IONIC</span></code> backend
+in rocm-xio links against. rocm-xio is then configured with
+<code class="docutils literal notranslate"><span class="pre">-DGDA_IONIC=ON</span> <span class="pre">-DRDMA_CORE_BUILD=OFF</span></code> so it uses that
+system rdma-core rather than building a second copy.</p>
+</section>
+<section id="bumping-the-upstream-baseline">
+<h3>Bumping the Upstream Baseline<a class="headerlink" href="#bumping-the-upstream-baseline" title="Link to this heading">#</a></h3>
+<p>Change <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> in
+<code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code> and re-run
+<code class="docutils literal notranslate"><span class="pre">fetch-ionic-sources</span></code>. If a patch no longer applies,
+rebase it and refresh the file in <code class="docutils literal notranslate"><span class="pre">patches/</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">ionic-patches</span></code> CI job reads the pinned ref straight out
+of the cmake file and fails the pull request if any patch
+stops applying, so the two cannot drift apart.</p>
+<p>The pin is also what the driver pack records for guests: the
+install rules write it to
+<code class="docutils literal notranslate"><span class="pre">share/rocm-ernic/ionic-kernel-ref</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">rocm-ernic-driver-pack</span></code> copies that file into the tarball
+so the guest builds from the same baseline the patches
+beside it were generated against. Because it is captured at
+install time, a bump needs <code class="docutils literal notranslate"><span class="pre">cmake</span> <span class="pre">--install</span></code> re-run on the
+host before the next <code class="docutils literal notranslate"><span class="pre">driver-pack</span></code>; neither script carries
+a fallback, so a pack assembled without that file fails
+immediately rather than guessing a ref.</p>
+</section>
+</section>
+<section id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">tests/test_ionic_ci.sh</span></code> is registered with CTest as
+<code class="docutils literal notranslate"><span class="pre">ionic-ci</span></code> and needs no VM. It checks that the server
+starts on each backend, announces <code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code>, reports the
+expected BAR and MSI-X geometry, shuts down cleanly on
+<code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>, attaches to a TAP when one is available, comes
+up with no extra flags, and writes the full counter set to
+the stats file.</p>
+<p>The TAP attach check is skipped unless <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_TAP</span></code>
+names an existing interface owned by the current user,
+because creating one needs <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ip<span class="w"> </span>tuntap<span class="w"> </span>add<span class="w"> </span>dev<span class="w"> </span>ernic-ci0<span class="w"> </span>mode<span class="w"> </span>tap<span class="w"> </span>user<span class="w"> </span><span class="s2">"</span><span class="nv">$USER</span><span class="s2">"</span>
+<span class="nv">ERNIC_TEST_TAP</span><span class="o">=</span>ernic-ci0<span class="w"> </span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-ci
+</pre></div>
+</div>
+</section>
+<section id="current-status">
+<h2>Current Status<a class="headerlink" href="#current-status" title="Link to this heading">#</a></h2>
+<p>Working:</p>
+<ul class="simple">
+<li><p>PCI enumeration, device identify, LIF init, and the
+admin queue</p></li>
+<li><p>Ethernet transmit and receive over TAP, including ARP,
+ICMP, and bulk TCP in both directions</p></li>
+<li><p>RC, UC, and UD queue pairs (<code class="docutils literal notranslate"><span class="pre">ib_*_pingpong</span></code> and the
+in-tree <code class="docutils literal notranslate"><span class="pre">rdma_verify</span></code> payload checks)</p></li>
+<li><p>Fast registration: <code class="docutils literal notranslate"><span class="pre">IB_WR_REG_MR</span></code> and
+<code class="docutils literal notranslate"><span class="pre">IB_WR_LOCAL_INV</span></code> as local work requests, which is what
+a stock <code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> initiator uses to produce the keys
+in its keyed SGLs</p></li>
+</ul>
+<p>Not yet working:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code> connection establishment between two guests,
+and therefore <code class="docutils literal notranslate"><span class="pre">rping</span></code>: only the link-local GID is
+populated, and GSI traffic is not forwarded between
+endpoints. The <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> backend sidesteps this by
+answering the CM exchange inside the server rather than
+routing it to a peer, so <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> has a
+responder even though guest-to-guest <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code> does not
+(see <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>)</p></li>
+<li><p>Shared receive queues, which the upstream RDMA driver does
+not implement in its <code class="docutils literal notranslate"><span class="pre">ib_device_ops</span></code></p></li>
+<li><p>The PCI Express capability is not advertised, so the guest
+reports an unknown link speed and width; this is cosmetic</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="usage.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Usage</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="nvmeof.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">NVMe-oF Controller</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bar-layout">BAR Layout</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-and-installing">Building and Installing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loading-and-verifying">Loading and Verifying</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#userspace-the-upstream-provider">Userspace: the Upstream Provider</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bumping-the-upstream-baseline">Bumping the Upstream Baseline</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-status">Current Status</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

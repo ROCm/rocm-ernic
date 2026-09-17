@@ -1,0 +1,730 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Index &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'genindex';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="#" />
+    <link rel="search" title="Search" href="search.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1></h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+
+<h1 id="index">Index</h1>
+
+<div class="genindex-jumpbox">
+ <a href="#D"><strong>D</strong></a>
+ | <a href="#H"><strong>H</strong></a>
+ | <a href="#I"><strong>I</strong></a>
+ | <a href="#M"><strong>M</strong></a>
+ | <a href="#P"><strong>P</strong></a>
+ | <a href="#R"><strong>R</strong></a>
+ 
+</div>
+<h2 id="D">D</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv410dma_addr_t">dma_addr_t (C++ type)</a>
+</li>
+  </ul></td>
+</tr></table>
+
+<h2 id="H">H</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv46hwaddr">hwaddr (C++ type)</a>
+</li>
+  </ul></td>
+</tr></table>
+
+<h2 id="I">I</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#c.INTR_VEC_CMD_ASYNC_EVENTS">INTR_VEC_CMD_ASYNC_EVENTS (C macro)</a>
+</li>
+      <li><a href="api.html#c.INTR_VEC_CMD_COMPLETION_Q">INTR_VEC_CMD_COMPLETION_Q (C macro)</a>
+</li>
+      <li><a href="api.html#c.INTR_VEC_CMD_RING">INTR_VEC_CMD_RING (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv426ionic_adminq_cq_event_fn_t">ionic_adminq_cq_event_fn_t (C++ type)</a>
+</li>
+      <li><a href="api.html#_CPPv419ionic_adminq_createP9vfu_ctx_t">ionic_adminq_create (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv420ionic_adminq_destroyP16ionic_adminq_ctx">ionic_adminq_destroy (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_adminq_pollP16ionic_adminq_ctxP9vfu_ctx_t">ionic_adminq_poll (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv427ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t">ionic_adminq_register_queue (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv428ionic_adminq_set_cq_event_cbP16ionic_adminq_ctx26ionic_adminq_cq_event_fn_tPv">ionic_adminq_set_cq_event_cb (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_adminq_set_datapathP16ionic_adminq_ctxP14ionic_datapath">ionic_adminq_set_datapath (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv">ionic_adminq_set_pvrdma (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv426ionic_adminq_set_resourcesP16ionic_adminq_ctxPvPv">ionic_adminq_set_resources (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv424ionic_adminq_update_prodP16ionic_adminq_ctxi8uint16_t">ionic_adminq_update_prod (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423ionic_backend_post_send15pvrdma_handle_t8uint32_tPK8uint64_tPK8uint32_tPK8uint32_t8uint32_t7uint8_t">ionic_backend_post_send (C++ function)</a>
+</li>
+      <li><a href="api.html#c.IONIC_BAR0_MSIX_PBA">IONIC_BAR0_MSIX_PBA (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_BAR0_MSIX_TABLE">IONIC_BAR0_MSIX_TABLE (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_BAR0_REGS_SIZE">IONIC_BAR0_REGS_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_BAR0_TOTAL_SIZE">IONIC_BAR0_TOTAL_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_BAR2_DB_SIZE">IONIC_BAR2_DB_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv428ionic_datapath_attach_nvmeofP14ionic_datapathPK17nvmeof_target_cfgPc6size_t">ionic_datapath_attach_nvmeof (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421ionic_datapath_createP9vfu_ctx_tP13ionic_eth_emu">ionic_datapath_create (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_datapath_destroyP14ionic_datapath">ionic_datapath_destroy (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423ionic_datapath_doorbellP14ionic_datapathi8uint64_t">ionic_datapath_doorbell (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423ionic_datapath_has_workP14ionic_datapath">ionic_datapath_has_work (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv419ionic_datapath_pollP14ionic_datapath">ionic_datapath_poll (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv426ionic_datapath_register_cqP14ionic_datapath8uint32_t8uint32_tPK18ionic_dp_ring_desc">ionic_datapath_register_cq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv426ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc">ionic_datapath_register_mr (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv426ionic_datapath_register_qpP14ionic_datapath8uint32_t7uint8_t8uint32_tPK18ionic_dp_ring_desc8uint32_tPK18ionic_dp_ring_desc">ionic_datapath_register_qp (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv430ionic_datapath_set_cq_event_cbP14ionic_datapath22ionic_dp_cq_event_fn_tPv">ionic_datapath_set_cq_event_cb (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423ionic_datapath_set_destP14ionic_datapath8uint32_t8uint32_t8uint32_t">ionic_datapath_set_dest (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_datapath_set_pvrdmaP14ionic_datapathPv">ionic_datapath_set_pvrdma (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv428ionic_datapath_unregister_cqP14ionic_datapath8uint32_t">ionic_datapath_unregister_cq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv428ionic_datapath_unregister_mrP14ionic_datapath8uint32_t">ionic_datapath_unregister_mr (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv428ionic_datapath_unregister_qpP14ionic_datapath8uint32_t">ionic_datapath_unregister_qp (C++ function)</a>
+</li>
+      <li><a href="api.html#c.IONIC_DB_PAGE_SIZE">IONIC_DB_PAGE_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_dp_buf_desc">ionic_dp_buf_desc (C++ struct)</a>
+</li>
+      <li><a href="api.html#_CPPv4N17ionic_dp_buf_desc8dma_addrE">ionic_dp_buf_desc::dma_addr (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N17ionic_dp_buf_desc9map_countE">ionic_dp_buf_desc::map_count (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N17ionic_dp_buf_desc14page_size_log2E">ionic_dp_buf_desc::page_size_log2 (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_dp_cq_event_fn_t">ionic_dp_cq_event_fn_t (C++ type)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t">ionic_dp_node_from_gid (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv418ionic_dp_ring_desc">ionic_dp_ring_desc (C++ struct)</a>
+</li>
+      <li><a href="api.html#_CPPv4N18ionic_dp_ring_desc3bufE">ionic_dp_ring_desc::buf (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N18ionic_dp_ring_desc10depth_log2E">ionic_dp_ring_desc::depth_log2 (C++ member)</a>
+</li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv4N18ionic_dp_ring_desc11stride_log2E">ionic_dp_ring_desc::stride_log2 (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv424ionic_eth_emu_attach_tapP13ionic_eth_emuPKcPc6size_t">ionic_eth_emu_attach_tap (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_eth_emu_bar0_accessP13ionic_eth_emuPc6size_t6loff_tb">ionic_eth_emu_bar0_access (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_eth_emu_bar2_accessP13ionic_eth_emuPc6size_t6loff_tb">ionic_eth_emu_bar2_access (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv420ionic_eth_emu_createP9vfu_ctx_t6size_t">ionic_eth_emu_create (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421ionic_eth_emu_destroyP13ionic_eth_emu">ionic_eth_emu_destroy (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421ionic_eth_emu_poll_rxP13ionic_eth_emu">ionic_eth_emu_poll_rx (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv428ionic_eth_emu_queue_rx_frameP13ionic_eth_emuPKv6size_t">ionic_eth_emu_queue_rx_frame (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv429ionic_eth_emu_register_adminqP13ionic_eth_emuP16ionic_adminq_ctx">ionic_eth_emu_register_adminq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv431ionic_eth_emu_register_datapathP13ionic_eth_emuP14ionic_datapath">ionic_eth_emu_register_datapath (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv435ionic_eth_emu_register_rdma_handlerP13ionic_eth_emu22ionic_rdma_devcmd_fn_tPv">ionic_eth_emu_register_rdma_handler (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421ionic_eth_emu_set_macP13ionic_eth_emuAL6E_K7uint8_t">ionic_eth_emu_set_mac (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv424ionic_eth_emu_set_pvrdmaP13ionic_eth_emuPv">ionic_eth_emu_set_pvrdma (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_eth_emu_trigger_irqP13ionic_eth_emui">ionic_eth_emu_trigger_irq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_irq_trigger_fn_t">ionic_irq_trigger_fn_t (C++ type)</a>
+</li>
+      <li><a href="api.html#c.IONIC_KERN_PID">IONIC_KERN_PID (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_MAX_MR">IONIC_MAX_MR (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_MAX_MR_QUEUES">IONIC_MAX_MR_QUEUES (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv421ionic_mesh_local_node15pvrdma_handle_t">ionic_mesh_local_node (C++ function)</a>
+</li>
+      <li><a href="api.html#c.IONIC_MESH_MAX_MSG">IONIC_MESH_MAX_MSG (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv424ionic_mesh_node_from_gid15pvrdma_handle_tPK7uint8_t">ionic_mesh_node_from_gid (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv418ionic_mesh_recv_fn">ionic_mesh_recv_fn (C++ type)</a>
+</li>
+      <li><a href="api.html#_CPPv415ionic_mesh_send15pvrdma_handle_t8uint32_tPKv6size_t">ionic_mesh_send (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv416ionic_mesh_sendv15pvrdma_handle_t8uint32_tPKv6size_tPKv6size_t">ionic_mesh_sendv (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_mesh_set_recv_cb15pvrdma_handle_t18ionic_mesh_recv_fnPv">ionic_mesh_set_recv_cb (C++ function)</a>
+</li>
+      <li><a href="api.html#c.IONIC_MR_PER_QUEUE">IONIC_MR_PER_QUEUE (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_MSIX_MAX_VECTORS">IONIC_MSIX_MAX_VECTORS (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv424ionic_rdma_devcmd_createP9vfu_ctx_t">ionic_rdma_devcmd_create (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_rdma_devcmd_destroyP23ionic_rdma_devcmd_state">ionic_rdma_devcmd_destroy (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv426ionic_rdma_devcmd_dispatchPvPK7uint8_tP7uint8_t">ionic_rdma_devcmd_dispatch (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_rdma_devcmd_fn_t">ionic_rdma_devcmd_fn_t (C++ type)</a>
+</li>
+      <li><a href="api.html#_CPPv432ionic_rdma_devcmd_get_adminq_ctxP23ionic_rdma_devcmd_state">ionic_rdma_devcmd_get_adminq_ctx (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv431ionic_rdma_devcmd_post_cq_eventP23ionic_rdma_devcmd_state8uint32_t8uint32_t">ionic_rdma_devcmd_post_cq_event (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv430ionic_rdma_devcmd_set_datapathP23ionic_rdma_devcmd_stateP14ionic_datapath">ionic_rdma_devcmd_set_datapath (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv429ionic_rdma_devcmd_set_eth_emuP23ionic_rdma_devcmd_stateP13ionic_eth_emu">ionic_rdma_devcmd_set_eth_emu (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_rm_alloc_cq15pvrdma_handle_t8uint32_tP8uint32_t">ionic_rm_alloc_cq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_rm_alloc_mr15pvrdma_handle_t8uint32_t8uint32_tP8uint32_t">ionic_rm_alloc_mr (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_rm_alloc_pd15pvrdma_handle_tP8uint32_t">ionic_rm_alloc_pd (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_rm_alloc_qp15pvrdma_handle_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t">ionic_rm_alloc_qp (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv419ionic_rm_dealloc_cq15pvrdma_handle_t8uint32_t">ionic_rm_dealloc_cq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv419ionic_rm_dealloc_mr15pvrdma_handle_t8uint32_t">ionic_rm_dealloc_mr (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv419ionic_rm_dealloc_pd15pvrdma_handle_t8uint32_t">ionic_rm_dealloc_pd (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv419ionic_rm_dealloc_qp15pvrdma_handle_t8uint32_t">ionic_rm_dealloc_qp (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv418ionic_rm_modify_qp15pvrdma_handle_t8uint32_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_tPK7uint8_t">ionic_rm_modify_qp (C++ function)</a>
+</li>
+  </ul></td>
+</tr></table>
+
+<h2 id="M">M</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#c.MAX_UCS">MAX_UCS (C macro)</a>
+</li>
+  </ul></td>
+</tr></table>
+
+<h2 id="P">P</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv419pvrdma_adminq_count15pvrdma_handle_t">pvrdma_adminq_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422pvrdma_bar0_mmio_count15pvrdma_handle_tb">pvrdma_bar0_mmio_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv420pvrdma_device_createP16rocm_ernic_dev_tPKcPKcPKc7uint8_t">pvrdma_device_create (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421pvrdma_device_destroy15pvrdma_handle_t">pvrdma_device_destroy (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421pvrdma_device_realize15pvrdma_handle_t">pvrdma_device_realize (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv431pvrdma_drain_pending_interrupts15pvrdma_handle_t">pvrdma_drain_pending_interrupts (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422pvrdma_eth_bytes_count15pvrdma_handle_t8uint64_tb">pvrdma_eth_bytes_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv416pvrdma_get_stats15pvrdma_handle_tP8uint64_tP8uint64_tP8uint64_tP8uint64_tP8uint64_tP8uint64_t">pvrdma_get_stats (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv415pvrdma_handle_t">pvrdma_handle_t (C++ type)</a>
+</li>
+      <li><a href="api.html#_CPPv428pvrdma_inc_stats_reset_count15pvrdma_handle_t">pvrdma_inc_stats_reset_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv416pvrdma_irq_count15pvrdma_handle_t">pvrdma_irq_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv419pvrdma_qp_cqe_count15pvrdma_handle_t8uint32_t">pvrdma_qp_cqe_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv424pvrdma_qp_doorbell_count15pvrdma_handle_t8uint32_tb">pvrdma_qp_doorbell_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422pvrdma_qp_stats_forget15pvrdma_handle_t8uint32_t">pvrdma_qp_stats_forget (C++ function)</a>
+</li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv419pvrdma_qp_wqe_count15pvrdma_handle_t8uint32_tj">pvrdma_qp_wqe_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423pvrdma_rdma_bytes_count15pvrdma_handle_t8uint32_t8uint64_t14pvrdma_stat_op">pvrdma_rdma_bytes_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv433pvrdma_set_stats_connection_state15pvrdma_handle_tPKc">pvrdma_set_stats_connection_state (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421pvrdma_set_stats_file15pvrdma_handle_tPKc">pvrdma_set_stats_file (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv430pvrdma_set_stats_instance_info15pvrdma_handle_tPKcPKc">pvrdma_set_stats_instance_info (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv424pvrdma_set_stats_pci_ids15pvrdma_handle_t8uint16_t8uint16_t">pvrdma_set_stats_pci_ids (C++ function)</a>
+</li>
+      <li><a href="api.html#c.PVRDMA_STAT_NO_QP">PVRDMA_STAT_NO_QP (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv414pvrdma_stat_op">pvrdma_stat_op (C++ enum)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14pvrdma_stat_op21PVRDMA_STAT_RDMA_READE">pvrdma_stat_op::PVRDMA_STAT_RDMA_READ (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14pvrdma_stat_op22PVRDMA_STAT_RDMA_WRITEE">pvrdma_stat_op::PVRDMA_STAT_RDMA_WRITE (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14pvrdma_stat_op16PVRDMA_STAT_RECVE">pvrdma_stat_op::PVRDMA_STAT_RECV (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14pvrdma_stat_op16PVRDMA_STAT_SENDE">pvrdma_stat_op::PVRDMA_STAT_SEND (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv421pvrdma_uar_mmio_count15pvrdma_handle_tb">pvrdma_uar_mmio_count (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv418pvrdma_write_stats15pvrdma_handle_t">pvrdma_write_stats (C++ function)</a>
+</li>
+  </ul></td>
+</tr></table>
+
+<h2 id="R">R</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#c.RDMA_BAR0_MSIX_SIZE">RDMA_BAR0_MSIX_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#c.RDMA_BAR1_REGS_SIZE">RDMA_BAR1_REGS_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#c.RDMA_BAR2_UAR_SIZE">RDMA_BAR2_UAR_SIZE (C macro)</a>
+</li>
+      <li><a href="api.html#c.RDMA_MAX_INTRS">RDMA_MAX_INTRS (C macro)</a>
+</li>
+      <li><a href="api.html#_CPPv414rocm_ernic_dev">rocm_ernic_dev (C++ struct)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev19backend_device_nameE">rocm_ernic_dev::backend_device_name (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev18backend_eth_deviceE">rocm_ernic_dev::backend_eth_device (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev16backend_port_numE">rocm_ernic_dev::backend_port_num (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev16backend_type_strE">rocm_ernic_dev::backend_type_str (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev8bar0_memE">rocm_ernic_dev::bar0_mem (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev13device_activeE">rocm_ernic_dev::device_active (C++ member)</a>
+</li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev18device_initializedE">rocm_ernic_dev::device_initialized (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev15device_realizedE">rocm_ernic_dev::device_realized (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev8ionic_dpE">rocm_ernic_dev::ionic_dp (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev9ionic_emuE">rocm_ernic_dev::ionic_emu (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev10ionic_rdmaE">rocm_ernic_dev::ionic_rdma (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev8mac_addrE">rocm_ernic_dev::mac_addr (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev12mac_addr_setE">rocm_ernic_dev::mac_addr_set (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev13pvrdma_handleE">rocm_ernic_dev::pvrdma_handle (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev15stats_file_pathE">rocm_ernic_dev::stats_file_path (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev7verboseE">rocm_ernic_dev::verbose (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev7vfu_ctxE">rocm_ernic_dev::vfu_ctx (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv416rocm_ernic_dev_t">rocm_ernic_dev_t (C++ type)</a>, <a href="api.html#_CPPv416rocm_ernic_dev_t">[1]</a>
+</li>
+  </ul></td>
+</tr></table>
+
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

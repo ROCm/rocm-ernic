@@ -1,0 +1,870 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>NVMe-oF Controller &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'nvmeof';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="systemd Service and ernicctl" href="service.html" />
+    <link rel="prev" title="The ionic Device" href="ionic.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/nvmeof.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>NVMe-oF Controller</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-from-the-guest">Connecting from the Guest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-works">How It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#connection-establishment">Connection establishment</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capsules-and-data-transfer">Capsules and data transfer</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="nvme-of-controller">
+<h1>NVMe-oF Controller<a class="headerlink" href="#nvme-of-controller" title="Link to this heading">#</a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> backend turns a rocm-ernic instance into an
+NVMe over Fabrics <em>target</em>. The controller lives inside the
+server process and is reached over the emulated RDMA fabric,
+so a stock guest can run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>nvme<span class="w"> </span>connect<span class="w"> </span>-t<span class="w"> </span>rdma<span class="w"> </span>-a<span class="w"> </span><span class="m">192</span>.168.200.1<span class="w"> </span>-s<span class="w"> </span><span class="m">4420</span><span class="w"> </span>-n<span class="w"> </span>nvmet-test
+</pre></div>
+</div>
+<p>and get a working <code class="docutils literal notranslate"><span class="pre">/dev/nvmeXnY</span></code> with no second virtual
+machine, no second server instance, and no RDMA hardware
+anywhere in the picture.</p>
+<p>That is the point of it. Every other RDMA path in this
+project needs two endpoints to prove anything: two guests,
+or a guest and a peer server over the TCP mesh. Here one
+guest and one server are a complete fabric, which makes
+NVMe-oF usable as a day-to-day smoke test of the queue
+pairs, the memory keys, and the RDMA READ/WRITE engine in a
+single VM.</p>
+<p>Measured throughput and latency are on a page of their own:
+see <a class="reference internal" href="nvmeof-performance.html"><span class="doc">NVMe-oF Performance</span></a>, which also documents the
+memory-region budget that caps <code class="docutils literal notranslate"><span class="pre">queues=</span></code> at 15
+(<a class="reference internal" href="nvmeof-performance.html#nvmeof-mr-budget"><span class="std std-ref">The MR budget caps the queue count</span></a>).</p>
+<section id="starting-the-server">
+<h2>Starting the Server<a class="headerlink" href="#starting-the-server" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 64 MiB RAM namespace, 512-byte blocks, on 192.168.200.1:4420</span>
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>nvmeof<span class="w"> </span>--tap<span class="w"> </span>ernic0
+
+<span class="c1"># 1 GiB with 4 KiB blocks</span>
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>nvmeof:size<span class="o">=</span>1G,bs<span class="o">=</span><span class="m">4096</span><span class="w"> </span>--tap<span class="w"> </span>ernic0
+
+<span class="c1"># File-backed namespace that survives a restart</span>
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>nvmeof:file<span class="o">=</span>/var/tmp/ns0.img,size<span class="o">=</span>1G<span class="w"> </span>--tap<span class="w"> </span>ernic0
+</pre></div>
+</div>
+<p>The backend string is <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> optionally followed by
+<code class="docutils literal notranslate"><span class="pre">:</span></code> and a comma-separated option list:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 12.0%" />
+<col style="width: 18.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">size=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">64M</span></code></p></td>
+<td><p>Namespace capacity. Accepts <code class="docutils literal notranslate"><span class="pre">K</span></code>/<code class="docutils literal notranslate"><span class="pre">M</span></code>/<code class="docutils literal notranslate"><span class="pre">G</span></code>/<code class="docutils literal notranslate"><span class="pre">T</span></code>
+and the <code class="docutils literal notranslate"><span class="pre">KiB</span></code>/<code class="docutils literal notranslate"><span class="pre">MiB</span></code> spellings; must be a whole
+number of blocks.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bs=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">512</span></code></p></td>
+<td><p>Logical block size. One of 512, 1024, 2048 or 4096.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">file=</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>Back the namespace with this file instead of
+anonymous memory. Created if absent, and truncated to
+<code class="docutils literal notranslate"><span class="pre">size=</span></code> either way – an existing image larger than
+<code class="docutils literal notranslate"><span class="pre">size=</span></code> is shrunk.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nqn=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">nvmet-test</span></code></p></td>
+<td><p>Subsystem NQN the guest connects to.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ip=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">192.168.200.1</span></code></p></td>
+<td><p>Address the controller answers on. It has to be
+routable from the guest’s <code class="docutils literal notranslate"><span class="pre">rocm-ernic0</span></code> interface.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">port=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4420</span></code></p></td>
+<td><p>Transport service ID.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">queues=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">8</span></code></p></td>
+<td><p>Maximum I/O queues, 1..15. The ceiling is the
+emulator’s memory-region table, not the NVMe
+spec: an <code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> initiator pre-allocates
+128 regions per queue at connect time, admin
+queue included, out of a table of 2048.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nsid=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>Namespace identifier.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic</span> <span class="pre">NVMe-oF</span> <span class="pre">target</span></code></p></td>
+<td><p>Identify-controller model string.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">serial=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ERNIC0000000000001</span></code></p></td>
+<td><p>Identify-controller serial number.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A malformed option is refused before the device is
+presented, rather than surfacing later as a failed connect:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>./build/rocm-ernic<span class="w"> </span>--backend<span class="w"> </span>nvmeof:size<span class="o">=</span>bogus
+<span class="go">Error: nvmeof backend: bad size 'bogus'</span>
+</pre></div>
+</div>
+<p>A successful start logs the controller at <code class="docutils literal notranslate"><span class="pre">info</span></code>:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">ionic_datapath: nvmeof target 'nvmet-test' 1073741824 bytes bs=4096 \</span>
+<span class="go">    at 192.168.200.1:4420</span>
+</pre></div>
+</div>
+</section>
+<section id="connecting-from-the-guest">
+<h2>Connecting from the Guest<a class="headerlink" href="#connecting-from-the-guest" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>modprobe<span class="w"> </span>nvme-fabrics<span class="w"> </span>nvme-rdma
+
+<span class="c1"># rdma_resolve_addr() needs a neighbour for the controller</span>
+<span class="c1"># address; nothing on the wire answers ARP for it.</span>
+sudo<span class="w"> </span>ip<span class="w"> </span>neigh<span class="w"> </span>replace<span class="w"> </span><span class="m">192</span>.168.200.1<span class="w"> </span>lladdr<span class="w"> </span><span class="m">02</span>:00:00:00:c0:01<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>dev<span class="w"> </span>rocm-ernic0<span class="w"> </span>nud<span class="w"> </span>permanent
+
+sudo<span class="w"> </span>nvme<span class="w"> </span>discover<span class="w"> </span>-t<span class="w"> </span>rdma<span class="w"> </span>-a<span class="w"> </span><span class="m">192</span>.168.200.1<span class="w"> </span>-s<span class="w"> </span><span class="m">4420</span>
+sudo<span class="w"> </span>nvme<span class="w"> </span>connect<span class="w">  </span>-t<span class="w"> </span>rdma<span class="w"> </span>-a<span class="w"> </span><span class="m">192</span>.168.200.1<span class="w"> </span>-s<span class="w"> </span><span class="m">4420</span><span class="w"> </span>-n<span class="w"> </span>nvmet-test
+sudo<span class="w"> </span>nvme<span class="w"> </span>list
+
+sudo<span class="w"> </span>nvme<span class="w"> </span>disconnect<span class="w"> </span>-n<span class="w"> </span>nvmet-test
+</pre></div>
+</div>
+<p>The neighbour entry is the one unobvious step. The
+controller is not a host on the segment and has no MAC of
+its own, so the guest’s address resolution has nothing to
+resolve to. Any link-layer address will do: the emulator
+routes the connection by queue pair, not by MAC. The
+<code class="docutils literal notranslate"><span class="pre">nvmeof_setup</span></code> role in <code class="docutils literal notranslate"><span class="pre">batesste-ansible</span></code> does the same
+thing for the hardware path.</p>
+</section>
+<section id="how-it-works">
+<h2>How It Works<a class="headerlink" href="#how-it-works" title="Link to this heading">#</a></h2>
+<p>Unlike <code class="docutils literal notranslate"><span class="pre">loopback</span></code>, <code class="docutils literal notranslate"><span class="pre">tcp</span></code> and <code class="docutils literal notranslate"><span class="pre">verbs</span></code>, this is not a
+transport for guest RDMA traffic – it is a <em>peer</em> that
+speaks NVMe-oF back at the guest. It therefore hooks into
+<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>, the data path that actually
+serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than into the
+QEMU-derived backend vtable.</p>
+<section id="connection-establishment">
+<h3>Connection establishment<a class="headerlink" href="#connection-establishment" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> goes through <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>, which
+means an IB CM exchange over GSI (QP1). The data path
+recognises sends on the guest’s GSI queue pair and hands the
+256-byte MAD to <code class="file docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, which answers it:</p>
+<ul class="simple">
+<li><p><strong>REQ</strong> – validate the <code class="docutils literal notranslate"><span class="pre">cma_hdr</span></code> and the
+<code class="docutils literal notranslate"><span class="pre">nvme_rdma_cm_req</span></code> private data behind it, allocate a
+controller-side queue, and reply with <strong>REP</strong> carrying an
+<code class="docutils literal notranslate"><span class="pre">nvme_rdma_cm_rep</span></code>. An unsupported <code class="docutils literal notranslate"><span class="pre">qid</span></code> gets a
+<strong>REJ</strong> with the right NVMe-oF status rather than a
+timeout. The subsystem NQN is not in the rdma_cm private
+data at all, so a wrong one is caught later, by the
+Fabrics Connect capsule.</p></li>
+<li><p><strong>RTU</strong> – mark the queue established.</p></li>
+<li><p><strong>DREQ</strong> – tear the queue down and answer <strong>DREP</strong>.</p></li>
+</ul>
+<p>Replies are delivered back into the guest’s GSI receive
+queue as UD completions, with a synthesised 40-byte GRH and
+the source MAC and <code class="docutils literal notranslate"><span class="pre">IS_IPV4</span></code> bits the upstream driver
+requires to report <code class="docutils literal notranslate"><span class="pre">IB_WC_GRH</span> <span class="pre">|</span> <span class="pre">IB_WC_WITH_SMAC</span></code>. The
+GIDs in that GRH are snooped from the CM REQ, so the
+controller never has to be told its own address twice.</p>
+<p>Controller queue pairs are numbered from <code class="docutils literal notranslate"><span class="pre">0x00c00000</span></code>.
+The data path spots a send whose destination QPN falls in
+that range and routes the capsule to the controller instead
+of looking for a fabric peer.</p>
+</section>
+<section id="capsules-and-data-transfer">
+<h3>Capsules and data transfer<a class="headerlink" href="#capsules-and-data-transfer" title="Link to this heading">#</a></h3>
+<p>Each guest SEND on an established queue carries a 64-byte
+NVMe command capsule, which <code class="file docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code>
+executes and answers with a 16-byte response capsule
+delivered into a posted receive.</p>
+<p>Admin commands cover what <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span></code>, <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">discover</span></code> and
+<code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">list</span></code> need: the fabrics Connect and Property
+Get/Set, Identify (controller, namespace, active namespace
+list and namespace descriptor list), Get/Set Features, Get
+Log Page, Keep Alive, Abort and Async Event. The I/O command
+set is Read, Write, Flush, Write Zeroes and Dataset
+Management.</p>
+<p>Read and Write move their payload with keyed SGLs: the
+controller issues RDMA READ or WRITE against the guest’s
+memory key from inside the data path, using the same
+<code class="docutils literal notranslate"><span class="pre">rdma_pci_dma_map</span></code> machinery the rest of the emulator
+uses. <code class="docutils literal notranslate"><span class="pre">ioccsz</span></code> is reported as 4 – a 64-byte capsule with
+no room after the command – so the host always sends a
+keyed SGL rather than in-capsule data, and there is exactly
+one data path to get right.</p>
+<p>The key in that SGL comes from fast registration. A stock
+<code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> initiator has <code class="docutils literal notranslate"><span class="pre">register_always</span></code> on, so it
+posts an <code class="docutils literal notranslate"><span class="pre">IB_WR_REG_MR</span></code> ahead of every command to bind a
+freshly rotated key to the command’s pages, and an
+<code class="docutils literal notranslate"><span class="pre">IB_WR_LOCAL_INV</span></code> afterwards. Those arrive as the local
+work requests <code class="docutils literal notranslate"><span class="pre">IONIC_V1_OP_REG_MR</span></code> and
+<code class="docutils literal notranslate"><span class="pre">IONIC_V1_OP_LOCAL_INV</span></code>, which the data path executes
+against the same MR table <code class="docutils literal notranslate"><span class="pre">CREATE_MR</span></code> fills. Without them
+the controller’s RDMA READ and WRITE would resolve keys that
+name nothing.</p>
+</section>
+</section>
+<section id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
+<p>Server-side coverage runs without a VM and is part of
+<code class="docutils literal notranslate"><span class="pre">ctest</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>nvmeof
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-target-unit</span></code> – capsule parsing, the admin and
+I/O command set, and namespace backing.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-cm-unit</span></code> – the CM state machine, including the
+rejection paths.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-ci</span></code> – starts the real server binary once per
+documented option spelling, checks the controller it
+reports, checks that a file-backed namespace appears on
+disk at the right size, and checks that malformed options
+are refused.</p></li>
+</ul>
+<p>The end-to-end connect needs a guest. It runs in three
+places, all doing the same thing: discover, connect, check
+the namespace appears, write 16 MiB of random data through
+<code class="docutils literal notranslate"><span class="pre">O_DIRECT</span></code> and compare digests on read-back, run a short
+fio job, disconnect, and check the namespace went away. The
+digest comparison is the check that proves the RDMA
+transfers behind the capsules actually moved the bytes, and
+the disconnect is the only thing that exercises the CM
+teardown path at all.</p>
+<p>The Ansible play is the reusable definition, and needs a
+single guest already provisioned against an instance running
+the controller:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
+</pre></div>
+</div>
+<p>The self-hosted lane drives it from shell so each step lands
+in the CI results as its own check, and provisions the guest
+itself first:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_INSTANCES</span><span class="o">=</span><span class="m">1</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_BACKEND</span><span class="o">=</span>nvmeof:size<span class="o">=</span>256M,bs<span class="o">=</span><span class="m">4096</span>
+bash<span class="w"> </span>ci/jobs/vm-up.sh
+bash<span class="w"> </span>ci/jobs/vm-nvmeof.sh
+bash<span class="w"> </span>ci/jobs/vm-down.sh
+</pre></div>
+</div>
+<p>Export them rather than prefixing a single command: all
+three scripts read both, and <code class="docutils literal notranslate"><span class="pre">ERNIC_INSTANCES</span></code> defaults to
+2.</p>
+<p>And the hosted lane runs the whole thing from scratch –
+build, boot a guest, provision it, connect – in
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/nvmeof-lane.yml</span></code>, which is the
+cheapest end-to-end RDMA test in the matrix precisely
+because it needs only one VM. That lane is a reusable
+workflow with a single <code class="docutils literal notranslate"><span class="pre">publish</span></code> input, called by
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>: false on a pull
+request, true on a scheduled or dispatched run against
+<code class="docutils literal notranslate"><span class="pre">main</span></code>. The steps are the same either way, so a green pull
+request and a scheduled run mean the same thing.
+The <code class="docutils literal notranslate"><span class="pre">vm-nvmeof</span></code> job in
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/self-hosted-ci.yml</span></code> runs the
+self-hosted lane at the functional tier and above.</p>
+<p>The controller’s address, port and NQN are Ansible
+variables (<code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_traddr</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_trsvcid</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_nqn</span></code> and friends in
+<code class="file docutils literal notranslate"><span class="pre">ansible/group_vars/all.yml</span></code>); they have to match the
+<code class="docutils literal notranslate"><span class="pre">--backend</span></code> options the instance was started with.</p>
+<p>Both lanes aim the connect at the controller’s queue ceiling
+rather than leaving it to the initiator, which would otherwise
+ask for one queue per online CPU and make the lane’s coverage a
+property of the runner rather than of the controller. The
+ceiling is the <code class="docutils literal notranslate"><span class="pre">queues=</span></code> key of the <code class="docutils literal notranslate"><span class="pre">--backend</span></code> string, or
+eight when the key is absent: <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> reads it
+out of <code class="docutils literal notranslate"><span class="pre">ERNIC_BACKEND</span></code> (override with <code class="docutils literal notranslate"><span class="pre">NVMEOF_QUEUES</span></code>),
+and the play takes it from <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_queues</span></code>, which like
+the variables above has to be told what the instance was
+started with. Both then read
+<code class="file docutils literal notranslate"><span class="pre">/sys/class/nvme/nvmeN/queue_count</span></code> back and fail unless
+it matches, because too few queues is not an error to
+<code class="docutils literal notranslate"><span class="pre">nvme-cli</span></code>. A guest with fewer vCPUs than half the ceiling
+cannot reach it – see <a class="reference internal" href="nvmeof-performance.html#nvmeof-mr-budget"><span class="std std-ref">The MR budget caps the queue count</span></a> – so the
+expected count is computed from the guest’s CPU count, and
+falling short of the ceiling is reported rather than failed.</p>
+</section>
+<section id="performance">
+<h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
+<p>The scheduled run of
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> sweeps fio
+across three block sizes against the connected namespace
+and publishes what it measured, on the same terms and
+through the same code path as the RDMA and TCP/IP
+figures. The numbers land on the
+<a class="reference external" href="https://rocm.github.io/rocm-ernic/perf-trends.html">trend page</a>
+as the <em>NVMe-oF read bandwidth over time</em> chart, and the
+4 KiB figure becomes the <code class="docutils literal notranslate"><span class="pre">NVMe-oF</span> <span class="pre">4K</span> <span class="pre">read</span></code> shield on the
+README.</p>
+<p>The sweep is random <em>reads</em>. A read has the controller
+RDMA-WRITE into guest memory, which is the direction worth
+a headline number; mixing reads and writes into one figure
+would make it mean half of each. The write direction is
+covered instead by the digest round trip above, which is a
+correctness check rather than a rate.</p>
+<p>Three caveats about the numbers, all of which matter more
+than the numbers themselves:</p>
+<ul class="simple">
+<li><p>They come from a <strong>GitHub-hosted runner</strong> – shared
+vCPUs, noisy neighbours, no pinning. Treat them as a
+trend, not a benchmark. Everything published is measured
+on that class of machine now, but these stay in their own
+<code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> series: a fio sweep against an in-process
+controller and a perftest sweep across two guests share
+no scale.</p></li>
+<li><p>The namespace is RAM by default, so nothing here
+measures storage. What is being measured is the capsule
+and RDMA path: command capsules in by SEND, data out by
+RDMA WRITE, completions back into posted receives.</p></li>
+<li><p>Only a green run on <code class="docutils literal notranslate"><span class="pre">main</span></code> publishes. A failed lane’s
+numbers describe a broken controller.</p></li>
+</ul>
+<p>To take the same measurements locally, set
+<code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_perf_csv</span></code> to a path and the play writes one
+bandwidth CSV there:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_nvmeof_perf_csv</span><span class="o">=</span>/tmp/nvmeof-bw.csv
+</pre></div>
+</div>
+<p>The block sizes are <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_perf_sweep</span></code> in
+<code class="file docutils literal notranslate"><span class="pre">ansible/group_vars/all.yml</span></code>. They are not free-form:
+they have to stay equal to <code class="docutils literal notranslate"><span class="pre">TRACKED_SIZES</span></code> in
+<code class="file docutils literal notranslate"><span class="pre">ci/report/publish-perf.py</span></code> or the chart quietly drops
+a series. The shell lane captures the same sweep in
+<code class="docutils literal notranslate"><span class="pre">probe_fio_sweep</span></code>, and refuses to record it unless the
+guest ran under KVM – numbers measured under TCG are one to
+two orders of magnitude off and would poison the history.</p>
+</section>
+<section id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>One subsystem with one namespace per server instance.</p></li>
+<li><p>No authentication, no discovery-controller persistence,
+no multipath, no reservations.</p></li>
+<li><p>No ANA, no namespace management, and no Format NVM.</p></li>
+<li><p>Connections do not survive a server restart; a
+file-backed namespace does, but the guest has to
+reconnect.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="ionic.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">The ionic Device</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="service.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">systemd Service and ernicctl</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-from-the-guest">Connecting from the Guest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-works">How It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#connection-establishment">Connection establishment</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#capsules-and-data-transfer">Capsules and data transfer</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

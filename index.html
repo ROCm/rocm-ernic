@@ -1,5 +1,678 @@
-<!doctype html>
-<meta charset="utf-8">
-<title>rocm-ernic</title>
-<p>The documentation site is being built. See
-<a href="https://github.com/ROCm/rocm-ernic">ROCm/rocm-ernic</a>.</p>
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>rocm-ernic: Emulated RDMA NIC for Virtual Machines &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'index';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Building and Installing" href="building.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="#">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/index.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>rocm-ernic: Emulated RDMA NIC for Virtual Machines</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#introduction">Introduction</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#key-features">Key Features</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-start">Quick Start</a><ul class="nav section-nav flex-column">
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#acknowledgments">Acknowledgments</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#license">License</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="rocm-ernic-emulated-rdma-nic-for-virtual-machines">
+<h1>rocm-ernic: Emulated RDMA NIC for Virtual Machines<a class="headerlink" href="#rocm-ernic-emulated-rdma-nic-for-virtual-machines" title="Link to this heading">#</a></h1>
+<section id="introduction">
+<h2>Introduction<a class="headerlink" href="#introduction" title="Link to this heading">#</a></h2>
+<p>rocm-ernic is a userspace RDMA device server built on the
+<a class="reference external" href="https://github.com/nutanix/libvfio-user">libvfio-user</a>
+framework. It provides full RDMA (Remote Direct Memory Access)
+functionality to virtual machines without requiring physical
+RDMA hardware or an in-guest software stack such as
+<a class="reference external" href="https://man7.org/linux/man-pages/man7/rxe.7.html">Soft-RoCE</a>.</p>
+<section id="key-features">
+<h3>Key Features<a class="headerlink" href="#key-features" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Full PCIe device emulation in userspace</p></li>
+<li><p>An AMD Pensando ionic NIC, driven in the guest by the
+upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> drivers
+(see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></li>
+<li><p>Memory-mapped BARs (MSI-X, registers, doorbells)</p></li>
+<li><p>MSI-X interrupt support</p></li>
+<li><p>Multiple RDMA backends (loopback, TCP/IP, native verbs)</p></li>
+<li><p>An in-process NVMe-oF target, so one VM and one server
+are a complete fabric (see <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>)</p></li>
+<li><p>Working Ethernet and TCP/IP to the host via a TAP
+interface</p></li>
+<li><p>Comprehensive statistics collection</p></li>
+</ul>
+</section>
+<section id="quick-start">
+<h3>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>cmake<span class="w"> </span>meson<span class="w"> </span>ninja-build<span class="w"> </span>pkg-config<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libibverbs-dev<span class="w"> </span>librdmacm-dev<span class="w"> </span>libglib2.0-dev<span class="w"> </span>libjson-c-dev
+cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Debug
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span>--verbose
+</pre></div>
+</div>
+<p>That presents the device to the guest as an upstream-driven
+ionic NIC. Add <code class="docutils literal notranslate"><span class="pre">--tap</span></code> to attach its Ethernet interface to
+a host TAP:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span>--tap<span class="w"> </span>ernic0
+</pre></div>
+</div>
+<div class="toctree-wrapper compound">
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="building.html#dependencies">Dependencies</a></li>
+<li class="toctree-l2"><a class="reference internal" href="building.html#compilation">Compilation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="building.html#installation">Installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="building.html#build-options">Build Options</a></li>
+<li class="toctree-l2"><a class="reference internal" href="building.html#warnings-as-errors">Warnings as Errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="building.html#guest-ionic-modules">Guest ionic Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="building.html#building-documentation">Building Documentation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#high-level-overview">High-Level Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#components">Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#pci-bars">PCI BARs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#backends">Backends</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#basic-usage">Basic Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#the-emulated-device">The Emulated Device</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#log-levels">Log Levels</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#launching-a-vm">Launching a VM</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#statistics-collection">Statistics Collection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#development-workflow-hot-reload">Development Workflow: Hot Reload</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="ionic.html#starting-the-server">Starting the Server</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ionic.html#ethernet-and-tcp-ip">Ethernet and TCP/IP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ionic.html#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ionic.html#testing">Testing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ionic.html#current-status">Current Status</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof.html#starting-the-server">Starting the Server</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof.html#connecting-from-the-guest">Connecting from the Guest</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof.html#how-it-works">How It Works</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof.html#testing">Testing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof.html#performance">Performance</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof.html#limitations">Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="service.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="service.html#installation">Installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="service.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="service.html#using-the-service">Using the Service</a></li>
+<li class="toctree-l2"><a class="reference internal" href="service.html#ernicctl-command-reference">ernicctl Command Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="service.html#manifest">Manifest</a></li>
+<li class="toctree-l2"><a class="reference internal" href="service.html#typical-workflows">Typical Workflows</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="monitoring.html#architecture">Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="monitoring.html#quick-start">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="monitoring.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="monitoring.html#metrics-reference">Metrics Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="monitoring.html#grafana-dashboard">Grafana Dashboard</a></li>
+<li class="toctree-l2"><a class="reference internal" href="monitoring.html#useful-promql-examples">Useful PromQL Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#test-programs">Test Programs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#running-tests">Running Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#multi-vm-rdma-testing">Multi-VM RDMA Testing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#ansible-based-testing">Ansible-Based Testing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#guest-driver-ci">Guest Driver CI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#self-hosted-ci">Self-Hosted CI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing.html#adding-new-tests">Adding New Tests</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="performance.html#test-environment">Test Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="performance.html#running-the-benchmarks">Running the Benchmarks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="performance.html#interpreting-the-results">Interpreting the Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="performance.html#reference-measurements">Reference Measurements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="performance.html#known-limitations">Known Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof-performance.html#test-environment">Test Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof-performance.html#reproducing">Reproducing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof-performance.html#results">Results</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nvmeof-performance.html#known-limits">Known Limits</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="perf-trends.html#send-bandwidth-over-time">Send bandwidth over time</a></li>
+<li class="toctree-l2"><a class="reference internal" href="perf-trends.html#send-latency-over-time">Send latency over time</a></li>
+<li class="toctree-l2"><a class="reference internal" href="perf-trends.html#nvme-of-read-bandwidth-over-time">NVMe-oF read bandwidth over time</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#userspace-server-api">Userspace Server API</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#ionic-emulation">ionic Emulation</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+</section>
+<section id="acknowledgments">
+<h2>Acknowledgments<a class="headerlink" href="#acknowledgments" title="Link to this heading">#</a></h2>
+<p>The RDMA device logic in <code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code> is adapted from the
+QEMU PVRDMA implementation. The original authors of that work:</p>
+<ul class="simple">
+<li><p>Yuval Shaia &lt;<a class="reference external" href="mailto:yuval&#46;shaia&#37;&#52;&#48;oracle&#46;com">yuval<span>&#46;</span>shaia<span>&#64;</span>oracle<span>&#46;</span>com</a>&gt; (Oracle)</p></li>
+<li><p>Marcel Apfelbaum &lt;<a class="reference external" href="mailto:marcel&#37;&#52;&#48;redhat&#46;com">marcel<span>&#64;</span>redhat<span>&#46;</span>com</a>&gt; (Red Hat)</p></li>
+</ul>
+</section>
+<section id="license">
+<h2>License<a class="headerlink" href="#license" title="Link to this heading">#</a></h2>
+<p>The project is licensed under the
+<a class="reference external" href="https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md">MIT license</a>.
+Some files carry different licenses per their SPDX headers:</p>
+<ul class="simple">
+<li><p>Files under <code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code> are derived from QEMU and are
+licensed under <code class="docutils literal notranslate"><span class="pre">GPL-2.0-or-later</span></code>.</p></li>
+<li><p>The kernel patches under <code class="docutils literal notranslate"><span class="pre">patches/</span></code> apply to Linux driver
+sources and carry <code class="docutils literal notranslate"><span class="pre">GPL-2.0</span></code> as indicated by their SPDX
+headers.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="right-next"
+       href="building.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Building and Installing</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#introduction">Introduction</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#key-features">Key Features</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#quick-start">Quick Start</a><ul class="nav section-nav flex-column">
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#acknowledgments">Acknowledgments</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#license">License</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

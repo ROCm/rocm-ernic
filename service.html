@@ -1,0 +1,1189 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>systemd Service and ernicctl &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'service';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Prometheus Monitoring and Grafana Dashboard" href="monitoring.html" />
+    <link rel="prev" title="NVMe-oF Controller" href="nvmeof.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/service.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>systemd Service and ernicctl</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-settings">Server settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mac-address-overrides">MAC address overrides</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vm-and-qemu-settings">VM and QEMU settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#driver-settings">Driver settings</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-the-service">Using the Service</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ernicctl-command-reference">ernicctl Command Reference</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#service-lifecycle">Service lifecycle</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dynamic-mesh-management">Dynamic mesh management</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-vm-attach-and-detach">Live VM attach and detach</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hot-reload">Hot reload</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vm-management">VM management</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#driver-distribution">Driver distribution</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#manifest">Manifest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#typical-workflows">Typical Workflows</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#single-server-development">Single-server development</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-server-tcp-mesh">Multi-server TCP mesh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-server-to-a-running-mesh">Adding a server to a running mesh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#automated-workflow-via-ansible">Automated workflow via Ansible</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hot-reloading-after-a-code-change">Hot-reloading after a code change</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-vm-hardening">Guest VM Hardening</a></li>
+</ul>
+</li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="systemd-service-and-ernicctl">
+<h1>systemd Service and ernicctl<a class="headerlink" href="#systemd-service-and-ernicctl" title="Link to this heading">#</a></h1>
+<p>rocm-ernic ships a systemd service and a companion
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> CLI for managing one or more server
+instances, launching VMs, performing live hotplug, and
+distributing the kernel driver to guests.</p>
+<nav class="contents local" id="on-this-page">
+<p class="topic-title">On this page</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#overview" id="id1">Overview</a></p>
+<ul>
+<li><p><a class="reference internal" href="#prerequisites" id="id2">Prerequisites</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#installation" id="id3">Installation</a></p></li>
+<li><p><a class="reference internal" href="#configuration" id="id4">Configuration</a></p>
+<ul>
+<li><p><a class="reference internal" href="#server-settings" id="id5">Server settings</a></p></li>
+<li><p><a class="reference internal" href="#mac-address-overrides" id="id6">MAC address overrides</a></p></li>
+<li><p><a class="reference internal" href="#vm-and-qemu-settings" id="id7">VM and QEMU settings</a></p></li>
+<li><p><a class="reference internal" href="#driver-settings" id="id8">Driver settings</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#using-the-service" id="id9">Using the Service</a></p></li>
+<li><p><a class="reference internal" href="#ernicctl-command-reference" id="id10">ernicctl Command Reference</a></p>
+<ul>
+<li><p><a class="reference internal" href="#service-lifecycle" id="id11">Service lifecycle</a></p></li>
+<li><p><a class="reference internal" href="#dynamic-mesh-management" id="id12">Dynamic mesh management</a></p></li>
+<li><p><a class="reference internal" href="#live-vm-attach-and-detach" id="id13">Live VM attach and detach</a></p></li>
+<li><p><a class="reference internal" href="#hot-reload" id="id14">Hot reload</a></p></li>
+<li><p><a class="reference internal" href="#vm-management" id="id15">VM management</a></p></li>
+<li><p><a class="reference internal" href="#driver-distribution" id="id16">Driver distribution</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#manifest" id="id17">Manifest</a></p></li>
+<li><p><a class="reference internal" href="#typical-workflows" id="id18">Typical Workflows</a></p>
+<ul>
+<li><p><a class="reference internal" href="#single-server-development" id="id19">Single-server development</a></p></li>
+<li><p><a class="reference internal" href="#multi-server-tcp-mesh" id="id20">Multi-server TCP mesh</a></p></li>
+<li><p><a class="reference internal" href="#adding-a-server-to-a-running-mesh" id="id21">Adding a server to a running mesh</a></p></li>
+<li><p><a class="reference internal" href="#automated-workflow-via-ansible" id="id22">Automated workflow via Ansible</a></p></li>
+<li><p><a class="reference internal" href="#hot-reloading-after-a-code-change" id="id23">Hot-reloading after a code change</a></p></li>
+<li><p><a class="reference internal" href="#guest-vm-hardening" id="id24">Guest VM Hardening</a></p></li>
+</ul>
+</li>
+</ul>
+</nav>
+<section id="overview">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">Overview</a><a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>The service replaces the older <code class="docutils literal notranslate"><span class="pre">setup-rocm-ernic</span></code>
+script with a production-grade systemd unit.  Key
+capabilities:</p>
+<ul class="simple">
+<li><p>Start/stop N server instances in a TCP manager/worker
+mesh with a single <code class="docutils literal notranslate"><span class="pre">systemctl</span></code> command.</p></li>
+<li><p>Deterministic per-instance MAC addresses derived from
+the host’s <code class="docutils literal notranslate"><span class="pre">/etc/machine-id</span></code>.</p></li>
+<li><p>Dynamic mesh scaling – add or remove worker instances
+at runtime.</p></li>
+<li><p>Launch QEMU VMs via qemu-minimal’s <code class="docutils literal notranslate"><span class="pre">run-vm</span></code> and
+hot-plug/unplug vfio-user devices via QMP.</p></li>
+<li><p>Build and push a self-contained driver tarball to
+guest VMs.</p></li>
+</ul>
+<section id="prerequisites">
+<h3><a class="toc-backref" href="#id2" role="doc-backlink">Prerequisites</a><a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Python 3 (standard library only; no pip packages)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">socat</span></code> (for QMP communication)</p></li>
+<li><p>QEMU 10.1+ with vfio-user support</p></li>
+<li><p>qemu-minimal checkout with <code class="docutils literal notranslate"><span class="pre">run-vm</span></code> supporting
+<code class="docutils literal notranslate"><span class="pre">QMP_SOCKET</span></code> and <code class="docutils literal notranslate"><span class="pre">VFIO_USERDEV</span></code></p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>socat<span class="w"> </span>python3
+</pre></div>
+</div>
+</section>
+</section>
+<section id="installation">
+<h2><a class="toc-backref" href="#id3" role="doc-backlink">Installation</a><a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
+<p>Build and install with CMake:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_INSTALL_PREFIX<span class="o">=</span>/usr/local<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_INSTALL_SERVICE<span class="o">=</span>ON
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+sudo<span class="w"> </span>cmake<span class="w"> </span>--install<span class="w"> </span>build
+</pre></div>
+</div>
+<p>This installs:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 40.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Destination</p></th>
+<th class="head"><p>Contents</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/usr/local/bin/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic</span></code>, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/usr/local/libexec/rocm-ernic/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic-launcher</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rocm-ernic-driver-pack</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/usr/local/etc/rocm-ernic/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic.env</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">/usr/local/share/rocm-ernic/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">vm-driver-install.sh.in</span></code>, <code class="docutils literal notranslate"><span class="pre">patches/</span></code>,
+<code class="docutils literal notranslate"><span class="pre">fetch-ionic-sources.sh</span></code>, <code class="docutils literal notranslate"><span class="pre">setup-ionic-dkms.sh</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ionic-kernel-ref</span></code>,
+<code class="docutils literal notranslate"><span class="pre">requirements-exporter.txt</span></code>,
+<code class="docutils literal notranslate"><span class="pre">grafana/ernic-dashboard.json</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/usr/local/lib/systemd/system/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic.service</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rocm-ernic-driver-pack.service</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ernic-exporter.service</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>All destinations are relative to <code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code>,
+shown here for the default <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The systemd units and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> read the environment
+file from <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code>, but the
+install rule places it under the install prefix. With the
+default prefix it lands in <code class="docutils literal notranslate"><span class="pre">/usr/local/etc/rocm-ernic/</span></code>,
+so copy or symlink it into <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/</span></code> before
+starting the service. Likewise, systemd does not read
+units from <code class="docutils literal notranslate"><span class="pre">/usr/local/lib/systemd/system</span></code> by default;
+install with <code class="docutils literal notranslate"><span class="pre">-DCMAKE_INSTALL_PREFIX=/usr</span></code> or copy the
+units into <code class="docutils literal notranslate"><span class="pre">/etc/systemd/system/</span></code>.</p>
+</div>
+<p>After installation, reload systemd and optionally
+enable the service at boot:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>systemctl<span class="w"> </span>daemon-reload
+sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>rocm-ernic
+</pre></div>
+</div>
+</section>
+<section id="configuration">
+<h2><a class="toc-backref" href="#id4" role="doc-backlink">Configuration</a><a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<p>All settings live in <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code>
+(a shell-sourceable key=value file used by systemd’s
+<code class="docutils literal notranslate"><span class="pre">EnvironmentFile=</span></code> directive).  Edit this file to
+match your environment.</p>
+<section id="server-settings">
+<h3><a class="toc-backref" href="#id5" role="doc-backlink">Server settings</a><a class="headerlink" href="#server-settings" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 20.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BIN</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/usr/local/bin/rocm-ernic</span></code></p></td>
+<td><p>Path to the server binary</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_RUN_DIR</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/run/rocm-ernic</span></code></p></td>
+<td><p>Runtime directory (sockets, stats, manifest)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_DIR</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/var/log/rocm-ernic</span></code></p></td>
+<td><p>Log directory</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTANCES</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
+<td><p>Total instances (1 manager + N-1 workers)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_PORT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6320</span></code></p></td>
+<td><p>TCP port for the manager/worker mesh</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_MANAGER_IP</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code></p></td>
+<td><p>IP address workers connect to</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">warn</span></code></p></td>
+<td><p>Server log verbosity:
+<code class="docutils literal notranslate"><span class="pre">none|error|warn|info|debug</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VERBOSE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Deprecated shorthand for
+<code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL=debug</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TAP_PREFIX</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ernic-tap</span></code></p></td>
+<td><p>Instance <em>n</em> is started with
+<code class="docutils literal notranslate"><span class="pre">--tap</span> <span class="pre">${ERNIC_TAP_PREFIX}n</span></code>; a missing interface
+is a warning and the instance starts without
+Ethernet</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TAP_BRIDGE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ernicbr0</span></code></p></td>
+<td><p>Host bridge the TAPs are enslaved to, so guests can
+reach each other.  Created by the
+<code class="docutils literal notranslate"><span class="pre">ernic_host_setup</span></code> Ansible role, not by the
+launcher</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="mac-address-overrides">
+<h3><a class="toc-backref" href="#id6" role="doc-backlink">MAC address overrides</a><a class="headerlink" href="#mac-address-overrides" title="Link to this heading">#</a></h3>
+<p>By default, each instance gets a deterministic MAC
+derived from <code class="docutils literal notranslate"><span class="pre">/etc/machine-id</span></code> and the instance index.
+To assign explicit MACs, set <code class="docutils literal notranslate"><span class="pre">ERNIC_MAC_1</span></code> through
+<code class="docutils literal notranslate"><span class="pre">ERNIC_MAC_N</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ERNIC_MAC_1</span><span class="o">=</span><span class="m">02</span>:aa:bb:cc:00:01
+<span class="nv">ERNIC_MAC_2</span><span class="o">=</span><span class="m">02</span>:aa:bb:cc:00:02
+</pre></div>
+</div>
+</section>
+<section id="vm-and-qemu-settings">
+<h3><a class="toc-backref" href="#id7" role="doc-backlink">VM and QEMU settings</a><a class="headerlink" href="#vm-and-qemu-settings" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 20.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_QEMU_MINIMAL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">$HOME/Projects/qemu-minimal</span></code></p></td>
+<td><p>Path to qemu-minimal checkout</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_QEMU_PATH</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/opt/qemu-v10.1.2/bin/</span></code></p></td>
+<td><p>Directory containing <code class="docutils literal notranslate"><span class="pre">qemu-system-x86_64</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_IMAGE_DIR</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">$ERNIC_QEMU_MINIMAL/images</span></code></p></td>
+<td><p>Directory with qcow2 VM images</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">stebates-test-vm</span></code></p></td>
+<td><p>Base VM name (qcow2 filename stem)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_VCPUS</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
+<td><p>vCPUs per VM</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_MEM</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
+<td><p>Memory per VM (MB)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_USER</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ubuntu</span></code></p></td>
+<td><p>SSH user for guest access</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_HOST</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">localhost</span></code></p></td>
+<td><p>SSH destination host for guest commands (use an
+<code class="docutils literal notranslate"><span class="pre">ssh_config</span></code> Host alias when you do not use
+<code class="docutils literal notranslate"><span class="pre">localhost</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_CONFIG</span></code></p></td>
+<td><p>(unset)</p></td>
+<td><p>Path passed to <code class="docutils literal notranslate"><span class="pre">ssh</span></code>/<code class="docutils literal notranslate"><span class="pre">scp</span></code> as <code class="docutils literal notranslate"><span class="pre">-F</span></code>.  When unset
+and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> runs as <code class="docutils literal notranslate"><span class="pre">root</span></code> under <code class="docutils literal notranslate"><span class="pre">sudo</span></code>, the
+invoking user’s <code class="docutils literal notranslate"><span class="pre">~/.ssh/config</span></code> (<code class="docutils literal notranslate"><span class="pre">SUDO_USER</span></code>) is used
+if that file exists.  <code class="docutils literal notranslate"><span class="pre">/root/.ssh</span></code> is never read for this
+implicit default; set <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_CONFIG</span></code> when there is
+no <code class="docutils literal notranslate"><span class="pre">SUDO_USER</span></code> (e.g. a systemd unit or bare <code class="docutils literal notranslate"><span class="pre">su</span> <span class="pre">-</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_BASE_PORT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2222</span></code></p></td>
+<td><p>Base SSH port (instance N uses base + N - 1)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_IDENTITY</span></code></p></td>
+<td><p>(unset)</p></td>
+<td><p>SSH private key path for the VM_LOAD column (SSH
+fallback).  When unset and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> runs as
+<code class="docutils literal notranslate"><span class="pre">root</span></code> under <code class="docutils literal notranslate"><span class="pre">sudo</span></code>, a recent <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> may use
+<code class="docutils literal notranslate"><span class="pre">SUDO_USER</span></code>’s default <code class="docutils literal notranslate"><span class="pre">~/.ssh/id_rsa</span></code> (or
+<code class="docutils literal notranslate"><span class="pre">id_ed25519</span></code> / <code class="docutils literal notranslate"><span class="pre">id_ecdsa</span></code>) automatically.  <code class="docutils literal notranslate"><span class="pre">/root/.ssh</span></code>
+keys are not auto-discovered.  Otherwise set this for
+<code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_USER&#64;ERNIC_VM_SSH_HOST</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_BACKING</span></code></p></td>
+<td><p>(unset)</p></td>
+<td><p>Golden backing qcow2. When set and a
+per-instance overlay does not exist,
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> creates one
+automatically via <code class="docutils literal notranslate"><span class="pre">qemu-img</span> <span class="pre">create</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="driver-settings">
+<h3><a class="toc-backref" href="#id8" role="doc-backlink">Driver settings</a><a class="headerlink" href="#driver-settings" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 25.0%" />
+<col style="width: 45.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DRIVER_SOURCE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/usr/share/rocm-ernic/patches</span></code></p></td>
+<td><p>Patched ionic sources to pack for the guest</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DRIVER_TARBALL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/tmp/rocm-ernic-driver.tar.gz</span></code></p></td>
+<td><p>Path to the built tarball</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<section id="using-the-service">
+<h2><a class="toc-backref" href="#id9" role="doc-backlink">Using the Service</a><a class="headerlink" href="#using-the-service" title="Link to this heading">#</a></h2>
+<p>Start, stop, and check status:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>systemctl<span class="w"> </span>start<span class="w"> </span>rocm-ernic
+sudo<span class="w"> </span>systemctl<span class="w"> </span>status<span class="w"> </span>rocm-ernic
+sudo<span class="w"> </span>systemctl<span class="w"> </span>stop<span class="w"> </span>rocm-ernic
+</pre></div>
+</div>
+<p>Or use <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> which wraps <code class="docutils literal notranslate"><span class="pre">systemctl</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ernicctl<span class="w"> </span>start
+ernicctl<span class="w"> </span>status
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>stop
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">status</span></code> command reports the emulated
+device, then a table of all instances with their PID, MAC,
+socket, VM attachment, IP and RDMA byte counts (TX/RX),
+liveness state, uptime, and log file path:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Device: ionic 1dd8:100a (TAP ernic-tap&lt;id&gt;)
+
+ID  ROLE      PID    STATE      UPTIME     MAC                SOCKET                         VM           IP (TX/RX)      RDMA (TX/RX)    LOG
+1   manager   12345  running    2h15m      02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         67890:2222   1.2K/3.4K       45M/12M         /var/log/rocm-ernic/1.log
+2   worker    12346  running    2h14m      02:a1:b2:c3:d4:02  /run/rocm-ernic/2.sock         67891:2223   0B/0B           0B/0B           /var/log/rocm-ernic/2.log
+3   worker    12347  running    2h14m      02:a1:b2:c3:d4:03  /run/rocm-ernic/3.sock         -            -               -               /var/log/rocm-ernic/3.log
+4   worker    0      dead       -          02:a1:b2:c3:d4:04  /run/rocm-ernic/4.sock         -            -               -               /var/log/rocm-ernic/4.log
+</pre></div>
+</div>
+<p>The VM column shows <code class="docutils literal notranslate"><span class="pre">vm_pid:ssh_port</span></code> when a VM is
+attached, <code class="docutils literal notranslate"><span class="pre">detached</span></code> when detached, or <code class="docutils literal notranslate"><span class="pre">-</span></code> when no
+VM is associated. The IP and RDMA columns show
+TX/RX byte totals with auto-scaled units (B, K, M,
+G, T). The UPTIME column shows how long each server
+process has been running (<code class="docutils literal notranslate"><span class="pre">45s</span></code>, <code class="docutils literal notranslate"><span class="pre">3m47s</span></code>,
+<code class="docutils literal notranslate"><span class="pre">2h15m</span></code>, <code class="docutils literal notranslate"><span class="pre">3d04h</span></code>).</p>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--json</span></code> for machine-readable output (includes
+raw <code class="docutils literal notranslate"><span class="pre">ip_bytes_tx</span></code>, <code class="docutils literal notranslate"><span class="pre">ip_bytes_rx</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rdma_bytes_tx</span></code>, <code class="docutils literal notranslate"><span class="pre">rdma_bytes_rx</span></code> fields).</p>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--rate</span> <span class="pre">SECS</span></code> to show byte deltas measured over
+a SECS-second window instead of cumulative totals.
+This is useful with <code class="docutils literal notranslate"><span class="pre">watch</span></code> to monitor live
+throughput.</p>
+</section>
+<section id="ernicctl-command-reference">
+<h2><a class="toc-backref" href="#id10" role="doc-backlink">ernicctl Command Reference</a><a class="headerlink" href="#ernicctl-command-reference" title="Link to this heading">#</a></h2>
+<section id="service-lifecycle">
+<h3><a class="toc-backref" href="#id11" role="doc-backlink">Service lifecycle</a><a class="headerlink" href="#service-lifecycle" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ernicctl<span class="w"> </span>start<span class="w">                    </span><span class="c1"># systemctl start</span>
+ernicctl<span class="w"> </span>stop<span class="w">                     </span><span class="c1"># systemctl stop</span>
+ernicctl<span class="w"> </span>restart<span class="w">                  </span><span class="c1"># systemctl restart</span>
+ernicctl<span class="w"> </span>reload<span class="w">                   </span><span class="c1"># re-read env</span>
+ernicctl<span class="w"> </span>status<span class="w"> </span><span class="o">[</span>--json<span class="o">]</span><span class="w">          </span><span class="c1"># instance table</span>
+ernicctl<span class="w"> </span>status<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w">          </span><span class="c1"># 5s byte deltas</span>
+ernicctl<span class="w"> </span>status<span class="w"> </span>--debug-vm-load<span class="w">   </span><span class="c1"># VM_LOAD QMP/SSH trace</span>
+ernicctl<span class="w"> </span>logs<span class="w"> </span><span class="o">[</span>N<span class="o">]</span><span class="w">                 </span><span class="c1"># tail logs</span>
+ernicctl<span class="w"> </span>stats<span class="w"> </span><span class="o">[</span>N<span class="o">]</span><span class="w">                </span><span class="c1"># raw stats dump</span>
+ernicctl<span class="w"> </span>stats<span class="w"> </span>--summary<span class="w">          </span><span class="c1"># one-row summary</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">stats</span> <span class="pre">--summary</span></code> command prints a
+concise table with one row per instance:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ID  CONN        IP (TX/RX)      RDMA-SR (TX/RX) RDMA-RW (R/W)   MMIO (R/W)      CMDS    INTS    QPS  FLR
+1   connected   1.2K/3.4K       45M/12M         8.1M/22M        123K/456K       89      789     3    0
+2   connected   0B/0B           0B/0B           0B/0B           0B/0B           0       0       0    0
+</pre></div>
+</div>
+<p>Columns: CONN = connection state, RDMA-SR = Send/Recv
+bytes, RDMA-RW = Read/Write bytes, MMIO = register
+reads/writes, CMDS = commands processed, INTS =
+interrupts, QPS = active queue pairs, FLR = Function
+Level Reset count.</p>
+</section>
+<section id="dynamic-mesh-management">
+<h3><a class="toc-backref" href="#id12" role="doc-backlink">Dynamic mesh management</a><a class="headerlink" href="#dynamic-mesh-management" title="Link to this heading">#</a></h3>
+<p>Add or remove worker instances at runtime without
+restarting the manager or existing workers:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Add a new worker to the TCP mesh</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>add-instance
+
+<span class="c1"># Remove instance 4 (detaches from VM if needed)</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>remove-instance<span class="w"> </span><span class="m">4</span>
+</pre></div>
+</div>
+</section>
+<section id="live-vm-attach-and-detach">
+<h3><a class="toc-backref" href="#id13" role="doc-backlink">Live VM attach and detach</a><a class="headerlink" href="#live-vm-attach-and-detach" title="Link to this heading">#</a></h3>
+<p>Hot-plug or hot-unplug a server instance’s vfio-user
+device into/from a running VM via QMP:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Attach instance 2 to a running VM</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>attach<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--qmp<span class="w"> </span>/run/rocm-ernic/qmp-2.sock
+
+<span class="c1"># Detach instance 2 (optionally unload guest driver)</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>detach<span class="w"> </span><span class="m">2</span><span class="w"> </span>--unload-driver
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">attach</span></code> command accepts optional overrides:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--device-id</span></code> – QEMU device ID
+(default <code class="docutils literal notranslate"><span class="pre">ernicN</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--root-port</span></code> – PCIe root port bus
+(default <code class="docutils literal notranslate"><span class="pre">pcie-vfu.1</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ssh-port</span></code> – guest SSH port</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ssh-user</span></code> – guest SSH user</p></li>
+</ul>
+</section>
+<section id="hot-reload">
+<h3><a class="toc-backref" href="#id14" role="doc-backlink">Hot reload</a><a class="headerlink" href="#hot-reload" title="Link to this heading">#</a></h3>
+<p>Perform a full hot-reload cycle for an instance: detach
+from VM, stop server, rebuild, restart, re-attach, and
+optionally update the guest driver:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ernicctl<span class="w"> </span>hot-reload<span class="w"> </span><span class="m">1</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>hot-reload<span class="w"> </span><span class="m">1</span><span class="w"> </span>--update-driver
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>hot-reload<span class="w"> </span><span class="m">1</span><span class="w"> </span>--no-build
+</pre></div>
+</div>
+<p>This is the service-aware equivalent of the standalone
+<code class="docutils literal notranslate"><span class="pre">scripts/hot-reload.sh</span></code> script.</p>
+</section>
+<section id="vm-management">
+<h3><a class="toc-backref" href="#id15" role="doc-backlink">VM management</a><a class="headerlink" href="#vm-management" title="Link to this heading">#</a></h3>
+<p>Launch, stop, and list QEMU VMs.  <code class="docutils literal notranslate"><span class="pre">vm-launch</span></code> uses
+qemu-minimal’s <code class="docutils literal notranslate"><span class="pre">run-vm</span></code> script with automatic QMP,
+hotplug, and manifest integration:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Launch a VM connected to instance 1</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">1</span>
+
+<span class="c1"># Launch with overrides</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vm-name<span class="w"> </span>my-test-vm<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ssh-port<span class="w"> </span><span class="m">2223</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vcpus<span class="w"> </span><span class="m">8</span><span class="w"> </span>--mem<span class="w"> </span><span class="m">16384</span>
+
+<span class="c1"># List running VMs</span>
+ernicctl<span class="w"> </span>vm-list
+
+<span class="c1"># Stop a VM</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-stop<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">vm-launch</span></code> command sets the following environment
+variables for <code class="docutils literal notranslate"><span class="pre">run-vm</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">VFIO_USERDEV</span></code> – the instance’s vfio-user socket</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">QMP_SOCKET</span></code> – placed at
+<code class="docutils literal notranslate"><span class="pre">$ERNIC_RUN_DIR/qmp-N.sock</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">QEMU_PATH</span></code>, <code class="docutils literal notranslate"><span class="pre">VM_NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">IMAGES</span></code>, <code class="docutils literal notranslate"><span class="pre">SSH_PORT</span></code>,
+<code class="docutils literal notranslate"><span class="pre">VCPUS</span></code>, <code class="docutils literal notranslate"><span class="pre">VMEM</span></code></p></li>
+</ul>
+</section>
+<section id="driver-distribution">
+<h3><a class="toc-backref" href="#id16" role="doc-backlink">Driver distribution</a><a class="headerlink" href="#driver-distribution" title="Link to this heading">#</a></h3>
+<p>Build a self-contained driver tarball and push it to
+guest VMs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build the tarball</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>driver-pack
+
+<span class="c1"># Push to a VM and install automatically</span>
+ernicctl<span class="w"> </span>driver-push<span class="w"> </span>ubuntu@localhost<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">2222</span><span class="w"> </span>--install
+
+<span class="c1"># Push without auto-install</span>
+ernicctl<span class="w"> </span>driver-push<span class="w"> </span>ubuntu@localhost<span class="w"> </span>--port<span class="w"> </span><span class="m">2222</span>
+</pre></div>
+</div>
+<p>The tarball extracts to <code class="docutils literal notranslate"><span class="pre">/tmp/rocm-ernic-driver/</span></code> on
+the guest and includes <code class="docutils literal notranslate"><span class="pre">vm-driver-install.sh</span></code> which:</p>
+<ol class="arabic simple">
+<li><p>Fetches the upstream ionic sources at the pinned
+<code class="docutils literal notranslate"><span class="pre">ionic-kernel-ref</span></code> and applies <code class="docutils literal notranslate"><span class="pre">patches/</span></code>.</p></li>
+<li><p>Builds and installs <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code>
+via DKMS.</p></li>
+<li><p>Loads <code class="docutils literal notranslate"><span class="pre">ib_core</span></code>, <code class="docutils literal notranslate"><span class="pre">ib_uverbs</span></code>, <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code>.</p></li>
+<li><p>Verifies the RDMA device appears via
+<code class="docutils literal notranslate"><span class="pre">ibv_devices</span></code>.</p></li>
+</ol>
+<p>The install script also supports <code class="docutils literal notranslate"><span class="pre">--unload</span></code> to remove
+the modules and <code class="docutils literal notranslate"><span class="pre">--build-only</span></code> to build without
+loading.  See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a> for the sources and patches
+it uses.</p>
+</section>
+</section>
+<section id="manifest">
+<h2><a class="toc-backref" href="#id17" role="doc-backlink">Manifest</a><a class="headerlink" href="#manifest" title="Link to this heading">#</a></h2>
+<p>The service maintains a JSON manifest at
+<code class="docutils literal notranslate"><span class="pre">$ERNIC_RUN_DIR/instances.json</span></code> that tracks all
+running instances and their VM attachment state.  The
+manifest is the single source of truth for <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>
+and the launcher.</p>
+<p>Example:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"instances"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"manager"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"pid"</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"mac"</span><span class="p">:</span><span class="w"> </span><span class="s2">"02:a1:b2:c3:d4:01"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"socket"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/run/rocm-ernic/1.sock"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"vm"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"qmp_socket"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/run/rocm-ernic/qmp-1.sock"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"device_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ernic1"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"root_port"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcie-vfu.1"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"ssh_port"</span><span class="p">:</span><span class="w"> </span><span class="mi">2222</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"ssh_user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ubuntu"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"attached"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"vm_pid"</span><span class="p">:</span><span class="w"> </span><span class="mi">67890</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"vm_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"stebates-test-vm"</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When <code class="docutils literal notranslate"><span class="pre">vm</span></code> is <code class="docutils literal notranslate"><span class="pre">null</span></code>, the instance is running but not
+attached to any VM.</p>
+</section>
+<section id="typical-workflows">
+<h2><a class="toc-backref" href="#id18" role="doc-backlink">Typical Workflows</a><a class="headerlink" href="#typical-workflows" title="Link to this heading">#</a></h2>
+<section id="single-server-development">
+<h3><a class="toc-backref" href="#id19" role="doc-backlink">Single-server development</a><a class="headerlink" href="#single-server-development" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Edit /etc/rocm-ernic/rocm-ernic.env:</span>
+<span class="c1">#   ERNIC_INSTANCES=1</span>
+sudo<span class="w"> </span>systemctl<span class="w"> </span>start<span class="w"> </span>rocm-ernic
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">1</span>
+ernicctl<span class="w"> </span>driver-push<span class="w"> </span>ubuntu@localhost<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">2222</span><span class="w"> </span>--install
+ssh<span class="w"> </span>-p<span class="w"> </span><span class="m">2222</span><span class="w"> </span>ubuntu@localhost
+</pre></div>
+</div>
+</section>
+<section id="multi-server-tcp-mesh">
+<h3><a class="toc-backref" href="#id20" role="doc-backlink">Multi-server TCP mesh</a><a class="headerlink" href="#multi-server-tcp-mesh" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Edit /etc/rocm-ernic/rocm-ernic.env:</span>
+<span class="c1">#   ERNIC_INSTANCES=3</span>
+sudo<span class="w"> </span>systemctl<span class="w"> </span>start<span class="w"> </span>rocm-ernic
+ernicctl<span class="w"> </span>status
+
+<span class="c1"># Launch VMs for instances 1 and 2</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">1</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">2</span>
+
+<span class="c1"># Push driver to both VMs</span>
+ernicctl<span class="w"> </span>driver-push<span class="w"> </span>ubuntu@localhost<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">2222</span><span class="w"> </span>--install
+ernicctl<span class="w"> </span>driver-push<span class="w"> </span>ubuntu@localhost<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">2223</span><span class="w"> </span>--install
+</pre></div>
+</div>
+</section>
+<section id="adding-a-server-to-a-running-mesh">
+<h3><a class="toc-backref" href="#id21" role="doc-backlink">Adding a server to a running mesh</a><a class="headerlink" href="#adding-a-server-to-a-running-mesh" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ernicctl<span class="w"> </span>add-instance
+<span class="c1"># Prints: Added instance 4.</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">4</span>
+ernicctl<span class="w"> </span>status
+</pre></div>
+</div>
+</section>
+<section id="automated-workflow-via-ansible">
+<h3><a class="toc-backref" href="#id22" role="doc-backlink">Automated workflow via Ansible</a><a class="headerlink" href="#automated-workflow-via-ansible" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">ansible/</span></code> directory contains playbooks that
+automate the entire workflow: build, install, configure
+the env file, create golden VM images, launch VMs,
+provision guests with the driver and custom rdma-core,
+and run iperf3 / perftest sanity tests.  See
+<a class="reference internal" href="testing.html"><span class="doc">Testing</span></a> for details.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-playbook<span class="w"> </span>site.yml
+</pre></div>
+</div>
+</section>
+<section id="hot-reloading-after-a-code-change">
+<h3><a class="toc-backref" href="#id23" role="doc-backlink">Hot-reloading after a code change</a><a class="headerlink" href="#hot-reloading-after-a-code-change" title="Link to this heading">#</a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Rebuild server and cycle instance 1</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>hot-reload<span class="w"> </span><span class="m">1</span><span class="w"> </span>--update-driver
+</pre></div>
+</div>
+</section>
+<section id="guest-vm-hardening">
+<h3><a class="toc-backref" href="#id24" role="doc-backlink">Guest VM Hardening</a><a class="headerlink" href="#guest-vm-hardening" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">vm-driver-install.sh</span></code> script automatically
+configures systemd to avoid long shutdown hangs
+caused by stale user session scopes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">KillUserProcesses=yes</span></code> in
+<code class="docutils literal notranslate"><span class="pre">/etc/systemd/logind.conf</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DefaultTimeoutStopSec=15s</span></code> in
+<code class="docutils literal notranslate"><span class="pre">/etc/systemd/system.conf</span></code></p></li>
+</ul>
+<p>These settings are applied on first driver install
+and persist across reboots.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="nvmeof.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">NVMe-oF Controller</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="monitoring.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Prometheus Monitoring and Grafana Dashboard</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-settings">Server settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mac-address-overrides">MAC address overrides</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vm-and-qemu-settings">VM and QEMU settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#driver-settings">Driver settings</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-the-service">Using the Service</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ernicctl-command-reference">ernicctl Command Reference</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#service-lifecycle">Service lifecycle</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dynamic-mesh-management">Dynamic mesh management</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-vm-attach-and-detach">Live VM attach and detach</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hot-reload">Hot reload</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vm-management">VM management</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#driver-distribution">Driver distribution</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#manifest">Manifest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#typical-workflows">Typical Workflows</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#single-server-development">Single-server development</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-server-tcp-mesh">Multi-server TCP mesh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-server-to-a-running-mesh">Adding a server to a running mesh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#automated-workflow-via-ansible">Automated workflow via Ansible</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hot-reloading-after-a-code-change">Hot-reloading after a code change</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-vm-hardening">Guest VM Hardening</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
