@@ -75,6 +75,13 @@ Build Options
    * - ``ERNIC_USE_THREAD_SANITIZER``
      - ``OFF``
      - Enable TSAN (mutually exclusive with above)
+   * - ``ERNIC_TEST_DISABLE_ASLR``
+     - ``ON``
+     - Run the TSAN tests under ``setarch -R``. Without it TSan
+       aborts before ``main()`` with "unexpected memory mapping"
+       on hosts with high mmap entropy. Turn off if you have set
+       ``vm.mmap_rnd_bits=28`` instead. No effect unless
+       ``ERNIC_USE_THREAD_SANITIZER`` is on
    * - ``ERNIC_BUILD_DOCS``
      - ``OFF``
      - Build Sphinx + Breathe + Doxygen documentation

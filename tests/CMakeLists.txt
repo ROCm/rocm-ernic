@@ -466,7 +466,7 @@ endforeach()
 # test client, and clean up.
 add_test(
     NAME pci-config-test
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run-test.sh
+    COMMAND ${ERNIC_TEST_LAUNCHER} ${CMAKE_CURRENT_SOURCE_DIR}/run-test.sh
         $<TARGET_FILE:test_pci_client>
         $<TARGET_FILE:rocm-ernic>
 )
@@ -487,42 +487,42 @@ set_tests_properties(pci-config-test PROPERTIES
 # rdma_backend_query_port NULL-guard / dispatch unit test
 add_test(
     NAME rdma-backend-query-port-unit
-    COMMAND $<TARGET_FILE:test_rdma_backend_query_port>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_rdma_backend_query_port>
 )
 set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # TCP/UDP checksum helper unit test (table-driven, ASan-instrumented)
 add_test(
     NAME net-checksum-unit
-    COMMAND $<TARGET_FILE:test_net_checksum>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_net_checksum>
 )
 set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # rdma_cm protocol parser unit test (table-driven, ASan-instrumented)
 add_test(
     NAME rdma-cm-proto-unit
-    COMMAND $<TARGET_FILE:test_rdma_cm_proto>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_rdma_cm_proto>
 )
 set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
 
 # DHCP server packet parser unit test (table-driven, ASan-instrumented)
 add_test(
     NAME dhcp-server-process-unit
-    COMMAND $<TARGET_FILE:test_dhcp_server_process>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_dhcp_server_process>
 )
 set_tests_properties(dhcp-server-process-unit PROPERTIES TIMEOUT 30)
 
 # DHCP server lifecycle / leak test (table-driven, ASan+LSan)
 add_test(
     NAME dhcp-server-lifecycle-unit
-    COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_dhcp_server_lifecycle>
 )
 set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # Strict integer parser unit test (table-driven, ASan-instrumented)
 add_test(
     NAME parse-int-unit
-    COMMAND $<TARGET_FILE:test_parse_int>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_parse_int>
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
 
@@ -530,7 +530,7 @@ set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
 # nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
 add_test(
     NAME nvmeof-target-unit
-    COMMAND $<TARGET_FILE:test_nvmeof_target>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_nvmeof_target>
 )
 set_tests_properties(nvmeof-target-unit PROPERTIES TIMEOUT 30)
 
@@ -538,14 +538,14 @@ set_tests_properties(nvmeof-target-unit PROPERTIES TIMEOUT 30)
 # a misaddressed or mismatched "nvme connect" can take.
 add_test(
     NAME nvmeof-cm-unit
-    COMMAND $<TARGET_FILE:test_nvmeof_cm>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_nvmeof_cm>
 )
 set_tests_properties(nvmeof-cm-unit PROPERTIES TIMEOUT 30)
 
 # Loopback SGE-copy boundary-walking unit test
 add_test(
     NAME loopback-sge-copy-unit
-    COMMAND $<TARGET_FILE:test_loopback_sge_copy>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_loopback_sge_copy>
 )
 set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
@@ -553,7 +553,7 @@ set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRU
 # vector is latched and replayed on unmask rather than dropped.
 add_test(
     NAME ionic-intr-pending-unit
-    COMMAND $<TARGET_FILE:test_ionic_intr_pending>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_ionic_intr_pending>
 )
 set_tests_properties(ionic-intr-pending-unit PROPERTIES TIMEOUT 30)
 
@@ -561,7 +561,7 @@ set_tests_properties(ionic-intr-pending-unit PROPERTIES TIMEOUT 30)
 # raises the event immediately, rather than waiting for a CQE that never comes.
 add_test(
     NAME ionic-cq-arm-unit
-    COMMAND $<TARGET_FILE:test_ionic_cq_arm>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_ionic_cq_arm>
 )
 set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
 
@@ -569,7 +569,7 @@ set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
 # fixed-size payload are zeroed rather than carrying stack contents.
 add_test(
     NAME tcp-mesh-topology-unit
-    COMMAND $<TARGET_FILE:test_tcp_mesh_topology>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_tcp_mesh_topology>
 )
 set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
@@ -578,7 +578,7 @@ set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRU
 # below the registered region.
 add_test(
     NAME tcp-mr-bounds-unit
-    COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_tcp_mr_bounds>
 )
 set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
@@ -586,7 +586,7 @@ set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 # next allocation rather than handing back a handle one past the end.
 add_test(
     NAME rdma-res-tbl-unit
-    COMMAND $<TARGET_FILE:test_rdma_res_tbl>
+    COMMAND ${ERNIC_TEST_LAUNCHER} $<TARGET_FILE:test_rdma_res_tbl>
 )
 set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
@@ -594,7 +594,8 @@ set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 # Tests that the ionic emulation layer initialises without crashing.
 add_test(
     NAME ionic-server-smoke
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_server_start.sh
+    COMMAND ${ERNIC_TEST_LAUNCHER}
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_server_start.sh
         $<TARGET_FILE:rocm-ernic>
 )
 set_tests_properties(ionic-server-smoke PROPERTIES
@@ -608,7 +609,7 @@ set_tests_properties(ionic-server-smoke PROPERTIES
 # Does not require a VM or RDMA hardware.
 add_test(
     NAME ionic-ci
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_ci.sh
+    COMMAND ${ERNIC_TEST_LAUNCHER} ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_ci.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 set_tests_properties(ionic-ci PROPERTIES
