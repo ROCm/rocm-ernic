@@ -64,18 +64,38 @@ This installs:
    * - Destination
      - Contents
    * - ``/usr/local/bin/``
-     - ``rocm-ernic``, ``ernicctl``
+     - ``rocm-ernic``, ``ernicctl``,
+       ``ernic-exporter``
    * - ``/usr/local/libexec/rocm-ernic/``
      - ``rocm-ernic-launcher``,
        ``rocm-ernic-driver-pack``
-   * - ``/etc/rocm-ernic/``
+   * - ``/usr/local/etc/rocm-ernic/``
      - ``rocm-ernic.env``
    * - ``/usr/local/share/rocm-ernic/``
-     - ``vm-driver-install.sh``, ``patches/``,
-       ``fetch-ionic-sources.sh``, ``setup-ionic-dkms.sh``
-   * - ``/usr/lib/systemd/system/``
+     - ``vm-driver-install.sh.in``, ``patches/``,
+       ``fetch-ionic-sources.sh``, ``setup-ionic-dkms.sh``,
+       ``ionic-kernel-ref``,
+       ``requirements-exporter.txt``,
+       ``grafana/ernic-dashboard.json``
+   * - ``/usr/local/lib/systemd/system/``
      - ``rocm-ernic.service``,
-       ``rocm-ernic-driver-pack.service``
+       ``rocm-ernic-driver-pack.service``,
+       ``ernic-exporter.service``
+
+All destinations are relative to ``CMAKE_INSTALL_PREFIX``,
+shown here for the default ``/usr/local``.
+
+.. note::
+
+   The systemd units and ``ernicctl`` read the environment
+   file from ``/etc/rocm-ernic/rocm-ernic.env``, but the
+   install rule places it under the install prefix. With the
+   default prefix it lands in ``/usr/local/etc/rocm-ernic/``,
+   so copy or symlink it into ``/etc/rocm-ernic/`` before
+   starting the service. Likewise, systemd does not read
+   units from ``/usr/local/lib/systemd/system`` by default;
+   install with ``-DCMAKE_INSTALL_PREFIX=/usr`` or copy the
+   units into ``/etc/systemd/system/``.
 
 After installation, reload systemd and optionally
 enable the service at boot:
