@@ -4,7 +4,7 @@ Performance
 This page describes how rocm-ernic performance is measured and
 what the current numbers mean. The tracked numbers are published
 by CI rather than written here: see :doc:`perf-trends`, which the
-nightly full-tier run regenerates from
+scheduled GitHub-hosted runs regenerate from
 ``docs/perf-history/history.jsonl``. `Reference Measurements`_
 below records one full sweep in prose, because the trend page
 tracks three message sizes and says nothing about the shape of
@@ -29,6 +29,11 @@ The reference environment is the self-hosted CI node,
 **hpe-rack-15.adc.amd.com** (AMD EPYC 7513, 128 threads), with
 the TCP mesh backend: a manager and a worker server instance on
 one host, each attached to a guest VM over localhost loopback.
+
+This is the environment for the `Reference Measurements`_ below
+only. The tracked trend on :doc:`perf-trends` is measured on
+GitHub-hosted runners and will read lower throughout; the two
+are not comparable, and neither is wrong.
 
 ==============================  ==========================================
 Component                       Value
@@ -64,20 +69,30 @@ benchmarks CI runs:
    # Ethernet: iperf3 between the two guests over the TAP bridge
    ansible-playbook playbooks/tcp-performance-tests.yml
 
-``ci/jobs/perf.sh`` wraps the first of these for the nightly
-run and hands the results to ``ci/report/publish-perf.py``,
-which appends one record per run to
-``docs/perf-history/history.jsonl`` and regenerates the charts,
-the trend tables, and the shields.io badges.
+Both plays are driven for the published trend by the scheduled
+run of :file:`.github/workflows/system-tests.yml`, which hands
+the results to ``ci/report/publish-perf.py``. That appends one
+record per run to ``docs/perf-history/history.jsonl`` and
+regenerates the charts, the trend tables, and the shields.io
+badges. ``ci/jobs/perf.sh`` drives the same two plays on the
+self-hosted node, but that lane no longer publishes: it sweeps,
+reports and gates regressions, and its numbers stay in the run's
+artifacts.
 
-A third series comes from the NVMe-oF lane rather than from
-perftest: :file:`.github/workflows/nvmeof-nightly.yml` sweeps
-fio across the same three block sizes against an in-process
-NVMe-oF controller and publishes it as the ``nvmeof`` series.
-It is kept separate because it is measured on a GitHub-hosted
-runner rather than the self-hosted node, so it is comparable
-with itself over time but not with the numbers on this page.
-See the *Performance* section of :doc:`nvmeof`.
+Everything published is therefore measured on a GitHub-hosted
+runner, including the ``nvmeof`` series that
+:file:`.github/workflows/nvmeof-nightly.yml` sweeps with fio
+against an in-process NVMe-oF controller (see the *Performance*
+section of :doc:`nvmeof`). A GitHub runner has noisy neighbours
+and no fixed CPU, so these figures are comparable with each
+other over time but not with a dedicated machine's. That is a
+deliberate trade: one class of machine keeps the trend line
+about the code rather than about which host answered.
+
+Records are tagged with the class they came from, and
+:doc:`perf-trends` charts each class on its own axes, so the
+earlier self-hosted measurements remain readable alongside
+without ever being joined into one line.
 
 Interpreting the Results
 ------------------------

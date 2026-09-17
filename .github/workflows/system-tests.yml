@@ -23,19 +23,34 @@ on:
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
       - '.github/actions/fetch-guest-vm/**'
+  schedule:
+    # 04:23 UTC, after nvmeof-nightly at 03:41 so the two publishing
+    # lanes are not racing each other to rebase onto main.  Off the
+    # hour on purpose -- the top of the hour is when every cron on
+    # GitHub fires at once and queue times spike.
+    - cron: '23 4 * * *'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Record the result in docs/perf-history'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a pull request's run is what you want; superseding a
+  # run on main is not, now that main is what publishes.  A manual
+  # dispatch would otherwise cancel the nightly part-way through its
+  # commit-and-push and leave the shields on the previous run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Container image with QEMU and libvfio-user pre-built
 env:
   TCP_PORT: 5000
-  # The emulated Ethernet segment for the two-server job: one TAP per
+  # The emulated Ethernet segment for the two-VM job: one TAP per
   # instance, both enslaved to one bridge, which is the only way the
   # guests reach each other on ernic_nic_subnet.  These match the
   # ernic_host_setup defaults and are passed to it explicitly so the
@@ -1048,8 +1063,8 @@ jobs:
     # System Tests".  The prefix cannot be suppressed, so name the
     # caller the way the sibling lanes are named and let the inner job
     # carry only the configuration, giving "NVMe-oF Backend System
-    # Tests / Single Server" alongside "TCP Backend System Tests (Two
-    # Servers)".
+    # Tests / Single Server" alongside "TCP Mesh Backend System Tests
+    # (Two VMs)".
     name: NVMe-oF Backend System Tests
     # The lane itself lives in its own reusable workflow because the
     # nightly perf run needs the identical steps; see
@@ -1060,10 +1075,23 @@ jobs:
     with:
       publish: false
 
-  system-test-tcp:
-    name: TCP Backend System Tests (Two Servers)
+  system-test-two-vms:
+    name: TCP Mesh Backend System Tests (Two VMs)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    # This job is the RDMA and TCP/IP perf source for the README
+    # shields, so on a scheduled run it commits the trend history and
+    # dispatches docs-deploy.  Pull request runs neither sweep nor
+    # publish; the write scopes are unused there.
+    permissions:
+      contents: write
+      actions: write
+    env:
+      # Canonical perf CSV directory: ci/report/gen-report.py globs
+      # <results>/perf-csv/*.csv, and the two ansible perf plays write
+      # their bw-*.csv / lat-*.csv straight into it.
+      PERF_RESULTS: /tmp/ernic-ci-results
+      PERF_CSV_DIR: /tmp/ernic-ci-results/perf-csv
     container:
       # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
@@ -2058,6 +2086,157 @@ jobs:
           -e ernic_vm_ssh_base_port=2222 \
           -e ernic_vm_ssh_user="$VM_USER"
 
+    - name: RDMA and TCP/IP performance sweeps (Ansible)
+      # Not on pull requests: the sweep is minutes of perftest and
+      # iperf3 on top of a job that already runs for the best part of
+      # an hour, and a pull request's numbers may never be published
+      # anyway.  Scheduled and dispatched runs sweep.
+      if: github.event_name != 'pull_request'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "=== perf sweeps across the two guests ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        # The same two plays ci/jobs/perf.sh drives on the self-hosted
+        # path -- tcp-performance-tests.yml (iperf3, one sustained rate
+        # under verb "tcp", size "stream") and performance-tests.yml
+        # (perftest, the send/write/read size sweep).  results_dir is
+        # what sends their CSVs to perf-csv/ rather than dirtying
+        # docs/perf-results in the checkout.
+        mkdir -p "$PERF_CSV_DIR"
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+
+        cd ansible
+        # ernic_project_root, explicitly, for the same reason
+        # ci/jobs/perf.sh passes it: the group_vars default is
+        # {{ playbook_dir }}/../.., which resolves against the entry
+        # playbook.  With ci-site.yml that is ansible/, so the default
+        # lands one directory above the checkout and
+        # performance-tests.yml cannot find free-perftest-port.sh or
+        # find-rdma-device.sh.
+        ansible-playbook ci-site.yml --tags perf \
+          -e ernic_project_root="$GITHUB_WORKSPACE" \
+          -e ernic_run_dir=/tmp/ernic-ci \
+          -e ernic_instances=2 \
+          -e ernic_vm_ssh_base_port=2222 \
+          -e ernic_vm_ssh_user="$VM_USER" \
+          -e results_dir="$PERF_CSV_DIR"
+
+        echo "--- CSVs produced ---"
+        ls -l "$PERF_CSV_DIR"
+
+    - name: Upload the perf sweep
+      if: always() && github.event_name != 'pull_request'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: two-vms-perf-csv
+        path: /tmp/ernic-ci-results/perf-csv/
+        if-no-files-found: ignore
+
+    - name: Publish the RDMA and TCP/IP trends and shields
+      # Only a green run on main may move the published history: a
+      # failed job's numbers describe a broken mesh, a pull request's
+      # describe the pull request, and a branch's describe the branch.
+      #
+      # A scheduled run always publishes; a manual one does whatever
+      # the dispatch asked for, so the sweep can be exercised against
+      # main without touching the history.  This mirrors the publish
+      # input on nvmeof-nightly.yml.
+      if: >-
+        success() &&
+        github.ref == 'refs/heads/main' &&
+        github.event_name != 'pull_request' &&
+        (github.event_name != 'workflow_dispatch' || inputs.publish)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+
+        if ! compgen -G "$PERF_CSV_DIR/*.csv" >/dev/null; then
+          echo "::warning::no sweep CSVs in $PERF_CSV_DIR; nothing to publish"
+          exit 0
+        fi
+
+        python3 ci/report/gen-report.py \
+          --results "$PERF_RESULTS" \
+          --out "$PERF_RESULTS/report" \
+          --no-fail
+
+        # gen-report.py records only what it measured; stamp the run
+        # identity on so the history entry can be traced back.
+        python3 - "$PERF_RESULTS/report/summary.json" <<'PY'
+        import json, os, sys
+        p = sys.argv[1]
+        d = json.load(open(p))
+        d.setdefault("meta", {}).update({
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "sha": os.environ["GITHUB_SHA"],
+            "node": "github-hosted",
+        })
+        json.dump(d, open(p, "w"))
+        PY
+
+        # --runner keeps these out of the lab node's series.  A shared
+        # runner has noisy neighbours and no fixed CPU, so appending
+        # them to the self-hosted line would make the trend chart lie.
+        python3 ci/report/publish-perf.py \
+          --summary "$PERF_RESULTS/report/summary.json" \
+          --docs-dir docs \
+          --runner github-hosted
+
+        # Publishing is a nice-to-have: the job has already measured
+        # everything it was asked to, so nothing below may fail it.
+        bail() { echo "::warning::$1; trends not published"; exit 0; }
+
+        # This job runs in a container, so the workspace arrives owned
+        # by a different uid than the one running this step and git
+        # disowns the repository.  actions/checkout's safe.directory
+        # entry goes into a temporary global config that is not in
+        # scope here.
+        git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+        git rev-parse --show-toplevel >/dev/null 2>&1 \
+          || bail "workspace is not a usable git repository"
+
+        # Only trustworthy once the repository check above has passed:
+        # a git that cannot read the repo also reports "changes".
+        if git diff --quiet -- docs/perf-history docs/perf-trends.rst; then
+          echo "no change to publish"
+          exit 0
+        fi
+
+        git config user.name  "rocm-ernic-ci" || bail "could not configure git"
+        git config user.email "rocm-ernic-ci@users.noreply.github.com" || bail "could not configure git"
+        git config commit.gpgSign false || bail "could not configure git"
+        git add docs/perf-history docs/perf-trends.rst || bail "could not stage the trends"
+        # [skip ci] for the same reason the other lanes give: a push
+        # made with this job's own GITHUB_TOKEN never starts another
+        # workflow, so Pages is rebuilt by an explicit dispatch below
+        # rather than by this commit.
+        git commit -m "docs(perf): publish RDMA and TCP trends from run ${GITHUB_RUN_ID}" \
+                   -m "Generated by ci/report/publish-perf.py. [skip ci]" \
+          || bail "could not commit the trends"
+
+        remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+        git fetch --quiet "$remote" main || bail "could not fetch main"
+        if ! git rebase FETCH_HEAD; then
+          git rebase --abort || true
+          bail "could not rebase onto main"
+        fi
+        if git push "$remote" HEAD:main; then
+          echo "published"
+          if gh workflow run docs-deploy.yml --ref main; then
+            echo "docs-deploy dispatched; Pages will rebuild"
+          else
+            echo "::warning::could not dispatch docs-deploy; Pages is stale"
+          fi
+        else
+          echo "::warning::could not push; trends not published"
+        fi
+
     - name: Cleanup
       if: always()
       run: |
@@ -2083,7 +2262,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: tcp-backend-test-logs
+        name: two-vms-test-logs
         path: |
           /tmp/server1.log
           /tmp/server2.log

@@ -290,7 +290,7 @@ their outcome is the run's own status and the job summary.
 
 ## Publishing performance trends
 
-The nightly publishes its medians to the docs site at
+The nightlies publish their medians to the docs site at
 <https://rocm.github.io/rocm-ernic/>, under *Performance
 trends*.
 
@@ -300,19 +300,44 @@ trends*.
 commit is pushed with the job's own `GITHUB_TOKEN`, which
 GitHub's loop-prevention rule exempts from starting other
 workflow runs -- `docs-deploy`'s `push` trigger would not
-fire on it either way, `[skip ci]` or not -- so the report
+fire on it either way, `[skip ci]` or not -- so the publishing
 job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
 needs `actions: write`) right after the push to rebuild Pages.
 
-The same run writes one shields.io [endpoint badge][shields-endpoint]
+### Only GitHub-hosted runs publish
+
+Every published number comes off a GitHub-hosted runner. The
+self-hosted lane still sweeps, reports and gates regressions, but
+its figures stay in the run's artifacts and never reach the docs
+site or the shields.
+
+The reason is comparability. A GitHub runner has noisy neighbours
+and no fixed CPU; `hpe-rack-15` has neither. Interleaving the two
+in one series produces a chart whose every other point is a step
+change in the machine rather than in the code, which is exactly the
+signal the trend exists to show. Publishing from one class of
+machine keeps the line meaningful even though it is the noisier
+class.
+
+`publish-perf.py --runner` records the class on each history entry
+(`github-hosted` or `self-hosted`), and the page charts each class
+on its own axes. Records written before that flag existed carry no
+`runner` key and are read as `self-hosted`, which is where they
+came from. The shields read the `github-hosted` series only: a
+fallback across classes would put a lab-node number behind a label
+the README presents as a GitHub-hosted one.
+
+### The shields
+
+Each publishing run writes one shields.io [endpoint badge][shields-endpoint]
 per transport into `docs/perf-history/`, each falling back to the
-latest prior run that has a value so one bad sweep does not grey a
-badge out:
+latest prior run *of the same runner class* that has a value, so one
+bad sweep does not grey a badge out:
 
 | File | Metric | Written by |
 | --- | --- | --- |
-| `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `self-hosted-ci.yml` |
-| `badge-tcp.json` | `iperf3`, sustained GB/s | `self-hosted-ci.yml` |
+| `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `system-tests.yml` |
+| `badge-tcp.json` | `iperf3`, sustained GB/s | `system-tests.yml` |
 | `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `nvmeof-nightly.yml` |
 
 `docs/conf.py` publishes the whole of `docs/perf-history` (charts,
@@ -320,28 +345,45 @@ history, badges, this file) as `html_static_path`, so once Pages
 rebuilds each badge is reachable at
 `https://rocm.github.io/rocm-ernic/_static/badge-<name>.json`.
 
-README.md links the RDMA and NVMe-oF badges. The TCP badge is not
-linked: no nightly has produced a real number for it, and a "no
-data" badge on the front page reads as a broken project rather than
-a pending measurement -- link it once the first nightly with TCP
-data has published.
-
-The NVMe-oF badge is a deliberate exception to that rule. It ships
-linked with a committed `"no data"` placeholder, because the lane
-that feeds it is new and the shield is part of announcing it. The
-placeholder matters: without a file at that URL shields.io renders
-an *error*, which looks far worse than a grey "no data". Expect the
-first real number after the first green `nvmeof-nightly` run on
-`main`.
+README.md links all three. All three currently ship with a
+committed `"no data"` placeholder: the `github-hosted` series
+starts empty, and the RDMA and TCP numbers that were there before
+came off the lab node, so continuing to show them under these
+labels would be a wrong answer rather than a stale one. The
+placeholder matters -- without a file at that URL shields.io
+renders an *error*, which looks far worse than a grey "no data".
+Expect real numbers after the first green `system-tests` and
+`nvmeof-nightly` runs on `main`, whether scheduled or dispatched
+by hand.
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
-Only a clean full-tier nightly on `main` publishes.
-Pull request runs are excluded by the same condition that
-guards the baseline: with the `pr` input `github.ref` still
-says `main`, so `inputs.pr == ''` is what actually
-distinguishes them. A pull request's numbers describe the
-pull request, not `main`.
+### Publishing on demand
+
+Waiting for 03:41 and 04:23 UTC is optional. Both lanes take a
+`workflow_dispatch` with a `publish` boolean (default true), so a
+manual run against `main` fills the shields immediately:
+
+```bash
+gh workflow run nvmeof-nightly.yml --ref main
+gh workflow run system-tests.yml   --ref main
+```
+
+Pass `-f publish=false` to exercise a lane without touching the
+history -- useful when the sweep itself is what you are testing.
+Dispatching anything other than `--ref main` sweeps but never
+publishes, by the same rule below.
+
+`system-tests.yml` does not cancel in-progress runs on `main`, so
+a dispatch will not kill a nightly part-way through its push; the
+two queue instead. `nvmeof-nightly.yml` already serialised on a
+fixed concurrency group for the same reason.
+
+Only a green run on `main` publishes. Pull request runs never do -- a pull request's numbers describe the pull
+request, not `main` -- and on `system-tests.yml` they do not
+even sweep: the two perf plays are minutes of `perftest` and
+`iperf3` on top of a job that already runs the best part of an
+hour, for numbers that would be discarded.
 
 Charts are inline SVG with no JavaScript and no extra build
 dependency. Each message size gets its own panel and its own
@@ -352,9 +394,15 @@ show. Every chart is also rendered as a table, which is both
 the accessible reading and the relief required for the one
 palette colour that sits below 3:1 on the light surface.
 
-Publishing never fails a run. If `main` moved underneath the
-job and the commit cannot be rebased on, it warns and leaves
-the run's real result alone.
+Publishing never fails a run. Every git step in the publish
+block warns and exits 0 rather than propagating: if `main`
+moved underneath the job, if the push is rejected, or if git
+cannot read the repository at all, the run keeps the result it
+actually earned. That last case is not hypothetical -- these
+lanes run in a container, where the workspace arrives owned by
+another uid and `actions/checkout`'s `safe.directory` entry is
+out of scope, so the publish block marks the workspace safe
+itself before touching git.
 
 ## Running jobs by hand
 
