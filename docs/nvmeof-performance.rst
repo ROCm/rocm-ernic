@@ -207,8 +207,12 @@ registration -- that is, on every command -- so the constant is
 a per-I/O cost as well as a ceiling.
 
 The measurements above predate that change and were taken at
-``queues=4``. They are not affected by it: the MR budget governs
-whether a connect succeeds, not the cost of an I/O once it has.
+``queues=4`` against the old 1024-entry table. They have not been
+rerun. The change does not alter protocol behaviour once a connect
+has succeeded, but it is not free either: ``dp_reg_mr()`` walks the
+whole table on every fast registration, as above, so doubling the
+constant doubles that walk. Treat the figures as a baseline for the
+1024-entry table rather than as current numbers.
 
 Both CI lanes now aim the connect at the controller's ceiling
 rather than letting the initiator choose. ``nvme-rdma`` defaults
