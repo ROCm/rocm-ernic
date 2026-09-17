@@ -3,6 +3,11 @@
  * Minimal definitions for PVRDMA
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_QDEV_CORE_H
 #define QEMU_QDEV_CORE_H
 

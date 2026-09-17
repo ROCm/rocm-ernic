@@ -3,6 +3,11 @@
  * Provides VMState macros (we don't use state serialization)
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_HW_H
 #define QEMU_HW_H
 

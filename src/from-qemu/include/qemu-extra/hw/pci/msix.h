@@ -3,6 +3,11 @@
  * libvfio-user handles MSI-X, so these are mostly no-ops
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_MSIX_H
 #define QEMU_MSIX_H
 

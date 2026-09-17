@@ -6,6 +6,11 @@
  * to link and run in a standalone libvfio-user environment.
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #include <stdint.h>
 #include <inttypes.h>
 #include <stdbool.h>

@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef HW_PCI_PCI_REGS_H
 #define HW_PCI_PCI_REGS_H
 

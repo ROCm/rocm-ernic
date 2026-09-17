@@ -3,6 +3,11 @@
  * PVRDMA can optionally work with VMXNET3 as function 0, but we don't use this
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QEMU_VMXNET3_DEFS_H
 #define QEMU_VMXNET3_DEFS_H
 

@@ -3,6 +3,11 @@
  * We don't use QEMU's Error type in standalone mode
  */
 
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef QAPI_ERROR_H
 #define QAPI_ERROR_H
 
