@@ -101,11 +101,18 @@ runs:
         git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
           || bail "could not clone gh-pages (has it been seeded?)"
 
-        # Seed the working copy from the published history, not from
-        # the placeholder committed to main, or every run would append
-        # to an empty file and the trend would be one point long.
+        # Seed the working copy from the published data, not from the
+        # placeholders committed to main, or every run would append to
+        # an empty history and the trend would be one point long.
+        #
+        # The badges matter just as much: publish-perf.py has paths
+        # that write no badge at all, and the copy-back below is
+        # unconditional, so an unseeded working copy hands main's
+        # "no data" stubs straight over the live shields.  That is how
+        # run 35282938069 greyed out a working NVMe-oF badge.
         mkdir -p docs/perf-history
         cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+        cp "$pages"/perf/badge-*.json  docs/perf-history/ 2>/dev/null || true
 
         python3 ci/report/publish-perf.py \
           --summary "$RESULTS/report/summary.json" \
@@ -152,6 +159,7 @@ runs:
             || bail "could not refresh gh-pages"
           git -C "$pages" reset --hard FETCH_HEAD || bail "could not refresh gh-pages"
           cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+          cp "$pages"/perf/badge-*.json  docs/perf-history/ 2>/dev/null || true
           python3 ci/report/publish-perf.py \
             --summary "$RESULTS/report/summary.json" \
             --docs-dir docs \
