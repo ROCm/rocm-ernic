@@ -41,8 +41,14 @@ Installation
 
    sudo cmake --install build
 
-By default the binary installs to ``/usr/local/bin/rocm-ernic``.
+By default the binary installs to ``/usr/local/bin/rocm-ernic``,
+and that is the only file a default install places.
 Override the destination with ``-DCMAKE_INSTALL_PREFIX=<path>``.
+
+Configure with ``-DERNIC_INSTALL_SERVICE=ON`` to additionally
+install the systemd units, ``ernicctl``, the launcher, the
+Prometheus exporter, and the ionic driver patches;
+:doc:`service` lists the full set of installed files.
 
 Build Options
 -------------
@@ -84,6 +90,15 @@ Build Options
      - ``v7.2.4``
      - Linux kernel tag or SHA the ionic sources are fetched
        from; must be ``v6.18`` or newer
+   * - ``IONIC_KERNEL_REPO``
+     - kernel.org stable
+     - Linux kernel git repository the ionic sources are
+       fetched from
+   * - ``ERNIC_INSTALL_SERVICE``
+     - ``OFF``
+     - Also install the systemd units, ``ernicctl``, the
+       launcher, and the Prometheus exporter
+       (see :doc:`service`)
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix
