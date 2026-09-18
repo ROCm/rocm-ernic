@@ -50,7 +50,6 @@
 #define DEFAULT_BUCKET "ernic"
 #define DEFAULT_ADDR   "192.168.200.1"
 #define DEFAULT_PORT   9000
-#define GID_INDEX      0
 
 static int failures;
 static bool verbose;
@@ -64,6 +63,7 @@ struct client {
     uint8_t *buf;
     size_t buflen;
     union ibv_gid gid;
+    uint8_t gid_index;
     uint16_t lid;
     uint8_t port_num;
 
@@ -110,6 +110,14 @@ static void put_le64(uint8_t *p, uint64_t v)
     for (int i = 0; i < 8; i++) {
         p[i] = (uint8_t)(v >> (8 * i));
     }
+}
+
+/* ::ffff:a.b.c.d, which is the form the target mints its own GID in. */
+static bool gid_is_ipv4(const union ibv_gid *g)
+{
+    static const uint8_t v4[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+
+    return memcmp(g->raw, v4, sizeof(v4)) == 0;
 }
 
 static uint32_t get_le32(const uint8_t *p)
@@ -406,9 +414,27 @@ static bool client_open(struct client *c, const char *want_dev, size_t buflen)
         return false;
     }
     c->lid = pattr.lid;
-    if (ibv_query_gid(c->ctx, c->port_num, GID_INDEX, &c->gid) != 0) {
+    c->gid_index = 0;
+    if (ibv_query_gid(c->ctx, c->port_num, 0, &c->gid) != 0) {
         fprintf(stderr, "ibv_query_gid failed; is the NIC addressed?\n");
         return false;
+    }
+
+    /*
+     * GID 0 is the link-local IPv6 address the driver derives from the MAC,
+     * and the target's GID is IPv4-mapped.  RoCE will not route between the
+     * two families, so an AH pairing them is rejected outright; prefer the
+     * entry covering the NIC's IPv4 address.  Scanned rather than hardcoded
+     * because its index depends on how many addresses the guest has.
+     */
+    for (int i = 0; i < pattr.gid_tbl_len; i++) {
+        union ibv_gid g;
+
+        if (ibv_query_gid(c->ctx, c->port_num, i, &g) == 0 && gid_is_ipv4(&g)) {
+            c->gid = g;
+            c->gid_index = (uint8_t)i;
+            break;
+        }
     }
 
     c->pd = ibv_alloc_pd(c->ctx);
@@ -456,8 +482,8 @@ static bool client_open(struct client *c, const char *want_dev, size_t buflen)
 
     char gidstr[INET6_ADDRSTRLEN] = "?";
     inet_ntop(AF_INET6, c->gid.raw, gidstr, sizeof(gidstr));
-    printf("buffer: %zu bytes, rkey 0x%08x, gid %s, qpn 0x%06x\n\n", buflen,
-           c->mr->rkey, gidstr, c->qp->qp_num);
+    printf("buffer: %zu bytes, rkey 0x%08x, gid[%u] %s, qpn 0x%06x\n\n", buflen,
+           c->mr->rkey, c->gid_index, gidstr, c->qp->qp_num);
     return true;
 }
 
@@ -569,7 +595,7 @@ static bool qp_connect(struct client *c, uint32_t peer_qpn,
         .ah_attr = {.is_global = 1,
                     .port_num = peer_port ? peer_port : c->port_num,
                     .grh = {.dgid = peer_gid,
-                            .sgid_index = GID_INDEX,
+                            .sgid_index = c->gid_index,
                             .hop_limit = 1}},
     };
     if (ibv_modify_qp(c->qp, &rtr,
@@ -630,6 +656,17 @@ static void connect_to_target(struct client *c)
              gidstr, peer_port);
     check("qp-peer", peer_qpn != 0, detail);
     if (peer_qpn == 0) {
+        return;
+    }
+
+    /* Checked here so the mismatch is named rather than surfacing as an
+     * EINVAL from the RTR transition, which says nothing about why. */
+    if (gid_is_ipv4(&peer_gid) != gid_is_ipv4(&c->gid)) {
+        char mine[INET6_ADDRSTRLEN] = "?";
+        inet_ntop(AF_INET6, c->gid.raw, mine, sizeof(mine));
+        snprintf(detail, sizeof(detail), "local %s cannot reach peer %s", mine,
+                 gidstr);
+        check("qp-rts", false, detail);
         return;
     }
 
