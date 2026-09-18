@@ -496,7 +496,6 @@ static int loopback_copy_to_remote_addr(
     uint64_t src_mapped_len = 0;
     uint64_t dst_mapped_len = 0;
     int ret = 0;
-    bool dst_is_mr = false, src_is_mr = false;
 
     /* Map remote address via MR or DMA */
     dst_mapped_len = total_len;
