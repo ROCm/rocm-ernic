@@ -476,9 +476,12 @@ def _table_lines(chart, history):
 
 # README badges: shields.io "endpoint" schema
 # (https://shields.io/badges/endpoint-badge). One JSON file per
-# transport; each is copied to the built docs site's _static/
-# (see docs/conf.py) so a shields.io endpoint badge in
-# README.md can point at them from GitHub Pages.
+# transport. These are written into docs/perf-history/ and pushed
+# to perf/ on gh-pages by .github/actions/publish-perf, which is
+# the URL README.md points at. They do not travel with the Sphinx
+# build: a shield fed from the site would only be as fresh as the
+# last docs deploy, and would read whatever placeholder was
+# committed to main until one ran.
 def _fmt_rate(value, unit):
     # iperf3 across the emulated TAP bridge sustains single-digit
     # MB/s, and a fixed "%.2f GB/s" renders that as "0.00 GB/s" --

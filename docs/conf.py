@@ -55,14 +55,20 @@ html_theme_options = {
     "show_toc_level": 2,
 }
 html_title = f"rocm-ernic {version}"
-# docs/perf-history holds the nightly perf charts and the
-# shields.io endpoint badges (badge-rdma.json, badge-tcp.json,
-# badge-nvmeof.json)
-# that README.md points at. Publishing it as html_static_path
-# copies its contents into the built site's _static/, so once
-# docs-deploy pushes the build to GitHub Pages the badges are
-# reachable at a stable URL. sphinx-build is invoked with -c
-# pointing at a separate configured-conf.py directory (see
-# cmake/ErnicDocumentation.cmake), so this path must be
-# absolute rather than relative to the docs/ source tree.
-html_static_path = ["@CMAKE_SOURCE_DIR@/docs/perf-history"]
+# No user static directory. docs/perf-history used to be published
+# here, on the understanding that it was how README.md's shields
+# reached a stable URL. It was not: the shields point at
+# perf/badge-*.json on gh-pages, written directly by
+# .github/actions/publish-perf, and the _static/ copies were built
+# from whatever was committed to main -- the "no data" placeholders,
+# permanently, with no badge-s3.json at all once the S3 lane was
+# added. Nothing read them.
+#
+# The charts do not need this either: publish-perf.py includes them
+# with `.. raw:: html :file: perf-history/chart-*.html`, resolved
+# against the source tree and inlined into the page.
+#
+# Set explicitly rather than left to Sphinx's ["_static"] default,
+# which would warn on every build about a directory this project
+# does not have.
+html_static_path = []
