@@ -23,6 +23,22 @@ Send bandwidth over time
 
 Median ``bw_peak_GBs`` for ``send`` (higher is better).
 
+Measured on GitHub-hosted runners:
+
+.. raw:: html
+   :file: perf-history/chart-bandwidth-github-hosted.html
+
+Last 3 runs, in GB/s:
+
+======== ===== ====== =====
+Run      4 KiB 64 KiB 1 MiB
+======== ===== ====== =====
+b66fdca9 --    --     --
+7b6fa94a --    --     --
+7c740944 0.91  7.54   16.06
+======== ===== ====== =====
+
+
 Measured on the self-hosted lab node:
 
 .. raw:: html
@@ -42,6 +58,22 @@ Send latency over time
 ----------------------
 
 Median ``lat_typical_us`` for ``send`` (lower is better).
+
+Measured on GitHub-hosted runners:
+
+.. raw:: html
+   :file: perf-history/chart-latency-github-hosted.html
+
+Last 3 runs, in µs:
+
+======== ====== ====== ======
+Run      4 KiB  64 KiB 1 MiB
+======== ====== ====== ======
+b66fdca9 --     --     --
+7b6fa94a --     --     --
+7c740944 377.66 367.26 930.71
+======== ====== ====== ======
+
 
 Measured on the self-hosted lab node:
 
