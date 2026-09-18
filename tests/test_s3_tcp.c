@@ -358,6 +358,20 @@ static bool checksums_ok(const char *name, const uint8_t *f, size_t len)
     return true;
 }
 
+static unsigned count_http_payloads(const struct capture *cap)
+{
+    unsigned n = 0;
+
+    for (unsigned i = 0; i < cap->n; i++) {
+        size_t plen = 0;
+        if (as_tcp(cap->f[i].buf, cap->f[i].len, &plen) == NULL)
+            continue;
+        if (plen >= 8 && memcmp(tcp_payload(cap->f[i].buf), "HTTP/1.1", 8) == 0)
+            n++;
+    }
+    return n;
+}
+
 static void check_all_checksums(const char *name, struct capture *cap)
 {
     for (unsigned i = 0; i < cap->n; i++)
@@ -1309,6 +1323,86 @@ out:
 }
 
 /*
+ * The hole the segment-sized test above cannot reach.  Refusing an
+ * oversized segment leaves the receive buffer exactly as full as it was,
+ * so a later segment that fits the remaining room is still accepted --
+ * and once it lands the buffer holds S3_HTTP_REQUEST_MAX bytes, which the
+ * parser answers with a second 413 of its own.  That one is queued behind
+ * a FIN that has already been decided on, so it is emitted at a sequence
+ * number the FIN consumes.
+ *
+ * Sized deliberately rather than with a round segment: the gap has to be
+ * filled to the byte for the parser to see a full buffer.
+ */
+static void test_oversized_exact_fit(void)
+{
+    const char *name = "oversized-exact-fit";
+    struct fixture fx;
+    uint32_t srv = 0;
+    uint8_t junk[1460];
+    unsigned responses = 0;
+    uint32_t seq = 2;
+
+    memset(junk, 'A', sizeof(junk));
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!handshake(&fx, name, GUEST_PORT, 1, &srv, 10))
+        goto out;
+
+    /* Whole segments until the next one would not fit, then the one that
+     * does not: that is the segment the endpoint answers. */
+    const unsigned whole = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk);
+    const size_t gap = S3_HTTP_REQUEST_MAX - whole * sizeof(junk);
+
+    for (unsigned i = 0; i <= whole; i++) {
+        cap_reset(&fx.cap);
+        size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK,
+                             junk, sizeof(junk));
+        if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20 + i)) {
+            fail(name, "a body segment was not consumed");
+            goto out;
+        }
+        seq += (uint32_t)sizeof(junk);
+        responses += count_http_payloads(&fx.cap);
+    }
+
+    if (responses != 1) {
+        fail(name, "filling the buffer drew %u answers, want 1", responses);
+        goto out;
+    }
+    if (gap == 0) {
+        /* Nothing to fit; the segment size divides the limit exactly. */
+        ok(name);
+        goto out;
+    }
+
+    /* The refusal consumed no buffer, so this still fits -- and brings the
+     * buffer to exactly the parser's limit. */
+    cap_reset(&fx.cap);
+    size_t n =
+        build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK, junk, gap);
+    if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 100)) {
+        fail(name, "the exact-fit segment was not consumed");
+        goto out;
+    }
+    check_all_checksums(name, &fx.cap);
+
+    unsigned extra = count_http_payloads(&fx.cap);
+    if (extra != 0) {
+        fail(name,
+             "a segment that exactly filled the buffer drew %u more "
+             "answers, want 0",
+             extra);
+        goto out;
+    }
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/*
  * A port probe: the peer completes the handshake and closes without ever
  * sending a request, so nothing was ever queued for it.  The ACK of our
  * own FIN then acknowledges a sequence number no send buffer backs.
@@ -1376,6 +1470,7 @@ int main(void)
     test_idle_reap();
     test_oversized_request();
     test_oversized_stream();
+    test_oversized_exact_fit();
     test_probe_close();
 
     if (failures)

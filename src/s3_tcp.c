@@ -502,6 +502,18 @@ static bool conn_service(struct s3_tcp *s, struct s3_conn *c)
 {
     size_t consumed = 0;
 
+    /*
+     * Once a FIN is queued the answer is already decided, and anything this
+     * function appended would be sent past the sequence number the FIN
+     * consumes.  The bytes still have to be drained so a peer that keeps
+     * writing does not refill the buffer and stall, but nothing in them can
+     * be acted on.
+     */
+    if (c->fin_queued) {
+        c->rxlen = 0;
+        return true;
+    }
+
     while (consumed < c->rxlen) {
         struct s3_http_request req;
         ssize_t n =
