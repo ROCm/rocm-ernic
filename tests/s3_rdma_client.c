@@ -112,6 +112,46 @@ static void put_le64(uint8_t *p, uint64_t v)
     }
 }
 
+static uint32_t get_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+/*
+ * Decode the token the target returns in x-amz-rdma-reply, whose value is
+ * "<http code>:" followed by the same 88 hex digits a request token carries.
+ * Only the fields naming the target's queue pair are pulled out; the rest of
+ * it echoes the rkey and address we sent.
+ */
+static bool parse_peer_token(const char *reply, uint32_t *qpn,
+                             union ibv_gid *gid, uint8_t *port)
+{
+    uint8_t bin[TOKEN_BIN_LEN];
+    const char *hex = strchr(reply, ':');
+
+    /* Exactly, not at least: s3_reply_parse_peer() on the other side rejects
+     * any other length, and a client that were laxer would accept replies the
+     * protocol does not define. */
+    if (hex == NULL || strlen(++hex) != TOKEN_HEX_LEN) {
+        return false;
+    }
+    for (int i = 0; i < TOKEN_BIN_LEN; i++) {
+        char pair[3] = {hex[i * 2], hex[i * 2 + 1], '\0'};
+        char *end;
+        unsigned long v = strtoul(pair, &end, 16);
+
+        if (*end != '\0') {
+            return false;
+        }
+        bin[i] = (uint8_t)v;
+    }
+    *qpn = get_le32(&bin[1]);
+    memcpy(gid->raw, &bin[5], sizeof(gid->raw));
+    *port = bin[41];
+    return true;
+}
+
 /*
  * Mint a token over [addr, addr+len) of the registered buffer.  Field order
  * and endianness are the cuObject v1.2.0 layout: transport, qp_num, gid,
@@ -408,7 +448,6 @@ static bool client_open(struct client *c, const char *want_dev, size_t buflen)
                 .max_recv_sge = 1},
         .qp_type = IBV_QPT_RC,
     };
-    /* Cosmetic: the token carries a QPN even where nothing connects it. */
     c->qp = ibv_create_qp(c->pd, &qia);
     if (c->qp == NULL) {
         fprintf(stderr, "ibv_create_qp failed: %s\n", strerror(errno));
@@ -488,6 +527,128 @@ static bool obj_delete(struct client *c, const char *key, struct reply *r)
 
     snprintf(path, sizeof(path), "/%s/%s", c->bucket, key);
     return http_do(c, "DELETE", path, NULL, 0, NULL, 0, r);
+}
+
+/* ── queue pair bring-up ──────────────────────────────────────── */
+
+/*
+ * Drive the local queue pair RESET -> INIT -> RTR -> RTS against the target's,
+ * which is what an S3-over-RDMA client does before it offers a token.  The
+ * attribute sets mirror ep_connect() in rdma_verify.c because that sequence is
+ * already known to work against this device.
+ *
+ * Nothing is ever posted on this QP: in this protocol the target is the
+ * requester and the client is the responder, so the QP has to be reachable
+ * rather than busy.  Doing the transitions anyway is the point -- it is what
+ * puts the guest's ionic_rdma driver through the MODIFY_QP admin commands a
+ * real deployment would issue.
+ */
+static bool qp_connect(struct client *c, uint32_t peer_qpn,
+                       union ibv_gid peer_gid, uint8_t peer_port)
+{
+    struct ibv_qp_attr init = {
+        .qp_state = IBV_QPS_INIT,
+        .pkey_index = 0,
+        .port_num = c->port_num,
+        .qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ,
+    };
+    if (ibv_modify_qp(c->qp, &init,
+                      IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
+                          IBV_QP_ACCESS_FLAGS) != 0) {
+        fprintf(stderr, "modify to INIT failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    struct ibv_qp_attr rtr = {
+        .qp_state = IBV_QPS_RTR,
+        .path_mtu = IBV_MTU_1024,
+        .dest_qp_num = peer_qpn,
+        .rq_psn = 0,
+        .max_dest_rd_atomic = 1,
+        .min_rnr_timer = 12,
+        .ah_attr = {.is_global = 1,
+                    .port_num = peer_port ? peer_port : c->port_num,
+                    .grh = {.dgid = peer_gid,
+                            .sgid_index = GID_INDEX,
+                            .hop_limit = 1}},
+    };
+    if (ibv_modify_qp(c->qp, &rtr,
+                      IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                          IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                          IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) !=
+        0) {
+        fprintf(stderr, "modify to RTR failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    struct ibv_qp_attr rts = {
+        .qp_state = IBV_QPS_RTS,
+        .timeout = 14,
+        .retry_cnt = 7,
+        .rnr_retry = 7,
+        .sq_psn = 0,
+        .max_rd_atomic = 1,
+    };
+    if (ibv_modify_qp(c->qp, &rts,
+                      IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
+                          IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
+                          IBV_QP_MAX_QP_RD_ATOMIC) != 0) {
+        fprintf(stderr, "modify to RTS failed: %s\n", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+/*
+ * The target publishes its queue pair only in the token it sends back, so the
+ * client has to ask something before it can connect.  A token GET of a key
+ * that does not exist is the cheapest question: the target answers 404 having
+ * moved no bytes and touched no object, but still fills in x-amz-rdma-reply
+ * with its own QPN and GID.
+ */
+static void connect_to_target(struct client *c)
+{
+    union ibv_gid peer_gid;
+    struct reply r;
+    char gidstr[INET6_ADDRSTRLEN] = "?";
+    char detail[160];
+    uint32_t peer_qpn = 0;
+    uint8_t peer_port = 0;
+
+    if (!obj_get(c, "connect.probe", 0, 0, NULL, &r)) {
+        check("qp-peer", false, "no response");
+        return;
+    }
+    if (!parse_peer_token(r.rdma_reply, &peer_qpn, &peer_gid, &peer_port)) {
+        snprintf(detail, sizeof(detail), "status %d, reply \"%.60s\"", r.status,
+                 r.rdma_reply);
+        check("qp-peer", false, detail);
+        return;
+    }
+    inet_ntop(AF_INET6, peer_gid.raw, gidstr, sizeof(gidstr));
+    snprintf(detail, sizeof(detail), "qpn 0x%06x, gid %s, port %u", peer_qpn,
+             gidstr, peer_port);
+    check("qp-peer", peer_qpn != 0, detail);
+    if (peer_qpn == 0) {
+        return;
+    }
+
+    if (!qp_connect(c, peer_qpn, peer_gid, peer_port)) {
+        check("qp-rts", false, "see stderr for the failing transition");
+        return;
+    }
+
+    /* Queried rather than assumed: ibv_modify_qp returning 0 says the command
+     * was accepted, not that the device left the QP where it was asked to. */
+    struct ibv_qp_attr got;
+    struct ibv_qp_init_attr got_init;
+    if (ibv_query_qp(c->qp, &got, IBV_QP_STATE, &got_init) != 0) {
+        check("qp-rts", false, "ibv_query_qp failed");
+        return;
+    }
+    snprintf(detail, sizeof(detail), "local qpn 0x%06x in state %d",
+             c->qp->qp_num, got.qp_state);
+    check("qp-rts", got.qp_state == IBV_QPS_RTS, detail);
 }
 
 static void fill_pattern(uint8_t *p, size_t len, uint32_t seed)
@@ -913,6 +1074,11 @@ int main(int argc, char **argv)
         client_close(&c);
         return 1;
     }
+
+    /* Before the functional checks, and before the sweep too: the QP the
+     * tokens name is the one brought up here, so every later request carries a
+     * connected QPN rather than one sitting in RESET. */
+    connect_to_target(&c);
 
     if (do_func) {
         test_round_trip(&c, 4096);
