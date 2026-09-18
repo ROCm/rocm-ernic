@@ -268,9 +268,47 @@ jobs:
           path: /var/tmp/ernic-ci-work/log/
           if-no-files-found: warn
 
+  # Same shared VM work directory again, so this queues behind
+  # vm-nvmeof rather than racing it.
+  vm-s3:
+    name: 1-VM S3-over-RDMA functional
+    needs: [preflight, vm-nvmeof]
+    if: >-
+      needs.preflight.outputs.tier != 'build'
+    runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
+    timeout-minutes: 60
+    env:
+      CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
+      # As with nvmeof: the instance is the object store, so one
+      # guest is the whole fabric and the lane is cheap.
+      ERNIC_INSTANCES: '1'
+      ERNIC_BACKEND: 's3:size=256M,bucket=ernic,ip=192.168.200.1,port=9000'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Bring up VM
+        run: bash ci/jobs/vm-up.sh
+
+      - name: S3-over-RDMA functional tests
+        run: bash ci/jobs/vm-s3.sh
+
+      - name: Tear down VM
+        if: always()
+        run: bash ci/jobs/vm-down.sh
+
+      - name: Upload VM logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vm-s3-logs
+          path: /var/tmp/ernic-ci-work/log/
+          if-no-files-found: warn
+
   perf:
     name: Performance sweeps
-    needs: [preflight, vm-nvmeof]
+    needs: [preflight, vm-s3]
     if: >-
       needs.preflight.outputs.tier == 'full'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
@@ -328,7 +366,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    needs: [preflight, build, loopback, vm-functional, vm-nvmeof, perf]
+    needs: [preflight, build, loopback, vm-functional, vm-nvmeof, vm-s3, perf]
     # Report on whatever actually ran, including when an
     # upstream tier was skipped or failed.  Still refuses
     # fork pull requests.
@@ -405,6 +443,7 @@ jobs:
                    "${{ needs.build.result }}" \
                    "${{ needs.loopback.result }}" \
                    "${{ needs.vm-nvmeof.result }}" \
+                   "${{ needs.vm-s3.result }}" \
                    "${{ needs.vm-functional.result }}" \
                    "${{ needs.perf.result }}"; do
             case "${r}" in
@@ -444,6 +483,7 @@ jobs:
             echo "| Build + ctest | ${{ needs.build.result }} |"
             echo "| Loopback | ${{ needs.loopback.result }} |"
             echo "| NVMe-oF (1 VM) | ${{ needs.vm-nvmeof.result }} |"
+            echo "| S3 over RDMA (1 VM) | ${{ needs.vm-s3.result }} |"
             echo "| 2-VM RDMA functional | ${{ needs.vm-functional.result }} |"
             echo "| Performance sweeps | ${{ needs.perf.result }} |"
             echo

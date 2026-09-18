@@ -42,6 +42,7 @@
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "nvmeof_target.h"
+#include "s3_target.h"
 
 static const char *get_backend_type_base(const char *backend_str);
 
@@ -383,6 +384,26 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         }
     }
 
+    if (!strcmp(get_backend_type_base(dev->backend_type_str), "s3")) {
+        struct s3_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        s3_target_cfg_defaults(&cfg);
+        if (!s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                 sizeof(err)) ||
+            !ionic_datapath_attach_s3(dev->ionic_dp, &cfg, err, sizeof(err))) {
+            fprintf(stderr, "s3 backend: %s\n", err);
+            ionic_datapath_destroy(dev->ionic_dp);
+            ionic_rdma_devcmd_destroy(dev->ionic_rdma);
+            ionic_eth_emu_destroy(dev->ionic_emu);
+            dev->ionic_dp = NULL;
+            dev->ionic_emu = NULL;
+            dev->ionic_rdma = NULL;
+            return -1;
+        }
+    }
+
     /* Wire the datapath into the eth emulator's BAR2 handler */
     ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
 
@@ -569,7 +590,7 @@ static void usage(const char *progname)
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
     fprintf(stderr, "  -b, --backend TYPE   RDMA backend: "
-                    "none|loopback|verbs|tcp|nvmeof\n");
+                    "none|loopback|verbs|tcp|nvmeof|s3\n");
     fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -L, --log-level LEVEL Log verbosity: "
                     "none|error|warn|info|debug\n");
@@ -693,6 +714,29 @@ static void usage(const char *progname)
                     "1 GiB, 4 KiB blocks\n");
     fprintf(stderr, "                      nvmeof:file=/tmp/ns0.img,size=1G - "
                     "File-backed namespace\n");
+    fprintf(stderr, "  s3: in-process S3-over-RDMA object store the guest "
+                    "reaches over HTTP\n");
+    fprintf(stderr, "                    Options (comma-separated):\n");
+    fprintf(stderr, "                      bucket=NAME  - Bucket name "
+                    "(default: ernic)\n");
+    fprintf(stderr, "                      size=BYTES   - Store capacity, "
+                    "K/M/G suffixes (default: 256M)\n");
+    fprintf(stderr, "                      objects=NUM  - Maximum live keys "
+                    "(default: 256)\n");
+    fprintf(stderr, "                      ip=ADDR      - Endpoint address the "
+                    "guest talks to\n");
+    fprintf(stderr, "                                     (default: "
+                    "192.168.200.1)\n");
+    fprintf(
+        stderr,
+        "                      port=NUM     - HTTP port (default: 9000)\n");
+    fprintf(stderr, "                      maxpart=BYTES - Largest single RDMA "
+                    "transfer (default: 256M)\n");
+    fprintf(stderr, "                    Examples:\n");
+    fprintf(stderr, "                      s3                              - "
+                    "256 MiB store at 192.168.200.1:9000\n");
+    fprintf(stderr, "                      s3:bucket=bench,size=2G         - "
+                    "Larger store named 'bench'\n");
 }
 
 /**
@@ -716,6 +760,9 @@ static const char *get_backend_type_base(const char *backend_str)
     }
     if (!strncmp(backend_str, "nvmeof", 6)) {
         return "nvmeof";
+    }
+    if (!strncmp(backend_str, "s3", 2)) {
+        return "s3";
     }
     return "none";
 }
@@ -893,6 +940,21 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
             fprintf(stderr, "Error: nvmeof backend: %s\n", err);
             fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
                             "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
+            return -1;
+        }
+    }
+
+    if (!strcmp(backend_type, "s3")) {
+        struct s3_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        s3_target_cfg_defaults(&cfg);
+        if (!s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                 sizeof(err))) {
+            fprintf(stderr, "Error: s3 backend: %s\n", err);
+            fprintf(stderr, "  Use: --backend s3[:bucket=NAME][,size=256M]"
+                            "[,objects=256][,ip=ADDR][,port=9000]\n");
             return -1;
         }
     }

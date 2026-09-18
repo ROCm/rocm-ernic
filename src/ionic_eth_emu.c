@@ -305,6 +305,9 @@ struct ionic_eth_emu {
 
     /* Host network backend, or NULL when Tx is a sink. */
     struct ionic_eth_net *net;
+    /* In-process endpoint offered every Tx frame before the backend. */
+    ionic_eth_tx_filter_fn tx_filter;
+    void *tx_filter_ctx;
     /* Staging buffer for one frame in either direction. */
     uint8_t frame[IONIC_ETH_NET_MTU_MAX];
 
@@ -466,6 +469,13 @@ void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
                                      struct ionic_datapath *dp)
 {
     emu->dp = dp;
+}
+
+void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_tx_filter_fn fn, void *ctx)
+{
+    emu->tx_filter = fn;
+    emu->tx_filter_ctx = ctx;
 }
 
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
@@ -1462,9 +1472,10 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     return off;
 }
 
-/* Drain the Tx ring.  Frames go to the host network backend when one is
- * attached; otherwise Tx is a sink, which is still necessary -- without a
- * completion the netdev watchdog fires every five seconds and resets the
+/* Drain the Tx ring.  A registered filter sees each frame first and may
+ * claim it; what it leaves goes to the host network backend when one is
+ * attached.  With neither, Tx is a sink, which is still necessary -- without
+ * a completion the netdev watchdog fires every five seconds and resets the
  * queues. */
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index)
@@ -1480,10 +1491,15 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
     q->prod = prod;
 
     for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
-        if (emu->net) {
+        if (emu->net || emu->tx_filter) {
             size_t len = eth_tx_gather(emu, q, q->head);
             if (len) {
-                ionic_eth_net_send(emu->net, emu->frame, len);
+                bool taken = emu->tx_filter != NULL &&
+                             emu->tx_filter(emu->tx_filter_ctx, emu->frame,
+                                            len);
+                if (!taken && emu->net) {
+                    ionic_eth_net_send(emu->net, emu->frame, len);
+                }
                 pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
             }
         }

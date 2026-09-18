@@ -22,6 +22,7 @@ on:
       - 'ci/lib/common.sh'        # carries a third copy of the guest tag
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
+      - '.github/workflows/s3-lane.yml'       # the s3 job's body
       - '.github/actions/fetch-guest-vm/**'
   schedule:
     # 04:23 UTC.  Off the hour on purpose -- the top of the hour is
@@ -1088,6 +1089,32 @@ jobs:
       # The same rule the two-VM lane publishes under, so the three
       # badges are fed on identical terms: never from a pull request,
       # and a manual run does whatever the dispatch asked for.
+      publish: >-
+        ${{ github.event_name != 'pull_request' &&
+            (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+
+  system-test-s3:
+    # As with the NVMe-oF lane, GitHub prefixes the caller's name onto
+    # the called workflow's job name, so this one says S3 and the inner
+    # job carries only the configuration: "S3 Backend System Tests /
+    # Single Server".
+    name: S3 Backend System Tests
+    # The lane body lives in its own reusable workflow; see
+    # .github/workflows/s3-lane.yml.
+    #
+    # Write lives on the calling job, not in the reusable workflow, so
+    # a pull request run cannot inherit it.
+    permissions:
+      contents: write
+      # Dispatching docs-deploy after the publish commit: a push made
+      # with this job's own GITHUB_TOKEN is exempt from triggering
+      # other workflows, so Pages would otherwise never rebuild.
+      actions: write
+    uses: ./.github/workflows/s3-lane.yml
+    with:
+      # The same rule the other publishing lanes use, so every badge is
+      # fed on identical terms: never from a pull request, and a manual
+      # run does whatever the dispatch asked for.
       publish: >-
         ${{ github.event_name != 'pull_request' &&
             (github.event_name != 'workflow_dispatch' || inputs.publish) }}

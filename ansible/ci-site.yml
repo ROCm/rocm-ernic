@@ -21,6 +21,8 @@
 #
 # Tags:
 #   functional -- guest setup + sanity tests
+#   nvmeof     -- single-VM NVMe-oF against the in-process controller
+#   s3         -- single-VM S3 over RDMA against the in-process store
 #   perf       -- iperf3 + RDMA perftest sweeps
 
 ---
@@ -44,6 +46,13 @@
 - name: "CI: NVMe-oF tests (in-process controller)"
   ansible.builtin.import_playbook: playbooks/nvmeof-tests.yml
   tags: [nvmeof]
+
+# Single-VM lane, for the same reason as nvmeof above: the
+# instance runs the object store itself, so this is NOT part
+# of the `functional` tag.  Ask for it by name with --tags s3.
+- name: "CI: S3-over-RDMA tests (in-process object store)"
+  ansible.builtin.import_playbook: playbooks/s3-tests.yml
+  tags: [s3]
 
 - name: "CI: TCP/IP performance (iperf3)"
   ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml

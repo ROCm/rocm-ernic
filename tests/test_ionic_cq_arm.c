@@ -143,6 +143,81 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
     return false;
 }
 
+struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
+                                   size_t errlen)
+{
+    (void)cfg;
+    (void)err;
+    (void)errlen;
+    return NULL;
+}
+void s3_target_destroy(struct s3_target *t)
+{
+    (void)t;
+}
+void s3_tcp_cfg_from_target(struct s3_tcp_cfg *cfg,
+                            const struct s3_target *target)
+{
+    (void)cfg;
+    (void)target;
+}
+struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
+                             struct s3_target *target,
+                             const struct s3_dma_ops *dma, void *dma_ctx,
+                             s3_tcp_tx_fn tx, void *tx_ctx, char *err,
+                             size_t errlen)
+{
+    (void)cfg;
+    (void)target;
+    (void)dma;
+    (void)dma_ctx;
+    (void)tx;
+    (void)tx_ctx;
+    (void)err;
+    (void)errlen;
+    return NULL;
+}
+void s3_tcp_destroy(struct s3_tcp *s)
+{
+    (void)s;
+}
+bool s3_tcp_rx_frame(struct s3_tcp *s, const void *frame, size_t len,
+                     uint64_t now_ms)
+{
+    (void)s;
+    (void)frame;
+    (void)len;
+    (void)now_ms;
+    return false;
+}
+bool s3_tcp_poll(struct s3_tcp *s, uint64_t now_ms)
+{
+    (void)s;
+    (void)now_ms;
+    return false;
+}
+bool s3_tcp_has_work(const struct s3_tcp *s)
+{
+    (void)s;
+    return false;
+}
+
+void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_tx_filter_fn fn, void *ctx)
+{
+    (void)emu;
+    (void)fn;
+    (void)ctx;
+}
+int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
+                                 size_t len)
+{
+    (void)emu;
+    (void)frame;
+    (void)len;
+    return -1;
+}
+
 void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
 {
     (void)handle;

@@ -269,6 +269,63 @@ target_compile_definitions(test_nvmeof_cm PRIVATE _GNU_SOURCE)
 target_compile_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# S3-over-RDMA token codec test. The encoding is a wire contract shared
+# with hipObject, so this links nothing but the codec itself.
+add_executable(test_s3_token
+    test_s3_token.c
+    ${CMAKE_SOURCE_DIR}/src/s3_token.c
+)
+target_include_directories(test_s3_token PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(test_s3_token PRIVATE _GNU_SOURCE)
+target_compile_options(test_s3_token PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_s3_token PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# S3 control-plane HTTP subset test: buffers in, buffers out, no socket.
+add_executable(test_s3_http
+    test_s3_http.c
+    ${CMAKE_SOURCE_DIR}/src/s3_http.c
+)
+target_include_directories(test_s3_http PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(test_s3_http PRIVATE _GNU_SOURCE)
+target_compile_options(test_s3_http PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_s3_http PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# S3 object store test. Like the NVMe-oF one, the target takes its DMA
+# through a callback pair, so a byte array stands in for guest memory and
+# no VM, RDMA device or server process is involved.
+add_executable(test_s3_target
+    test_s3_target.c
+    ${CMAKE_SOURCE_DIR}/src/s3_target.c
+    ${CMAKE_SOURCE_DIR}/src/s3_http.c
+    ${CMAKE_SOURCE_DIR}/src/s3_token.c
+)
+target_include_directories(test_s3_target PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(test_s3_target PRIVATE _GNU_SOURCE)
+target_compile_options(test_s3_target PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_s3_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# In-band TCP endpoint test. It drives the endpoint with hand-built
+# Ethernet frames and dissects what comes back, so the ARP exchange, the
+# handshake, segment reassembly and the checksums are all checked against
+# an independent implementation in the test.
+add_executable(test_s3_tcp
+    test_s3_tcp.c
+    ${CMAKE_SOURCE_DIR}/src/s3_tcp.c
+    ${CMAKE_SOURCE_DIR}/src/s3_target.c
+    ${CMAKE_SOURCE_DIR}/src/s3_http.c
+    ${CMAKE_SOURCE_DIR}/src/s3_token.c
+)
+target_include_directories(test_s3_tcp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+# s3_tcp.c takes its Ethernet/IP/TCP structs from the ported net_headers.h,
+# which is not warning-clean under this project's flags; the test declares
+# its own copies, so only the source under test needs the SYSTEM path.
+target_include_directories(test_s3_tcp SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+)
+target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
+target_compile_options(test_s3_tcp PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_s3_tcp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # Loopback SGE-copy test. It #includes the loopback translation unit to
 # reach its static helpers and stubs the DMA layer with an identity
 # mapping, so no RDMA subsystem link is needed.
@@ -542,6 +599,38 @@ add_test(
 )
 set_tests_properties(nvmeof-cm-unit PROPERTIES TIMEOUT 30)
 
+# S3-over-RDMA token codec unit test: the x-amz-rdma-token and
+# x-amz-rdma-reply wire formats, pinned against a hand-assembled image.
+add_test(
+    NAME s3-token-unit
+    COMMAND $<TARGET_FILE:test_s3_token>
+)
+set_tests_properties(s3-token-unit PROPERTIES TIMEOUT 30)
+
+# S3 control-plane HTTP unit test: request parsing including incremental
+# arrival, query handling, and the response builder.
+add_test(
+    NAME s3-http-unit
+    COMMAND $<TARGET_FILE:test_s3_http>
+)
+set_tests_properties(s3-http-unit PROPERTIES TIMEOUT 30)
+
+# S3 object store unit test: PUT, GET, ranged GET, HEAD, DELETE,
+# ListObjectsV2 and the multipart upload sequence, over a fake DMA.
+add_test(
+    NAME s3-target-unit
+    COMMAND $<TARGET_FILE:test_s3_target>
+)
+set_tests_properties(s3-target-unit PROPERTIES TIMEOUT 60)
+
+# In-band TCP endpoint unit test: ARP, the handshake, split segments,
+# keep-alive and teardown, driven with raw Ethernet frames.
+add_test(
+    NAME s3-tcp-unit
+    COMMAND $<TARGET_FILE:test_s3_tcp>
+)
+set_tests_properties(s3-tcp-unit PROPERTIES TIMEOUT 60)
+
 # Loopback SGE-copy boundary-walking unit test
 add_test(
     NAME loopback-sge-copy-unit
@@ -613,6 +702,22 @@ add_test(
 )
 set_tests_properties(ionic-ci PROPERTIES
     TIMEOUT 60
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
+
+# S3 backend CI suite: every documented option spelling starts a server with
+# the store it asked for, the in-band endpoint announces the address and MAC
+# the guest will ARP for, and bad options are refused before startup.
+# Does not require a VM or RDMA hardware.
+add_test(
+    NAME s3-ci
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_s3_ci.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_tests_properties(s3-ci PROPERTIES
+    TIMEOUT 120
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"

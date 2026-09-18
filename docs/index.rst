@@ -23,6 +23,9 @@ Key Features
 - Multiple RDMA backends (loopback, TCP/IP, native verbs)
 - An in-process NVMe-oF target, so one VM and one server
   are a complete fabric (see :doc:`nvmeof`)
+- An in-process S3-over-RDMA object store, with its own
+  in-band HTTP endpoint on the emulated wire, so the same
+  single VM is a complete object fabric (see :doc:`s3`)
 - Working Ethernet and TCP/IP to the host via a TAP
   interface
 - Comprehensive statistics collection
@@ -60,6 +63,7 @@ a host TAP:
    usage
    ionic
    nvmeof
+   s3
    service
    monitoring
    testing

@@ -1,0 +1,281 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# S3-over-RDMA tests against the in-process object store
+# in the rocm-ernic server.
+#
+# Like the NVMe-oF play and unlike the sanity and
+# performance ones this needs only ONE guest: the server
+# instance it is attached to terminates the HTTP control
+# plane on the emulated NIC and serves object bytes straight
+# out of the guest's own registered memory, so a single VM
+# and a single server are a complete object fabric.  It
+# therefore runs per host in ernic_vms rather than pairing
+# VM1 with VM2.
+#
+# It requires the instance to have been started on the s3
+# backend:
+#
+#   rocm-ernic --backend s3:size=256M ...
+#
+# The guest side is tests/s3_rdma_client.c, compiled in the
+# guest: it mints an x-amz-rdma-token over a registered
+# buffer, PUTs and GETs through it, and compares the bytes
+# that actually landed.  ci/jobs/vm-s3.sh checks the same
+# things and is what the self-hosted lane runs; keep the two
+# in step.
+
+---
+- name: S3-over-RDMA tests against the in-process object store
+  hosts: ernic_vms
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    # udev/99-rocm-ernic.rules renames the emulated interface
+    # to rocm-ernic%n by device ID, so the name is fixed for
+    # any guest ernic_guest_setup has provisioned.
+    # ernic_nic_name is a role default and a role default is
+    # scoped to its role, so the default() below is the normal
+    # path; the variable exists so -e can still override it.
+    ernic_s3_nic_name: "{{ ernic_nic_name | default('rocm-ernic0') }}"
+    ernic_s3_dir: /tmp/s3-rdma
+    ernic_s3_url: "http://{{ ernic_s3_addr }}:{{ ernic_s3_port }}"
+
+  tasks:
+
+    # curl for the control-plane checks and a compiler plus
+    # the verbs headers for the client.  Installed here, not
+    # left to the image: a guest missing any of them would
+    # skip silently, which reads as a pass.
+    - name: Install the client build and probe tools
+      ansible.builtin.apt:
+        name:
+          - build-essential
+          - curl
+          - libibverbs-dev
+          - pkg-config
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      register: ernic_s3_tools
+      retries: 3
+      delay: 10
+      until: ernic_s3_tools is succeeded
+
+    - name: Check the emulated NIC carries an IPv4 address
+      ansible.builtin.command:
+        cmd: "ip -4 -br addr show {{ ernic_s3_nic_name }}"
+      register: ernic_s3_nic
+      changed_when: false
+      failed_when: false
+
+    # Without an IPv4 address on the NIC there is no route to
+    # the endpoint and the driver populates no RoCEv2 GID, so
+    # the client has nothing to mint into its token either.
+    # Guest setup must have run with ernic_configure_nic
+    # enabled.
+    - name: Fail when the NIC has no address
+      ansible.builtin.assert:
+        that:
+          - ernic_s3_nic.rc == 0
+          - ernic_s3_nic.stdout is search('[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        fail_msg: >-
+          {{ ernic_s3_nic_name }} has no IPv4 address, so there is no
+          route to {{ ernic_s3_addr }} and no RoCEv2 GID to mint a
+          token from.  Re-run guest setup with
+          ernic_configure_nic=true.
+
+    # The endpoint is a userspace TCP/IP stack inside the
+    # emulator, reached over the emulated NIC rather than over
+    # any host route.  ICMP echo is the cheapest proof that
+    # the ARP exchange and the IPv4 layer under the object
+    # protocol both work, and it fails far more legibly than a
+    # socket timeout three tasks later would.
+    - name: Ping the object endpoint
+      ansible.builtin.command:
+        argv:
+          - ping
+          - -c
+          - "3"
+          - -W
+          - "2"
+          - -I
+          - "{{ ernic_s3_nic_name }}"
+          - "{{ ernic_s3_addr }}"
+      register: ernic_s3_ping
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when the endpoint does not answer
+      ansible.builtin.assert:
+        that:
+          - ernic_s3_ping.rc == 0
+        fail_msg: >-
+          {{ ernic_s3_addr }} did not answer ICMP echo from
+          {{ ernic_s3_nic_name }}.  The instance is either not on the
+          s3 backend or its in-band endpoint is not running.
+          stdout={{ ernic_s3_ping.stdout }}
+
+    # The bucket listing over plain HTTP, no RDMA involved:
+    # the control plane on its own.  An ordinary S3 client
+    # that has never heard of a token sees exactly this.
+    - name: List the bucket over the control plane
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sS
+          - --max-time
+          - "20"
+          - "{{ ernic_s3_url }}/{{ ernic_s3_bucket }}/"
+      register: ernic_s3_list
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when the bucket listing did not come back
+      ansible.builtin.assert:
+        that:
+          - ernic_s3_list.rc == 0
+          - ernic_s3_list.stdout is search('ListBucketResult')
+        fail_msg: >-
+          GET {{ ernic_s3_url }}/{{ ernic_s3_bucket }}/ did not return a
+          bucket listing.  rc={{ ernic_s3_list.rc }}
+          stderr={{ ernic_s3_list.stderr | default('') }}
+
+    - name: Create the client directory
+      ansible.builtin.file:
+        path: "{{ ernic_s3_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the client source into the guest
+      ansible.builtin.copy:
+        src: ../../tests/s3_rdma_client.c
+        dest: "{{ ernic_s3_dir }}/s3_rdma_client.c"
+        mode: "0644"
+
+    # Compiled in the guest rather than shipped as a binary:
+    # the guest kernel and rdma-core are the ones the image
+    # pins, and a controller-built binary would link against
+    # whatever the controller happens to have.
+    - name: Build the client
+      ansible.builtin.shell:
+        executable: /bin/bash
+        chdir: "{{ ernic_s3_dir }}"
+        cmd: >-
+          cc -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c
+          $(pkg-config --libs libibverbs)
+      register: ernic_s3_build
+      changed_when: true
+
+    # PUT, GET, ranged GET, short-buffer GET, body GET, list,
+    # delete and the error cases -- and, in every transfer
+    # case, a byte-for-byte comparison.  A store that answers
+    # 200 without moving bytes fails here and nowhere else.
+    - name: Run the functional checks
+      ansible.builtin.command:
+        argv:
+          - "{{ ernic_s3_dir }}/s3_rdma_client"
+          - -a
+          - "{{ ernic_s3_addr }}"
+          - -p
+          - "{{ ernic_s3_port | string }}"
+          - -b
+          - "{{ ernic_s3_bucket }}"
+          - -s
+          - "{{ ernic_s3_buffer | string }}"
+          - -F
+      register: ernic_s3_functional
+      changed_when: true
+      failed_when: false
+
+    - name: Show the functional results
+      ansible.builtin.debug:
+        var: ernic_s3_functional.stdout_lines
+
+    - name: Fail when any functional check did not pass
+      ansible.builtin.assert:
+        that:
+          - ernic_s3_functional.rc == 0
+          - ernic_s3_functional.stdout is search('all checks passed')
+        fail_msg: >-
+          The S3-over-RDMA client reported failures.
+          rc={{ ernic_s3_functional.rc }}
+
+    # The functional run deletes everything it created, so a
+    # non-empty listing means a DELETE reported success
+    # without doing anything.
+    - name: List the bucket again
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sS
+          - --max-time
+          - "20"
+          - "{{ ernic_s3_url }}/{{ ernic_s3_bucket }}/"
+      register: ernic_s3_list_after
+      changed_when: false
+
+    - name: Fail when the store was not left empty
+      ansible.builtin.assert:
+        that:
+          - ernic_s3_list_after.stdout is search('<KeyCount>0</KeyCount>')
+        fail_msg: >-
+          The bucket is not empty after the functional run, so at
+          least one DELETE reported success without removing the
+          object.
+
+    # ── Size sweep for the trend chart ───────────────
+    # GETs, not PUTs: a GET has the store RDMA-WRITE into
+    # guest memory, which is the direction the README shield
+    # speaks for, and mixing the two would make both numbers
+    # mean half of something.  The write direction is already
+    # proven by the round trips above.
+    - name: Sweep the client across the tracked sizes
+      ansible.builtin.command:
+        argv:
+          - "{{ ernic_s3_dir }}/s3_rdma_client"
+          - -a
+          - "{{ ernic_s3_addr }}"
+          - -p
+          - "{{ ernic_s3_port | string }}"
+          - -b
+          - "{{ ernic_s3_bucket }}"
+          - -s
+          - "{{ ernic_s3_buffer | string }}"
+          - -i
+          - "{{ ernic_s3_perf_iters | string }}"
+          - -P
+          - -c
+          - "{{ ernic_s3_dir }}/s3-bw.csv"
+      register: ernic_s3_sweep
+      changed_when: true
+      when: ernic_s3_perf_csv | length > 0
+
+    - name: Show the sweep
+      ansible.builtin.debug:
+        var: ernic_s3_sweep.stdout_lines
+      when: ernic_s3_sweep is not skipped
+
+    # Fetched rather than rewritten: the client already emits
+    # the exact schema ci/report/gen-report.py dispatches on,
+    # and re-deriving it here would give the numbers two
+    # definitions.
+    - name: Fetch the sweep CSV onto the controller
+      ansible.builtin.fetch:
+        src: "{{ ernic_s3_dir }}/s3-bw.csv"
+        dest: "{{ ernic_s3_perf_csv }}"
+        flat: true
+      when: ernic_s3_sweep is not skipped
+
+    - name: Report the result
+      ansible.builtin.debug:
+        msg: >-
+          S3 over RDMA against the in-process store passed on
+          {{ inventory_hostname }}: {{ ernic_s3_addr }} answered,
+          objects were PUT and GET through an x-amz-rdma-token
+          over a {{ ernic_s3_buffer }} byte registered buffer, every
+          payload compared equal, and the bucket was left empty.
