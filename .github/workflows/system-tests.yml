@@ -79,8 +79,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
-      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
-      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
       options: --device /dev/kvm
@@ -1147,8 +1146,7 @@ jobs:
       PERF_RESULTS: /tmp/ernic-ci-results
       PERF_CSV_DIR: /tmp/ernic-ci-results/perf-csv
     container:
-      # TODO: move to ghcr.io/rocm/... once the image is published under the ROCm org
-      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
       #
