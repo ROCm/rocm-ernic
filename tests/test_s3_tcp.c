@@ -32,6 +32,7 @@
 #include "s3_http.h"
 #include "s3_target.h"
 #include "s3_tcp.h"
+#include "s3_token.h"
 
 #define TARGET_IP   0xc0a8c801u /* 192.168.200.1 */
 #define TARGET_PORT 9000
@@ -360,7 +361,84 @@ struct fixture {
     uint8_t frame[2048];
 };
 
-static bool fixture_up(struct fixture *fx, const char *name, unsigned max_conns)
+/*
+ * Fake guest memory, so the RDMA data plane can be exercised through the
+ * TCP endpoint rather than stubbed out.  The real one resolves an rkey
+ * in the emulator's MR table and DMAs against the guest; here a single
+ * flat window stands in for the client's registered buffer.
+ */
+#define FAKE_RKEY 0x00000101u
+#define FAKE_BASE 0x70000000ull
+#define FAKE_SIZE (256u * 1024u)
+
+struct fake_mem {
+    uint8_t buf[FAKE_SIZE];
+};
+
+static bool fake_range_ok(uint32_t key, uint64_t addr, uint32_t len,
+                          uint64_t *off)
+{
+    if (key != FAKE_RKEY)
+        return false;
+    if (addr < FAKE_BASE || addr - FAKE_BASE + len > FAKE_SIZE)
+        return false;
+    *off = addr - FAKE_BASE;
+    return true;
+}
+
+static uint32_t fake_from_host(void *ctx, uint32_t key, uint64_t addr,
+                               void *dst, uint32_t len)
+{
+    struct fake_mem *m = ctx;
+    uint64_t off;
+
+    if (!fake_range_ok(key, addr, len, &off))
+        return 0;
+    memcpy(dst, m->buf + off, len);
+    return len;
+}
+
+static uint32_t fake_to_host(void *ctx, uint32_t key, uint64_t addr,
+                             const void *src, uint32_t len)
+{
+    struct fake_mem *m = ctx;
+    uint64_t off;
+
+    if (!fake_range_ok(key, addr, len, &off))
+        return 0;
+    memcpy(m->buf + off, src, len);
+    return len;
+}
+
+static const struct s3_dma_ops fake_dma = {
+    .from_host = fake_from_host,
+    .to_host = fake_to_host,
+};
+
+/* Mint the token the guest client would over a window of that buffer. */
+static void mint(char *out, uint64_t off, uint64_t len)
+{
+    struct s3_token t;
+
+    memset(&t, 0, sizeof(t));
+    t.transport = S3_TRANSPORT_RC;
+    t.qp_num = 2;
+    t.gid[10] = 0xff;
+    t.gid[11] = 0xff;
+    t.gid[12] = 192;
+    t.gid[13] = 168;
+    t.gid[14] = 200;
+    t.gid[15] = 9;
+    t.rkey = FAKE_RKEY;
+    t.remote_addr = FAKE_BASE + off;
+    t.length = len;
+    t.port_num = 1;
+    s3_token_encode(&t, out);
+}
+
+static bool fixture_up_dma(struct fixture *fx, const char *name,
+                           unsigned max_conns, const struct s3_dma_ops *dma,
+                           void *dma_ctx)
 {
     struct s3_target_cfg tcfg;
     struct s3_tcp_cfg ncfg;
@@ -379,7 +457,7 @@ static bool fixture_up(struct fixture *fx, const char *name, unsigned max_conns)
         ncfg.max_conns = max_conns;
     memcpy(fx->mac, ncfg.mac, 6);
 
-    fx->tcp = s3_tcp_create(&ncfg, fx->target, NULL, NULL, cap_tx, &fx->cap,
+    fx->tcp = s3_tcp_create(&ncfg, fx->target, dma, dma_ctx, cap_tx, &fx->cap,
                             err, sizeof(err));
     if (fx->tcp == NULL) {
         fail(name, "tcp create: %s", err);
@@ -387,6 +465,11 @@ static bool fixture_up(struct fixture *fx, const char *name, unsigned max_conns)
         return false;
     }
     return true;
+}
+
+static bool fixture_up(struct fixture *fx, const char *name, unsigned max_conns)
+{
+    return fixture_up_dma(fx, name, max_conns, NULL, NULL);
 }
 
 static void fixture_down(struct fixture *fx)
@@ -672,6 +755,187 @@ out:
     fixture_down(&fx);
 }
 
+/*
+ * One whole transaction the way the guest client does it: a fresh
+ * connection, one request carrying Connection: close, read the answer,
+ * then acknowledge the data and the FIN and close.  Returns the number
+ * of response bytes collected.
+ */
+static size_t transact(struct fixture *fx, const char *name, uint16_t sport,
+                       const char *req, char *out, size_t outlen, uint64_t now)
+{
+    const uint32_t iss = 1000;
+    uint32_t srv = 0;
+
+    out[0] = '\0';
+    if (!handshake(fx, name, sport, iss, &srv, now))
+        return 0;
+
+    cap_reset(&fx->cap);
+    size_t n = build_tcp(fx->frame, fx->mac, sport, iss + 1, srv,
+                         FLAG_ACK | FLAG_PSH, req, strlen(req));
+    if (!s3_tcp_rx_frame(fx->tcp, fx->frame, n, now + 1)) {
+        fail(name, "the request segment was not consumed");
+        return 0;
+    }
+    check_all_checksums(name, &fx->cap);
+
+    size_t got = collect(&fx->cap, out, outlen);
+    if (got == 0)
+        return 0;
+
+    /*
+     * Acknowledge the response.  The FIN a Connection: close request is
+     * owed deliberately waits for this, so that it never overtakes data
+     * that may still need retransmitting.
+     */
+    const uint32_t cseq = iss + 1 + (uint32_t)strlen(req);
+    cap_reset(&fx->cap);
+    n = build_tcp(fx->frame, fx->mac, sport, cseq, srv + (uint32_t)got,
+                  FLAG_ACK, NULL, 0);
+    s3_tcp_rx_frame(fx->tcp, fx->frame, n, now + 2);
+
+    bool fin = false;
+    for (unsigned i = 0; i < fx->cap.n; i++) {
+        const struct t_tcp *tcp =
+            as_tcp(fx->cap.f[i].buf, fx->cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp->flags & FLAG_FIN))
+            fin = true;
+    }
+    if (!fin) {
+        fail(name, "no FIN after the closing response was acknowledged");
+        return got;
+    }
+
+    /* Ack the FIN and send our own: this is what retires the connection,
+     * and a slot that does not come back is a slot leaked. */
+    cap_reset(&fx->cap);
+    n = build_tcp(fx->frame, fx->mac, sport, cseq, srv + (uint32_t)got + 1,
+                  FLAG_ACK | FLAG_FIN, NULL, 0);
+    s3_tcp_rx_frame(fx->tcp, fx->frame, n, now + 3);
+    return got;
+}
+
+/*
+ * The whole point of the backend, driven the way the guest client drives
+ * it: a PUT whose bytes come out of the client's registered buffer over
+ * the data plane, then a GET of the same object into a different window
+ * of that buffer.  Nothing below the HTTP layer is stubbed -- this is the
+ * real TCP endpoint, the real parser and the real store.
+ */
+static void test_rdma_round_trip(void)
+{
+    const char *name = "rdma-round-trip";
+    struct fixture fx;
+    struct fake_mem *mem = calloc(1, sizeof(*mem));
+    char hex[S3_TOKEN_HEX_LEN + 1];
+    char req[1024];
+    char body[8192];
+    const size_t len = 4096;
+    const uint64_t dst = FAKE_SIZE / 2;
+
+    if (mem == NULL) {
+        fail(name, "out of memory");
+        return;
+    }
+    if (!fixture_up_dma(&fx, name, 0, &fake_dma, mem)) {
+        free(mem);
+        return;
+    }
+
+    for (size_t i = 0; i < len; i++)
+        mem->buf[i] = (uint8_t)(i * 7 + 1);
+
+    /*
+     * Byte for byte what tests/s3_rdma_client.c puts on the wire: the
+     * token, and a Content-Length naming the object with no body behind
+     * it.  The object is smaller than S3_HTTP_REQUEST_MAX here only so
+     * the frame fits; the size rule itself is pinned in the HTTP tests.
+     */
+    mint(hex, 0, len);
+    snprintf(req, sizeof(req),
+             "PUT /ernic/roundtrip.bin HTTP/1.1\r\n"
+             "Host: 192.168.200.1:9000\r\n"
+             "Connection: close\r\n"
+             "x-amz-rdma-token: %s\r\n"
+             "Content-Length: %zu\r\n\r\n",
+             hex, len);
+
+    if (transact(&fx, name, GUEST_PORT, req, body, sizeof(body), 10) == 0) {
+        fail(name, "the RDMA PUT went unanswered");
+        goto out;
+    }
+    if (strncmp(body, "HTTP/1.1 200 OK\r\n", 17) != 0) {
+        fail(name, "RDMA PUT answered %.32s", body);
+        goto out;
+    }
+    if (strstr(body, "x-amz-rdma-reply") == NULL)
+        fail(name, "no x-amz-rdma-reply on the PUT response");
+
+    mint(hex, dst, len);
+    snprintf(req, sizeof(req),
+             "GET /ernic/roundtrip.bin HTTP/1.1\r\n"
+             "Host: 192.168.200.1:9000\r\n"
+             "Connection: close\r\n"
+             "x-amz-rdma-token: %s\r\n"
+             "Content-Length: 0\r\n\r\n",
+             hex);
+
+    if (transact(&fx, name, GUEST_PORT + 1, req, body, sizeof(body), 20) == 0) {
+        fail(name, "the RDMA GET went unanswered");
+        goto out;
+    }
+    if (strncmp(body, "HTTP/1.1 200 OK\r\n", 17) != 0)
+        fail(name, "RDMA GET answered %.32s", body);
+    else if (memcmp(mem->buf, mem->buf + dst, len) != 0)
+        fail(name, "the object did not come back byte for byte");
+    else
+        ok(name);
+
+out:
+    fixture_down(&fx);
+    free(mem);
+}
+
+/*
+ * A slot has to come back when the connection that held it closes.  The
+ * guest client opens one connection per request, so a slot leaked on any
+ * path silently black-holes every request after the eighth -- which is
+ * how one stalled transfer turned into a cascade of unanswered requests.
+ */
+static void test_conn_recycle(void)
+{
+    const char *name = "conn-recycle";
+    struct fixture fx;
+    const unsigned slots = 4;
+    char body[8192];
+
+    if (!fixture_up_dma(&fx, name, slots, NULL, NULL))
+        return;
+
+    static const char req[] = "GET / HTTP/1.1\r\n"
+                              "Host: 192.168.200.1:9000\r\n"
+                              "Connection: close\r\n\r\n";
+
+    for (unsigned i = 0; i < slots * 3; i++) {
+        size_t got = transact(&fx, name, (uint16_t)(GUEST_PORT + i), req, body,
+                              sizeof(body), 100 + i * 10);
+        if (got == 0) {
+            fail(name, "connection %u of %u went unanswered: a slot leaked",
+                 i + 1, slots * 3);
+            goto out;
+        }
+        if (strncmp(body, "HTTP/1.1 200 OK\r\n", 17) != 0) {
+            fail(name, "connection %u answered %.32s", i + 1, body);
+            goto out;
+        }
+    }
+    ok(name);
+
+out:
+    fixture_down(&fx);
+}
+
 /* The guest's stack decides where the segment boundaries fall, and it
  * will happily split a request line in half. */
 static void test_split_request(void)
@@ -925,6 +1189,8 @@ int main(void)
     test_arp();
     test_ping();
     test_request_response();
+    test_rdma_round_trip();
+    test_conn_recycle();
     test_split_request();
     test_stray_segment();
     test_conn_limit();

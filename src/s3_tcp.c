@@ -80,6 +80,7 @@ struct s3_conn {
 
     bool fin_queued; /* send FIN once txbuf has drained */
     bool fin_sent;
+    bool fin_acked; /* the peer acknowledged our FIN's sequence number */
     bool peer_fin;
 
     uint64_t rto_at;
@@ -699,6 +700,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
         if (c->fin_sent && seq_lt(c->snd_una, ack)) {
             /* The FIN's own sequence number was acknowledged. */
             c->snd_una = ack;
+            c->fin_acked = true;
             if (c->state == S3_CONN_LAST_ACK) {
                 conn_free(c);
                 return true;
@@ -750,6 +752,20 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
     if (need_ack && !pumped && c->state != S3_CONN_FREE) {
         send_tcp(s, c, c->snd_una + (uint32_t)c->txout, TCP_FLAG_ACK, NULL, 0,
                  false);
+    }
+
+    /*
+     * Both directions are closed: we sent the FIN first because the
+     * request asked for Connection: close, it has been acknowledged, and
+     * the peer has now sent its own.  Nothing further can arrive, so the
+     * slot goes back now.  Leaving it to the idle reaper would hold it
+     * for a minute, and a client that opens one connection per request
+     * -- which is what Connection: close means -- exhausts every slot
+     * long before then and is refused with an RST it cannot explain.
+     */
+    if (c->state == S3_CONN_FIN_WAIT && c->peer_fin && c->fin_acked &&
+        c->txlen == 0) {
+        conn_free(c);
     }
     return true;
 }

@@ -599,6 +599,50 @@ out:
     s3_target_destroy(t);
 }
 
+/*
+ * A suffix range names the last N bytes, and an empty object has no
+ * last byte: the answer is 416, not a 206 of nothing.  The clamp to the
+ * object size takes the count to zero, which is what has to be caught.
+ */
+static void test_range_on_empty_object(void)
+{
+    const char *name = "range-on-empty-object";
+    struct s3_target *t = make_target(NULL);
+    struct host_mem *h = calloc(1, sizeof(*h));
+    struct reply r;
+
+    if (t == NULL || h == NULL) {
+        fail(name, "setup failed");
+        goto out;
+    }
+
+    if (!exec_req(t, &r, &host_ops, h, "PUT", "/ernic/empty", NULL, NULL, NULL,
+                  0)) {
+        fail(name, "PUT could not be built");
+        goto out;
+    }
+    if (r.resp.status != 200) {
+        fail(name, "PUT status %d, want 200", r.resp.status);
+        reply_free(&r);
+        goto out;
+    }
+    reply_free(&r);
+
+    if (!exec_req(t, &r, &host_ops, h, "GET", "/ernic/empty", NULL,
+                  "Range: bytes=-64", NULL, 0)) {
+        fail(name, "GET could not be built");
+        goto out;
+    }
+    if (r.resp.status != 416)
+        fail(name, "status %d, want 416", r.resp.status);
+    else
+        ok(name);
+    reply_free(&r);
+out:
+    free(h);
+    s3_target_destroy(t);
+}
+
 /* A DMA that moves fewer bytes than asked is a failed transfer, and the
  * client only learns that from the reply header. */
 static void test_rdma_short_transfer(void)
@@ -1160,6 +1204,7 @@ int main(void)
     test_rdma_put_get();
     test_rdma_put_with_content_length();
     test_rdma_ranged_get();
+    test_range_on_empty_object();
     test_rdma_short_transfer();
     test_rdma_errors();
     test_routing();

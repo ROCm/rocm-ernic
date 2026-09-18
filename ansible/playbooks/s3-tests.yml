@@ -196,6 +196,14 @@
       ansible.builtin.debug:
         var: ernic_s3_functional.stdout_lines
 
+    # A failed check prints only "no response" on stdout; which kind of
+    # no response it was -- a refused connect, a short write, an
+    # unparsable reply -- is on stderr, and without it the lane says
+    # nothing about why.
+    - name: Show the functional diagnostics
+      ansible.builtin.debug:
+        var: ernic_s3_functional.stderr_lines
+
     - name: Fail when any functional check did not pass
       ansible.builtin.assert:
         that:
@@ -204,6 +212,7 @@
         fail_msg: >-
           The S3-over-RDMA client reported failures.
           rc={{ ernic_s3_functional.rc }}
+          stderr={{ ernic_s3_functional.stderr | default('') }}
 
     # The functional run deletes everything it created, so a
     # non-empty listing means a DELETE reported success

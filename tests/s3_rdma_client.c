@@ -248,8 +248,14 @@ static bool http_do(struct client *c, const char *method, const char *path,
     if (verbose) {
         printf("--> %s %s\n", method, path);
     }
+    /*
+     * body_len is the declared Content-Length, not necessarily bytes on
+     * the socket: an RDMA PUT names the object's size and then sends
+     * nothing, because the payload rides the fabric.  Only a real body
+     * gets written.
+     */
     if (!write_all(fd, req, (size_t)n) ||
-        (body_len > 0 && !write_all(fd, body, body_len))) {
+        (body != NULL && body_len > 0 && !write_all(fd, body, body_len))) {
         fprintf(stderr, "short write to %s:%u\n", c->host, c->port);
         close(fd);
         return false;

@@ -817,6 +817,9 @@ static bool parse_range(const char *v, size_t size, size_t *off, size_t *len)
         if (last > size) {
             last = size;
         }
+        if (last == 0) { /* empty object: nothing can satisfy a suffix */
+            return false;
+        }
         *off = size - (size_t)last;
         *len = (size_t)last;
         return true;
