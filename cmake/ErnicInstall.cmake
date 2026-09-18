@@ -1,6 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MIT
 
 # Install targets for rocm-ernic.
 

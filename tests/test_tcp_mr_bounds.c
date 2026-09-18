@@ -1,4 +1,4 @@
-/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+/*
  *
  * Unit tests for the memory-region bounds checks in rdma_backend_tcp.c.
  *
@@ -41,7 +41,11 @@
  * paths under test need only the MR lookup, so the rest of the backend's
  * externals are stubbed out.
  *
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <inttypes.h>

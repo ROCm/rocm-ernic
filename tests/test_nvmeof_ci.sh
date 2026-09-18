@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 # NVMe-oF backend testing for CI.
 #
 # The controller only becomes reachable once a guest runs `nvme connect`
