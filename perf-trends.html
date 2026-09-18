@@ -376,6 +376,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-bandwidth-over-time">Send bandwidth over time</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-latency-over-time">Send latency over time</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-read-bandwidth-over-time">NVMe-oF read bandwidth over time</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-get-bandwidth-over-time">S3-over-RDMA GET bandwidth over time</a></li>
 </ul>
             </nav>
         </div>
@@ -389,8 +390,8 @@
                   
   <section id="performance-trends">
 <h1>Performance trends<a class="headerlink" href="#performance-trends" title="Link to this heading">#</a></h1>
-<p>Medians from the nightly runs, oldest at the left. Latest: <code class="docutils literal notranslate"><span class="pre">2ca92d62</span></code>
-on GitHub-hosted runners at 2026-09-18 04:39:52 UTC.</p>
+<p>Medians from the nightly runs, oldest at the left. Latest: <code class="docutils literal notranslate"><span class="pre">e715df52</span></code>
+on GitHub-hosted runners at 2026-09-18 14:49:10 UTC.</p>
 <p>Each runner class is charted on its own axes and never joined into one
 line. A GitHub-hosted runner has noisy neighbours and no fixed CPU, so
 its figures are comparable with each other over time but not with the
@@ -478,7 +479,7 @@ never combined: they share no scale.</p>
 <text class="axis" x="54" y="254">GB/s, oldest run left to newest right</text>
 </svg>
 </div>
-<p>Last 4 runs, in GB/s:</p>
+<p>Last 5 runs, in GB/s:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Run</p></th>
@@ -507,6 +508,11 @@ never combined: they share no scale.</p>
 <td><p>0.79</p></td>
 <td><p>6.95</p></td>
 <td><p>15.45</p></td>
+</tr>
+<tr class="row-even"><td><p>e715df52</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
 </tr>
 </tbody>
 </table>
@@ -696,7 +702,7 @@ never combined: they share no scale.</p>
 <text class="axis" x="54" y="254">µs, oldest run left to newest right</text>
 </svg>
 </div>
-<p>Last 4 runs, in µs:</p>
+<p>Last 5 runs, in µs:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Run</p></th>
@@ -725,6 +731,11 @@ never combined: they share no scale.</p>
 <td><p>371.55</p></td>
 <td><p>442.82</p></td>
 <td><p>1026.74</p></td>
+</tr>
+<tr class="row-even"><td><p>e715df52</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
 </tr>
 </tbody>
 </table>
@@ -920,7 +931,7 @@ never combined: they share no scale.</p>
 <text class="axis" x="54" y="254">GB/s, oldest run left to newest right</text>
 </svg>
 </div>
-<p>Last 4 runs, in GB/s:</p>
+<p>Last 5 runs, in GB/s:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Run</p></th>
@@ -949,6 +960,125 @@ never combined: they share no scale.</p>
 <td><p>0.086831</p></td>
 <td><p>1.31773</p></td>
 <td><p>1.93243</p></td>
+</tr>
+<tr class="row-even"><td><p>e715df52</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="s3-over-rdma-get-bandwidth-over-time">
+<h2>S3-over-RDMA GET bandwidth over time<a class="headerlink" href="#s3-over-rdma-get-bandwidth-over-time" title="Link to this heading">#</a></h2>
+<p>Median <code class="docutils literal notranslate"><span class="pre">bw_avg_GBs</span></code> for <code class="docutils literal notranslate"><span class="pre">s3</span></code> (higher is better).</p>
+<p>Measured on GitHub-hosted runners:</p>
+<style>
+.vizwrap{--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;
+ --muted:#898781;--rule:#c3c2b7;
+ --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+ background:var(--surface);padding:8px 4px;border-radius:6px;margin:6px 0 2px}
+.vizwrap .ln{fill:none;stroke-width:2;stroke-linejoin:round;
+ stroke-linecap:round}
+.vizwrap .pt{stroke:var(--surface);stroke-width:2}
+.vizwrap .grid{stroke:var(--rule);stroke-width:1;opacity:.55}
+.vizwrap .tick{fill:var(--muted);font:11px system-ui,sans-serif}
+.vizwrap .axis{fill:var(--ink2);font:11px system-ui,sans-serif}
+.vizwrap .lbl{fill:var(--ink);font:12px system-ui,sans-serif;font-weight:600}
+.vizwrap .ptitle{fill:var(--ink2);font:12px system-ui,sans-serif}
+@media (prefers-color-scheme:dark){.vizwrap{
+ --surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--rule:#383835;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70}}
+</style>
+<div class="vizwrap">
+<svg class="viz" viewBox="0 0 948 262" width="100%" role="img" aria-labelledby="c3-github-hosted-t" xmlns="http://www.w3.org/2000/svg">
+<title id="c3-github-hosted-t">S3-over-RDMA GET bandwidth over time, one panel per message size</title>
+<text class="ptitle" x="54" y="18">4 KiB</text>
+<line class="grid" x1="54" y1="220.0" x2="290" y2="220.0"/>
+<text class="tick" x="47" y="224.0" text-anchor="end">0</text>
+<line class="grid" x1="54" y1="172.5" x2="290" y2="172.5"/>
+<text class="tick" x="47" y="176.5" text-anchor="end">0.002</text>
+<line class="grid" x1="54" y1="125.0" x2="290" y2="125.0"/>
+<text class="tick" x="47" y="129.0" text-anchor="end">0.004</text>
+<line class="grid" x1="54" y1="77.5" x2="290" y2="77.5"/>
+<text class="tick" x="47" y="81.5" text-anchor="end">0.006</text>
+<line class="grid" x1="54" y1="30.0" x2="290" y2="30.0"/>
+<text class="tick" x="47" y="34.0" text-anchor="end">0.008</text>
+<path class="ln" d="M172.0,76.6" stroke="var(--s1)"/>
+<circle class="pt" cx="172.0" cy="76.6" r="4" fill="var(--s1)"><title>4 KiB — 0.006039 GB/s — e715df52</title></circle>
+<text class="lbl" x="290" y="66.6" text-anchor="end">0.006039</text>
+<text class="tick" x="54" y="238">e715df52</text>
+<text class="tick" x="290" y="238" text-anchor="end">e715df52</text>
+<text class="ptitle" x="376" y="18">64 KiB</text>
+<line class="grid" x1="376" y1="220.0" x2="612" y2="220.0"/>
+<text class="tick" x="369" y="224.0" text-anchor="end">0</text>
+<line class="grid" x1="376" y1="172.5" x2="612" y2="172.5"/>
+<text class="tick" x="369" y="176.5" text-anchor="end">0.038</text>
+<line class="grid" x1="376" y1="125.0" x2="612" y2="125.0"/>
+<text class="tick" x="369" y="129.0" text-anchor="end">0.075</text>
+<line class="grid" x1="376" y1="77.5" x2="612" y2="77.5"/>
+<text class="tick" x="369" y="81.5" text-anchor="end">0.113</text>
+<line class="grid" x1="376" y1="30.0" x2="612" y2="30.0"/>
+<text class="tick" x="369" y="34.0" text-anchor="end">0.15</text>
+<path class="ln" d="M494.0,92.9" stroke="var(--s2)"/>
+<circle class="pt" cx="494.0" cy="92.9" r="4" fill="var(--s2)"><title>64 KiB — 0.100311 GB/s — e715df52</title></circle>
+<text class="lbl" x="612" y="82.9" text-anchor="end">0.100311</text>
+<text class="tick" x="376" y="238">e715df52</text>
+<text class="tick" x="612" y="238" text-anchor="end">e715df52</text>
+<text class="ptitle" x="698" y="18">1 MiB</text>
+<line class="grid" x1="698" y1="220.0" x2="934" y2="220.0"/>
+<text class="tick" x="691" y="224.0" text-anchor="end">0</text>
+<line class="grid" x1="698" y1="172.5" x2="934" y2="172.5"/>
+<text class="tick" x="691" y="176.5" text-anchor="end">0.375</text>
+<line class="grid" x1="698" y1="125.0" x2="934" y2="125.0"/>
+<text class="tick" x="691" y="129.0" text-anchor="end">0.75</text>
+<line class="grid" x1="698" y1="77.5" x2="934" y2="77.5"/>
+<text class="tick" x="691" y="81.5" text-anchor="end">1.1</text>
+<line class="grid" x1="698" y1="30.0" x2="934" y2="30.0"/>
+<text class="tick" x="691" y="34.0" text-anchor="end">1.5</text>
+<path class="ln" d="M816.0,53.3" stroke="var(--s3)"/>
+<circle class="pt" cx="816.0" cy="53.3" r="4" fill="var(--s3)"><title>1 MiB — 1.31572 GB/s — e715df52</title></circle>
+<text class="lbl" x="934" y="43.3" text-anchor="end">1.31572</text>
+<text class="tick" x="698" y="238">e715df52</text>
+<text class="tick" x="934" y="238" text-anchor="end">e715df52</text>
+<text class="axis" x="54" y="254">GB/s, oldest run left to newest right</text>
+</svg>
+</div>
+<p>Last 5 runs, in GB/s:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Run</p></th>
+<th class="head"><p>4 KiB</p></th>
+<th class="head"><p>64 KiB</p></th>
+<th class="head"><p>1 MiB</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>b66fdca9</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>7b6fa94a</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>7c740944</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>2ca92d62</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>e715df52</p></td>
+<td><p>0.006039</p></td>
+<td><p>0.100311</p></td>
+<td><p>1.31572</p></td>
 </tr>
 </tbody>
 </table>
@@ -1006,6 +1136,7 @@ never combined: they share no scale.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-bandwidth-over-time">Send bandwidth over time</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-latency-over-time">Send latency over time</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-read-bandwidth-over-time">NVMe-oF read bandwidth over time</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-get-bandwidth-over-time">S3-over-RDMA GET bandwidth over time</a></li>
 </ul>
   </nav></div>
 
