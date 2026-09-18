@@ -600,6 +600,71 @@ out:
 }
 
 /*
+ * An object written over RDMA and read back in an HTTP body has to be
+ * the same object.  Nothing else crosses the two paths: the body tests
+ * write with a body, the RDMA tests read with a token, and a store that
+ * kept the two in separate places would pass both.
+ */
+static void test_rdma_put_body_get(void)
+{
+    const char *name = "rdma-put-body-get";
+    struct s3_target *t = make_target(NULL);
+    struct host_mem *h = calloc(1, sizeof(*h));
+    char token[S3_TOKEN_HEX_LEN + 1];
+    struct reply r;
+    char put_etag[64] = "";
+    const size_t len = 4096;
+
+    if (t == NULL || h == NULL) {
+        fail(name, "setup failed");
+        goto out;
+    }
+
+    for (size_t i = 0; i < len; i++)
+        h->buf[i] = (uint8_t)(i * 31u + 7u);
+
+    mint(token, 0, len);
+    if (!exec_req(t, &r, &host_ops, h, "PUT", "/ernic/crossed", token, NULL,
+                  NULL, 0)) {
+        fail(name, "PUT could not be built");
+        goto out;
+    }
+    if (r.resp.status != 200) {
+        fail(name, "PUT status %d", r.resp.status);
+        reply_free(&r);
+        goto out;
+    }
+    const char *e = hdr(&r, "ETag");
+    if (e != NULL)
+        snprintf(put_etag, sizeof(put_etag), "%s", e);
+    reply_free(&r);
+
+    /* No token: the object comes back in the body. */
+    if (!exec_req(t, &r, &host_ops, h, "GET", "/ernic/crossed", NULL, NULL,
+                  NULL, 0)) {
+        fail(name, "GET could not be built");
+        goto out;
+    }
+    if (r.resp.status != 200)
+        fail(name, "GET status %d", r.resp.status);
+    else if (r.resp.body_len != len)
+        fail(name, "body %zu bytes, want %zu", r.resp.body_len, len);
+    else if (memcmp(r.resp.body, h->buf, len) != 0)
+        fail(name, "body is not the bytes the RDMA PUT delivered");
+    else if (put_etag[0] == '\0')
+        fail(name, "the RDMA PUT reported no ETag");
+    else if (hdr(&r, "ETag") == NULL || strcmp(hdr(&r, "ETag"), put_etag) != 0)
+        fail(name, "ETag %s on GET, %s on PUT",
+             hdr(&r, "ETag") ? hdr(&r, "ETag") : "(absent)", put_etag);
+    else
+        ok(name);
+    reply_free(&r);
+out:
+    free(h);
+    s3_target_destroy(t);
+}
+
+/*
  * A suffix range names the last N bytes, and an empty object has no
  * last byte: the answer is 416, not a 206 of nothing.  The clamp to the
  * object size takes the count to zero, which is what has to be caught.
@@ -1204,6 +1269,7 @@ int main(void)
     test_rdma_put_get();
     test_rdma_put_with_content_length();
     test_rdma_ranged_get();
+    test_rdma_put_body_get();
     test_range_on_empty_object();
     test_rdma_short_transfer();
     test_rdma_errors();

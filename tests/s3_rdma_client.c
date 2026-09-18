@@ -552,9 +552,20 @@ static void test_round_trip(struct client *c, size_t len)
     check("rdma-payload", at == len, detail);
 }
 
+/*
+ * ranged.bin is written here and read back a second way by
+ * test_body_get, so both need its contents.  They are named rather than
+ * shared through c->buf because test_short_buffer overwrites that half
+ * of the buffer in between.
+ */
+#define RANGED_LEN  4096u
+#define RANGED_SEED 0x1234u
+
+static char ranged_etag[64];
+
 static void test_ranged_get(struct client *c)
 {
-    const size_t len = 4096;
+    const size_t len = RANGED_LEN;
     const size_t off = 1024;
     const size_t span = 512;
     uint8_t *src = c->buf;
@@ -562,13 +573,14 @@ static void test_ranged_get(struct client *c)
     struct reply r;
     char detail[128];
 
-    fill_pattern(src, len, 0x1234u);
+    fill_pattern(src, len, RANGED_SEED);
     memset(dst, 0, len);
 
     if (!obj_put(c, "ranged.bin", 0, len, &r) || r.status != 200) {
         check("ranged-setup", false, "PUT failed");
         return;
     }
+    snprintf(ranged_etag, sizeof(ranged_etag), "%s", r.etag);
 
     char range[64];
     snprintf(range, sizeof(range), "bytes=%zu-%zu", off, off + span - 1);
@@ -629,7 +641,41 @@ static void test_body_get(struct client *c)
     }
     snprintf(detail, sizeof(detail), "status %d, %ld bytes", r.status,
              r.content_length);
-    check("body-get", r.status == 200 && r.content_length == 4096, detail);
+    check("body-get",
+          r.status == 200 && r.content_length == (long)RANGED_LEN &&
+              r.body_len == RANGED_LEN,
+          detail);
+
+    /*
+     * Status and Content-Length only say the server answered; they say
+     * nothing about what it sent.  ranged.bin arrived over RDMA, so
+     * comparing the body against the same pattern proves the two access
+     * paths agree on the object rather than merely on its size.
+     */
+    static uint8_t want[RANGED_LEN];
+    fill_pattern(want, RANGED_LEN, RANGED_SEED);
+    if (r.body_len != RANGED_LEN) {
+        snprintf(detail, sizeof(detail), "%zu bytes of body, want %u",
+                 r.body_len, RANGED_LEN);
+        check("body-payload", false, detail);
+    } else {
+        size_t at = diff_at(want, (const uint8_t *)r.body, RANGED_LEN);
+        if (at == RANGED_LEN) {
+            snprintf(detail, sizeof(detail), "%u bytes identical", RANGED_LEN);
+        } else {
+            snprintf(detail, sizeof(detail), "first difference at byte %zu",
+                     at);
+        }
+        check("body-payload", at == RANGED_LEN, detail);
+    }
+
+    /* The digest the store reported when the object was written over
+     * RDMA has to be the one it reports reading it back over HTTP. */
+    snprintf(detail, sizeof(detail), "PUT %.40s, GET %.40s",
+             ranged_etag[0] ? ranged_etag : "(absent)",
+             r.etag[0] ? r.etag : "(absent)");
+    check("body-etag",
+          ranged_etag[0] != '\0' && strcmp(ranged_etag, r.etag) == 0, detail);
 }
 
 static void test_list_and_delete(struct client *c)
