@@ -655,6 +655,13 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
         return 0;
     }
 
+    if (attr_mask & IBV_QP_RQ_PSN) {
+        qp->rq_psn = rq_psn & 0xffffffu;
+    }
+    if (attr_mask & IBV_QP_SQ_PSN) {
+        qp->sq_psn = sq_psn & 0xffffffu;
+    }
+
     if (attr_mask & IBV_QP_STATE) {
         qp->qp_state = qp_state;
 
@@ -739,8 +746,15 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
 
     /* Query backend using vtable dispatch if available */
     if (qp->backend_qp.backend_ops && qp->backend_qp.backend_ops->query_qp) {
-        return qp->backend_qp.backend_ops->query_qp(&qp->backend_qp, attr,
-                                                    attr_mask, init_attr);
+        int ret = qp->backend_qp.backend_ops->query_qp(&qp->backend_qp, attr,
+                                                       attr_mask, init_attr);
+        if (!ret) {
+            /* The backends clear attr and fill only what they model, so the
+             * PSNs have to be laid back over the top of their answer. */
+            attr->rq_psn = qp->rq_psn;
+            attr->sq_psn = qp->sq_psn;
+        }
+        return ret;
     } else {
         /* No backend - return basic QP attributes */
         rdma_info_report(
@@ -752,6 +766,8 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
         attr->path_mtu = IBV_MTU_1024;
         attr->qp_access_flags =
             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+        attr->rq_psn = qp->rq_psn;
+        attr->sq_psn = qp->sq_psn;
 
         if (init_attr) {
             memset(init_attr, 0, sizeof(*init_attr));

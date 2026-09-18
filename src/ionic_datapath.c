@@ -45,6 +45,8 @@
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
 #include "rocm_ernic_compat.h"
+#include "s3_tcp.h"
+#include "s3_target.h"
 
 /* -------------------------------------------------------------------------
  * ionic_fw.h wire format constants (keep in sync with pinned kernel ref)
@@ -347,6 +349,10 @@ struct ionic_datapath {
     struct nvmeof_cm *nvmeof_cm;
     uint8_t nvmeof_sgid[16]; /* controller GID, learned from the CM REQ */
     uint8_t nvmeof_dgid[16]; /* the guest's own GID                    */
+
+    /* In-process S3 object store, NULL unless --backend s3. */
+    struct s3_target *s3;
+    struct s3_tcp *s3_tcp;
 
     struct ionic_qp_ring *qp; /* indexed by driver qp_id */
     struct ionic_cq_ring *cq; /* indexed by driver cq_id */
@@ -661,6 +667,11 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
 
     nvmeof_cm_destroy(dp->nvmeof_cm);
     nvmeof_target_destroy(dp->nvmeof);
+
+    if (dp->eth_emu && dp->s3_tcp)
+        ionic_eth_emu_register_tx_filter(dp->eth_emu, NULL, NULL);
+    s3_tcp_destroy(dp->s3_tcp);
+    s3_target_destroy(dp->s3);
 
     pthread_mutex_lock(&dp->rx_lock);
     for (struct dp_inmsg *m = dp->rx_head; m;) {
@@ -1791,6 +1802,84 @@ static const struct nvmeof_dma_ops dp_nvmeof_dma_ops = {
     .to_host = dp_nvmeof_to_host,
 };
 
+/*
+ * The S3 target reaches guest memory through the rkey in the client's
+ * x-amz-rdma-token, which resolves in the same MR table as any lkey for the
+ * same reason the NVMe-oF controller's does.
+ */
+static uint32_t dp_s3_from_host(void *ctx, uint32_t key, uint64_t addr,
+                                void *dst, uint32_t len)
+{
+    return dp_sge_to_host(ctx, key, addr, dst, len);
+}
+
+static uint32_t dp_s3_to_host(void *ctx, uint32_t key, uint64_t addr,
+                              const void *src, uint32_t len)
+{
+    return dp_host_to_sge(ctx, key, addr, src, len);
+}
+
+static const struct s3_dma_ops dp_s3_dma_ops = {
+    .from_host = dp_s3_from_host,
+    .to_host = dp_s3_to_host,
+};
+
+/* The control plane's replies go back to the guest as received frames. */
+static void dp_s3_tx_frame(void *ctx, const void *frame, size_t len)
+{
+    struct ionic_datapath *dp = ctx;
+
+    ionic_eth_emu_queue_rx_frame(dp->eth_emu, frame, len);
+}
+
+static bool dp_s3_tx_filter(void *ctx, const void *frame, size_t len)
+{
+    struct ionic_datapath *dp = ctx;
+
+    return s3_tcp_rx_frame(dp->s3_tcp, frame, len, dp_now_ms());
+}
+
+bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
+                              const struct s3_target_cfg *cfg, char *err,
+                              size_t errlen)
+{
+    if (!dp || !cfg)
+        return false;
+
+    if (!dp->eth_emu) {
+        snprintf(err, errlen,
+                 "the s3 backend needs the Ethernet emulator for its "
+                 "control plane");
+        return false;
+    }
+
+    dp->s3 = s3_target_create(cfg, err, errlen);
+    if (!dp->s3)
+        return false;
+
+    struct s3_tcp_cfg ncfg;
+    s3_tcp_cfg_from_target(&ncfg, dp->s3);
+    dp->s3_tcp = s3_tcp_create(&ncfg, dp->s3, &dp_s3_dma_ops, dp,
+                               dp_s3_tx_frame, dp, err, errlen);
+    if (!dp->s3_tcp) {
+        s3_target_destroy(dp->s3);
+        dp->s3 = NULL;
+        return false;
+    }
+
+    ionic_eth_emu_register_tx_filter(dp->eth_emu, dp_s3_tx_filter, dp);
+
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: s3 bucket '%s' %" PRIu64
+            " bytes at http://%u.%u.%u.%u:%u/ mac "
+            "%02x:%02x:%02x:%02x:%02x:%02x",
+            cfg->bucket, cfg->capacity, cfg->traddr >> 24,
+            (cfg->traddr >> 16) & 0xff, (cfg->traddr >> 8) & 0xff,
+            cfg->traddr & 0xff, cfg->trsvcid, ncfg.mac[0], ncfg.mac[1],
+            ncfg.mac[2], ncfg.mac[3], ncfg.mac[4], ncfg.mac[5]);
+    return true;
+}
+
 /* Build the global route header a UD receive is expected to carry. */
 static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
                           uint32_t paylen)
@@ -2440,6 +2529,9 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp)
     pthread_mutex_lock(&dp->rx_lock);
     work = dp->rx_fresh != 0;
     pthread_mutex_unlock(&dp->rx_lock);
+
+    if (!work && dp->s3_tcp)
+        work = s3_tcp_has_work(dp->s3_tcp);
     return work;
 }
 
@@ -2449,6 +2541,9 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
 
     if (!dp)
         return;
+
+    if (dp->s3_tcp)
+        s3_tcp_poll(dp->s3_tcp, dp_now_ms());
 
     pthread_mutex_lock(&dp->rx_lock);
     list = dp->rx_head;

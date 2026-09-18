@@ -179,6 +179,34 @@ ernic_nvmeof_perf_size: "64M"
 ernic_nvmeof_perf_runtime: 10
 ernic_nvmeof_perf_iodepth: 32
 
+# ── S3-over-RDMA test defaults ───────────────────
+# These describe the in-process object store the s3 backend
+# runs, and must match the --backend options the instance was
+# started with.  Unlike the NVMe-oF controller the endpoint is
+# a real IP host on the segment -- the emulator answers ARP and
+# ICMP for it -- so no neighbour entry has to be seeded.
+ernic_s3_addr: "{{ ernic_nic_subnet }}.1"
+ernic_s3_port: 9000
+ernic_s3_bucket: "ernic"
+# The buffer the client registers and mints its token over.
+# Half is the PUT source and half the GET destination, so it
+# has to be at least twice the largest size in the sweep.
+ernic_s3_buffer: 8388608
+
+# The size sweep behind the S3 trend chart and the README
+# bandwidth shield.  Off by default: it costs one more guest
+# run and only the nightly has a use for the numbers.  Set
+# ernic_s3_perf_csv to a path on the controller to turn it on
+# -- the client writes the bandwidth CSV in the guest and the
+# play fetches it, in the schema ci/report/gen-report.py
+# already dispatches on.
+#
+# The client's own sizes are 4K, 64K and 1M, which must stay
+# equal to TRACKED_SIZES in ci/report/publish-perf.py or the
+# chart silently drops a series.
+ernic_s3_perf_csv: ""
+ernic_s3_perf_iters: 20
+
 # ── Performance sweep defaults ───────────────────
 ernic_perf_bw_iters: 1000
 ernic_perf_lat_iters: 50

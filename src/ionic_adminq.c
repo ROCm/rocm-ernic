@@ -1046,7 +1046,93 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         return 0;
     }
 
-    case IONIC_V1_ADMIN_QUERY_QP:
+    case IONIC_V1_ADMIN_QUERY_QP: {
+        /* ionic_admin_query_qp body (34 bytes):
+         *   le64 hdr_dma_addr [0:7]   (AH header template, only when IB_QP_AV)
+         *   le64 sq_dma_addr  [8:15]
+         *   le64 rq_dma_addr  [16:23]
+         *   le32 ah_id        [24:27]
+         *   le32 id_ver       [28:31]  (qpid | ver<<24)
+         *   le16 dbid_flags   [32:33]
+         *
+         * The answer is not the completion: the driver reads it out of the
+         * two buffers it DMA-mapped, and both are zeroed before the command,
+         * so succeeding without writing them reports a QP in RESET.  That is
+         * what ibv_query_qp saw while this was a stub. */
+        if (len < 34 || !ctx->pvrdma_handle) {
+            return 0;
+        }
+
+        uint64_t sq_dma, rq_dma;
+        uint32_t id_ver;
+        memcpy(&sq_dma, body + 8, 8);
+        sq_dma = le64toh(sq_dma);
+        memcpy(&rq_dma, body + 16, 8);
+        rq_dma = le64toh(rq_dma);
+        memcpy(&id_ver, body + 28, 4);
+        id_ver = le32toh(id_ver);
+
+        uint32_t qp_id = id_ver & 0x00ffffffu;
+        uint32_t qpn;
+        if (!adminq_lookup_qp(ctx, qp_id, &qpn)) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq QUERY_QP: unknown qp_id=%u", qp_id);
+            return 1;
+        }
+
+        uint8_t state = 0, path_mtu = 3 /* IBV_MTU_1024 */;
+        uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
+        if (ionic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
+                              &dest_qpn, &access, &rq_psn, &sq_psn) != 0) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP %u: failed",
+                    qp_id);
+            return 1;
+        }
+
+        /* ionic numbers its QP states as IB does, so the state needs no
+         * translation; the MTU does, because the driver subtracts 7 from the
+         * low nibble to recover the ibv_mtu enum. */
+        uint16_t flags = 0;
+        if (access & (1u << 1)) /* IBV_ACCESS_REMOTE_WRITE */
+            flags |= 1u << 0;   /* IONIC_QPF_REMOTE_WRITE */
+        if (access & (1u << 2)) /* IBV_ACCESS_REMOTE_READ */
+            flags |= 1u << 1;   /* IONIC_QPF_REMOTE_READ */
+        if (access & (1u << 3)) /* IBV_ACCESS_REMOTE_ATOMIC */
+            flags |= 1u << 2;   /* IONIC_QPF_REMOTE_ATOMIC */
+
+        /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
+        uint8_t sqbuf[20] = {0};
+        uint16_t flags_be = htobe16(flags);
+        uint32_t dest_be = htobe32(dest_qpn);
+        uint32_t rq_psn_be = htobe32(rq_psn & 0xffffffu);
+        memcpy(sqbuf + 2, &flags_be, 2);
+        memcpy(sqbuf + 8, &dest_be, 4);
+        memcpy(sqbuf + 16, &rq_psn_be, 4);
+
+        /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
+         * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
+         * limits, so 1 is the single outstanding operation ionic_datapath
+         * actually supports. */
+        uint8_t rqbuf[12] = {0};
+        rqbuf[0] = (uint8_t)((state & 0x0fu) << 4 | ((path_mtu + 7) & 0x0fu));
+        rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
+        rqbuf[2] = 1;
+        rqbuf[3] = 1;
+        uint32_t sq_psn_be = htobe32(sq_psn & 0xffffffu);
+        memcpy(rqbuf + 4, &sq_psn_be, 4);
+        memcpy(rqbuf + 8, &flags_be, 2);
+
+        if (sq_dma && dma_write(ctx->vfu_ctx, sq_dma, sqbuf, sizeof(sqbuf)) < 0)
+            return 1;
+        if (rq_dma && dma_write(ctx->vfu_ctx, rq_dma, rqbuf, sizeof(rqbuf)) < 0)
+            return 1;
+
+        vfu_log(ctx->vfu_ctx, LOG_INFO,
+                "ionic_adminq QUERY_QP qp_id=%u qpn=%u state=%u dest_qpn=%u",
+                qp_id, qpn, state, dest_qpn);
+        return 0;
+    }
+
     case IONIC_V1_ADMIN_CREATE_AH:
     case IONIC_V1_ADMIN_QUERY_AH:
     case IONIC_V1_ADMIN_DESTROY_AH:

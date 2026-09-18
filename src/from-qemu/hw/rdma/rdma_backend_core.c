@@ -39,6 +39,8 @@ static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
      * management the loopback backend uses.
      */
     [RDMA_BACKEND_TYPE_NVMEOF] = &rdma_backend_ops_loopback,
+    /* Nor is the S3 object store, for the same reason. */
+    [RDMA_BACKEND_TYPE_S3] = &rdma_backend_ops_loopback,
 };
 
 /**
@@ -91,6 +93,10 @@ RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str)
         return RDMA_BACKEND_TYPE_NVMEOF;
     }
 
+    if (!strncmp(backend_str, "s3:", 3) || !strcmp(backend_str, "s3")) {
+        return RDMA_BACKEND_TYPE_S3;
+    }
+
     rdma_warn_report("Unknown backend '%s', using 'none'", backend_str);
     return RDMA_BACKEND_TYPE_NONE;
 }
@@ -114,6 +120,8 @@ const char *rdma_backend_type_to_string(RdmaBackendType type)
         return "tcp";
     case RDMA_BACKEND_TYPE_NVMEOF:
         return "nvmeof";
+    case RDMA_BACKEND_TYPE_S3:
+        return "s3";
     default:
         return "unknown";
     }

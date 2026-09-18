@@ -1,0 +1,447 @@
+S3 over RDMA Object Store
+=========================
+
+The ``s3`` backend turns a rocm-ernic instance into an S3
+*server* that moves object payloads over RDMA instead of over
+the HTTP body. The object store, the HTTP endpoint and the
+RDMA data mover all live inside the server process, so a
+stock guest can run
+
+.. code-block:: bash
+
+   curl http://192.168.200.1:9000/ernic/
+
+and get a bucket listing back over the emulated NIC, with no
+second virtual machine, no second server instance, and no
+RDMA hardware anywhere in the picture.
+
+It is the NVMe-oF backend's argument applied one layer up.
+Every other RDMA path in this project needs two endpoints to
+prove anything; here one guest and one server are a complete
+object fabric, which makes an object ``PUT`` and ``GET`` a
+day-to-day smoke test of the memory keys and the RDMA
+READ/WRITE engine in a single VM.
+
+The protocol is the one cuObject v1.2.0 introduced and
+`hipObject <https://github.com/ROCm/hipObject>`_ speaks on
+the client side: an ordinary HTTP/1.1 request carrying an
+``x-amz-rdma-token`` header that describes the client's
+registered buffer, and a response whose payload was placed
+into that buffer by RDMA before the headers came back. The
+S3 surface itself -- path addressing, the XML listing
+documents, the error codes, the multipart flow -- follows
+`versitygw <https://github.com/versity/versitygw>`_, which
+is the reference this implementation was read against. No
+part of versitygw is vendored or submoduled: the store here
+is a few hundred lines of in-memory objects, because its job
+is to exercise the data path rather than to be a gateway.
+
+Starting the Server
+-------------------
+
+.. code-block:: bash
+
+   # 256 MiB store in bucket "ernic" on 192.168.200.1:9000
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend s3 --tap ernic0
+
+   # 1 GiB, a different bucket name
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend s3:size=1G,bucket=bench --tap ernic0
+
+   # Somewhere else on the guest's segment
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend s3:ip=10.0.0.5,port=8080 --tap ernic0
+
+The backend string is ``s3`` optionally followed by ``:`` and
+a comma-separated option list:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 20 68
+
+   * - Option
+     - Default
+     - Meaning
+   * - ``bucket=``
+     - ``ernic``
+     - The single bucket the store serves. A DNS label:
+       3..63 characters of lowercase, digits, dot and dash,
+       not starting or ending with dot or dash.
+   * - ``size=``
+     - ``256M``
+     - Total object capacity. Accepts ``K``/``M``/``G``/``T``
+       and the ``KiB``/``MiB`` spellings. Objects are held in
+       anonymous memory, so this is a real allocation ceiling
+       and a ``PUT`` past it gets a 507.
+   * - ``objects=``
+     - ``256``
+     - Object slots, 1..65536. Independent of ``size=``:
+       whichever runs out first stops the next ``PUT``.
+   * - ``ip=``
+     - ``192.168.200.1``
+     - Address the HTTP endpoint answers on. It has to be on
+       the guest's ``rocm-ernic0`` segment.
+   * - ``port=``
+     - ``9000``
+     - TCP port the endpoint listens on.
+   * - ``maxpart=``
+     - ``256M``
+     - Largest single transfer, and so the largest multipart
+       part, accepted in one request.
+
+A malformed option is refused before the device is
+presented, rather than surfacing later as a failed request:
+
+.. code-block:: console
+
+   $ ./build/rocm-ernic --backend s3:size=bogus
+   Error: s3 backend: bad size 'bogus'
+
+A successful start logs the store, its endpoint and the MAC
+the endpoint will answer ARP with, at ``info``:
+
+.. code-block:: console
+
+   ionic_datapath: s3 bucket 'ernic' 268435456 bytes at \
+       http://192.168.200.1:9000/ mac 02:53:c0:a8:c8:01
+
+Reaching It from the Guest
+--------------------------
+
+Nothing has to be configured in the guest. Unlike the
+NVMe-oF controller, this endpoint answers ARP for itself, so
+it is simply a host on the segment:
+
+.. code-block:: bash
+
+   ping -c 3 192.168.200.1
+   curl -s http://192.168.200.1:9000/ernic/
+   curl -s -X PUT --data-binary @file http://192.168.200.1:9000/ernic/obj
+   curl -s http://192.168.200.1:9000/ernic/obj
+
+Those last two are the *body* path: with no
+``x-amz-rdma-token`` header the endpoint behaves like an
+ordinary S3 server and carries the payload in the HTTP body.
+That path exists so that ``curl`` is a usable debugging tool
+and so the control plane can be checked independently of
+RDMA. The RDMA path needs a client that registers a buffer
+and mints a token; :file:`tests/s3_rdma_client.c` is that
+client, and is described under `Testing`_ below.
+
+How It Works
+------------
+
+Like ``nvmeof``, this is not a transport for guest RDMA
+traffic -- it is a *peer* that speaks S3 back at the guest.
+It hooks into :file:`src/ionic_datapath.c`, the data path
+that serves the guest ``ionic_rdma`` driver, rather than into
+the QEMU-derived backend vtable.
+
+The control plane, in band
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+S3 needs TCP, and the guest's TCP goes out of the emulated
+ionic NIC. Rather than open a host socket and ask the guest
+to route out to it -- which would make the backend depend on
+``--tap`` and on the host's network -- :file:`src/s3_tcp.c`
+terminates TCP *on the emulated wire*. Guest TX frames are
+offered to a filter registered with
+:file:`src/ionic_eth_emu.c` before they go anywhere else, and
+replies are injected back into the guest's RX queue.
+
+What is implemented is the smallest TCP a well-behaved local
+peer on a lossless link needs: ARP, ICMP echo, the three-way
+handshake, in-order data with cumulative ACKs, MSS-sized
+segmentation (1460 bytes, honouring a smaller peer MSS down
+to 536), a 64 KiB window, one 200 ms retransmission timer per
+connection, and an orderly FIN. Eight connections at a time.
+There is no congestion control, no SACK, no out-of-order
+reassembly and no fragmentation, because every one of those
+exists to cope with a real network and there is not one
+between these two endpoints.
+
+The endpoint's MAC is derived from its address --
+``02:53:`` followed by the four address bytes, so
+192.168.200.1 is ``02:53:c0:a8:c8:01``. It is locally
+administered and stable across restarts, and because the
+stack answers ARP the guest never needs to be told it.
+
+Frames in, frames out through a callback: nothing in
+:file:`src/s3_tcp.c` knows about vfio-user or queues, which
+is why the whole stack runs under CTest against a loopback
+that hands frames straight back.
+
+The RDMA token
+^^^^^^^^^^^^^^
+
+A client that wants the payload moved by RDMA sends
+
+.. code-block:: text
+
+   x-amz-rdma-token: <88 hex characters>
+
+which decodes to a 44-byte little-endian structure
+(:file:`src/s3_token.h`):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 14 72
+
+   * - Offset
+     - Size
+     - Field
+   * - 0
+     - 1
+     - Transport: ``0x00`` Dynamic Connection, ``0x01``
+       Reliable Connection. cuObject requires DC on
+       ConnectX; hipObject and this emulator speak RC.
+   * - 1
+     - 4
+     - Queue-pair number.
+   * - 5
+     - 16
+     - GID.
+   * - 21
+     - 4
+     - ``rkey`` of the client's registered buffer.
+   * - 25
+     - 8
+     - Remote address of that buffer.
+   * - 33
+     - 8
+     - Length of the window the server may touch.
+   * - 41
+     - 1
+     - Port number.
+   * - 42
+     - 2
+     - LID.
+
+hipObject's ``formatRdmaHeaderValue()`` sends a three-field
+form, ``<token-hex>:<addr-hex>:<len-hex>``, where the
+trailing pair overrides the address and length inside the
+token and a zero in either means "no override". Both forms
+are accepted.
+
+The response carries the outcome in ``x-amz-rdma-reply`` and
+the byte count actually moved in ``x-amz-rdma-bytes``. The
+reply value has three forms in the wild: the legacy cuObject
+``ok``/``err`` tags, a bare decimal HTTP status, and
+``<code>:<token-hex>`` carrying the server's own token so an
+RC client can point a queue pair at the peer that just
+served it. This server sends the last form; all three parse.
+
+Moving the bytes
+^^^^^^^^^^^^^^^^
+
+On a ``GET`` the store resolves the token's ``rkey`` and
+RDMA-WRITEs the object into the client's buffer; on a ``PUT``
+it RDMA-READs the payload out of it. Either way the transfer
+is capped by the token's length field, by ``maxpart=``, and
+by the object's own size -- a token describing a window
+smaller than the object gets a short transfer and an
+``x-amz-rdma-bytes`` that says so, rather than a write past
+the end of the client's registration.
+
+The interesting part is what is *not* here: no queue pair is
+ever connected. One guest owns every registration in the
+emulator, so an ``rkey`` arriving in a token resolves in the
+same memory-region table as any local ``lkey``, and the
+target DMAs against it directly through the same
+``rdma_pci_dma_map`` machinery the rest of the emulator uses.
+The client still creates a real RC queue pair and puts its
+QPN in the token, because that is what it would have to do on
+hardware and the field is checked -- but nothing on this path
+depends on the connection existing.
+
+What the store supports
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Path-style addressing (``/bucket/key``) against one bucket:
+
+- ``GET /`` -- list buckets.
+- ``GET /bucket`` -- list objects, with ``prefix`` and
+  ``max-keys``, returning a ``ListBucketResult``.
+- ``HEAD /bucket`` -- bucket existence.
+- ``PUT``, ``GET``, ``HEAD``, ``DELETE`` on an object, with
+  MD5 ``ETag``\ s and ranged ``GET`` (``Range: bytes=a-b``
+  answered with a 206).
+- Multipart upload: ``POST ?uploads`` to initiate,
+  ``PUT ?partNumber=N&uploadId=...`` for parts, ``POST
+  ?uploadId=...`` to complete. The completed ``ETag`` is the
+  digest of the part digests suffixed with the part count,
+  as clients expect.
+- S3 XML errors throughout: ``NoSuchKey``, ``NoSuchBucket``,
+  ``InvalidRange``, ``MethodNotAllowed``, ``EntityTooLarge``
+  and friends, each with the offending resource named.
+
+Deletes are idempotent, as S3 requires: a missing key is
+still a 204.
+
+Testing
+-------
+
+Server-side coverage runs without a VM and is part of
+``ctest``:
+
+.. code-block:: bash
+
+   ctest --test-dir build -R '^s3-'
+
+- ``s3-token-unit`` -- the token and reply wire formats,
+  pinned against a hand-assembled reference image so the
+  layout cannot drift.
+- ``s3-http-unit`` -- the HTTP/1.1 subset: request parsing,
+  query strings, headers, chunked and ``Content-Length``
+  bodies, response assembly.
+- ``s3-target-unit`` -- the store: the full method set, the
+  listing documents, ranged reads, multipart, the error
+  paths, and the RDMA transfers against a fake set of DMA
+  ops.
+- ``s3-tcp-unit`` -- the in-band stack end to end over a
+  loopback: ARP, ICMP, handshake, segmentation,
+  retransmission, FIN.
+- ``s3-ci`` -- starts the real server binary once per
+  documented option spelling, checks the store and endpoint
+  it reports, checks the derived MAC, and checks that
+  malformed options are refused before the device appears.
+
+The end-to-end RDMA transfer needs a guest, because it needs
+a real ``ibv_reg_mr`` for the token to describe.
+:file:`tests/s3_rdma_client.c` is a single self-contained
+libibverbs client, built inside the guest and run there. It
+opens the RDMA device, registers one buffer, splits it in
+half -- low half the ``PUT`` source, high half the ``GET``
+destination -- and mints a token per request. In functional
+mode (``-F``) it checks:
+
+- a 4 KiB and a 1 MiB round trip, comparing byte for byte;
+- a ranged ``GET`` (206 for ``bytes=1024-1535``);
+- a token whose window is shorter than the object, asserting
+  that the write stopped at the window;
+- the body path, with no token at all;
+- listing and deletion, then a 404 for the deleted key;
+- the error paths: missing key, malformed token, wrong
+  bucket.
+
+It prints ``all checks passed`` and exits 0, or names what
+failed and exits 1.
+
+The Ansible play is the reusable definition, and needs a
+single guest already provisioned against an instance running
+the store:
+
+.. code-block:: bash
+
+   cd ansible
+   ansible-playbook playbooks/s3-tests.yml
+
+It installs a toolchain and ``libibverbs-dev`` in the guest,
+copies the client in, builds it, runs it, and checks the
+store came back empty. ``ansible-playbook ci-site.yml --tags
+s3`` runs the same play as part of the CI site.
+
+The self-hosted lane drives it from shell so each step lands
+in the CI results as its own check, and provisions the guest
+itself first:
+
+.. code-block:: bash
+
+   export ERNIC_INSTANCES=1
+   export ERNIC_BACKEND=s3:size=256M,bucket=ernic
+   bash ci/jobs/vm-up.sh
+   bash ci/jobs/vm-s3.sh
+   bash ci/jobs/vm-down.sh
+
+Export them rather than prefixing a single command: all three
+scripts read both, and ``ERNIC_INSTANCES`` defaults to 2.
+
+And the hosted lane runs the whole thing from scratch --
+build, unit tests, boot a guest, provision it, transfer --
+in :file:`.github/workflows/s3-lane.yml`. Like the NVMe-oF
+lane it is a reusable workflow with a single ``publish``
+input, called by :file:`.github/workflows/system-tests.yml`:
+false on a pull request, true on a scheduled or dispatched
+run against ``main``. The steps are the same either way, so a
+green pull request and a scheduled run mean the same thing.
+The ``vm-s3`` job in
+:file:`.github/workflows/self-hosted-ci.yml` runs the
+self-hosted lane at the functional tier and above.
+
+The endpoint's address, port and bucket are Ansible
+variables (``ernic_s3_addr``, ``ernic_s3_port``,
+``ernic_s3_bucket`` in
+:file:`ansible/group_vars/all.yml`); they have to match the
+``--backend`` options the instance was started with.
+
+Performance
+-----------
+
+The scheduled run of
+:file:`.github/workflows/system-tests.yml` sweeps the client
+across three object sizes and publishes what it measured, on
+the same terms and through the same code path as the RDMA,
+TCP/IP and NVMe-oF figures. The numbers land on the
+`trend page <https://rocm.github.io/rocm-ernic/perf-trends.html>`_
+as the *S3-over-RDMA GET bandwidth over time* chart, and the
+1 MiB figure becomes the ``S3 1M GET`` shield on the README.
+
+The sweep is ``GET``\ s -- the store RDMA-WRITEs into guest
+memory, which is the direction worth a headline number.
+Correctness in the other direction is covered by the round
+trips above, which are checks rather than rates.
+
+The headline is the *largest* tracked size, unlike the
+NVMe-oF shield's 4 KiB. Every object transfer here carries an
+HTTP request and response of its own over the in-band TCP
+stack, so a 4 KiB figure measures that control plane rather
+than the data plane the badge is about.
+
+The same caveats apply as everywhere else on that page:
+
+- The numbers come from a **GitHub-hosted runner** -- shared
+  vCPUs, noisy neighbours, no pinning. Treat them as a trend,
+  not a benchmark. They stay in their own ``s3`` series: an
+  HTTP-framed object transfer and a perftest sweep share no
+  scale.
+- The store is RAM, so nothing here measures storage.
+- Only a green run on ``main`` publishes.
+
+To take the same measurements locally, set
+``ernic_s3_perf_csv`` to a path and the play writes one
+bandwidth CSV there:
+
+.. code-block:: bash
+
+   cd ansible
+   ansible-playbook playbooks/s3-tests.yml \
+     -e ernic_s3_perf_csv=/tmp/s3-bw.csv
+
+The object sizes are not free-form: they have to stay equal
+to ``TRACKED_SIZES`` in :file:`ci/report/publish-perf.py` or
+the chart quietly drops a series. The shell lane captures the
+same sweep in ``probe_perf_sweep``, and refuses to record it
+unless the guest ran under KVM -- numbers measured under TCG
+are one to two orders of magnitude off and would poison the
+history.
+
+Limitations
+-----------
+
+- One bucket per server instance, held entirely in memory.
+  Nothing survives a restart.
+- No authentication: no SigV4, no ACLs, no policies. The
+  endpoint is on a private emulated segment and trusts
+  everything on it.
+- No versioning, no lifecycle, no tagging, no CORS, no
+  ``DeleteObjects`` batch, no copy.
+- Multipart parts are buffered whole and concatenated at
+  completion, so an upload is bounded by the store's
+  capacity twice over.
+- The in-band TCP stack does not fragment, reassemble out of
+  order, or do congestion control; it is correct for the one
+  link it serves and would not survive a real network.

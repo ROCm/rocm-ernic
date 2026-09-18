@@ -36,6 +36,7 @@ typedef enum {
     RDMA_BACKEND_TYPE_VERBS,    /* libibverbs hardware backend */
     RDMA_BACKEND_TYPE_TCP,      /* TCP/IP network backend */
     RDMA_BACKEND_TYPE_NVMEOF,   /* In-process NVMe-oF controller */
+    RDMA_BACKEND_TYPE_S3,       /* In-process S3-over-RDMA object store */
     RDMA_BACKEND_TYPE_MAX
 } RdmaBackendType;
 

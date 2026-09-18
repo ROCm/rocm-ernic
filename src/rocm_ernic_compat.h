@@ -351,6 +351,23 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes);
 
 /**
+ * ionic_rm_query_qp - Read a queue pair's attributes back out of rdma_rm
+ * @qpn:          QP number (handle)
+ * @state:        ibv_qp_state the device holds for the QP
+ * @path_mtu:     ibv_mtu enum
+ * @dest_qpn:     peer QPN, 0 when the backend tracks none
+ * @access_flags: ibv_access_flags bitmask
+ * @rq_psn:       receive PSN the guest last set, 0 if it never set one
+ * @sq_psn:       send PSN the guest last set, 0 if it never set one
+ *
+ * Any out parameter may be NULL.  Returns 0 on success, -errno on failure.
+ */
+int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
+                      uint8_t *path_mtu, uint32_t *dest_qpn,
+                      uint32_t *access_flags, uint32_t *rq_psn,
+                      uint32_t *sq_psn);
+
+/**
  * Mesh access for the ionic data path.
  *
  * ionic resolves rkeys against its own guest-physical MR table rather than

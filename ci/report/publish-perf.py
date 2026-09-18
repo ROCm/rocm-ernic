@@ -84,6 +84,15 @@ CHARTS = (
         "unit": "GB/s",
         "higher_is_better": True,
     },
+    {
+        "key": "s3",
+        "section": "bandwidth",
+        "metric": "bw_avg_GBs",
+        "verb": "s3",
+        "title": "S3-over-RDMA GET bandwidth over time",
+        "unit": "GB/s",
+        "higher_is_better": True,
+    },
 )
 
 # Reference palette, categorical slots 1-3.  Validated with
@@ -189,6 +198,12 @@ def extract(summary, runner=DEFAULT_RUNNER):
     rec["badges"]["nvmeof_iops_M"] = _find_median(
         bw_rows, verb="nvmeof", size=TRACKED_SIZES[0],
         metric="msg_rate_mpps")
+    # S3 headlines bandwidth at the largest tracked size: an object
+    # GET carries an HTTP round trip of its own, so at 4 KiB the
+    # number is a measure of the control plane rather than of the
+    # data plane the badge is about.
+    rec["badges"]["s3_bw_GBs"] = _find_median(
+        bw_rows, verb="s3", size=TRACKED_SIZES[-1], metric="bw_avg_GBs")
     return rec
 
 
@@ -506,6 +521,13 @@ BADGES = (
         "label": "NVMe-oF 4K read",
         "unit": "IOPS",
         "format": _fmt_iops,
+    },
+    {
+        "key": "s3_bw_GBs",
+        "file": "badge-s3.json",
+        "label": "S3 1M GET",
+        "unit": "GB/s",
+        "format": _fmt_rate,
     },
 )
 

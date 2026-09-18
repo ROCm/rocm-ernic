@@ -35,6 +35,26 @@
   connect, an `O_DIRECT` digest round trip, fio, disconnect -- and is run by
   the hosted `system-test-nvmeof` job, by the `vm-nvmeof` self-hosted job via
   `ci/jobs/vm-nvmeof.sh`, and by hand with `--tags nvmeof`.
+* `--backend s3[:bucket=...,size=...,objects=...,ip=...,port=...,maxpart=...]`
+  runs an S3-over-RDMA object store inside the server. Object payloads move
+  by RDMA against the client's registered buffer, described by the
+  `x-amz-rdma-token` header cuObject v1.2.0 introduced and hipObject sends;
+  the reply carries `x-amz-rdma-reply` and `x-amz-rdma-bytes`. The control
+  plane is terminated in band on the emulated wire by `src/s3_tcp.c` — ARP,
+  ICMP and a minimal TCP — so the endpoint is simply a host on the guest's
+  segment, ARPable at a MAC derived from its address, and needs no `--tap`.
+  S3 semantics follow versitygw; nothing is vendored from it. Requests with
+  no token fall back to carrying the payload in the HTTP body, so `curl` is a
+  usable client. Documented in `docs/s3.rst`.
+* `tests/test_s3_token.c` (CTest `s3-token-unit`), `tests/test_s3_http.c`
+  (`s3-http-unit`), `tests/test_s3_target.c` (`s3-target-unit`),
+  `tests/test_s3_tcp.c` (`s3-tcp-unit`) and `tests/test_s3_ci.sh` (`s3-ci`)
+  cover the store without needing a VM; `tests/s3_rdma_client.c` is a
+  self-contained libibverbs client built and run inside the guest by
+  `ansible/playbooks/s3-tests.yml`, which the hosted `system-test-s3` job runs
+  end to end, the `vm-s3` self-hosted job runs via `ci/jobs/vm-s3.sh`, and
+  which can be run by hand with `--tags s3`. The hosted lane publishes an
+  *S3-over-RDMA GET bandwidth* trend and the `S3 1M GET` shield.
 * `ERNIC_BACKEND` in `service/rocm-ernic.env` overrides the backend the
   launcher picks per instance, which is what selects `nvmeof` for that lane.
 * CI job `ionic-patches` verifies that every patch in `patches/` still applies

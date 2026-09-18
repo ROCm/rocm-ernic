@@ -10,6 +10,7 @@
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-rdma.json)][perf-trends]
 [![TCP/IP bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-tcp.json)][perf-trends]
 [![NVMe-oF 4K read](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-nvmeof.json)][perf-trends]
+[![S3 1M GET](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-s3.json)][perf-trends]
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running
@@ -22,7 +23,9 @@ requiring physical RDMA hardware or an in-guest software stack such as
 (multi-node without hardware), native verbs (real InfiniBand HCA
 pass-through), and nvmeof (an in-process NVMe over Fabrics target, so a single
 VM and a single server instance are a complete fabric — see
-[`docs/nvmeof.rst`](docs/nvmeof.rst)).
+[`docs/nvmeof.rst`](docs/nvmeof.rst)), and s3 (an in-process S3-over-RDMA
+object store with its own in-band HTTP endpoint, so the same single VM is a
+complete object fabric — see [`docs/s3.rst`](docs/s3.rst)).
 
 The server emulates an AMD Pensando ionic NIC (`1dd8:100a`), so the guest runs
 the upstream Linux `ionic` and `ionic_rdma` drivers with only the small

@@ -196,6 +196,14 @@ set(NVMEOF_SOURCES
     src/nvmeof_cm.c
 )
 
+# In-process S3-over-RDMA object store, reached in-band over the emulated NIC
+set(S3_SOURCES
+    src/s3_token.c
+    src/s3_http.c
+    src/s3_target.c
+    src/s3_tcp.c
+)
+
 # Main server implementation
 set(SERVER_SOURCES
     src/rocm_ernic_server.c
@@ -206,6 +214,7 @@ set(ALL_SOURCES
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
     ${NVMEOF_SOURCES}
+    ${S3_SOURCES}
     ${ERNIC_VENDORED_SOURCES}
     ${ERNIC_FROM_QEMU_AMD_SOURCES}
 )
@@ -234,6 +243,7 @@ target_include_directories(rocm-ernic PRIVATE
 target_include_directories(rocm-ernic SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}

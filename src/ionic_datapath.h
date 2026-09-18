@@ -125,6 +125,21 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
                                   char *err, size_t errlen);
 
 /*
+ * Attach the in-process S3 object store.  Once attached the emulated NIC
+ * answers ARP, ping and HTTP at the configured address, and an object
+ * request that carries an x-amz-rdma-token moves its payload straight
+ * between the store and the guest buffer the token describes.
+ *
+ * Requires the Ethernet emulator, because the control plane lives on the
+ * emulated wire rather than on a host socket.  Returns false and fills
+ * @err on failure; the data path owns the store from then on.
+ */
+struct s3_target_cfg;
+bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
+                              const struct s3_target_cfg *cfg, char *err,
+                              size_t errlen);
+
+/*
  * Set the pvrdma handle so the datapath can post sends via the backend.
  * Call this once after ionic_device_init() and pvrdma_device_realize().
  * @handle: pvrdma_handle_t (void *) from pvrdma_device_create().

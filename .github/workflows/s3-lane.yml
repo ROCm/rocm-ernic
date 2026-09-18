@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - NVMe-oF Lane
+name: rocm-ernic - S3 Lane
 
-# The NVMe-oF system-test lane, factored out of system-tests.yml
-# because it is long enough to be worth reading on its own.
+# The S3-over-RDMA system-test lane, factored out of system-tests.yml
+# the way the NVMe-oF one is, because it is long enough to be worth
+# reading on its own.
 #
 # Caller:
 #   .github/workflows/system-tests.yml
@@ -12,9 +13,9 @@ name: rocm-ernic - NVMe-oF Lane
 # caller's business, not this file's.
 #
 # Note that `permissions:` takes no expression, so the caller cannot
-# grant write only on the events that publish -- its nvmeof job holds
-# contents/actions write on pull requests too, as the two-VM job
-# already did.  What keeps a pull request from publishing is the
+# grant write only on the events that publish -- its s3 job holds
+# contents/actions write on pull requests too, as the other lanes
+# already do.  What keeps a pull request from publishing is the
 # `publish` input, false on pull_request, checked again by the `if:`
 # on the publish step below.  A fork's token is read-only regardless.
 
@@ -23,23 +24,23 @@ on:
     inputs:
       publish:
         description: >-
-          Sweep fio across the tracked block sizes, record the result
-          in docs/perf-history and rebuild Pages.  Requires the caller
-          to grant contents: write and actions: write.
+          Sweep the client across the tracked object sizes, record the
+          result in docs/perf-history and rebuild Pages.  Requires the
+          caller to grant contents: write and actions: write.
         type: boolean
         default: false
 
 env:
   # Pinned here rather than taken as an input: `env` is not available
   # in a caller's `with:`, so passing it would mean a literal copy in
-  # every caller.  system-tests.yml keeps its own copy for the other
-  # two lanes; keep the two in step.
+  # every caller.  system-tests.yml and nvmeof-lane.yml keep their own
+  # copies; keep the three in step.
   GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 
 jobs:
-  system-test-nvmeof:
+  system-test-s3:
     # Only the configuration, not the lane name: every caller's name is
-    # prefixed onto this one, and the callers already say NVMe-oF.
+    # prefixed onto this one, and the callers already say S3.
     name: Single Server
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -48,24 +49,23 @@ jobs:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
       options: --device /dev/kvm
     # One guest, one server, no TAP and no peer: the instance runs the
-    # NVMe-oF controller itself, so this lane is a complete fabric on
-    # its own.  That is the whole point of the nvmeof backend, and it
-    # makes this the cheapest end-to-end RDMA test in the matrix -- it
-    # exercises the CM exchange, the queue pairs, the memory keys and
-    # the RDMA READ/WRITE engine without a second VM.
+    # object store and terminates the HTTP control plane on the
+    # emulated NIC itself, so this lane is a complete object fabric on
+    # its own.  It covers a path no other lane reaches -- the in-band
+    # ARP/IPv4/TCP stack in front of the store, and RDMA transfers
+    # driven by the target rather than by the guest.
     env:
-      NVMEOF_SIZE: 256M
-      NVMEOF_BS: 4096
-      NVMEOF_NQN: nvmet-test
+      S3_SIZE: 256M
+      S3_BUCKET: ernic
       # Must sit on ernic_nic_subnet, which is where
       # vm-register.yml addresses the guest NIC from.
-      NVMEOF_TRADDR: 192.168.200.1
-      NVMEOF_TRSVCID: 4420
-      # Where the play drops the block-size sweep when publishing.
+      S3_ADDR: 192.168.200.1
+      S3_PORT: 9000
+      # Where the play drops the size sweep when publishing.
       # gen-report.py globs <results>/perf-csv/*.csv, so the directory
       # name is part of the contract, not a preference.
-      NVMEOF_RESULTS: /tmp/ernic-ci-results
-      NVMEOF_PERF_CSV: /tmp/ernic-ci-results/perf-csv/nvmeof-bw.csv
+      S3_RESULTS: /tmp/ernic-ci-results
+      S3_PERF_CSV: /tmp/ernic-ci-results/perf-csv/s3-bw.csv
 
     steps:
     - name: Checkout code
@@ -86,16 +86,8 @@ jobs:
           echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
         fi
 
-        # Size the guests from the runner rather than pinning 2 vCPU / 1 GB.
-        # The hosted runner is 4 vCPU / 16 GB, so the old numbers left most
-        # of the machine idle while a DKMS kernel build ran single-file in
-        # the guest.  Derive it instead: a larger runner class or the
-        # self-hosted node then benefits without another edit here.
-        #
-        # One core and a quarter of RAM stay with the host -- the
-        # vfio-user server, the harness and the runner agent share it --
-        # and the memfd backend is not preallocated, so the guest only
-        # takes what it touches.
+        # Size the guests from the runner rather than pinning 2 vCPU / 1 GB;
+        # the same derivation the other lanes use.
         HOST_CPUS=$(nproc)
         HOST_MEM_MB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
 
@@ -104,10 +96,7 @@ jobs:
         # neqs = min(rdma.eq_qtype.qid_count, num_online_cpus()), and
         # ionic_create_rdma_admin() rejects anything below
         # IONIC_EQ_COUNT_MIN (4) with a silent -EINVAL that surfaces only
-        # as "Failed to register ibdev".  A guest with fewer than 4 online
-        # CPUs can never bring up ionic_rdma, whatever the device
-        # advertises.  Oversubscribing the runner is fine; starving the
-        # guest is not.
+        # as "Failed to register ibdev".
         [ "$VM_VCPUS" -lt 4 ] && VM_VCPUS=4
         VM_MEM_MB=$(( HOST_MEM_MB * 3 / 4 / VMS ))
         [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
@@ -162,9 +151,6 @@ jobs:
             "SSH_KEY": d.get("ssh_key", ""),
             "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
             "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
-            # Only the payload image sets these.  kernel_ref is nested
-            # under provisioning in schema v2; reading it from the top
-            # level is why this reported "ionic ref unknown".
             "KERNEL_RELEASE": d.get("kernel_release", ""),
             "KERNEL_REF": d.get("provisioning", {}).get("kernel_ref", ""),
             "FLAVOUR": d.get("flavour", ""),
@@ -185,17 +171,12 @@ jobs:
           exit 1
         fi
 
-        # Verify disk image is accessible and check for missing backing file
-        # Error out immediately if disk has a backing file reference that doesn't exist
         QEMU_IMG_OUTPUT=$(qemu-img info "$VM_DISK" 2>&1)
         QEMU_IMG_EXIT=$?
         if [ $QEMU_IMG_EXIT -ne 0 ]; then
           if echo "$QEMU_IMG_OUTPUT" | grep -q "Could not open backing file"; then
             echo "✗ Disk image has backing file reference but backing file does not exist"
-            echo "The disk image metadata references a backing file that is missing."
-            echo ""
             echo "Disk path: $VM_DISK"
-            echo "qemu-img info output:"
             echo "$QEMU_IMG_OUTPUT"
             exit 1
           else
@@ -223,12 +204,6 @@ jobs:
     - name: Install dependencies
       run: |
         # Only what the container image does not already carry.
-        # build-essential, cmake, meson, ninja-build, pkg-config,
-        # libglib2.0-dev, libjson-c-dev and libcmocka-dev are baked
-        # into the image; re-installing them cost an apt round trip
-        # per job for nothing.  These three are genuinely absent, and
-        # iproute2 in particular is what puts `ss` on PATH for the
-        # TCP job's listener check.
         apt-get update
         apt-get install -y \
           libibverbs-dev \
@@ -239,12 +214,9 @@ jobs:
       run: |
         # The image ships libvfio-user under /usr/local, and
         # CMakeLists.txt falls back to find_library/find_path there
-        # when pkg-config misses, so there is nothing to build here.
-        # What the build actually requires is the max_regions
-        # parameter that f3742ed9 (#835) added to
-        # vfu_setup_device_dma(); assert that rather than assuming
-        # it, so a rebased image fails here with a clear message
-        # instead of part-way through the compile.
+        # when pkg-config misses.  What the build actually requires is
+        # the max_regions parameter that f3742ed9 (#835) added to
+        # vfu_setup_device_dma(); assert that rather than assuming it.
         set -e
         ldconfig
         HDR=/usr/local/include/vfio-user/libvfio-user.h
@@ -273,25 +245,30 @@ jobs:
         ls -lh build/rocm-ernic
         echo "✓ Server built successfully"
 
+    - name: Object store unit tests
+      run: |
+        # The store, the HTTP subset, the token codec and the in-band
+        # TCP endpoint are all testable without a guest, and a failure
+        # in any of them makes the forty minutes below unreadable.  Run
+        # them first, where the message is still about the code.
+        ctest --test-dir build --output-on-failure -R '^s3-'
+
     - name: Start rocm-ernic server
       shell: bash
       run: |
-        echo "=== Starting rocm-ernic server (nvmeof backend) ==="
-        # Remove any existing socket
+        echo "=== Starting rocm-ernic server (s3 backend) ==="
         rm -f /tmp/vfio-user-rocm-ernic.sock
 
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
-          --backend "nvmeof:size=${NVMEOF_SIZE},bs=${NVMEOF_BS},nqn=${NVMEOF_NQN},ip=${NVMEOF_TRADDR},port=${NVMEOF_TRSVCID}" \
+          --backend "s3:size=${S3_SIZE},bucket=${S3_BUCKET},ip=${S3_ADDR},port=${S3_PORT}" \
           --verbose > /tmp/vfu_server.log 2>&1 &
-        
+
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
         echo "Server PID: $SERVER_PID"
-        
-        # Wait for socket and verify server is running
+
         for i in {1..30}; do
-          # Check if server process is still running
           if ! kill -0 "$SERVER_PID" 2>/dev/null; then
             echo "✗ Server process died (PID: $SERVER_PID)"
             echo "Exit code: $(wait $SERVER_PID 2>&1 || echo $?)"
@@ -299,40 +276,25 @@ jobs:
             cat /tmp/vfu_server.log
             exit 1
           fi
-          
-          # Check if socket exists and is a socket file
+
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
             chmod 666 /tmp/vfio-user-rocm-ernic.sock 2>/dev/null || true
             echo "✓ Server started (PID: $SERVER_PID)"
-            echo "✓ Socket created: /tmp/vfio-user-rocm-ernic.sock"
             ls -la /tmp/vfio-user-rocm-ernic.sock
             exit 0
           fi
-          
-          # Show progress every 5 seconds
+
           if [ $((i % 5)) -eq 0 ]; then
             echo "Waiting for socket... (attempt $i/30)"
             echo "Server PID $SERVER_PID status: $(kill -0 $SERVER_PID 2>/dev/null && echo 'running' || echo 'dead')"
-            echo "Socket exists: $([ -e /tmp/vfio-user-rocm-ernic.sock ] && echo 'yes' || echo 'no')"
-            if [ -e /tmp/vfio-user-rocm-ernic.sock ]; then
-              ls -la /tmp/vfio-user-rocm-ernic.sock
-            fi
           fi
           sleep 1
         done
-        
+
         echo "✗ Server failed to create socket after 30 seconds"
-        echo "Server PID $SERVER_PID status: $(kill -0 $SERVER_PID 2>/dev/null && echo 'running' || echo 'dead')"
-        echo "Socket exists: $([ -e /tmp/vfio-user-rocm-ernic.sock ] && echo 'yes' || echo 'no')"
-        if [ -e /tmp/vfio-user-rocm-ernic.sock ]; then
-          echo "Socket type:"
-          ls -la /tmp/vfio-user-rocm-ernic.sock
-          file /tmp/vfio-user-rocm-ernic.sock
-        fi
         echo "=== Server log ==="
         cat /tmp/vfu_server.log
         exit 1
-    
 
     - name: Start QEMU VM
       shell: bash
@@ -340,8 +302,7 @@ jobs:
         echo "=== Starting QEMU VM ==="
         VM_DISK="${{ steps.vm_info.outputs.vm_disk }}"
         SSH_PORT=2222
-        
-        # Start VM with vfio-user device
+
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
           -machine q35,accel=${QEMU_ACCEL},memory-backend=mem0 \
@@ -363,7 +324,6 @@ jobs:
         echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
         echo "✓ QEMU started (PID: $QEMU_PID)"
 
-        # Early failure detection: check if QEMU dies within 5 seconds
         echo "Monitoring QEMU for early failures..."
         sleep 5
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -373,13 +333,10 @@ jobs:
           echo ""
           echo "=== Guest console ==="
           cat /tmp/qemu-console.log || echo "Console log not found"
-          echo ""
-          echo "=== QEMU exit code ==="
           wait "$QEMU_PID" 2>&1 || echo "Exit code: $?"
           exit 1
         fi
         echo "✓ QEMU still running after 5 seconds"
-    
 
     - name: Setup SSH keys
       shell: bash
@@ -387,57 +344,31 @@ jobs:
         echo "=== Setting up SSH keys ==="
         SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
         SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
-        SSH_KEY="${{ steps.vm_info.outputs.ssh_key }}"
         SSH_PORT="$SSH_PORT"
-        
+
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
-        
-        # Require SSH key file paths from vm-info.json
+
         if [ -z "$SSH_KEY_PRIVATE" ] || [ -z "$SSH_KEY_PUBLIC" ]; then
-          echo "✗ SSH key paths (ssh_key_private and ssh_key_public) are required in vm-info.json"
-          echo "Found ssh_key_private: $([ -n "$SSH_KEY_PRIVATE" ] && echo "$SSH_KEY_PRIVATE" || echo 'not set')"
-          echo "Found ssh_key_public: $([ -n "$SSH_KEY_PUBLIC" ] && echo "$SSH_KEY_PUBLIC" || echo 'not set')"
+          echo "✗ SSH key paths are required in vm-info.json"
           exit 1
         fi
-        
-        # Check if key files exist at the specified paths
-        if [ ! -f "$SSH_KEY_PRIVATE" ]; then
-          echo "✗ SSH private key file not found: $SSH_KEY_PRIVATE"
+        if [ ! -f "$SSH_KEY_PRIVATE" ] || [ ! -f "$SSH_KEY_PUBLIC" ]; then
+          echo "✗ SSH key file not found ($SSH_KEY_PRIVATE / $SSH_KEY_PUBLIC)"
           exit 1
         fi
-        
-        if [ ! -f "$SSH_KEY_PUBLIC" ]; then
-          echo "✗ SSH public key file not found: $SSH_KEY_PUBLIC"
-          exit 1
-        fi
-        
-        echo "✓ Using SSH keys from vm-info.json"
-        echo "  Private key: $SSH_KEY_PRIVATE"
-        echo "  Public key: $SSH_KEY_PUBLIC"
 
         ssh-keyscan -p "$SSH_PORT" localhost >> ~/.ssh/known_hosts 2>/dev/null || true
 
         # Use the key where the fetch action left it rather than copying
-        # it into ~/.ssh and letting ssh find it by default, because ssh
-        # will not: ~ is $HOME, which a container job sets to
-        # /github/home, but OpenSSH builds its default identity and
-        # known_hosts paths from getpwuid() -- /root for us -- which is
-        # empty.  The copy therefore landed somewhere ssh never looked,
-        # and six runs died at "Permission denied (publickey,password)"
-        # looking exactly like a guest that never booted.
-        #
-        # IdentitiesOnly stops an agent or those defaults from being
-        # offered as well, so this stays legible if it ever breaks again;
-        # BatchMode turns the password fallback into an immediate failure
-        # with a usable message instead of a read_passphrase error.
+        # it into ~/.ssh: a container job sets HOME to /github/home, but
+        # OpenSSH builds its default identity path from getpwuid().
         SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
         SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
         SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
         echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
         echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
         echo "✓ SSH_OPTS=$SSH_OPTS"
-    
 
     - name: Wait for VM SSH
       shell: bash
@@ -445,10 +376,7 @@ jobs:
         echo "=== Waiting for VM SSH ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
-        
-        # Keep ssh's stderr rather than discarding it: "Connection
-        # refused" and "Connection timed out" are different faults, and
-        # the old 2>/dev/null hid which one this was for five runs.
+
         for i in {1..60}; do
           if ssh $SSH_OPTS -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
@@ -460,8 +388,6 @@ jobs:
         done
 
         echo "✗ VM SSH timeout"
-        echo ""
-        echo "=== Final attempt, verbose ==="
         ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
           -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
@@ -473,7 +399,6 @@ jobs:
           --qemu-log /tmp/qemu.log \
           --pid "$QEMU_PID"
         exit 1
-    
 
     - name: Verify the ionic PCI function is present in the VM
       shell: bash
@@ -482,18 +407,6 @@ jobs:
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
 
-        # This runs before ernic_guest_setup, so ionic_rdma is not
-        # loaded yet and there is deliberately no verbs check here --
-        # that is "Verify RDMA device with running server", after
-        # provisioning.
-        #
-        # The PCI function itself is a different matter: QEMU attached
-        # the vfio-user device at boot, so 1dd8:100a is on the bus from
-        # the first second.  This step used to end every probe in
-        # `|| echo "... not found"`, so a guest that never saw the
-        # device passed it exactly like a guest that did.  Assert it:
-        # if the function is missing, nothing downstream can work and
-        # the failure belongs here, where the cause is still visible.
         ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
         set -e
 
@@ -508,10 +421,6 @@ jobs:
           exit 1
         fi
         echo "✓ ionic PCI function 1dd8:100a present"
-
-        echo ""
-        echo "=== Kernel modules (informational, pre-provisioning) ==="
-        lsmod | grep -E 'ionic|ib_' || echo "(none loaded yet, as expected)"
         EOFVM
 
     - name: Install the Ansible collection dependencies
@@ -520,21 +429,7 @@ jobs:
         echo "=== Installing the Ansible collection dependencies ==="
         # The guest is provisioned by the sbates130272.rocm_ernic
         # collection in this repo, so the same role the self-hosted CI
-        # and developers use is what these jobs exercise.
-        #
-        # The container's ansible-core comes from pipx and searches
-        # ~/.ansible/collections, not the dist-packages tree the
-        # "ansible" apt bundle installs into, so installing that
-        # bundle leaves community.general invisible.
-        #
-        # community.general by name rather than -r requirements.yml:
-        # since 0.2.0 that file resolves to this one collection
-        # anyway, so the two are equivalent and this needs no
-        # checkout.  Through 0.1.0 it was six collections and ~29M --
-        # sbates130272.batesste dragged in amazon.aws and
-        # community.libvirt for ernic_image_prep, which no longer
-        # exists -- and six galaxy round trips was six chances to hit
-        # the 500 that has already reddened runs.
+        # and developers use is what this job exercises.
         ansible --version
         # Galaxy resets connections often enough to fail a lane on its
         # own, and only someone with write access can rerun the job.
@@ -558,18 +453,9 @@ jobs:
         set -e
         KVER=$(uname -r)
 
-        # The ionic flavour of the guest image bakes these in, but
-        # these jobs run against a generic prebuilt CI qcow2, so the
-        # build toolchain is installed here.  The kernel version
-        # itself is the image's business, and ernic_guest_setup
-        # asserts it matches the pinned ionic sources.
-        #
-        # Headers are a check, not an install.  A guest on a mainline
-        # kernel has them from the .deb, and kernel.ubuntu.com is a
-        # directory of loose .debs with no Packages index behind it --
-        # so there is no apt source to install them from and
-        # linux-headers-$(uname -r) 404s.  What matters is that the
-        # build tree is there; ask for the package only when it is not.
+        # Headers are a check, not an install: a guest on a mainline
+        # kernel has them from the .deb, and kernel.ubuntu.com has no
+        # Packages index behind it, so linux-headers-$(uname -r) 404s.
         HEADER_PKG=""
         if [ -d "/lib/modules/${KVER}/build" ]; then
           echo "Kernel headers already present for ${KVER}"
@@ -610,7 +496,7 @@ jobs:
             {
               "id": 1,
               "vm": {
-                "vm_name": "gh-nvmeof-vm1",
+                "vm_name": "gh-s3-vm1",
                 "ssh_port": ${SSH_PORT},
                 "ssh_user": "${VM_USER}"
               }
@@ -635,18 +521,17 @@ jobs:
           -e ernic_guest_agent=false \
           -e ernic_set_hostname=false
         # NOTE: ernic_configure_nic is deliberately left at its default
-        # (true), unlike the loopback job.  The guest needs an IPv4
-        # address on the emulated NIC or ionic_rdma populates no RoCEv2
-        # GID, rdma_resolve_addr() has no source to bind to, and the
-        # connect fails with a bare ENETUNREACH.  vm-register.yml
-        # gives instance 1 the .10 address on ernic_nic_subnet, the
-        # same segment the controller answers on.
-    
+        # (true), unlike the loopback job.  Without an IPv4 address on
+        # the emulated NIC the guest has no route to the endpoint at
+        # all, and ionic_rdma populates no RoCEv2 GID for the client to
+        # mint into its token.  vm-register.yml gives instance 1 the
+        # .10 address on ernic_nic_subnet, the same segment the object
+        # endpoint answers on.
 
-    - name: Verify the RDMA device and the running controller
+    - name: Verify the RDMA device and the running object store
       shell: bash
       run: |
-        echo "=== Verifying the RDMA device and the nvmeof controller ==="
+        echo "=== Verifying the RDMA device and the s3 endpoint ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
 
@@ -657,18 +542,18 @@ jobs:
         fi
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
-        # The controller is created at startup, before any guest
-        # touches it, so its banner is the earliest proof the backend
-        # parsed its options and came up with the namespace asked for.
-        # Assert it here rather than inferring it from a failed
-        # connect several minutes later.
-        if ! grep -q "nvmeof target '${NVMEOF_NQN}'" /tmp/vfu_server.log; then
-          echo "✗ Server log carries no nvmeof controller banner"
-          echo "  Expected: nvmeof target '${NVMEOF_NQN}'"
-          grep -i nvmeof /tmp/vfu_server.log || tail -40 /tmp/vfu_server.log
+        # The store and its in-band endpoint are created at startup,
+        # before any guest touches them, so the banner is the earliest
+        # proof the backend parsed its options and came up on the
+        # address the guest will ARP for.  Assert it here rather than
+        # inferring it from a socket timeout several minutes later.
+        if ! grep -q "s3 bucket '${S3_BUCKET}'" /tmp/vfu_server.log; then
+          echo "✗ Server log carries no s3 store banner"
+          echo "  Expected: s3 bucket '${S3_BUCKET}'"
+          grep -i 's3' /tmp/vfu_server.log || tail -40 /tmp/vfu_server.log
           exit 1
         fi
-        grep -m1 "nvmeof target" /tmp/vfu_server.log
+        grep -m1 "s3 bucket" /tmp/vfu_server.log
 
         # Same device detection as every other lane: by PCI vendor ID,
         # never by name.  See scripts/find-rdma-device.sh.
@@ -690,10 +575,9 @@ jobs:
           exit 1
         fi
 
-        # nvme connect resolves the controller address to a RoCEv2 GID,
-        # so the guest needs a v2 GID table entry for the NIC's IPv4
-        # address.  Print it: a missing entry here is the single most
-        # likely cause of a connect that fails with ENETUNREACH.
+        # The client mints its token over a GID from this table, so
+        # print it: a missing v2 entry is the likeliest cause of a
+        # registration that succeeds and a transfer that goes nowhere.
         echo "=== GID table ==="
         ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
           "ibv_devinfo -d $DEVICE -v | grep -A2 GID || true"
@@ -701,14 +585,14 @@ jobs:
           "ip -4 -br addr show rocm-ernic0; ip route" || true
 
         echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
-        echo "✓ $DEVICE is PORT_ACTIVE and the controller is up"
+        echo "✓ $DEVICE is PORT_ACTIVE and the object store is up"
 
-    - name: NVMe-oF end-to-end tests (Ansible)
+    - name: S3-over-RDMA end-to-end tests (Ansible)
       shell: bash
       env:
         PUBLISH: ${{ inputs.publish }}
       run: |
-        echo "=== NVMe-oF over the emulated fabric ==="
+        echo "=== S3 over RDMA against the in-process store ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         ERNIC_RUN_DIR=/tmp/ernic-ci
@@ -719,41 +603,40 @@ jobs:
         PROJECT_ROOT="$PWD"
 
         # The same play the self-hosted lane and developers run, so
-        # there is one definition of what "NVMe-oF works" means:
-        # discover, connect, verify a digest round trip through
-        # O_DIRECT, fio, disconnect, and assert the namespace went away.
-        # The sweep is off unless this run is publishing: it is three
-        # more fio runs and only the nightly has a use for the
-        # numbers.  An empty value is what the play's own default is.
+        # there is one definition of what "S3 over RDMA works" means:
+        # the endpoint answers, objects go out and come back through an
+        # x-amz-rdma-token, every payload compares equal, and the
+        # bucket is left empty.  The sweep is off unless this run is
+        # publishing; an empty value is the play's own default.
         perf_csv=""
         if [ "$PUBLISH" = "true" ]; then
-          mkdir -p "$(dirname "$NVMEOF_PERF_CSV")"
-          perf_csv="$NVMEOF_PERF_CSV"
+          mkdir -p "$(dirname "$S3_PERF_CSV")"
+          perf_csv="$S3_PERF_CSV"
         fi
 
         cd ansible
-        ansible-playbook ci-site.yml --tags nvmeof \
+        ansible-playbook ci-site.yml --tags s3 \
           -e ernic_project_root="$PROJECT_ROOT" \
           -e ernic_run_dir="$ERNIC_RUN_DIR" \
           -e ernic_instances=1 \
           -e ernic_vm_ssh_base_port="$SSH_PORT" \
           -e ernic_vm_ssh_user="$VM_USER" \
-          -e ernic_nvmeof_nqn="$NVMEOF_NQN" \
-          -e ernic_nvmeof_traddr="$NVMEOF_TRADDR" \
-          -e ernic_nvmeof_trsvcid="$NVMEOF_TRSVCID" \
-          -e ernic_nvmeof_perf_csv="$perf_csv"
+          -e ernic_s3_addr="$S3_ADDR" \
+          -e ernic_s3_port="$S3_PORT" \
+          -e ernic_s3_bucket="$S3_BUCKET" \
+          -e ernic_s3_perf_csv="$perf_csv"
 
     - name: Check the server survived the run
       if: always()
       shell: bash
       run: |
-        # A controller that crashed mid-run invalidates every check
-        # above it, and the vfio-user teardown can look from inside the
-        # guest exactly like a clean disconnect.  Name it here.
+        # A store that crashed mid-run invalidates every check above it,
+        # and from inside the guest the vfio-user teardown looks exactly
+        # like a connection the server closed.  Name it here.
         if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-          echo "✓ ERNIC server still running after the NVMe-oF run"
+          echo "✓ ERNIC server still running after the S3 run"
         else
-          echo "✗ ERNIC server died during the NVMe-oF run"
+          echo "✗ ERNIC server died during the S3 run"
           tail -60 /tmp/vfu_server.log || true
           exit 1
         fi
@@ -763,8 +646,8 @@ jobs:
       run: |
         echo "=== Server Logs ==="
         ls -lh /tmp/vfu_server*.log || echo "No server logs"
-        echo "--- nvmeof lines ---"
-        grep -i nvmeof /tmp/vfu_server.log || echo "(none)"
+        echo "--- s3 lines ---"
+        grep -i 's3' /tmp/vfu_server.log || echo "(none)"
         echo "--- tail ---"
         tail -50 /tmp/vfu_server*.log || true
         echo ""
@@ -778,7 +661,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: nvmeof-backend-test-logs
+        name: s3-backend-test-logs
         path: |
           /tmp/vfu_server.log
           /tmp/qemu.log
@@ -787,28 +670,27 @@ jobs:
         if-no-files-found: ignore
 
     # ── Publish (nightly only) ───────────────────────
-    - name: Upload the NVMe-oF sweep
+    - name: Upload the S3 sweep
       if: inputs.publish && always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: nvmeof-perf-csv
-        path: ${{ env.NVMEOF_RESULTS }}/perf-csv/
+        name: s3-perf-csv
+        path: ${{ env.S3_RESULTS }}/perf-csv/
         if-no-files-found: warn
 
-    - name: Publish the NVMe-oF trend and shield
+    - name: Publish the S3 trend and shield
       # Only a green run on main may move the published history: a
-      # failed lane's numbers describe a broken controller, and a
-      # branch's describe the branch.  A hosted runner is also noisier
-      # than the self-hosted node, which is why this feeds its own
-      # "nvmeof" series rather than the perftest one.
+      # failed lane's numbers describe a broken store, and a branch's
+      # describe the branch.  A hosted runner is also noisier than the
+      # self-hosted node, which is why this feeds its own "s3" series.
       if: >-
         inputs.publish &&
         success() &&
         github.ref == 'refs/heads/main'
       uses: ./.github/actions/publish-perf
       with:
-        results: ${{ env.NVMEOF_RESULTS }}
-        subject: NVMe-oF
+        results: ${{ env.S3_RESULTS }}
+        subject: S3 over RDMA
         token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Cleanup
