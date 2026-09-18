@@ -1494,9 +1494,9 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         if (emu->net || emu->tx_filter) {
             size_t len = eth_tx_gather(emu, q, q->head);
             if (len) {
-                bool taken = emu->tx_filter != NULL &&
-                             emu->tx_filter(emu->tx_filter_ctx, emu->frame,
-                                            len);
+                bool taken =
+                    emu->tx_filter != NULL &&
+                    emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
                 if (!taken && emu->net) {
                     ionic_eth_net_send(emu->net, emu->frame, len);
                 }

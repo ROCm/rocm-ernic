@@ -431,7 +431,17 @@ jobs:
         # collection in this repo, so the same role the self-hosted CI
         # and developers use is what this job exercises.
         ansible --version
-        ansible-galaxy collection install community.general
+        # Galaxy resets connections often enough to fail a lane on its
+        # own, and only someone with write access can rerun the job.
+        for attempt in 1 2 3; do
+          if ansible-galaxy collection install community.general; then
+            exit 0
+          fi
+          echo "::warning::galaxy install failed (attempt ${attempt}/3)"
+          sleep $((attempt * 20))
+        done
+        echo "::error::galaxy install failed after 3 attempts"
+        exit 1
 
     - name: Install kernel headers and build tools in VM
       shell: bash

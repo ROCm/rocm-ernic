@@ -483,6 +483,49 @@ out:
     s3_target_destroy(t);
 }
 
+/*
+ * What a real client puts on the wire: a token *and* a Content-Length
+ * naming the object, with no body behind it.  The length is well past
+ * S3_HTTP_REQUEST_MAX, which bounds a body on the socket and must not
+ * bound an object that never touches it.
+ */
+static void test_rdma_put_with_content_length(void)
+{
+    const char *name = "rdma-put-content-length";
+    struct s3_target *t = make_target(NULL);
+    struct host_mem *h = calloc(1, sizeof(*h));
+    char token[S3_TOKEN_HEX_LEN + 1];
+    struct reply r;
+    const size_t len = 64 * 1024;
+
+    if (t == NULL || h == NULL) {
+        fail(name, "setup failed");
+        goto out;
+    }
+
+    for (size_t i = 0; i < len; i++)
+        h->buf[i] = (uint8_t)(i * 17 + 3);
+
+    mint(token, 0, len);
+    if (!exec_req(t, &r, &host_ops, h, "PUT", "/ernic/declared", token,
+                  "Content-Length: 65536", NULL, 0)) {
+        fail(name, "the request the client sends could not be parsed");
+        goto out;
+    }
+    if (r.resp.status != 200)
+        fail(name, "status %d: %s", r.resp.status, r.text);
+    else if (s3_target_bytes_used(t) != len)
+        fail(name, "stored %llu bytes, want %zu",
+             (unsigned long long)s3_target_bytes_used(t), len);
+    else
+        ok(name);
+    reply_free(&r);
+
+out:
+    free(h);
+    s3_target_destroy(t);
+}
+
 static void test_rdma_ranged_get(void)
 {
     const char *name = "rdma-ranged-get";
@@ -1115,6 +1158,7 @@ int main(void)
     test_cfg_parse();
     test_body_put_get();
     test_rdma_put_get();
+    test_rdma_put_with_content_length();
     test_rdma_ranged_get();
     test_rdma_short_transfer();
     test_rdma_errors();

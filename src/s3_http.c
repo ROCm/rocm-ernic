@@ -31,14 +31,21 @@ static bool ieq(const char *a, const char *b)
     return *a == *b;
 }
 
+/*
+ * Unsigned throughout: on plain signed char the subtractions below are
+ * signed int arithmetic, and -Wstrict-overflow=4 refuses to let gcc
+ * fold the range tests without saying so.
+ */
 static int hex_nibble(char c)
 {
-    if (c >= '0' && c <= '9')
-        return c - '0';
-    if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
+    unsigned u = (unsigned char)c;
+
+    if (u >= '0' && u <= '9')
+        return (int)(u - '0');
+    if (u >= 'a' && u <= 'f')
+        return (int)(u - 'a' + 10u);
+    if (u >= 'A' && u <= 'F')
+        return (int)(u - 'A' + 10u);
     return -1;
 }
 
@@ -204,11 +211,27 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
         req->nhdr++;
     }
 
+    /*
+     * An RDMA request carries its payload over the fabric, not on the
+     * socket, and still declares the object's length in Content-Length --
+     * that is what hipObject sends and what the store reads back to size
+     * the transfer.  Framing therefore has to stop expecting a body when
+     * a token is present, or the connection sits waiting for bytes the
+     * client will never write and the request is never answered.
+     */
+    req->rdma = s3_http_header_get(req, "x-amz-rdma-token") != NULL;
+
     const char *cl = s3_http_header_get(req, "content-length");
     if (cl != NULL) {
         char *end = NULL;
         unsigned long long v = strtoull(cl, &end, 10);
-        if (end == cl || *end != '\0' || v > S3_HTTP_REQUEST_MAX)
+        /*
+         * S3_HTTP_REQUEST_MAX bounds a connection's receive buffer, so it
+         * bounds a body on the socket -- an object announced by a token
+         * never lands there and is as large as the store will allow.
+         */
+        if (end == cl || *end != '\0' ||
+            (!req->rdma && v > S3_HTTP_REQUEST_MAX))
             return -EINVAL;
         req->content_length = (size_t)v;
     }
@@ -216,22 +239,23 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
     /* Chunked bodies are refused rather than mis-parsed as identity: a
      * silent misread would hand the object store a length prefix as if
      * it were data. */
-    const char *te = s3_http_header_get(req, "transfer-encoding");
-    if (te != NULL && !ieq(te, "identity"))
+    const char *xfer_enc = s3_http_header_get(req, "transfer-encoding");
+    if (xfer_enc != NULL && !ieq(xfer_enc, "identity"))
         return -EINVAL;
 
     const char *conn = s3_http_header_get(req, "connection");
     if (conn != NULL && ieq(conn, "close"))
         req->keep_alive = false;
 
-    size_t have = len - hdr_len;
-    if (have < req->content_length)
-        return hdr_len + req->content_length > S3_HTTP_REQUEST_MAX ? -EMSGSIZE
-                                                                   : 0;
+    size_t on_wire = req->rdma ? 0 : req->content_length;
 
-    req->body = req->content_length ? (const uint8_t *)body : NULL;
-    req->body_len = req->content_length;
-    return (ssize_t)(hdr_len + req->content_length);
+    size_t have = len - hdr_len;
+    if (have < on_wire)
+        return hdr_len + on_wire > S3_HTTP_REQUEST_MAX ? -EMSGSIZE : 0;
+
+    req->body = on_wire ? (const uint8_t *)body : NULL;
+    req->body_len = on_wire;
+    return (ssize_t)(hdr_len + on_wire);
 }
 
 const char *s3_http_header_get(const struct s3_http_request *req,

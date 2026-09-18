@@ -49,14 +49,21 @@ static uint64_t get_le64(const uint8_t *p)
     return (uint64_t)get_le32(p) | ((uint64_t)get_le32(p + 4) << 32);
 }
 
+/*
+ * Unsigned throughout: on plain signed char the subtractions below are
+ * signed int arithmetic, and -Wstrict-overflow=4 refuses to let gcc
+ * fold the range tests without saying so.
+ */
 static int hex_nibble(char c)
 {
-    if (c >= '0' && c <= '9')
-        return c - '0';
-    if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
+    unsigned u = (unsigned char)c;
+
+    if (u >= '0' && u <= '9')
+        return (int)(u - '0');
+    if (u >= 'a' && u <= 'f')
+        return (int)(u - 'a' + 10u);
+    if (u >= 'A' && u <= 'F')
+        return (int)(u - 'A' + 10u);
     return -1;
 }
 
@@ -190,17 +197,20 @@ bool s3_reply_parse_code(const char *reply, size_t len, int *http_code)
 
     /* A decimal status, optionally followed by ":<peer token>". */
     size_t n = 0;
-    int code = 0;
-    while (n < len && reply[n] >= '0' && reply[n] <= '9') {
-        code = code * 10 + (reply[n] - '0');
-        if (code > 999)
+    unsigned code = 0;
+    while (n < len) {
+        unsigned digit = (unsigned char)reply[n] - (unsigned)'0';
+        if (digit > 9)
+            break;
+        code = code * 10u + digit;
+        if (code > 999u)
             return false;
         n++;
     }
     if (n == 0 || (n != len && reply[n] != ':'))
         return false;
 
-    *http_code = code;
+    *http_code = (int)code;
     return true;
 }
 

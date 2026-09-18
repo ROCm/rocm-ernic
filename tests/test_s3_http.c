@@ -117,6 +117,55 @@ static void test_parse_incremental(void)
     ok(name);
 }
 
+/*
+ * An RDMA PUT declares the object's length in Content-Length and then
+ * writes nothing on the socket, because the bytes ride the fabric.  If
+ * framing waits for them the request is never answered and the
+ * connection wedges, so the rule is pinned here.
+ */
+static void test_parse_rdma_no_body(void)
+{
+    const char *name = "parse-rdma-no-body";
+    static const char req_text[] = "PUT /ernic/k HTTP/1.1\r\n"
+                                   "Content-Length: 1048576\r\n"
+                                   "x-amz-rdma-token: 00deadbeef\r\n"
+                                   "\r\n";
+    size_t total = strlen(req_text);
+    struct s3_http_request req;
+
+    ssize_t n = s3_http_parse(req_text, total, &req);
+    if (n != (ssize_t)total) {
+        fail(name, "consumed %zd of %zu, want the whole request", n, total);
+        return;
+    }
+    if (!req.rdma)
+        fail(name, "rdma flag not set");
+    else if (req.content_length != 1048576)
+        fail(name, "content_length %zu, want 1048576", req.content_length);
+    else if (req.body_len != 0 || req.body != NULL)
+        fail(name, "body_len %zu, want no body on the socket", req.body_len);
+    else
+        ok(name);
+}
+
+/* Without a token the same request must still wait for its body. */
+static void test_parse_body_still_framed(void)
+{
+    const char *name = "parse-body-still-framed";
+    static const char hdrs[] = "PUT /ernic/k HTTP/1.1\r\n"
+                               "Content-Length: 5\r\n"
+                               "\r\n";
+    struct s3_http_request req;
+
+    ssize_t n = s3_http_parse(hdrs, strlen(hdrs), &req);
+    if (n != 0)
+        fail(name, "returned %zd with no body yet, want 0", n);
+    else if (req.rdma)
+        fail(name, "rdma flag set without a token");
+    else
+        ok(name);
+}
+
 static void test_parse_pipelined(void)
 {
     const char *name = "parse-pipelined";
@@ -354,6 +403,8 @@ int main(void)
 {
     test_parse_get();
     test_parse_incremental();
+    test_parse_rdma_no_body();
+    test_parse_body_still_framed();
     test_parse_pipelined();
     test_parse_errors();
     test_query();

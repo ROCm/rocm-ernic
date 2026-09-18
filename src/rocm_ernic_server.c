@@ -727,9 +727,8 @@ static void usage(const char *progname)
                     "guest talks to\n");
     fprintf(stderr, "                                     (default: "
                     "192.168.200.1)\n");
-    fprintf(
-        stderr,
-        "                      port=NUM     - HTTP port (default: 9000)\n");
+    fprintf(stderr,
+            "                      port=NUM     - HTTP port (default: 9000)\n");
     fprintf(stderr, "                      maxpart=BYTES - Largest single RDMA "
                     "transfer (default: 256M)\n");
     fprintf(stderr, "                    Examples:\n");

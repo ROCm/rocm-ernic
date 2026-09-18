@@ -53,6 +53,13 @@ struct s3_http_request {
     unsigned nhdr;
     size_t content_length;
     bool keep_alive;
+    /*
+     * The request carried an x-amz-rdma-token, so its payload rides the
+     * fabric and Content-Length describes the object rather than a body
+     * on the socket.  Set by the parser; the store re-reads the header
+     * itself to get at the token.
+     */
+    bool rdma;
     const uint8_t *body; /* points into the caller's buffer */
     size_t body_len;
 };
