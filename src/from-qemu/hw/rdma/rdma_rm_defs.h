@@ -126,6 +126,10 @@ typedef struct RdmaRmQP {
     uint32_t send_cq_handle;
     uint32_t recv_cq_handle;
     enum ibv_qp_state qp_state;
+    /* The backends do not model PSNs, so the values the guest set are only
+     * recoverable from here. */
+    uint32_t rq_psn;
+    uint32_t sq_psn;
     uint8_t is_srq;
     RdmaRmQPWqeProcessingState wqe_state;
     _Atomic uint32_t send_in_flight;

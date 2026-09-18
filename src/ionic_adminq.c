@@ -1081,9 +1081,9 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         }
 
         uint8_t state = 0, path_mtu = 3 /* IBV_MTU_1024 */;
-        uint32_t dest_qpn = 0, access = 0;
+        uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
         if (ionic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
-                              &dest_qpn, &access) != 0) {
+                              &dest_qpn, &access, &rq_psn, &sq_psn) != 0) {
             vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP %u: failed",
                     qp_id);
             return 1;
@@ -1104,8 +1104,10 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         uint8_t sqbuf[20] = {0};
         uint16_t flags_be = htobe16(flags);
         uint32_t dest_be = htobe32(dest_qpn);
+        uint32_t rq_psn_be = htobe32(rq_psn & 0xffffffu);
         memcpy(sqbuf + 2, &flags_be, 2);
         memcpy(sqbuf + 8, &dest_be, 4);
+        memcpy(sqbuf + 16, &rq_psn_be, 4);
 
         /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
          * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
@@ -1116,6 +1118,8 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
         rqbuf[2] = 1;
         rqbuf[3] = 1;
+        uint32_t sq_psn_be = htobe32(sq_psn & 0xffffffu);
+        memcpy(rqbuf + 4, &sq_psn_be, 4);
         memcpy(rqbuf + 8, &flags_be, 2);
 
         if (sq_dma && dma_write(ctx->vfu_ctx, sq_dma, sqbuf, sizeof(sqbuf)) < 0)

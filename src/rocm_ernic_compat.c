@@ -1093,7 +1093,8 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
 
 int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
-                      uint32_t *access_flags)
+                      uint32_t *access_flags, uint32_t *rq_psn,
+                      uint32_t *sq_psn)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     struct ibv_qp_attr attr;
@@ -1105,7 +1106,8 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
 
     ret = rdma_rm_query_qp(
         &pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn, &attr,
-        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_ACCESS_FLAGS,
+        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_ACCESS_FLAGS |
+            IBV_QP_RQ_PSN | IBV_QP_SQ_PSN,
         &init_attr);
     if (ret)
         return ret;
@@ -1118,6 +1120,10 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
         *dest_qpn = attr.dest_qp_num;
     if (access_flags)
         *access_flags = (uint32_t)attr.qp_access_flags;
+    if (rq_psn)
+        *rq_psn = attr.rq_psn;
+    if (sq_psn)
+        *sq_psn = attr.sq_psn;
     return 0;
 }
 

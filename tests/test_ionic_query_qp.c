@@ -111,12 +111,15 @@ static uint8_t g_state;
 static uint8_t g_path_mtu;
 static uint32_t g_dest_qpn;
 static uint32_t g_access;
+static uint32_t g_rq_psn;
+static uint32_t g_sq_psn;
 static int g_query_rc;
 static uint32_t g_queried_qpn;
 
 int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
-                      uint32_t *access_flags)
+                      uint32_t *access_flags, uint32_t *rq_psn,
+                      uint32_t *sq_psn)
 {
     (void)handle;
     g_queried_qpn = qpn;
@@ -130,6 +133,10 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
         *dest_qpn = g_dest_qpn;
     if (access_flags)
         *access_flags = g_access;
+    if (rq_psn)
+        *rq_psn = g_rq_psn;
+    if (sq_psn)
+        *sq_psn = g_sq_psn;
     return 0;
 }
 
@@ -305,6 +312,8 @@ static void ctx_reset(void)
     g_path_mtu = 3; /* IBV_MTU_1024 */
     g_dest_qpn = 0xd00001;
     g_access = (1u << 1) | (1u << 2); /* REMOTE_WRITE | REMOTE_READ */
+    g_rq_psn = 0x0abcde;
+    g_sq_psn = 0x123456;
     g_query_rc = 0;
     g_queried_qpn = 0;
 }
@@ -413,6 +422,38 @@ static void test_dest_qpn_is_reported(void)
 }
 
 /*
+ * The two PSNs land in different buffers and in the opposite one to the
+ * name a reader expects: the receive PSN is the last field of the sq
+ * buffer, the send PSN the second field of the rq buffer.  Both are 24-bit
+ * on the wire, so a resource manager that hands back more has to be
+ * truncated rather than allowed to spill into the neighbouring field.
+ */
+static void test_psns_are_reported(void)
+{
+    uint8_t body[34];
+    uint32_t rq_be, sq_be;
+
+    ctx_reset();
+    build_body(body, QP_ID, SQ_GPA, RQ_GPA);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+
+    memcpy(&rq_be, g_mem + SQ_GPA + 16, 4);
+    memcpy(&sq_be, g_mem + RQ_GPA + 4, 4);
+    check("rq-psn-in-sq-buffer", be32toh(rq_be) == g_rq_psn);
+    check("sq-psn-in-rq-buffer", be32toh(sq_be) == g_sq_psn);
+
+    ctx_reset();
+    g_rq_psn = 0xff000001;
+    g_sq_psn = 0xff000002;
+    build_body(body, QP_ID, SQ_GPA, RQ_GPA);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+
+    memcpy(&rq_be, g_mem + SQ_GPA + 16, 4);
+    memcpy(&sq_be, g_mem + RQ_GPA + 4, 4);
+    check("psns-masked-to-24-bits", be32toh(rq_be) == 1 && be32toh(sq_be) == 2);
+}
+
+/*
  * A qp_id with no mapping must fail the command rather than answer with a
  * zeroed buffer, which the driver would read as a perfectly good QP in
  * RESET.
@@ -458,6 +499,7 @@ int main(void)
     test_every_state_round_trips();
     test_access_flags_are_translated();
     test_dest_qpn_is_reported();
+    test_psns_are_reported();
     test_unknown_qp_fails();
     test_query_failure_fails_the_command();
     test_short_body_writes_nothing();
