@@ -1962,14 +1962,14 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     /* Serialised against the data path; see the
                      * REGISTER_RESP send above. */
                     qemu_mutex_lock(&conn->lock);
-                    int ret = tcp_send_message(
+                    int send_ret = tcp_send_message(
                         conn->sockfd, TCP_MSG_DHCP_RESPONSE, &dhcp_resp,
                         resp_len,
                         __atomic_fetch_add(&priv->next_seq, 1,
                                            __ATOMIC_RELAXED),
                         priv->local_node_id, hdr.src_node_id, 0, 0);
                     qemu_mutex_unlock(&conn->lock);
-                    if (ret < 0) {
+                    if (send_ret < 0) {
                         rdma_error_report(
                             "TCP: Failed to send DHCP response to node %u",
                             hdr.src_node_id);
@@ -2747,8 +2747,6 @@ static void *tcp_manager_health_check_thread(void *opaque)
 static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
 {
     TcpRegisterNodePayload reg;
-    TcpMsgHeader hdr;
-    void *payload = NULL;
     int ret;
     char hostname[256];
 
@@ -2820,10 +2818,10 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
             rdma_error_report("TCP: Registration timeout");
             return -1;
         }
-        int ret =
+        int wait_ret =
             pthread_cond_timedwait(&priv->registration_cond.cond,
                                    &priv->registration_mutex.lock, &deadline);
-        if (ret == ETIMEDOUT) {
+        if (wait_ret == ETIMEDOUT) {
             qemu_mutex_unlock(&priv->registration_mutex);
             rdma_error_report("TCP: Registration timeout");
             return -1;
