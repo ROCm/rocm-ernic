@@ -190,6 +190,7 @@
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
 <li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a></li>
 <li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
@@ -392,6 +393,8 @@
 </li>
       <li><a href="api.html#_CPPv428ionic_datapath_attach_nvmeofP14ionic_datapathPK17nvmeof_target_cfgPc6size_t">ionic_datapath_attach_nvmeof (C++ function)</a>
 </li>
+      <li><a href="api.html#_CPPv424ionic_datapath_attach_s3P14ionic_datapathPK13s3_target_cfgPc6size_t">ionic_datapath_attach_s3 (C++ function)</a>
+</li>
       <li><a href="api.html#_CPPv421ionic_datapath_createP9vfu_ctx_tP13ionic_eth_emu">ionic_datapath_create (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv422ionic_datapath_destroyP14ionic_datapath">ionic_datapath_destroy (C++ function)</a>
@@ -440,10 +443,10 @@
 </li>
       <li><a href="api.html#_CPPv4N18ionic_dp_ring_desc10depth_log2E">ionic_dp_ring_desc::depth_log2 (C++ member)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#_CPPv4N18ionic_dp_ring_desc11stride_log2E">ionic_dp_ring_desc::stride_log2 (C++ member)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#_CPPv424ionic_eth_emu_attach_tapP13ionic_eth_emuPKcPc6size_t">ionic_eth_emu_attach_tap (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv425ionic_eth_emu_bar0_accessP13ionic_eth_emuPc6size_t6loff_tb">ionic_eth_emu_bar0_access (C++ function)</a>
@@ -464,11 +467,15 @@
 </li>
       <li><a href="api.html#_CPPv435ionic_eth_emu_register_rdma_handlerP13ionic_eth_emu22ionic_rdma_devcmd_fn_tPv">ionic_eth_emu_register_rdma_handler (C++ function)</a>
 </li>
+      <li><a href="api.html#_CPPv432ionic_eth_emu_register_tx_filterP13ionic_eth_emu22ionic_eth_tx_filter_fnPv">ionic_eth_emu_register_tx_filter (C++ function)</a>
+</li>
       <li><a href="api.html#_CPPv421ionic_eth_emu_set_macP13ionic_eth_emuAL6E_K7uint8_t">ionic_eth_emu_set_mac (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv424ionic_eth_emu_set_pvrdmaP13ionic_eth_emuPv">ionic_eth_emu_set_pvrdma (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv425ionic_eth_emu_trigger_irqP13ionic_eth_emui">ionic_eth_emu_trigger_irq (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_eth_tx_filter_fn">ionic_eth_tx_filter_fn (C++ type)</a>
 </li>
       <li><a href="api.html#_CPPv422ionic_irq_trigger_fn_t">ionic_irq_trigger_fn_t (C++ type)</a>
 </li>
@@ -529,6 +536,8 @@
       <li><a href="api.html#_CPPv419ionic_rm_dealloc_qp15pvrdma_handle_t8uint32_t">ionic_rm_dealloc_qp (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv418ionic_rm_modify_qp15pvrdma_handle_t8uint32_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_tPK7uint8_t">ionic_rm_modify_qp (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv417ionic_rm_query_qp15pvrdma_handle_t8uint32_tP7uint8_tP7uint8_tP8uint32_tP8uint32_tP8uint32_tP8uint32_t">ionic_rm_query_qp (C++ function)</a>
 </li>
   </ul></td>
 </tr></table>

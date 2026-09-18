@@ -1,0 +1,949 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>S3 over RDMA Object Store &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 's3';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="systemd Service and ernicctl" href="service.html" />
+    <link rel="prev" title="NVMe-oF Controller" href="nvmeof.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">S3 over RDMA Object Store</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/s3.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>S3 over RDMA Object Store</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reaching-it-from-the-guest">Reaching It from the Guest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-works">How It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-control-plane-in-band">The control plane, in band</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rdma-token">The RDMA token</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#moving-the-bytes">Moving the bytes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-store-supports">What the store supports</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="s3-over-rdma-object-store">
+<h1>S3 over RDMA Object Store<a class="headerlink" href="#s3-over-rdma-object-store" title="Link to this heading">#</a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">s3</span></code> backend turns a rocm-ernic instance into an S3
+<em>server</em> that moves object payloads over RDMA instead of over
+the HTTP body. The object store, the HTTP endpoint and the
+RDMA data mover all live inside the server process, so a
+stock guest can run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>http://192.168.200.1:9000/ernic/
+</pre></div>
+</div>
+<p>and get a bucket listing back over the emulated NIC, with no
+second virtual machine, no second server instance, and no
+RDMA hardware anywhere in the picture.</p>
+<p>It is the NVMe-oF backend’s argument applied one layer up.
+Every other RDMA path in this project needs two endpoints to
+prove anything; here one guest and one server are a complete
+object fabric, which makes an object <code class="docutils literal notranslate"><span class="pre">PUT</span></code> and <code class="docutils literal notranslate"><span class="pre">GET</span></code> a
+day-to-day smoke test of the memory keys and the RDMA
+READ/WRITE engine in a single VM.</p>
+<p>The protocol is the one cuObject v1.2.0 introduced and
+<a class="reference external" href="https://github.com/ROCm/hipObject">hipObject</a> speaks on
+the client side: an ordinary HTTP/1.1 request carrying an
+<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-token</span></code> header that describes the client’s
+registered buffer, and a response whose payload was placed
+into that buffer by RDMA before the headers came back. The
+S3 surface itself – path addressing, the XML listing
+documents, the error codes, the multipart flow – follows
+<a class="reference external" href="https://github.com/versity/versitygw">versitygw</a>, which
+is the reference this implementation was read against. No
+part of versitygw is vendored or submoduled: the store here
+is a few hundred lines of in-memory objects, because its job
+is to exercise the data path rather than to be a gateway.</p>
+<section id="starting-the-server">
+<h2>Starting the Server<a class="headerlink" href="#starting-the-server" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 256 MiB store in bucket "ernic" on 192.168.200.1:9000</span>
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>s3<span class="w"> </span>--tap<span class="w"> </span>ernic0
+
+<span class="c1"># 1 GiB, a different bucket name</span>
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>s3:size<span class="o">=</span>1G,bucket<span class="o">=</span>bench<span class="w"> </span>--tap<span class="w"> </span>ernic0
+
+<span class="c1"># Somewhere else on the guest's segment</span>
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>s3:ip<span class="o">=</span><span class="m">10</span>.0.0.5,port<span class="o">=</span><span class="m">8080</span><span class="w"> </span>--tap<span class="w"> </span>ernic0
+</pre></div>
+</div>
+<p>The backend string is <code class="docutils literal notranslate"><span class="pre">s3</span></code> optionally followed by <code class="docutils literal notranslate"><span class="pre">:</span></code> and
+a comma-separated option list:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 12.0%" />
+<col style="width: 20.0%" />
+<col style="width: 68.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bucket=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ernic</span></code></p></td>
+<td><p>The single bucket the store serves. A DNS label:
+3..63 characters of lowercase, digits, dot and dash,
+not starting or ending with dot or dash.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">size=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">256M</span></code></p></td>
+<td><p>Total object capacity. Accepts <code class="docutils literal notranslate"><span class="pre">K</span></code>/<code class="docutils literal notranslate"><span class="pre">M</span></code>/<code class="docutils literal notranslate"><span class="pre">G</span></code>/<code class="docutils literal notranslate"><span class="pre">T</span></code>
+and the <code class="docutils literal notranslate"><span class="pre">KiB</span></code>/<code class="docutils literal notranslate"><span class="pre">MiB</span></code> spellings. Objects are held in
+anonymous memory, so this is a real allocation ceiling
+and a <code class="docutils literal notranslate"><span class="pre">PUT</span></code> past it gets a 507.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">objects=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">256</span></code></p></td>
+<td><p>Object slots, 1..65536. Independent of <code class="docutils literal notranslate"><span class="pre">size=</span></code>:
+whichever runs out first stops the next <code class="docutils literal notranslate"><span class="pre">PUT</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ip=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">192.168.200.1</span></code></p></td>
+<td><p>Address the HTTP endpoint answers on. It has to be on
+the guest’s <code class="docutils literal notranslate"><span class="pre">rocm-ernic0</span></code> segment.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">port=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">9000</span></code></p></td>
+<td><p>TCP port the endpoint listens on.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">maxpart=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">256M</span></code></p></td>
+<td><p>Largest single transfer, and so the largest multipart
+part, accepted in one request.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A malformed option is refused before the device is
+presented, rather than surfacing later as a failed request:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>./build/rocm-ernic<span class="w"> </span>--backend<span class="w"> </span>s3:size<span class="o">=</span>bogus
+<span class="go">Error: s3 backend: bad size 'bogus'</span>
+</pre></div>
+</div>
+<p>A successful start logs the store, its endpoint and the MAC
+the endpoint will answer ARP with, at <code class="docutils literal notranslate"><span class="pre">info</span></code>:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">ionic_datapath: s3 bucket 'ernic' 268435456 bytes at \</span>
+<span class="go">    http://192.168.200.1:9000/ mac 02:53:c0:a8:c8:01</span>
+</pre></div>
+</div>
+</section>
+<section id="reaching-it-from-the-guest">
+<h2>Reaching It from the Guest<a class="headerlink" href="#reaching-it-from-the-guest" title="Link to this heading">#</a></h2>
+<p>Nothing has to be configured in the guest. Unlike the
+NVMe-oF controller, this endpoint answers ARP for itself, so
+it is simply a host on the segment:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ping<span class="w"> </span>-c<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="m">192</span>.168.200.1
+curl<span class="w"> </span>-s<span class="w"> </span>http://192.168.200.1:9000/ernic/
+curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>PUT<span class="w"> </span>--data-binary<span class="w"> </span>@file<span class="w"> </span>http://192.168.200.1:9000/ernic/obj
+curl<span class="w"> </span>-s<span class="w"> </span>http://192.168.200.1:9000/ernic/obj
+</pre></div>
+</div>
+<p>Those last two are the <em>body</em> path: with no
+<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-token</span></code> header the endpoint behaves like an
+ordinary S3 server and carries the payload in the HTTP body.
+That path exists so that <code class="docutils literal notranslate"><span class="pre">curl</span></code> is a usable debugging tool
+and so the control plane can be checked independently of
+RDMA. The RDMA path needs a client that registers a buffer
+and mints a token; <code class="file docutils literal notranslate"><span class="pre">tests/s3_rdma_client.c</span></code> is that
+client, and is described under <a class="reference internal" href="#testing">Testing</a> below.</p>
+</section>
+<section id="how-it-works">
+<h2>How It Works<a class="headerlink" href="#how-it-works" title="Link to this heading">#</a></h2>
+<p>Like <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code>, this is not a transport for guest RDMA
+traffic – it is a <em>peer</em> that speaks S3 back at the guest.
+It hooks into <code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>, the data path
+that serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than into
+the QEMU-derived backend vtable.</p>
+<section id="the-control-plane-in-band">
+<h3>The control plane, in band<a class="headerlink" href="#the-control-plane-in-band" title="Link to this heading">#</a></h3>
+<p>S3 needs TCP, and the guest’s TCP goes out of the emulated
+ionic NIC. Rather than open a host socket and ask the guest
+to route out to it – which would make the backend depend on
+<code class="docutils literal notranslate"><span class="pre">--tap</span></code> and on the host’s network – <code class="file docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code>
+terminates TCP <em>on the emulated wire</em>. Guest TX frames are
+offered to a filter registered with
+<code class="file docutils literal notranslate"><span class="pre">src/ionic_eth_emu.c</span></code> before they go anywhere else, and
+replies are injected back into the guest’s RX queue.</p>
+<p>What is implemented is the smallest TCP a well-behaved local
+peer on a lossless link needs: ARP, ICMP echo, the three-way
+handshake, in-order data with cumulative ACKs, MSS-sized
+segmentation (1460 bytes, honouring a smaller peer MSS down
+to 536), a 64 KiB window, one 200 ms retransmission timer per
+connection, and an orderly FIN. Eight connections at a time.
+There is no congestion control, no SACK, no out-of-order
+reassembly and no fragmentation, because every one of those
+exists to cope with a real network and there is not one
+between these two endpoints.</p>
+<p>The endpoint’s MAC is derived from its address –
+<code class="docutils literal notranslate"><span class="pre">02:53:</span></code> followed by the four address bytes, so
+192.168.200.1 is <code class="docutils literal notranslate"><span class="pre">02:53:c0:a8:c8:01</span></code>. It is locally
+administered and stable across restarts, and because the
+stack answers ARP the guest never needs to be told it.</p>
+<p>Frames in, frames out through a callback: nothing in
+<code class="file docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code> knows about vfio-user or queues, which
+is why the whole stack runs under CTest against a loopback
+that hands frames straight back.</p>
+</section>
+<section id="the-rdma-token">
+<h3>The RDMA token<a class="headerlink" href="#the-rdma-token" title="Link to this heading">#</a></h3>
+<p>A client that wants the payload moved by RDMA sends</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>x-amz-rdma-token: &lt;88 hex characters&gt;
+</pre></div>
+</div>
+<p>which decodes to a 44-byte little-endian structure
+(<code class="file docutils literal notranslate"><span class="pre">src/s3_token.h</span></code>):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 14.0%" />
+<col style="width: 14.0%" />
+<col style="width: 72.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Offset</p></th>
+<th class="head"><p>Size</p></th>
+<th class="head"><p>Field</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0</p></td>
+<td><p>1</p></td>
+<td><p>Transport: <code class="docutils literal notranslate"><span class="pre">0x00</span></code> Dynamic Connection, <code class="docutils literal notranslate"><span class="pre">0x01</span></code>
+Reliable Connection. cuObject requires DC on
+ConnectX; hipObject and this emulator speak RC.</p></td>
+</tr>
+<tr class="row-odd"><td><p>1</p></td>
+<td><p>4</p></td>
+<td><p>Queue-pair number.</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>16</p></td>
+<td><p>GID.</p></td>
+</tr>
+<tr class="row-odd"><td><p>21</p></td>
+<td><p>4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rkey</span></code> of the client’s registered buffer.</p></td>
+</tr>
+<tr class="row-even"><td><p>25</p></td>
+<td><p>8</p></td>
+<td><p>Remote address of that buffer.</p></td>
+</tr>
+<tr class="row-odd"><td><p>33</p></td>
+<td><p>8</p></td>
+<td><p>Length of the window the server may touch.</p></td>
+</tr>
+<tr class="row-even"><td><p>41</p></td>
+<td><p>1</p></td>
+<td><p>Port number.</p></td>
+</tr>
+<tr class="row-odd"><td><p>42</p></td>
+<td><p>2</p></td>
+<td><p>LID.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>hipObject’s <code class="docutils literal notranslate"><span class="pre">formatRdmaHeaderValue()</span></code> sends a three-field
+form, <code class="docutils literal notranslate"><span class="pre">&lt;token-hex&gt;:&lt;addr-hex&gt;:&lt;len-hex&gt;</span></code>, where the
+trailing pair overrides the address and length inside the
+token and a zero in either means “no override”. Both forms
+are accepted.</p>
+<p>The response carries the outcome in <code class="docutils literal notranslate"><span class="pre">x-amz-rdma-reply</span></code> and
+the byte count actually moved in <code class="docutils literal notranslate"><span class="pre">x-amz-rdma-bytes</span></code>. The
+reply value has three forms in the wild: the legacy cuObject
+<code class="docutils literal notranslate"><span class="pre">ok</span></code>/<code class="docutils literal notranslate"><span class="pre">err</span></code> tags, a bare decimal HTTP status, and
+<code class="docutils literal notranslate"><span class="pre">&lt;code&gt;:&lt;token-hex&gt;</span></code> carrying the server’s own token so an
+RC client can point a queue pair at the peer that just
+served it. This server sends the last form; all three parse.</p>
+</section>
+<section id="moving-the-bytes">
+<h3>Moving the bytes<a class="headerlink" href="#moving-the-bytes" title="Link to this heading">#</a></h3>
+<p>On a <code class="docutils literal notranslate"><span class="pre">GET</span></code> the store resolves the token’s <code class="docutils literal notranslate"><span class="pre">rkey</span></code> and
+RDMA-WRITEs the object into the client’s buffer; on a <code class="docutils literal notranslate"><span class="pre">PUT</span></code>
+it RDMA-READs the payload out of it. Either way the transfer
+is capped by the token’s length field, by <code class="docutils literal notranslate"><span class="pre">maxpart=</span></code>, and
+by the object’s own size – a token describing a window
+smaller than the object gets a short transfer and an
+<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-bytes</span></code> that says so, rather than a write past
+the end of the client’s registration.</p>
+<p>The interesting part is what is <em>not</em> here: no queue pair is
+ever connected. One guest owns every registration in the
+emulator, so an <code class="docutils literal notranslate"><span class="pre">rkey</span></code> arriving in a token resolves in the
+same memory-region table as any local <code class="docutils literal notranslate"><span class="pre">lkey</span></code>, and the
+target DMAs against it directly through the same
+<code class="docutils literal notranslate"><span class="pre">rdma_pci_dma_map</span></code> machinery the rest of the emulator uses.
+The client still creates a real RC queue pair and puts its
+QPN in the token, because that is what it would have to do on
+hardware and the field is checked – but nothing on this path
+depends on the connection existing.</p>
+</section>
+<section id="what-the-store-supports">
+<h3>What the store supports<a class="headerlink" href="#what-the-store-supports" title="Link to this heading">#</a></h3>
+<p>Path-style addressing (<code class="docutils literal notranslate"><span class="pre">/bucket/key</span></code>) against one bucket:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/</span></code> – list buckets.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/bucket</span></code> – list objects, with <code class="docutils literal notranslate"><span class="pre">prefix</span></code> and
+<code class="docutils literal notranslate"><span class="pre">max-keys</span></code>, returning a <code class="docutils literal notranslate"><span class="pre">ListBucketResult</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HEAD</span> <span class="pre">/bucket</span></code> – bucket existence.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PUT</span></code>, <code class="docutils literal notranslate"><span class="pre">GET</span></code>, <code class="docutils literal notranslate"><span class="pre">HEAD</span></code>, <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> on an object, with
+MD5 <code class="docutils literal notranslate"><span class="pre">ETag</span></code>s and ranged <code class="docutils literal notranslate"><span class="pre">GET</span></code> (<code class="docutils literal notranslate"><span class="pre">Range:</span> <span class="pre">bytes=a-b</span></code>
+answered with a 206).</p></li>
+<li><p>Multipart upload: <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">?uploads</span></code> to initiate,
+<code class="docutils literal notranslate"><span class="pre">PUT</span> <span class="pre">?partNumber=N&amp;uploadId=...</span></code> for parts, <code class="docutils literal notranslate"><span class="pre">POST</span>
+<span class="pre">?uploadId=...</span></code> to complete. The completed <code class="docutils literal notranslate"><span class="pre">ETag</span></code> is the
+digest of the part digests suffixed with the part count,
+as clients expect.</p></li>
+<li><p>S3 XML errors throughout: <code class="docutils literal notranslate"><span class="pre">NoSuchKey</span></code>, <code class="docutils literal notranslate"><span class="pre">NoSuchBucket</span></code>,
+<code class="docutils literal notranslate"><span class="pre">InvalidRange</span></code>, <code class="docutils literal notranslate"><span class="pre">MethodNotAllowed</span></code>, <code class="docutils literal notranslate"><span class="pre">EntityTooLarge</span></code>
+and friends, each with the offending resource named.</p></li>
+</ul>
+<p>Deletes are idempotent, as S3 requires: a missing key is
+still a 204.</p>
+</section>
+</section>
+<section id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
+<p>Server-side coverage runs without a VM and is part of
+<code class="docutils literal notranslate"><span class="pre">ctest</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^s3-'</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">s3-token-unit</span></code> – the token and reply wire formats,
+pinned against a hand-assembled reference image so the
+layout cannot drift.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">s3-http-unit</span></code> – the HTTP/1.1 subset: request parsing,
+query strings, headers, chunked and <code class="docutils literal notranslate"><span class="pre">Content-Length</span></code>
+bodies, response assembly.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">s3-target-unit</span></code> – the store: the full method set, the
+listing documents, ranged reads, multipart, the error
+paths, and the RDMA transfers against a fake set of DMA
+ops.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">s3-tcp-unit</span></code> – the in-band stack end to end over a
+loopback: ARP, ICMP, handshake, segmentation,
+retransmission, FIN.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">s3-ci</span></code> – starts the real server binary once per
+documented option spelling, checks the store and endpoint
+it reports, checks the derived MAC, and checks that
+malformed options are refused before the device appears.</p></li>
+</ul>
+<p>The end-to-end RDMA transfer needs a guest, because it needs
+a real <code class="docutils literal notranslate"><span class="pre">ibv_reg_mr</span></code> for the token to describe.
+<code class="file docutils literal notranslate"><span class="pre">tests/s3_rdma_client.c</span></code> is a single self-contained
+libibverbs client, built inside the guest and run there. It
+opens the RDMA device, registers one buffer, splits it in
+half – low half the <code class="docutils literal notranslate"><span class="pre">PUT</span></code> source, high half the <code class="docutils literal notranslate"><span class="pre">GET</span></code>
+destination – and mints a token per request. In functional
+mode (<code class="docutils literal notranslate"><span class="pre">-F</span></code>) it checks:</p>
+<ul class="simple">
+<li><p>a 4 KiB and a 1 MiB round trip, comparing byte for byte;</p></li>
+<li><p>a ranged <code class="docutils literal notranslate"><span class="pre">GET</span></code> (206 for <code class="docutils literal notranslate"><span class="pre">bytes=1024-1535</span></code>);</p></li>
+<li><p>a token whose window is shorter than the object, asserting
+that the write stopped at the window;</p></li>
+<li><p>the body path, with no token at all;</p></li>
+<li><p>listing and deletion, then a 404 for the deleted key;</p></li>
+<li><p>the error paths: missing key, malformed token, wrong
+bucket.</p></li>
+</ul>
+<p>It prints <code class="docutils literal notranslate"><span class="pre">all</span> <span class="pre">checks</span> <span class="pre">passed</span></code> and exits 0, or names what
+failed and exits 1.</p>
+<p>The Ansible play is the reusable definition, and needs a
+single guest already provisioned against an instance running
+the store:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-playbook<span class="w"> </span>playbooks/s3-tests.yml
+</pre></div>
+</div>
+<p>It installs a toolchain and <code class="docutils literal notranslate"><span class="pre">libibverbs-dev</span></code> in the guest,
+copies the client in, builds it, runs it, and checks the
+store came back empty. <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span> <span class="pre">ci-site.yml</span> <span class="pre">--tags</span>
+<span class="pre">s3</span></code> runs the same play as part of the CI site.</p>
+<p>The self-hosted lane drives it from shell so each step lands
+in the CI results as its own check, and provisions the guest
+itself first:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_INSTANCES</span><span class="o">=</span><span class="m">1</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_BACKEND</span><span class="o">=</span>s3:size<span class="o">=</span>256M,bucket<span class="o">=</span>ernic
+bash<span class="w"> </span>ci/jobs/vm-up.sh
+bash<span class="w"> </span>ci/jobs/vm-s3.sh
+bash<span class="w"> </span>ci/jobs/vm-down.sh
+</pre></div>
+</div>
+<p>Export them rather than prefixing a single command: all three
+scripts read both, and <code class="docutils literal notranslate"><span class="pre">ERNIC_INSTANCES</span></code> defaults to 2.</p>
+<p>And the hosted lane runs the whole thing from scratch –
+build, unit tests, boot a guest, provision it, transfer –
+in <code class="file docutils literal notranslate"><span class="pre">.github/workflows/s3-lane.yml</span></code>. Like the NVMe-oF
+lane it is a reusable workflow with a single <code class="docutils literal notranslate"><span class="pre">publish</span></code>
+input, called by <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>:
+false on a pull request, true on a scheduled or dispatched
+run against <code class="docutils literal notranslate"><span class="pre">main</span></code>. The steps are the same either way, so a
+green pull request and a scheduled run mean the same thing.
+The <code class="docutils literal notranslate"><span class="pre">vm-s3</span></code> job in
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/self-hosted-ci.yml</span></code> runs the
+self-hosted lane at the functional tier and above.</p>
+<p>The endpoint’s address, port and bucket are Ansible
+variables (<code class="docutils literal notranslate"><span class="pre">ernic_s3_addr</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic_s3_port</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ernic_s3_bucket</span></code> in
+<code class="file docutils literal notranslate"><span class="pre">ansible/group_vars/all.yml</span></code>); they have to match the
+<code class="docutils literal notranslate"><span class="pre">--backend</span></code> options the instance was started with.</p>
+</section>
+<section id="performance">
+<h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
+<p>The scheduled run of
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> sweeps the client
+across three object sizes and publishes what it measured, on
+the same terms and through the same code path as the RDMA,
+TCP/IP and NVMe-oF figures. The numbers land on the
+<a class="reference external" href="https://rocm.github.io/rocm-ernic/perf-trends.html">trend page</a>
+as the <em>S3-over-RDMA GET bandwidth over time</em> chart, and the
+1 MiB figure becomes the <code class="docutils literal notranslate"><span class="pre">S3</span> <span class="pre">1M</span> <span class="pre">GET</span></code> shield on the README.</p>
+<p>The sweep is <code class="docutils literal notranslate"><span class="pre">GET</span></code>s – the store RDMA-WRITEs into guest
+memory, which is the direction worth a headline number.
+Correctness in the other direction is covered by the round
+trips above, which are checks rather than rates.</p>
+<p>The headline is the <em>largest</em> tracked size, unlike the
+NVMe-oF shield’s 4 KiB. Every object transfer here carries an
+HTTP request and response of its own over the in-band TCP
+stack, so a 4 KiB figure measures that control plane rather
+than the data plane the badge is about.</p>
+<p>The same caveats apply as everywhere else on that page:</p>
+<ul class="simple">
+<li><p>The numbers come from a <strong>GitHub-hosted runner</strong> – shared
+vCPUs, noisy neighbours, no pinning. Treat them as a trend,
+not a benchmark. They stay in their own <code class="docutils literal notranslate"><span class="pre">s3</span></code> series: an
+HTTP-framed object transfer and a perftest sweep share no
+scale.</p></li>
+<li><p>The store is RAM, so nothing here measures storage.</p></li>
+<li><p>Only a green run on <code class="docutils literal notranslate"><span class="pre">main</span></code> publishes.</p></li>
+</ul>
+<p>To take the same measurements locally, set
+<code class="docutils literal notranslate"><span class="pre">ernic_s3_perf_csv</span></code> to a path and the play writes one
+bandwidth CSV there:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-playbook<span class="w"> </span>playbooks/s3-tests.yml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_s3_perf_csv</span><span class="o">=</span>/tmp/s3-bw.csv
+</pre></div>
+</div>
+<p>The object sizes are not free-form: they have to stay equal
+to <code class="docutils literal notranslate"><span class="pre">TRACKED_SIZES</span></code> in <code class="file docutils literal notranslate"><span class="pre">ci/report/publish-perf.py</span></code> or
+the chart quietly drops a series. The shell lane captures the
+same sweep in <code class="docutils literal notranslate"><span class="pre">probe_perf_sweep</span></code>, and refuses to record it
+unless the guest ran under KVM – numbers measured under TCG
+are one to two orders of magnitude off and would poison the
+history.</p>
+</section>
+<section id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>One bucket per server instance, held entirely in memory.
+Nothing survives a restart.</p></li>
+<li><p>No authentication: no SigV4, no ACLs, no policies. The
+endpoint is on a private emulated segment and trusts
+everything on it.</p></li>
+<li><p>No versioning, no lifecycle, no tagging, no CORS, no
+<code class="docutils literal notranslate"><span class="pre">DeleteObjects</span></code> batch, no copy.</p></li>
+<li><p>Multipart parts are buffered whole and concatenated at
+completion, so an upload is bounded by the store’s
+capacity twice over.</p></li>
+<li><p>The in-band TCP stack does not fragment, reassemble out of
+order, or do congestion control; it is correct for the one
+link it serves and would not survive a real network.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="nvmeof.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">NVMe-oF Controller</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="service.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">systemd Service and ernicctl</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reaching-it-from-the-guest">Reaching It from the Guest</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-works">How It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-control-plane-in-band">The control plane, in band</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rdma-token">The RDMA token</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#moving-the-bytes">Moving the bytes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-store-supports">What the store supports</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

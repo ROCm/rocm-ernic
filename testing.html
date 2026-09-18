@@ -195,6 +195,7 @@
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
 <li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a></li>
 <li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Testing</a></li>
@@ -378,6 +379,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-tests">S3-over-RDMA tests</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-tests">Running Tests</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -494,6 +496,26 @@ what it reports, including that bad options are refused).</p>
 <code class="docutils literal notranslate"><span class="pre">system-test-nvmeof</span></code> job runs end to end and which
 <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> mirrors check-by-check for the
 self-hosted lane. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+</section>
+<section id="s3-over-rdma-tests">
+<h3>S3-over-RDMA tests<a class="headerlink" href="#s3-over-rdma-tests" title="Link to this heading">#</a></h3>
+<p>Five tests cover the in-process object store without needing
+a VM: <code class="docutils literal notranslate"><span class="pre">s3-token-unit</span></code> (the RDMA token wire format),
+<code class="docutils literal notranslate"><span class="pre">s3-http-unit</span></code> (the HTTP/1.1 subset), <code class="docutils literal notranslate"><span class="pre">s3-target-unit</span></code>
+(the store and its transfers against fake DMA ops),
+<code class="docutils literal notranslate"><span class="pre">s3-tcp-unit</span></code> (the in-band ARP/ICMP/TCP stack over a
+loopback) and <code class="docutils literal notranslate"><span class="pre">s3-ci</span></code> (a shell test that starts the real
+server once per documented option spelling).</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^s3-'</span>
+</pre></div>
+</div>
+<p>The guest-side transfer needs a VM, because it needs a real
+<code class="docutils literal notranslate"><span class="pre">ibv_reg_mr</span></code> for the token to describe.
+<code class="docutils literal notranslate"><span class="pre">tests/s3_rdma_client.c</span></code> is built and run inside the guest
+by <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/s3-tests.yml</span></code>, which the hosted
+<code class="docutils literal notranslate"><span class="pre">system-test-s3</span></code> job runs end to end and which
+<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-s3.sh</span></code> mirrors check-by-check for the
+self-hosted lane. See <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>.</p>
 </section>
 </section>
 <section id="running-tests">
@@ -708,6 +730,7 @@ ansible-playbook<span class="w"> </span>playbooks/vm-register.yml
 ansible-playbook<span class="w"> </span>playbooks/guest-setup.yml
 ansible-playbook<span class="w"> </span>playbooks/sanity-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/s3-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/performance-tests.yml
 </pre></div>
 </div>
@@ -1008,6 +1031,7 @@ this is a public repository.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-tests">S3-over-RDMA tests</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-tests">Running Tests</a><ul class="pst-show_toc_level nav section-nav flex-column">

@@ -89,6 +89,29 @@ The guest-side connect needs a VM. It lives in
 ``ci/jobs/vm-nvmeof.sh`` mirrors check-by-check for the
 self-hosted lane. See :doc:`nvmeof`.
 
+S3-over-RDMA tests
+^^^^^^^^^^^^^^^^^^
+
+Five tests cover the in-process object store without needing
+a VM: ``s3-token-unit`` (the RDMA token wire format),
+``s3-http-unit`` (the HTTP/1.1 subset), ``s3-target-unit``
+(the store and its transfers against fake DMA ops),
+``s3-tcp-unit`` (the in-band ARP/ICMP/TCP stack over a
+loopback) and ``s3-ci`` (a shell test that starts the real
+server once per documented option spelling).
+
+.. code-block:: bash
+
+   ctest --test-dir build -R '^s3-'
+
+The guest-side transfer needs a VM, because it needs a real
+``ibv_reg_mr`` for the token to describe.
+``tests/s3_rdma_client.c`` is built and run inside the guest
+by ``ansible/playbooks/s3-tests.yml``, which the hosted
+``system-test-s3`` job runs end to end and which
+``ci/jobs/vm-s3.sh`` mirrors check-by-check for the
+self-hosted lane. See :doc:`s3`.
+
 Running Tests
 -------------
 
@@ -336,6 +359,7 @@ Each play can also be run separately:
    ansible-playbook playbooks/guest-setup.yml
    ansible-playbook playbooks/sanity-tests.yml
    ansible-playbook playbooks/nvmeof-tests.yml
+   ansible-playbook playbooks/s3-tests.yml
    ansible-playbook playbooks/performance-tests.yml
 
 Variable overrides

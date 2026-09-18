@@ -196,6 +196,7 @@
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
 <li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a></li>
 <li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
@@ -415,6 +416,9 @@ upstream Linux <code class="docutils literal notranslate"><span class="pre">ioni
 <li><p>Multiple RDMA backends (loopback, TCP/IP, native verbs)</p></li>
 <li><p>An in-process NVMe-oF target, so one VM and one server
 are a complete fabric (see <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>)</p></li>
+<li><p>An in-process S3-over-RDMA object store, with its own
+in-band HTTP endpoint on the emulated wire, so the same
+single VM is a complete object fabric (see <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>)</p></li>
 <li><p>Working Ethernet and TCP/IP to the host via a TAP
 interface</p></li>
 <li><p>Comprehensive statistics collection</p></li>
@@ -484,6 +488,15 @@ a host TAP:</p>
 <li class="toctree-l2"><a class="reference internal" href="nvmeof.html#testing">Testing</a></li>
 <li class="toctree-l2"><a class="reference internal" href="nvmeof.html#performance">Performance</a></li>
 <li class="toctree-l2"><a class="reference internal" href="nvmeof.html#limitations">Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="s3.html#starting-the-server">Starting the Server</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html#reaching-it-from-the-guest">Reaching It from the Guest</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html#how-it-works">How It Works</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html#testing">Testing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html#performance">Performance</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3.html#limitations">Limitations</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a><ul>
