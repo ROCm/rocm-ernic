@@ -45,6 +45,20 @@
 #define FLAG_PSH 0x08
 #define FLAG_ACK 0x10
 
+/*
+ * UBSan recovers by default: a runtime error prints and the run still
+ * exits 0.  Some of what this file drives -- a zero-length memmove off a
+ * NULL send buffer -- has no wrong output to assert on, so the report has
+ * to be the failure.  Like __asan_default_options in
+ * test_tcp_mesh_topology.c this is only a default, and a UBSAN_OPTIONS in
+ * the environment overrides it.
+ */
+const char *__ubsan_default_options(void);
+const char *__ubsan_default_options(void)
+{
+    return "halt_on_error=1";
+}
+
 static const uint8_t GUEST_MAC[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 static const uint8_t BCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -1184,6 +1198,171 @@ out:
     fixture_down(&fx);
 }
 
+/*
+ * An oversized body is answered once.  The endpoint used to queue a fresh
+ * 413 for every segment that overflowed the receive buffer, so once the
+ * peer acknowledged the first one the FIN went out and every answer after
+ * it landed on a sequence number the FIN had already consumed -- with the
+ * slot held until the idle reaper took it back.
+ */
+static void test_oversized_stream(void)
+{
+    const char *name = "oversized-stream";
+    struct fixture fx;
+    uint32_t srv = 0;
+    uint8_t junk[1460];
+    unsigned responses = 0;
+    unsigned after_fin = 0;
+    uint32_t fin_seq = 0;
+    size_t answered = 0;
+    bool fin_seen = false;
+    bool acked = false;
+
+    memset(junk, 'A', sizeof(junk));
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!handshake(&fx, name, GUEST_PORT, 1, &srv, 10))
+        goto out;
+
+    /* Enough segments to fill the receive buffer twice over, so most of
+     * the body arrives after the endpoint has given up on the request. */
+    const unsigned rounds = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk) + 12;
+    uint32_t seq = 2;
+
+    for (unsigned i = 0; i < rounds; i++) {
+        /* Acknowledge the answer on its own the way a client still
+         * writing its body does: that is what releases the FIN. */
+        bool ack_only = answered > 0 && !acked;
+
+        cap_reset(&fx.cap);
+        size_t n = build_tcp(
+            fx.frame, fx.mac, GUEST_PORT, seq, srv + (uint32_t)answered,
+            FLAG_ACK, ack_only ? NULL : junk, ack_only ? 0 : sizeof(junk));
+        if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20 + i)) {
+            fail(name, "a body segment was not consumed");
+            goto out;
+        }
+        if (ack_only)
+            acked = true;
+        else
+            seq += (uint32_t)sizeof(junk);
+        check_all_checksums(name, &fx.cap);
+
+        for (unsigned j = 0; j < fx.cap.n; j++) {
+            size_t plen = 0;
+            const struct t_tcp *tcp =
+                as_tcp(fx.cap.f[j].buf, fx.cap.f[j].len, &plen);
+            if (tcp == NULL)
+                continue;
+            if (plen > 0) {
+                if (fin_seen)
+                    after_fin++;
+                else
+                    answered += plen;
+                if (plen >= 8 &&
+                    memcmp(tcp_payload(fx.cap.f[j].buf), "HTTP/1.1", 8) == 0)
+                    responses++;
+            }
+            if (tcp->flags & FLAG_FIN) {
+                fin_seen = true;
+                fin_seq = ntohl(tcp->seq);
+            }
+        }
+    }
+
+    if (responses == 0) {
+        fail(name, "an oversized body went unanswered");
+        goto out;
+    }
+    if (responses != 1)
+        fail(name, "an oversized body drew %u answers, want 1", responses);
+    if (!fin_seen) {
+        fail(name, "the endpoint never closed on an oversized body");
+        goto out;
+    }
+    if (after_fin != 0)
+        fail(name, "%u data segments followed the FIN at seq %u", after_fin,
+             fin_seq);
+
+    /* The ACK of our own FIN has to disarm its retransmit timer as well as
+     * clear a send buffer it has no bytes left in. */
+    cap_reset(&fx.cap);
+    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq,
+                         srv + (uint32_t)answered + 1, FLAG_ACK, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 100);
+    if (s3_tcp_has_work(fx.tcp))
+        fail(name, "the ACK of our FIN left its retransmit armed");
+
+    /* The peer's own close has to retire the slot: a drain that holds one
+     * until the idle reaper starves an endpoint with eight of them. */
+    cap_reset(&fx.cap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq,
+                  srv + (uint32_t)answered + 1, FLAG_ACK | FLAG_FIN, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 101);
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "the connection kept its slot after both sides closed");
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/*
+ * A port probe: the peer completes the handshake and closes without ever
+ * sending a request, so nothing was ever queued for it.  The ACK of our
+ * own FIN then acknowledges a sequence number no send buffer backs.
+ */
+static void test_probe_close(void)
+{
+    const char *name = "probe-close";
+    struct fixture fx;
+    uint32_t srv = 0;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+
+    if (!handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
+        goto out;
+
+    cap_reset(&fx.cap);
+    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                         FLAG_ACK | FLAG_FIN, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+    check_all_checksums(name, &fx.cap);
+
+    bool fin = false;
+    for (unsigned i = 0; i < fx.cap.n; i++) {
+        const struct t_tcp *tcp =
+            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp->flags & FLAG_FIN))
+            fin = true;
+    }
+    if (!fin) {
+        fail(name, "the endpoint did not close back on a peer FIN");
+        goto out;
+    }
+
+    cap_reset(&fx.cap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1002, srv + 1, FLAG_ACK, NULL,
+                  0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 21);
+    for (unsigned i = 0; i < fx.cap.n; i++) {
+        const struct t_tcp *tcp =
+            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp->flags & FLAG_RST))
+            fail(name, "the ACK of our FIN drew a reset");
+    }
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "a probed-and-closed connection kept its slot");
+    if (s3_tcp_has_work(fx.tcp))
+        fail(name, "a retired connection still claims work");
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
 int main(void)
 {
     test_arp();
@@ -1196,6 +1375,8 @@ int main(void)
     test_conn_limit();
     test_idle_reap();
     test_oversized_request();
+    test_oversized_stream();
+    test_probe_close();
 
     if (failures)
         printf("\n%d failure(s)\n", failures);

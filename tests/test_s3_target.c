@@ -1174,6 +1174,160 @@ static void test_multipart_errors(void)
     ok(name);
 }
 
+/* A part the store has no room for must leave no trace: a rejected slot
+ * would otherwise pad the completed object's ETag with a part that has
+ * no bytes. */
+static void test_multipart_part_rejected(void)
+{
+    const char *name = "multipart-part-rejected";
+    struct s3_target *t = make_target("size=4K");
+    struct reply r;
+    char upload_id[64] = "";
+    char target[128];
+    char payload[5000];
+
+    if (t == NULL)
+        return;
+
+    memset(payload, 'q', sizeof(payload));
+
+    if (!exec_req(t, &r, NULL, NULL, "POST", "/ernic/p?uploads", NULL, NULL,
+                  NULL, 0)) {
+        fail(name, "initiate could not be built");
+        goto out;
+    }
+    const char *idp = strstr(r.text, "<UploadId>");
+    if (idp == NULL) {
+        fail(name, "initiate has no UploadId: %s", r.text);
+        reply_free(&r);
+        goto out;
+    }
+    idp += 10;
+    const char *ide = strstr(idp, "</UploadId>");
+    snprintf(upload_id, sizeof(upload_id), "%.*s", (int)(ide - idp), idp);
+    reply_free(&r);
+
+    snprintf(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
+             upload_id);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload, 2000)) {
+        if (r.resp.status != 200)
+            fail(name, "part 1 status %d, want 200", r.resp.status);
+        reply_free(&r);
+    }
+
+    /* A part that does not fit, then an oversized overwrite of the part
+     * that does: neither may disturb what the upload already holds. */
+    snprintf(target, sizeof(target), "/ernic/p?partNumber=2&uploadId=%s",
+             upload_id);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 507)
+            fail(name, "part 2 past capacity gave status %d, want 507",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    snprintf(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
+             upload_id);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 507)
+            fail(name, "oversized overwrite gave status %d, want 507",
+                 r.resp.status);
+        reply_free(&r);
+    }
+
+    snprintf(target, sizeof(target), "/ernic/p?uploadId=%s", upload_id);
+    if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+        fail(name, "complete could not be built");
+        goto out;
+    }
+    if (r.resp.status != 200)
+        fail(name, "complete status %d: %s", r.resp.status, r.text);
+    else if (strstr(r.text, "-1&quot;") == NULL)
+        fail(name, "a rejected part is still counted in the ETag: %s", r.text);
+    reply_free(&r);
+
+    if (s3_target_object_count(t) != 1)
+        fail(name, "complete did not produce exactly one object");
+    if (exec_req(t, &r, NULL, NULL, "GET", "/ernic/p", NULL, NULL, NULL, 0)) {
+        if (r.resp.body_len != 2000)
+            fail(name, "the completed object is %zu bytes, want 2000",
+                 r.resp.body_len);
+        else if (memcmp(r.text, payload, 2000) != 0)
+            fail(name, "the completed object is not the part that was kept");
+        reply_free(&r);
+    }
+
+    ok(name);
+out:
+    s3_target_destroy(t);
+}
+
+/* An uploadId longer than the target's buffer is a wrong upload id, not
+ * an absent one.  Read as absent, an UploadPart falls through to a plain
+ * PUT and the part overwrites the object it was meant to be part of. */
+static void test_overlong_upload_id(void)
+{
+    const char *name = "overlong-upload-id";
+    struct s3_target *t = make_target(NULL);
+    struct reply r;
+    char id[41];
+    char target[128];
+
+    if (t == NULL)
+        return;
+
+    memset(id, 'a', sizeof(id) - 1);
+    id[sizeof(id) - 1] = '\0';
+
+    static const char payload[] = "the quick brown fox";
+    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/fox.txt", NULL, NULL,
+                 payload, strlen(payload))) {
+        if (r.resp.status != 200)
+            fail(name, "seed PUT gave status %d, want 200", r.resp.status);
+        reply_free(&r);
+    }
+
+    snprintf(target, sizeof(target), "/ernic/fox.txt?partNumber=1&uploadId=%s",
+             id);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "d", 1)) {
+        if (r.resp.status != 404)
+            fail(name, "a part with an over-long uploadId gave %d, want 404",
+                 r.resp.status);
+        reply_free(&r);
+    }
+
+    /* The part must not have landed on the key as an object of its own. */
+    if (exec_req(t, &r, NULL, NULL, "HEAD", "/ernic/fox.txt", NULL, NULL, NULL,
+                 0)) {
+        const char *clen = hdr(&r, "x-amz-content-length");
+        if (clen == NULL || atoi(clen) != (int)strlen(payload))
+            fail(name, "the object is now %s bytes, want %zu",
+                 clen ? clen : "(absent)", strlen(payload));
+        reply_free(&r);
+    }
+
+    snprintf(target, sizeof(target), "/ernic/fox.txt?uploadId=%s", id);
+    if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 404)
+            fail(name, "completing an over-long uploadId gave %d, want 404",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 404)
+            fail(name, "aborting an over-long uploadId gave %d, want 404",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    if (s3_target_object_count(t) != 1)
+        fail(name, "the abort deleted the object, %u left",
+             s3_target_object_count(t));
+
+    s3_target_destroy(t);
+    ok(name);
+}
+
 /* Capacity and the object-slot ceiling are what stop a runaway client
  * from turning the emulator into an OOM kill. */
 static void test_capacity(void)
@@ -1232,6 +1386,125 @@ static void test_capacity(void)
     ok(name);
 }
 
+/* An in-flight multipart upload's bytes are the store's bytes: they have
+ * to count against capacity for every other writer, not just for the
+ * upload holding them. */
+static void test_multipart_capacity(void)
+{
+    const char *name = "multipart-capacity";
+    struct s3_target *t = make_target("size=4K,objects=2");
+    struct reply r;
+    char payload[3000];
+    char ids[2][64] = {{0}, {0}};
+    char target[128];
+
+    if (t == NULL)
+        return;
+
+    memset(payload, 'q', sizeof(payload));
+
+    static const char *keys[] = {"a", "b"};
+    for (int i = 0; i < 2; i++) {
+        snprintf(target, sizeof(target), "/ernic/%s?uploads", keys[i]);
+        if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+            fail(name, "initiate %s could not be built", keys[i]);
+            goto out;
+        }
+        const char *idp = strstr(r.text, "<UploadId>");
+        const char *ide = idp != NULL ? strstr(idp + 10, "</UploadId>") : NULL;
+        if (ide == NULL) {
+            fail(name, "initiate %s has no UploadId: %s", keys[i], r.text);
+            reply_free(&r);
+            goto out;
+        }
+        snprintf(ids[i], sizeof(ids[i]), "%.*s", (int)(ide - idp - 10),
+                 idp + 10);
+        reply_free(&r);
+    }
+
+    snprintf(target, sizeof(target), "/ernic/a?partNumber=1&uploadId=%s",
+             ids[0]);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 200)
+            fail(name, "part status %d, want 200", r.resp.status);
+        reply_free(&r);
+    }
+    if (s3_target_bytes_used(t) != sizeof(payload))
+        fail(name, "a part in flight leaves used at %llu, want %zu",
+             (unsigned long long)s3_target_bytes_used(t), sizeof(payload));
+
+    /* Those 3000 bytes are gone from the 4096 the store has, whoever asks. */
+    snprintf(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
+             ids[1]);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 507)
+            fail(name, "second part past capacity gave status %d, want 507",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/plain", NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 507)
+            fail(name, "a PUT past capacity gave status %d, want 507",
+                 r.resp.status);
+        reply_free(&r);
+    }
+
+    /* Complete charges the assembled object once, not twice and not zero
+     * times: the part bytes become the object's bytes. */
+    snprintf(target, sizeof(target), "/ernic/a?uploadId=%s", ids[0]);
+    if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 200)
+            fail(name, "complete status %d: %s", r.resp.status, r.text);
+        reply_free(&r);
+    }
+    if (s3_target_bytes_used(t) != sizeof(payload))
+        fail(name, "complete left used at %llu, want %zu",
+             (unsigned long long)s3_target_bytes_used(t), sizeof(payload));
+    if (s3_target_object_count(t) != 1)
+        fail(name, "complete left %u objects, want 1",
+             s3_target_object_count(t));
+
+    if (exec_req(t, &r, NULL, NULL, "DELETE", "/ernic/a", NULL, NULL, NULL, 0))
+        reply_free(&r);
+    if (s3_target_bytes_used(t) != 0)
+        fail(name, "delete left used at %llu, want 0",
+             (unsigned long long)s3_target_bytes_used(t));
+
+    /* An abandoned upload gives its bytes back when it is aborted. */
+    snprintf(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
+             ids[1]);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 200)
+            fail(name, "part on the second upload status %d, want 200",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    snprintf(target, sizeof(target), "/ernic/b?uploadId=%s", ids[1]);
+    if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 204)
+            fail(name, "abort gave status %d, want 204", r.resp.status);
+        reply_free(&r);
+    }
+    if (s3_target_bytes_used(t) != 0)
+        fail(name, "abort left used at %llu, want 0",
+             (unsigned long long)s3_target_bytes_used(t));
+    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/plain", NULL, NULL, payload,
+                 sizeof(payload))) {
+        if (r.resp.status != 200)
+            fail(name, "a PUT into reclaimed space gave status %d, want 200",
+                 r.resp.status);
+        reply_free(&r);
+    }
+
+    ok(name);
+out:
+    s3_target_destroy(t);
+}
+
 static void test_peer_token(void)
 {
     const char *name = "peer-token";
@@ -1277,7 +1550,10 @@ int main(void)
     test_list_objects();
     test_multipart();
     test_multipart_errors();
+    test_multipart_part_rejected();
+    test_overlong_upload_id();
     test_capacity();
+    test_multipart_capacity();
     test_peer_token();
 
     if (failures)

@@ -690,10 +690,16 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
             if (acked > c->txout) {
                 acked = (uint32_t)c->txout; /* never ACK what we never sent */
             }
-            memmove(c->txbuf, c->txbuf + acked, c->txlen - acked);
-            c->txlen -= acked;
-            c->txout -= acked;
-            c->snd_una += acked;
+            if (acked > 0) {
+                memmove(c->txbuf, c->txbuf + acked, c->txlen - acked);
+                c->txlen -= acked;
+                c->txout -= acked;
+                c->snd_una += acked;
+            }
+            /* An ACK of our own FIN clamps to zero on a connection that
+             * never queued a byte, so there is no send buffer to shuffle.
+             * The timer reset stays outside the guard: nothing else
+             * disarms the FIN's retransmit. */
             c->rexmits = 0;
             c->rto_at = c->txout > 0 ? now_ms + S3_TCP_RTO_MS : 0;
         }
@@ -714,9 +720,15 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
         if (seq == c->rcv_nxt) {
             if (!buf_reserve(&c->rxbuf, &c->rxcap, c->rxlen + payload_len,
                              S3_HTTP_REQUEST_MAX)) {
-                queue_canned(c, 413, "EntityTooLarge",
-                             "The request exceeds the server's limit.");
-                c->fin_queued = true;
+                /* The rest of the body still has to be absorbed so the
+                 * peer can finish and close, but only the first segment
+                 * over the limit is answered: a second response would be
+                 * queued behind a FIN that has already gone out. */
+                if (!c->fin_queued) {
+                    queue_canned(c, 413, "EntityTooLarge",
+                                 "The request exceeds the server's limit.");
+                    c->fin_queued = true;
+                }
                 c->rcv_nxt += (uint32_t)payload_len;
                 conn_pump(s, c, now_ms);
                 send_tcp(s, c, c->snd_una + (uint32_t)c->txout, TCP_FLAG_ACK,

@@ -661,6 +661,25 @@ static struct s3_upload *upload_find(struct s3_target *t, const char *id)
     return NULL;
 }
 
+/*
+ * An uploadId too long for @out is a wrong one, not an absent one, but
+ * s3_http_query_get() reports both as false.  Taken for absent, an
+ * UploadPart would fall through to a plain PUT over the key, so ask for
+ * presence separately and leave an id that will not fit empty: no
+ * upload has an empty id, so it matches none.
+ */
+static bool upload_id_get(const struct s3_http_request *req, char *out,
+                          size_t outlen)
+{
+    if (!s3_http_query_get(req, "uploadId", NULL, 0)) {
+        return false;
+    }
+    if (!s3_http_query_get(req, "uploadId", out, outlen)) {
+        out[0] = '\0';
+    }
+    return true;
+}
+
 static struct s3_upload *upload_alloc(struct s3_target *t, const char *key)
 {
     for (unsigned i = 0; i < S3_MAX_UPLOADS; i++) {
@@ -1143,10 +1162,11 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
         }
     }
 
-    /* A part upload holds its bytes aside until the upload completes. */
+    /* A part upload holds its bytes aside until the upload completes, but
+     * they are the store's bytes from the moment they arrive. */
     char upload_id[32] = "";
     char part_str[16] = "";
-    if (s3_http_query_get(req, "uploadId", upload_id, sizeof(upload_id))) {
+    if (upload_id_get(req, upload_id, sizeof(upload_id))) {
         struct s3_upload *u = upload_find(t, upload_id);
         uint32_t number = 0;
 
@@ -1170,8 +1190,12 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
             }
             return;
         }
+        unsigned nparts_before = u->nparts;
         struct s3_part *p = part_slot(u, number);
-        if (p == NULL || t->used + u->bytes - p->len + len > t->cfg.capacity) {
+        if (p == NULL || t->used - p->len + len > t->cfg.capacity) {
+            /* part_slot() has already committed the slot, and a part
+             * the store cannot take must not count towards the ETag. */
+            u->nparts = nparts_before;
             free(buf);
             s3_error(t, resp, 507, "EntityTooLarge",
                      "The store has no room for this part.", key);
@@ -1180,6 +1204,7 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
             }
             return;
         }
+        t->used = t->used - p->len + len;
         u->bytes = u->bytes - p->len + len;
         free(p->data);
         p->data = buf;
@@ -1222,13 +1247,14 @@ static void handle_delete(struct s3_target *t,
 {
     char upload_id[32] = "";
 
-    if (s3_http_query_get(req, "uploadId", upload_id, sizeof(upload_id))) {
+    if (upload_id_get(req, upload_id, sizeof(upload_id))) {
         struct s3_upload *u = upload_find(t, upload_id);
         if (u == NULL) {
             s3_error(t, resp, 404, "NoSuchUpload",
                      "The specified multipart upload does not exist.", key);
             return;
         }
+        t->used -= u->bytes;
         upload_reset(u);
         resp->status = 204;
         return;
@@ -1309,8 +1335,14 @@ static void handle_complete(struct s3_target *t, const char *key,
     md5_hex(digest, hex);
     snprintf(etag, sizeof(etag), "\"%s-%u\"", hex, u->nparts);
 
+    /* The parts are already charged against capacity, so hand their bytes
+     * back before obj_store charges the assembled object -- and take them
+     * again if it had no room. */
+    t->used -= u->bytes;
+
     struct s3_object *o = obj_store(t, key, buf, at, etag);
     if (o == NULL) {
+        t->used += u->bytes;
         free(buf);
         s3_error(t, resp, 507, "EntityTooLarge",
                  "The store is full or has no free object slot.", key);
@@ -1401,8 +1433,7 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
         char upload_id[32] = "";
         if (s3_http_query_get(req, "uploads", NULL, 0)) {
             handle_initiate(t, key, resp);
-        } else if (s3_http_query_get(req, "uploadId", upload_id,
-                                     sizeof(upload_id))) {
+        } else if (upload_id_get(req, upload_id, sizeof(upload_id))) {
             handle_complete(t, key, upload_id, resp);
         } else {
             s3_error(t, resp, 400, "InvalidRequest",
