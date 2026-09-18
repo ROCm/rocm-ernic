@@ -4,18 +4,23 @@
 # README links to are its siblings, perf/badge-*.json.
 #
 # What is committed on main is a placeholder -- an empty
-# history.jsonl and three "no data" badges -- so that a local or
-# pull request docs build still renders a complete site.  The
-# chart-*.html fragments are generated, and git-ignored.
+# history.jsonl, so that a local or pull request docs build still
+# renders a complete trend page, and a set of "no data" badges,
+# which exist only so the unconditional copy-back in
+# .github/actions/publish-perf has something to copy on the paths
+# where publish-perf.py writes no badge at all.  Neither reaches
+# the built site: the docs build publishes no static directory.
+# The chart-*.html fragments are generated, and git-ignored.
 #
 # During a publishing run, and during the docs-deploy build, the
 # real history is copied in here first and the tools work against
 # it as if it had always been local.
 #
-# One workflow writes the record: system-tests.yml, whose two
-# publishing lanes both go through .github/actions/publish-perf.
+# One workflow writes the record: system-tests.yml, whose three
+# publishing lanes all go through .github/actions/publish-perf.
 #   two-VM lane      perftest and iperf3   -> badge-rdma, badge-tcp
 #   NVMe-oF lane     the fio sweep         -> badge-nvmeof
+#   S3 lane          the GET size sweep    -> badge-s3
 #
 # Every record carries a "runner" field.  Numbers are only comparable
 # within a class, so each class is charted and badged as its own
