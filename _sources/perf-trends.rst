@@ -4,8 +4,8 @@
 Performance trends
 ==================
 
-Medians from the nightly runs, oldest at the left. Latest: ``7c740944``
-on GitHub-hosted runners at 2026-09-17 23:55:05 UTC.
+Medians from the nightly runs, oldest at the left. Latest: ``2ca92d62``
+on GitHub-hosted runners at 2026-09-18 04:39:52 UTC.
 
 Each runner class is charted on its own axes and never joined into one
 line. A GitHub-hosted runner has noisy neighbours and no fixed CPU, so
@@ -28,7 +28,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-bandwidth-github-hosted.html
 
-Last 3 runs, in GB/s:
+Last 4 runs, in GB/s:
 
 ======== ===== ====== =====
 Run      4 KiB 64 KiB 1 MiB
@@ -36,6 +36,7 @@ Run      4 KiB 64 KiB 1 MiB
 b66fdca9 --    --     --
 7b6fa94a --    --     --
 7c740944 0.91  7.54   16.06
+2ca92d62 --    --     --
 ======== ===== ====== =====
 
 
@@ -64,7 +65,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-latency-github-hosted.html
 
-Last 3 runs, in µs:
+Last 4 runs, in µs:
 
 ======== ====== ====== ======
 Run      4 KiB  64 KiB 1 MiB
@@ -72,6 +73,7 @@ Run      4 KiB  64 KiB 1 MiB
 b66fdca9 --     --     --
 7b6fa94a --     --     --
 7c740944 377.66 367.26 930.71
+2ca92d62 --     --     --
 ======== ====== ====== ======
 
 
@@ -100,7 +102,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-nvmeof-github-hosted.html
 
-Last 3 runs, in GB/s:
+Last 4 runs, in GB/s:
 
 ======== ======== ======== =======
 Run      4 KiB    64 KiB   1 MiB
@@ -108,5 +110,6 @@ Run      4 KiB    64 KiB   1 MiB
 b66fdca9 0.055195 0.828823 1.42307
 7b6fa94a 0.058755 0.937654 1.80337
 7c740944 0.102948 1.60176  2.82049
+2ca92d62 0.086831 1.31773  1.93243
 ======== ======== ======== =======
 
