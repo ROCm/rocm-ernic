@@ -23,10 +23,23 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Files with different licenses
 
-Some files in this repository carry different licenses as noted in their
-individual SPDX headers:
+The MIT terms above cover the build system and the deployment and
+automation code: the `CMakeLists.txt` files, `cmake/`, `docs/`, `ansible/`,
+`ci/`, `.github/`, `prometheus/`, `udev/`, `scripts/`, and `service/`.
 
-* Files under `src/from-qemu/` are derived from the QEMU project and are
-  licensed under `GPL-2.0-or-later`.
+The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
-The per-file SPDX header takes precedence for any file that contains one.
+* Everything under `src/` and `tests/`, and the fuzz harnesses in
+  `nix/analysis/fuzz/`, which build against `src/`. The one exception is
+  `tests/test_write_imm.c`, which is MIT.
+
+* Many of the files under `src/` were imported from the QEMU project
+  (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI headers
+  under `src/from-qemu/include/qemu-extra/standard-headers/` are instead
+  dual `GPL-2.0` / `BSD-2-Clause`, as stated in each file's header comment.
+
+The groupings above are a summary; the per-file notice is authoritative.
+Most files carry an `SPDX-License-Identifier` tag. The QEMU-derived files
+under `src/from-qemu/hw/rdma/` instead state their terms in prose in the
+header comment, and some files -- build fragments, dotfiles, data --
+carry no notice at all and take the license of the directory they sit in.

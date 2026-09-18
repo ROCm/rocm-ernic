@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 # S3-over-RDMA backend testing for CI.
 #
 # The object store only becomes reachable once a guest drives HTTP at the

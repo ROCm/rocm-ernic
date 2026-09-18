@@ -4,8 +4,11 @@
  * Connects to the rocm-ernic server via socket and performs basic
  * PCI configuration space queries to verify the device is working.
  *
- * Copyright (C) 2025
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <assert.h>

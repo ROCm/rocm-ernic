@@ -1,7 +1,4 @@
-/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
- *
- * SPDX-License-Identifier: MIT
- *
+/*
  * s3_rdma_client.c — guest-side S3-over-RDMA client for the ernic emulator
  *
  * The emulator's s3 backend is a storage server: an HTTP control plane it
@@ -24,6 +21,12 @@
  * src/s3_token.c: this file is scp'd into a guest and built there on its
  * own.  tests/test_s3_token.c pins the same layout against a hand-assembled
  * reference image, so the two cannot drift silently.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #define _GNU_SOURCE

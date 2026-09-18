@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR BSD-2-Clause)
+ */
 /*
  * Copyright (c) 2012-2016 VMware, Inc.  All rights reserved.
  *
@@ -11,8 +13,8 @@
  * http://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program available in the file COPYING in the main
- * directory of this source tree.
+ * along with this program available in the file LICENSE_GPL.md in the
+ * top-level directory of this source tree.
  *
  * The BSD 2-Clause License
  *

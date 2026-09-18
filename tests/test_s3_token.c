@@ -11,8 +11,11 @@
  * Failures print "FAIL <case>: <detail>" and main() returns the count, so
  * a regression names itself rather than just tripping an assert.
  *
- * Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <stdarg.h>

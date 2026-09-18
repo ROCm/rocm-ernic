@@ -11,8 +11,11 @@
  * The offsets are written out independently of src/nvmeof_cm.c so that a
  * typo in one does not cancel out against a matching typo in the other.
  *
- * Copyright (C) 2026 Advanced Micro Devices, Inc.
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <stdarg.h>

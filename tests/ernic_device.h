@@ -1,7 +1,4 @@
-/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
- *
- * SPDX-License-Identifier: MIT
- *
+/*
  * Shared emulated-device lookup for the libibverbs tests.
  *
  * Devices are identified by PCI vendor ID, not by name.  An RDMA
@@ -18,6 +15,12 @@
  * When $RDMA_DEVICE is set the caller has already identified the
  * device and its answer wins outright: not finding it is a failure,
  * never a skip, because the caller has asserted it is there.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #ifndef ERNIC_TESTS_DEVICE_H

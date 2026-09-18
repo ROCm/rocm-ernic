@@ -1,9 +1,14 @@
-// SPDX-License-Identifier: MIT
 /*
  * Test RDMA Connection Manager (rdma_cm) emulation support
  *
  * Tests that connection info (remote_addr, remote_rkey) is properly
  * exposed through query_qp when QPs are auto-paired in loopback mode.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 /* usleep() is POSIX, not ISO C */
