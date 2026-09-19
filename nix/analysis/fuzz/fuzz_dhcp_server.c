@@ -23,11 +23,9 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     (void)argc;
     (void)argv;
     /* 10.0.0.1/24, gw 10.0.0.1, dns 8.8.8.8, pool 10.0.0.2–10.0.0.254. */
-    g_server = dhcp_server_create(
-        htonl(0x0a000001), htonl(0xffffff00),
-        htonl(0x0a000001), htonl(0x08080808),
-        htonl(0x0a000002), htonl(0x0a0000fe),
-        3600);
+    g_server = dhcp_server_create(htonl(0x0a000001), htonl(0xffffff00),
+                                  htonl(0x0a000001), htonl(0x08080808),
+                                  htonl(0x0a000002), htonl(0x0a0000fe), 3600);
     return 0;
 }
 
@@ -52,9 +50,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         return 0;
     }
 
-    (void)dhcp_server_process(g_server,
-                              (const struct dhcp_packet *)request, size,
-                              response, sizeof(struct dhcp_packet));
+    (void)dhcp_server_process(g_server, (const struct dhcp_packet *)request,
+                              size, response, sizeof(struct dhcp_packet));
 
     free(response);
     free(request);
