@@ -11,10 +11,12 @@ breaking_changes:
     of `batesste-ci-images
     <https://github.com/sbates130272/batesste-ci-images>`__, which pins
     mainline 7.2.3 on Ubuntu 26.04 and bakes the RDMA userspace, the DKMS
-    toolchain and ``perftest``.  Everything the role used to do --- the
-    mainline kernel, the ``pci.ids`` entry, ``modules-load.d``, masking
-    ``unattended-upgrades`` --- is the image's business now.  Its
-    ``ernic_image_*`` variables are gone with it.
+    toolchain and ``perftest``.  The mainline kernel and masking
+    ``unattended-upgrades`` are the image's business now; the ``pci.ids``
+    entry and the ``modules-load.d`` entries moved into
+    ``ernic_guest_setup`` instead, since they describe the RDMA node the
+    role builds rather than the image it starts from.  The
+    ``ernic_image_*`` variables are gone with the role.
   - >-
     ``sbates130272.batesste`` and ``ansible.posix`` are no longer
     dependencies.  ``ernic_image_prep`` was batesste's only consumer, and

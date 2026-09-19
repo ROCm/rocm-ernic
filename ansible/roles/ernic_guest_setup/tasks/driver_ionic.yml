@@ -15,6 +15,9 @@
 # ernic_ionic_ref and ernic_ionic_kver are resolved by the
 # ernic_source role, which main.yml includes first.
 
+# The vCPU floor ionic_rdma needs is asserted in preflight.yml,
+# which main.yml runs before any of the builds.
+
 # drivers/infiniband/hw/ionic landed in 6.18.  On an older guest
 # the Ethernet half builds and the RDMA half does not, which fails
 # much later and much less clearly than this does.
@@ -46,9 +49,9 @@
       Guest kernel {{ ansible_kernel }} does not match the ionic
       sources pinned at {{ ernic_ionic_ref }}; ionic_rdma needs a
       {{ ernic_ionic_kver.split('.')[0:2] | join('.') }}.x kernel.
-      Rebuild the golden image with
-      ernic_image_kernel_mainline=true, or set
-      ernic_ionic_kernel_ref to a tag matching this kernel.
+      Set ernic_ionic_kernel_ref to a tag matching this kernel, or
+      boot a guest image carrying the pinned one -- this collection
+      no longer builds images, so the kernel is the image's choice.
   when: ernic_ionic_kver | length > 0
 
 # The overlays are meant to be identical.  When they are not, the

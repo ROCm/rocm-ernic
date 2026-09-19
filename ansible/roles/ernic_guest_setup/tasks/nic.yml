@@ -26,7 +26,11 @@
     fail_msg: >-
       ernic_guest_vm_ip is empty.  Set it (or the vm_ip host var
       that vm-register.yml supplies) to the address this guest
-      should take on {{ ernic_nic_name }}.
+      should take on {{ ernic_nic_name }}.  vm-register.yml derives
+      it as {{ ernic_nic_subnet }}.{{ 10 * (ernic_guest_vm_index
+      | int) }} for index {{ ernic_guest_vm_index }} -- .10 and .20
+      for a two-guest mesh, which is what the sanity and
+      performance plays expect.
 
 - name: Check that the emulated NIC exists
   ansible.builtin.command:
@@ -40,8 +44,12 @@
     that:
       - ernic_nic_check.rc == 0
     fail_msg: >-
-      NIC {{ ernic_nic_name }} not found.
-      Check udev rules and driver loading.
+      NIC {{ ernic_nic_name }} not found.  preflight.yml confirmed
+      {{ ernic_device_vendor_id }}:{{ ernic_device_id }} is on the
+      bus, so the device exists and it is the rename that did not
+      happen: check that udev/99-rocm-ernic.rules landed in
+      /etc/udev/rules.d and that ionic is the bound driver
+      (the rules also match on DRIVERS=="ionic").
 
 - name: Bring the emulated NIC up
   ansible.builtin.command:

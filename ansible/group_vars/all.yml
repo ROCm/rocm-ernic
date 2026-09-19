@@ -122,6 +122,9 @@ ernic_vm_backing: >-
 
 # ── Guest NIC configuration ─────────────────────
 # The NIC name itself is an ernic_guest_setup role default.
+# So is this, now -- but it has to be repeated here, because the
+# test plays interpolate it in play vars, where role defaults are
+# not yet in scope.  Keep the two in step.
 ernic_nic_subnet: "192.168.200"
 # iperf3 rate limit and duration.  Bandwidth is passed to iperf3 -b verbatim
 # (e.g. 100M, 1G); see iperf3(1) for accepted forms.  "0" means unlimited,

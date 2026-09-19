@@ -16,6 +16,12 @@
   ansible.builtin.include_role:
     name: ernic_source
 
+# First, and deliberately: everything below it is minutes of apt,
+# rdma-core and DKMS, and both preflight failures are ones the
+# guest would otherwise report as something unrelated.
+- name: Check the guest can host an RDMA node at all
+  ansible.builtin.include_tasks: preflight.yml
+
 - name: Install and start the QEMU guest agent
   ansible.builtin.include_tasks: guest_agent.yml
   when: ernic_guest_agent | bool

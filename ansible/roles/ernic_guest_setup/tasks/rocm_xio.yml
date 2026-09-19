@@ -83,6 +83,12 @@
           && depmod -a
       changed_when: true
 
+    # Deliberately not persistent, unlike the ionic modules.  Those
+    # are a DKMS package, so they are rebuilt for each kernel;
+    # rocm-xio.ko is hand-copied into the *running* kernel's extra/
+    # above.  A modules-load.d entry would survive a kernel upgrade
+    # that the module does not, leaving
+    # systemd-modules-load.service failed and the guest degraded.
     - name: Load the rocm-xio kernel module
       community.general.modprobe:
         name: rocm_xio
