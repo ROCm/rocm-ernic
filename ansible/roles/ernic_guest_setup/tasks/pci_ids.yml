@@ -124,7 +124,7 @@
           - "'Duplicate entry' not in (ernic_pciids_verify.stdout | default(''))"
         fail_msg: >-
           Merging the rocm-ernic entry left
-          {{ ernic_pciids_path }} unparseable, so lspci now resolves
+          {{ ernic_pciids_path }} unparsable, so lspci now resolves
           no names for any device: {{
           ernic_pciids_verify.stdout | default('') }}.  Restore it
           with "update-pciids" and set ernic_guest_pciids=false.
