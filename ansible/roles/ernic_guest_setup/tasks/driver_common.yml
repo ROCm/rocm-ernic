@@ -22,10 +22,29 @@
     cmd: udevadm control --reload-rules
   changed_when: true
 
+- name: Register the emulated NIC in pci.ids
+  ansible.builtin.include_tasks: pci_ids.yml
+  when: ernic_guest_pciids | bool
+
+# persistent: present also writes /etc/modules-load.d/<name>.conf.
+# ionic_rdma is the one that needs it: nothing autoloads it, so
+# without an entry a rebooted overlay comes back with the netdev
+# but no RDMA device.  ionic itself is autoloaded off modules.alias
+# -- the patch series adds 1dd8:100a to its PCI id table and the
+# DKMS install runs depmod -- and ib_core/ib_uverbs arrive as
+# ionic_rdma's dependencies, so those three are belt and braces.
+#
+# Only module loading is made persistent here.  The address in
+# nic.yml, the netdev up below and the counters symlink are still
+# run-time only, so a rebooted guest has its RDMA device back but
+# is not test-ready until the role runs again.
 - name: Load the guest kernel modules
   community.general.modprobe:
     name: "{{ item }}"
     state: present
+    persistent: >-
+      {{ 'present' if ernic_guest_modules_persist | bool
+         else 'absent' }}
   loop: "{{ ernic_guest_modules }}"
 
 - name: Verify the guest kernel modules loaded

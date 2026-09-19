@@ -1,0 +1,64 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``ernic_guest_setup`` gained a ``preflight.yml``, included first,
+    that fails on the two preconditions the role used to discover late
+    and report as something else.  It asserts the guest has at least
+    ``ernic_ionic_min_vcpus`` (4) online CPUs, because
+    ``ionic_lif_size()`` takes the RDMA event-queue count from
+    ``num_online_cpus()`` and ``ionic_create_rdma_admin()`` rejects
+    anything below ``IONIC_EQ_COUNT_MIN`` with a bare ``-EINVAL`` ---
+    reaching the operator only as ``Failed to register ibdev``, which
+    names neither CPUs nor queues.  And it asserts
+    ``ernic_device_vendor_id``:``ernic_device_id`` is on the PCI bus,
+    read from sysfs, so a device server built from a different revision
+    of rocm-ernic fails with the ids it actually presented instead of
+    silently never binding.  Both ran previously only after apt, the
+    rdma-core build and the DKMS build, or not at all.
+  - >-
+    ``ernic_guest_setup`` makes the guest kernel modules persistent
+    through ``/etc/modules-load.d``, behind
+    ``ernic_guest_modules_persist``.  ``ionic_rdma`` is the one that
+    needs it --- nothing autoloads it, so a rebooted overlay came back
+    with the netdev and no RDMA device.  ``rocm_xio`` is deliberately
+    excluded: it is hand-copied into the running kernel's ``extra/``
+    rather than DKMS-managed, so an entry would outlive the module
+    across a kernel upgrade and leave
+    ``systemd-modules-load.service`` failed.  Addressing, the netdev
+    up and the counters symlink remain run-time only, so a rebooted
+    guest is not test-ready without re-running the role.
+  - >-
+    ``ernic_guest_setup`` writes the ``pci.ids`` entry for the emulated
+    NIC, behind ``ernic_guest_pciids``, and
+    ``scripts/pci.ids.rocm-ernic`` returns as the canonical copy
+    carrying ``1dd8:100a`` rather than the retired ``1022:8000``.  On a
+    current guest this is a no-op and says so: hwdata already lists
+    ``1dd8:100a`` as ``DSC Serial Port Controller``, since the emulated
+    device reuses a vendor-assigned pair.  The entry is added only
+    where the vendor block does not list the device at all, because
+    pciutils rejects a ``pci.ids`` containing a duplicate device id
+    outright --- ``lspci`` then exits non-zero having resolved no names
+    for any device on the bus.
+  - >-
+    ``ernic_nic_subnet`` is an ``ernic_guest_setup`` default rather than
+    only a repo group var, and the role documents the addressing the
+    plays assume: ``vm-register.yml`` derives each guest's address as
+    ``{{ ernic_nic_subnet }}.{{ 10 * vm_index }}``, so a two-guest mesh
+    is ``.10`` and ``.20`` --- which is what ``sanity-tests.yml``,
+    ``performance-tests.yml`` and ``tcp-performance-tests.yml``
+    hard-code.  A consumer using the collection standalone never loaded
+    the group vars and had to reconstruct both the subnet and the
+    arithmetic by reading the plays.  ``nic.yml``'s empty-address
+    assert now spells the derivation out.  The role still does not
+    assign an address itself; ``ernic_guest_vm_ip`` remains required.
+bugfixes:
+  - >-
+    The kernel-mismatch ``fail_msg`` in ``driver_ionic.yml`` no longer
+    offers ``ernic_image_kernel_mainline=true`` as a remedy.  That
+    variable belonged to ``ernic_image_prep``, removed earlier in this
+    release, so half the message pointed at something that exists
+    nowhere in the tree.

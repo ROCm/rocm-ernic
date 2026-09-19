@@ -32,10 +32,11 @@ Phases, each behind a flag:
 
 | Phase | Tasks | Flag |
 |---|---|---|
+| Preflight | online-CPU floor, emulated NIC present on the PCI bus | always / `ernic_guest_preflight_device` |
 | Guest agent | `qemu-guest-agent` for QMP `guest-get-load` | `ernic_guest_agent` |
 | Stage sources | push `patches/` and the ionic helper scripts from the controller | always |
 | rdma-core | download, patch or inject the provider, build, install, stamp | `ernic_build_rdma_core` |
-| Driver | fetch and patch the ionic sources, DKMS build, udev rules, modprobe, `ibv_devices` checks | `ernic_install_driver` |
+| Driver | fetch and patch the ionic sources, DKMS build, udev rules, `pci.ids`, modprobe with `modules-load.d`, `ibv_devices` checks | `ernic_install_driver` |
 | NIC | hostname, `/etc/hosts`, address on `ernic_nic_name` | `ernic_configure_nic` |
 | rocm-xio | build, `rocm-xio.ko`, `xio-tester` | `ernic_gpu_passthrough` |
 
@@ -67,6 +68,16 @@ fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
 ## Requirements
 
 - Ubuntu resolute (26.04) guest
+- At least four online CPUs. `ionic_lif_size()` takes the RDMA event-queue
+  count from `num_online_cpus()` and `ionic_create_rdma_admin()` rejects fewer
+  than `IONIC_EQ_COUNT_MIN` with a bare `-EINVAL`, which reaches the operator
+  only as `Failed to register ibdev`. The preflight phase asserts on it before
+  anything is built.
+- The emulated NIC already attached, presenting
+  `ernic_device_vendor_id`:`ernic_device_id`. Preflight asserts on that too:
+  a device server built from a different revision of rocm-ernic presents
+  something `udev/99-rocm-ernic.rules` does not match, and nothing about that
+  is otherwise visible — nothing renames and nothing probes.
 - `become: true`
 - `community.general` for `modprobe` / `make`
 - A rocm-ernic checkout on the controller, or network access to clone one
@@ -79,6 +90,13 @@ fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
 # IONIC_KERNEL_REF pinned in cmake/ErnicKernelModule.cmake".
 ernic_ionic_source_dir: /var/tmp/ionic-src
 ernic_ionic_min_kernel: "6.18"
+ernic_ionic_min_vcpus: 4
+
+# Boot-time state. modules-load.d entries so a rebooted guest keeps
+# its RDMA device, and the pci.ids entry so lspci names the NIC.
+# Both used to be the golden image's business and are the role's now.
+ernic_guest_modules_persist: true
+ernic_guest_pciids: true
 
 # Phase gates
 ernic_guest_agent: true
@@ -100,9 +118,14 @@ ernic_rdma_core_hold: true
 
 # NIC. vm_index / vm_ip host vars (set by vm-register.yml) are
 # picked up automatically; set these directly for a static
-# inventory.
+# inventory.  vm-register.yml derives the address as
+# "{{ ernic_nic_subnet }}.{{ 10 * vm_index }}" -- .10 and .20 for a
+# two-guest mesh, which is what the sanity and performance plays
+# expect.  Address guests by hand the same way, or those plays will
+# be looking at the wrong hosts.
 ernic_nic_name: rocm-ernic0
 ernic_nic_prefix: 24
+ernic_nic_subnet: "192.168.200"
 ernic_guest_vm_index: "{{ vm_index | default(1) }}"
 ernic_guest_vm_ip: "{{ vm_ip | default('') }}"
 ernic_vm_name_base: rocm-ernic-vm

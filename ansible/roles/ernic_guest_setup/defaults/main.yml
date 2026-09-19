@@ -60,6 +60,26 @@ ernic_ionic_source_dir: /var/tmp/ionic-src
 # drivers/infiniband/hw/ionic was merged for 6.18; older guest
 # kernels cannot build the RDMA half.
 ernic_ionic_min_kernel: "6.18"
+# IONIC_EQ_COUNT_MIN in the upstream driver.  A guest below this
+# builds the modules fine and then fails to probe; see the assert in
+# tasks/preflight.yml.
+ernic_ionic_min_vcpus: 4
+
+# ── Preflight ────────────────────────────────────
+# The PCI pair the device server presents and
+# udev/99-rocm-ernic.rules matches.  Duplicated from those (the
+# rules are a static file this role copies verbatim), so preflight
+# can name the pair it looked for.  A server built from a different
+# revision of rocm-ernic presents something else, and the drift is
+# otherwise silent -- nothing renames, nothing probes.
+ernic_device_vendor_id: "0x1dd8"
+ernic_device_id: "0x100a"
+ernic_guest_preflight_device: true
+# A guest has a handful of PCI devices, so the failure message lists
+# them; run the role against something larger and the list is the
+# message.  Capped rather than dropped -- the presented id is the
+# whole point of printing it.
+ernic_preflight_max_report: 24
 
 # ── DKMS ─────────────────────────────────────────
 # A fresh id each run, so the DKMS setup script cannot
@@ -105,14 +125,49 @@ ernic_guest_modules:
   - ib_uverbs
   - ionic
   - ionic_rdma
+# Write /etc/modules-load.d entries as well as loading now, so a
+# rebooted guest comes back with its RDMA device.  ionic_rdma is
+# the one that needs it; see the comment in tasks/driver_common.yml
+# for why the other three are belt and braces.  Setting this false
+# removes entries a previous run wrote, rather than just declining
+# to write new ones.
+ernic_guest_modules_persist: true
+
+# ── lspci naming ─────────────────────────────────
+# Cosmetic, and usually a no-op: the emulated NIC reuses a real
+# vendor-assigned pair, and current hwdata already lists
+# 1dd8:100a -- as "DSC Serial Port Controller", which is what lspci
+# will call it.  tasks/pci_ids.yml only adds the entry below on a
+# guest whose pci.ids does not list the device at all, because a
+# duplicate device id makes pciutils reject the whole file.
+# scripts/pci.ids.rocm-ernic is the canonical copy of the entry;
+# keep the two in step.
+ernic_guest_pciids: true
+ernic_guest_pciids_vendor: "1dd8"
+ernic_guest_pciids_entry: "100a  ROCm Emulated RDMA NIC (ionic)"
 
 # ── Guest NIC ────────────────────────────────────
 ernic_nic_name: rocm-ernic0
 ernic_nic_prefix: 24
+# The /24 the emulated NICs share.  Also a group var in this repo,
+# because the test plays interpolate it at play level where role
+# defaults are not in scope; the two must agree.
+#
+# vm-register.yml derives each guest's address as
+# "{{ ernic_nic_subnet }}.{{ 10 * vm_index }}" -- so instance 1 is
+# .10 and instance 2 is .20, which is what sanity-tests.yml,
+# performance-tests.yml and tcp-performance-tests.yml expect of a
+# two-guest mesh.  A consumer addressing guests by hand should
+# follow the same arithmetic if it wants those plays to work.
+ernic_nic_subnet: "192.168.200"
 # Per-host values.  vm-register.yml supplies
 # vm_index and vm_ip via add_host; a static inventory can set
 # these directly instead.
 ernic_guest_vm_index: "{{ vm_index | default(1) }}"
+# Deliberately empty rather than derived from the subnet and the
+# index: two guests that both fell back to index 1 would silently
+# take the same address, which surfaces much later as an
+# unexplained test failure.  nic.yml asserts on it instead.
 ernic_guest_vm_ip: "{{ vm_ip | default('') }}"
 ernic_vm_name_base: rocm-ernic-vm
 

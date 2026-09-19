@@ -1,0 +1,131 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Name the emulated NIC in the guest's pci.ids, but only where the
+# id is genuinely unclaimed.
+#
+# The emulated device reuses a real, vendor-assigned pair: current
+# hwdata already lists 1dd8:100a as "DSC Serial Port Controller",
+# so on an up-to-date guest lspci names the device (misleadingly,
+# but it names it) and there is nothing to add.  Adding anyway is
+# not merely redundant -- pciutils rejects a pci.ids containing a
+# duplicate device id outright, so a second 100a line makes lspci
+# exit 1 and stop resolving names for every device on the bus, not
+# just this one.  Hence the per-device guard below rather than a
+# grep for our own description.
+#
+# scripts/pci.ids.rocm-ernic is the canonical copy of the entry;
+# ernic_guest_pciids_entry must match it.
+
+---
+- name: Find the system pci.ids path
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /usr/share/hwdata/pci.ids
+    - /usr/share/misc/pci.ids
+  register: ernic_pciids_stat
+
+- name: Set the pci.ids path fact
+  ansible.builtin.set_fact:
+    ernic_pciids_path: >-
+      {{ (ernic_pciids_stat.results
+          | selectattr('stat.exists')
+          | map(attribute='item')
+          | first
+          | default('')) }}
+
+# No pci.ids at all means no pciutils database to amend.  Cosmetic
+# either way, so this is skipped rather than fatal.
+- name: Amend pci.ids
+  when: ernic_pciids_path | length > 0
+  block:
+
+    # pci.ids is a flat file with block structure: a vendor line at
+    # column 0, its devices indented one tab, subsystems two.  So
+    # "does this vendor already list this device" needs a stateful
+    # scan, not a grep -- a bare grep for the device id matches the
+    # same four hex digits under a dozen other vendors.
+    - name: Check whether the vendor block already lists the device
+      ansible.builtin.command:
+        argv:
+          - awk
+          - >-
+            /^[0-9a-fA-F]{4}[ \t]/ {
+              inblock = ($1 == vendor)
+            }
+            inblock && $0 ~ "^\t" device "[ \t]" { found = 1 }
+            END { exit found ? 0 : 1 }
+          - "vendor={{ ernic_guest_pciids_vendor }}"
+          - "device={{ ernic_guest_pciids_entry.split()[0] }}"
+          - "{{ ernic_pciids_path }}"
+      register: ernic_pciids_have
+      failed_when: false
+      changed_when: false
+
+    # Inserted directly under the vendor line, because pci.ids is
+    # parsed sequentially: a device line belongs to the vendor block
+    # it sits in, so appending at the end of the file would land it
+    # under the class section and never match.
+    - name: Merge the rocm-ernic device into pci.ids
+      ansible.builtin.replace:
+        path: "{{ ernic_pciids_path }}"
+        regexp: '^({{ ernic_guest_pciids_vendor }}[ \t]+\S.*)$'
+        replace: '\1\n\t{{ ernic_guest_pciids_entry }}'
+      register: ernic_pciids_merge
+      when: ernic_pciids_have.rc != 0
+
+    # A hwdata too old to know the vendor leaves the replace above a
+    # silent no-op and the entry quietly never appears.  Say so
+    # rather than pretend it worked.
+    - name: Warn when the pci.ids vendor block is missing
+      ansible.builtin.debug:
+        msg: >-
+          No vendor {{ ernic_guest_pciids_vendor }} block in
+          {{ ernic_pciids_path }}, so the rocm-ernic device entry
+          was not added; lspci will show a bare device id.  Update
+          the guest's hwdata package.
+      when:
+        - ernic_pciids_have.rc != 0
+        - not (ernic_pciids_merge.changed | default(false))
+
+    - name: Report the name pci.ids already gives the device
+      ansible.builtin.debug:
+        msg: >-
+          {{ ernic_pciids_path }} already lists
+          {{ ernic_guest_pciids_vendor }}:{{
+          ernic_guest_pciids_entry.split()[0] }}, so it was left
+          alone -- the emulated NIC reuses a vendor-assigned id and
+          lspci will call it whatever hwdata calls it.  Adding a
+          second entry would make pciutils reject the file.
+      when: ernic_pciids_have.rc == 0
+
+    # Cheap, and the only thing that proves the file is still
+    # parseable: on a duplicate device id pciutils prints
+    # "Duplicate entry at <file>, line N" and resolves no names at
+    # all, for any device on the bus.  Skipped when pciutils is
+    # absent -- this role does not install it, and a missing binary
+    # is not evidence of a corrupt file.
+    - name: Verify pci.ids still parses
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          command -v lspci >/dev/null || exit 0;
+          lspci -i {{ ernic_pciids_path | quote }} -nn 2>&1 >/dev/null
+      register: ernic_pciids_verify
+      changed_when: false
+      failed_when: false
+      when: ernic_pciids_have.rc != 0
+
+    - name: Assert pci.ids was not corrupted
+      ansible.builtin.assert:
+        that:
+          - "'Duplicate entry' not in (ernic_pciids_verify.stdout | default(''))"
+        fail_msg: >-
+          Merging the rocm-ernic entry left
+          {{ ernic_pciids_path }} unparseable, so lspci now resolves
+          no names for any device: {{
+          ernic_pciids_verify.stdout | default('') }}.  Restore it
+          with "update-pciids" and set ernic_guest_pciids=false.
+      when: ernic_pciids_have.rc != 0
