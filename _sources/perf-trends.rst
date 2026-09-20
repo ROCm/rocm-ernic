@@ -5,7 +5,7 @@ Performance trends
 ==================
 
 Medians from the nightly runs, oldest at the left. Latest: ``0b48aa1d``
-on GitHub-hosted runners at 2026-09-19 04:37:36 UTC.
+on GitHub-hosted runners at 2026-09-20 04:37:50 UTC.
 
 Each runner class is charted on its own axes and never joined into one
 line. A GitHub-hosted runner has noisy neighbours and no fixed CPU, so
@@ -28,7 +28,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-bandwidth-github-hosted.html
 
-Last 6 runs, in GB/s:
+Last 7 runs, in GB/s:
 
 ======== ===== ====== =====
 Run      4 KiB 64 KiB 1 MiB
@@ -39,6 +39,7 @@ b66fdca9 --    --     --
 2ca92d62 0.79  6.95   15.45
 e715df52 1.09  7.39   18.36
 0b48aa1d 0.95  8.02   16.76
+0b48aa1d --    --     --
 ======== ===== ====== =====
 
 
@@ -67,7 +68,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-latency-github-hosted.html
 
-Last 6 runs, in µs:
+Last 7 runs, in µs:
 
 ======== ====== ====== =======
 Run      4 KiB  64 KiB 1 MiB
@@ -78,6 +79,7 @@ b66fdca9 --     --     --
 2ca92d62 371.55 442.82 1026.74
 e715df52 286.73 290.74 663.11
 0b48aa1d 306.54 359    851.36
+0b48aa1d --     --     --
 ======== ====== ====== =======
 
 
@@ -106,7 +108,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-nvmeof-github-hosted.html
 
-Last 6 runs, in GB/s:
+Last 7 runs, in GB/s:
 
 ======== ======== ======== =======
 Run      4 KiB    64 KiB   1 MiB
@@ -117,6 +119,7 @@ b66fdca9 0.055195 0.828823 1.42307
 2ca92d62 0.086831 1.31773  1.93243
 e715df52 0.088529 1.28944  1.91219
 0b48aa1d 0.066281 0.85107  1.46981
+0b48aa1d --       --       --
 ======== ======== ======== =======
 
 S3-over-RDMA GET bandwidth over time
@@ -129,7 +132,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-s3-github-hosted.html
 
-Last 6 runs, in GB/s:
+Last 7 runs, in GB/s:
 
 ======== ======== ======== =======
 Run      4 KiB    64 KiB   1 MiB
@@ -140,5 +143,6 @@ b66fdca9 --       --       --
 2ca92d62 --       --       --
 e715df52 0.006039 0.100311 1.31572
 0b48aa1d 0.005941 0.089183 1.26371
+0b48aa1d 0.005359 0.084159 1.20345
 ======== ======== ======== =======
 
