@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - develop
     paths:
       - 'docs/**'
       - 'src/**/*.h'
@@ -52,11 +52,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y doxygen
 
-    # docs/perf-history/history.jsonl is committed to main as an empty
-    # placeholder so a local or PR build still renders a complete site.
-    # The real record lives on gh-pages, written by the perf lanes, and
-    # has to be present *before* Sphinx runs: perf-trends is a page in
-    # the toctree, not an artifact of the build.
+    # docs/perf-history/history.jsonl is committed to develop as an
+    # empty placeholder so a local or PR build still renders a complete
+    # site.  The real record lives on gh-pages, written by the perf
+    # lanes, and has to be present *before* Sphinx runs: perf-trends is
+    # a page in the toctree, not an artifact of the build.
     - name: Fetch the published performance history
       run: |
         set -euo pipefail

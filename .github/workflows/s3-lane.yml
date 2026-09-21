@@ -678,14 +678,14 @@ jobs:
         if-no-files-found: warn
 
     - name: Publish the S3 trend and shield
-      # Only a green run on main may move the published history: a
+      # Only a green run on develop may move the published history: a
       # failed lane's numbers describe a broken store, and a branch's
       # describe the branch.  A hosted runner is also noisier than the
       # self-hosted node, which is why this feeds its own "s3" series.
       if: >-
         inputs.publish &&
         success() &&
-        github.ref == 'refs/heads/main'
+        github.ref == 'refs/heads/develop'
       uses: ./.github/actions/publish-perf
       with:
         results: ${{ env.S3_RESULTS }}

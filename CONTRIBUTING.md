@@ -11,14 +11,14 @@ changes.
 
 ## Branching Model
 
-The main development trunk of rocm-ernic is the `main` branch.
+The main development trunk of rocm-ernic is the `develop` branch.
 
 rocm-ernic generally uses trunk-based development, where feature branches are
 intended to be relatively short-lived. When necessary, feature branches will be
 created and prefixed with `feature/`. These feature branches will be deleted
-after the feature has been merged to `main`. Any feature branches which are not
-merged to `main`, but should be kept around for posterity, will be renamed
-`feature` --> `inactive`.
+after the feature has been merged to `develop`. Any feature branches which are
+not merged to `develop`, but should be kept around for posterity, will be
+renamed `feature` --> `inactive`.
 
 External developers must use forks for development. You will sometimes see
 branches from AMD staff named `<category>/<user>/<description>`. These will be
@@ -29,9 +29,9 @@ very short-lived.
 Releases are tagged `vX.Y.Z`, where `X`, `Y`, and `Z` are the major, minor,
 and patch versions of the release.
 
-Releases occur from `main`. Upon release, the tag is created and the minor
-version number is bumped. The major version number will only be bumped on `main`
-when making an API/ABI-breaking change.
+Releases occur from `develop`. Upon release, the tag is created and the minor
+version number is bumped. The major version number will only be bumped on
+`develop` when making an API/ABI-breaking change.
 
 Project release tags `vX.Y.Z` publish GitHub release assets for the
 `rocm-ernic` server and `ernicctl`. The Ansible collection uses its own
@@ -39,7 +39,7 @@ Project release tags `vX.Y.Z` publish GitHub release assets for the
 published separately.
 
 Release branches are created retroactively and only when it is necessary to
-bugfix supported versions. Bugfixing should take place on `main` and be
+bugfix supported versions. Bugfixing should take place on `develop` and be
 cherry-picked to any branches that are being maintained.
 
 ## Pull Requests

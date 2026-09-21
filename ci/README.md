@@ -192,7 +192,7 @@ without feedback.
 Fork pull requests **are** runnable, via the `pr` input:
 
 ```bash
-gh workflow run self-hosted-ci.yml --ref main -f pr=123
+gh workflow run self-hosted-ci.yml --ref develop -f pr=123
 ```
 
 or just `/run-ci` on the pull request.
@@ -274,7 +274,7 @@ pull request.
 Note that `workflow_dispatch` only resolves workflows
 present on the default branch. Both
 `self-hosted-ci.yml` and `ci-command.yml` must be merged
-to `main` before the command works, even when targeting
+to `develop` before the command works, even when targeting
 a topic branch.
 
 ## Reporting back
@@ -302,9 +302,9 @@ fio sweep -- hand off to the same composite action,
 push and Pages-dispatch logic, so a bug in it is fixed once rather
 than per lane.
 
-### Nothing CI writes lands on `main`
+### Nothing CI writes lands on `develop`
 
-`main` is source only. The published site and the data behind it
+`develop` is source only. The published site and the data behind it
 live on the orphan `gh-pages` branch, which is also what GitHub
 Pages serves (Settings > Pages > "Deploy from a branch",
 `gh-pages` / root):
@@ -339,7 +339,7 @@ The badges are therefore correct the moment a lane pushes: they no
 longer wait on a Sphinx build, which is what left run `35270045274`
 publishing a real number behind a stale shield.
 
-`docs/perf-history/history.jsonl` is committed to `main` **empty**,
+`docs/perf-history/history.jsonl` is committed to `develop` **empty**,
 with `"no data"` badges and a stub `docs/perf-trends.rst`, so a
 local `make docs` or a pull request build still renders a complete
 site with no toctree warnings. To see the real page locally, fetch
@@ -400,7 +400,7 @@ labels would be a wrong answer rather than a stale one. The
 placeholder matters -- without a file at that URL shields.io
 renders an *error*, which looks far worse than a grey "no data".
 Expect real numbers after the first green `system-tests` run on
-`main`, whether scheduled or dispatched by hand.
+`develop`, whether scheduled or dispatched by hand.
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
@@ -408,15 +408,15 @@ Expect real numbers after the first green `system-tests` run on
 
 Waiting for 04:23 UTC is optional. `system-tests.yml` takes a
 `workflow_dispatch` with a `publish` boolean (default true), so a
-manual run against `main` fills all three shields:
+manual run against `develop` fills all three shields:
 
 ```bash
-gh workflow run system-tests.yml --ref main
+gh workflow run system-tests.yml --ref develop
 ```
 
 Pass `-f publish=false` to exercise the sweeps without touching
 the history -- useful when the sweep itself is what you are
-testing. Dispatching anything other than `--ref main` sweeps but
+testing. Dispatching anything other than `--ref develop` sweeps but
 never publishes, by the same rule below.
 
 Budget for it: the two-VM lane boots two guests and runs for the
@@ -424,15 +424,16 @@ best part of an hour, so this is not a quick way to refresh a
 badge. The NVMe-oF lane finishes much sooner and pushes as soon
 as it does, rather than waiting for its slower sibling.
 
-The workflow does not cancel in-progress runs on `main`, so a
+The workflow does not cancel in-progress runs on `develop`, so a
 dispatch will not kill a scheduled run part-way through its push;
 the two queue instead.
 
-Only a green run on `main` publishes. Pull request runs never do -- a pull request's numbers describe the pull
-request, not `main` -- and on `system-tests.yml` they do not
-even sweep: the two perf plays are minutes of `perftest` and
-`iperf3` on top of a job that already runs the best part of an
-hour, for numbers that would be discarded.
+Only a green run on `develop` publishes. Pull request runs never
+do -- a pull request's numbers describe the pull request, not
+`develop` -- and on `system-tests.yml` they do not even sweep:
+the two perf plays are minutes of `perftest` and `iperf3` on top
+of a job that already runs the best part of an hour, for numbers
+that would be discarded.
 
 Charts are inline SVG with no JavaScript and no extra build
 dependency. Each message size gets its own panel and its own
@@ -444,7 +445,7 @@ the accessible reading and the relief required for the one
 palette colour that sits below 3:1 on the light surface.
 
 Publishing never fails a run. Every git step in the publish
-block warns and exits 0 rather than propagating: if `main`
+block warns and exits 0 rather than propagating: if `develop`
 moved underneath the job, if the push is rejected, or if git
 cannot read the repository at all, the run keeps the result it
 actually earned. That last case is not hypothetical -- these
@@ -564,7 +565,7 @@ Latency metrics are inverted so that "worse" is always
 negative. The script exits non-zero on any functional
 failure or regression, which is what gates the workflow.
 
-Only a clean tier-3 run on `main` updates the baseline,
+Only a clean tier-3 run on `develop` updates the baseline,
 so a failing or partial run can never quietly lower the
 bar.
 

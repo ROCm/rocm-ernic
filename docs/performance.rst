@@ -76,7 +76,7 @@ the results to ``ci/report/publish-perf.py``. That appends one
 record per run to ``perf/history.jsonl`` on the ``gh-pages``
 branch and refreshes the shields.io badges beside it; the charts
 and the trend tables are rendered from that record when the site
-is next built. Nothing CI writes lands on ``main``.
+is next built. Nothing CI writes lands on ``develop``.
 ``ci/jobs/perf.sh`` drives the same two plays on the
 self-hosted node, but that lane no longer publishes: it sweeps,
 reports and gates regressions, and its numbers stay in the run's

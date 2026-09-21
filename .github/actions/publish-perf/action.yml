@@ -93,23 +93,24 @@ runs:
         git config --global user.email "rocm-ernic-ci@users.noreply.github.com" || bail "could not configure git"
         git config --global commit.gpgSign false || bail "could not configure git"
 
-        # main never receives a CI commit.  The durable record lives at
-        # perf/history.jsonl on gh-pages, alongside the badges the
-        # README points at, so a shield is correct the moment this push
-        # lands -- it no longer waits on a Sphinx build that might fail.
+        # develop never receives a CI commit.  The durable record
+        # lives at perf/history.jsonl on gh-pages, alongside the badges
+        # the README points at, so a shield is correct the moment this
+        # push lands -- it no longer waits on a Sphinx build that might
+        # fail.
         pages="$(mktemp -d)"
         git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
           || bail "could not clone gh-pages (has it been seeded?)"
 
         # Seed the working copy from the published data, not from the
-        # placeholders committed to main, or every run would append to
-        # an empty history and the trend would be one point long.
+        # placeholders committed to develop, or every run would append
+        # to an empty history and the trend would be one point long.
         #
         # The badges matter just as much: publish-perf.py has paths
         # that write no badge at all, and the copy-back below is
-        # unconditional, so an unseeded working copy hands main's
-        # "no data" stubs straight over the live shields.  That is how
-        # run 35282938069 greyed out a working NVMe-oF badge.
+        # unconditional, so an unseeded working copy hands develop's
+        # "no data" stubs straight over the live shields.  That is
+        # how run 35282938069 greyed out a working NVMe-oF badge.
         mkdir -p docs/perf-history
         cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
         cp "$pages"/perf/badge-*.json  docs/perf-history/ 2>/dev/null || true
@@ -177,7 +178,7 @@ runs:
         req = urllib.request.Request(
             "https://api.github.com/repos/%s/actions/workflows/"
             "docs-deploy.yml/dispatches" % os.environ["GITHUB_REPOSITORY"],
-            data=json.dumps({"ref": "main"}).encode(),
+            data=json.dumps({"ref": "develop"}).encode(),
             headers={
                 "Authorization": "Bearer " + os.environ["GH_TOKEN"],
                 "Accept": "application/vnd.github+json",
