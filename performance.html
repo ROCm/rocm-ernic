@@ -488,7 +488,7 @@ the results to <code class="docutils literal notranslate"><span class="pre">ci/r
 record per run to <code class="docutils literal notranslate"><span class="pre">perf/history.jsonl</span></code> on the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code>
 branch and refreshes the shields.io badges beside it; the charts
 and the trend tables are rendered from that record when the site
-is next built. Nothing CI writes lands on <code class="docutils literal notranslate"><span class="pre">main</span></code>.
+is next built. Nothing CI writes lands on <code class="docutils literal notranslate"><span class="pre">develop</span></code>.
 <code class="docutils literal notranslate"><span class="pre">ci/jobs/perf.sh</span></code> drives the same two plays on the
 self-hosted node, but that lane no longer publishes: it sweeps,
 reports and gates regressions, and its numbers stay in the run’s

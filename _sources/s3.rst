@@ -366,7 +366,7 @@ in :file:`.github/workflows/s3-lane.yml`. Like the NVMe-oF
 lane it is a reusable workflow with a single ``publish``
 input, called by :file:`.github/workflows/system-tests.yml`:
 false on a pull request, true on a scheduled or dispatched
-run against ``main``. The steps are the same either way, so a
+run against ``develop``. The steps are the same either way, so a
 green pull request and a scheduled run mean the same thing.
 The ``vm-s3`` job in
 :file:`.github/workflows/self-hosted-ci.yml` runs the
@@ -409,7 +409,7 @@ The same caveats apply as everywhere else on that page:
   HTTP-framed object transfer and a perftest sweep share no
   scale.
 - The store is RAM, so nothing here measures storage.
-- Only a green run on ``main`` publishes.
+- Only a green run on ``develop`` publishes.
 
 To take the same measurements locally, set
 ``ernic_s3_perf_csv`` to a path and the play writes one

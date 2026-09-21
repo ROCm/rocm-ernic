@@ -90,7 +90,7 @@ License
 -------
 
 The project is licensed under the
-`MIT license <https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md>`_.
+`MIT license <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_.
 Some files carry different licenses per their SPDX headers:
 
 - Files under ``src/from-qemu/`` are derived from QEMU and are

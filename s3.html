@@ -757,7 +757,7 @@ in <code class="file docutils literal notranslate"><span class="pre">.github/wor
 lane it is a reusable workflow with a single <code class="docutils literal notranslate"><span class="pre">publish</span></code>
 input, called by <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>:
 false on a pull request, true on a scheduled or dispatched
-run against <code class="docutils literal notranslate"><span class="pre">main</span></code>. The steps are the same either way, so a
+run against <code class="docutils literal notranslate"><span class="pre">develop</span></code>. The steps are the same either way, so a
 green pull request and a scheduled run mean the same thing.
 The <code class="docutils literal notranslate"><span class="pre">vm-s3</span></code> job in
 <code class="file docutils literal notranslate"><span class="pre">.github/workflows/self-hosted-ci.yml</span></code> runs the
@@ -795,7 +795,7 @@ not a benchmark. They stay in their own <code class="docutils literal notranslat
 HTTP-framed object transfer and a perftest sweep share no
 scale.</p></li>
 <li><p>The store is RAM, so nothing here measures storage.</p></li>
-<li><p>Only a green run on <code class="docutils literal notranslate"><span class="pre">main</span></code> publishes.</p></li>
+<li><p>Only a green run on <code class="docutils literal notranslate"><span class="pre">develop</span></code> publishes.</p></li>
 </ul>
 <p>To take the same measurements locally, set
 <code class="docutils literal notranslate"><span class="pre">ernic_s3_perf_csv</span></code> to a path and the play writes one

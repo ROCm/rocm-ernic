@@ -664,7 +664,7 @@ because it needs only one VM. That lane is a reusable
 workflow with a single <code class="docutils literal notranslate"><span class="pre">publish</span></code> input, called by
 <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>: false on a pull
 request, true on a scheduled or dispatched run against
-<code class="docutils literal notranslate"><span class="pre">main</span></code>. The steps are the same either way, so a green pull
+<code class="docutils literal notranslate"><span class="pre">develop</span></code>. The steps are the same either way, so a green pull
 request and a scheduled run mean the same thing.
 The <code class="docutils literal notranslate"><span class="pre">vm-nvmeof</span></code> job in
 <code class="file docutils literal notranslate"><span class="pre">.github/workflows/self-hosted-ci.yml</span></code> runs the
@@ -723,7 +723,7 @@ no scale.</p></li>
 measures storage. What is being measured is the capsule
 and RDMA path: command capsules in by SEND, data out by
 RDMA WRITE, completions back into posted receives.</p></li>
-<li><p>Only a green run on <code class="docutils literal notranslate"><span class="pre">main</span></code> publishes. A failed lane’s
+<li><p>Only a green run on <code class="docutils literal notranslate"><span class="pre">develop</span></code> publishes. A failed lane’s
 numbers describe a broken controller.</p></li>
 </ul>
 <p>To take the same measurements locally, set
