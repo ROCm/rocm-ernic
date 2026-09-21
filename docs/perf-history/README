@@ -3,7 +3,7 @@
 # perf/history.jsonl on the gh-pages branch, and the badges the
 # README links to are its siblings, perf/badge-*.json.
 #
-# What is committed on main is a placeholder -- an empty
+# What is committed on develop is a placeholder -- an empty
 # history.jsonl, so that a local or pull request docs build still
 # renders a complete trend page, and a set of "no data" badges,
 # which exist only so the unconditional copy-back in

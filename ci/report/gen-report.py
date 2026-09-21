@@ -457,8 +457,8 @@ def main():
 
     # GITHUB_SHA / GITHUB_REF_NAME describe what *triggered* the
     # workflow, not what was checked out. A self-hosted run dispatched
-    # with a `pr` input still reports main there while testing the PR
-    # head, so the workflow passes the resolved ref explicitly. Fall
+    # with a `pr` input still reports develop there while testing the
+    # PR head, so the workflow passes the resolved ref explicitly. Fall
     # back to the trigger values for local runs.
     meta = {
         "run_id": os.environ.get("GITHUB_RUN_ID", "local"),

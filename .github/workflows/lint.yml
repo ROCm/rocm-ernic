@@ -3,7 +3,7 @@ name: rocm-ernic - Lint
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ develop ]
     paths:
       - '**.c'
       - '**.h'

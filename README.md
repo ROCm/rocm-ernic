@@ -62,12 +62,12 @@ see [LICENSE.md](LICENSE.md) for details.
 
 <!-- References -->
 
-[license]: https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md
+[license]: https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md
 [ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
 [ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
 [ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
 [ci-system-tests]: https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml
-[guest-kernel]: https://github.com/ROCm/rocm-ernic/blob/main/docs/performance.rst
+[guest-kernel]: https://github.com/ROCm/rocm-ernic/blob/develop/docs/performance.rst
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
 [libvfio]: https://github.com/nutanix/libvfio-user
 [softroce]: https://man7.org/linux/man-pages/man7/rxe.7.html

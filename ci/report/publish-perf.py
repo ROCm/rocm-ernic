@@ -18,7 +18,7 @@
 #
 # Only trusted runs should call this.  A pull request's
 # numbers must never enter the history, or the published
-# trend stops describing main.  The workflow enforces that;
+# trend stops describing develop.  The workflow enforces that;
 # this script does not check it.
 
 import argparse
@@ -353,7 +353,7 @@ No published measurements yet.
 The nightly runs append their medians here and regenerate this
 page, so charts appear after the first successful nightly. Pull
 request runs never publish: their numbers describe the pull
-request, not ``main``.
+request, not ``develop``.
 """
 
 
@@ -481,7 +481,7 @@ def _table_lines(chart, history):
 # the URL README.md points at. They do not travel with the Sphinx
 # build: a shield fed from the site would only be as fresh as the
 # last docs deploy, and would read whatever placeholder was
-# committed to main until one ran.
+# committed to develop until one ran.
 def _fmt_rate(value, unit):
     # iperf3 across the emulated TAP bridge sustains single-digit
     # MB/s, and a fixed "%.2f GB/s" renders that as "0.00 GB/s" --

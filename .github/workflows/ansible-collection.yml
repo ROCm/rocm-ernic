@@ -15,7 +15,7 @@ name: rocm-ernic - Ansible Collection
   workflow_dispatch: {}
   pull_request:
     branches:
-      - main
+      - develop
     paths:
       - 'ansible/**'
       - '.github/workflows/ansible-collection.yml'

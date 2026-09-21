@@ -7,10 +7,10 @@ Performance trends
 ==================
 
 This page is generated from the recorded history of the nightly
-performance runs. The record itself is not kept on ``main`` -- it lives
-at ``perf/history.jsonl`` on the ``gh-pages`` branch, written by the
-lanes in ``.github/workflows/system-tests.yml`` and read back when the
-site is built.
+performance runs. The record itself is not kept on ``develop`` -- it
+lives at ``perf/history.jsonl`` on the ``gh-pages`` branch, written by
+the lanes in ``.github/workflows/system-tests.yml`` and read back when
+the site is built.
 
 So this copy is empty by construction. The published page, with the
 charts and the per-size tables, is at

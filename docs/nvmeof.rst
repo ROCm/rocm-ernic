@@ -279,7 +279,7 @@ because it needs only one VM. That lane is a reusable
 workflow with a single ``publish`` input, called by
 :file:`.github/workflows/system-tests.yml`: false on a pull
 request, true on a scheduled or dispatched run against
-``main``. The steps are the same either way, so a green pull
+``develop``. The steps are the same either way, so a green pull
 request and a scheduled run mean the same thing.
 The ``vm-nvmeof`` job in
 :file:`.github/workflows/self-hosted-ci.yml` runs the
@@ -343,7 +343,7 @@ than the numbers themselves:
   measures storage. What is being measured is the capsule
   and RDMA path: command capsules in by SEND, data out by
   RDMA WRITE, completions back into posted receives.
-- Only a green run on ``main`` publishes. A failed lane's
+- Only a green run on ``develop`` publishes. A failed lane's
   numbers describe a broken controller.
 
 To take the same measurements locally, set

@@ -3,7 +3,7 @@ name: rocm-ernic - System Tests
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ develop ]
     # These jobs boot QEMU guests and run an hour of DKMS builds and
     # RDMA sweeps, so gate them on the things they actually consume.
     #
@@ -46,10 +46,10 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # Superseding a pull request's run is what you want; superseding a
-  # run on main is not, now that main is what publishes.  A manual
-  # dispatch would otherwise cancel the nightly part-way through its
-  # commit-and-push and leave the shields on the previous run.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # run on develop is not, now that develop is what publishes.  A
+  # manual dispatch would otherwise cancel the nightly part-way through
+  # its commit-and-push and leave the shields on the previous run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
 
 # Container image with QEMU and libvfio-user pre-built
 env:
@@ -2199,16 +2199,16 @@ jobs:
         if-no-files-found: ignore
 
     - name: Publish the RDMA and TCP/IP trends and shields
-      # Only a green run on main may move the published history: a
+      # Only a green run on develop may move the published history: a
       # failed job's numbers describe a broken mesh, a pull request's
       # describe the pull request, and a branch's describe the branch.
       #
       # A scheduled run always publishes; a manual one does whatever
       # the dispatch asked for, so the sweep can be exercised against
-      # main without touching the history.
+      # develop without touching the history.
       if: >-
         success() &&
-        github.ref == 'refs/heads/main' &&
+        github.ref == 'refs/heads/develop' &&
         github.event_name != 'pull_request' &&
         (github.event_name != 'workflow_dispatch' || inputs.publish)
       uses: ./.github/actions/publish-perf

@@ -19,7 +19,7 @@
 # Fork pull requests ARE testable, via the pr input.  The
 # split that makes this safe is that dispatch runs the
 # workflow file from the branch given to --ref (normally
-# main) while checking out refs/pull/<pr>/head as the code
+# develop) while checking out refs/pull/<pr>/head as the code
 # under test.  A fork therefore supplies code to compile
 # and run, but cannot alter what this workflow does, and
 # cannot start a run at all: workflow_dispatch requires
@@ -382,7 +382,7 @@ jobs:
         continue-on-error: true
         env:
           # What was actually checked out and tested. github.sha still
-          # points at main for a `pr`-dispatched run, so reporting it
+          # points at develop for a `pr`-dispatched run, so reporting it
           # would label the report with the wrong tree.
           CI_TESTED_REF: ${{ env.CI_CHECKOUT_REF }}
         run: |
@@ -401,17 +401,17 @@ jobs:
           python3 ci/report/gen-report.py "${args[@]}"
 
       - name: Update baseline
-        # Only a clean full run on main is allowed to
+        # Only a clean full run on develop is allowed to
         # move the baseline, so a failing or partial run
         # can never silently lower the bar.
         #
         # inputs.pr must be empty too.  With the pr input
-        # github.ref is still main while the code under test is
+        # github.ref is still develop while the code under test is
         # the pull request's, so without this any PR -- a fork's
         # included -- could redefine what "no regression" means.
         if: >-
           steps.report.outcome == 'success' &&
-          github.ref == 'refs/heads/main' &&
+          github.ref == 'refs/heads/develop' &&
           inputs.pr == '' &&
           needs.preflight.outputs.tier == 'full' &&
           needs.perf.result == 'success'

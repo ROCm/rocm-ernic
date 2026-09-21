@@ -22,13 +22,13 @@ apply it directly.
 ernic_source_dir: ""
 
 ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
-ernic_source_repo_version: "main"
+ernic_source_repo_version: "develop"
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
 ernic_source_force_clone: false
 ```
 
 Pin `ernic_source_repo_version` to a commit SHA for any run you intend to
-reproduce; `main` moves. The only release tag on the repo today is
+reproduce; `develop` moves. The only release tag on the repo today is
 `ansible-v0.1.0`, so a SHA is the pin — not a version tag.
 
 Pinning the collection does not pin this. The driver sources, the patch
