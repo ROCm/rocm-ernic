@@ -61,6 +61,45 @@ static void ok(const char *name)
     printf("ok   %s\n", name);
 }
 
+/*
+ * Lift the upload id out of an InitiateMultipartUploadResult into dst.
+ *
+ * A reply that names no id, or that opens the element without closing it,
+ * is a defect in the target rather than a case the caller should carry on
+ * from: an id read as empty still forms a syntactically valid uploadId=
+ * query, so the request it is spliced into fails several calls later as a
+ * 404 and the failure is charged to whatever that request was testing.
+ * Reporting it here keeps it attached to the reply that caused it.
+ *
+ * Returns false having already called fail(), so callers can stop.
+ */
+static bool take_upload_id(const char *text, char *dst, size_t dst_size,
+                           const char *name)
+{
+    static const char open_tag[] = "<UploadId>";
+    const char *begin = strstr(text, open_tag);
+    const char *end = begin != NULL
+                          ? strstr(begin + sizeof(open_tag) - 1, "</UploadId>")
+                          : NULL;
+
+    if (end == NULL) {
+        fail(name, "reply carries no complete UploadId: %s", text);
+        return false;
+    }
+    if (dst_size == 0) {
+        fail(name, "take_upload_id() called with no room for a NUL");
+        return false;
+    }
+    begin += sizeof(open_tag) - 1;
+
+    size_t len = (size_t)(end - begin);
+    if (len > dst_size - 1)
+        len = dst_size - 1;
+    memcpy(dst, begin, len);
+    dst[len] = '\0';
+    return true;
+}
+
 /* ---- Fake guest memory -------------------------------------------------- */
 
 struct host_mem {
@@ -132,6 +171,15 @@ static bool build(struct s3_http_request *req, char *scratch, size_t scratchlen,
     if (n < 0 || (size_t)n >= scratchlen)
         return false;
     size_t at = (size_t)n;
+
+    /*
+     * Every header appended below is far shorter than this. Checking the
+     * headroom once, against a bound the compiler can carry through the
+     * appends, is what keeps -Wformat-truncation from having to rediscover
+     * it at each snprintf() from nothing but "at < scratchlen".
+     */
+    if (scratchlen - at < 1024)
+        return false;
 
     if (token != NULL) {
         n = snprintf(scratch + at, scratchlen - at, "x-amz-rdma-token: %s\r\n",
@@ -1013,15 +1061,10 @@ static void test_multipart(void)
         fail(name, "initiate could not be built");
         goto out;
     }
-    const char *idp = strstr(r.text, "<UploadId>");
-    if (idp == NULL) {
-        fail(name, "initiate has no UploadId: %s", r.text);
+    if (!take_upload_id(r.text, upload_id, sizeof(upload_id), name)) {
         reply_free(&r);
         goto out;
     }
-    idp += 10;
-    const char *ide = strstr(idp, "</UploadId>");
-    snprintf(upload_id, sizeof(upload_id), "%.*s", (int)(ide - idp), idp);
     reply_free(&r);
 
     /* Upload the parts out of order: the target sorts them on complete. */
@@ -1113,13 +1156,7 @@ static void test_multipart_errors(void)
 
     if (exec_req(t, &r, NULL, NULL, "POST", "/ernic/x?uploads", NULL, NULL,
                  NULL, 0)) {
-        const char *idp = strstr(r.text, "<UploadId>");
-        if (idp != NULL) {
-            idp += 10;
-            const char *ide = strstr(idp, "</UploadId>");
-            snprintf(upload_id, sizeof(upload_id), "%.*s", (int)(ide - idp),
-                     idp);
-        }
+        take_upload_id(r.text, upload_id, sizeof(upload_id), name);
         reply_free(&r);
     }
 
@@ -1199,15 +1236,10 @@ static void test_multipart_part_rejected(void)
         fail(name, "initiate could not be built");
         goto out;
     }
-    const char *idp = strstr(r.text, "<UploadId>");
-    if (idp == NULL) {
-        fail(name, "initiate has no UploadId: %s", r.text);
+    if (!take_upload_id(r.text, upload_id, sizeof(upload_id), name)) {
         reply_free(&r);
         goto out;
     }
-    idp += 10;
-    const char *ide = strstr(idp, "</UploadId>");
-    snprintf(upload_id, sizeof(upload_id), "%.*s", (int)(ide - idp), idp);
     reply_free(&r);
 
     snprintf(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
@@ -1413,15 +1445,10 @@ static void test_multipart_capacity(void)
             fail(name, "initiate %s could not be built", keys[i]);
             goto out;
         }
-        const char *idp = strstr(r.text, "<UploadId>");
-        const char *ide = idp != NULL ? strstr(idp + 10, "</UploadId>") : NULL;
-        if (ide == NULL) {
-            fail(name, "initiate %s has no UploadId: %s", keys[i], r.text);
+        if (!take_upload_id(r.text, ids[i], sizeof(ids[i]), name)) {
             reply_free(&r);
             goto out;
         }
-        snprintf(ids[i], sizeof(ids[i]), "%.*s", (int)(ide - idp - 10),
-                 idp + 10);
         reply_free(&r);
     }
 
