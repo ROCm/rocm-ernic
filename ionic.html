@@ -410,12 +410,12 @@
 <col style="width: 80.0%" />
 </colgroup>
 <thead>
-<tr class="row-odd"><th class="head"><p>VID:DID</p></th>
+<tr class="row-odd"><th class="head"><p>VID:DID / SSVID:SDID</p></th>
 <th class="head"><p>Guest driver</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> / <code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code></p></td>
 <td><p>Upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> + <code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code>,
 with the patches in <code class="docutils literal notranslate"><span class="pre">patches/</span></code> applied, and the
 upstream <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> in rdma-core</p></td>
@@ -439,7 +439,10 @@ below.</p>
 what the upstream driver claims, but device ID <code class="docutils literal notranslate"><span class="pre">0x100a</span></code>
 sits outside the range real hardware uses (<code class="docutils literal notranslate"><span class="pre">0x1002</span></code> and
 <code class="docutils literal notranslate"><span class="pre">0x1003</span></code>) so an emulated device can never be confused with
-a physical DSC on the same host.</p>
+a physical DSC on the same host. The registered subsystem ID
+<code class="docutils literal notranslate"><span class="pre">0x5400</span></code> lets <code class="docutils literal notranslate"><span class="pre">pci.ids</span></code> name just this function
+<code class="docutils literal notranslate"><span class="pre">ROCm</span> <span class="pre">Emulated</span> <span class="pre">RDMA</span> <span class="pre">NIC</span></code> while leaving the underlying
+vendor/device pair intact for the upstream driver.</p>
 <section id="starting-the-server">
 <h2>Starting the Server<a class="headerlink" href="#starting-the-server" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
@@ -633,7 +636,7 @@ the DKMS build.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic
 sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic_rdma
 
-lspci<span class="w"> </span>-nn<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>1dd8:100a
+lspci<span class="w"> </span>-nnv<span class="w"> </span>-d<span class="w"> </span>1dd8:100a<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s1">'\[1dd8:5400\]'</span>
 ip<span class="w"> </span>link<span class="w">                  </span><span class="c1"># the LIF appears as a normal netdev</span>
 ibv_devices<span class="w">              </span><span class="c1"># the RDMA device appears here</span>
 </pre></div>
@@ -681,11 +684,11 @@ immediately rather than guessing a ref.</p>
 <h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">tests/test_ionic_ci.sh</span></code> is registered with CTest as
 <code class="docutils literal notranslate"><span class="pre">ionic-ci</span></code> and needs no VM. It checks that the server
-starts on each backend, announces <code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code>, reports the
-expected BAR and MSI-X geometry, shuts down cleanly on
-<code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>, attaches to a TAP when one is available, comes
-up with no extra flags, and writes the full counter set to
-the stats file.</p>
+starts on each backend, announces <code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> with
+subsystem <code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code>, reports the expected BAR and MSI-X
+geometry, shuts down cleanly on <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>, attaches to a
+TAP when one is available, comes up with no extra flags, and
+writes the full counter set to the stats file.</p>
 <p>The TAP attach check is skipped unless <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_TAP</span></code>
 names an existing interface owned by the current user,
 because creating one needs <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>:</p>

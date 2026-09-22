@@ -430,8 +430,10 @@
 <section id="the-emulated-device">
 <h2>The Emulated Device<a class="headerlink" href="#the-emulated-device" title="Link to this heading">#</a></h2>
 <p>The server emulates an AMD Pensando ionic NIC
-(<code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code>) driven by the upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and
-<code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> modules. There is nothing to select.</p>
+(<code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code>) with subsystem <code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code>, driven by the
+upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> modules. With a
+current <code class="docutils literal notranslate"><span class="pre">pci.ids</span></code> database, <code class="docutils literal notranslate"><span class="pre">lspci</span></code> names that subsystem
+<code class="docutils literal notranslate"><span class="pre">ROCm</span> <span class="pre">Emulated</span> <span class="pre">RDMA</span> <span class="pre">NIC</span></code>. There is nothing to select.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--tap</span> <span class="pre">IFNAME</span></code> (short <code class="docutils literal notranslate"><span class="pre">-T</span></code>) attaches the emulated
 Ethernet interface to an existing host TAP. Create the TAP up
 front, owned by the user running the server:</p>
@@ -523,7 +525,7 @@ required.</p>
 <p>Inside the guest, load the upstream modules and verify:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic
 sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic_rdma
-lspci<span class="w"> </span>-nn<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>1dd8:100a
+lspci<span class="w"> </span>-nnv<span class="w"> </span>-d<span class="w"> </span>1dd8:100a<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s1">'\[1dd8:5400\]'</span>
 ibv_devices
 </pre></div>
 </div>
