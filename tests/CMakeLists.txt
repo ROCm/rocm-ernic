@@ -396,6 +396,11 @@ target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 add_executable(test_ionic_cq_arm test_ionic_cq_arm.c)
 target_include_directories(test_ionic_cq_arm PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+# Ported and third-party header trees are SYSTEM includes, matching the main
+# target, so their warnings stay quiet while the ionic sources under test are
+# still warning-checked.
+target_include_directories(test_ionic_cq_arm SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu
     ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
