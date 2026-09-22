@@ -4,8 +4,8 @@
 Performance trends
 ==================
 
-Medians from the nightly runs, oldest at the left. Latest: ``0b48aa1d``
-on GitHub-hosted runners at 2026-09-21 04:43:09 UTC.
+Medians from the nightly runs, oldest at the left. Latest: ``1e5932c6``
+on GitHub-hosted runners at 2026-09-22 04:38:55 UTC.
 
 Each runner class is charted on its own axes and never joined into one
 line. A GitHub-hosted runner has noisy neighbours and no fixed CPU, so
@@ -28,7 +28,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-bandwidth-github-hosted.html
 
-Last 8 runs, in GB/s:
+Last 9 runs, in GB/s:
 
 ======== ===== ====== =====
 Run      4 KiB 64 KiB 1 MiB
@@ -41,6 +41,7 @@ e715df52 1.09  7.39   18.36
 0b48aa1d 0.95  8.02   16.76
 0b48aa1d 0.59  4.55   16.61
 0b48aa1d --    --     --
+1e5932c6 --    --     --
 ======== ===== ====== =====
 
 
@@ -69,7 +70,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-latency-github-hosted.html
 
-Last 8 runs, in µs:
+Last 9 runs, in µs:
 
 ======== ====== ====== =======
 Run      4 KiB  64 KiB 1 MiB
@@ -82,6 +83,7 @@ e715df52 286.73 290.74 663.11
 0b48aa1d 306.54 359    851.36
 0b48aa1d 301.32 338.99 802.29
 0b48aa1d --     --     --
+1e5932c6 --     --     --
 ======== ====== ====== =======
 
 
@@ -110,7 +112,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-nvmeof-github-hosted.html
 
-Last 8 runs, in GB/s:
+Last 9 runs, in GB/s:
 
 ======== ======== ======== =======
 Run      4 KiB    64 KiB   1 MiB
@@ -123,6 +125,7 @@ e715df52 0.088529 1.28944  1.91219
 0b48aa1d 0.066281 0.85107  1.46981
 0b48aa1d 0.057417 0.891161 1.28665
 0b48aa1d 0.087054 1.43795  2.6433
+1e5932c6 --       --       --
 ======== ======== ======== =======
 
 S3-over-RDMA GET bandwidth over time
@@ -135,7 +138,7 @@ Measured on GitHub-hosted runners:
 .. raw:: html
    :file: perf-history/chart-s3-github-hosted.html
 
-Last 8 runs, in GB/s:
+Last 9 runs, in GB/s:
 
 ======== ======== ======== =======
 Run      4 KiB    64 KiB   1 MiB
@@ -148,5 +151,6 @@ e715df52 0.006039 0.100311 1.31572
 0b48aa1d 0.005941 0.089183 1.26371
 0b48aa1d 0.005359 0.084159 1.20345
 0b48aa1d 0.005512 0.089893 1.27119
+1e5932c6 0.005994 0.095586 1.29512
 ======== ======== ======== =======
 
