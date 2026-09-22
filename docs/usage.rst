@@ -38,8 +38,10 @@ The Emulated Device
 -------------------
 
 The server emulates an AMD Pensando ionic NIC
-(``1dd8:100a``) driven by the upstream Linux ``ionic`` and
-``ionic_rdma`` modules. There is nothing to select.
+(``1dd8:100a``) with subsystem ``1dd8:5400``, driven by the
+upstream Linux ``ionic`` and ``ionic_rdma`` modules. With a
+current ``pci.ids`` database, ``lspci`` names that subsystem
+``ROCm Emulated RDMA NIC``. There is nothing to select.
 
 ``--tap IFNAME`` (short ``-T``) attaches the emulated
 Ethernet interface to an existing host TAP. Create the TAP up
@@ -133,7 +135,7 @@ Inside the guest, load the upstream modules and verify:
 
    sudo modprobe ionic
    sudo modprobe ionic_rdma
-   lspci -nn | grep 1dd8:100a
+   lspci -nnv -d 1dd8:100a | grep '\[1dd8:5400\]'
    ibv_devices
 
 Statistics Collection

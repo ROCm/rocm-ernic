@@ -411,15 +411,22 @@ jobs:
 
         echo "=== PCI devices ==="
         sudo lspci -nn
+        echo ""
+        PCI_INFO="$(sudo lspci -Dnnv -d 1dd8:100a)"
+        echo "$PCI_INFO"
 
         echo ""
-        if ! sudo lspci -nn | grep -q '1dd8:100a'; then
+        if [ -z "$PCI_INFO" ]; then
           echo "✗ ionic PCI function 1dd8:100a not present on the guest bus"
           echo "  The vfio-user device did not attach.  Check the server"
           echo "  log and the QEMU console for the vfio-user handshake."
           exit 1
         fi
-        echo "✓ ionic PCI function 1dd8:100a present"
+        if ! grep -q '\[1dd8:5400\]' <<<"$PCI_INFO"; then
+          echo "✗ ionic PCI function present, but subsystem 1dd8:5400 is missing"
+          exit 1
+        fi
+        echo "✓ ionic PCI function 1dd8:100a present with subsystem 1dd8:5400"
         EOFVM
 
     - name: Install the Ansible collection dependencies

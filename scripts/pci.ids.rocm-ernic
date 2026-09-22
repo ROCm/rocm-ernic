@@ -1,30 +1,29 @@
-# PCI ID fragment for the rocm-ernic emulated NIC (0x1dd8:0x100a).
+# PCI ID fragment for the rocm-ernic emulated NIC subsystem
+# (0x1dd8:0x100a, subsystem 0x1dd8:0x5400).
 #
 # Usually you do not need this. The device server presents a real,
-# vendor-assigned pair, and current hwdata already lists 1dd8:100a --
-# as "DSC Serial Port Controller", which is what lspci will call the
-# emulated NIC. Misleading, but named.
+# vendor-assigned pair, and current hwdata already lists 1dd8:100a as
+# "DSC Serial Port Controller". With an up-to-date pci.ids database
+# the subsystem line below renames that specific function to
+# "ROCm Emulated RDMA NIC", which is what lspci will call it.
 #
-# The fragment is here for a guest whose pci.ids predates that entry,
-# where lspci shows a bare device id instead. Merge the device line
-# under the existing "1dd8" vendor block in your system pci.ids;
-# typical paths are /usr/share/hwdata/pci.ids and
-# /usr/share/misc/pci.ids.
+# The fragment is here for a guest whose pci.ids predates the
+# registered subsystem entry. Merge the subsystem line under the
+# existing 1dd8 / 100a device line in your system pci.ids; typical
+# paths are /usr/share/hwdata/pci.ids and /usr/share/misc/pci.ids.
 #
 # Two things will bite you if you do it by hand:
 #
-#  - pci.ids is parsed sequentially, so the device line must sit
-#    inside the vendor block. Appending it to the end of the file
+#  - pci.ids is parsed sequentially, so the subsystem line must sit
+#    inside the 100a device block. Appending it to the end of the file
 #    puts it under the class section, where it never matches.
-#  - pciutils rejects a file containing a duplicate device id
-#    outright: lspci then exits 1 and resolves no names for any
-#    device on the bus, not just this one. So check the vendor block
-#    does not already list 100a before adding it.
+#  - If your pci.ids does not yet list the 1dd8 / 100a device at all,
+#    the subsystem line has nowhere valid to attach. Update the guest's
+#    hwdata package first.
 #
 # ernic_guest_setup does both checks for you (tasks/pci_ids.yml);
 # keep ernic_guest_pciids_entry in its defaults in step with the
 # line below. Note that update-pciids overwrites the system pci.ids
 # and discards the edit; re-run the role after each update.
 #
-1dd8  AMD Pensando Systems
-	100a  ROCm Emulated RDMA NIC (ionic)
+		1dd8  5400  ROCm Emulated RDMA NIC

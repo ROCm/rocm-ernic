@@ -14,6 +14,7 @@ performs basic PCI configuration space queries.
 - Socket connection to server
 - PCI Vendor ID verification (Pensando: 0x1dd8)
 - PCI Device ID verification (ROCm ERNIC: 0x100a)
+- PCI subsystem verification (Pensando: 0x1dd8, ROCm ERNIC: 0x5400)
 - PCI Class Code verification (Network Controller, Ethernet:
   0x02 00 00)
 - PCI Header Type verification (Type 0)
@@ -60,7 +61,8 @@ Shell test for the emulated ionic device, registered with CTest as
 
 **Tests Performed:**
 - Server starts on the `loopback` and `none` backends
-- PCI Device ID verification (ionic ERNIC: `0x1dd8:0x100a`)
+- PCI identity verification (ionic ERNIC: `0x1dd8:0x100a`,
+  subsystem `0x1dd8:0x5400`)
 - BAR geometry (64K BAR0 with a 32K register window, 4M BAR2)
 - MSI-X vector count (32)
 - Clean shutdown on `SIGTERM`

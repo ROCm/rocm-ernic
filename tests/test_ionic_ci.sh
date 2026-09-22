@@ -7,7 +7,7 @@
 #
 # Tests that can run without a VM (no RDMA device needed):
 #   1. Server starts with the loopback backend
-#   2. Server announces correct VID:DID (0x1dd8:0x100a)
+#   2. Server announces correct VID:DID/SSID:SDID
 #   3. Server reports correct BAR layout (64K BAR0 / 32K regs + 4M BAR2)
 #   4. Server reports correct MSI-X vector count (32)
 #   5. Server exits cleanly on SIGTERM
@@ -77,11 +77,12 @@ echo "Test 1: server starts (loopback backend)"
 start_server loopback || fail "server did not start"
 pass "socket appeared"
 
-# --- Test 2: correct VID:DID ---
+# --- Test 2: correct PCI identity ---
 echo ""
-echo "Test 2: VID:DID 0x1dd8:0x100a"
+echo "Test 2: VID:DID 0x1dd8:0x100a, SSVID:SDID 0x1dd8:0x5400"
 grep -q "VID:DID 0x1dd8:0x100a" "$LOG" || fail "VID:DID not found in log"
-pass "VID:DID correct"
+grep -q "SSVID:SDID 0x1dd8:0x5400" "$LOG" || fail "SSID:SDID not found in log"
+pass "PCI identity correct"
 
 # --- Test 3: ionic banner ---
 echo ""
@@ -119,6 +120,7 @@ echo ""
 echo "Test 7: none backend"
 start_server none || fail "server did not start with none backend"
 grep -q "VID:DID 0x1dd8:0x100a" "$LOG" || fail "VID:DID not in none backend log"
+grep -q "SSVID:SDID 0x1dd8:0x5400" "$LOG" || fail "SSID:SDID not in none backend log"
 pass "none backend works"
 
 # --- Test 8: --tap attaches to a host TAP interface ---
@@ -165,6 +167,10 @@ done
 grep -q "VID:DID 0x1dd8:0x100a" "$LOG" || {
     cat "$LOG"
     fail "server did not announce the ionic device"
+}
+grep -q "SSVID:SDID 0x1dd8:0x5400" "$LOG" || {
+    cat "$LOG"
+    fail "server did not announce the ionic subsystem ID"
 }
 pass "server announces the ionic device"
 

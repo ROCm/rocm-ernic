@@ -7,9 +7,9 @@ rocm-ernic presents a single PCIe device to the guest:
    :header-rows: 1
    :widths: 20 80
 
-   * - VID:DID
+   * - VID:DID / SSVID:SDID
      - Guest driver
-   * - ``1dd8:100a``
+   * - ``1dd8:100a`` / ``1dd8:5400``
      - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
        with the patches in ``patches/`` applied, and the
        upstream ``providers/ionic`` in rdma-core
@@ -32,7 +32,10 @@ The Pensando vendor ID ``0x1dd8`` is kept, because that is
 what the upstream driver claims, but device ID ``0x100a``
 sits outside the range real hardware uses (``0x1002`` and
 ``0x1003``) so an emulated device can never be confused with
-a physical DSC on the same host.
+a physical DSC on the same host. The registered subsystem ID
+``0x5400`` lets ``pci.ids`` name just this function
+``ROCm Emulated RDMA NIC`` while leaving the underlying
+vendor/device pair intact for the upstream driver.
 
 Starting the Server
 -------------------
@@ -233,7 +236,7 @@ Loading and Verifying
    sudo modprobe ionic
    sudo modprobe ionic_rdma
 
-   lspci -nn | grep 1dd8:100a
+   lspci -nnv -d 1dd8:100a | grep '\[1dd8:5400\]'
    ip link                  # the LIF appears as a normal netdev
    ibv_devices              # the RDMA device appears here
 
@@ -283,11 +286,11 @@ Testing
 
 ``tests/test_ionic_ci.sh`` is registered with CTest as
 ``ionic-ci`` and needs no VM. It checks that the server
-starts on each backend, announces ``1dd8:100a``, reports the
-expected BAR and MSI-X geometry, shuts down cleanly on
-``SIGTERM``, attaches to a TAP when one is available, comes
-up with no extra flags, and writes the full counter set to
-the stats file.
+starts on each backend, announces ``1dd8:100a`` with
+subsystem ``1dd8:5400``, reports the expected BAR and MSI-X
+geometry, shuts down cleanly on ``SIGTERM``, attaches to a
+TAP when one is available, comes up with no extra flags, and
+writes the full counter set to the stats file.
 
 The TAP attach check is skipped unless ``ERNIC_TEST_TAP``
 names an existing interface owned by the current user,
