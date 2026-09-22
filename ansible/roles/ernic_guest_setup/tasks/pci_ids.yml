@@ -121,7 +121,7 @@
                   print('changed')
                   sys.exit(0)
 
-          sys.exit(1)
+          sys.exit(2)
           PY
       register: ernic_pciids_merge
       changed_when: "'changed' in ernic_pciids_merge.stdout"
@@ -167,7 +167,7 @@
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
         - ernic_pciids_merge is defined
-        - ernic_pciids_merge.rc != 0
+        - ernic_pciids_merge.rc not in [0, 2]
 
     # Cheap, and the only thing that proves the file is still
     # parseable: on a duplicate device id pciutils prints
