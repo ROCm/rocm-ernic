@@ -33,7 +33,6 @@
 #pragma GCC diagnostic ignored "-Wredundant-decls"
 #pragma GCC diagnostic ignored "-Wshift-overflow"
 #pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wpacked"
 #include "from-qemu/hw/rdma/vmw/pvrdma.h"
 #include "from-qemu/hw/rdma/vmw/pvrdma_qp_ops.h"
 #include "from-qemu/hw/rdma/rdma_backend.h"

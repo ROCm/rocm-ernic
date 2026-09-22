@@ -49,11 +49,28 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wformat-signedness
         -Wformat-truncation=2
         -Wformat-y2k
+        -Winvalid-pch
         -Wlogical-op
         -Wmissing-declarations
         -Wnormalized
         -Wnull-dereference
-        -Wpacked
+
+        # -Wpacked is deliberately left unset.  It fires when
+        # __attribute__((packed)) does not change the layout, which is
+        # exactly the case for a wire-format struct whose fields happen
+        # to be naturally packed on this target.  Acting on it means
+        # deleting the attribute, after which the next field added to
+        # the struct silently reintroduces padding.  For a struct whose
+        # layout is fixed by an external specification the redundancy is
+        # the point.  (GCC-only for C; clang's -Wpacked covers only the
+        # C++ -Wpacked-non-pod.)
+        #
+        # The related -Wpacked-not-aligned does catch a real defect -- a
+        # member whose declared alignment the enclosing packed struct
+        # drops -- but -Wall already enables it, so it is not repeated
+        # here.
+        #-Wpacked
+
         -Wpointer-arith
         -Wredundant-decls
         -Wshadow
