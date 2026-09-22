@@ -16,6 +16,8 @@
 
 #include "dhcp_server.h"
 
+#include "fuzz_harness.h"
+
 static DhcpServer *g_server;
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
