@@ -467,20 +467,6 @@ size_t dhcp_server_process(DhcpServer *server,
     }
 }
 
-uint32_t dhcp_server_get_allocated_ip(DhcpServer *server, const uint8_t *mac)
-{
-    if (!server) {
-        return 0;
-    }
-
-    qemu_mutex_lock(&server->lock);
-    uint32_t *ip = g_hash_table_lookup(server->allocations, mac);
-    uint32_t result = ip ? *ip : 0;
-    qemu_mutex_unlock(&server->lock);
-
-    return result;
-}
-
 void dhcp_server_release_ip(DhcpServer *server, const uint8_t *mac)
 {
     if (!server) {

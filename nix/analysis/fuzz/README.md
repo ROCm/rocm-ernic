@@ -60,7 +60,8 @@ length.
 
 ## Not yet fuzzed (device-fixture required)
 
-`eth_rx_inject_frame()` and the ionic devcmd and datapath handlers in
+`eth_rx_inject_frame_mesh_blocking()` and the ionic devcmd and datapath
+handlers in
 `src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c` are **not** fuzzed
 here. They are not byte-buffer parsers: they move guest data through
 `rdma_pci_dma_map()` and operate on the RDMA resource manager, so a

@@ -168,9 +168,7 @@ set(ERNIC_FROM_QEMU_AMD_SOURCES
     src/from-qemu/hw/rdma/vmw/pvrdma_main.c
     src/from-qemu/utils/error-report.c
     src/from-qemu/utils/dhcp_server.c
-    src/from-qemu/utils/dhcp_proxy.c
     src/from-qemu/utils/eth_rx_inject.c
-    src/from-qemu/utils/tcp_conn.c
     src/from-qemu/utils/rdma_cm_proto.c
     src/from-qemu/qemu-stubs/qemu_stubs.c
     src/from-qemu/qemu-stubs/qemu_type_stubs.c

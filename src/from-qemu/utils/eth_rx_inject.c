@@ -29,16 +29,6 @@ static struct ionic_eth_emu *emu_of(PVRDMADev *dev)
     return srv ? srv->ionic_emu : NULL;
 }
 
-int eth_rx_inject_frame(PVRDMADev *dev, const void *frame_data, size_t len)
-{
-    struct ionic_eth_emu *emu = emu_of(dev);
-
-    if (!emu)
-        return -ENODEV;
-
-    return ionic_eth_emu_queue_rx_frame(emu, frame_data, len);
-}
-
 int eth_rx_inject_frame_mesh_blocking(PVRDMADev *dev, const void *frame_data,
                                       size_t len)
 {

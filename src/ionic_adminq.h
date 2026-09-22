@@ -42,14 +42,6 @@ typedef void (*ionic_adminq_cq_event_fn_t)(void *opaque, uint32_t eq_id,
 void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
                                   ionic_adminq_cq_event_fn_t fn, void *opaque);
 
-/*
- * Set the rdma_rm / rdma_backend pointers used by opcode handlers.
- * Must be called after pvrdma_device_realize() succeeds.
- * Uses opaque void * to avoid including rdma_rm.h in the header.
- */
-void ionic_adminq_set_resources(struct ionic_adminq_ctx *ctx, void *dev_res,
-                                void *backend_dev);
-
 /* Set the pvrdma handle used by the ionic_rm_* compat wrappers.
  * @handle is a pvrdma_handle_t (void *) from pvrdma_device_create(). */
 void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx, void *handle);

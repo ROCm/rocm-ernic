@@ -608,26 +608,6 @@ static void tcp_update_stats(TcpBackendPrivate *priv, uint64_t bytes,
     priv->tcp_stats.completions_posted++;
 }
 
-void tcp_backend_log_stats(RdmaBackendDev *backend_dev)
-{
-    TcpBackendPrivate *priv = get_private(backend_dev);
-    if (!priv)
-        return;
-
-    rdma_info_report("TCP stats: sent=%lu recv=%lu "
-                     "wire_tx=%lu wire_rx=%lu "
-                     "completions=%lu cq_polls=%lu "
-                     "reconnect=%lu/%lu",
-                     (unsigned long)priv->tcp_stats.msgs_sent,
-                     (unsigned long)priv->tcp_stats.msgs_recv,
-                     (unsigned long)priv->tcp_stats.bytes_wire_sent,
-                     (unsigned long)priv->tcp_stats.bytes_wire_recv,
-                     (unsigned long)priv->tcp_stats.completions_posted,
-                     (unsigned long)priv->tcp_stats.cq_polls,
-                     (unsigned long)priv->tcp_stats.reconnect_successes,
-                     (unsigned long)priv->tcp_stats.reconnect_attempts);
-}
-
 /*
  * Overflow-safe memory region bounds check.
  *
@@ -1990,8 +1970,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
             }
 
             case TCP_MSG_DHCP_RESPONSE: {
-                /* Worker receives DHCP response from manager */
-                /* This is handled by dhcp_proxy in pvrdma_eth.c */
+                /* Worker receives DHCP response from manager.  Logged
+                 * only: nothing consumes the response on this path. */
                 rdma_info_report("TCP: Received DHCP_RESPONSE from manager");
                 break;
             }
@@ -4273,74 +4253,6 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .post_srq_recv = tcp_post_srq_recv,
 };
 
-int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
-                               size_t len)
-{
-    TcpBackendPrivate *priv = get_private(backend_dev);
-    int sent = 0;
-
-    if (!priv || len == 0 || len > TCP_MAX_ETH_FRAME_LEN)
-        return -1;
-
-    if (priv->is_manager) {
-        /*
-         * Snapshot connection targets under mesh_table_lock, then release
-         * the lock before calling tcp_send_message.  This prevents a
-         * deadlock where the TX thread holds mesh_table_lock while blocked
-         * on a full socket buffer, starving the RX thread that also needs
-         * mesh_table_lock to process incoming frames.
-         */
-        struct {
-            TcpConnection *conn;
-            uint32_t node_id;
-        } targets[64];
-        int ntargets = 0;
-
-        qemu_mutex_lock(&priv->mesh_table_lock);
-        GHashTableIter iter;
-        gpointer key, value;
-        g_hash_table_iter_init(&iter, priv->mesh_nodes);
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            uint32_t node_id = GPOINTER_TO_UINT(key);
-            TcpConnection *conn = tcp_get_connection(priv, node_id);
-            if (conn && conn->is_connected && conn->sockfd >= 0 &&
-                ntargets < 64) {
-                targets[ntargets].conn = conn;
-                targets[ntargets].node_id = node_id;
-                ntargets++;
-            }
-        }
-        qemu_mutex_unlock(&priv->mesh_table_lock);
-
-        for (int i = 0; i < ntargets; i++) {
-            qemu_mutex_lock(&targets[i].conn->lock);
-            int rc = tcp_send_eth_frame_nonblock(targets[i].conn->sockfd, frame,
-                                                 len, priv->local_node_id,
-                                                 targets[i].node_id);
-            qemu_mutex_unlock(&targets[i].conn->lock);
-            if (rc == 0)
-                sent++;
-        }
-    } else if (priv->manager_conn && priv->manager_conn->is_connected &&
-               priv->manager_conn->sockfd >= 0) {
-        qemu_mutex_lock(&priv->manager_conn->lock);
-        int rc = tcp_send_eth_frame_nonblock(priv->manager_conn->sockfd, frame,
-                                             len, priv->local_node_id, 0);
-        qemu_mutex_unlock(&priv->manager_conn->lock);
-        if (rc == 0)
-            sent++;
-    }
-
-    if (sent == 0 && len > 0 && tcp_mesh_debug()) {
-        tcp_mesh_warn_rate_limited(
-            "TCP mesh: ETH frame not forwarded to any peer "
-            "(all sends EAGAIN or no connections)",
-            &mesh_eth_zero_forward, 256);
-    }
-
-    return sent;
-}
-
 uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
@@ -4390,12 +4302,6 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
  * guest retransmit: send blocking (tcp_send_message polls on EAGAIN) and
  * report failure to the caller, which turns it into an error completion.
  */
-int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                           const void *buf, size_t len)
-{
-    return tcp_backend_send_ionic_v(backend_dev, dst_node, buf, len, NULL, 0);
-}
-
 int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
                              const void *hdr, size_t hdr_len, const void *body,
                              size_t body_len)

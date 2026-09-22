@@ -93,9 +93,6 @@ size_t dhcp_server_process(DhcpServer *server,
                            size_t request_len, struct dhcp_packet *response,
                            size_t max_response_len);
 
-/* Get allocated IP for a MAC address (or 0 if not allocated) */
-uint32_t dhcp_server_get_allocated_ip(DhcpServer *server, const uint8_t *mac);
-
 /* Release IP allocation for a MAC address */
 void dhcp_server_release_ip(DhcpServer *server, const uint8_t *mac);
 

@@ -353,16 +353,6 @@ void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
             aq_idx, aq_dma, r->aq_depth, cq_dma, r->cq_depth, cq_id, eq_id);
 }
 
-void ionic_adminq_set_resources(struct ionic_adminq_ctx *ctx, void *dev_res,
-                                void *backend_dev)
-{
-    /* dev_res and backend_dev are not stored directly — we use the
-     * ionic_rm_* compat wrappers via pvrdma_handle instead. */
-    (void)dev_res;
-    (void)backend_dev;
-    /* pvrdma_handle must be set separately via ionic_adminq_set_pvrdma. */
-}
-
 void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
                                   ionic_adminq_cq_event_fn_t fn, void *opaque)
 {
