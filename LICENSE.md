@@ -31,7 +31,8 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
 * Everything under `src/` and `tests/`, and the fuzz harnesses in
   `nix/analysis/fuzz/`, which build against `src/`. The one exception is
-  `tests/test_write_imm.c`, which is MIT.
+  `tests/test_write_imm.c`, which is MIT and carries a
+  `Copyright (c) Gluesys Inc. and Jihyeon Gim` notice alongside AMD's.
 
 * Many of the files under `src/` were imported from the QEMU project
   (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI headers
@@ -39,7 +40,6 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
   dual `GPL-2.0` / `BSD-2-Clause`, as stated in each file's header comment.
 
 The groupings above are a summary; the per-file notice is authoritative.
-Most files carry an `SPDX-License-Identifier` tag. The QEMU-derived files
-under `src/from-qemu/hw/rdma/` instead state their terms in prose in the
-header comment, and some files -- build fragments, dotfiles, data --
-carry no notice at all and take the license of the directory they sit in.
+Every `.c` and `.h` file carries an `SPDX-License-Identifier` tag. Some
+other files -- build fragments, dotfiles, documentation, data -- carry no
+notice at all and take the license of the directory they sit in.

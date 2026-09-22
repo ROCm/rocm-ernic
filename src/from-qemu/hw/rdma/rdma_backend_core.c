@@ -4,7 +4,7 @@
  * This file implements the core backend abstraction that allows
  * multiple RDMA backends (none, loopback, verbs, etc.) to coexist.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *

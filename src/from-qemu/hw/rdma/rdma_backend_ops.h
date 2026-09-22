@@ -4,7 +4,7 @@
  * Multi-backend abstraction layer for RDMA operations.
  * Allows supporting multiple backend types: none, loopback, verbs, etc.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *

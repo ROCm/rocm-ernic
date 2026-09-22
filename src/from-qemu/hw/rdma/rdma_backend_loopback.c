@@ -4,7 +4,7 @@
  * Internal RDMA loopback backend for testing without hardware.
  * Implements complete RDMA emulation with in-memory data transfer.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
