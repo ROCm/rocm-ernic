@@ -158,7 +158,7 @@
     - name: Assert the subsystem entry insert did not fail unexpectedly
       ansible.builtin.assert:
         that:
-          - ernic_pciids_merge.rc in [0, 2]
+          - ernic_pciids_merge.rc == 0
         fail_msg: >-
           {{ ernic_pciids_path }} lists
           {{ ernic_guest_pciids_vendor }}:{{
