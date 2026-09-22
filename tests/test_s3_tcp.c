@@ -534,7 +534,7 @@ static bool handshake(struct fixture *fx, const char *name, uint16_t sport,
     if (tcp == NULL ||
         (tcp->flags & (FLAG_SYN | FLAG_ACK)) != (FLAG_SYN | FLAG_ACK)) {
         fail(name, "the answer to a SYN was not a SYN|ACK (flags 0x%02x)",
-             tcp ? tcp->flags : 0);
+             tcp ? (unsigned)tcp->flags : 0u);
         return false;
     }
     if (ntohl(tcp->ack) != client_iss + 1) {
@@ -1061,7 +1061,7 @@ static void test_stray_segment(void)
     const struct t_tcp *tcp = as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL);
     if (tcp == NULL || !(tcp->flags & FLAG_RST))
         fail(name, "a stray segment was not reset (flags 0x%02x)",
-             tcp ? tcp->flags : 0);
+             tcp ? (unsigned)tcp->flags : 0u);
     checksums_ok(name, fx.cap.f[0].buf, fx.cap.f[0].len);
 
     /* Another port on the same wire is not ours. */
