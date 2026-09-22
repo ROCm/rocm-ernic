@@ -410,11 +410,12 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     dev->device_initialized = true;
 
-    printf("ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
-           (unsigned)PCI_VENDOR_ID_PENSANDO,
-           (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC,
-           (unsigned)PCI_VENDOR_ID_PENSANDO,
-           (unsigned)PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
+    printf(
+        "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
+        (unsigned)PCI_VENDOR_ID_PENSANDO,
+        (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC,
+        (unsigned)PCI_VENDOR_ID_PENSANDO,
+        (unsigned)PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
     return 0;
 }
 
@@ -434,8 +435,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
     /* Patched ionic.ko + ionic_rdma.ko bind to this ID. */
     uint16_t did = PCI_DEVICE_ID_AMD_IONIC_ERNIC;
-    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_PENSANDO, did,
-                   PCI_VENDOR_ID_PENSANDO,
+    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_PENSANDO, did, PCI_VENDOR_ID_PENSANDO,
                    PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
 
     /* Set PCI class code: Network Controller - Ethernet (RoCEv2) */
