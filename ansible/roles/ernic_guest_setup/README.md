@@ -93,7 +93,8 @@ ernic_ionic_min_kernel: "6.18"
 ernic_ionic_min_vcpus: 4
 
 # Boot-time state. modules-load.d entries so a rebooted guest keeps
-# its RDMA device, and the pci.ids entry so lspci names the NIC.
+# its RDMA device, and the pci.ids subsystem entry so lspci names the
+# NIC "ROCm Emulated RDMA NIC" once hwdata knows 1dd8:100a.
 # Both used to be the golden image's business and are the role's now.
 ernic_guest_modules_persist: true
 ernic_guest_pciids: true

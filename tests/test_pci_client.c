@@ -29,14 +29,17 @@
 #include <linux/pci_regs.h>
 
 /* Emulated ionic device IDs */
-#define PCI_VENDOR_ID_PENSANDO   0x1dd8u
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x100au
+#define PCI_VENDOR_ID_PENSANDO      0x1dd8u
+#define PCI_DEVICE_ID_ROCM_ERNIC    0x100au
+#define PCI_SUBDEVICE_ID_ROCM_ERNIC 0x5400u
 
 /* Test results */
 typedef struct {
     bool connected;
     uint16_t vendor_id;
     uint16_t device_id;
+    uint16_t subsystem_vendor_id;
+    uint16_t subsystem_device_id;
     uint8_t revision;
     uint32_t class_code;
     uint8_t header_type;
@@ -113,6 +116,14 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
             *(uint8_t *)buf = 0x01; /* Just revision */
         }
         break;
+    case PCI_SUBSYSTEM_VENDOR_ID:
+        if (count >= 2) {
+            *(uint16_t *)buf = PCI_VENDOR_ID_PENSANDO;
+            if (count >= 4) {
+                *((uint16_t *)buf + 1) = PCI_SUBDEVICE_ID_ROCM_ERNIC;
+            }
+        }
+        break;
     case PCI_HEADER_TYPE:
         *(uint8_t *)buf = 0x00;
         break;
@@ -158,6 +169,25 @@ static int run_pci_tests(int fd, test_results_t *results)
         printf(" (ROCm ERNIC) ✓\n");
     } else {
         printf(" (expected 0x%04x) ✗\n", PCI_DEVICE_ID_ROCM_ERNIC);
+    }
+
+    uint32_t ssvid_sdid;
+    ret = read_pci_config(fd, PCI_SUBSYSTEM_VENDOR_ID, &ssvid_sdid,
+                          sizeof(ssvid_sdid));
+    if (ret < 0) {
+        return -1;
+    }
+    results->subsystem_vendor_id = (uint16_t)(ssvid_sdid & 0xFFFFu);
+    results->subsystem_device_id = (uint16_t)((ssvid_sdid >> 16) & 0xFFFFu);
+
+    printf("  Subsystem:  0x%04x:0x%04x", results->subsystem_vendor_id,
+           results->subsystem_device_id);
+    if (results->subsystem_vendor_id == PCI_VENDOR_ID_PENSANDO &&
+        results->subsystem_device_id == PCI_SUBDEVICE_ID_ROCM_ERNIC) {
+        printf(" (ROCm Emulated RDMA NIC) ✓\n");
+    } else {
+        printf(" (expected 0x%04x:0x%04x) ✗\n", PCI_VENDOR_ID_PENSANDO,
+               PCI_SUBDEVICE_ID_ROCM_ERNIC);
     }
 
     /* Read revision and class code */
@@ -246,6 +276,12 @@ static bool validate_results(const test_results_t *results)
 
     if (results->device_id != PCI_DEVICE_ID_ROCM_ERNIC) {
         printf("  ✗ Device ID mismatch\n");
+        passed = false;
+    }
+
+    if (results->subsystem_vendor_id != PCI_VENDOR_ID_PENSANDO ||
+        results->subsystem_device_id != PCI_SUBDEVICE_ID_ROCM_ERNIC) {
+        printf("  ✗ Subsystem ID mismatch\n");
         passed = false;
     }
 

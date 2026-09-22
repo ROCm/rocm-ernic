@@ -136,15 +136,15 @@ ernic_guest_modules_persist: true
 # ── lspci naming ─────────────────────────────────
 # Cosmetic, and usually a no-op: the emulated NIC reuses a real
 # vendor-assigned pair, and current hwdata already lists
-# 1dd8:100a -- as "DSC Serial Port Controller", which is what lspci
-# will call it.  tasks/pci_ids.yml only adds the entry below on a
-# guest whose pci.ids does not list the device at all, because a
-# duplicate device id makes pciutils reject the whole file.
+# 1dd8:100a as "DSC Serial Port Controller". tasks/pci_ids.yml only
+# adds the registered 1dd8:5400 subsystem name below on a guest whose
+# pci.ids lacks that subsystem entry.
 # scripts/pci.ids.rocm-ernic is the canonical copy of the entry;
 # keep the two in step.
 ernic_guest_pciids: true
 ernic_guest_pciids_vendor: "1dd8"
-ernic_guest_pciids_entry: "100a  ROCm Emulated RDMA NIC (ionic)"
+ernic_guest_pciids_device: "100a"
+ernic_guest_pciids_entry: "1dd8  5400  ROCm Emulated RDMA NIC"
 
 # ── Guest NIC ────────────────────────────────────
 ernic_nic_name: rocm-ernic0

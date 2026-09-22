@@ -54,8 +54,9 @@ static const char *get_backend_type_base(const char *backend_str);
  * distinguishable from real DSC hardware in lspci, udev and pci.ids
  * at the cost of the one-line ID patch in
  * patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch. */
-#define PCI_VENDOR_ID_PENSANDO        0x1dd8
-#define PCI_DEVICE_ID_AMD_IONIC_ERNIC 0x100a
+#define PCI_VENDOR_ID_PENSANDO           0x1dd8
+#define PCI_DEVICE_ID_AMD_IONIC_ERNIC    0x100a
+#define PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC 0x5400
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -409,9 +410,12 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     dev->device_initialized = true;
 
-    printf("ionic emulation initialized (VID:DID %#x:%#x)\n",
-           (unsigned)PCI_VENDOR_ID_PENSANDO,
-           (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+    printf(
+        "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
+        (unsigned)PCI_VENDOR_ID_PENSANDO,
+        (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC,
+        (unsigned)PCI_VENDOR_ID_PENSANDO,
+        (unsigned)PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
     return 0;
 }
 
@@ -432,7 +436,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Patched ionic.ko + ionic_rdma.ko bind to this ID. */
     uint16_t did = PCI_DEVICE_ID_AMD_IONIC_ERNIC;
     vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_PENSANDO, did, PCI_VENDOR_ID_PENSANDO,
-                   did);
+                   PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
 
     /* Set PCI class code: Network Controller - Ethernet (RoCEv2) */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
@@ -440,8 +444,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                       0x00); /* Prog-if */
 
     ernic_startup_report("rocm-ernic: PCI device configured: vendor=%#x "
-                         "device=%#x",
-                         (unsigned)PCI_VENDOR_ID_PENSANDO, (unsigned)did);
+                         "device=%#x subsystem=%#x:%#x",
+                         (unsigned)PCI_VENDOR_ID_PENSANDO, (unsigned)did,
+                         (unsigned)PCI_VENDOR_ID_PENSANDO,
+                         (unsigned)PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
 
     return 0;
 }

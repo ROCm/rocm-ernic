@@ -500,13 +500,30 @@ jobs:
         sudo lspci -nn
 
         echo ""
-        if ! sudo lspci -nn | grep -q '1dd8:100a'; then
+        PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
+          [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
+          [ "$(cat "$dev/device")" = '0x100a' ] || continue
+          basename "$dev"
+          break
+        done)"
+        if [ -z "$PCI_BDF" ]; then
           echo "✗ ionic PCI function 1dd8:100a not present on the guest bus"
           echo "  The vfio-user device did not attach.  Check the server"
           echo "  log and the QEMU console for the vfio-user handshake."
           exit 1
         fi
-        echo "✓ ionic PCI function 1dd8:100a present"
+
+        SUBSYSTEM_VENDOR="$(cat "/sys/bus/pci/devices/$PCI_BDF/subsystem_vendor")"
+        SUBSYSTEM_DEVICE="$(cat "/sys/bus/pci/devices/$PCI_BDF/subsystem_device")"
+        echo "=== Raw PCI IDs for $PCI_BDF ==="
+        echo "subsystem_vendor=$SUBSYSTEM_VENDOR"
+        echo "subsystem_device=$SUBSYSTEM_DEVICE"
+
+        if [ "$SUBSYSTEM_VENDOR" != '0x1dd8' ] || [ "$SUBSYSTEM_DEVICE" != '0x5400' ]; then
+          echo "✗ ionic PCI function present, but subsystem is ${SUBSYSTEM_VENDOR#0x}:${SUBSYSTEM_DEVICE#0x}"
+          exit 1
+        fi
+        echo "✓ ionic PCI function 1dd8:100a present with subsystem 1dd8:5400"
 
         echo ""
         echo "=== Kernel modules (informational, pre-provisioning) ==="

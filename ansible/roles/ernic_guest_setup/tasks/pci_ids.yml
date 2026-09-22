@@ -2,18 +2,16 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Name the emulated NIC in the guest's pci.ids, but only where the
-# id is genuinely unclaimed.
+# Name the emulated NIC in the guest's pci.ids by subsystem ID.
 #
 # The emulated device reuses a real, vendor-assigned pair: current
-# hwdata already lists 1dd8:100a as "DSC Serial Port Controller",
-# so on an up-to-date guest lspci names the device (misleadingly,
-# but it names it) and there is nothing to add.  Adding anyway is
-# not merely redundant -- pciutils rejects a pci.ids containing a
-# duplicate device id outright, so a second 100a line makes lspci
-# exit 1 and stop resolving names for every device on the bus, not
-# just this one.  Hence the per-device guard below rather than a
-# grep for our own description.
+# hwdata already lists 1dd8:100a as "DSC Serial Port Controller".
+# Newer pci.ids releases add a subsystem-specific 1dd8:5400 line that
+# renames just rocm-ernic to "ROCm Emulated RDMA NIC". On an
+# up-to-date guest there is therefore nothing to add. Adding a second
+# 100a device line would be wrong and can make pciutils reject the
+# file outright, so the guard below works at subsystem granularity
+# inside the existing device block.
 #
 # scripts/pci.ids.rocm-ernic is the canonical copy of the entry;
 # ernic_guest_pciids_entry must match it.
@@ -58,23 +56,56 @@
             inblock && $0 ~ "^\t" device "[ \t]" { found = 1 }
             END { exit found ? 0 : 1 }
           - "vendor={{ ernic_guest_pciids_vendor }}"
-          - "device={{ ernic_guest_pciids_entry.split()[0] }}"
+          - "device={{ ernic_guest_pciids_device }}"
           - "{{ ernic_pciids_path }}"
-      register: ernic_pciids_have
+      register: ernic_pciids_have_device
       failed_when: false
       changed_when: false
 
-    # Inserted directly under the vendor line, because pci.ids is
-    # parsed sequentially: a device line belongs to the vendor block
-    # it sits in, so appending at the end of the file would land it
-    # under the class section and never match.
-    - name: Merge the rocm-ernic device into pci.ids
+    - name: Check whether the device block already lists the subsystem
+      ansible.builtin.command:
+        argv:
+          - awk
+          - >-
+            /^[0-9a-fA-F]{4}[ \t]/ {
+              in_vendor = ($1 == vendor)
+              in_device = 0
+            }
+            in_vendor && $0 ~ "^\t" device "[ \t]" {
+              in_device = 1
+              next
+            }
+            in_vendor && $0 ~ "^\t[0-9a-fA-F]{4}[ \t]" { in_device = 0 }
+            in_device && $0 ~ "^\t\t" subvendor "[ \t]+" subdevice "[ \t]" {
+              found = 1
+            }
+            END { exit found ? 0 : 1 }
+          - "vendor={{ ernic_guest_pciids_vendor }}"
+          - "device={{ ernic_guest_pciids_device }}"
+          - "subvendor={{ ernic_guest_pciids_entry.split()[0] }}"
+          - "subdevice={{ ernic_guest_pciids_entry.split()[1] }}"
+          - "{{ ernic_pciids_path }}"
+      register: ernic_pciids_have_subsystem
+      failed_when: false
+      changed_when: false
+
+    # Inserted directly under the device line, because pci.ids is
+    # parsed sequentially: a subsystem line belongs to the device
+    # block it sits in, so appending at the end of the file would
+    # land it under the class section and never match.
+    - name: Merge the rocm-ernic subsystem into pci.ids
       ansible.builtin.replace:
         path: "{{ ernic_pciids_path }}"
-        regexp: '^({{ ernic_guest_pciids_vendor }}[ \t]+\S.*)$'
-        replace: '\1\n\t{{ ernic_guest_pciids_entry }}'
+        regexp: >-
+          (?m)^((?:{{ ernic_guest_pciids_vendor }}[^\n]*\n)(?:\t(?!{{
+          ernic_guest_pciids_device }}[ \t]).*\n)*\t{{
+          ernic_guest_pciids_device }}[^\n]*)$
+        replace: '\1\n\t\t{{ ernic_guest_pciids_entry }}'
       register: ernic_pciids_merge
-      when: ernic_pciids_have.rc != 0
+      when:
+        - ernic_pciids_have_device.rc == 0
+        - ernic_pciids_have_subsystem.rc != 0
+        - not ansible_check_mode
 
     # A hwdata too old to know the vendor leaves the replace above a
     # silent no-op and the entry quietly never appears.  Say so
@@ -82,24 +113,24 @@
     - name: Warn when the pci.ids vendor block is missing
       ansible.builtin.debug:
         msg: >-
-          No vendor {{ ernic_guest_pciids_vendor }} block in
-          {{ ernic_pciids_path }}, so the rocm-ernic device entry
-          was not added; lspci will show a bare device id.  Update
-          the guest's hwdata package.
+          {{ ernic_pciids_path }} does not list
+          {{ ernic_guest_pciids_vendor }}:{{
+          ernic_guest_pciids_device }}, so the rocm-ernic subsystem
+          entry was not added. Update the guest's hwdata package so
+          the subsystem name has a device block to attach to.
       when:
-        - ernic_pciids_have.rc != 0
+        - ernic_pciids_have_device.rc != 0
         - not (ernic_pciids_merge.changed | default(false))
 
     - name: Report the name pci.ids already gives the device
       ansible.builtin.debug:
         msg: >-
-          {{ ernic_pciids_path }} already lists
+          {{ ernic_pciids_path }} already lists subsystem
+          {{ ernic_guest_pciids_entry.split()[0] }}:{{
+          ernic_guest_pciids_entry.split()[1] }} for
           {{ ernic_guest_pciids_vendor }}:{{
-          ernic_guest_pciids_entry.split()[0] }}, so it was left
-          alone -- the emulated NIC reuses a vendor-assigned id and
-          lspci will call it whatever hwdata calls it.  Adding a
-          second entry would make pciutils reject the file.
-      when: ernic_pciids_have.rc == 0
+          ernic_guest_pciids_device }}, so it was left alone.
+      when: ernic_pciids_have_subsystem.rc == 0
 
     # Cheap, and the only thing that proves the file is still
     # parseable: on a duplicate device id pciutils prints
@@ -116,7 +147,10 @@
       register: ernic_pciids_verify
       changed_when: false
       failed_when: false
-      when: ernic_pciids_have.rc != 0
+      when:
+        - ernic_pciids_have_device.rc == 0
+        - ernic_pciids_have_subsystem.rc != 0
+        - not ansible_check_mode
 
     - name: Assert pci.ids was not corrupted
       ansible.builtin.assert:
@@ -128,4 +162,7 @@
           no names for any device: {{
           ernic_pciids_verify.stdout | default('') }}.  Restore it
           with "update-pciids" and set ernic_guest_pciids=false.
-      when: ernic_pciids_have.rc != 0
+      when:
+        - ernic_pciids_have_device.rc == 0
+        - ernic_pciids_have_subsystem.rc != 0
+        - not ansible_check_mode
