@@ -14,6 +14,38 @@ cat result/summary.txt
 Each harness is built with `-fsanitize=fuzzer,address,undefined`, so
 out-of-bounds accesses and undefined behaviour abort with a diagnostic.
 
+## Staying buildable between fuzz runs
+
+Because the Nix targets above are opt-in, nothing on an ordinary PR used to
+compile these harnesses — a changed parser signature could break them and
+stay broken until someone asked for a fuzz run.
+
+`tests/nix/` therefore builds every harness as part of the normal CMake
+build, linked against a plain `main()` (`tests/nix/fuzz_replay_main.c`)
+instead of libFuzzer, and registers each as a `fuzz-replay-<harness>` test:
+
+```
+ctest -R fuzz-replay
+```
+
+The compile is what catches the drift; the replay over a few generated
+inputs is a cheap smoke test on top. `-fsanitize=fuzzer` is clang-only, but
+the driver needs no libFuzzer, so this builds under gcc too. The harnesses
+are held to the full project warning set there — they are our code, not
+vendored, and are warning-clean.
+
+**When adding a harness, add it in both places**: the `harnesses` list in
+`nix/analysis/fuzz.nix` and the `ernic_add_fuzz_replay()` calls in
+`tests/nix/CMakeLists.txt`. One without the other leaves it compiled only
+by the opt-in workflow again.
+
+The driver also replays a saved crash input, which reproduces a finding
+from a real fuzz run under ASan without rebuilding via Nix:
+
+```
+./fuzz_replay_dhcp_server crash-da39a3ee5e6b4b0d
+```
+
 ## Harnesses
 
 | Harness | Target | Notes |

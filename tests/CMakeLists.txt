@@ -762,3 +762,10 @@ set_tests_properties(s3-ci PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
+
+# ---------------------------------------------------------------
+# Compile checks for the Nix fuzz harnesses
+# ---------------------------------------------------------------
+# Builds nix/analysis/fuzz/ against a plain main() so the harnesses cannot
+# go stale between opt-in fuzz runs. See tests/nix/CMakeLists.txt.
+add_subdirectory(nix)

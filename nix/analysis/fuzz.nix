@@ -35,6 +35,10 @@ let
   symbolizer = "${lib.getBin pkgs.llvm}/bin/llvm-symbolizer";
 
   # name -> extra .c files linked alongside nix/analysis/fuzz/fuzz_<name>.c
+  #
+  # These targets are opt-in, so tests/nix/CMakeLists.txt also builds every
+  # harness against a plain main() during the ordinary CMake build to keep
+  # them from going stale. Add a harness in both places.
   harnesses = [
     { name = "rdma_cm_proto";
       extra = [
