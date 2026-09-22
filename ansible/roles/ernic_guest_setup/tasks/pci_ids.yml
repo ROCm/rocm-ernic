@@ -129,6 +129,7 @@
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
+        - not ansible_check_mode
 
     # A hwdata too old to know the vendor leaves the replace above a
     # silent no-op and the entry quietly never appears.  Say so
@@ -169,6 +170,7 @@
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
         - ernic_pciids_merge is defined
+        - not ansible_check_mode
 
     # Cheap, and the only thing that proves the file is still
     # parseable: on a duplicate device id pciutils prints
@@ -188,6 +190,7 @@
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
+        - not ansible_check_mode
 
     - name: Assert pci.ids was not corrupted
       ansible.builtin.assert:
@@ -202,3 +205,4 @@
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
+        - not ansible_check_mode
