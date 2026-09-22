@@ -522,11 +522,19 @@ set(ERNIC_TEST_TARGETS
     test_dhcp_server_process
     test_dhcp_server_lifecycle
     test_parse_int
+    test_nvmeof_target
+    test_nvmeof_cm
+    test_s3_token
+    test_s3_http
+    test_s3_target
+    test_s3_tcp
     test_loopback_sge_copy
     test_ionic_intr_pending
     test_ionic_query_qp
+    test_ionic_cq_arm
     test_tcp_mesh_topology
     test_tcp_mr_bounds
+    test_rdma_res_tbl
 )
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
