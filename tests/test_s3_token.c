@@ -64,6 +64,15 @@ static const char REF_HEX[] =
     "01"                               /* port_num  = 1 */
     "0000";                            /* lid       = 0 */
 
+/*
+ * The image above is a literal, so its length is fixed when this file is
+ * compiled rather than when the test runs: check it here, where a hand-edit
+ * that drops or doubles a byte stops the build instead of failing a run.
+ * sizeof counts the NUL, hence the -1.
+ */
+_Static_assert(sizeof(REF_HEX) - 1 == S3_TOKEN_HEX_LEN,
+               "the reference token image is not S3_TOKEN_HEX_LEN chars");
+
 static const uint8_t REF_GID[16] = {0, 0, 0,    0,    0,    0,    0,    0,
                                     0, 0, 0xff, 0xff, 0xc0, 0xa8, 0xc8, 0x09};
 
@@ -72,17 +81,13 @@ static void test_decode_reference(void)
     const char *name = "decode-reference";
     struct s3_token t;
 
-    if (strlen(REF_HEX) != S3_TOKEN_HEX_LEN) {
-        fail(name, "reference is %zu chars, want %d", strlen(REF_HEX),
-             S3_TOKEN_HEX_LEN);
-        return;
-    }
     if (!s3_token_decode(REF_HEX, &t)) {
         fail(name, "decode rejected the reference token");
         return;
     }
     if (t.transport != S3_TRANSPORT_RC)
-        fail(name, "transport %u, want %u", t.transport, S3_TRANSPORT_RC);
+        fail(name, "transport %u, want %u", t.transport,
+             (unsigned)S3_TRANSPORT_RC);
     if (t.qp_num != 0x00123456u)
         fail(name, "qp_num 0x%x, want 0x123456", t.qp_num);
     if (memcmp(t.gid, REF_GID, sizeof(REF_GID)) != 0)
