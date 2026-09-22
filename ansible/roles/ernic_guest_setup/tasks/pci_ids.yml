@@ -155,19 +155,20 @@
           ernic_guest_pciids_device }}, so it was left alone.
       when: ernic_pciids_have_subsystem.rc == 0
 
-    - name: Warn when the subsystem entry could not be inserted
-      ansible.builtin.debug:
-        msg: >-
-          {{ ernic_pciids_path }} has device
+    - name: Assert the subsystem entry insert did not fail unexpectedly
+      ansible.builtin.assert:
+        that:
+          - ernic_pciids_merge.rc in [0, 2]
+        fail_msg: >-
+          {{ ernic_pciids_path }} lists
           {{ ernic_guest_pciids_vendor }}:{{
           ernic_guest_pciids_device }}, but the rocm-ernic subsystem
-          line could not be inserted under it. Re-run update-pciids and
-          inspect that device block manually.
+          line could not be inserted under that device block. Inspect
+          the file manually and re-run update-pciids if needed.
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
         - ernic_pciids_merge is defined
-        - ernic_pciids_merge.rc not in [0, 2]
 
     # Cheap, and the only thing that proves the file is still
     # parseable: on a duplicate device id pciutils prints
