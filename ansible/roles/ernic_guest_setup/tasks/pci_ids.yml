@@ -94,37 +94,14 @@
     # block it sits in, so appending at the end of the file would
     # land it under the class section and never match.
     - name: Merge the rocm-ernic subsystem into pci.ids
-      ansible.builtin.shell:
-        executable: /bin/bash
-        cmd: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          path = Path({{ ernic_pciids_path | to_json }})
-          vendor = {{ ernic_guest_pciids_vendor | to_json }}
-          device = {{ ernic_guest_pciids_device | to_json }}
-          entry = "\t\t" + {{ ernic_guest_pciids_entry | to_json }}
-
-          lines = path.read_text().splitlines()
-          in_vendor = False
-
-          for idx, line in enumerate(lines):
-              if re.match(r'^[0-9A-Fa-f]{4}[ \t]', line):
-                  in_vendor = line.split()[0] == vendor
-                  continue
-
-              if in_vendor and re.match(r'^\t' + re.escape(device) + r'[ \t]', line):
-                  lines.insert(idx + 1, entry)
-                  path.write_text('\n'.join(lines) + '\n')
-                  print('changed')
-                  sys.exit(0)
-
-          sys.exit(1)
-          PY
+      ansible.builtin.replace:
+        path: "{{ ernic_pciids_path }}"
+        regexp: >-
+          (?m)^((?:{{ ernic_guest_pciids_vendor }}[^\n]*\n)(?:\t(?!{{
+          ernic_guest_pciids_device }}[ \t]).*\n)*\t{{
+          ernic_guest_pciids_device }}[^\n]*)$
+        replace: '\1\n\t\t{{ ernic_guest_pciids_entry }}'
       register: ernic_pciids_merge
-      changed_when: "'changed' in ernic_pciids_merge.stdout"
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
