@@ -121,11 +121,10 @@
                   print('changed')
                   sys.exit(0)
 
-          sys.exit(2)
+          sys.exit(1)
           PY
       register: ernic_pciids_merge
       changed_when: "'changed' in ernic_pciids_merge.stdout"
-      failed_when: false
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
@@ -155,22 +154,6 @@
           {{ ernic_guest_pciids_vendor }}:{{
           ernic_guest_pciids_device }}, so it was left alone.
       when: ernic_pciids_have_subsystem.rc == 0
-
-    - name: Assert the subsystem entry insert did not fail unexpectedly
-      ansible.builtin.assert:
-        that:
-          - ernic_pciids_merge.rc == 0
-        fail_msg: >-
-          {{ ernic_pciids_path }} lists
-          {{ ernic_guest_pciids_vendor }}:{{
-          ernic_guest_pciids_device }}, but the rocm-ernic subsystem
-          line could not be inserted under that device block. Inspect
-          the file manually and re-run update-pciids if needed.
-      when:
-        - ernic_pciids_have_device.rc == 0
-        - ernic_pciids_have_subsystem.rc != 0
-        - ernic_pciids_merge is defined
-        - not ansible_check_mode
 
     # Cheap, and the only thing that proves the file is still
     # parseable: on a duplicate device id pciutils prints
