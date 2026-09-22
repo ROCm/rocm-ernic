@@ -166,7 +166,8 @@
       when:
         - ernic_pciids_have_device.rc == 0
         - ernic_pciids_have_subsystem.rc != 0
-        - (ernic_pciids_merge.rc | default(0)) != 0
+        - ernic_pciids_merge is defined
+        - ernic_pciids_merge.rc != 0
 
     # Cheap, and the only thing that proves the file is still
     # parseable: on a duplicate device id pciutils prints
