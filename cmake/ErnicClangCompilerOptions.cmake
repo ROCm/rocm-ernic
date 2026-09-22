@@ -75,13 +75,24 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wmissing-include-dirs
         -Wmissing-variable-declarations
         -Wnull-dereference
-        -Wpacked
+
+        # -Wpacked is deliberately left unset.  On GCC it fires when
+        # __attribute__((packed)) does not change the layout, which is
+        # exactly the case for a wire-format struct whose fields happen
+        # to be naturally packed on this target; acting on it means
+        # deleting the attribute, after which the next field added to
+        # the struct silently reintroduces padding.  clang's -Wpacked is
+        # a near no-op here in any case -- its only member,
+        # -Wpacked-non-pod, is C++-only.
+        #-Wpacked
+
         -Wpointer-arith
         -Wredundant-parens
         -Wshadow-all
         -Wshift-sign-overflow
         -Wswitch-default
         -Wtype-limits
+        -Wunaligned-access
         -Wundef
         -Wunreachable-code-aggressive
         -Wvla
