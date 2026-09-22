@@ -12,8 +12,8 @@
 #   fuzz_dhcp_server     dhcp_server_process()      — DHCP packet parser
 #   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
 #
-# Deliberately NOT fuzzed here: eth_rx_inject_frame() and the ionic devcmd
-# and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
+# Deliberately NOT fuzzed here: eth_rx_inject_frame_mesh_blocking() and the
+# ionic devcmd and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
 # through rdma_pci_dma_map() and manipulate the RDMA resource manager, so a
 # faithful harness needs a fully-wired device (PCI + DMA + backend) fixture
 # rather than a byte buffer. Reaching them meaningfully is a device-emulation

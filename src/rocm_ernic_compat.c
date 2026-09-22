@@ -40,7 +40,6 @@
 #include "from-qemu/hw/rdma/rdma_rm.h"
 #include "from-qemu/hw/rdma/rdma_utils.h"
 #include "from-qemu/utils/dhcp_server.h"
-#include "from-qemu/utils/dhcp_proxy.h"
 #include "from-qemu/include/qemu-extra/standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "from-qemu/include/qemu-extra/standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 #include "from-qemu/include/qemu-extra/hw/pci/pci.h"
@@ -601,31 +600,6 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
  * Statistics
  */
 
-void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *uar_writes, uint64_t *interrupts,
-                      uint64_t *uar_reads, uint64_t *bar0_reads,
-                      uint64_t *bar0_writes)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    if (commands)
-        *commands = pvrdma->stats.commands;
-    if (uar_writes)
-        *uar_writes = pvrdma->stats.uar_writes;
-    if (interrupts)
-        *interrupts = pvrdma->stats.interrupts;
-    if (uar_reads)
-        *uar_reads = pvrdma->stats.uar_reads;
-    if (bar0_reads)
-        *bar0_reads = pvrdma->stats.bar0_reads;
-    if (bar0_writes)
-        *bar0_writes = pvrdma->stats.bar0_writes;
-}
-
 void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
@@ -982,14 +956,6 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
                             pd_handle, 0);
 }
 
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    if (!pvrdma)
-        return;
-    rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
-}
-
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
@@ -1030,34 +996,6 @@ void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
     if (!pvrdma)
         return;
     rdma_rm_dealloc_mr(&pvrdma->rdma_dev_res, mr_handle);
-}
-
-int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
-                            const uint64_t *sge_va, const uint32_t *sge_len,
-                            const uint32_t *sge_lkey, uint32_t num_sge,
-                            uint8_t opcode)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
-        return -EINVAL;
-    if (num_sge == 0 || num_sge > 32)
-        return -EINVAL;
-
-    RdmaRmQP *rm_qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
-    if (!rm_qp)
-        return -ENOENT;
-
-    /* The ionic datapath posts its own CQEs directly via post_data_cqe(), so a
-     * backend completion would be a duplicate.  There is also no
-     * CompHandlerCtx to hand to rdma_backend_post_send(), and every completion
-     * path dereferences it, so the backend post is skipped for all backends
-     * until the ionic path grows a real per-request context.  The QP lookup
-     * above is kept so an unknown QPN is still rejected. */
-    (void)sge_va;
-    (void)sge_len;
-    (void)sge_lkey;
-    (void)opcode;
-    return 0;
 }
 
 int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
@@ -1153,16 +1091,6 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
 
     memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
     return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
-}
-
-int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
-                    size_t len)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma)
-        return -EINVAL;
-    return tcp_backend_send_ionic(&pvrdma->backend_dev, dst_node, buf, len);
 }
 
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,

@@ -68,10 +68,6 @@ int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
                                RdmaBackendType type, const char *config);
 void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
 
-/* Ethernet frame forwarding via TCP mesh */
-int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
-                               size_t len);
-
 /*
  * Opaque node-to-node transport for the ionic data path.
  *
@@ -84,9 +80,7 @@ int tcp_backend_send_eth_frame(RdmaBackendDev *backend_dev, const void *frame,
 typedef void (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node,
                                   const void *buf, size_t len);
 
-int tcp_backend_send_ionic(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                           const void *buf, size_t len);
-/* As above, but header and body stay separate all the way down to writev. */
+/* Header and body stay separate all the way down to writev. */
 int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
                              const void *hdr, size_t hdr_len, const void *body,
                              size_t body_len);
@@ -100,9 +94,6 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
 uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev);
 uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
                                    const union ibv_gid *dgid);
-
-/* Dump the mesh's cumulative traffic counters at info level. */
-void tcp_backend_log_stats(RdmaBackendDev *backend_dev);
 
 /* Legacy verbs backend init (for compatibility) */
 int rdma_backend_init(RdmaBackendDev *backend_dev, PCIDevice *pdev,

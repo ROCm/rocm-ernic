@@ -175,21 +175,6 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
  */
 
 /**
- * pvrdma_get_stats - Get device statistics
- * @handle: Device handle
- * @commands: Pointer to receive command count (optional)
- * @uar_writes: Pointer to receive UAR write count (optional)
- * @interrupts: Pointer to receive interrupt count (optional)
- * @uar_reads: Pointer to receive UAR read count (optional)
- * @bar0_reads: Pointer to receive BAR0 read count (optional)
- * @bar0_writes: Pointer to receive BAR0 write count (optional)
- */
-void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *uar_writes, uint64_t *interrupts,
-                      uint64_t *uar_reads, uint64_t *bar0_reads,
-                      uint64_t *bar0_writes);
-
-/**
  * pvrdma_set_stats_file - Set statistics output file path
  * @handle: Device handle
  * @stats_file: Path to stats output file (will be copied)
@@ -280,11 +265,6 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle);
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);
 
 /**
- * ionic_rm_dealloc_pd - Free a protection domain
- */
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle);
-
-/**
  * ionic_rm_alloc_qp - Allocate a queue pair
  * @handle:        pvrdma device handle
  * @pd_handle:     protection domain handle
@@ -318,23 +298,6 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
  * ionic_rm_dealloc_mr - Free a memory region
  */
 void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle);
-
-/**
- * ionic_backend_post_send - Post a send WQE to the RDMA backend
- *
- * @qpn:         QP number (handle) in rdma_rm
- * @sge_va:      Array of SGE virtual addresses (guest VAs, host-order)
- * @sge_len:     Array of SGE lengths
- * @sge_lkey:    Array of SGE local keys
- * @num_sge:     Number of SGE entries
- * @opcode:      ionic v1 WQE opcode (IONIC_V1_OP_SEND etc.)
- *
- * Returns 0 on success, -errno on failure.
- */
-int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
-                            const uint64_t *sge_va, const uint32_t *sge_len,
-                            const uint32_t *sge_lkey, uint32_t num_sge,
-                            uint8_t opcode);
 
 /**
  * ionic_rm_modify_qp - Modify a queue pair's state
@@ -384,7 +347,7 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
                                    const void *buf, size_t len);
 
 /*
- * Largest single message ionic_mesh_send() accepts, header included.  Mirrors
+ * Largest single message ionic_mesh_sendv() accepts, header included.  Mirrors
  * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp.c, which static-asserts the two
  * agree.
  */
@@ -393,9 +356,7 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes);
-int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
-                    size_t len);
-/* As above, but header and body stay separate all the way down to writev. */
+/* Header and body stay separate all the way down to writev. */
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len);
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
