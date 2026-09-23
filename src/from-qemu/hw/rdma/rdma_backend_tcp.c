@@ -187,7 +187,7 @@ typedef struct {
 typedef struct {
     uint32_t assigned_node_id;
     uint32_t num_nodes;
-    int32_t result; /* 0 = success, negative = error */
+    uint32_t result; /* Signed: 0 = success, negative = error */
 } __attribute__((packed)) TcpRegisterRespPayload;
 
 typedef struct {
@@ -1107,9 +1107,17 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     TcpMsgHeader hdr;
     ssize_t ret;
 
+    /* The receiver drops the connection on anything larger. */
+    if (payload_len > TCP_MAX_PAYLOAD_LEN ||
+        payload2_len > TCP_MAX_PAYLOAD_LEN - payload_len) {
+        rdma_error_report("TCP: payload too large: %zu + %zu", payload_len,
+                          payload2_len);
+        return -1;
+    }
+
     hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
     hdr.msg_type = htonl(msg_type);
-    hdr.msg_len = htonl(payload_len + payload2_len);
+    hdr.msg_len = htonl((uint32_t)(payload_len + payload2_len));
     hdr.seq = htonl(seq);
     hdr.src_node_id = htonl(src_node);
     hdr.dst_node_id = htonl(dst_node);
@@ -1200,9 +1208,13 @@ static int tcp_send_eth_frame_nonblock(int sockfd, const void *payload,
     TcpMsgHeader *hdr = (TcpMsgHeader *)buf;
     size_t total = sizeof(*hdr) + payload_len;
 
+    if (payload_len > TCP_MAX_ETH_FRAME_LEN) {
+        return -EMSGSIZE;
+    }
+
     hdr->magic = htonl(TCP_PROTOCOL_MAGIC);
     hdr->msg_type = htonl(TCP_MSG_ETH_FRAME);
-    hdr->msg_len = htonl(payload_len);
+    hdr->msg_len = htonl((uint32_t)payload_len);
     hdr->seq = 0;
     hdr->src_node_id = htonl(src_node);
     hdr->dst_node_id = htonl(dst_node);
@@ -1732,7 +1744,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 TcpRegisterRespPayload *resp =
                     (TcpRegisterRespPayload *)payload;
                 uint32_t assigned_id = ntohl(resp->assigned_node_id);
-                int32_t result = ntohl(resp->result);
+                int32_t result = (int32_t)ntohl(resp->result);
 
                 if (result != 0) {
                     rdma_error_report("TCP: Registration failed: %d", result);
@@ -2855,8 +2867,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->is_manager = false;
     priv->mesh_nodes = NULL;
     priv->health_check_running = false;
-    priv->health_check_interval_sec =
-        tcp_env_int("ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
+    /* tcp_env_int() only returns positive values */
+    priv->health_check_interval_sec = (uint32_t)tcp_env_int(
+        "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
     priv->next_available_node_id = 1; /* Manager starts assigning from 1 */
     priv->manager_host = NULL;
     priv->manager_port = 0;
