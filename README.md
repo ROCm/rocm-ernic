@@ -57,9 +57,10 @@ API reference.
 
 ## License
 
-[MIT](LICENSE.md) for the build system and the deployment and automation code;
-the emulator under `src/` and `tests/` is `GPL-2.0-or-later`. The per-file SPDX
-header is authoritative; see [LICENSE.md](LICENSE.md) for details.
+[MIT](LICENSE.md) for the build system, documentation, and the deployment and automation code;
+everything under `src/` and `tests/` is `GPL-2.0-or-later` unless its per-file
+SPDX declaration says otherwise. The per-file SPDX header is authoritative; see
+[LICENSE.md](LICENSE.md) for details.
 
 <!-- References -->
 
