@@ -1,6 +1,6 @@
 # rocm-ernic
 
-[![MIT](https://img.shields.io/badge/License-MIT-blue.svg)][license]
+[![License](https://img.shields.io/badge/License-MIT%20%7C%20GPL--2.0--or--later-blue.svg)][license]
 [![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml/badge.svg)][ci-build]
 [![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
 [![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
@@ -57,8 +57,10 @@ API reference.
 
 ## License
 
-[MIT](LICENSE.md). Some files carry different licenses per their SPDX headers;
-see [LICENSE.md](LICENSE.md) for details.
+[MIT](LICENSE.md) for the build system, documentation, and the deployment and automation code;
+everything under `src/` and `tests/` is `GPL-2.0-or-later` unless its per-file
+SPDX declaration says otherwise. The per-file SPDX header is authoritative; see
+[LICENSE.md](LICENSE.md) for details.
 
 <!-- References -->
 

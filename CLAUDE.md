@@ -13,9 +13,12 @@ new file, and do not "update" a year on an existing one.
 
 Two forms are in use, split by license:
 
-- MIT-licensed files (everything outside `src/from-qemu/`) use the full line
-  above, matching `LICENSE.md`.
-- GPL-licensed files carried over from QEMU (`src/from-qemu/`) use
+- MIT-licensed files — the build system and the deployment and automation
+  code (`CMakeLists.txt`, `cmake/`, `docs/`, `ansible/`, `ci/`, `.github/`,
+  `prometheus/`, `udev/`, `scripts/`, `service/`) — use the full line above,
+  matching `LICENSE.md`.
+- GPL-licensed files — everything under `src/` and `tests/`, and the fuzz
+  harnesses in `nix/analysis/fuzz/` — use
   `Copyright (C) Advanced Micro Devices, Inc.` — capital `(C)`, no
   "All rights reserved" — and keep the QEMU GPL boilerplate that follows it.
 

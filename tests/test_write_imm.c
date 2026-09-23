@@ -1,8 +1,4 @@
-/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
- * Copyright (c) Gluesys Inc. and Jihyeon Gim. All rights reserved.
- *
- * SPDX-License-Identifier: MIT
- *
+/*
  * Loopback WRITE_WITH_IMM responder-delivery test.
  *
  * Pairs two RC QPs on one rocm_ernic device, then runs several
@@ -18,6 +14,13 @@
  * present (CTest skip), and 1 on any validation failure. Set
  * $RDMA_DEVICE to pin the device; it then exits 1 rather than 77 if
  * that device is absent. See ernic_device.h.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * Copyright (c) Gluesys Inc. and Jihyeon Gim. All rights reserved.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #define _POSIX_C_SOURCE 200809L
