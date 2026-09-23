@@ -89,7 +89,7 @@ QEMU PVRDMA implementation. The original authors of that work:
 License
 -------
 
-The build system and the deployment and automation code are licensed
+The build system, documentation, and the deployment and automation code are licensed
 under the
 `MIT license <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_.
 The emulator itself is ``GPL-2.0-or-later``:
