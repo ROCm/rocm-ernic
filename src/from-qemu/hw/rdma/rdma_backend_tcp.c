@@ -118,7 +118,6 @@ static void tcp_mesh_warn_rate_limited(const char *msg, uint64_t *counter,
 
 static uint64_t mesh_eth_eagain_events;
 static uint64_t mesh_eth_truncated_sends;
-static uint64_t mesh_eth_zero_forward;
 static uint64_t mesh_eth_inject_fail;
 static uint64_t mesh_eth_manager_relay_eagain;
 

@@ -68,8 +68,8 @@ void dhcp_server_destroy(DhcpServer *server)
     g_free(server);
 }
 
-/* DHCP magic cookie: 0x63825363 */
-#define DHCP_MAGIC_COOKIE 0x63825363
+/* DHCP magic cookie (RFC 2131), in wire order at the start of options */
+static const uint8_t dhcp_magic_cookie[4] = {0x63, 0x82, 0x53, 0x63};
 
 /* Find DHCP option in packet */
 static const uint8_t *dhcp_find_option(const struct dhcp_packet *packet,
@@ -80,10 +80,8 @@ static const uint8_t *dhcp_find_option(const struct dhcp_packet *packet,
     int opt_count = 0;
 
     /* Check for magic cookie at start of options field */
-    if (options[0] == 0x63 && options[1] == 0x82 && options[2] == 0x53 &&
-        options[3] == 0x63) {
-        /* Skip magic cookie (4 bytes) */
-        i = 4;
+    if (memcmp(options, dhcp_magic_cookie, sizeof(dhcp_magic_cookie)) == 0) {
+        i = sizeof(dhcp_magic_cookie);
         rdma_info_report(
             "DHCP: Found magic cookie, starting options search at offset 4");
     }
@@ -263,10 +261,8 @@ size_t dhcp_server_process(DhcpServer *server,
     size_t opt_offset = 0;
 
     /* Add magic cookie to options */
-    options[opt_offset++] = 0x63;
-    options[opt_offset++] = 0x82;
-    options[opt_offset++] = 0x53;
-    options[opt_offset++] = 0x63;
+    memcpy(&options[opt_offset], dhcp_magic_cookie, sizeof(dhcp_magic_cookie));
+    opt_offset += sizeof(dhcp_magic_cookie);
 
     switch (msg_type) {
     case DHCP_MSG_DISCOVER: {
@@ -436,13 +432,6 @@ size_t dhcp_server_process(DhcpServer *server,
             return sizeof(*response);
         } else {
             /* IP not available or not allocated to this MAC - send NAK */
-            /* Add magic cookie if not already added */
-            if (opt_offset == 0) {
-                options[opt_offset++] = 0x63;
-                options[opt_offset++] = 0x82;
-                options[opt_offset++] = 0x53;
-                options[opt_offset++] = 0x63;
-            }
             uint8_t nak_type = DHCP_MSG_NAK;
             dhcp_add_option(options, &opt_offset, DHCP_OPT_MSG_TYPE, &nak_type,
                             1);

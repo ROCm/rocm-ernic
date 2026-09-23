@@ -51,19 +51,7 @@ struct rdma_cm_msg_hdr {
 /* rdma_cm message types (simplified) */
 #define RDMA_CM_MSG_REQ 0x01 /* Connection request */
 #define RDMA_CM_MSG_REP 0x02 /* Connection reply */
-#define RDMA_CM_MSG_REJ 0x03 /* Connection reject */
 #define RDMA_CM_MSG_MRA 0x04 /* Connection accept */
-
-/* InfiniBand SA method/class values */
-#define IB_SA_METHOD_GET_TABLE       0x01
-#define IB_SA_METHOD_GET_TABLE_RSP   0x81
-#define IB_SA_METHOD_DELETE          0x15
-#define IB_SA_METHOD_DELETE_RSP      0x95
-#define IB_SA_METHOD_SEND            0x03
-#define IB_SA_METHOD_TRAP            0x05
-#define IB_SA_METHOD_REPORT          0x06
-#define IB_SA_METHOD_SERVICE_REC     0x10
-#define IB_SA_METHOD_SERVICE_REC_RSP 0x90
 
 /* Management class values */
 #define IB_MGMT_CLASS_SUBN_ADM        0x03
