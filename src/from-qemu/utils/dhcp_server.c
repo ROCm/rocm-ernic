@@ -83,7 +83,8 @@ static const uint8_t *dhcp_find_option(const struct dhcp_packet *packet,
     if (memcmp(options, dhcp_magic_cookie, sizeof(dhcp_magic_cookie)) == 0) {
         i = sizeof(dhcp_magic_cookie);
         rdma_info_report(
-            "DHCP: Found magic cookie, starting options search at offset 4");
+            "DHCP: Found magic cookie, starting options search at offset %zu",
+            i);
     }
 
     while (i < sizeof(packet->options)) {
