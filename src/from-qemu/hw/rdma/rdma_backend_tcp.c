@@ -1120,6 +1120,10 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     iov[0].iov_base = &hdr;
     iov[0].iov_len = sizeof(hdr);
 
+    /* struct iovec serves readv() as well as writev(), so iov_base is not
+     * const even though writev() only reads through it. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
     if (payload && payload_len > 0) {
         iov[iovcnt].iov_base = (void *)payload;
         iov[iovcnt].iov_len = payload_len;
@@ -1132,6 +1136,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
         total += payload2_len;
         iovcnt++;
     }
+#pragma GCC diagnostic pop
 
     size_t sent = 0;
 
@@ -2125,17 +2130,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     host_dst, mr->virt, (unsigned long)(raddr - mr->start),
                     dlen, (unsigned long)mr->start, (unsigned long)mr->length);
                 memcpy(host_dst, data, dlen);
-
-                if (dlen >= 8) {
-                    uint32_t *src32 = (uint32_t *)data;
-                    uint32_t *dst32 = (uint32_t *)host_dst;
-                    uint32_t *end32 = (uint32_t *)((char *)host_dst + dlen - 4);
-                    rdma_info_report("TCP: RDMA_WRITE post-memcpy verify: "
-                                     "src[0]=0x%08x dst[0]=0x%08x "
-                                     "dst[last]=0x%08x match=%d",
-                                     src32[0], dst32[0], *end32,
-                                     (dst32[0] == src32[0]));
-                }
 
                 PCIDevice *pci_dev = priv->backend_dev->dev;
                 if (pci_dev)

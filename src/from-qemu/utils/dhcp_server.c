@@ -72,8 +72,8 @@ void dhcp_server_destroy(DhcpServer *server)
 #define DHCP_MAGIC_COOKIE 0x63825363
 
 /* Find DHCP option in packet */
-static uint8_t *dhcp_find_option(const struct dhcp_packet *packet,
-                                 uint8_t option_type)
+static const uint8_t *dhcp_find_option(const struct dhcp_packet *packet,
+                                       uint8_t option_type)
 {
     const uint8_t *options = packet->options;
     size_t i = 0;
@@ -113,7 +113,7 @@ static uint8_t *dhcp_find_option(const struct dhcp_packet *packet,
         if (opt == option_type) {
             rdma_info_report("DHCP: Found option %u at offset %zu (len=%u)",
                              option_type, i, opt_len);
-            return (uint8_t *)&options[i];
+            return &options[i];
         }
 
         i += 2 + opt_len;
@@ -233,7 +233,7 @@ size_t dhcp_server_process(DhcpServer *server,
         request->options[6], request->options[7]);
 
     /* Find message type option */
-    uint8_t *msg_type_opt = dhcp_find_option(request, DHCP_OPT_MSG_TYPE);
+    const uint8_t *msg_type_opt = dhcp_find_option(request, DHCP_OPT_MSG_TYPE);
     if (!msg_type_opt) {
         rdma_warn_report("DHCP: Message type option not found in request");
         qemu_mutex_unlock(&server->lock);
@@ -338,7 +338,8 @@ size_t dhcp_server_process(DhcpServer *server,
     case DHCP_MSG_REQUEST: {
         /* Check if requesting a specific IP */
         /* First check REQUESTED_IP option */
-        uint8_t *req_ip_opt = dhcp_find_option(request, DHCP_OPT_REQUESTED_IP);
+        const uint8_t *req_ip_opt =
+            dhcp_find_option(request, DHCP_OPT_REQUESTED_IP);
         uint32_t requested_ip = 0;
 
         if (req_ip_opt && req_ip_opt[1] == 4) {
