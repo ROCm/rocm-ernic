@@ -111,6 +111,11 @@ struct RdmaBackendOps {
                           uint32_t num_sge, void *ctx);
 };
 
+/* Backend implementations, registered in rdma_backend_core.c */
+extern const RdmaBackendOps rdma_backend_ops_none;
+extern const RdmaBackendOps rdma_backend_ops_loopback;
+extern const RdmaBackendOps rdma_backend_ops_tcp;
+
 /*
  * rdma_backend_get_ops(), rdma_backend_get_type_from_string() and
  * rdma_backend_type_to_string() are declared in rdma_backend.h, not here:

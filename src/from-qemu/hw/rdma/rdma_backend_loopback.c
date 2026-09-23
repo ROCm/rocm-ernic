@@ -60,7 +60,7 @@ typedef struct {
     uint32_t pd_handle;
 } LoopbackMR;
 
-GHashTable *global_mrs_table = NULL;
+static GHashTable *global_mrs_table = NULL;
 
 typedef struct {
     enum ibv_wc_status status;

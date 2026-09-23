@@ -18,12 +18,6 @@
 #include "rdma_utils.h"
 #include <string.h>
 
-/* Forward declarations of backend implementations */
-extern const RdmaBackendOps rdma_backend_ops_none;
-extern const RdmaBackendOps rdma_backend_ops_loopback;
-extern const RdmaBackendOps rdma_backend_ops_tcp;
-/* extern const RdmaBackendOps rdma_backend_ops_verbs; */ /* TODO */
-
 /**
  * Backend registry
  *
