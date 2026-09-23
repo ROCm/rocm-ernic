@@ -16,7 +16,7 @@
  * that device is absent. See ernic_device.h.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
- * Copyright (C) Gluesys Inc. and Jihyeon Gim
+ * Copyright (c) Gluesys Inc. and Jihyeon Gim. All rights reserved.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * This work is licensed under the terms of the GNU GPL, version 2 or later.
