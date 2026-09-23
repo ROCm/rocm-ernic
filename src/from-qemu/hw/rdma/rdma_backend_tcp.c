@@ -2752,8 +2752,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
 
     /* Prepare registration payload */
     memset(&reg, 0, sizeof(reg));
-    strncpy(reg.hostname, hostname, sizeof(reg.hostname) - 1);
-    reg.hostname[sizeof(reg.hostname) - 1] = '\0';
+    g_strlcpy(reg.hostname, hostname, sizeof(reg.hostname));
     reg.port = htons(priv->listen_port);
     reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
 
