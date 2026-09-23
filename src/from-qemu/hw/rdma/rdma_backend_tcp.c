@@ -25,6 +25,7 @@
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
 #include "../../utils/parse_int.h"
+#include "qemu/compiler.h" /* For container_of() */
 #include <errno.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -1995,8 +1996,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 }
                 if (priv && priv->backend_dev && payload && hdr.msg_len > 0) {
                     PVRDMADev *pvrdma_dev =
-                        (PVRDMADev *)((char *)priv->backend_dev -
-                                      offsetof(PVRDMADev, backend_dev));
+                        container_of(priv->backend_dev, PVRDMADev, backend_dev);
                     int inj = eth_rx_inject_frame_mesh_blocking(
                         pvrdma_dev, payload, hdr.msg_len);
                     if (inj != 0 && tcp_mesh_debug()) {

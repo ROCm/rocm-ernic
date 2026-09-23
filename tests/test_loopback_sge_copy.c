@@ -180,13 +180,15 @@ static int check_sge_copy(const char *name, const uint32_t *src_sizes,
     uint32_t src_total = build_sges(src, src_sizes, nsrc, src_ref, 1);
     uint32_t dst_total = build_sges(dst, dst_sizes, ndst, dst_ref, 0);
 
-    int copied = loopback_copy_sge_data(dummy_pci(), src, nsrc, dst, ndst,
-                                        LOOPBACK_DATA_PATTERN_PRESERVE);
+    uint32_t copied = 0;
+    int rc = loopback_copy_sge_data(dummy_pci(), src, nsrc, dst, ndst,
+                                    LOOPBACK_DATA_PATTERN_PRESERVE, &copied);
 
     uint32_t expect = src_total < dst_total ? src_total : dst_total;
     int fail = 0;
-    if (copied != (int)expect) {
-        printf("FAIL %-22s: copied=%d expected=%u\n", name, copied, expect);
+    if (rc != 0 || copied != expect) {
+        printf("FAIL %-22s: rc=%d copied=%u expected=%u\n", name, rc, copied,
+               expect);
         fail = 1;
     } else {
         gather_dst(dst, ndst, dst_ref);
@@ -215,14 +217,18 @@ static int check_remote_roundtrip(const char *name, const uint32_t *sizes,
     uint8_t *remote = calloc(total ? total : 1, 1);
     uint64_t remote_addr = (uint64_t)(uintptr_t)remote;
 
-    int w = loopback_copy_to_remote_addr(dummy_pci(), src, n, remote_addr,
-                                         total, LOOPBACK_DATA_PATTERN_PRESERVE);
-    int r = loopback_copy_from_remote_addr(dummy_pci(), remote_addr, total, dst,
-                                           n, LOOPBACK_DATA_PATTERN_PRESERVE);
+    uint32_t w = 0, r = 0;
+    int wrc =
+        loopback_copy_to_remote_addr(dummy_pci(), src, n, remote_addr, total,
+                                     LOOPBACK_DATA_PATTERN_PRESERVE, &w);
+    int rrc =
+        loopback_copy_from_remote_addr(dummy_pci(), remote_addr, total, dst, n,
+                                       LOOPBACK_DATA_PATTERN_PRESERVE, &r);
 
     int fail = 0;
-    if (w != (int)total || r != (int)total) {
-        printf("FAIL %-22s: write=%d read=%d expected=%u\n", name, w, r, total);
+    if (wrc != 0 || rrc != 0 || w != total || r != total) {
+        printf("FAIL %-22s: write rc=%d len=%u read rc=%d len=%u expected=%u\n",
+               name, wrc, w, rrc, r, total);
         fail = 1;
     } else {
         gather_dst(dst, n, dst_ref);
