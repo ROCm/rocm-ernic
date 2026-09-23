@@ -156,16 +156,12 @@ set(ERNIC_VENDORED_SOURCES
 # AMD-authored code that happens to sit under src/from-qemu/.  Ours to
 # maintain; folds into the src/ file lists once the vendored files move
 # out.
-#
-# pvrdma_main.c is here despite its Oracle / Red Hat header: only the
-# statistics bookkeeping and device-agnostic completion machinery
-# survive from upstream, and it is maintained locally.
 set(ERNIC_FROM_QEMU_AMD_SOURCES
     src/from-qemu/hw/rdma/rdma_backend_core.c
     src/from-qemu/hw/rdma/rdma_backend_none.c
     src/from-qemu/hw/rdma/rdma_backend_loopback.c
     src/from-qemu/hw/rdma/rdma_backend_tcp.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_main.c
+    src/from-qemu/hw/rdma/vmw/pvrdma_stats.c
     src/from-qemu/utils/error-report.c
     src/from-qemu/utils/dhcp_server.c
     src/from-qemu/utils/eth_rx_inject.c

@@ -42,6 +42,10 @@
 #include <time.h>
 #include <inttypes.h>
 
+/* Linux gives EWOULDBLOCK the same value as EAGAIN, so errno checks in
+ * this file test EAGAIN alone. */
+_Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
+
 /*
  * TCP Backend Protocol (Multi-Node Extension)
  *
@@ -1157,7 +1161,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
 
         ret = writev(sockfd, cur, cur_cnt);
         if (ret < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
                 poll(&pfd, 1, 5);
                 continue;
@@ -1256,7 +1260,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
         ret = recv(sockfd, (char *)hdr + total_recv, sizeof(*hdr) - total_recv,
                    0);
         if (ret < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 return -EAGAIN;
             }
             rdma_error_report("TCP: Failed to receive header: %s",
@@ -1299,7 +1303,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             ret = recv(sockfd, (char *)*payload + total_recv,
                        hdr->msg_len - total_recv, 0);
             if (ret < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (errno == EAGAIN) {
                     struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
                     poll(&pfd, 1, 5);
                     continue;
@@ -2338,7 +2342,7 @@ static void *tcp_accept_thread(void *opaque)
                         &client_len);
 
         if (sockfd < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 usleep(100000); /* 100ms */
                 continue;
             }
