@@ -1271,7 +1271,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             rdma_info_report("TCP: Connection closed by peer");
             return -1;
         }
-        total_recv += ret;
+        total_recv += (size_t)ret;
     }
 
     /* Convert from network byte order */
@@ -1320,7 +1320,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                 *payload = NULL;
                 return -1;
             }
-            total_recv += ret;
+            total_recv += (size_t)ret;
         }
     } else {
         *payload = NULL;

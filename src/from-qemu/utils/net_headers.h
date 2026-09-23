@@ -112,7 +112,7 @@ struct udp_header {
 /* Helper functions */
 static inline uint16_t ntohs(uint16_t val)
 {
-    return ((val & 0xFF00) >> 8) | ((val & 0x00FF) << 8);
+    return (uint16_t)(((val & 0xFF00) >> 8) | ((val & 0x00FF) << 8));
 }
 
 static inline uint16_t htons(uint16_t val)
@@ -266,7 +266,7 @@ static inline uint16_t udp_checksum(const struct ip_header *ip_hdr,
 
     /* Add odd byte if present */
     if (payload_len % 2) {
-        sum += ((const uint8_t *)payload)[payload_len - 1] << 8;
+        sum += (uint32_t)((const uint8_t *)payload)[payload_len - 1] << 8;
     }
 
     /* Add carry bits */
@@ -292,7 +292,8 @@ static inline uint16_t tcp_checksum(const struct ip_header *ip_hdr,
         payload_len = 0;
     }
 
-    uint16_t tcp_len = (tcp_hdr->data_off >> 4) * 4 + payload_len;
+    /* The pseudo-header carries the TCP length as a 16-bit field. */
+    uint16_t tcp_len = (uint16_t)((tcp_hdr->data_off >> 4) * 4 + payload_len);
 
     /* Pseudo-header: src IP, dst IP, protocol, TCP length */
     sum += (ntohl(ip_hdr->src_ip) >> 16) & 0xFFFF;
@@ -309,7 +310,7 @@ static inline uint16_t tcp_checksum(const struct ip_header *ip_hdr,
     sum += ntohl(tcp_hdr->seq) & 0xFFFF;
     sum += (ntohl(tcp_hdr->ack) >> 16) & 0xFFFF;
     sum += ntohl(tcp_hdr->ack) & 0xFFFF;
-    sum += ((tcp_hdr->data_off & 0xF0) << 8) | tcp_hdr->flags;
+    sum += ((uint32_t)(tcp_hdr->data_off & 0xF0) << 8) | tcp_hdr->flags;
     sum += ntohs(tcp_hdr->window);
     /* Skip checksum field (set to 0) */
     sum += ntohs(tcp_hdr->urg_ptr);
@@ -323,7 +324,7 @@ static inline uint16_t tcp_checksum(const struct ip_header *ip_hdr,
 
     /* Add odd byte if present */
     if (payload_len % 2) {
-        sum += ((const uint8_t *)payload)[payload_len - 1] << 8;
+        sum += (uint32_t)((const uint8_t *)payload)[payload_len - 1] << 8;
     }
 
     /* Add carry bits */

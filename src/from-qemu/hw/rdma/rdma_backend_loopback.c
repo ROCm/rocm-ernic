@@ -1558,8 +1558,8 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         remote_addr = comp_ctx->remote_addr;
         rkey = comp_ctx->rkey;
         wc_opcode = comp_ctx->cqe.opcode;
-        pvrdma_qp_handle =
-            comp_ctx->cqe.qp; /* QP handle from completion context */
+        /* QP handle from completion context */
+        pvrdma_qp_handle = (uint32_t)comp_ctx->cqe.qp;
         rdma_info_report(">>> Loopback: post_send: Extracted "
                          "pvrdma_qp_handle=%u from comp_ctx",
                          pvrdma_qp_handle);
@@ -1801,8 +1801,9 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                         uint32_t imm_len =
                             (transferred > 0) ? transferred : total_len;
                         pvrdma_queue_recv_imm_work_completion(
-                            pdev, imm_rctx->cq_handle, imm_rctx->cqe.qp,
-                            imm_rctx->cqe.wr_id, imm_len, lqp->qpn,
+                            pdev, imm_rctx->cq_handle,
+                            (uint32_t)imm_rctx->cqe.qp, imm_rctx->cqe.wr_id,
+                            imm_len, lqp->qpn,
                             comp_ctx ? comp_ctx->imm_data : 0);
                         rdma_info_report(
                             "Loopback: WRITE_WITH_IMM QP %u -> recv "
@@ -1810,9 +1811,9 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                             lqp->qpn, imm_remote->qpn,
                             comp_ctx ? comp_ctx->imm_data : 0, imm_len);
                         if (imm_rctx->cqe.qp > 0 && imm_len > 0) {
-                            loopback_update_byte_stats(backend_dev,
-                                                       imm_rctx->cqe.qp,
-                                                       imm_len, IBV_WC_RECV);
+                            loopback_update_byte_stats(
+                                backend_dev, (uint32_t)imm_rctx->cqe.qp,
+                                imm_len, IBV_WC_RECV);
                         }
                         g_free(imm_rctx);
                     }
