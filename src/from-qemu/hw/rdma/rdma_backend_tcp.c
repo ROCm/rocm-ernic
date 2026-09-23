@@ -565,21 +565,17 @@ static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint64_t bytes,
         return;
     PVRDMADev *dev = (PVRDMADev *)priv->backend_dev->dev;
 
-    switch (opcode) {
-    case IBV_WC_SEND:
+    /* An if chain rather than a switch: -Wswitch-enum would demand a case
+     * for every ibv_wc_opcode, and the members of that enum vary with the
+     * installed rdma-core version. */
+    if (opcode == IBV_WC_SEND) {
         dev->stats.total_bytes_sent += bytes;
-        break;
-    case IBV_WC_RECV:
+    } else if (opcode == IBV_WC_RECV) {
         dev->stats.total_bytes_received += bytes;
-        break;
-    case IBV_WC_RDMA_READ:
+    } else if (opcode == IBV_WC_RDMA_READ) {
         dev->stats.total_bytes_rdma_read += bytes;
-        break;
-    case IBV_WC_RDMA_WRITE:
+    } else if (opcode == IBV_WC_RDMA_WRITE) {
         dev->stats.total_bytes_rdma_write += bytes;
-        break;
-    default:
-        break;
     }
 }
 
@@ -591,19 +587,13 @@ static void tcp_update_stats(TcpBackendPrivate *priv, uint64_t bytes,
     if (!priv)
         return;
 
-    switch (opcode) {
-    case IBV_WC_SEND:
-    case IBV_WC_RDMA_WRITE:
+    /* An if chain for the same reason as in tcp_update_dev_stats(). */
+    if (opcode == IBV_WC_SEND || opcode == IBV_WC_RDMA_WRITE) {
         priv->tcp_stats.bytes_wire_sent += bytes;
         priv->tcp_stats.msgs_sent++;
-        break;
-    case IBV_WC_RECV:
-    case IBV_WC_RDMA_READ:
+    } else if (opcode == IBV_WC_RECV || opcode == IBV_WC_RDMA_READ) {
         priv->tcp_stats.bytes_wire_recv += bytes;
         priv->tcp_stats.msgs_recv++;
-        break;
-    default:
-        break;
     }
     priv->tcp_stats.completions_posted++;
 }

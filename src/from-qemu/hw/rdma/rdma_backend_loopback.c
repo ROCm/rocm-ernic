@@ -198,26 +198,25 @@ static void loopback_update_byte_stats(RdmaBackendDev *backend_dev,
         ">>> loopback_update_byte_stats: QP handle=%u, bytes=%u, opcode=%d",
         qp_handle, bytes, opcode);
 
-    /* Update per-QP stats */
-    switch (opcode) {
-    case IBV_WC_SEND:
+    /*
+     * Update per-QP stats.
+     *
+     * An if chain rather than a switch: -Wswitch-enum would demand a case
+     * for every ibv_wc_opcode, and the members of that enum vary with the
+     * installed rdma-core version.
+     */
+    if (opcode == IBV_WC_SEND) {
         qp_stats->bytes_sent += bytes;
         dev->stats.total_bytes_sent += bytes;
-        break;
-    case IBV_WC_RECV:
+    } else if (opcode == IBV_WC_RECV) {
         qp_stats->bytes_received += bytes;
         dev->stats.total_bytes_received += bytes;
-        break;
-    case IBV_WC_RDMA_READ:
+    } else if (opcode == IBV_WC_RDMA_READ) {
         qp_stats->bytes_rdma_read += bytes;
         dev->stats.total_bytes_rdma_read += bytes;
-        break;
-    case IBV_WC_RDMA_WRITE:
+    } else if (opcode == IBV_WC_RDMA_WRITE) {
         qp_stats->bytes_rdma_write += bytes;
         dev->stats.total_bytes_rdma_write += bytes;
-        break;
-    default:
-        break;
     }
 }
 
@@ -351,6 +350,7 @@ static void generate_data_pattern(void *buffer, size_t length,
         break;
 
     case LOOPBACK_DATA_PATTERN_PRESERVE:
+    default:
         /* Don't modify the buffer - use actual guest data */
         break;
     }

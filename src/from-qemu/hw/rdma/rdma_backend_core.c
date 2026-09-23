@@ -124,6 +124,7 @@ const char *rdma_backend_type_to_string(RdmaBackendType type)
         return "nvmeof";
     case RDMA_BACKEND_TYPE_S3:
         return "s3";
+    case RDMA_BACKEND_TYPE_MAX:
     default:
         return "unknown";
     }
