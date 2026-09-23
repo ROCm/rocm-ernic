@@ -260,7 +260,7 @@ target_compile_options(rocm-ernic PRIVATE
 # -w is temporary: drop ERNIC_FROM_QEMU_AMD_SOURCES from the call below
 # to see those warnings.
 set_source_files_properties(
-    ${ERNIC_VENDORED_SOURCES} ${ERNIC_FROM_QEMU_AMD_SOURCES}
+    ${ERNIC_VENDORED_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 

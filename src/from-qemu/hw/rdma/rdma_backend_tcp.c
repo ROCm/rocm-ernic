@@ -3162,7 +3162,13 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
 static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    TcpPD *tpd = g_new0(TcpPD, 1);
+    TcpPD *tpd;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    tpd = g_new0(TcpPD, 1);
 
     qemu_mutex_lock(&priv->lock);
     tpd->handle = priv->next_pd_handle++;
@@ -3234,7 +3240,13 @@ static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
                          int cqe)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    TcpCQ *tcq = g_new0(TcpCQ, 1);
+    TcpCQ *tcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    tcq = g_new0(TcpCQ, 1);
 
     qemu_mutex_lock(&priv->lock);
     tcq->handle = priv->next_cq_handle++;
@@ -3338,9 +3350,15 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                          uint32_t max_recv_sge)
 {
     TcpBackendPrivate *priv = get_private(scq->backend_dev);
-    TcpQP *tqp = g_new0(TcpQP, 1);
+    TcpQP *tqp;
     uint32_t scq_handle = (uint32_t)(uintptr_t)scq->ibcq;
     uint32_t rcq_handle = (uint32_t)(uintptr_t)rcq->ibcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    tqp = g_new0(TcpQP, 1);
 
     qemu_mutex_lock(&priv->lock);
     tqp->qpn = priv->next_qpn++;

@@ -846,7 +846,13 @@ static int loopback_query_device(RdmaBackendDev *backend_dev,
 static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
     LoopbackBackendPrivate *priv = get_private(backend_dev);
-    LoopbackPD *lpd = g_new0(LoopbackPD, 1);
+    LoopbackPD *lpd;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    lpd = g_new0(LoopbackPD, 1);
 
     qemu_mutex_lock(&priv->lock);
     lpd->handle = priv->next_pd_handle++;
@@ -1003,7 +1009,13 @@ static int loopback_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
                               int cqe)
 {
     LoopbackBackendPrivate *priv = get_private(backend_dev);
-    LoopbackCQ *lcq = g_new0(LoopbackCQ, 1);
+    LoopbackCQ *lcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    lcq = g_new0(LoopbackCQ, 1);
 
     qemu_mutex_lock(&priv->lock);
     lcq->handle = priv->next_cq_handle++;
@@ -1047,8 +1059,14 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
                               uint32_t max_send_sge, uint32_t max_recv_sge)
 {
     LoopbackBackendPrivate *priv = get_private(scq->backend_dev);
-    LoopbackQP *lqp = g_new0(LoopbackQP, 1);
+    LoopbackQP *lqp;
     LoopbackCQ *lscq, *lrcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    lqp = g_new0(LoopbackQP, 1);
 
     qemu_mutex_lock(&priv->lock);
     lqp->qpn = priv->next_qpn++;
