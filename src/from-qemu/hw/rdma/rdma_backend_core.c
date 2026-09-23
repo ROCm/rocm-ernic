@@ -48,12 +48,12 @@ static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
 const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type)
 {
     if (type >= RDMA_BACKEND_TYPE_MAX) {
-        rdma_error_report("Invalid backend type %d", type);
+        rdma_error_report("Invalid backend type %u", type);
         return NULL;
     }
 
     if (!backend_registry[type]) {
-        rdma_warn_report("Backend type %d not implemented yet", type);
+        rdma_warn_report("Backend type %u not implemented yet", type);
         return NULL;
     }
 
@@ -140,7 +140,7 @@ int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
 
     ops = rdma_backend_get_ops(type);
     if (!ops) {
-        rdma_error_report("Backend type %d not available", type);
+        rdma_error_report("Backend type %u not available", type);
         return -ENOTSUP;
     }
 

@@ -196,7 +196,7 @@ static void loopback_update_byte_stats(RdmaBackendDev *backend_dev,
     }
 
     rdma_info_report(
-        ">>> loopback_update_byte_stats: QP handle=%u, bytes=%u, opcode=%d",
+        ">>> loopback_update_byte_stats: QP handle=%u, bytes=%u, opcode=%u",
         qp_handle, bytes, opcode);
 
     /*
@@ -726,7 +726,7 @@ __attribute__((unused)) static void loopback_post_completion(
     g_queue_push_tail(cq->completions, comp);
     qemu_mutex_unlock(&cq->lock);
 
-    rdma_info_report("Loopback: Posted completion wr_id=%lu status=%d to CQ %u",
+    rdma_info_report("Loopback: Posted completion wr_id=%lu status=%u to CQ %u",
                      wr_id, status, cq->handle);
 }
 
@@ -990,8 +990,8 @@ static void loopback_destroy_mr(RdmaBackendMR *mr)
 static uint32_t loopback_mr_lkey(const RdmaBackendMR *mr)
 {
     uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u", mr,
-                     mr->ibmr, handle);
+    rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u",
+                     (const void *)mr, (void *)mr->ibmr, handle);
     return handle; /* lkey = handle */
 }
 
@@ -1098,7 +1098,7 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     qp->sgid_idx = 0;
 
     rdma_info_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)",
-                     lqp->qpn, qp_type, lqp);
+                     lqp->qpn, qp_type, (void *)lqp);
     return 0;
 }
 
@@ -1529,8 +1529,8 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
 
     rdma_info_report(
-        ">>> Loopback: post_send ENTRY: qp=%p, lqp=%p, num_sge=%u, ctx=%p", qp,
-        lqp, num_sge, ctx);
+        ">>> Loopback: post_send ENTRY: qp=%p, lqp=%p, num_sge=%u, ctx=%p",
+        (void *)qp, (void *)lqp, num_sge, ctx);
     LoopbackQP *remote_qp = NULL;
     LoopbackWR *recv_wr = NULL;
     uint32_t total_len = 0;
@@ -1540,12 +1540,14 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint64_t remote_addr = 0;
     uint32_t rkey = 0;
     bool write_failed = false;
+    uint32_t byte_len;
+    enum ibv_wc_status final_status;
 
     if (!lqp) {
         rdma_error_report("Loopback: post_send on unknown QP");
         return;
     }
-    rdma_info_report(">>> Loopback: post_send: lqp->qpn=%u, lqp->state=%d",
+    rdma_info_report(">>> Loopback: post_send: lqp->qpn=%u, lqp->state=%u",
                      lqp->qpn, lqp->state);
 
     /* Extract opcode and RDMA parameters from context if available */
@@ -1580,7 +1582,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
     rdma_info_report(
         ">>> Loopback: post_send: pci_dev=%p, total_len=%u, pvrdma_opcode=%u",
-        pci_dev, total_len, pvrdma_opcode);
+        (void *)pci_dev, total_len, pvrdma_opcode);
 
     if (comp_ctx && pvrdma_opcode == PVRDMA_WR_SEND_DC &&
         comp_ctx->dc_target_srq) {
@@ -1982,16 +1984,16 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 post_send_finalize:
     /* Post send completion directly to PVRDMA layer */
     /* Use total_len if transferred is 0 (no data copied or error) */
-    uint32_t byte_len = (transferred > 0) ? transferred : total_len;
-    enum ibv_wc_status final_status = IBV_WC_SUCCESS;
+    byte_len = (transferred > 0) ? transferred : total_len;
+    final_status = IBV_WC_SUCCESS;
     if (write_failed) {
         final_status = IBV_WC_LOC_PROT_ERR;
         byte_len = 0;
     }
     rdma_info_report(
         ">>> Loopback: post_send: About to post completion, "
-        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%d, qpn=%u, "
-        "status=%d",
+        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%u, qpn=%u, "
+        "status=%u",
         transferred, total_len, byte_len, wc_opcode, lqp->qpn, final_status);
     rdma_backend_complete_work(final_status, 0, byte_len, lqp->qpn, wc_opcode,
                                ctx);

@@ -35,7 +35,8 @@ ErnicLogLevel ernic_log_get_level(void);
 bool ernic_log_enabled(ErnicLogLevel lvl);
 
 /* One-shot startup/shutdown lines: unprefixed, printed at WARN and above. */
-void ernic_startup_report(const char *fmt, ...);
+void ernic_startup_report(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
 
 /* Simple implementations that just print to stderr/stdout */
 
@@ -55,12 +56,15 @@ static inline int error_printf(const char *fmt, ...)
 }
 
 /* Declarations - implementations in error-report.c */
-void error_report(const char *fmt, ...);
-void warn_report(const char *fmt, ...);
-void info_report(const char *fmt, ...);
-void error_vreport(const char *fmt, va_list ap);
-void warn_vreport(const char *fmt, va_list ap);
-void info_vreport(const char *fmt, va_list ap);
+void error_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void warn_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void info_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void error_vreport(const char *fmt, va_list ap)
+    __attribute__((format(printf, 1, 0)));
+void warn_vreport(const char *fmt, va_list ap)
+    __attribute__((format(printf, 1, 0)));
+void info_vreport(const char *fmt, va_list ap)
+    __attribute__((format(printf, 1, 0)));
 
 /* Location-aware variants - just ignore location */
 static inline void error_report_once_cond(int *printed, const char *fmt, ...)

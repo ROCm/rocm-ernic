@@ -62,7 +62,7 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
  */
 
 #define TCP_PROTOCOL_MAGIC     0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION   3          /* v3: wc_opcode in TcpWR */
+#define TCP_PROTOCOL_VERSION   3u         /* v3: wc_opcode in TcpWR */
 #define TCP_MAX_ETH_FRAME_LEN  2048
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
@@ -3515,7 +3515,7 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     qemu_mutex_unlock(&priv->lock);
 
     rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, "
-                     "node=%u, mode=%d)",
+                     "node=%u, mode=%u)",
                      qpn, dqpn, tqp ? tqp->remote_node_id : 0, priv->mode);
     return 0;
 }

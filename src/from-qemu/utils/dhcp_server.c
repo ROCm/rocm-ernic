@@ -209,7 +209,8 @@ size_t dhcp_server_process(DhcpServer *server,
         max_response_len < sizeof(*response)) {
         rdma_warn_report("DHCP: Invalid parameters: server=%p request=%p "
                          "response=%p max_len=%zu",
-                         server, request, response, max_response_len);
+                         (void *)server, (const void *)request,
+                         (void *)response, max_response_len);
         return 0;
     }
 
