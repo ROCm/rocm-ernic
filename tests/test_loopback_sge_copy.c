@@ -116,8 +116,8 @@ void pvrdma_queue_recv_imm_work_completion(
 
 static PCIDevice *dummy_pci(void)
 {
-    static uint8_t dummy;
-    return (PCIDevice *)&dummy;
+    static PCIDevice dummy;
+    return &dummy;
 }
 
 /* Fill a buffer with a recognisable, position-dependent pattern. */

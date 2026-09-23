@@ -216,8 +216,10 @@ static int broadcast_on_poisoned_stack(TcpBackendPrivate *priv)
     pthread_t tid;
     void *stack;
     int ret;
+    long page_sz = sysconf(_SC_PAGESIZE);
 
-    if (posix_memalign(&stack, sysconf(_SC_PAGESIZE), POISON_STACK_SZ) != 0) {
+    if (page_sz <= 0 ||
+        posix_memalign(&stack, (size_t)page_sz, POISON_STACK_SZ) != 0) {
         return -1;
     }
     memset(stack, POISON_BYTE, POISON_STACK_SZ);

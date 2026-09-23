@@ -38,23 +38,6 @@ bool ernic_log_enabled(ErnicLogLevel lvl);
 void ernic_startup_report(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 
-/* Simple implementations that just print to stderr/stdout */
-
-static inline int error_vprintf(const char *fmt, va_list ap)
-{
-    return vfprintf(stderr, fmt, ap);
-}
-
-static inline int error_printf(const char *fmt, ...)
-{
-    va_list ap;
-    int ret;
-    va_start(ap, fmt);
-    ret = vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    return ret;
-}
-
 /* Declarations - implementations in error-report.c */
 void error_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void warn_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -65,29 +48,6 @@ void warn_vreport(const char *fmt, va_list ap)
     __attribute__((format(printf, 1, 0)));
 void info_vreport(const char *fmt, va_list ap)
     __attribute__((format(printf, 1, 0)));
-
-/* Location-aware variants - just ignore location */
-static inline void error_report_once_cond(int *printed, const char *fmt, ...)
-{
-    if (!*printed) {
-        va_list ap;
-        va_start(ap, fmt);
-        error_vreport(fmt, ap);
-        va_end(ap);
-        *printed = 1;
-    }
-}
-
-static inline void warn_report_once_cond(int *printed, const char *fmt, ...)
-{
-    if (!*printed) {
-        va_list ap;
-        va_start(ap, fmt);
-        warn_vreport(fmt, ap);
-        va_end(ap);
-        *printed = 1;
-    }
-}
 
 /* Global state - not used but stubbed for compatibility */
 static bool message_with_timestamp __attribute__((unused)) = false;

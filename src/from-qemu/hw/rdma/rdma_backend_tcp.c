@@ -1651,8 +1651,12 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 uint32_t requested_id = ntohl(reg->requested_node_id);
                 uint16_t worker_port = ntohs(reg->port);
                 char worker_host[256];
-                strncpy(worker_host, reg->hostname, sizeof(worker_host) - 1);
-                worker_host[sizeof(worker_host) - 1] = '\0';
+                /* The hostname comes off the wire and need not be
+                 * terminated, so bound the read to the field. */
+                size_t host_len =
+                    strnlen(reg->hostname, sizeof(worker_host) - 1);
+                memcpy(worker_host, reg->hostname, host_len);
+                worker_host[host_len] = '\0';
 
                 qemu_mutex_lock(&priv->mesh_table_lock);
 

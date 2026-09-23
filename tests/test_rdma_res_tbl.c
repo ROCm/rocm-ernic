@@ -61,8 +61,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Pull in the code under test (including its static functions). */
+/*
+ * Pull in the code under test (including its static functions). rdma_rm.c
+ * is vendored, so the warnings it raises are silenced here rather than fixed;
+ * the pragmas cover only the #included code.
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wformat"
+#pragma GCC diagnostic ignored "-Wpointer-arith"
+#ifdef __clang__
+/* clang files %p with a non-void pointer under -Wpedantic, not -Wformat. */
+#pragma clang diagnostic ignored "-Wformat-pedantic"
+#endif
 #include "hw/rdma/rdma_rm.c"
+#pragma GCC diagnostic pop
+
+#include "hw/pci/pci.h" /* declares the pci_dma_* stubs below */
 
 /* ---- Stubs for the backend entry points rdma_rm.c calls, and for the two
  * DMA symbols the linked qemu-stubs TU references but does not define.
@@ -150,7 +166,7 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
 #define TBL_SZ_RAGGED 100
 
 #define RES_SZ     32
-#define GUARD_BYTE 0xC7
+#define GUARD_BYTE 0xC7u
 
 /*
  * res_tbl_init() allocates tbl->tbl itself, so a guard band cannot be placed

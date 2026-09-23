@@ -21,17 +21,6 @@
 
 set(ERNIC_FUZZ_DIR ${CMAKE_SOURCE_DIR}/nix/analysis/fuzz)
 
-# Source-file properties are directory-scoped, so the parent's -w on
-# ERNIC_TEST_PORTED_SOURCES does not reach here. Re-silence the ported
-# sources these targets compile; without it the QEMU-ported C is held to
-# the project warning flags and fails under ERNIC_WERROR.
-set_source_files_properties(
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/rdma_cm_proto.c
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
-    PROPERTIES COMPILE_OPTIONS "-w"
-)
-
 # Mirrors ERNIC_PARSER_TEST_SAN in the parent: ASan + UBSan unless the
 # project is already built with TSan, which is incompatible.
 set(ERNIC_FUZZ_REPLAY_SAN "")
@@ -54,11 +43,9 @@ function(ernic_add_fuzz_replay harness)
         ${ARGN}
     )
 
-    # The harness sources are ours and are warning-clean, so they are NOT
-    # silenced the way ERNIC_TEST_PORTED_SOURCES is -- keeping them under
-    # the project flags is the point of building them here. The ported .c
-    # files passed in ARGN are silenced per-source by the parent scope's
-    # set_source_files_properties() on ERNIC_TEST_PORTED_SOURCES.
+    # The harness sources, and the ported .c files passed in ARGN, are ours
+    # and are warning-clean, so they are built under the project flags --
+    # keeping them there is the point of building them here.
     target_include_directories(${target} PRIVATE
         ${ERNIC_FUZZ_DIR}
         ${CMAKE_SOURCE_DIR}/src
