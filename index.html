@@ -575,16 +575,21 @@ QEMU PVRDMA implementation. The original authors of that work:</p>
 </section>
 <section id="license">
 <h2>License<a class="headerlink" href="#license" title="Link to this heading">#</a></h2>
-<p>The project is licensed under the
+<p>The build system, documentation, and the deployment and automation code are licensed
+under the
 <a class="reference external" href="https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md">MIT license</a>.
-Some files carry different licenses per their SPDX headers:</p>
+The emulator itself is <code class="docutils literal notranslate"><span class="pre">GPL-2.0-or-later</span></code>:</p>
 <ul class="simple">
-<li><p>Files under <code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code> are derived from QEMU and are
-licensed under <code class="docutils literal notranslate"><span class="pre">GPL-2.0-or-later</span></code>.</p></li>
-<li><p>The kernel patches under <code class="docutils literal notranslate"><span class="pre">patches/</span></code> apply to Linux driver
-sources and carry <code class="docutils literal notranslate"><span class="pre">GPL-2.0</span></code> as indicated by their SPDX
-headers.</p></li>
+<li><p>Everything under <code class="docutils literal notranslate"><span class="pre">src/</span></code> and <code class="docutils literal notranslate"><span class="pre">tests/</span></code>, and the fuzz harnesses in
+<code class="docutils literal notranslate"><span class="pre">nix/analysis/fuzz/</span></code>, which build against <code class="docutils literal notranslate"><span class="pre">src/</span></code>.</p></li>
+<li><p>The VMware/Linux uAPI headers under
+<code class="docutils literal notranslate"><span class="pre">src/from-qemu/include/qemu-extra/standard-headers/</span></code> are instead
+dual <code class="docutils literal notranslate"><span class="pre">GPL-2.0</span></code> / <code class="docutils literal notranslate"><span class="pre">BSD-2-Clause</span></code>.</p></li>
 </ul>
+<p>The groupings above are a summary; the per-file <code class="docutils literal notranslate"><span class="pre">SPDX-License-Identifier</span></code>
+notice is authoritative. See
+<a class="reference external" href="https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md">LICENSE.md</a>
+for the full statement.</p>
 </section>
 </section>
 
