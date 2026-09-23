@@ -13,15 +13,16 @@
 
 #include <stdint.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <poll.h>
 #include <time.h>
 #include <endian.h>
 #include <errno.h>
+#include <glib.h>
 
 /*
  * The headers declaring the stubs defined below.  Including them is what
@@ -99,40 +100,75 @@ void qemu_thread_join(QemuThread *thread)
  * Bit Manipulation
  */
 
-unsigned long *bitmap_new(int nbits)
+/* Bits in one storage word. The word is unsigned long, whose width varies
+ * by platform, so it is measured rather than assumed. */
+#define BITMAP_WORD_BITS (CHAR_BIT * sizeof(unsigned long))
+
+/*
+ * Returns a zeroed map, or NULL if allocation fails. The map is allocated
+ * with GLib because the resource manager releases it with g_free().
+ */
+unsigned long *bitmap_new(uint32_t nbits)
 {
-    int len = (nbits + 63) / 64;
-    return calloc(len, sizeof(unsigned long));
+    /* Round up by testing the remainder: nbits + BITMAP_WORD_BITS - 1
+     * can overflow when size_t is 32 bits. */
+    size_t words = nbits / BITMAP_WORD_BITS;
+    if (nbits % BITMAP_WORD_BITS != 0) {
+        words++;
+    }
+
+    /* g_try_new0() returns NULL for a zero count, which callers would
+     * take for an allocation failure. An empty map gets one word. */
+    if (words == 0) {
+        words = 1;
+    }
+
+    return g_try_new0(unsigned long, words);
 }
 
 void bitmap_free(unsigned long *bitmap)
 {
-    free(bitmap);
+    g_free(bitmap);
 }
 
-void set_bit(int nr, unsigned long *addr)
+void set_bit(uint32_t nr, unsigned long *addr)
 {
-    addr[nr / 64] |= (1UL << (nr % 64));
+    addr[nr / BITMAP_WORD_BITS] |= 1UL << (nr % BITMAP_WORD_BITS);
 }
 
-void clear_bit(int nr, unsigned long *addr)
+void clear_bit(uint32_t nr, unsigned long *addr)
 {
-    addr[nr / 64] &= ~(1UL << (nr % 64));
+    addr[nr / BITMAP_WORD_BITS] &= ~(1UL << (nr % BITMAP_WORD_BITS));
 }
 
-int test_bit(int nr, const unsigned long *addr)
+bool test_bit(uint32_t nr, const unsigned long *addr)
 {
-    return (addr[nr / 64] & (1UL << (nr % 64))) != 0;
+    return (addr[nr / BITMAP_WORD_BITS] & (1UL << (nr % BITMAP_WORD_BITS))) !=
+           0;
 }
 
-int find_first_zero_bit(const unsigned long *addr, unsigned long size)
+/*
+ * Returns the index of the first clear bit, or size if every bit is set.
+ */
+uint32_t find_first_zero_bit(const unsigned long *addr, uint64_t size)
 {
-    for (unsigned long i = 0; i < size; i++) {
+    if (size > UINT32_MAX) {
+        fprintf(stderr,
+                "find_first_zero_bit: a %" PRIu64 "-bit map cannot be "
+                "indexed by uint32_t\n",
+                size);
+        abort();
+    }
+
+    /* The check above bounds size, so this conversion is exact. */
+    uint32_t nbits = (uint32_t)size;
+
+    for (uint32_t i = 0; i < nbits; i++) {
         if (!test_bit(i, addr)) {
             return i;
         }
     }
-    return size;
+    return nbits;
 }
 
 /*
@@ -167,20 +203,6 @@ uint32_t cpu_to_be32(uint32_t val)
 uint16_t cpu_to_be16(uint16_t val)
 {
     return htobe16(val);
-}
-
-/*
- * String Utilities
- */
-
-void pstrcpy(char *buf, int buf_size, const char *str)
-{
-    int len = strlen(str);
-    if (len >= buf_size) {
-        len = buf_size - 1;
-    }
-    memcpy(buf, str, len);
-    buf[len] = '\0';
 }
 
 /*
@@ -222,10 +244,30 @@ int64_t qemu_clock_get_ns(int type)
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
+#define NS_PER_SECOND INT64_C(1000000000)
+
+_Static_assert(sizeof(time_t) >= sizeof(int64_t),
+               "qemu_poll_ns() stores whole seconds of an int64_t "
+               "nanosecond timeout in time_t");
+
+/*
+ * ppoll() takes the timeout as a timespec, so the full nanosecond value is
+ * honoured: no rounding to milliseconds and no narrowing to int. A
+ * negative timeout waits indefinitely, as in QEMU.
+ */
 int qemu_poll_ns(struct pollfd *fds, nfds_t nfds, int64_t timeout_ns)
 {
-    int timeout_ms = timeout_ns / 1000000;
-    return poll(fds, nfds, timeout_ms);
+    struct timespec ts;
+
+    if (timeout_ns < 0) {
+        return ppoll(fds, nfds, NULL, NULL);
+    }
+
+    ts.tv_sec = timeout_ns / NS_PER_SECOND;
+    /* The remainder is below one billion, which fits in any long. */
+    ts.tv_nsec = (long)(timeout_ns % NS_PER_SECOND);
+
+    return ppoll(fds, nfds, &ts, NULL);
 }
 
 /*

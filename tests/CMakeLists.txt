@@ -508,6 +508,28 @@ target_link_directories(test_rdma_res_tbl PRIVATE
 target_link_libraries(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# QEMU utility stubs test: bitmap word boundaries, the oversize-map abort,
+# and qemu_poll_ns() timeout handling. It links the stubs translation unit
+# directly. The ported header trees are SYSTEM includes, as in the main
+# build, so the test source itself is still warning-checked.
+add_executable(test_qemu_stubs test_qemu_stubs.c
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/qemu-stubs/qemu_stubs.c
+)
+target_include_directories(test_qemu_stubs SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_qemu_stubs PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_qemu_stubs PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_qemu_stubs PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_qemu_stubs PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_qemu_stubs PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
 # ---------------------------------------------------------------
@@ -535,6 +557,7 @@ set(ERNIC_TEST_TARGETS
     test_tcp_mesh_topology
     test_tcp_mr_bounds
     test_rdma_res_tbl
+    test_qemu_stubs
 )
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
@@ -718,6 +741,13 @@ add_test(
     COMMAND $<TARGET_FILE:test_rdma_res_tbl>
 )
 set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# QEMU utility stubs unit test (bitmap, qemu_poll_ns; ASan-instrumented)
+add_test(
+    NAME qemu-stubs-unit
+    COMMAND $<TARGET_FILE:test_qemu_stubs>
+)
+set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
 
 # ionic server smoke test: start the server, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.
