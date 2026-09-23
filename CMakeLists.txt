@@ -254,11 +254,9 @@ target_compile_options(rocm-ernic PRIVATE
     -g
 )
 
-# Suppress strict warnings under src/from-qemu/.
+# Suppress strict warnings under src/from-qemu/
 #
-# Vendored code is not ours to fix.  The AMD-authored code is, and its
-# -w is temporary: drop ERNIC_FROM_QEMU_AMD_SOURCES from the call below
-# to see those warnings.
+# Vendored code is not ours to fix.
 set_source_files_properties(
     ${ERNIC_VENDORED_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"
