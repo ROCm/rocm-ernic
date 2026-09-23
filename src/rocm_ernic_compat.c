@@ -184,7 +184,7 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     pvrdma->dev_attr.max_sge = MAX_SGE; /* Required for calculations below */
 
     /* Calculate dynamic device capabilities (from init_dev_caps in
-     * pvrdma_main.c) */
+     * upstream QEMU's hw/rdma/vmw/pvrdma_main.c) */
     {
         size_t pg_tbl_bytes =
             PVRDMA_PG_TBL_PAGES * PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));

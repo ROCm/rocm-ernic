@@ -14,15 +14,7 @@
  * files
  */
 
-struct RdmaDeviceResources;
-struct RdmaBackendDev;
-struct ibv_device_attr;
-
 void rdma_backend_destroy(void *backend_dev);
-int rdma_rm_init(struct RdmaDeviceResources *rdma_dev_res,
-                 struct ibv_device_attr *dev_attr);
-void rdma_rm_fini(struct RdmaDeviceResources *rdma_dev_res,
-                  struct RdmaBackendDev *backend_dev, const char *ifname);
 
 /* DMA mapping functions - forward declarations */
 void *rdma_pci_dma_map(void *dev, uint64_t addr, uint64_t len);

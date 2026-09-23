@@ -42,6 +42,10 @@
 #include <time.h>
 #include <inttypes.h>
 
+/* Linux gives EWOULDBLOCK the same value as EAGAIN, so errno checks in
+ * this file test EAGAIN alone. */
+_Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
+
 /*
  * TCP Backend Protocol (Multi-Node Extension)
  *
@@ -118,7 +122,6 @@ static void tcp_mesh_warn_rate_limited(const char *msg, uint64_t *counter,
 
 static uint64_t mesh_eth_eagain_events;
 static uint64_t mesh_eth_truncated_sends;
-static uint64_t mesh_eth_zero_forward;
 static uint64_t mesh_eth_inject_fail;
 static uint64_t mesh_eth_manager_relay_eagain;
 
@@ -565,21 +568,17 @@ static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint64_t bytes,
         return;
     PVRDMADev *dev = (PVRDMADev *)priv->backend_dev->dev;
 
-    switch (opcode) {
-    case IBV_WC_SEND:
+    /* An if chain rather than a switch: -Wswitch-enum would demand a case
+     * for every ibv_wc_opcode, and the members of that enum vary with the
+     * installed rdma-core version. */
+    if (opcode == IBV_WC_SEND) {
         dev->stats.total_bytes_sent += bytes;
-        break;
-    case IBV_WC_RECV:
+    } else if (opcode == IBV_WC_RECV) {
         dev->stats.total_bytes_received += bytes;
-        break;
-    case IBV_WC_RDMA_READ:
+    } else if (opcode == IBV_WC_RDMA_READ) {
         dev->stats.total_bytes_rdma_read += bytes;
-        break;
-    case IBV_WC_RDMA_WRITE:
+    } else if (opcode == IBV_WC_RDMA_WRITE) {
         dev->stats.total_bytes_rdma_write += bytes;
-        break;
-    default:
-        break;
     }
 }
 
@@ -591,19 +590,13 @@ static void tcp_update_stats(TcpBackendPrivate *priv, uint64_t bytes,
     if (!priv)
         return;
 
-    switch (opcode) {
-    case IBV_WC_SEND:
-    case IBV_WC_RDMA_WRITE:
+    /* An if chain for the same reason as in tcp_update_dev_stats(). */
+    if (opcode == IBV_WC_SEND || opcode == IBV_WC_RDMA_WRITE) {
         priv->tcp_stats.bytes_wire_sent += bytes;
         priv->tcp_stats.msgs_sent++;
-        break;
-    case IBV_WC_RECV:
-    case IBV_WC_RDMA_READ:
+    } else if (opcode == IBV_WC_RECV || opcode == IBV_WC_RDMA_READ) {
         priv->tcp_stats.bytes_wire_recv += bytes;
         priv->tcp_stats.msgs_recv++;
-        break;
-    default:
-        break;
     }
     priv->tcp_stats.completions_posted++;
 }
@@ -1130,6 +1123,10 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     iov[0].iov_base = &hdr;
     iov[0].iov_len = sizeof(hdr);
 
+    /* struct iovec serves readv() as well as writev(), so iov_base is not
+     * const even though writev() only reads through it. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
     if (payload && payload_len > 0) {
         iov[iovcnt].iov_base = (void *)payload;
         iov[iovcnt].iov_len = payload_len;
@@ -1142,6 +1139,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
         total += payload2_len;
         iovcnt++;
     }
+#pragma GCC diagnostic pop
 
     size_t sent = 0;
 
@@ -1163,7 +1161,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
 
         ret = writev(sockfd, cur, cur_cnt);
         if (ret < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
                 poll(&pfd, 1, 5);
                 continue;
@@ -1262,7 +1260,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
         ret = recv(sockfd, (char *)hdr + total_recv, sizeof(*hdr) - total_recv,
                    0);
         if (ret < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 return -EAGAIN;
             }
             rdma_error_report("TCP: Failed to receive header: %s",
@@ -1305,7 +1303,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             ret = recv(sockfd, (char *)*payload + total_recv,
                        hdr->msg_len - total_recv, 0);
             if (ret < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (errno == EAGAIN) {
                     struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
                     poll(&pfd, 1, 5);
                     continue;
@@ -2136,17 +2134,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     dlen, (unsigned long)mr->start, (unsigned long)mr->length);
                 memcpy(host_dst, data, dlen);
 
-                if (dlen >= 8) {
-                    uint32_t *src32 = (uint32_t *)data;
-                    uint32_t *dst32 = (uint32_t *)host_dst;
-                    uint32_t *end32 = (uint32_t *)((char *)host_dst + dlen - 4);
-                    rdma_info_report("TCP: RDMA_WRITE post-memcpy verify: "
-                                     "src[0]=0x%08x dst[0]=0x%08x "
-                                     "dst[last]=0x%08x match=%d",
-                                     src32[0], dst32[0], *end32,
-                                     (dst32[0] == src32[0]));
-                }
-
                 PCIDevice *pci_dev = priv->backend_dev->dev;
                 if (pci_dev)
                     pci_dma_sync(pci_dev, raddr, dlen);
@@ -2355,7 +2342,7 @@ static void *tcp_accept_thread(void *opaque)
                         &client_len);
 
         if (sockfd < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (errno == EAGAIN) {
                 usleep(100000); /* 100ms */
                 continue;
             }

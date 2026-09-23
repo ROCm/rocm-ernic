@@ -132,7 +132,7 @@ static inline uint32_t htonl(uint32_t val)
 }
 
 /* Parse Ethernet header from frame */
-static inline bool parse_eth_header(const void *frame, size_t len,
+static inline bool parse_eth_header(void *frame, size_t len,
                                     struct eth_header **eth_hdr)
 {
     if (len < sizeof(struct eth_header)) {
@@ -143,7 +143,7 @@ static inline bool parse_eth_header(const void *frame, size_t len,
 }
 
 /* Parse IP header from frame (after Ethernet header) */
-static inline bool parse_ip_header(const void *frame, size_t len,
+static inline bool parse_ip_header(void *frame, size_t len,
                                    struct eth_header *eth_hdr,
                                    struct ip_header **ip_hdr)
 {
@@ -159,7 +159,7 @@ static inline bool parse_ip_header(const void *frame, size_t len,
 }
 
 /* Parse TCP header from frame (after IP header) */
-static inline bool parse_tcp_header(const void *frame, size_t len,
+static inline bool parse_tcp_header(void *frame, size_t len,
                                     struct ip_header *ip_hdr,
                                     struct tcp_header **tcp_hdr,
                                     size_t *tcp_offset)
@@ -177,7 +177,7 @@ static inline bool parse_tcp_header(const void *frame, size_t len,
 }
 
 /* Parse UDP header from frame (after IP header) */
-static inline bool parse_udp_header(const void *frame, size_t len,
+static inline bool parse_udp_header(void *frame, size_t len,
                                     struct ip_header *ip_hdr,
                                     struct udp_header **udp_hdr,
                                     size_t *udp_offset)

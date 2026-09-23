@@ -1,58 +1,25 @@
 /*
- * QEMU paravirtual RDMA
+ * PVRDMA device statistics
  *
- * Copyright (C) 2018 Oracle
- * Copyright (C) 2018 Red Hat Inc
+ * Per-QP counter lookup and the stats file that ernic-exporter reads.
  *
- * Authors:
- *     Yuval Shaia <yuval.shaia@oracle.com>
- *     Marcel Apfelbaum <marcel@redhat.com>
+ * Copyright (C) Advanced Micro Devices, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * This work is licensed under the terms of the GNU GPL, version 2 or later.
  * See the LICENSE_GPL.md file in the top-level directory.
- *
- * What remains of the original QEMU device model is the statistics
- * bookkeeping.  The guest-facing PVRDMA interface -- DSR command ring,
- * BAR1 registers, UAR doorbells, realize/reset -- went away with the
- * PVRDMA device mode; the ionic front end drives the resource
- * manager and backend directly.
  */
 
-/* Minimal includes instead of qemu/osdep.h */
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
 #include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
 #include <inttypes.h>
-/* #include "qapi/error.h" - Not needed for standalone */
-/* #include "qemu/module.h" - Not needed for standalone */
-#include "hw/pci/pci.h"
-#include "hw/pci/pci_ids.h"
-#include "hw/pci/pci_regs.h" /* For PVRDMA_DEV, OBJECT, PCI_SLOT, PCI_FUNC, etc. */
-#include "hw/pci/msi.h"
-#include "hw/pci/msix.h"
-/* #include "hw/qdev-properties.h" - Not needed for standalone */
-/* #include "hw/qdev-properties-system.h" - Not needed for standalone */
-/* #include "cpu.h" - Not needed for PVRDMA */
-/* #include "monitor/monitor.h" - Not needed for standalone */
-#include "hw/rdma/rdma.h" /* Needed for rdma_pci_dma_map declaration */
-#include "qom/object.h"   /* For object_get_typename */
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <glib.h>
 
-#include "../rdma_rm.h"
-#include "../rdma_backend.h"
-#include "../rdma_utils.h"
-
-#include <infiniband/verbs.h>
 #include "pvrdma.h"
-#include "standard-headers/rdma/vmw_pvrdma-abi.h"
-/* #include "sysemu/runstate.h" - Not needed for standalone */
-#include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
-#include "pvrdma_qp_ops.h"
+#include "../rdma_utils.h"
 
 /* Get or create QP stats entry */
 PVRDMAQPStats *pvrdma_get_qp_stats(PVRDMADev *dev, uint32_t qp_handle)
@@ -98,6 +65,11 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
                                   "REG_SIG_MR",
                                   "ERROR",
                                   "SEND_DC"};
+
+    /* The per-QP loop below indexes both arrays with one bound. */
+    _Static_assert(G_N_ELEMENTS(opcode_names) ==
+                       G_N_ELEMENTS(((PVRDMAQPStats *)NULL)->wqes_by_opcode),
+                   "opcode_names must name every wqes_by_opcode entry");
 
     if (!dev->stats.stats_file) {
         return;
@@ -175,7 +147,7 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
             uint32_t qp_handle = GPOINTER_TO_UINT(key);
             PVRDMAQPStats *qp_stats = (PVRDMAQPStats *)value;
             uint64_t total_wqes = 0;
-            int i;
+            size_t i;
 
             fprintf(fp, "  QP %u:\n", qp_handle);
             fprintf(fp, "    doorbell_send  : %" PRIu64 "\n",
@@ -196,7 +168,7 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
                     qp_stats->bytes_rdma_write);
 
             fprintf(fp, "    WQEs by opcode:\n");
-            for (i = 0; i < 18 && i < (int)G_N_ELEMENTS(opcode_names); i++) {
+            for (i = 0; i < G_N_ELEMENTS(opcode_names); i++) {
                 if (qp_stats->wqes_by_opcode[i] > 0) {
                     /* The width must exceed the longest opcode name, and the
                      * space before the colon must be explicit: ernic-exporter

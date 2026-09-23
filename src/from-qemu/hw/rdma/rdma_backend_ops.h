@@ -111,10 +111,12 @@ struct RdmaBackendOps {
                           uint32_t num_sge, void *ctx);
 };
 
-/* Backend registration and management */
-const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);
-RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str);
-const char *rdma_backend_type_to_string(RdmaBackendType type);
+/*
+ * rdma_backend_get_ops(), rdma_backend_get_type_from_string() and
+ * rdma_backend_type_to_string() are declared in rdma_backend.h, not here:
+ * a second prototype trips -Wredundant-decls in every file that includes
+ * both headers.
+ */
 
 /* Helper to check if backend has capability */
 static inline bool rdma_backend_has_srq(const RdmaBackendOps *ops)
