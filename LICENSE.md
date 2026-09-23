@@ -30,9 +30,7 @@ automation code: the `CMakeLists.txt` files, `cmake/`, `docs/`, `ansible/`,
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
 * Everything under `src/` and `tests/`, and the fuzz harnesses in
-  `nix/analysis/fuzz/`, which build against `src/`. The one exception is
-  `tests/test_write_imm.c`, which is MIT and carries a
-  `Copyright (c) Gluesys Inc. and Jihyeon Gim` notice alongside AMD's.
+  `nix/analysis/fuzz/`, which build against `src/`.
 
 * Many of the files under `src/` were imported from the QEMU project
   (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI headers
