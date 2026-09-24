@@ -26,7 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Some files in this repository carry different licenses as noted in their
 individual SPDX headers:
 
-* Files under `src/from-qemu/` are derived from the QEMU project and are
+* Files under `third-party/qemu/` are derived from the QEMU project and are
   licensed under `GPL-2.0-or-later`.
 
 The per-file SPDX header takes precedence for any file that contains one.

@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dhcp_server.h"
+#include "net/dhcp_server.h"
 
 /* Small pool (10.0.0.2 .. 10.0.0.6) so "full pool" is cheap to fill. */
 static DhcpServer *make_server(void)

@@ -109,8 +109,8 @@ Warnings as Errors
 ------------------
 
 ``ERNIC_WERROR`` adds ``-Werror`` to the project's own
-sources and to the test targets. The QEMU-ported sources
-under ``src/from-qemu/`` are compiled with ``-w`` regardless,
+sources and to the test targets. The vendored QEMU sources
+under ``third-party/`` are compiled with ``-w`` regardless,
 so the flag only governs code this project maintains.
 
 It defaults to ``OFF`` so that a packager or downstream

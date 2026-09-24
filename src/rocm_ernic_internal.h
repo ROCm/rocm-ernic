@@ -25,7 +25,8 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 
 /* ---------------------------------------------------------------------------
  * Legacy PVRDMA BAR layout (kept for reference during ionic migration).
- * These are used by the PVRDMA emulation layer in src/from-qemu/hw/rdma/vmw/.
+ * These are used by the PVRDMA emulation layer in
+ * third-party/qemu/hw/rdma/vmw/.
  * ---------------------------------------------------------------------------
  */
 #ifndef RDMA_BAR0_MSIX_SIZE

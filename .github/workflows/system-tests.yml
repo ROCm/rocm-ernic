@@ -12,6 +12,7 @@ on:
     # in-repo driver path to list.
     paths:
       - 'src/**'                  # the vfio-user server under test
+      - 'third-party/**'          # vendored QEMU code built into it
       - 'tests/**'                # rdma_verify, test_write_imm, ...
       - 'CMakeLists.txt'
       - 'cmake/**'

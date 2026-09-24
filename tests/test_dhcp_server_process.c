@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dhcp_server.h"
+#include "net/dhcp_server.h"
 
 #define NULL_REQUEST ((size_t) - 1)
 

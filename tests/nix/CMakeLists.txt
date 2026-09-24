@@ -6,9 +6,8 @@
 #
 # The harnesses are built for real by nix/analysis/fuzz.nix, which runs only
 # behind the `run-fuzz` label or a manual dispatch. Nothing on an ordinary
-# PR compiled them, so a changed parser signature under
-# src/from-qemu/utils/ could break them silently and stay broken until the
-# next opt-in fuzz run.
+# PR compiled them, so a changed parser signature under src/net/ could
+# break them silently and stay broken until the next opt-in fuzz run.
 #
 # Here each harness is linked against tests/nix/fuzz_replay_main.c -- a
 # plain main() rather than libFuzzer, so this builds under gcc as well as
@@ -45,16 +44,17 @@ function(ernic_add_fuzz_replay harness)
 
     # The harness sources, and the ported .c files passed in ARGN, are ours
     # and are warning-clean, so they are built under the project flags --
-    # keeping them there is the point of building them here.
+    # keeping them there is the point of building them here. The harnesses
+    # include the src/net headers by bare name.
     target_include_directories(${target} PRIVATE
         ${ERNIC_FUZZ_DIR}
         ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/src/net
+        ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
     )
-    # Ported header trees are SYSTEM includes so their warnings stay quiet.
+    # Vendored header trees are SYSTEM includes so their warnings stay quiet.
     target_include_directories(${target} SYSTEM PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/from-qemu
-        ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
-        ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+        ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
         ${GLIB2_INCLUDE_DIRS}
     )
     target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
@@ -78,13 +78,13 @@ function(ernic_add_fuzz_replay harness)
 endfunction()
 
 ernic_add_fuzz_replay(rdma_cm_proto
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/rdma_cm_proto.c
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+    ${CMAKE_SOURCE_DIR}/src/net/rdma_cm_proto.c
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 
 ernic_add_fuzz_replay(dhcp_server
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/dhcp_server.c
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils/error-report.c
+    ${CMAKE_SOURCE_DIR}/src/net/dhcp_server.c
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 # Only this harness defines LLVMFuzzerInitialize(); the driver calls it
 # behind this define rather than a weak symbol, which gcc and clang treat

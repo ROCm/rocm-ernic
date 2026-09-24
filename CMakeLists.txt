@@ -143,31 +143,35 @@ endif()
 
 # Upstream QEMU/VMware code, under Oracle / Red Hat copyright.
 # Not ours to fix
-#
-# Note: rdma.c is deliberately absent -- it only contains QEMU type
-# registration, which this project does not use.
 set(ERNIC_VENDORED_SOURCES
-    src/from-qemu/hw/rdma/rdma_backend.c
-    src/from-qemu/hw/rdma/rdma_rm.c
-    src/from-qemu/hw/rdma/rdma_utils.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_qp_ops.c
+    third-party/qemu/hw/rdma/rdma_backend.c
+    third-party/qemu/hw/rdma/rdma_rm.c
+    third-party/qemu/hw/rdma/rdma_utils.c
+    third-party/qemu/hw/rdma/vmw/pvrdma_qp_ops.c
 )
 
-# AMD-authored code that happens to sit under src/from-qemu/.  Ours to
-# maintain; folds into the src/ file lists once the vendored files move
-# out.
-set(ERNIC_FROM_QEMU_AMD_SOURCES
-    src/from-qemu/hw/rdma/rdma_backend_core.c
-    src/from-qemu/hw/rdma/rdma_backend_none.c
-    src/from-qemu/hw/rdma/rdma_backend_loopback.c
-    src/from-qemu/hw/rdma/rdma_backend_tcp.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_stats.c
-    src/from-qemu/utils/error-report.c
-    src/from-qemu/utils/dhcp_server.c
-    src/from-qemu/utils/eth_rx_inject.c
-    src/from-qemu/utils/rdma_cm_proto.c
-    src/from-qemu/qemu-stubs/qemu_stubs.c
-    src/from-qemu/qemu-stubs/qemu_type_stubs.c
+# The QEMU APIs the vendored code calls, implemented for a standalone
+# process
+set(QEMU_COMPAT_SOURCES
+    src/qemu-compat/error-report.c
+    src/qemu-compat/qemu_stubs.c
+    src/qemu-compat/qemu_type_stubs.c
+)
+
+# RDMA backends (none, loopback, TCP mesh) behind the vendored device model
+set(RDMA_BACKEND_SOURCES
+    src/rdma/rdma_backend_core.c
+    src/rdma/rdma_backend_none.c
+    src/rdma/rdma_backend_loopback.c
+    src/rdma/rdma_backend_tcp.c
+    src/rdma/pvrdma_stats.c
+)
+
+# DHCP, RDMA CM and Ethernet frame injection for the emulated network
+set(NET_SOURCES
+    src/net/dhcp_server.c
+    src/net/eth_rx_inject.c
+    src/net/rdma_cm_proto.c
 )
 
 # Compatibility bridge layer
@@ -209,8 +213,10 @@ set(ALL_SOURCES
     ${IONIC_EMU_SOURCES}
     ${NVMEOF_SOURCES}
     ${S3_SOURCES}
+    ${RDMA_BACKEND_SOURCES}
+    ${NET_SOURCES}
+    ${QEMU_COMPAT_SOURCES}
     ${ERNIC_VENDORED_SOURCES}
-    ${ERNIC_FROM_QEMU_AMD_SOURCES}
 )
 
 # ---------------------------------------------------------------
@@ -228,16 +234,19 @@ else()
     set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDE_DIRS}")
 endif()
 
+# src/rdma is searched directly because the vendored sources include
+# rdma_backend_ops.h and pvrdma_comp_ctx.h by bare name.
 target_include_directories(rocm-ernic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/rdma
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
 )
 
-# The QEMU-ported header trees should be treated as SYSTEM includes
-# so their warnings stay quiet
+# The vendored header trees are SYSTEM includes so their warnings stay
+# quiet
 target_include_directories(rocm-ernic SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/hw/rdma
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/utils
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -254,7 +263,7 @@ target_compile_options(rocm-ernic PRIVATE
     -g
 )
 
-# Suppress strict warnings under src/from-qemu/
+# Suppress strict warnings under third-party/
 #
 # Vendored code is not ours to fix.
 set_source_files_properties(

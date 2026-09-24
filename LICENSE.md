@@ -29,12 +29,12 @@ automation code: the `CMakeLists.txt` files, `cmake/`, `docs/`, `ansible/`,
 
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
-* Everything under `src/` and `tests/`, and the fuzz harnesses in
-  `nix/analysis/fuzz/`, which build against `src/`.
+* Everything under `src/`, `tests/` and `third-party/`, and the fuzz
+  harnesses in `nix/analysis/fuzz/`, which build against `src/`.
 
-* Many of the files under `src/` were imported from the QEMU project
+* The files under `third-party/qemu/` were imported from the QEMU project
   (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI headers
-  under `src/from-qemu/include/qemu-extra/standard-headers/` are instead
+  under `third-party/qemu/include/standard-headers/` are instead
   dual `GPL-2.0` / `BSD-2-Clause`, as stated in each file's header comment.
 
 The groupings above are a summary; the per-file notice is authoritative.

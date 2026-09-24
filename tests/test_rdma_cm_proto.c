@@ -22,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "rdma_cm_proto.h"
+#include "net/rdma_cm_proto.h"
 
 #define RESP_CAP     2048
 #define NULL_PAYLOAD ((size_t) - 1)

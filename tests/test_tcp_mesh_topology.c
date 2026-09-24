@@ -37,7 +37,7 @@
 #include <unistd.h>
 
 /* Pull in the code under test (including its static functions) */
-#include "hw/rdma/rdma_backend_tcp.c"
+#include "rdma/rdma_backend_tcp.c"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the topology-broadcast path; they exist

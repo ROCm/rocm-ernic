@@ -26,9 +26,9 @@ let
 
   includeFlags = lib.concatStringsSep " " [
     "-Isrc"
-    "-Isrc/from-qemu"
-    "-Isrc/from-qemu/utils"
-    "-Isrc/from-qemu/include/qemu-extra"
+    "-Isrc/net"
+    "-Isrc/qemu-compat/include"
+    "-Ithird-party/qemu/hw/rdma"
   ];
   sanFlags = "-fsanitize=fuzzer,address,undefined -g -O1 -fno-omit-frame-pointer";
 
@@ -42,13 +42,13 @@ let
   harnesses = [
     { name = "rdma_cm_proto";
       extra = [
-        "src/from-qemu/utils/rdma_cm_proto.c"
-        "src/from-qemu/utils/error-report.c"
+        "src/net/rdma_cm_proto.c"
+        "src/qemu-compat/error-report.c"
       ]; }
     { name = "dhcp_server";
       extra = [
-        "src/from-qemu/utils/dhcp_server.c"
-        "src/from-qemu/utils/error-report.c"
+        "src/net/dhcp_server.c"
+        "src/qemu-compat/error-report.c"
       ]; }
     { name = "net_headers";
       extra = [ ]; }

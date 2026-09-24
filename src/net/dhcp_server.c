@@ -6,7 +6,7 @@
  */
 
 #include "dhcp_server.h"
-#include "from-qemu/hw/rdma/rdma_utils.h"
+#include "rdma_utils.h"
 #include "net_headers.h" /* For htonl/ntohl */
 #include "qemu/thread.h"
 #include <string.h>

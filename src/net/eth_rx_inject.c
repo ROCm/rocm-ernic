@@ -6,8 +6,8 @@
  */
 
 #include "eth_rx_inject.h"
-#include "from-qemu/hw/rdma/vmw/pvrdma.h"
-#include "from-qemu/hw/rdma/rdma_utils.h"
+#include "vmw/pvrdma.h"
+#include "rdma_utils.h"
 #include "hw/pci/pci.h"
 #include "rocm_ernic_internal.h"
 #include "ionic_eth_emu.h"

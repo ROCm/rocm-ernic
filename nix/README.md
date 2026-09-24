@@ -79,8 +79,9 @@ Per-tool targets: `analysis-clang-tidy`, `analysis-cppcheck`,
 
 Triage (`nix/analysis/triage/`) loads every tool's report, drops noise and
 out-of-scope paths, deduplicates, cross-references findings flagged by
-multiple tools, and ranks by priority. `src/from-qemu/utils/` and
-`hw/rdma/` (the untrusted-input parsers) are treated as security-sensitive.
+multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and the
+vendored `third-party/qemu/hw/rdma/` (the untrusted-input paths) are
+treated as security-sensitive.
 
 ## Dynamic analysis
 

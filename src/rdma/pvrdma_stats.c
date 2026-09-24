@@ -18,8 +18,8 @@
 #include <string.h>
 #include <glib.h>
 
-#include "pvrdma.h"
-#include "../rdma_utils.h"
+#include "vmw/pvrdma.h"
+#include "rdma_utils.h"
 
 /* Get or create QP stats entry */
 PVRDMAQPStats *pvrdma_get_qp_stats(PVRDMADev *dev, uint32_t qp_handle)

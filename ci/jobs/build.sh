@@ -62,7 +62,8 @@ fi
 
 # A binary older than the sources means the build did not
 # actually run, however green ninja looked.
-if [ -n "$(find "${PROJECT_ROOT}/src" "${PROJECT_ROOT}/CMakeLists.txt" \
+if [ -n "$(find "${PROJECT_ROOT}/src" "${PROJECT_ROOT}/third-party" \
+              "${PROJECT_ROOT}/CMakeLists.txt" \
               -newer "${CI_BUILD_DIR}/rocm-ernic" -print -quit)" ]; then
     die "rocm-ernic is older than the sources; the build did not run"
 fi
