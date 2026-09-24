@@ -507,8 +507,8 @@ launcher, and the Prometheus exporter
 <section id="warnings-as-errors">
 <span id="werror-policy"></span><h2>Warnings as Errors<a class="headerlink" href="#warnings-as-errors" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code> adds <code class="docutils literal notranslate"><span class="pre">-Werror</span></code> to the project’s own
-sources and to the test targets. The QEMU-ported sources
-under <code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code> are compiled with <code class="docutils literal notranslate"><span class="pre">-w</span></code> regardless,
+sources and to the test targets. The vendored QEMU sources
+under <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> are compiled with <code class="docutils literal notranslate"><span class="pre">-w</span></code> regardless,
 so the flag only governs code this project maintains.</p>
 <p>It defaults to <code class="docutils literal notranslate"><span class="pre">OFF</span></code> so that a packager or downstream
 consumer building with a compiler version we have not tested

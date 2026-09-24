@@ -726,7 +726,7 @@ N-queue controller therefore needs <code class="docutils literal notranslate"><s
 before the first capsule moves, and the emulator’s table is a
 fixed <code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code> = 2048 (<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.h</span></code>,
 which also sizes <code class="docutils literal notranslate"><span class="pre">MAX_MR</span></code> in
-<code class="file docutils literal notranslate"><span class="pre">src/from-qemu/hw/rdma/rdma_rm_defs.h</span></code> and in
+<code class="file docutils literal notranslate"><span class="pre">third-party/qemu/hw/rdma/rdma_rm_defs.h</span></code> and in
 <code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>). That puts the ceiling at 15 I/O
 queues, which <code class="docutils literal notranslate"><span class="pre">nvmeof_parse_backend()</span></code> enforces at startup:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: nvmeof backend: queues must be 1..15, one per 128

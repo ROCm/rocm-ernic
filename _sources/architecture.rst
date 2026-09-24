@@ -68,14 +68,34 @@ and the libvfio-user transport. The bridge exposes a clean
 C API (``pvrdma_device_create``, ``pvrdma_regs_write``, etc.)
 so that the server never includes QEMU headers directly.
 
-RDMA Device Logic (``src/from-qemu/``)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RDMA Device Logic (``third-party/qemu/``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Adapted from the QEMU PVRDMA device implementation. This code
+Vendored from the QEMU PVRDMA device implementation. This code
 handles the command ring, doorbell processing, queue-pair
 management, and completion-queue posting. It is intentionally
 kept close to the upstream QEMU source to simplify future
 synchronization.
+
+QEMU Compatibility Layer (``src/qemu-compat/``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The QEMU headers and functions the vendored code expects
+(``qemu/thread.h``, ``hw/pci/pci.h``, error reporting, and so
+on), implemented for a standalone process rather than taken
+from QEMU.
+
+RDMA Backends (``src/rdma/``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The backend vtable and its none, loopback and TCP mesh
+implementations, described under `Backends`_ below.
+
+Network Services (``src/net/``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The DHCP server, the RDMA CM wire protocol, and Ethernet frame
+injection into the emulated NIC's receive path.
 
 ionic Emulation (``src/ionic_*.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

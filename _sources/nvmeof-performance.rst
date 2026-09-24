@@ -192,7 +192,7 @@ N-queue controller therefore needs ``(N + 1) * 128`` regions
 before the first capsule moves, and the emulator's table is a
 fixed ``IONIC_MAX_MR`` = 2048 (:file:`src/ionic_datapath.h`,
 which also sizes ``MAX_MR`` in
-:file:`src/from-qemu/hw/rdma/rdma_rm_defs.h` and in
+:file:`third-party/qemu/hw/rdma/rdma_rm_defs.h` and in
 :file:`src/ionic_datapath.c`). That puts the ceiling at 15 I/O
 queues, which ``nvmeof_parse_backend()`` enforces at startup:
 

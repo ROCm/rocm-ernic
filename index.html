@@ -566,7 +566,7 @@ a host TAP:</p>
 </section>
 <section id="acknowledgments">
 <h2>Acknowledgments<a class="headerlink" href="#acknowledgments" title="Link to this heading">#</a></h2>
-<p>The RDMA device logic in <code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code> is adapted from the
+<p>The RDMA device logic in <code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code> is adapted from the
 QEMU PVRDMA implementation. The original authors of that work:</p>
 <ul class="simple">
 <li><p>Yuval Shaia &lt;<a class="reference external" href="mailto:yuval&#46;shaia&#37;&#52;&#48;oracle&#46;com">yuval<span>&#46;</span>shaia<span>&#64;</span>oracle<span>&#46;</span>com</a>&gt; (Oracle)</p></li>
@@ -580,10 +580,10 @@ under the
 <a class="reference external" href="https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md">MIT license</a>.
 The emulator itself is <code class="docutils literal notranslate"><span class="pre">GPL-2.0-or-later</span></code>:</p>
 <ul class="simple">
-<li><p>Everything under <code class="docutils literal notranslate"><span class="pre">src/</span></code> and <code class="docutils literal notranslate"><span class="pre">tests/</span></code>, and the fuzz harnesses in
-<code class="docutils literal notranslate"><span class="pre">nix/analysis/fuzz/</span></code>, which build against <code class="docutils literal notranslate"><span class="pre">src/</span></code>.</p></li>
+<li><p>Everything under <code class="docutils literal notranslate"><span class="pre">src/</span></code>, <code class="docutils literal notranslate"><span class="pre">tests/</span></code> and <code class="docutils literal notranslate"><span class="pre">third-party/</span></code>, and the fuzz
+harnesses in <code class="docutils literal notranslate"><span class="pre">nix/analysis/fuzz/</span></code>, which build against <code class="docutils literal notranslate"><span class="pre">src/</span></code>.</p></li>
 <li><p>The VMware/Linux uAPI headers under
-<code class="docutils literal notranslate"><span class="pre">src/from-qemu/include/qemu-extra/standard-headers/</span></code> are instead
+<code class="docutils literal notranslate"><span class="pre">third-party/qemu/include/standard-headers/</span></code> are instead
 dual <code class="docutils literal notranslate"><span class="pre">GPL-2.0</span></code> / <code class="docutils literal notranslate"><span class="pre">BSD-2-Clause</span></code>.</p></li>
 </ul>
 <p>The groupings above are a summary; the per-file <code class="docutils literal notranslate"><span class="pre">SPDX-License-Identifier</span></code>

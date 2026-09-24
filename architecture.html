@@ -377,7 +377,10 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components">Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-rocm-ernic-server-c">Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-bridge-rocm-ernic-compat-c">Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-src-from-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-third-party-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qemu-compatibility-layer-src-qemu-compat">QEMU Compatibility Layer (<code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-backends-src-rdma">RDMA Backends (<code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#network-services-src-net">Network Services (<code class="docutils literal notranslate"><span class="pre">src/net/</span></code>)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ionic-emulation-src-ionic-c">ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)</a></li>
 </ul>
 </li>
@@ -469,13 +472,30 @@ and the libvfio-user transport. The bridge exposes a clean
 C API (<code class="docutils literal notranslate"><span class="pre">pvrdma_device_create</span></code>, <code class="docutils literal notranslate"><span class="pre">pvrdma_regs_write</span></code>, etc.)
 so that the server never includes QEMU headers directly.</p>
 </section>
-<section id="rdma-device-logic-src-from-qemu">
-<h3>RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code>)<a class="headerlink" href="#rdma-device-logic-src-from-qemu" title="Link to this heading">#</a></h3>
-<p>Adapted from the QEMU PVRDMA device implementation. This code
+<section id="rdma-device-logic-third-party-qemu">
+<h3>RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>)<a class="headerlink" href="#rdma-device-logic-third-party-qemu" title="Link to this heading">#</a></h3>
+<p>Vendored from the QEMU PVRDMA device implementation. This code
 handles the command ring, doorbell processing, queue-pair
 management, and completion-queue posting. It is intentionally
 kept close to the upstream QEMU source to simplify future
 synchronization.</p>
+</section>
+<section id="qemu-compatibility-layer-src-qemu-compat">
+<h3>QEMU Compatibility Layer (<code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code>)<a class="headerlink" href="#qemu-compatibility-layer-src-qemu-compat" title="Link to this heading">#</a></h3>
+<p>The QEMU headers and functions the vendored code expects
+(<code class="docutils literal notranslate"><span class="pre">qemu/thread.h</span></code>, <code class="docutils literal notranslate"><span class="pre">hw/pci/pci.h</span></code>, error reporting, and so
+on), implemented for a standalone process rather than taken
+from QEMU.</p>
+</section>
+<section id="rdma-backends-src-rdma">
+<h3>RDMA Backends (<code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>)<a class="headerlink" href="#rdma-backends-src-rdma" title="Link to this heading">#</a></h3>
+<p>The backend vtable and its none, loopback and TCP mesh
+implementations, described under <a class="reference internal" href="#backends">Backends</a> below.</p>
+</section>
+<section id="network-services-src-net">
+<h3>Network Services (<code class="docutils literal notranslate"><span class="pre">src/net/</span></code>)<a class="headerlink" href="#network-services-src-net" title="Link to this heading">#</a></h3>
+<p>The DHCP server, the RDMA CM wire protocol, and Ethernet frame
+injection into the emulated NIC’s receive path.</p>
 </section>
 <section id="ionic-emulation-src-ionic-c">
 <h3>ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)<a class="headerlink" href="#ionic-emulation-src-ionic-c" title="Link to this heading">#</a></h3>
@@ -653,7 +673,10 @@ the vfio-user context may DMA into guest memory.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components">Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-rocm-ernic-server-c">Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-bridge-rocm-ernic-compat-c">Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-src-from-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">src/from-qemu/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-third-party-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qemu-compatibility-layer-src-qemu-compat">QEMU Compatibility Layer (<code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-backends-src-rdma">RDMA Backends (<code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#network-services-src-net">Network Services (<code class="docutils literal notranslate"><span class="pre">src/net/</span></code>)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ionic-emulation-src-ionic-c">ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)</a></li>
 </ul>
 </li>
