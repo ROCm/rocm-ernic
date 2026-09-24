@@ -188,7 +188,7 @@ typedef struct {
 typedef struct {
     uint32_t assigned_node_id;
     uint32_t num_nodes;
-    uint32_t result; /* Signed: 0 = success, negative = error */
+    uint32_t result; /* int32_t on the wire: 0 = success, negative = error */
 } __attribute__((packed)) TcpRegisterRespPayload;
 
 typedef struct {
