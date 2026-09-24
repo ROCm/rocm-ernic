@@ -117,7 +117,7 @@ target_compile_definitions(test_write_imm PRIVATE
     _POSIX_C_SOURCE=200809L
 )
 target_include_directories(test_write_imm PRIVATE
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_write_imm PRIVATE
     ${IBVERBS_LIBRARY_DIRS}
@@ -332,7 +332,7 @@ target_include_directories(test_loopback_sge_copy PRIVATE
 target_include_directories(test_loopback_sge_copy SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
     ${GLIB2_INCLUDE_DIRS}
-    ${IBVERBS_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_loopback_sge_copy PRIVATE
     _GNU_SOURCE)
