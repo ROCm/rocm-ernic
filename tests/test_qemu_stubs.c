@@ -16,7 +16,8 @@
  * The polling cases cover the two timeouts that a conversion to whole
  * milliseconds gets wrong: a negative timeout must wait indefinitely
  * rather than return at once, and a sub-millisecond timeout must wait
- * rather than round down to zero.
+ * rather than round down to zero. Timeouts whose whole seconds overflow a
+ * 32-bit time_t must still produce a valid timespec.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -265,12 +266,54 @@ static void test_poll_negative_waits(void)
     close(fds[1]);
 }
 
+static void test_poll_huge_timeouts(void)
+{
+    /* 2^31 seconds is the smallest whole-second count that a 32-bit
+     * time_t cannot hold: truncated, it becomes INT32_MIN. */
+    const int64_t timeouts_ns[] = {
+        ((int64_t)INT32_MAX + 1) * INT64_C(1000000000),
+        INT64_MAX,
+    };
+    struct pollfd pfd;
+    int fds[2];
+    int rc;
+
+    if (pipe(fds) != 0) {
+        fail("pipe failed", 0, 0);
+        return;
+    }
+    if (write(fds[1], "x", 1) != 1) {
+        fail("could not write to the pipe", 0, 0);
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+
+    pfd.fd = fds[0];
+    pfd.events = POLLIN;
+
+    /* The pipe stays readable, so a valid timeout returns at once. A
+     * negative tv_sec makes ppoll() fail with EINVAL instead. */
+    for (size_t i = 0; i < sizeof(timeouts_ns) / sizeof(timeouts_ns[0]); i++) {
+        pfd.revents = 0;
+        rc = qemu_poll_ns(&pfd, 1, timeouts_ns[i]);
+        if (rc != 1 || !(pfd.revents & POLLIN)) {
+            fail("huge timeout did not report the readable pipe", 0,
+                 (uint32_t)i);
+        }
+    }
+
+    close(fds[0]);
+    close(fds[1]);
+}
+
 int main(void)
 {
     test_bitmap_sizes();
     test_oversize_aborts();
     test_poll_sub_millisecond();
     test_poll_negative_waits();
+    test_poll_huge_timeouts();
 
     if (failures) {
         printf("qemu_stubs: %d check(s) FAILED\n", failures);

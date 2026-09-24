@@ -246,24 +246,29 @@ int64_t qemu_clock_get_ns(int type)
 
 #define NS_PER_SECOND INT64_C(1000000000)
 
-_Static_assert(sizeof(time_t) >= sizeof(int64_t),
-               "qemu_poll_ns() stores whole seconds of an int64_t "
-               "nanosecond timeout in time_t");
-
 /*
  * ppoll() takes the timeout as a timespec, so the full nanosecond value is
  * honoured: no rounding to milliseconds and no narrowing to int. A
  * negative timeout waits indefinitely, as in QEMU.
+ *
+ * Whole seconds are capped at INT32_MAX, about 68 years, so they fit in
+ * time_t even where it is 32 bits (32-bit ARM without _TIME_BITS=64). A
+ * timeout that long is indistinguishable from waiting indefinitely.
  */
 int qemu_poll_ns(struct pollfd *fds, nfds_t nfds, int64_t timeout_ns)
 {
     struct timespec ts;
+    int64_t secs;
 
     if (timeout_ns < 0) {
         return ppoll(fds, nfds, NULL, NULL);
     }
 
-    ts.tv_sec = timeout_ns / NS_PER_SECOND;
+    secs = timeout_ns / NS_PER_SECOND;
+    if (secs > INT32_MAX) {
+        secs = INT32_MAX;
+    }
+    ts.tv_sec = (time_t)secs;
     /* The remainder is below one billion, which fits in any long. */
     ts.tv_nsec = (long)(timeout_ns % NS_PER_SECOND);
 
