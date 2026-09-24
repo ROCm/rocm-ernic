@@ -3,24 +3,29 @@
 Adapted for rocm-ernic's C codebase. Path patterns reflect this repo's
 layout:
   - src/rocm_ernic_*.{c,h}         our own userspace code
-  - src/from-qemu/utils/           QEMU-ported wire-protocol parsers
-                                   (DHCP, rdma-cm, TCP) — untrusted input
-  - src/from-qemu/hw/rdma/         QEMU-ported RDMA backends / PVRDMA device
+  - src/net/                       wire-protocol parsers (DHCP, rdma-cm)
+                                   — untrusted input
+  - src/rdma/                      RDMA backends (loopback, TCP mesh)
+  - third-party/qemu/hw/rdma/      vendored QEMU PVRDMA device model
   - tests/                         test programs
 
-Unlike the xdp2 original, nothing under src/ is treated as unactionable
-third-party: the QEMU-ported sources are maintained here and are exactly
-the security-sensitive parsers we also fuzz, so they stay in the triage
-view and are marked security-sensitive to raise their priority.
+Unlike the xdp2 original, the vendored QEMU code under third-party/ is not
+treated as unactionable: it ships in the emulator and handles guest input
+alongside the parsers we also fuzz, so it stays in the triage view and is
+marked security-sensitive to raise its priority.
 """
 
 from finding import Finding
 
 
-# Truly non-actionable third-party trees. rocm-ernic vendors nothing under
-# src/ that we want to hide, so this stays empty; the is_third_party()
-# fallback still drops anything outside src/ (tests, build artifacts).
+# Truly non-actionable third-party trees. The code rocm-ernic vendors is
+# kept in view (see above), so this stays empty; the is_third_party()
+# fallback still drops anything outside ANALYSIS_ROOTS (tests, build
+# artifacts).
 THIRD_PARTY_PATTERNS = []
+
+# Trees whose findings are in scope for triage.
+ANALYSIS_ROOTS = ('src/', 'third-party/')
 
 # Generated files — rocm-ernic has no code-generation step, so none.
 GENERATED_FILE_PATTERNS = []
@@ -56,8 +61,10 @@ TEST_PATH_PATTERNS = ['tests/', '/test_']
 # Security-sensitive locations: the parsers that handle untrusted wire data
 # (the prime fuzz targets) plus our own userspace glue.
 SECURITY_PATHS = [
-    'src/from-qemu/utils/',
-    'src/from-qemu/hw/rdma/',
+    'src/net/',
+    'src/rdma/',
+    'src/parse_int.h',
+    'third-party/qemu/hw/rdma/',
     'src/rocm_ernic',
 ]
 
@@ -77,8 +84,8 @@ def is_third_party(path: str) -> bool:
     for pat in THIRD_PARTY_PATTERNS:
         if pat in path:
             return True
-    # Files not under src/ are outside the analysis scope (tests, build).
-    return not path.startswith('src/')
+    # Files outside ANALYSIS_ROOTS are out of scope (tests, build).
+    return not path.startswith(ANALYSIS_ROOTS)
 
 
 def is_test_code(path: str) -> bool:

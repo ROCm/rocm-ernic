@@ -5,6 +5,7 @@ on:
     branches: [ develop ]
     paths:
       - 'src/**'
+      - 'third-party/**'
       - 'tests/**'
       - 'service/**'
       - 'CMakeLists.txt'

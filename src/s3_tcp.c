@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "net_headers.h"
+#include "net/net_headers.h"
 #include "s3_http.h"
 #include "s3_tcp.h"
 

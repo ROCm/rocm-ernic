@@ -3,7 +3,7 @@
 # Static-analysis entry point for rocm-ernic. Ported from the xdp2
 # reference framework, re-implemented for this CMake project.
 #
-# Tools (userspace src/ only):
+# Tools (userspace src/ and third-party/ only):
 #   clang-tidy, cppcheck           via the CMake compilation database
 #   flawfinder, semgrep            raw-source scanners
 #   gcc-warnings, gcc-analyzer     full builds with extra diagnostics

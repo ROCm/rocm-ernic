@@ -4,8 +4,8 @@
  * The harnesses are normally built and driven by libFuzzer via
  * nix/analysis/fuzz.nix, which runs only in the opt-in fuzz workflow. That
  * left them able to stop compiling -- a changed parser signature under
- * src/from-qemu/utils/ would not be noticed until someone asked for a fuzz
- * run. Linking each harness against this main() instead lets the ordinary
+ * src/net/ would not be noticed until someone asked for a fuzz run.
+ * Linking each harness against this main() instead lets the ordinary
  * CMake build compile them on every PR, so the drift becomes a build
  * failure where it is introduced.
  *

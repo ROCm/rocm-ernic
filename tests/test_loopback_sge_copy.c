@@ -28,7 +28,7 @@
 #include <string.h>
 
 /* Pull in the code under test (including its static functions). */
-#include "hw/rdma/rdma_backend_loopback.c"
+#include "rdma/rdma_backend_loopback.c"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * rdma_pci_dma_map is an identity mapping: the SGE "guest address" is a

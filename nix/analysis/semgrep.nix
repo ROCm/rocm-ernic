@@ -1,8 +1,9 @@
 # nix/analysis/semgrep.nix
 #
 # semgrep pattern-based scan with the project's C ruleset
-# (semgrep-rules.yaml). Scans raw source under src/, so it covers the
-# QEMU-ported parsers as well as our own code. Runs fully offline.
+# (semgrep-rules.yaml). Scans raw source under src/ and third-party/, so
+# it covers the vendored QEMU sources as well as our own code. Runs fully
+# offline.
 { pkgs, mkSourceReport }:
 
 let
@@ -31,6 +32,7 @@ let
         --metrics=off \
         --no-git-ignore \
         "$source_dir/src" \
+        "$source_dir/third-party" \
         > "$output_dir/report.json" 2>&1 || true
 
       semgrep \
@@ -38,6 +40,7 @@ let
         --metrics=off \
         --no-git-ignore \
         "$source_dir/src" \
+        "$source_dir/third-party" \
         > "$output_dir/report.txt" 2>&1 || true
 
       findings=$(grep -o '"check_id"' "$output_dir/report.json" | wc -l || echo "0")

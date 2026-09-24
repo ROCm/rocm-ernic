@@ -60,7 +60,7 @@
 #include <unistd.h>
 
 /* Pull in the code under test (including its static functions) */
-#include "hw/rdma/rdma_backend_tcp.c"
+#include "rdma/rdma_backend_tcp.c"
 
 /* ---- Test fixture geometry ---------------------------------------------
  *

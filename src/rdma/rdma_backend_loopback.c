@@ -21,7 +21,7 @@
 #include "hw/pci/pci.h"      /* For PCIDevice and pci_dma_sync */
 #include "hw/pci/pci_regs.h" /* For PVRDMA_DEV */
 #include "vmw/pvrdma.h"      /* For PVRDMADev and stats */
-#include "vmw/pvrdma_comp_ctx.h"
+#include "pvrdma_comp_ctx.h"
 #include "vmw/pvrdma_qp_ops.h"
 #include <errno.h>
 #include <string.h>

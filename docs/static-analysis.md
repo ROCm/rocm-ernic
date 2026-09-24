@@ -6,6 +6,14 @@
 > D1 by #62, D2 by #63, D3 by #64, D4 by #63/#64, S1 by #65, S2 by #66 and
 > S4 by #67. S3 remains open as #68. Re-run `nix build .#analysis-deep` for
 > the current state rather than relying on the statuses below.
+>
+> **Paths.** File paths and line numbers are as of that commit. The
+> `src/from-qemu/` tree has since been split up: the vendored QEMU files
+> (`rdma_backend.c`, `pvrdma_qp_ops.c` and the `standard-headers/` uAPI
+> headers among them) are under `third-party/qemu/`; the DHCP, rdma_cm and
+> Ethernet RX code and `net_headers.h` are in `src/net/`; the RDMA backends
+> (`rdma_backend_loopback.c`, `rdma_backend_tcp.c`) are in `src/rdma/`; and
+> the QEMU stubs and shim headers are in `src/qemu-compat/`.
 
 ## What this is
 

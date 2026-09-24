@@ -22,9 +22,9 @@
 #include "vmw/pvrdma.h"
 #include "hw/pci/pci.h"        /* For pci_dma_map/unmap/sync */
 #include "rocm_ernic_compat.h" /* IONIC_MESH_MAX_MSG, kept in step below */
-#include "../../utils/dhcp_server.h"
-#include "../../utils/eth_rx_inject.h"
-#include "../../utils/parse_int.h"
+#include "net/dhcp_server.h"
+#include "net/eth_rx_inject.h"
+#include "parse_int.h"
 #include "qemu/compiler.h" /* For container_of() */
 #include <errno.h>
 #include <stdatomic.h>

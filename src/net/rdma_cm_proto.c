@@ -23,7 +23,7 @@
  */
 
 #include "rdma_cm_proto.h"
-#include "from-qemu/hw/rdma/rdma_utils.h"
+#include "rdma_utils.h"
 #include "net_headers.h"
 #include <stdio.h>
 #include <string.h>

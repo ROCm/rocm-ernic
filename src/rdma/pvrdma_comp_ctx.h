@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 
-#include "../rdma_backend_defs.h"
+#include "rdma_backend_defs.h"
 #include <stdbool.h>
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 
