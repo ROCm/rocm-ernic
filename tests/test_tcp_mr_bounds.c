@@ -83,11 +83,11 @@
 
 #define MR_START   16u  /* guest address of the region's first byte */
 #define MR_RKEY    0x42 /* the only handle the stubbed lookup answers for */
-#define GUARD_BYTE 0xC7
+#define GUARD_BYTE 0xC7u
 
 /* Target WRAP_BELOW bytes under mr->virt, copying WRAP_LEN bytes. */
 #define WRAP_BELOW 80
-#define WRAP_LEN   96
+#define WRAP_LEN   96u
 
 /*
  * Offset within the region used as the *source* of the loopback write. Far
@@ -511,8 +511,8 @@ static int read_exact(int fd, void *buf, size_t len)
  * request produced it -- the assertion the msg_type alone cannot make, since
  * a served wrapped op replies with the same message type as a legitimate one.
  */
-#define SEQ_ATTACK 0xA11
-#define SEQ_LEGIT  0x1E6
+#define SEQ_ATTACK 0xA11u
+#define SEQ_LEGIT  0x1E6u
 
 /* Push one message onto the socket in the wire format tcp_recv_message()
  * expects: byte-swapped header, then a raw (host-order) payload. */
@@ -674,7 +674,7 @@ static int test_write_wrap(void)
         fail = 1;
     } else if (ntohl(reply.msg_type) != TCP_MSG_COMPLETION) {
         printf("FAIL %-22s: first reply was msg_type %u, expected "
-               "COMPLETION (%u)\n",
+               "COMPLETION (%d)\n",
                name, ntohl(reply.msg_type), TCP_MSG_COMPLETION);
         fail = 1;
     } else if (ntohl(reply.seq) != SEQ_LEGIT) {
@@ -746,7 +746,7 @@ static int test_read_wrap(void)
         fail = 1;
     } else if (ntohl(reply.msg_type) != TCP_MSG_RDMA_READ_RESP) {
         printf("FAIL %-22s: first reply was msg_type %u, expected "
-               "READ_RESP (%u)\n",
+               "READ_RESP (%d)\n",
                name, ntohl(reply.msg_type), TCP_MSG_RDMA_READ_RESP);
         fail = 1;
     } else if (ntohl(reply.seq) != SEQ_LEGIT) {
@@ -1074,7 +1074,7 @@ static int test_loopback_ok(void)
                last_completion.count);
         fail = 1;
     } else if (last_completion.status != IBV_WC_SUCCESS) {
-        printf("FAIL %-22s: in-bounds write completed with status %d, "
+        printf("FAIL %-22s: in-bounds write completed with status %u, "
                "expected IBV_WC_SUCCESS (%d)\n",
                name, last_completion.status, IBV_WC_SUCCESS);
         fail = 1;

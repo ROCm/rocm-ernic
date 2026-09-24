@@ -25,6 +25,7 @@
 #include "../../utils/dhcp_server.h"
 #include "../../utils/eth_rx_inject.h"
 #include "../../utils/parse_int.h"
+#include "qemu/compiler.h" /* For container_of() */
 #include <errno.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -62,7 +63,7 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
  */
 
 #define TCP_PROTOCOL_MAGIC     0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION   3          /* v3: wc_opcode in TcpWR */
+#define TCP_PROTOCOL_VERSION   3u         /* v3: wc_opcode in TcpWR */
 #define TCP_MAX_ETH_FRAME_LEN  2048
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
@@ -187,7 +188,7 @@ typedef struct {
 typedef struct {
     uint32_t assigned_node_id;
     uint32_t num_nodes;
-    int32_t result; /* 0 = success, negative = error */
+    uint32_t result; /* int32_t on the wire: 0 = success, negative = error */
 } __attribute__((packed)) TcpRegisterRespPayload;
 
 typedef struct {
@@ -1107,9 +1108,17 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     TcpMsgHeader hdr;
     ssize_t ret;
 
+    /* The receiver drops the connection on anything larger. */
+    if (payload_len > TCP_MAX_PAYLOAD_LEN ||
+        payload2_len > TCP_MAX_PAYLOAD_LEN - payload_len) {
+        rdma_error_report("TCP: payload too large: %zu + %zu", payload_len,
+                          payload2_len);
+        return -1;
+    }
+
     hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
     hdr.msg_type = htonl(msg_type);
-    hdr.msg_len = htonl(payload_len + payload2_len);
+    hdr.msg_len = htonl((uint32_t)(payload_len + payload2_len));
     hdr.seq = htonl(seq);
     hdr.src_node_id = htonl(src_node);
     hdr.dst_node_id = htonl(dst_node);
@@ -1200,9 +1209,13 @@ static int tcp_send_eth_frame_nonblock(int sockfd, const void *payload,
     TcpMsgHeader *hdr = (TcpMsgHeader *)buf;
     size_t total = sizeof(*hdr) + payload_len;
 
+    if (payload_len > TCP_MAX_ETH_FRAME_LEN) {
+        return -EMSGSIZE;
+    }
+
     hdr->magic = htonl(TCP_PROTOCOL_MAGIC);
     hdr->msg_type = htonl(TCP_MSG_ETH_FRAME);
-    hdr->msg_len = htonl(payload_len);
+    hdr->msg_len = htonl((uint32_t)payload_len);
     hdr->seq = 0;
     hdr->src_node_id = htonl(src_node);
     hdr->dst_node_id = htonl(dst_node);
@@ -1271,7 +1284,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             rdma_info_report("TCP: Connection closed by peer");
             return -1;
         }
-        total_recv += ret;
+        total_recv += (size_t)ret;
     }
 
     /* Convert from network byte order */
@@ -1320,7 +1333,7 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                 *payload = NULL;
                 return -1;
             }
-            total_recv += ret;
+            total_recv += (size_t)ret;
         }
     } else {
         *payload = NULL;
@@ -1638,8 +1651,12 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 uint32_t requested_id = ntohl(reg->requested_node_id);
                 uint16_t worker_port = ntohs(reg->port);
                 char worker_host[256];
-                strncpy(worker_host, reg->hostname, sizeof(worker_host) - 1);
-                worker_host[sizeof(worker_host) - 1] = '\0';
+                /* The hostname comes off the wire and need not be
+                 * terminated, so bound the read to the field. */
+                size_t host_len =
+                    strnlen(reg->hostname, sizeof(worker_host) - 1);
+                memcpy(worker_host, reg->hostname, host_len);
+                worker_host[host_len] = '\0';
 
                 qemu_mutex_lock(&priv->mesh_table_lock);
 
@@ -1732,7 +1749,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 TcpRegisterRespPayload *resp =
                     (TcpRegisterRespPayload *)payload;
                 uint32_t assigned_id = ntohl(resp->assigned_node_id);
-                int32_t result = ntohl(resp->result);
+                int32_t result = (int32_t)ntohl(resp->result);
 
                 if (result != 0) {
                     rdma_error_report("TCP: Registration failed: %d", result);
@@ -1983,8 +2000,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 }
                 if (priv && priv->backend_dev && payload && hdr.msg_len > 0) {
                     PVRDMADev *pvrdma_dev =
-                        (PVRDMADev *)((char *)priv->backend_dev -
-                                      offsetof(PVRDMADev, backend_dev));
+                        container_of(priv->backend_dev, PVRDMADev, backend_dev);
                     int inj = eth_rx_inject_frame_mesh_blocking(
                         pvrdma_dev, payload, hdr.msg_len);
                     if (inj != 0 && tcp_mesh_debug()) {
@@ -2752,8 +2768,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
 
     /* Prepare registration payload */
     memset(&reg, 0, sizeof(reg));
-    strncpy(reg.hostname, hostname, sizeof(reg.hostname) - 1);
-    reg.hostname[sizeof(reg.hostname) - 1] = '\0';
+    g_strlcpy(reg.hostname, hostname, sizeof(reg.hostname));
     reg.port = htons(priv->listen_port);
     reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
 
@@ -2856,8 +2871,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->is_manager = false;
     priv->mesh_nodes = NULL;
     priv->health_check_running = false;
-    priv->health_check_interval_sec =
-        tcp_env_int("ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
+    /* tcp_env_int() only returns positive values */
+    priv->health_check_interval_sec = (uint32_t)tcp_env_int(
+        "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
     priv->next_available_node_id = 1; /* Manager starts assigning from 1 */
     priv->manager_host = NULL;
     priv->manager_port = 0;
@@ -3162,7 +3178,13 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
 static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    TcpPD *tpd = g_new0(TcpPD, 1);
+    TcpPD *tpd;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    tpd = g_new0(TcpPD, 1);
 
     qemu_mutex_lock(&priv->lock);
     tpd->handle = priv->next_pd_handle++;
@@ -3234,7 +3256,13 @@ static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
                          int cqe)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    TcpCQ *tcq = g_new0(TcpCQ, 1);
+    TcpCQ *tcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    tcq = g_new0(TcpCQ, 1);
 
     qemu_mutex_lock(&priv->lock);
     tcq->handle = priv->next_cq_handle++;
@@ -3338,9 +3366,15 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                          uint32_t max_recv_sge)
 {
     TcpBackendPrivate *priv = get_private(scq->backend_dev);
-    TcpQP *tqp = g_new0(TcpQP, 1);
+    TcpQP *tqp;
     uint32_t scq_handle = (uint32_t)(uintptr_t)scq->ibcq;
     uint32_t rcq_handle = (uint32_t)(uintptr_t)rcq->ibcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    tqp = g_new0(TcpQP, 1);
 
     qemu_mutex_lock(&priv->lock);
     tqp->qpn = priv->next_qpn++;
@@ -3498,7 +3532,7 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     qemu_mutex_unlock(&priv->lock);
 
     rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, "
-                     "node=%u, mode=%d)",
+                     "node=%u, mode=%u)",
                      qpn, dqpn, tqp ? tqp->remote_node_id : 0, priv->mode);
     return 0;
 }

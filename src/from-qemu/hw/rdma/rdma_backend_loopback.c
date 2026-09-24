@@ -60,7 +60,7 @@ typedef struct {
     uint32_t pd_handle;
 } LoopbackMR;
 
-GHashTable *global_mrs_table = NULL;
+static GHashTable *global_mrs_table = NULL;
 
 typedef struct {
     enum ibv_wc_status status;
@@ -196,7 +196,7 @@ static void loopback_update_byte_stats(RdmaBackendDev *backend_dev,
     }
 
     rdma_info_report(
-        ">>> loopback_update_byte_stats: QP handle=%u, bytes=%u, opcode=%d",
+        ">>> loopback_update_byte_stats: QP handle=%u, bytes=%u, opcode=%u",
         qp_handle, bytes, opcode);
 
     /*
@@ -359,18 +359,19 @@ static void generate_data_pattern(void *buffer, size_t length,
 
 /*
  * Helper: Copy data from source SGEs to destination SGEs with pattern support
- * Returns number of bytes copied, or -1 on error
+ * On success, stores the number of bytes copied in *copied and returns 0.
+ * Returns -1 on error.
  */
 static int loopback_copy_sge_data(PCIDevice *pci_dev, struct ibv_sge *src_sge,
                                   uint32_t num_src_sge, struct ibv_sge *dst_sge,
                                   uint32_t num_dst_sge,
-                                  LoopbackDataPattern pattern)
+                                  LoopbackDataPattern pattern, uint32_t *copied)
 {
     uint32_t src_idx = 0, dst_idx = 0;
     uint32_t src_offset = 0, dst_offset = 0;
     uint32_t total_copied = 0;
     void *src_host = NULL, *dst_host = NULL;
-    uint64_t src_mapped_len = 0, dst_mapped_len = 0;
+    uint32_t src_mapped_len = 0, dst_mapped_len = 0;
     int ret = 0;
 
     while (src_idx < num_src_sge && dst_idx < num_dst_sge) {
@@ -467,7 +468,8 @@ static int loopback_copy_sge_data(PCIDevice *pci_dev, struct ibv_sge *src_sge,
         rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
     }
 
-    return total_copied;
+    *copied = total_copied;
+    return 0;
 
 out:
     /* Cleanup on error */
@@ -485,19 +487,21 @@ static void *loopback_translate_addr(PCIDevice *pci_dev, uint64_t guest_addr,
 
 /*
  * Helper: Copy data from source SGEs to a single remote address (RDMA
- * Write/Read) Returns number of bytes copied, or -1 on error
+ * Write/Read).  On success, stores the number of bytes copied in *copied and
+ * returns 0.  Returns -1 on error.
  */
 static int loopback_copy_to_remote_addr(
     PCIDevice *pci_dev, struct ibv_sge *src_sge, uint32_t num_src_sge,
-    uint64_t remote_addr, uint32_t total_len, LoopbackDataPattern pattern)
+    uint64_t remote_addr, uint32_t total_len, LoopbackDataPattern pattern,
+    uint32_t *copied)
 {
     uint32_t src_idx = 0;
     uint32_t src_offset = 0;
     uint32_t remote_offset = 0;
     uint32_t total_copied = 0;
     void *src_host = NULL, *dst_host = NULL;
-    uint64_t src_mapped_len = 0;
-    uint64_t dst_mapped_len = 0;
+    uint32_t src_mapped_len = 0;
+    uint32_t dst_mapped_len = 0;
     int ret = 0;
 
     /* Map remote address via MR or DMA */
@@ -565,7 +569,8 @@ static int loopback_copy_to_remote_addr(
         rdma_pci_dma_unmap(pci_dev, src_host, src_mapped_len);
     }
 
-    return total_copied;
+    *copied = total_copied;
+    return 0;
 
 out:
     /* Cleanup on error */
@@ -580,18 +585,20 @@ out:
 
 /*
  * Helper: Copy data from remote address to destination SGEs (RDMA Read)
- * Returns number of bytes copied, or -1 on error
+ * On success, stores the number of bytes copied in *copied and returns 0.
+ * Returns -1 on error.
  */
 static int loopback_copy_from_remote_addr(
     PCIDevice *pci_dev, uint64_t remote_addr, uint32_t total_len,
-    struct ibv_sge *dst_sge, uint32_t num_dst_sge, LoopbackDataPattern pattern)
+    struct ibv_sge *dst_sge, uint32_t num_dst_sge, LoopbackDataPattern pattern,
+    uint32_t *copied)
 {
     uint32_t dst_idx = 0;
     uint32_t dst_offset = 0;
     uint32_t remote_offset = 0;
     uint32_t total_copied = 0;
     void *src_host = NULL, *dst_host = NULL;
-    uint64_t src_mapped_len = 0, dst_mapped_len = 0;
+    uint32_t src_mapped_len = 0, dst_mapped_len = 0;
     int ret = 0;
 
     /* Map remote address via MR or DMA */
@@ -662,7 +669,8 @@ static int loopback_copy_from_remote_addr(
         rdma_pci_dma_unmap(pci_dev, dst_host, dst_mapped_len);
     }
 
-    return total_copied;
+    *copied = total_copied;
+    return 0;
 
 out:
     /* Cleanup on error */
@@ -726,7 +734,7 @@ __attribute__((unused)) static void loopback_post_completion(
     g_queue_push_tail(cq->completions, comp);
     qemu_mutex_unlock(&cq->lock);
 
-    rdma_info_report("Loopback: Posted completion wr_id=%lu status=%d to CQ %u",
+    rdma_info_report("Loopback: Posted completion wr_id=%lu status=%u to CQ %u",
                      wr_id, status, cq->handle);
 }
 
@@ -846,7 +854,13 @@ static int loopback_query_device(RdmaBackendDev *backend_dev,
 static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
     LoopbackBackendPrivate *priv = get_private(backend_dev);
-    LoopbackPD *lpd = g_new0(LoopbackPD, 1);
+    LoopbackPD *lpd;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    lpd = g_new0(LoopbackPD, 1);
 
     qemu_mutex_lock(&priv->lock);
     lpd->handle = priv->next_pd_handle++;
@@ -984,8 +998,8 @@ static void loopback_destroy_mr(RdmaBackendMR *mr)
 static uint32_t loopback_mr_lkey(const RdmaBackendMR *mr)
 {
     uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u", mr,
-                     mr->ibmr, handle);
+    rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u",
+                     (const void *)mr, (void *)mr->ibmr, handle);
     return handle; /* lkey = handle */
 }
 
@@ -1003,7 +1017,13 @@ static int loopback_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
                               int cqe)
 {
     LoopbackBackendPrivate *priv = get_private(backend_dev);
-    LoopbackCQ *lcq = g_new0(LoopbackCQ, 1);
+    LoopbackCQ *lcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    lcq = g_new0(LoopbackCQ, 1);
 
     qemu_mutex_lock(&priv->lock);
     lcq->handle = priv->next_cq_handle++;
@@ -1047,8 +1067,14 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
                               uint32_t max_send_sge, uint32_t max_recv_sge)
 {
     LoopbackBackendPrivate *priv = get_private(scq->backend_dev);
-    LoopbackQP *lqp = g_new0(LoopbackQP, 1);
+    LoopbackQP *lqp;
     LoopbackCQ *lscq, *lrcq;
+
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    lqp = g_new0(LoopbackQP, 1);
 
     qemu_mutex_lock(&priv->lock);
     lqp->qpn = priv->next_qpn++;
@@ -1080,7 +1106,7 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     qp->sgid_idx = 0;
 
     rdma_info_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)",
-                     lqp->qpn, qp_type, lqp);
+                     lqp->qpn, qp_type, (void *)lqp);
     return 0;
 }
 
@@ -1511,8 +1537,8 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
 
     rdma_info_report(
-        ">>> Loopback: post_send ENTRY: qp=%p, lqp=%p, num_sge=%u, ctx=%p", qp,
-        lqp, num_sge, ctx);
+        ">>> Loopback: post_send ENTRY: qp=%p, lqp=%p, num_sge=%u, ctx=%p",
+        (void *)qp, (void *)lqp, num_sge, ctx);
     LoopbackQP *remote_qp = NULL;
     LoopbackWR *recv_wr = NULL;
     uint32_t total_len = 0;
@@ -1522,12 +1548,14 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint64_t remote_addr = 0;
     uint32_t rkey = 0;
     bool write_failed = false;
+    uint32_t byte_len;
+    enum ibv_wc_status final_status;
 
     if (!lqp) {
         rdma_error_report("Loopback: post_send on unknown QP");
         return;
     }
-    rdma_info_report(">>> Loopback: post_send: lqp->qpn=%u, lqp->state=%d",
+    rdma_info_report(">>> Loopback: post_send: lqp->qpn=%u, lqp->state=%u",
                      lqp->qpn, lqp->state);
 
     /* Extract opcode and RDMA parameters from context if available */
@@ -1538,8 +1566,8 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         remote_addr = comp_ctx->remote_addr;
         rkey = comp_ctx->rkey;
         wc_opcode = comp_ctx->cqe.opcode;
-        pvrdma_qp_handle =
-            comp_ctx->cqe.qp; /* QP handle from completion context */
+        /* QP handle from completion context */
+        pvrdma_qp_handle = (uint32_t)comp_ctx->cqe.qp;
         rdma_info_report(">>> Loopback: post_send: Extracted "
                          "pvrdma_qp_handle=%u from comp_ctx",
                          pvrdma_qp_handle);
@@ -1562,7 +1590,7 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
     rdma_info_report(
         ">>> Loopback: post_send: pci_dev=%p, total_len=%u, pvrdma_opcode=%u",
-        pci_dev, total_len, pvrdma_opcode);
+        (void *)pci_dev, total_len, pvrdma_opcode);
 
     if (comp_ctx && pvrdma_opcode == PVRDMA_WR_SEND_DC &&
         comp_ctx->dc_target_srq) {
@@ -1591,19 +1619,15 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             PvrdmaCompHandlerCtx *rctx =
                 (PvrdmaCompHandlerCtx *)(uintptr_t)recv_wr->wr_id;
             struct ibv_sge recv_sge[32];
-            int copy_result;
 
             for (uint32_t i = 0; i < recv_wr->num_sge && i < 32; i++) {
                 recv_sge[i].addr = (uint64_t)(uintptr_t)recv_wr->sge[i].addr;
                 recv_sge[i].length = recv_wr->sge[i].length;
                 recv_sge[i].lkey = recv_wr->sge[i].lkey;
             }
-            copy_result =
-                loopback_copy_sge_data(pci_dev, sge, num_sge, recv_sge,
-                                       recv_wr->num_sge, priv->data_pattern);
-            if (copy_result >= 0) {
-                transferred = (uint32_t)copy_result;
-            } else {
+            if (loopback_copy_sge_data(pci_dev, sge, num_sge, recv_sge,
+                                       recv_wr->num_sge, priv->data_pattern,
+                                       &transferred) < 0) {
                 transferred = 0;
             }
             recv_byte_len = (transferred > 0) ? transferred : total_len;
@@ -1659,15 +1683,12 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 dst_sge[i].length = sge[i].length;
                 dst_sge[i].lkey = sge[i].lkey;
             }
-            int copy_result = loopback_copy_from_remote_addr(
-                pci_dev, remote_addr, total_len, dst_sge, num_sge,
-                priv->data_pattern);
-            if (copy_result < 0) {
+            if (loopback_copy_from_remote_addr(
+                    pci_dev, remote_addr, total_len, dst_sge, num_sge,
+                    priv->data_pattern, &transferred) < 0) {
                 rdma_error_report("Loopback: RDMA READ copy failed, QP %u",
                                   lqp->qpn);
                 transferred = 0;
-            } else {
-                transferred = (uint32_t)copy_result;
             }
         } else {
             rdma_warn_report("Loopback: RDMA READ with zero remote_addr, QP %u",
@@ -1714,16 +1735,13 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
         /* Copy data from source SGEs to remote address */
         if (remote_addr != 0) {
-            int copy_result =
-                loopback_copy_to_remote_addr(pci_dev, sge, num_sge, remote_addr,
-                                             total_len, priv->data_pattern);
-            if (copy_result < 0) {
+            if (loopback_copy_to_remote_addr(pci_dev, sge, num_sge, remote_addr,
+                                             total_len, priv->data_pattern,
+                                             &transferred) < 0) {
                 rdma_error_report("Loopback: RDMA WRITE copy failed, QP %u",
                                   lqp->qpn);
                 transferred = 0;
                 write_failed = true;
-            } else {
-                transferred = (uint32_t)copy_result;
             }
         } else {
             rdma_warn_report(
@@ -1781,8 +1799,9 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                         uint32_t imm_len =
                             (transferred > 0) ? transferred : total_len;
                         pvrdma_queue_recv_imm_work_completion(
-                            pdev, imm_rctx->cq_handle, imm_rctx->cqe.qp,
-                            imm_rctx->cqe.wr_id, imm_len, lqp->qpn,
+                            pdev, imm_rctx->cq_handle,
+                            (uint32_t)imm_rctx->cqe.qp, imm_rctx->cqe.wr_id,
+                            imm_len, lqp->qpn,
                             comp_ctx ? comp_ctx->imm_data : 0);
                         rdma_info_report(
                             "Loopback: WRITE_WITH_IMM QP %u -> recv "
@@ -1790,9 +1809,9 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                             lqp->qpn, imm_remote->qpn,
                             comp_ctx ? comp_ctx->imm_data : 0, imm_len);
                         if (imm_rctx->cqe.qp > 0 && imm_len > 0) {
-                            loopback_update_byte_stats(backend_dev,
-                                                       imm_rctx->cqe.qp,
-                                                       imm_len, IBV_WC_RECV);
+                            loopback_update_byte_stats(
+                                backend_dev, (uint32_t)imm_rctx->cqe.qp,
+                                imm_len, IBV_WC_RECV);
                         }
                         g_free(imm_rctx);
                     }
@@ -1877,16 +1896,13 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
             /* Only copy if this is a real receive (not auto-generated) */
             if (recv_wr->wr_id != 0) {
-                int copy_result = loopback_copy_sge_data(
-                    pci_dev, sge, num_sge, recv_sge, recv_wr->num_sge,
-                    priv->data_pattern);
-                if (copy_result < 0) {
+                if (loopback_copy_sge_data(pci_dev, sge, num_sge, recv_sge,
+                                           recv_wr->num_sge, priv->data_pattern,
+                                           &transferred) < 0) {
                     rdma_error_report(
                         "Loopback: SEND copy failed, QP %u -> QP %u", lqp->qpn,
                         remote_qp->qpn);
                     transferred = 0;
-                } else {
-                    transferred = (uint32_t)copy_result;
                 }
             } else {
                 /* Auto-generated recv: just calculate transfer size */
@@ -1964,16 +1980,16 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 post_send_finalize:
     /* Post send completion directly to PVRDMA layer */
     /* Use total_len if transferred is 0 (no data copied or error) */
-    uint32_t byte_len = (transferred > 0) ? transferred : total_len;
-    enum ibv_wc_status final_status = IBV_WC_SUCCESS;
+    byte_len = (transferred > 0) ? transferred : total_len;
+    final_status = IBV_WC_SUCCESS;
     if (write_failed) {
         final_status = IBV_WC_LOC_PROT_ERR;
         byte_len = 0;
     }
     rdma_info_report(
         ">>> Loopback: post_send: About to post completion, "
-        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%d, qpn=%u, "
-        "status=%d",
+        "transferred=%u, total_len=%u, byte_len=%u, wc_opcode=%u, qpn=%u, "
+        "status=%u",
         transferred, total_len, byte_len, wc_opcode, lqp->qpn, final_status);
     rdma_backend_complete_work(final_status, 0, byte_len, lqp->qpn, wc_opcode,
                                ctx);

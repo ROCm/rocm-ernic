@@ -10,8 +10,6 @@
  * QEMU C Utility Functions Stubs
  */
 
-void pstrcpy(char *buf, int buf_size, const char *str);
-
 /* Math utilities */
 uint64_t pow2ceil(uint64_t value);
 uint64_t ROUND_UP(uint64_t n, uint64_t align);

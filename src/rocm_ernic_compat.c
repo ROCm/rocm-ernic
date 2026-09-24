@@ -230,7 +230,7 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     /* Set interrupt mask to 0 (interrupts enabled) */
     pvrdma->interrupt_mask = 0;
 
-    rdma_info_report("PVRDMA device created (handle=%p)", pvrdma);
+    rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
     return (pvrdma_handle_t)pvrdma;
 }
@@ -320,13 +320,13 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     /* CRITICAL: Link backend_dev to the device resources */
     pvrdma->backend_dev.rdma_dev_res = &pvrdma->rdma_dev_res;
     rdma_info_report("Linked backend_dev to rdma_dev_res at %p",
-                     pvrdma->backend_dev.rdma_dev_res);
+                     (void *)pvrdma->backend_dev.rdma_dev_res);
 
     /* CRITICAL: Set PCIDevice pointer for DMA operations */
     /* PVRDMADev has PCIDevice parent_obj as first field, so we can cast */
     pvrdma->backend_dev.dev = (PCIDevice *)pvrdma;
     rdma_info_report("Set backend_dev->dev to PCIDevice at %p",
-                     pvrdma->backend_dev.dev);
+                     (void *)pvrdma->backend_dev.dev);
 
     /* Initialize DHCP server for loopback mode and TCP manager mode */
     if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_LOOPBACK) {
@@ -398,7 +398,7 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     /* Initialize resource manager AFTER querying device capabilities */
     rdma_info_report("pvrdma_device_realize: About to call rdma_rm_init, "
                      "pvrdma=%p, &pvrdma->rdma_dev_res=%p",
-                     pvrdma, &pvrdma->rdma_dev_res);
+                     (void *)pvrdma, (void *)&pvrdma->rdma_dev_res);
     if (rdma_rm_init(&pvrdma->rdma_dev_res, &pvrdma->dev_attr) < 0) {
         rdma_error_report("Failed to initialize resource manager");
         return -EIO;
@@ -725,7 +725,8 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     }
 
     if (!dev->vfu_ctx) {
-        rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)", dev);
+        rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)",
+                          (void *)dev);
         rdma_error_report(
             "  This means vfu_ctx was not set in pvrdma_device_create");
         if (plen)

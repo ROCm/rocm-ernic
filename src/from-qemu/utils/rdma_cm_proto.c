@@ -266,8 +266,12 @@ size_t rdma_cm_process_message(const void *tcp_payload, size_t payload_len,
     size_t hex_len = 0;
     for (size_t i = 0; i < copy_len && i < 16 && hex_len < sizeof(resp_hex) - 3;
          i++) {
-        hex_len += snprintf(resp_hex + hex_len, sizeof(resp_hex) - hex_len,
-                            "%02x ", ((uint8_t *)response)[i]);
+        int n = snprintf(resp_hex + hex_len, sizeof(resp_hex) - hex_len,
+                         "%02x ", ((uint8_t *)response)[i]);
+        if (n < 0) {
+            break;
+        }
+        hex_len += (size_t)n;
     }
 
     rdma_info_report(
