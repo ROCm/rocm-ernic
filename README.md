@@ -3,7 +3,10 @@
 [![License](https://img.shields.io/badge/License-MIT%20%7C%20GPL--2.0--or--later-blue.svg)][license]
 [![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml/badge.svg)][ci-build]
 [![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
-[![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
+[![clang-format](https://github.com/ROCm/rocm-ernic/actions/workflows/clang-format.yml/badge.svg)][ci-clang-format]
+[![ShellCheck](https://github.com/ROCm/rocm-ernic/actions/workflows/shellcheck.yml/badge.svg)][ci-shellcheck]
+[![pylint](https://github.com/ROCm/rocm-ernic/actions/workflows/pylint.yml/badge.svg)][ci-pylint]
+[![cmakelint](https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml/badge.svg)][ci-cmakelint]
 [![System Tests](https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml/badge.svg)][ci-system-tests]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
@@ -67,7 +70,11 @@ SPDX declaration says otherwise. The per-file SPDX header is authoritative; see
 [license]: https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md
 [ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
 [ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
-[ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
+[ci-clang-format]: https://github.com/ROCm/rocm-ernic/actions/workflows/clang-format.yml
+[ci-shellcheck]: https://github.com/ROCm/rocm-ernic/actions/workflows/shellcheck.yml
+[ci-pylint]: https://github.com/ROCm/rocm-ernic/actions/workflows/pylint.yml
+[ci-cmakelint]: https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml
+[ci-codeql]: https://github.com/ROCm/rocm-ernic/actions/workflows/codeql.yml
 [ci-system-tests]: https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml
 [guest-kernel]: https://github.com/ROCm/rocm-ernic/blob/develop/docs/performance.rst
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
