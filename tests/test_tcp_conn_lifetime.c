@@ -38,10 +38,12 @@
  * first, new connection installed and announced, old one retired, node
  * marked alive.
  *
- * The last case covers ownership of the table itself: a peer that sends
- * REGISTER_NODE twice on one connection must not get that connection mapped
- * under a second node ID, which would leave the connection table holding
- * two owning references to one object.
+ * The remaining cases cover connections the manager has accepted but that
+ * have not registered yet. A peer that sends REGISTER_NODE twice on one
+ * connection must not get that connection mapped under a second node ID,
+ * which would leave the connection table holding two owning references to
+ * one object. An unregistered connection must be shut down at teardown, and
+ * one whose peer has left must be dropped by the next health-check pass.
  *
  * The static functions are reached by #including the translation unit. The
  * receive threads are real, so qemu_thread_create()/qemu_thread_join() are
@@ -227,16 +229,25 @@ static void lookup_hook_arm(void)
     atomic_store(&lookup_hook.armed, true);
 }
 
-/* True once the armed lookup has happened. */
-static bool lookup_hook_wait(void)
+/* True once @flag is set, false if WAIT_MS passes first. */
+static bool wait_for_flag(_Atomic bool *flag)
 {
     const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
 
     for (int ms = 0; ms < WAIT_MS; ms++) {
-        if (atomic_load(&lookup_hook.seen)) {
+        if (atomic_load(flag)) {
             return true;
         }
         nanosleep(&tick, NULL);
+    }
+    return false;
+}
+
+/* True once the armed lookup has happened. */
+static bool lookup_hook_wait(void)
+{
+    if (wait_for_flag(&lookup_hook.seen)) {
+        return true;
     }
     atomic_store(&lookup_hook.armed, false);
     return false;
@@ -275,6 +286,8 @@ static void fixture_init(struct mesh_fixture *f)
 
     f->priv.connections = g_hash_table_new_full(
         lookup_hook_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    f->priv.pending_conns = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, tcp_connection_destroy_notify, NULL);
     f->priv.mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
     qemu_mutex_init(&f->priv.conn_table_lock);
@@ -299,6 +312,7 @@ static void fixture_destroy(struct mesh_fixture *f)
 
     g_hash_table_destroy(f->priv.mesh_nodes);
     g_hash_table_destroy(f->priv.connections);
+    g_hash_table_destroy(f->priv.pending_conns);
     tcp_bufpool_destroy(&f->priv.recv_pool);
     qemu_mutex_destroy(&f->priv.lock);
     qemu_mutex_destroy(&f->priv.mesh_table_lock);
@@ -377,6 +391,23 @@ static int peer_register(struct mesh_fixture *f, const struct peer *p,
     qemu_mutex_unlock(&f->priv.conn_table_lock);
     qemu_mutex_unlock(&f->priv.mesh_table_lock);
     return 0;
+}
+
+/* Leave @p as the manager's accept thread leaves a new connection: waiting
+ * to register, owned by the pending set. */
+static void peer_pend(struct mesh_fixture *f, const struct peer *p)
+{
+    qemu_mutex_lock(&f->priv.conn_table_lock);
+    g_hash_table_add(f->priv.pending_conns, p->conn);
+    qemu_mutex_unlock(&f->priv.conn_table_lock);
+}
+
+static bool is_pending(struct mesh_fixture *f, TcpConnection *conn)
+{
+    qemu_mutex_lock(&f->priv.conn_table_lock);
+    bool pending = g_hash_table_contains(f->priv.pending_conns, conn);
+    qemu_mutex_unlock(&f->priv.conn_table_lock);
+    return pending;
 }
 
 /*
@@ -977,13 +1008,12 @@ static int test_double_register(const char *name)
 
     fixture_init(&f);
 
-    /* Accepted but not yet registered: in no table, as the manager's accept
-     * thread leaves it. */
     if (peer_open(&f, UNASSIGNED_NODE, false, &p) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
         fixture_destroy(&f);
         return 1;
     }
+    peer_pend(&f, &p);
 
     memset(&reg, 0, sizeof(reg));
     g_strlcpy(reg.hostname, PEER_HOST, sizeof(reg.hostname));
@@ -1012,30 +1042,159 @@ static int test_double_register(const char *name)
         fail = 1;
     }
 
-    /* Stop the receive thread before touching the table it writes to. */
+    /* Stop the receive thread before touching the tables it writes to. */
     tcp_connection_retire(p.conn);
+
+    if (!fail && resps != 1) {
+        printf("FAIL %-20s: %u REGISTER_RESP(s) for two registrations, "
+               "expected 1\n",
+               name, resps);
+        fail = 1;
+    }
+    if (!fail && is_pending(&f, p.conn)) {
+        printf("FAIL %-20s: connection still pending after registering\n",
+               name);
+        fail = 1;
+    }
 
     /*
      * Take the connection back out of the table and release it. It carries
      * one reference however many entries share it -- the creation reference,
-     * which the first registration handed to the table -- so it is released
-     * once, and a failure here is reported rather than turned into a double
-     * free at teardown.
+     * which registration moved from the pending set to the table -- so it is
+     * released once, and a failure here is reported rather than turned into
+     * a double free at teardown. With no entries the pending set still owns
+     * it, and the fixture releases it.
      */
     unsigned entries = steal_entries(&f, p.conn);
     if (!fail && entries != 1) {
-        printf("FAIL %-20s: connection is in the table under %u node IDs "
-               "after %u REGISTER_RESP(s), expected 1\n",
-               name, entries, resps);
+        printf("FAIL %-20s: connection is in the table under %u node IDs, "
+               "expected 1\n",
+               name, entries);
         fail = 1;
     }
-    tcp_connection_unref(p.conn);
+    if (entries > 0) {
+        tcp_connection_unref(p.conn);
+    }
 
     close(p.far);
     fixture_destroy(&f);
 
     if (!fail) {
         printf("PASS %-20s: second registration did not add an owner\n", name);
+    }
+    return fail;
+}
+
+/*
+ * A connection accepted but never registered must still be shut down at
+ * teardown. tcp_fini() retires everything through
+ * tcp_retire_all_connections(); if that missed the pending set, the
+ * connection's receive thread would outlive the backend it points into.
+ */
+static int test_pending_teardown(const char *name)
+{
+    struct mesh_fixture f;
+    struct peer p;
+    uint8_t byte;
+    int fail = 0;
+
+    fixture_init(&f);
+    if (peer_open(&f, UNASSIGNED_NODE, false, &p) != 0) {
+        printf("FAIL %-20s: fixture setup failed\n", name);
+        fixture_destroy(&f);
+        return 1;
+    }
+    peer_pend(&f, &p);
+
+    /* Held so the connection can be inspected after it is retired. */
+    TcpConnection *conn = tcp_connection_ref(p.conn);
+
+    tcp_retire_all_connections(&f.priv);
+
+    if (atomic_load(&conn->recv_thread_running) ||
+        atomic_load(&conn->is_connected)) {
+        printf("FAIL %-20s: the pending connection was not retired\n", name);
+        fail = 1;
+    } else if (recv(p.far, &byte, 1, 0) != 0) {
+        printf("FAIL %-20s: the pending connection's socket was not shut "
+               "down\n",
+               name);
+        fail = 1;
+    }
+
+    /* A no-op when the case passes. When it fails, this stops the thread
+     * the code under test left running, so the fixture can be torn down. */
+    tcp_connection_retire(conn);
+    tcp_connection_unref(conn);
+    close(p.far);
+    fixture_destroy(&f);
+
+    if (!fail) {
+        printf("PASS %-20s: unregistered connection stopped at teardown\n",
+               name);
+    }
+    return fail;
+}
+
+/*
+ * A connection whose peer leaves without registering is dropped by the next
+ * health-check pass rather than held, with its thread and descriptor, until
+ * teardown.
+ */
+static int test_pending_reap(const char *name)
+{
+    struct mesh_fixture f;
+    struct peer p;
+    int fail = 0;
+
+    fixture_init(&f);
+    f.priv.health_check_interval_sec = 1;
+    if (peer_open(&f, UNASSIGNED_NODE, false, &p) != 0) {
+        printf("FAIL %-20s: fixture setup failed\n", name);
+        fixture_destroy(&f);
+        return 1;
+    }
+    peer_pend(&f, &p);
+
+    /* Held so the connection can be inspected after it is dropped. */
+    TcpConnection *conn = tcp_connection_ref(p.conn);
+
+    /* The peer leaves; its receive thread sees the close and exits. */
+    close(p.far);
+    if (!wait_for_flag(&conn->recv_thread_exited)) {
+        printf("FAIL %-20s: the receive thread did not exit after the peer "
+               "closed\n",
+               name);
+        fail = 1;
+    }
+
+    if (!fail) {
+        tcp_health_check_pass(&f.priv);
+
+        if (is_pending(&f, conn)) {
+            printf("FAIL %-20s: the connection is still pending after the "
+                   "pass\n",
+                   name);
+            fail = 1;
+        } else if (atomic_load(&conn->recv_thread_running)) {
+            printf("FAIL %-20s: the dropped connection's receive thread was "
+                   "not joined\n",
+                   name);
+            fail = 1;
+        } else if (atomic_load(&conn->refcount) != 1) {
+            printf("FAIL %-20s: %u references left after the drop, expected "
+                   "only the test's\n",
+                   name, atomic_load(&conn->refcount));
+            fail = 1;
+        }
+    }
+
+    tcp_connection_unref(conn);
+    fixture_destroy(&f);
+
+    if (!fail) {
+        printf("PASS %-20s: unregistered connection dropped by the pass\n",
+               name);
     }
     return fail;
 }
@@ -1048,6 +1207,8 @@ static const struct {
     {"relay-vs-reconnect", test_relay_vs_reconnect},
     {"health-check-reconnect", test_health_check_reconnect},
     {"double-register", test_double_register},
+    {"pending-teardown", test_pending_teardown},
+    {"pending-reap", test_pending_reap},
 };
 
 /*

@@ -426,6 +426,12 @@ typedef struct {
      * every site.
      */
     _Atomic bool recv_thread_running;
+    /*
+     * Set by the receive thread as its last act, so a connection whose peer
+     * has gone can be found and reaped without waiting on it. The thread
+     * still has to be joined; tcp_connection_retire() does that.
+     */
+    _Atomic bool recv_thread_exited;
     QemuMutex lock;
     TcpBackendPrivate *priv;
 } TcpConnection;
@@ -492,6 +498,12 @@ struct TcpBackendPrivate {
 
     /* Multi-connection support */
     GHashTable *connections; /* node_id -> TcpConnection* */
+    /*
+     * Manager only: accepted connections that have not registered yet, a set
+     * owning one reference to each. Registration moves a connection, and its
+     * reference, from here to connections. Guarded by conn_table_lock.
+     */
+    GHashTable *pending_conns;
     QemuMutex conn_table_lock;
 
     /* Listen socket (for accepting connections) */
@@ -860,6 +872,7 @@ static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
     atomic_init(&conn->is_connected, false);
     atomic_init(&conn->refcount, 1);
     atomic_init(&conn->recv_thread_running, false);
+    atomic_init(&conn->recv_thread_exited, false);
     qemu_mutex_init(&conn->lock);
     return conn;
 }
@@ -1764,6 +1777,24 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                 qemu_mutex_lock(&priv->mesh_table_lock);
 
+                /*
+                 * A connection registers once. Only this thread moves this
+                 * connection out of the pending set, so the answer cannot
+                 * change before the move below. Registering again would
+                 * map the connection under a second node ID, leaving the
+                 * connection table with two entries sharing one reference.
+                 */
+                qemu_mutex_lock(&priv->conn_table_lock);
+                bool pending = g_hash_table_contains(priv->pending_conns, conn);
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                if (!pending) {
+                    qemu_mutex_unlock(&priv->mesh_table_lock);
+                    rdma_error_report("TCP: REGISTER_NODE on a connection "
+                                      "already registered as node %u",
+                                      conn->node_id);
+                    break;
+                }
+
                 /* Assign node ID */
                 uint32_t assigned_id = requested_id;
                 if (requested_id == 0xFFFFFFFF ||
@@ -1777,9 +1808,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     }
                     priv->next_available_node_id = assigned_id + 1;
                 }
-
-                /* Update connection with assigned node ID */
-                conn->node_id = assigned_id;
 
                 /* Create mesh node info */
                 MeshNodeInfo *node =
@@ -1796,9 +1824,11 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 g_hash_table_insert(priv->mesh_nodes,
                                     GUINT_TO_POINTER(assigned_id), node);
 
-                /* The table takes over the reference the accept thread
-                 * created the connection with. */
+                /* Move the connection, and the reference the pending set
+                 * held, into the connection table. */
                 qemu_mutex_lock(&priv->conn_table_lock);
+                g_hash_table_steal(priv->pending_conns, conn);
+                conn->node_id = assigned_id;
                 g_hash_table_insert(priv->connections,
                                     GUINT_TO_POINTER(assigned_id), conn);
                 qemu_mutex_unlock(&priv->conn_table_lock);
@@ -2415,6 +2445,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
     }
 
     rdma_info_report("TCP: Receive thread exiting for node %u", conn->node_id);
+    atomic_store(&conn->recv_thread_exited, true);
     return NULL;
 }
 
@@ -2499,6 +2530,13 @@ static void *tcp_accept_thread(void *opaque)
             conn->sockfd = sockfd;
             atomic_store(&conn->is_connected, true);
             conn->priv = priv;
+
+            /* The pending set takes over the creation reference until the
+             * connection registers. It has to be there before the receive
+             * thread can handle REGISTER_NODE. */
+            qemu_mutex_lock(&priv->conn_table_lock);
+            g_hash_table_add(priv->pending_conns, conn);
+            qemu_mutex_unlock(&priv->conn_table_lock);
 
             /* Start receive thread - it will handle REGISTER_NODE */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
@@ -2768,6 +2806,41 @@ static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, uint32_t node_id,
     return true;
 }
 
+/*
+ * Release accepted connections whose peer went away without registering.
+ * Their receive threads have exited, but nothing else would free them before
+ * teardown, so each such connection attempt would otherwise hold a thread
+ * handle, a descriptor and the connection until then.
+ */
+static void tcp_reap_pending_connections(TcpBackendPrivate *priv)
+{
+    GPtrArray *dead = g_ptr_array_new();
+    GHashTableIter iter;
+    gpointer key;
+
+    /* Stealing takes over the pending set's reference. */
+    qemu_mutex_lock(&priv->conn_table_lock);
+    g_hash_table_iter_init(&iter, priv->pending_conns);
+    while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        TcpConnection *conn = key;
+        if (atomic_load(&conn->recv_thread_exited)) {
+            g_hash_table_iter_steal(&iter);
+            g_ptr_array_add(dead, conn);
+        }
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    /* The joins in retire return at once: the threads have exited. */
+    for (guint i = 0; i < dead->len; i++) {
+        TcpConnection *conn = g_ptr_array_index(dead, i);
+        rdma_info_report("TCP: Dropping unregistered connection from %s:%u",
+                         conn->remote_host, conn->remote_port);
+        tcp_connection_retire(conn);
+        tcp_connection_unref(conn);
+    }
+    g_ptr_array_free(dead, TRUE);
+}
+
 /* One node's share of a health-check pass. */
 typedef struct {
     uint32_t node_id;
@@ -2779,9 +2852,10 @@ typedef struct {
 } TcpHealthCheckItem;
 
 /*
- * One health-check pass: heartbeat every other node, mark nodes that have
- * stopped answering as dead, and try to reconnect dead ones with
- * exponential backoff (at most every 60 s).
+ * One health-check pass: drop connections that closed before registering,
+ * heartbeat every other node, mark nodes that have stopped answering as
+ * dead, and try to reconnect dead ones with exponential backoff (at most
+ * every 60 s).
  *
  * The decisions are made in one walk of the mesh table under
  * mesh_table_lock; everything that blocks -- sends, connect(), retiring a
@@ -2797,6 +2871,8 @@ typedef struct {
  */
 static void tcp_health_check_pass(TcpBackendPrivate *priv)
 {
+    tcp_reap_pending_connections(priv);
+
     GArray *items = g_array_new(FALSE, TRUE, sizeof(TcpHealthCheckItem));
     bool node_died = false;
     bool node_reconnected = false;
@@ -3007,12 +3083,15 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
  */
 
 /*
- * Retire every connection, so no receive thread is left running. The
- * manager connection goes first: on a worker, its receive thread is what
- * adds peer connections to the table.
+ * Retire every connection, registered or pending, so no receive thread is
+ * left running. The manager connection goes first: on a worker, its receive
+ * thread is what adds peer connections to the table.
  *
  * Called at teardown, after the accept and health-check threads have
- * stopped and before anything a receive thread uses is destroyed.
+ * stopped and before anything a receive thread uses is destroyed. With
+ * those two threads stopped nothing creates connections any more, so the
+ * snapshot below is complete: registration only moves a connection from the
+ * pending set to the table, under the same lock.
  */
 static void tcp_retire_all_connections(TcpBackendPrivate *priv)
 {
@@ -3023,7 +3102,8 @@ static void tcp_retire_all_connections(TcpBackendPrivate *priv)
     /* Retiring joins receive threads, which take conn_table_lock, so take
      * references under the lock and retire outside it. */
     qemu_mutex_lock(&priv->conn_table_lock);
-    GList *conns = g_hash_table_get_values(priv->connections);
+    GList *conns = g_list_concat(g_hash_table_get_values(priv->connections),
+                                 g_hash_table_get_keys(priv->pending_conns));
     for (GList *it = conns; it; it = it->next) {
         tcp_connection_ref(it->data);
     }
@@ -3057,6 +3137,8 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->pending_conns = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, tcp_connection_destroy_notify, NULL);
 
     tcp_bufpool_init(&priv->recv_pool);
 
@@ -3276,6 +3358,7 @@ error:
     g_hash_table_destroy(priv->qps);
     g_hash_table_destroy(priv->qp_pairs);
     g_hash_table_destroy(priv->connections);
+    g_hash_table_destroy(priv->pending_conns);
     tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
@@ -3326,8 +3409,9 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
 
-    /* Drops the table's references, freeing the connections */
+    /* Drops the tables' references, freeing the connections */
     g_hash_table_destroy(priv->connections);
+    g_hash_table_destroy(priv->pending_conns);
 
     g_hash_table_destroy(priv->pds);
     g_hash_table_destroy(priv->mrs);
