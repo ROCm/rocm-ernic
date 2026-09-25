@@ -240,6 +240,7 @@ target_include_directories(rocm-ernic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/rdma
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
 )
 
 # The vendored header trees are SYSTEM includes so their warnings stay

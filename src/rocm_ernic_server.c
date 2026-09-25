@@ -43,6 +43,7 @@
 #include "ionic_datapath.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
+#include "rocm-ernic-warnings.h"
 
 static const char *get_backend_type_base(const char *backend_str);
 
@@ -98,14 +99,9 @@ static int set_signal_handler(int signo, void (*handler)(int))
      * glibc defines sa_handler as a macro that expands to a member of the
      * same name, which clang reports as a recursive macro expansion.
      */
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
-#endif
+    ROCM_ERNIC_WARN_SELF_REFERENTIAL_MACRO_OFF
     sa.sa_handler = handler;
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+    ROCM_ERNIC_WARN_SELF_REFERENTIAL_MACRO_ON
     sigemptyset(&sa.sa_mask);
 
     return sigaction(signo, &sa, NULL);

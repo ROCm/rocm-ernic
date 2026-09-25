@@ -301,7 +301,10 @@ add_executable(test_s3_tcp
     ${CMAKE_SOURCE_DIR}/src/s3_http.c
     ${CMAKE_SOURCE_DIR}/src/s3_token.c
 )
-target_include_directories(test_s3_tcp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_s3_tcp PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/shared
+)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 target_compile_options(test_s3_tcp PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_s3_tcp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -403,6 +406,7 @@ add_executable(test_tcp_mesh_topology test_tcp_mesh_topology.c)
 target_include_directories(test_tcp_mesh_topology PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
@@ -432,6 +436,7 @@ add_executable(test_tcp_mr_bounds test_tcp_mr_bounds.c)
 target_include_directories(test_tcp_mr_bounds PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
@@ -456,8 +461,9 @@ target_link_libraries(test_tcp_mr_bounds PRIVATE
 # RDMA resource-table allocator test. It #includes the resource-manager
 # translation unit to reach its static inline allocator and stubs the backend
 # entry points it calls, so no RDMA subsystem link is needed. rdma_rm.c is
-# vendored; the test silences the warnings it raises with diagnostic pragmas
-# around the #include, so the test's own code is still warning-checked.
+# vendored; the test silences the warnings it raises with the
+# rocm-ernic-warnings.h macros around the #include, so the test's own code is
+# still warning-checked.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
     ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
@@ -465,13 +471,14 @@ add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
 )
 # third-party/qemu is a normal include here: the test reaches rdma_rm.c
-# through it and relies on its own pragmas, not the include path, to
-# silence that file.
+# through it and relies on its own warning-suppression macros, not the
+# include path, to silence that file.
 target_include_directories(test_rdma_res_tbl PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/rdma
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
     ${CMAKE_SOURCE_DIR}/third-party/qemu
+    ${CMAKE_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target.

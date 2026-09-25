@@ -44,7 +44,7 @@ jobs:
           # only by the opt-in fuzz workflow, though tests/nix does compile
           # them on every build; format them here either way so they cannot
           # drift out of style.
-          DIRS="src tests nix/analysis/fuzz"
+          DIRS="src tests shared nix/analysis/fuzz"
 
           # Find all C source and header files
           FILES=$(find $DIRS -type f \( -name "*.c" -o -name "*.h" \))
