@@ -7,6 +7,7 @@
 [![ShellCheck](https://github.com/ROCm/rocm-ernic/actions/workflows/shellcheck.yml/badge.svg)][ci-shellcheck]
 [![pylint](https://github.com/ROCm/rocm-ernic/actions/workflows/pylint.yml/badge.svg)][ci-pylint]
 [![cmakelint](https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml/badge.svg)][ci-cmakelint]
+[![CodeQL](https://github.com/ROCm/rocm-ernic/actions/workflows/codeql.yml/badge.svg)][ci-codeql]
 [![System Tests](https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml/badge.svg)][ci-system-tests]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
