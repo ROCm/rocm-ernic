@@ -511,14 +511,14 @@ struct TcpBackendPrivate {
     uint16_t listen_port;
     bool is_listening;
     QemuThread accept_thread;
-    bool accept_thread_running;
+    _Atomic bool accept_thread_running;
 
     /* Manager-specific fields */
     bool is_manager;
     GHashTable *mesh_nodes; /* node_id -> MeshNodeInfo* */
     QemuMutex mesh_table_lock;
     QemuThread health_check_thread;
-    bool health_check_running;
+    _Atomic bool health_check_running;
     uint32_t health_check_interval_sec; /* Default: 5 seconds */
     uint32_t next_available_node_id;    /* For auto-assigning node IDs */
 
@@ -1210,6 +1210,17 @@ static int tcp_listen_on_port(uint16_t port)
                                      TCP_DEFAULT_LISTEN_BACKLOG));
     if (ret < 0) {
         rdma_error_report("TCP: Failed to listen on port %u: %s", port,
+                          strerror(errno));
+        close(sockfd);
+        return -1;
+    }
+
+    /* The accept thread polls before accepting, but a connection can be
+     * reset in between; accept() must then fail rather than block, or the
+     * thread cannot be stopped. */
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags < 0 || fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        rdma_error_report("TCP: Failed to make listen socket non-blocking: %s",
                           strerror(errno));
         close(sockfd);
         return -1;
@@ -2488,17 +2499,22 @@ static void *tcp_accept_thread(void *opaque)
 
     rdma_info_report("TCP: Accept thread started");
 
-    while (priv->accept_thread_running) {
+    while (atomic_load(&priv->accept_thread_running)) {
+        /* Wait at most 100 ms at a time, so a stop request is seen */
+        struct pollfd pfd = {.fd = priv->listen_fd, .events = POLLIN};
+        if (poll(&pfd, 1, 100) <= 0) {
+            continue;
+        }
+
         client_len = sizeof(client_addr);
         sockfd = accept(priv->listen_fd, (struct sockaddr *)&client_addr,
                         &client_len);
 
         if (sockfd < 0) {
-            if (errno == EAGAIN) {
-                usleep(100000); /* 100ms */
+            if (errno == EAGAIN || errno == ECONNABORTED || errno == EINTR) {
                 continue;
             }
-            if (!priv->accept_thread_running) {
+            if (!atomic_load(&priv->accept_thread_running)) {
                 break;
             }
             rdma_error_report("TCP: Failed to accept connection: %s",
@@ -2968,7 +2984,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
 
     rdma_info_report("TCP: Manager health check thread started");
 
-    while (priv->health_check_running) {
+    while (atomic_load(&priv->health_check_running)) {
         tcp_health_check_pass(priv);
 
         /* Sleep for health check interval */
@@ -3152,7 +3168,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 
     priv->listen_fd = -1;
     priv->is_listening = false;
-    priv->accept_thread_running = false;
+    atomic_init(&priv->accept_thread_running, false);
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
@@ -3160,7 +3176,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     /* Initialize manager/worker fields */
     priv->is_manager = false;
     priv->mesh_nodes = NULL;
-    priv->health_check_running = false;
+    atomic_init(&priv->health_check_running, false);
     /* tcp_env_int() only returns positive values */
     priv->health_check_interval_sec = (uint32_t)tcp_env_int(
         "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
@@ -3245,12 +3261,12 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->is_listening = true;
 
         /* Start accept thread */
-        priv->accept_thread_running = true;
+        atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
 
         /* Start health check thread */
-        priv->health_check_running = true;
+        atomic_store(&priv->health_check_running, true);
         qemu_thread_create(&priv->health_check_thread, "tcp-health",
                            tcp_manager_health_check_thread, priv,
                            QEMU_THREAD_JOINABLE);
@@ -3303,7 +3319,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->is_listening = true;
 
         /* Start accept thread */
-        priv->accept_thread_running = true;
+        atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
 
@@ -3328,14 +3344,12 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     return 0;
 
 error:
-    if (priv->health_check_running) {
-        priv->health_check_running = false;
+    if (atomic_exchange(&priv->health_check_running, false)) {
         qemu_thread_join(&priv->health_check_thread);
     }
     /* Stopped before the listen socket closes, as in tcp_fini(): the
      * accept loop only exits once it sees the flag. */
-    if (priv->accept_thread_running) {
-        priv->accept_thread_running = false;
+    if (atomic_exchange(&priv->accept_thread_running, false)) {
         qemu_thread_join(&priv->accept_thread);
     }
     if (priv->listen_fd >= 0) {
@@ -3377,14 +3391,12 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     rdma_info_report("TCP backend: Cleaning up");
 
     /* Stop health check thread (manager only) */
-    if (priv->health_check_running) {
-        priv->health_check_running = false;
+    if (atomic_exchange(&priv->health_check_running, false)) {
         qemu_thread_join(&priv->health_check_thread);
     }
 
     /* Stop accept thread */
-    if (priv->accept_thread_running) {
-        priv->accept_thread_running = false;
+    if (atomic_exchange(&priv->accept_thread_running, false)) {
         qemu_thread_join(&priv->accept_thread);
     }
 

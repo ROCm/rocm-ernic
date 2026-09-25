@@ -45,6 +45,11 @@
  * one object. An unregistered connection must be shut down at teardown, and
  * one whose peer has left must be dropped by the next health-check pass.
  *
+ * The last two cases run tcp_init() and tcp_fini() themselves: a manager and
+ * two workers in this process, connected over loopback exactly as separate
+ * servers would be, taken down while their connections are live; and a
+ * worker whose tcp_init() fails after it has started threads.
+ *
  * The static functions are reached by #including the translation unit. The
  * receive threads are real, so qemu_thread_create()/qemu_thread_join() are
  * implemented here on pthreads rather than stubbed out; the rest of the
@@ -76,8 +81,19 @@
 #include <time.h>
 #include <unistd.h>
 
+/*
+ * A worker registers under its host name, and other workers dial that name.
+ * The backend's gethostname() calls go to test_gethostname() instead, which
+ * answers with the loopback address, so the in-process mesh does not depend
+ * on this host's name resolving.
+ */
+static int test_gethostname(char *name, size_t len);
+#define gethostname test_gethostname
+
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
+
+#undef gethostname
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * The thread functions are real: the paths under test start and join
@@ -1199,6 +1215,259 @@ static int test_pending_reap(const char *name)
     return fail;
 }
 
+/* ---- tcp_init() and tcp_fini() ----------------------------------------- */
+
+/* The address every in-process node is reached at. */
+#define LOOPBACK_HOST "127.0.0.1"
+
+static int test_gethostname(char *name, size_t len)
+{
+    g_strlcpy(name, LOOPBACK_HOST, len);
+    return 0;
+}
+
+/*
+ * A port nothing is listening on, for a manager to take. The probe socket is
+ * closed again before the manager binds, so something else could take the
+ * port in between; the test runs serially, which makes that unlikely.
+ */
+static int free_port(uint16_t *port)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int ret = -1;
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+        getsockname(fd, (struct sockaddr *)&addr, &len) == 0) {
+        *port = ntohs(addr.sin_port);
+        ret = 0;
+    }
+    close(fd);
+    return ret;
+}
+
+/* Bring a backend up on @dev from "@role:LOOPBACK_HOST:@port". */
+static int node_start(RdmaBackendDev *dev, const char *role, uint16_t port)
+{
+    char config[sizeof("manager:" LOOPBACK_HOST ":65535")];
+
+    memset(dev, 0, sizeof(*dev));
+    int len = snprintf(config, sizeof(config), "%s:%s:%u", role, LOOPBACK_HOST,
+                       (unsigned)port);
+    if (len < 0 || (size_t)len >= sizeof(config)) {
+        return -1;
+    }
+    return tcp_init(dev, config);
+}
+
+/*
+ * @dev's connection to @peer, once it has one; NULL if WAIT_MS passes first.
+ * A worker's connection to the manager is its manager connection, not a
+ * table entry. Returns a reference.
+ */
+static TcpConnection *node_conn(RdmaBackendDev *dev, uint32_t peer)
+{
+    const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
+    TcpBackendPrivate *priv = get_private(dev);
+
+    if (!priv->is_manager && peer == MANAGER_NODE) {
+        return priv->manager_conn ? tcp_connection_ref(priv->manager_conn)
+                                  : NULL;
+    }
+    for (int ms = 0; ms < WAIT_MS; ms++) {
+        TcpConnection *conn = tcp_connection_lookup(priv, peer);
+        if (conn) {
+            return conn;
+        }
+        nanosleep(&tick, NULL);
+    }
+    return NULL;
+}
+
+/*
+ * Check that @node's connection to @peer, whose backend is gone, was retired
+ * and that the caller's reference is the only one left. Returns 1, having
+ * reported it, if not.
+ */
+static int check_released(const char *name, TcpConnection *conn, uint32_t node,
+                          uint32_t peer)
+{
+    if (atomic_load(&conn->is_connected) ||
+        atomic_load(&conn->recv_thread_running)) {
+        printf("FAIL %-20s: node %u's connection to node %u was not "
+               "retired\n",
+               name, node, peer);
+        return 1;
+    }
+    uint32_t refs = atomic_load(&conn->refcount);
+    if (refs != 1) {
+        printf("FAIL %-20s: node %u's connection to node %u has %u "
+               "references left, expected only the test's\n",
+               name, node, peer, refs);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * A manager and two workers brought up by tcp_init() as the server does it:
+ * each worker registers, the manager tells the workers about each other, and
+ * worker A, the lower-numbered, dials worker B. tcp_fini() then takes them
+ * down with their connections live: worker A first, with the whole mesh up;
+ * then the manager, with B still attached; then B, whose peers are both
+ * gone.
+ *
+ * Every tcp_fini() must stop every thread its backend started and release
+ * every connection, so once all three are down each connection has been
+ * retired and the test's reference is the only one left. On the sanitizer
+ * builds this case also checks that no thread outlived the backend it
+ * belongs to, and that nothing leaked.
+ */
+static int test_init_fini(const char *name)
+{
+    enum { MGR, WA, WB, N_NODES };
+    static const uint32_t node_ids[N_NODES] = {MANAGER_NODE, NODE_A, NODE_B};
+    /* Brought up in index order and taken down in this one. */
+    static const int fini_order[N_NODES] = {WA, MGR, WB};
+    /* Each node's connections, by the node at the far end. */
+    static const struct {
+        int node;
+        uint32_t peer;
+    } links[] = {
+        {MGR, NODE_A}, {MGR, NODE_B},      {WA, MANAGER_NODE},
+        {WA, NODE_B},  {WB, MANAGER_NODE}, {WB, NODE_A},
+    };
+    RdmaBackendDev dev[N_NODES];
+    bool up[N_NODES] = {false};
+    TcpConnection *conns[G_N_ELEMENTS(links)] = {NULL};
+    uint16_t port = 0;
+    int fail = 0;
+
+    /* The manager's tcp_fini() waits out the health check's sleep. */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", "1", 1);
+
+    if (free_port(&port) != 0) {
+        printf("FAIL %-20s: no free port for the manager\n", name);
+        return 1;
+    }
+
+    for (int n = 0; n < N_NODES && !fail; n++) {
+        up[n] = node_start(&dev[n], n == MGR ? "manager" : "worker", port) == 0;
+        if (!up[n]) {
+            printf("FAIL %-20s: tcp_init() failed for node %u\n", name,
+                   node_ids[n]);
+            fail = 1;
+        } else if (get_private(&dev[n])->local_node_id != node_ids[n]) {
+            printf("FAIL %-20s: node %u came up as node %u\n", name,
+                   node_ids[n], get_private(&dev[n])->local_node_id);
+            fail = 1;
+        }
+    }
+
+    for (size_t i = 0; i < G_N_ELEMENTS(links) && !fail; i++) {
+        conns[i] = node_conn(&dev[links[i].node], links[i].peer);
+        if (!conns[i]) {
+            printf("FAIL %-20s: node %u never connected to node %u\n", name,
+                   node_ids[links[i].node], links[i].peer);
+            fail = 1;
+        }
+    }
+
+    for (int i = 0; i < N_NODES; i++) {
+        int n = fini_order[i];
+        if (up[n]) {
+            tcp_fini(&dev[n]);
+            if (!fail && dev[n].backend_private) {
+                printf("FAIL %-20s: tcp_fini() left node %u's backend in "
+                       "place\n",
+                       name, node_ids[n]);
+                fail = 1;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < G_N_ELEMENTS(links); i++) {
+        if (conns[i]) {
+            if (!fail) {
+                fail = check_released(name, conns[i], node_ids[links[i].node],
+                                      links[i].peer);
+            }
+            tcp_connection_unref(conns[i]);
+        }
+    }
+
+    if (!fail) {
+        printf("PASS %-20s: three-node mesh came up and went down cleanly\n",
+               name);
+    }
+    return fail;
+}
+
+/*
+ * A worker whose manager accepts the connection and then never answers gives
+ * up when registration times out. By then tcp_init() has started the accept
+ * thread and the manager connection's receive thread; it must stop both,
+ * close the manager connection, and leave the device without a backend. The
+ * test plays the manager: it must see the registration request and then the
+ * connection close.
+ */
+static int test_init_failure(const char *name)
+{
+    RdmaBackendDev dev;
+    uint16_t port = 0;
+    int acc = -1;
+    uint8_t byte;
+    int fail = 0;
+
+    int lfd = listener_open(&port);
+    if (lfd < 0) {
+        printf("FAIL %-20s: fixture setup failed\n", name);
+        return 1;
+    }
+
+    if (node_start(&dev, "worker", port) == 0) {
+        printf("FAIL %-20s: registered with a manager that never answered\n",
+               name);
+        tcp_fini(&dev);
+        fail = 1;
+    } else if (dev.backend_private) {
+        printf("FAIL %-20s: the failed tcp_init() left a backend in place\n",
+               name);
+        fail = 1;
+    }
+
+    if (!fail) {
+        acc = listener_accept(lfd);
+        if (acc < 0 || read_until(acc, TCP_MSG_REGISTER_NODE,
+                                  TCP_MSG_REGISTER_NODE, NULL) != 0) {
+            printf("FAIL %-20s: no registration request reached the "
+                   "manager\n",
+                   name);
+            fail = 1;
+        } else if (recv(acc, &byte, 1, 0) != 0) {
+            printf("FAIL %-20s: the manager connection was not closed\n", name);
+            fail = 1;
+        }
+    }
+
+    if (acc >= 0) {
+        close(acc);
+    }
+    close(lfd);
+
+    if (!fail) {
+        printf("PASS %-20s: failed registration undid tcp_init()\n", name);
+    }
+    return fail;
+}
+
 static const struct {
     const char *name;
     int (*run)(const char *name);
@@ -1209,6 +1478,8 @@ static const struct {
     {"double-register", test_double_register},
     {"pending-teardown", test_pending_teardown},
     {"pending-reap", test_pending_reap},
+    {"init-fini", test_init_fini},
+    {"init-failure", test_init_failure},
 };
 
 /*
