@@ -2,27 +2,31 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-#
-# publish-perf.py
-#
-# Append one run's performance medians to the tracked
-# history, then regenerate the Sphinx page that charts it.
-#
-#   publish-perf.py --summary  $CI_WORK/report/summary.json \
-#                   --docs-dir docs
-#
-# History lives in docs/perf-history/history.jsonl, one JSON
-# object per run.  The page is docs/perf-trends.rst, which
-# embeds the charts as inline SVG: no JavaScript, no build
-# dependency, and it renders wherever the docs render.
-#
-# Only trusted runs should call this.  A pull request's
-# numbers must never enter the history, or the published
-# trend stops describing develop.  The workflow enforces that;
-# this script does not check it.
+
+# The hyphenated script name is not a valid module name
+# pylint: disable=invalid-name
+
+"""Record one run's performance medians and regenerate the trend page.
+
+Appends the run to the tracked history, then regenerates the Sphinx
+page that charts it.
+
+  publish-perf.py --summary  $CI_WORK/report/summary.json \\
+                  --docs-dir docs
+
+History lives in docs/perf-history/history.jsonl, one JSON object per
+run.  The page is docs/perf-trends.rst, which embeds the charts as
+inline SVG: no JavaScript, no build dependency, and it renders wherever
+the docs render.
+
+Only trusted runs should call this.  A pull request's numbers must
+never enter the history, or the published trend stops describing
+develop.  The workflow enforces that; this script does not check it.
+"""
 
 import argparse
 import json
+import math
 import pathlib
 import sys
 import textwrap
@@ -49,6 +53,7 @@ RUNNER_LABEL = {
 
 
 def runner_of(rec):
+    """Return the runner class a history record was measured on."""
     return rec.get("runner") or DEFAULT_RUNNER
 
 
@@ -103,10 +108,11 @@ DARK = ("#3987e5", "#d95926", "#199e70")
 
 
 def load_history(path):
+    """Read history.jsonl into a list of records, oldest first."""
     if not path.exists():
         return []
     out = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line:
             out.append(json.loads(line))
@@ -148,10 +154,12 @@ def merge_into(prior, rec):
 
 def _find_median(rows, verb, size, metric):
     for row in rows:
-        if (row.get("verb") == verb
-                and str(row.get("size")) == str(size)
-                and row.get("metric") == metric
-                and row.get("median") is not None):
+        if (
+            row.get("verb") == verb
+            and str(row.get("size")) == str(size)
+            and row.get("metric") == metric
+            and row.get("median") is not None
+        ):
             return float(row["median"])
     return None
 
@@ -171,10 +179,12 @@ def extract(summary, runner=DEFAULT_RUNNER):
         got = {}
         section = chart.get("section", chart["key"])
         for row in summary.get("perf", {}).get(section, []):
-            if (row.get("verb") == chart["verb"]
-                    and row.get("metric") == chart["metric"]
-                    and str(row.get("size")) in TRACKED_SIZES
-                    and row.get("median") is not None):
+            if (
+                row.get("verb") == chart["verb"]
+                and row.get("metric") == chart["metric"]
+                and str(row.get("size")) in TRACKED_SIZES
+                and row.get("median") is not None
+            ):
                 got[str(row["size"])] = float(row["median"])
         rec["series"][chart["key"]] = got
 
@@ -187,23 +197,25 @@ def extract(summary, runner=DEFAULT_RUNNER):
     # "stream".
     bw_rows = summary.get("perf", {}).get("bandwidth", [])
     rec["badges"]["rdma_bw_GBs"] = _find_median(
-        bw_rows, verb="send", size=TRACKED_SIZES[-1],
-        metric="bw_peak_GBs")
+        bw_rows, verb="send", size=TRACKED_SIZES[-1], metric="bw_peak_GBs"
+    )
     rec["badges"]["tcp_bw_GBs"] = _find_median(
-        bw_rows, verb="tcp", size="stream", metric="bw_avg_GBs")
+        bw_rows, verb="tcp", size="stream", metric="bw_avg_GBs"
+    )
     # NVMe-oF headlines IOPS at the smallest tracked size, where the
     # capsule and completion path dominates and the bandwidth number
     # says least. The sweep records it as msg_rate_mpps so that it
     # rides the bandwidth schema gen-report.py already knows.
     rec["badges"]["nvmeof_iops_M"] = _find_median(
-        bw_rows, verb="nvmeof", size=TRACKED_SIZES[0],
-        metric="msg_rate_mpps")
+        bw_rows, verb="nvmeof", size=TRACKED_SIZES[0], metric="msg_rate_mpps"
+    )
     # S3 headlines bandwidth at the largest tracked size: an object
     # GET carries an HTTP round trip of its own, so at 4 KiB the
     # number is a measure of the control plane rather than of the
     # data plane the badge is about.
     rec["badges"]["s3_bw_GBs"] = _find_median(
-        bw_rows, verb="s3", size=TRACKED_SIZES[-1], metric="bw_avg_GBs")
+        bw_rows, verb="s3", size=TRACKED_SIZES[-1], metric="bw_avg_GBs"
+    )
     return rec
 
 
@@ -211,7 +223,6 @@ def nice_ceiling(v):
     """A round upper bound at or above v."""
     if v <= 0:
         return 1.0
-    import math
     mag = 10 ** math.floor(math.log10(v))
     for step in (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10):
         if step * mag >= v:
@@ -229,6 +240,7 @@ def fmt_tick(v):
     return out.rstrip("0").rstrip(".") if "." in out else out
 
 
+# pylint: disable-next=too-many-locals
 def svg_chart(chart, history, chart_id):
     """Render one metric as small multiples: one panel per size.
 
@@ -248,76 +260,99 @@ def svg_chart(chart, history, chart_id):
     pts = [h for h in history if h["series"].get(chart["key"])]
     if not pts:
         return ""
-    sizes = [s for s in TRACKED_SIZES
-             if any(p["series"][chart["key"]].get(s) is not None
-                    for p in pts)]
+    sizes = [
+        s
+        for s in TRACKED_SIZES
+        if any(p["series"][chart["key"]].get(s) is not None for p in pts)
+    ]
     if not sizes:
         return ""
 
-    PW, PH = 236, 190           # panel plot box
+    plot_w, plot_h = 236, 190  # panel plot box
     ml, mr, mt, mb = 54, 14, 30, 42
     gap = 18
-    panel_w = ml + PW + mr
-    W = panel_w * len(sizes) + gap * (len(sizes) - 1)
-    H = mt + PH + mb
+    panel_w = ml + plot_w + mr
+    svg_w = panel_w * len(sizes) + gap * (len(sizes) - 1)
+    svg_h = mt + plot_h + mb
 
     o = []
     a = o.append
-    a(f'<svg class="viz" viewBox="0 0 {W} {H}" width="100%" '
-      f'role="img" aria-labelledby="{chart_id}-t" '
-      f'xmlns="http://www.w3.org/2000/svg">')
-    a(f'<title id="{chart_id}-t">{chart["title"]}, '
-      f'one panel per message size</title>')
+    a(
+        f'<svg class="viz" viewBox="0 0 {svg_w} {svg_h}" width="100%" '
+        f'role="img" aria-labelledby="{chart_id}-t" '
+        f'xmlns="http://www.w3.org/2000/svg">'
+    )
+    a(
+        f'<title id="{chart_id}-t">{chart["title"]}, '
+        f"one panel per message size</title>"
+    )
 
     n = len(pts)
     for pi, size in enumerate(sizes):
         ox = pi * (panel_w + gap)
         colour = f"var(--s{pi + 1})"
-        seq = [(i, p["series"][chart["key"]].get(size))
-               for i, p in enumerate(pts)]
+        seq = [(i, p["series"][chart["key"]].get(size)) for i, p in enumerate(pts)]
         seq = [(i, v) for i, v in seq if v is not None]
         if not seq:
             continue
         ymax = nice_ceiling(max(v for _, v in seq) * 1.12)
 
         def x(i, ox=ox):
-            return ox + ml + (PW / 2 if n == 1 else PW * i / (n - 1))
+            return ox + ml + (plot_w / 2 if n == 1 else plot_w * i / (n - 1))
 
         def y(v, ymax=ymax):
-            return mt + PH - (v / ymax) * PH
+            return mt + plot_h - (v / ymax) * plot_h
 
-        a(f'<text class="ptitle" x="{ox + ml}" y="{mt - 12}">'
-          f'{SIZE_LABEL[size]}</text>')
+        a(
+            f'<text class="ptitle" x="{ox + ml}" y="{mt - 12}">'
+            f"{SIZE_LABEL[size]}</text>"
+        )
         for k in range(5):
             gv = ymax * k / 4
             gy = y(gv)
-            a(f'<line class="grid" x1="{ox + ml}" y1="{gy:.1f}" '
-              f'x2="{ox + ml + PW}" y2="{gy:.1f}"/>')
-            a(f'<text class="tick" x="{ox + ml - 7}" y="{gy + 4:.1f}" '
-              f'text-anchor="end">{fmt_tick(gv)}</text>')
+            a(
+                f'<line class="grid" x1="{ox + ml}" y1="{gy:.1f}" '
+                f'x2="{ox + ml + plot_w}" y2="{gy:.1f}"/>'
+            )
+            a(
+                f'<text class="tick" x="{ox + ml - 7}" y="{gy + 4:.1f}" '
+                f'text-anchor="end">{fmt_tick(gv)}</text>'
+            )
 
-        d = " ".join(f'{"M" if k == 0 else "L"}{x(i):.1f},{y(v):.1f}'
-                     for k, (i, v) in enumerate(seq))
+        d = " ".join(
+            f'{"M" if k == 0 else "L"}{x(i):.1f},{y(v):.1f}'
+            for k, (i, v) in enumerate(seq)
+        )
         a(f'<path class="ln" d="{d}" stroke="{colour}"/>')
         for i, v in seq:
-            a(f'<circle class="pt" cx="{x(i):.1f}" cy="{y(v):.1f}" '
-              f'r="4" fill="{colour}">'
-              f'<title>{SIZE_LABEL[size]} \u2014 {v:g} {chart["unit"]} '
-              f'\u2014 {pts[i]["sha"]}</title></circle>')
+            a(
+                f'<circle class="pt" cx="{x(i):.1f}" cy="{y(v):.1f}" '
+                f'r="4" fill="{colour}">'
+                f'<title>{SIZE_LABEL[size]} \u2014 {v:g} {chart["unit"]} '
+                f'\u2014 {pts[i]["sha"]}</title></circle>'
+            )
 
         # Direct-label the newest value: the number a reader
         # actually wants, and identity never rests on colour.
-        li, lv = seq[-1]
-        a(f'<text class="lbl" x="{ox + ml + PW}" y="{y(lv) - 10:.1f}" '
-          f'text-anchor="end">{lv:g}</text>')
-        a(f'<text class="tick" x="{ox + ml}" y="{mt + PH + 18}">'
-          f'{pts[0]["sha"]}</text>')
-        a(f'<text class="tick" x="{ox + ml + PW}" y="{mt + PH + 18}" '
-          f'text-anchor="end">{pts[-1]["sha"]}</text>')
+        _, lv = seq[-1]
+        a(
+            f'<text class="lbl" x="{ox + ml + plot_w}" y="{y(lv) - 10:.1f}" '
+            f'text-anchor="end">{lv:g}</text>'
+        )
+        a(
+            f'<text class="tick" x="{ox + ml}" y="{mt + plot_h + 18}">'
+            f'{pts[0]["sha"]}</text>'
+        )
+        a(
+            f'<text class="tick" x="{ox + ml + plot_w}" y="{mt + plot_h + 18}" '
+            f'text-anchor="end">{pts[-1]["sha"]}</text>'
+        )
 
-    a(f'<text class="axis" x="{ml}" y="{H - 8}">'
-      f'{chart["unit"]}, oldest run left to newest right</text>')
-    a('</svg>')
+    a(
+        f'<text class="axis" x="{ml}" y="{svg_h - 8}">'
+        f'{chart["unit"]}, oldest run left to newest right</text>'
+    )
+    a("</svg>")
     return "\n".join(o)
 
 
@@ -370,7 +405,7 @@ def build_page(history, docs_dir):
     frag = docs_dir / "perf-history" / "charts.html"
     frag.parent.mkdir(parents=True, exist_ok=True)
     if not history:
-        out.write_text(PLACEHOLDER)
+        out.write_text(PLACEHOLDER, encoding="utf-8")
         return out
 
     latest = history[-1]
@@ -385,14 +420,18 @@ def build_page(history, docs_dir):
     lines += textwrap.wrap(
         f"Medians from the nightly runs, oldest at the left. Latest: "
         f"``{latest['sha']}`` on {RUNNER_LABEL[runner_of(latest)]} at "
-        f"{latest.get('generated', 'an unknown time')}.", 72)
+        f"{latest.get('generated', 'an unknown time')}.",
+        72,
+    )
     lines.append("")
     lines += textwrap.wrap(
         "Each runner class is charted on its own axes and never "
         "joined into one line. A GitHub-hosted runner has noisy "
         "neighbours and no fixed CPU, so its figures are comparable "
         "with each other over time but not with the lab node's. The "
-        "README shields read the GitHub-hosted series.", 72)
+        "README shields read the GitHub-hosted series.",
+        72,
+    )
     lines.append("")
     lines += textwrap.wrap(
         "Each panel carries one message size on its own scale. "
@@ -400,13 +439,14 @@ def build_page(history, docs_dir):
         "order of magnitude, so a shared axis would flatten the "
         "small sizes onto the baseline and hide exactly the "
         "movement a regression shows up in. Bandwidth and latency "
-        "are likewise never combined: they share no scale.", 72)
+        "are likewise never combined: they share no scale.",
+        72,
+    )
     lines.append("")
 
     # Runner classes that actually carry records, in RUNNERS order so
     # the series the README shields read leads every section.
-    present = [r for r in RUNNERS
-               if any(runner_of(h) == r for h in history)]
+    present = [r for r in RUNNERS if any(runner_of(h) == r for h in history)]
 
     for ci_, chart in enumerate(CHARTS):
         drawn = []
@@ -417,12 +457,11 @@ def build_page(history, docs_dir):
                 drawn.append((r, sub, svg))
         if not drawn:
             continue
-        better = ("higher is better" if chart["higher_is_better"]
-                  else "lower is better")
+        better = "higher is better" if chart["higher_is_better"] else "lower is better"
         lines += [chart["title"], "-" * len(chart["title"]), ""]
         lines += textwrap.wrap(
-            f"Median ``{chart['metric']}`` for ``{chart['verb']}`` "
-            f"({better}).", 72)
+            f"Median ``{chart['metric']}`` for ``{chart['verb']}`` ({better}).", 72
+        )
 
         for r, sub, svg in drawn:
             # One fragment per chart per runner class, so each sits
@@ -431,13 +470,20 @@ def build_page(history, docs_dir):
             # pair of axes.
             name = f"chart-{chart['key']}-{r}.html"
             (frag.parent / name).write_text(
-                f'{CSS.strip()}\n<div class="vizwrap">\n{svg}\n</div>\n')
-            lines += ["", f"Measured on {RUNNER_LABEL[r]}:", "",
-                      ".. raw:: html",
-                      f"   :file: perf-history/{name}", ""]
+                f'{CSS.strip()}\n<div class="vizwrap">\n{svg}\n</div>\n',
+                encoding="utf-8",
+            )
+            lines += [
+                "",
+                f"Measured on {RUNNER_LABEL[r]}:",
+                "",
+                ".. raw:: html",
+                f"   :file: perf-history/{name}",
+                "",
+            ]
             lines += _table_lines(chart, sub)
 
-    out.write_text("\n".join(lines) + "\n")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
@@ -449,28 +495,36 @@ def _table_lines(chart, history):
     """
     # .get, not [] -- history records written before a chart was
     # added carry no key for it at all.
-    sizes = [z for z in TRACKED_SIZES
-             if any(h["series"].get(chart["key"], {}).get(z)
-                    is not None for h in history)]
+    sizes = [
+        z
+        for z in TRACKED_SIZES
+        if any(h["series"].get(chart["key"], {}).get(z) is not None for h in history)
+    ]
     head = ["Run"] + [SIZE_LABEL[z] for z in sizes]
     rows = []
     for h in history[-10:]:
         got = h["series"].get(chart["key"], {})
-        rows.append([h["sha"] or "?"] + [
-            (f"{got[z]:g}" if got.get(z) is not None else "--")
-            for z in sizes])
-    w = [max(len(r[i]) for r in [head] + rows)
-         for i in range(len(head))]
+        rows.append(
+            [h["sha"] or "?"]
+            + [(f"{got[z]:g}" if got.get(z) is not None else "--") for z in sizes]
+        )
+    w = [max(len(r[i]) for r in [head] + rows) for i in range(len(head))]
     sep = " ".join("=" * x for x in w)
     n = len(rows)
-    head_line = (f"The one run so far, in {chart['unit']}:" if n == 1
-                 else f"Last {n} runs, in {chart['unit']}:")
-    lines = [head_line, "", sep,
-             " ".join(c.ljust(x) for c, x in zip(head, w)).rstrip(),
-             sep]
+    head_line = (
+        f"The one run so far, in {chart['unit']}:"
+        if n == 1
+        else f"Last {n} runs, in {chart['unit']}:"
+    )
+    lines = [
+        head_line,
+        "",
+        sep,
+        " ".join(c.ljust(x) for c, x in zip(head, w)).rstrip(),
+        sep,
+    ]
     for r in rows:
-        lines.append(" ".join(c.ljust(x)
-                              for c, x in zip(r, w)).rstrip())
+        lines.append(" ".join(c.ljust(x) for c, x in zip(r, w)).rstrip())
     return lines + [sep, ""]
 
 
@@ -568,32 +622,50 @@ def write_badges(rec, history, docs_dir):
             message = "no data"
             color = "lightgrey"
         else:
-            message = badge.get("format", _fmt_rate)(value,
-                                                     badge["unit"])
+            message = badge.get("format", _fmt_rate)(value, badge["unit"])
             if source is not rec:
                 date = (source.get("generated") or "").split(" ")[0]
                 if date:
                     message += f" (as of {date})"
             color = "blue"
-        (out_dir / badge["file"]).write_text(json.dumps({
-            "schemaVersion": 1,
-            "label": badge["label"],
-            "message": message,
-            "color": color,
-        }, sort_keys=True) + "\n")
+        (out_dir / badge["file"]).write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "label": badge["label"],
+                    "message": message,
+                    "color": color,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
 
 def main():
+    """Record a run into the history and rebuild the trend page."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--summary")
     ap.add_argument("--docs-dir", default="docs")
-    ap.add_argument("--max-runs", type=int, default=60,
-                    help="how many runs of history to keep per runner")
-    ap.add_argument("--runner", choices=RUNNERS, default=DEFAULT_RUNNER,
-                    help="class of machine these numbers were measured on")
-    ap.add_argument("--render-only", action="store_true",
-                    help="rebuild the trend page from the history already "
-                         "on disk, without recording a run")
+    ap.add_argument(
+        "--max-runs",
+        type=int,
+        default=60,
+        help="how many runs of history to keep per runner",
+    )
+    ap.add_argument(
+        "--runner",
+        choices=RUNNERS,
+        default=DEFAULT_RUNNER,
+        help="class of machine these numbers were measured on",
+    )
+    ap.add_argument(
+        "--render-only",
+        action="store_true",
+        help="rebuild the trend page from the history already "
+        "on disk, without recording a run",
+    )
     args = ap.parse_args()
 
     if not args.render_only and not args.summary:
@@ -616,10 +688,10 @@ def main():
         print(f"rendered {page} from {len(history)} runs")
         return 0
 
-    summary = json.load(open(args.summary))
+    with open(args.summary, encoding="utf-8") as fh:
+        summary = json.load(fh)
     rec = extract(summary, args.runner)
-    if not any(rec["series"].values()) and not any(
-            rec["badges"].values()):
+    if not any(rec["series"].values()) and not any(rec["badges"].values()):
         print("no tracked medians in this run; nothing published")
         return 0
 
@@ -627,8 +699,7 @@ def main():
     # Per runner class: the other class publishes on its own cadence,
     # so a global "is this the last record" check would miss a repeat.
     mine = [h for h in history if runner_of(h) == args.runner]
-    prior = next((h for h in reversed(mine)
-                  if h.get("run_id") == rec["run_id"]), None)
+    prior = next((h for h in reversed(mine) if h.get("run_id") == rec["run_id"]), None)
 
     if prior is None:
         history.append(rec)
@@ -636,9 +707,8 @@ def main():
         # another's history out from under its chart.
         drop = set()
         for name in RUNNERS:
-            idx = [i for i, h in enumerate(history)
-                   if runner_of(h) == name]
-            drop.update(idx[:-args.max_runs])
+            idx = [i for i, h in enumerate(history) if runner_of(h) == name]
+            drop.update(idx[: -args.max_runs])
         history = [h for i, h in enumerate(history) if i not in drop]
         verb = f"recorded run {rec['run_id']} ({rec['sha']})"
     elif merge_into(prior, rec):
@@ -649,7 +719,9 @@ def main():
         return 0
 
     hist_path.write_text(
-        "".join(json.dumps(h, sort_keys=True) + "\n" for h in history))
+        "".join(json.dumps(h, sort_keys=True) + "\n" for h in history),
+        encoding="utf-8",
+    )
 
     write_badges(rec, history, docs)
 

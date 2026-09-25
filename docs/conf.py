@@ -2,14 +2,16 @@
 #
 # SPDX-License-Identifier: MIT
 
+# Sphinx reads its settings from lowercase module-level names
+# pylint: disable=invalid-name
+
 """Sphinx configuration for rocm-ernic documentation."""
 
 project = "rocm-ernic"
 author = "Advanced Micro Devices, Inc."
-copyright = (
-    "2025-2026 Advanced Micro Devices, Inc. "
-    "All rights reserved."
-)
+# pylint: disable=redefined-builtin
+copyright = "2025-2026 Advanced Micro Devices, Inc. All rights reserved."
+# pylint: enable=redefined-builtin
 
 version = "0.2.0"
 release = version
@@ -48,9 +50,7 @@ suppress_warnings = [
 
 html_theme = "sphinx_book_theme"
 html_theme_options = {
-    "repository_url": (
-        "https://github.com/ROCm/rocm-ernic"
-    ),
+    "repository_url": ("https://github.com/ROCm/rocm-ernic"),
     "use_repository_button": True,
     "show_toc_level": 2,
 }
