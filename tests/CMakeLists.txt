@@ -769,6 +769,22 @@ set_tests_properties(ionic-ci PROPERTIES
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
 
+# NVMe-oF backend CI suite: every documented option spelling starts a server
+# with the namespace it asked for, a file-backed namespace appears on disk at
+# the right size, and bad options are refused before startup.
+# Does not require a VM or RDMA hardware.
+add_test(
+    NAME nvmeof-ci
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_nvmeof_ci.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_tests_properties(nvmeof-ci PROPERTIES
+    TIMEOUT 120
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
+
 # S3 backend CI suite: every documented option spelling starts a server with
 # the store it asked for, the in-band endpoint announces the address and MAC
 # the guest will ARP for, and bad options are refused before startup.
