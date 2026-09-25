@@ -17,9 +17,15 @@
 
 #include "s3_http.h"
 
+/*
+ * tolower and toupper are called as (tolower)(c) and (toupper)(c)
+ * throughout: when optimising, glibc also defines them as macros that
+ * expand to their own names, which clang reports as a recursive macro
+ * expansion.  The parentheses suppress the macro and call the function.
+ */
 static char lower(char c)
 {
-    return (char)tolower((unsigned char)c);
+    return (char)(tolower)((unsigned char)c);
 }
 
 static bool ieq(const char *a, const char *b)
@@ -156,7 +162,7 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
                       (size_t)(sp1 - line)))
         return -EINVAL;
     for (char *m = req->method; *m; m++)
-        *m = (char)toupper((unsigned char)*m);
+        *m = (char)(toupper)((unsigned char)*m);
 
     const char *target = sp1 + 1;
     size_t target_len = (size_t)(sp2 - target);

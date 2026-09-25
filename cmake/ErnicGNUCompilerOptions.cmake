@@ -122,6 +122,13 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
             -Walloc-size
             -Wcalloc-transposed-args
             -Wflex-array-member-not-at-end
+
+            # -Wuseless-cast (C-valid from GCC 14) is deliberately left
+            # unset.  Whether a cast is useless depends on the target's
+            # type sizes: (int64_t)ts.tv_sec, (uintptr_t)u64 and
+            # (unsigned long)u64 for "%lu" are no-ops on LP64 and required
+            # on ILP32, so acting on it breaks 32-bit builds.
+            #-Wuseless-cast
             ${flags}
         )
     endif()
@@ -130,6 +137,8 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         set(flags
             -Wtrailing-whitespace
             -Wleading-whitespace=tabs
+            # C++-only before GCC 15
+            -Wzero-as-null-pointer-constant
             ${flags}
         )
     endif()

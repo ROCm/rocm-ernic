@@ -55,12 +55,22 @@
  * to be the failure.  Like __asan_default_options in
  * test_tcp_mesh_topology.c this is only a default, and a UBSAN_OPTIONS in
  * the environment overrides it.
+ *
+ * The runtime looks this hook up by name, so the reserved identifier is
+ * unavoidable.
  */
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-identifier"
+#endif
 const char *__ubsan_default_options(void);
 const char *__ubsan_default_options(void)
 {
     return "halt_on_error=1";
 }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 static const uint8_t GUEST_MAC[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 static const uint8_t BCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};

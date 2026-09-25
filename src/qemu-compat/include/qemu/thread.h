@@ -109,7 +109,7 @@ static inline void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file,
 /* Thread creation and management */
 int qemu_thread_create(QemuThread *thread, const char *name,
                        void *(*start_routine)(void *), void *arg, int mode);
-void qemu_thread_exit(void *retval);
+_Noreturn void qemu_thread_exit(void *retval);
 void qemu_thread_join(QemuThread *thread);
 
 /* Condition variable operations */

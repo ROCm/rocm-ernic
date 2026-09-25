@@ -86,6 +86,32 @@ static void signal_handler(int signo)
 }
 
 /**
+ * Install ``handler`` (or SIG_IGN / SIG_DFL) for ``signo`` with no flags
+ * and an empty mask.  Returns sigaction()'s result.
+ */
+static int set_signal_handler(int signo, void (*handler)(int))
+{
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    /*
+     * glibc defines sa_handler as a macro that expands to a member of the
+     * same name, which clang reports as a recursive macro expansion.
+     */
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#endif
+    sa.sa_handler = handler;
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+    sigemptyset(&sa.sa_mask);
+
+    return sigaction(signo, &sa, NULL);
+}
+
+/**
  * Log callback for libvfio-user
  */
 static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
@@ -979,26 +1005,25 @@ int main(int argc, char *argv[])
     const char *tap_ifname = NULL;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
-    struct sigaction sa;
     int ret, opt;
 
     /* Command-line option definitions */
     static struct option long_options[] = {
         /* Common options */
-        {"socket", required_argument, 0, 's'},
-        {"backend", required_argument, 0, 'b'},
-        {"verbose", no_argument, 0, 'v'},
-        {"log-level", required_argument, 0, 'L'},
-        {"stats-file", required_argument, 0, 'S'},
-        {"log-file", required_argument, 0, 'l'},
-        {"mac", required_argument, 0, 'm'},
-        {"help", no_argument, 0, 'h'},
-        {"tap", required_argument, 0, 'T'},
+        {"socket", required_argument, NULL, 's'},
+        {"backend", required_argument, NULL, 'b'},
+        {"verbose", no_argument, NULL, 'v'},
+        {"log-level", required_argument, NULL, 'L'},
+        {"stats-file", required_argument, NULL, 'S'},
+        {"log-file", required_argument, NULL, 'l'},
+        {"mac", required_argument, NULL, 'm'},
+        {"help", no_argument, NULL, 'h'},
+        {"tap", required_argument, NULL, 'T'},
         /* Backend-specific options (verbs only) */
-        {"device", required_argument, 0, 'd'},
-        {"ethdev", required_argument, 0, 'e'},
-        {"port", required_argument, 0, 'p'},
-        {0, 0, 0, 0}};
+        {"device", required_argument, NULL, 'd'},
+        {"ethdev", required_argument, NULL, 'e'},
+        {"port", required_argument, NULL, 'p'},
+        {NULL, 0, NULL, 0}};
 
     /* Allocate device structure */
     dev = calloc(1, sizeof(*dev));
@@ -1129,12 +1154,8 @@ int main(int argc, char *argv[])
     }
 
     /* Setup signal handlers */
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-
-    if (sigaction(SIGINT, &sa, NULL) == -1 ||
-        sigaction(SIGTERM, &sa, NULL) == -1) {
+    if (set_signal_handler(SIGINT, signal_handler) == -1 ||
+        set_signal_handler(SIGTERM, signal_handler) == -1) {
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
@@ -1430,11 +1451,8 @@ int main(int argc, char *argv[])
     }
 
     /* Disable signal handlers during cleanup */
-    struct sigaction sa_ignore;
-    memset(&sa_ignore, 0, sizeof(sa_ignore));
-    sa_ignore.sa_handler = SIG_IGN;
-    sigaction(SIGINT, &sa_ignore, NULL);
-    sigaction(SIGTERM, &sa_ignore, NULL);
+    set_signal_handler(SIGINT, SIG_IGN);
+    set_signal_handler(SIGTERM, SIG_IGN);
 
     /* Cleanup */
     vfu_destroy_ctx(vfu_ctx);

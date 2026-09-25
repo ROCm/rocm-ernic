@@ -49,6 +49,7 @@
  */
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -600,7 +601,7 @@ static int recv_fixture_start(struct recv_fixture *f)
     f->conn.node_id = TEST_PEER_NODE;
     f->conn.sockfd = f->sv[0];
     f->conn.is_connected = true;
-    f->conn.recv_thread_running = true;
+    atomic_store(&f->conn.recv_thread_running, true);
     f->conn.priv = &f->priv;
     qemu_mutex_init(&f->conn.lock);
 
@@ -620,7 +621,7 @@ static int recv_fixture_start(struct recv_fixture *f)
 
 static void recv_fixture_stop(struct recv_fixture *f)
 {
-    f->conn.recv_thread_running = false;
+    atomic_store(&f->conn.recv_thread_running, false);
     pthread_join(f->tid, NULL);
 
     close(f->sv[0]);

@@ -114,7 +114,7 @@ static int tcp_mesh_debug(void)
 static void tcp_mesh_warn_rate_limited(const char *msg, uint64_t *counter,
                                        uint64_t every)
 {
-    uint64_t n = (uint64_t)__sync_add_and_fetch(counter, 1);
+    uint64_t n = __atomic_add_fetch(counter, 1, __ATOMIC_SEQ_CST);
 
     if (n == 1 || (every > 0 && (n % every) == 0)) {
         rdma_warn_report("%s (count=%" PRIu64 ")", msg, n);
@@ -759,8 +759,8 @@ static void tcp_connection_free(TcpConnection *conn)
         return;
     }
 
-    if (conn->recv_thread_running) {
-        conn->recv_thread_running = false;
+    if (atomic_load(&conn->recv_thread_running)) {
+        atomic_store(&conn->recv_thread_running, false);
         qemu_thread_join(&conn->recv_thread);
     }
 
@@ -773,6 +773,12 @@ static void tcp_connection_free(TcpConnection *conn)
     g_free(conn);
 }
 
+/* GDestroyNotify adapter for tcp_connection_free() */
+static void tcp_connection_destroy_notify(gpointer data)
+{
+    tcp_connection_free(data);
+}
+
 static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
                                          uint16_t port)
 {
@@ -782,7 +788,7 @@ static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
     conn->remote_host = g_strdup(host);
     conn->remote_port = port;
     conn->is_connected = false;
-    conn->recv_thread_running = false;
+    atomic_store(&conn->recv_thread_running, false);
     qemu_mutex_init(&conn->lock);
     return conn;
 }
@@ -808,6 +814,12 @@ static void mesh_node_info_free(MeshNodeInfo *node)
     }
     g_free(node->hostname);
     g_free(node);
+}
+
+/* GDestroyNotify adapter for mesh_node_info_free() */
+static void mesh_node_info_destroy_notify(gpointer data)
+{
+    mesh_node_info_free(data);
 }
 
 static MeshNodeInfo *mesh_node_info_new(uint32_t node_id, const char *hostname,
@@ -1356,7 +1368,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
     pfd.fd = conn->sockfd;
     pfd.events = POLLIN;
 
-    while (conn->recv_thread_running) {
+    while (atomic_load(&conn->recv_thread_running)) {
         ret = poll(&pfd, 1, 100); /* 100ms timeout */
         if (ret < 0) {
             if (errno == EINTR) {
@@ -1863,7 +1875,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     char thread_name[32];
                     snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
                              peer_id);
-                    peer_conn->recv_thread_running = true;
+                    atomic_store(&peer_conn->recv_thread_running, true);
                     qemu_thread_create(&peer_conn->recv_thread, thread_name,
                                        tcp_recv_thread_per_conn, peer_conn,
                                        QEMU_THREAD_JOINABLE);
@@ -2398,7 +2410,7 @@ static void *tcp_accept_thread(void *opaque)
 
             /* Start receive thread - it will handle REGISTER_NODE */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
-            conn->recv_thread_running = true;
+            atomic_store(&conn->recv_thread_running, true);
             qemu_thread_create(&conn->recv_thread, thread_name,
                                tcp_recv_thread_per_conn, conn,
                                QEMU_THREAD_JOINABLE);
@@ -2510,7 +2522,7 @@ static void *tcp_accept_thread(void *opaque)
             /* Start receive thread for this connection */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
                      remote_node_id);
-            conn->recv_thread_running = true;
+            atomic_store(&conn->recv_thread_running, true);
             qemu_thread_create(&conn->recv_thread, thread_name,
                                tcp_recv_thread_per_conn, conn,
                                QEMU_THREAD_JOINABLE);
@@ -2661,7 +2673,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         TcpConnection *old_conn = node->conn;
 
                         if (old_conn) {
-                            old_conn->recv_thread_running = false;
+                            atomic_store(&old_conn->recv_thread_running, false);
                             qemu_thread_join(&old_conn->recv_thread);
                             if (old_conn->sockfd >= 0) {
                                 close(old_conn->sockfd);
@@ -2688,7 +2700,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         char tname[32];
                         snprintf(tname, sizeof(tname), "tcp-recv-%u",
                                  node->node_id);
-                        new_conn->recv_thread_running = true;
+                        atomic_store(&new_conn->recv_thread_running, true);
                         qemu_thread_create(&new_conn->recv_thread, tname,
                                            tcp_recv_thread_per_conn, new_conn,
                                            QEMU_THREAD_JOINABLE);
@@ -2761,7 +2773,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     /* Start receive thread for manager connection */
     char thread_name[32];
     snprintf(thread_name, sizeof(thread_name), "tcp-mgr-recv");
-    priv->manager_conn->recv_thread_running = true;
+    atomic_store(&priv->manager_conn->recv_thread_running, true);
     qemu_thread_create(&priv->manager_conn->recv_thread, thread_name,
                        tcp_recv_thread_per_conn, priv->manager_conn,
                        QEMU_THREAD_JOINABLE);
@@ -2848,9 +2860,8 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                       (GDestroyNotify)g_free);
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
-    priv->connections =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                              (GDestroyNotify)tcp_connection_free);
+    priv->connections = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
 
     tcp_bufpool_init(&priv->recv_pool);
 
@@ -2905,9 +2916,8 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         }
 
         /* Initialize mesh nodes table */
-        priv->mesh_nodes =
-            g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                  (GDestroyNotify)mesh_node_info_free);
+        priv->mesh_nodes = g_hash_table_new_full(
+            g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
         if (!priv->mesh_nodes) {
             rdma_error_report("TCP: Failed to create mesh nodes table");
             g_free(manager_host);

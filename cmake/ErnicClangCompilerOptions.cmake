@@ -56,20 +56,53 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
 
         # General quality warnings
         -Warray-bounds-pointer-arithmetic
+        -Wassign-enum
+        -Watomic-implicit-seq-cst
+        -Wbinary-literal
         -Wcast-align
+        -Wcast-function-type
         -Wcast-qual
+        -Wcomma
         -Wconditional-uninitialized
         -Wconversion
+        -Wcstring-format-directive
         -Wdate-time
+        -Wdisabled-macro-expansion
+        -Wdocumentation
         -Wdouble-promotion
         -Wduplicate-enum
+        -Wendif-labels
+        -Wexpansion-to-defined
+        -Wextra-semi
+        -Wextra-semi-stmt
         -Wfloat-equal
         -Wformat=2
+        -Wformat-non-iso
+        -Wformat-pedantic
         -Wformat-security
+        -Wformat-type-confusion
+        -Wfour-char-constants
+        -Wfuse-ld-path
+        -Wglobal-constructors
         -Wimplicit-fallthrough
+        -Wincompatible-function-pointer-types-strict
+        -Wincomplete-module
+        -Winvalid-or-nonexistent-directory
+        -Wloop-analysis
+        -Wmain
+        -Wmain-return-type
+        -Wmax-tokens
+        -Wmicrosoft
         -Wmissing-include-dirs
+        -Wmissing-noreturn
         -Wmissing-variable-declarations
+        -Wnewline-eof
+        -Wnon-gcc
+        -Wnonportable-system-include-path
         -Wnull-dereference
+        -Wnullable-to-nonnull-conversion
+        -Wopenmp
+        -Wover-aligned
 
         # -Wpacked is deliberately left unset.  On GCC it fires when
         # __attribute__((packed)) does not change the layout, which is
@@ -81,24 +114,65 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         # -Wpacked-non-pod, is C++-only.
         #-Wpacked
 
+        -Wpartial-availability
         -Wpointer-arith
+        -Wpoison-system-directories
+        -Wpragmas
+        -Wquoted-include-in-framework-header
         -Wredundant-parens
+        -Wreserved-identifier
+        -Wsequence-point
         -Wshadow-all
         -Wshift-sign-overflow
+        -Wsigned-enum-bitfield
+        -Wsource-uses-openmp
+        -Wstatic-in-inline
         -Wswitch-default
+        -Wswitch-enum
+        -Wtautological-constant-in-range-compare
         -Wtype-limits
         -Wunaligned-access
         -Wundef
+        -Wundef-prefix
+        -Wunguarded-availability
         -Wunreachable-code-aggressive
+        -Wused-but-marked-unused
+        -Wvariadic-macros
+        -Wvector-conversion
         -Wvla
 
         # QEMU-ported code has many unused parameters
         -Wno-unused-parameter
     )
 
+    if(compiler_version VERSION_GREATER_EQUAL 18.1.6)
+        set(flags
+            -Wnonportable-private-system-apinotes-path
+            -Wopenacc
+            -Wsource-uses-openacc
+            ${flags}
+        )
+    endif()
+
     if(compiler_version VERSION_GREATER_EQUAL 19.1)
         set(flags
             -Wformat-signedness
+            ${flags}
+        )
+    endif()
+
+    if(compiler_version VERSION_GREATER_EQUAL 20.1)
+        set(flags
+            -Wdecls-in-multiple-modules
+            -Wvariadic-macro-arguments-omitted
+            ${flags}
+        )
+    endif()
+
+    if(compiler_version VERSION_GREATER_EQUAL 21.0)
+        set(flags
+            -Wthread-safety-pointer
+            -Wshift-bool
             ${flags}
         )
     endif()
