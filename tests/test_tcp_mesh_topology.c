@@ -297,6 +297,7 @@ static int run_case(const struct testcase *tc)
     }
 
     memset(&priv, 0, sizeof(priv));
+    tcp_private_init_atomics(&priv);
     priv.is_manager = true;
     priv.local_node_id = 1;
     priv.mesh_nodes = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -306,9 +307,12 @@ static int run_case(const struct testcase *tc)
 
     /* One "worker" on the near end of the socketpair */
     memset(&conn, 0, sizeof(conn));
+    /* Includes the fixture's own reference, never dropped, so no unref can
+     * free this stack object. */
+    tcp_connection_init_atomics(&conn);
     conn.node_id = 42;
     conn.sockfd = sv[0];
-    conn.is_connected = true;
+    atomic_store(&conn.is_connected, true);
     conn.priv = &priv;
     qemu_mutex_init(&conn.lock);
     g_hash_table_insert(priv.connections, GUINT_TO_POINTER(42u), &conn);

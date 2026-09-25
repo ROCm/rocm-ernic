@@ -458,6 +458,35 @@ target_link_directories(test_tcp_mr_bounds PRIVATE
 target_link_libraries(test_tcp_mr_bounds PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# TCP connection lifetime test. Like the other TCP tests it #includes the
+# backend translation unit, but it runs real receive threads, so it
+# implements the qemu thread functions on pthreads instead of stubbing them.
+add_executable(test_tcp_conn_lifetime test_tcp_conn_lifetime.c)
+target_include_directories(test_tcp_conn_lifetime PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
+)
+# Vendored and third-party header trees are SYSTEM includes, matching the
+# main target. The #included translation unit is reached through src, so
+# it is warning-checked.
+target_include_directories(test_tcp_conn_lifetime SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_tcp_conn_lifetime PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_tcp_conn_lifetime PRIVATE
+    ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_tcp_conn_lifetime PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_tcp_conn_lifetime PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_tcp_conn_lifetime PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # RDMA resource-table allocator test. It #includes the resource-manager
 # translation unit to reach its static inline allocator and stubs the backend
 # entry points it calls, so no RDMA subsystem link is needed. rdma_rm.c is
@@ -548,6 +577,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_cq_arm
     test_tcp_mesh_topology
     test_tcp_mr_bounds
+    test_tcp_conn_lifetime
     test_rdma_res_tbl
     test_qemu_stubs
 )
@@ -725,6 +755,17 @@ add_test(
     COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
 )
 set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# TCP connection lifetime unit test: connections stay valid for users while
+# the manager replaces them, register once, are dropped when their peer
+# stops reading, and are all stopped by tcp_fini(); an in-process manager and
+# two workers cover init, teardown, reconnects and malformed handshakes.
+# Most of its run time is deliberate waiting on timeouts, about 17 s in all.
+add_test(
+    NAME tcp-conn-lifetime-unit
+    COMMAND $<TARGET_FILE:test_tcp_conn_lifetime>
+)
+set_tests_properties(tcp-conn-lifetime-unit PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 
 # RDMA resource-table allocator unit test: asserts a full table refuses the
 # next allocation rather than handing back a handle one past the end.
