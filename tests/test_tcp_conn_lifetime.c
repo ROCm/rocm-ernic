@@ -32,7 +32,13 @@
  * cases therefore matter most on the sanitizer builds; the assertions below
  * check what is observable without one.
  *
- * The third case covers ownership of the table itself: a peer that sends
+ * The health-check case runs a whole tcp_health_check_pass() against a node
+ * that has stopped answering, with a loopback listener standing in for the
+ * node, and checks the pass carries the reconnect through: death announced
+ * first, new connection installed and announced, old one retired, node
+ * marked alive.
+ *
+ * The last case covers ownership of the table itself: a peer that sends
  * REGISTER_NODE twice on one connection must not get that connection mapped
  * under a second node ID, which would leave the connection table holding
  * two owning references to one object.
@@ -51,6 +57,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -61,6 +68,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -346,18 +354,18 @@ static int peer_open(struct mesh_fixture *f, uint32_t node_id,
     return 0;
 }
 
-/* Publish @p as a registered node, the way the REGISTER_NODE handler does:
- * in the mesh table and in the connection table, which takes ownership. */
-static int peer_register(struct mesh_fixture *f, const struct peer *p)
+/* Publish @p as a registered node listening at @host:@port, the way the
+ * REGISTER_NODE handler does: in the mesh table and in the connection
+ * table, which takes ownership. */
+static int peer_register(struct mesh_fixture *f, const struct peer *p,
+                         const char *host, uint16_t port)
 {
     uint32_t node_id = p->conn->node_id;
-    MeshNodeInfo *node = mesh_node_info_new(node_id, PEER_HOST, PEER_PORT);
+    MeshNodeInfo *node = mesh_node_info_new(node_id, host, port);
 
     if (!node) {
         return -1;
     }
-    node->sockfd = p->conn->sockfd;
-    node->conn = p->conn;
     node->is_alive = true;
     node->last_heartbeat = time(NULL);
 
@@ -378,22 +386,14 @@ static int peer_register(struct mesh_fixture *f, const struct peer *p)
 static int reconnect(struct mesh_fixture *f, uint32_t node_id, int *far)
 {
     int sv[2];
-    bool ok = false;
 
     if (socketpair_open(sv, false) != 0) {
         return -1;
     }
 
-    qemu_mutex_lock(&f->priv.mesh_table_lock);
-    MeshNodeInfo *node =
-        g_hash_table_lookup(f->priv.mesh_nodes, GUINT_TO_POINTER(node_id));
-    if (node) {
-        /* Takes ownership of sv[0] whether or not it succeeds. */
-        ok = tcp_mesh_reconnect_node(&f->priv, node, sv[0], time(NULL));
-    } else {
-        close(sv[0]);
-    }
-    qemu_mutex_unlock(&f->priv.mesh_table_lock);
+    /* Takes ownership of sv[0] whether or not it succeeds. */
+    bool ok = tcp_mesh_reconnect_node(&f->priv, node_id, PEER_HOST, PEER_PORT,
+                                      sv[0], time(NULL));
 
     *far = sv[1];
     return ok ? 0 : -1;
@@ -595,7 +595,8 @@ static int test_send_vs_reconnect(const char *name)
     int fail = 0;
 
     fixture_init(&f);
-    if (peer_open(&f, NODE_A, true, &a) != 0 || peer_register(&f, &a) != 0) {
+    if (peer_open(&f, NODE_A, true, &a) != 0 ||
+        peer_register(&f, &a, PEER_HOST, PEER_PORT) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
         fixture_destroy(&f);
         return 1;
@@ -674,12 +675,14 @@ static int test_relay_vs_reconnect(const char *name)
     int fail = 0;
 
     fixture_init(&f);
-    if (peer_open(&f, NODE_A, true, &a) != 0 || peer_register(&f, &a) != 0) {
+    if (peer_open(&f, NODE_A, true, &a) != 0 ||
+        peer_register(&f, &a, PEER_HOST, PEER_PORT) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
         fixture_destroy(&f);
         return 1;
     }
-    if (peer_open(&f, NODE_B, false, &b) != 0 || peer_register(&f, &b) != 0) {
+    if (peer_open(&f, NODE_B, false, &b) != 0 ||
+        peer_register(&f, &b, PEER_HOST, PEER_PORT) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
         close(a.far);
         fixture_destroy(&f);
@@ -741,6 +744,197 @@ static int test_relay_vs_reconnect(const char *name)
 
     if (!fail) {
         printf("PASS %-20s: relay on the replaced connection failed cleanly\n",
+               name);
+    }
+    return fail;
+}
+
+/* ---- Health-check pass ------------------------------------------------- */
+
+/*
+ * How long node A has been silent when the pass runs. It must exceed three
+ * health-check intervals (one second each here) and be a multiple of the
+ * reconnect backoff the pass computes for it, which for 4 s is 4 s.
+ */
+#define SILENT_SEC 4
+
+/* A loopback TCP listener on an ephemeral port, for the pass to dial. */
+static int listener_open(uint16_t *port)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(fd, 1) != 0 ||
+        getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
+    return fd;
+}
+
+/* Accept the connection the pass dialed. Its reads time out rather than
+ * block forever. */
+static int listener_accept(int lfd)
+{
+    const struct timeval tmo = {.tv_sec = WAIT_MS / 1000, .tv_usec = 0};
+
+    if (!wait_readable(lfd)) {
+        return -1;
+    }
+    int fd = accept(lfd, NULL, NULL);
+    if (fd >= 0 &&
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/*
+ * Wait for the wall clock to tick and return the new second. The pass reads
+ * time(NULL) once; starting just after a tick leaves it most of a second in
+ * which it still reads the value the test set the node up against.
+ */
+static time_t next_second(void)
+{
+    const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
+    time_t start = time(NULL);
+    time_t now;
+
+    while ((now = time(NULL)) == start) {
+        nanosleep(&tick, NULL);
+    }
+    return now;
+}
+
+/*
+ * A whole health-check pass over a node that has stopped answering. The pass
+ * must declare the node dead and broadcast that before trying to reach it,
+ * heartbeat it on the connection it has, dial it again, install the new
+ * connection, retire the old one, mark the node alive again, and broadcast
+ * the topology on the new connection.
+ */
+static int test_health_check_reconnect(const char *name)
+{
+    struct mesh_fixture f;
+    struct peer a = {.conn = NULL, .far = -1};
+    uint16_t port = 0;
+    int acc = -1;
+    unsigned handshakes = 0;
+    unsigned death_broadcasts = 0;
+    int fail = 0;
+
+    fixture_init(&f);
+    f.priv.health_check_interval_sec = 1;
+
+    int lfd = listener_open(&port);
+    if (lfd < 0 || peer_open(&f, NODE_A, false, &a) != 0 ||
+        peer_register(&f, &a, "127.0.0.1", port) != 0) {
+        printf("FAIL %-20s: fixture setup failed\n", name);
+        if (lfd >= 0) {
+            close(lfd);
+        }
+        if (a.far >= 0) {
+            close(a.far);
+        }
+        fixture_destroy(&f);
+        return 1;
+    }
+
+    /* Held across the pass so the old connection can still be inspected
+     * after it has been replaced. */
+    TcpConnection *old_conn = tcp_connection_lookup(&f.priv, NODE_A);
+
+    time_t start = next_second();
+    qemu_mutex_lock(&f.priv.mesh_table_lock);
+    MeshNodeInfo *node =
+        g_hash_table_lookup(f.priv.mesh_nodes, GUINT_TO_POINTER(NODE_A));
+    node->last_heartbeat = start - SILENT_SEC;
+    qemu_mutex_unlock(&f.priv.mesh_table_lock);
+
+    tcp_health_check_pass(&f.priv);
+
+    TcpConnection *new_conn = tcp_connection_lookup(&f.priv, NODE_A);
+    if (!new_conn || new_conn == old_conn ||
+        !atomic_load(&new_conn->is_connected)) {
+        printf("FAIL %-20s: node %u's connection was not replaced\n", name,
+               NODE_A);
+        fail = 1;
+    } else if (atomic_load(&old_conn->is_connected)) {
+        printf("FAIL %-20s: the replaced connection was not retired\n", name);
+        fail = 1;
+    }
+
+    /* The old connection carried the death broadcast, then the heartbeat,
+     * and was then shut down. */
+    uint8_t byte;
+    if (!fail && read_until(a.far, TCP_MSG_HEARTBEAT, TCP_MSG_MESH_TOPOLOGY,
+                            &death_broadcasts) != 0) {
+        printf("FAIL %-20s: no heartbeat on the old connection\n", name);
+        fail = 1;
+    } else if (!fail && death_broadcasts != 1) {
+        printf("FAIL %-20s: %u topology broadcasts ahead of the heartbeat on "
+               "the old connection, expected 1 announcing the death\n",
+               name, death_broadcasts);
+        fail = 1;
+    } else if (!fail && recv(a.far, &byte, 1, 0) != 0) {
+        printf("FAIL %-20s: the old connection's socket was not shut down\n",
+               name);
+        fail = 1;
+    }
+
+    /* The new connection opened with a handshake, and the pass's topology
+     * broadcast went out on it. */
+    if (!fail) {
+        acc = listener_accept(lfd);
+        if (acc < 0 ||
+            read_until(acc, TCP_MSG_MESH_TOPOLOGY, TCP_MSG_HANDSHAKE,
+                       &handshakes) != 0 ||
+            handshakes != 1) {
+            printf("FAIL %-20s: the new connection did not get a handshake "
+                   "and then the topology broadcast\n",
+                   name);
+            fail = 1;
+        }
+    }
+
+    qemu_mutex_lock(&f.priv.mesh_table_lock);
+    bool alive = node->is_alive && node->last_heartbeat >= start;
+    qemu_mutex_unlock(&f.priv.mesh_table_lock);
+    if (!fail && !alive) {
+        printf("FAIL %-20s: node %u was not marked alive after reconnecting\n",
+               name, NODE_A);
+        fail = 1;
+    }
+
+    uint64_t successes = atomic_load(&f.priv.tcp_stats.reconnect_successes);
+    if (!fail && successes != 1) {
+        printf("FAIL %-20s: %" PRIu64 " successful reconnects counted, "
+               "expected 1\n",
+               name, successes);
+        fail = 1;
+    }
+
+    tcp_connection_unref(new_conn);
+    tcp_connection_unref(old_conn);
+    fixture_destroy(&f);
+    if (acc >= 0) {
+        close(acc);
+    }
+    close(lfd);
+    close(a.far);
+
+    if (!fail) {
+        printf("PASS %-20s: silent node redialed, old connection retired\n",
                name);
     }
     return fail;
@@ -852,6 +1046,7 @@ static const struct {
 } cases[] = {
     {"send-vs-reconnect", test_send_vs_reconnect},
     {"relay-vs-reconnect", test_relay_vs_reconnect},
+    {"health-check-reconnect", test_health_check_reconnect},
     {"double-register", test_double_register},
 };
 

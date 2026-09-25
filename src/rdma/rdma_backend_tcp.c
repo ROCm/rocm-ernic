@@ -480,8 +480,6 @@ typedef struct {
     uint16_t port;
     bool is_alive;
     time_t last_heartbeat;
-    int sockfd;          /* Connection to this node (for manager) */
-    TcpConnection *conn; /* Connection object */
 } MeshNodeInfo;
 
 struct TcpBackendPrivate {
@@ -952,8 +950,6 @@ static MeshNodeInfo *mesh_node_info_new(uint32_t node_id, const char *hostname,
     node->port = port;
     node->is_alive = true;
     node->last_heartbeat = time(NULL);
-    node->sockfd = -1;
-    node->conn = NULL;
     return node;
 }
 
@@ -1795,8 +1791,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     qemu_mutex_unlock(&priv->mesh_table_lock);
                     break;
                 }
-                node->sockfd = conn->sockfd;
-                node->conn = conn;
 
                 /* Add to mesh table */
                 g_hash_table_insert(priv->mesh_nodes,
@@ -2700,29 +2694,24 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
 }
 
 /*
- * Replace @node's connection with a new one over @fd, a socket already
- * connected to the node. Takes ownership of @fd whether or not it succeeds.
- * The caller holds mesh_table_lock.
+ * Replace node @node_id's connection with a new one over @fd, a socket
+ * already connected to @hostname:@port. Takes ownership of @fd whether or
+ * not it succeeds.
+ *
+ * Called with no lock held: retiring the old connection joins its receive
+ * thread, which may itself be waiting on mesh_table_lock or
+ * conn_table_lock.
  *
  * Returns true if the new connection was installed.
  */
-static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, MeshNodeInfo *node,
-                                    int fd, time_t now)
+static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, uint32_t node_id,
+                                    const char *hostname, uint16_t port, int fd,
+                                    time_t now)
 {
     atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_attempts, 1,
                               memory_order_relaxed);
 
-    /* Kept alive by the connection table's reference until the replace
-     * below drops it. Users holding their own reference keep it past that,
-     * and see their sends on it fail. */
-    TcpConnection *old_conn = node->conn;
-
-    if (old_conn) {
-        tcp_connection_retire(old_conn);
-    }
-
-    TcpConnection *new_conn =
-        tcp_connection_new(node->node_id, node->hostname, node->port);
+    TcpConnection *new_conn = tcp_connection_new(node_id, hostname, port);
     new_conn->priv = priv;
     new_conn->sockfd = fd;
     atomic_store(&new_conn->is_connected, true);
@@ -2731,32 +2720,169 @@ static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, MeshNodeInfo *node,
         0) {
         rdma_error_report(
             "TCP: Failed to send handshake after reconnect to node %u",
-            node->node_id);
+            node_id);
         tcp_connection_unref(new_conn);
         return false;
     }
 
     char tname[32];
-    snprintf(tname, sizeof(tname), "tcp-recv-%u", node->node_id);
+    snprintf(tname, sizeof(tname), "tcp-recv-%u", node_id);
     atomic_store(&new_conn->recv_thread_running, true);
     qemu_thread_create(&new_conn->recv_thread, tname, tcp_recv_thread_per_conn,
                        new_conn, QEMU_THREAD_JOINABLE);
 
-    /* The table takes over new_conn's creation reference and drops its
-     * reference to old_conn. */
+    /*
+     * Swap the new connection in. The table takes over new_conn's creation
+     * reference and drops its reference to the old connection, so take one
+     * of our own first to keep the old connection alive until it is retired.
+     * From here on, new lookups find new_conn; users still holding the old
+     * connection see their sends on it fail once it is retired.
+     */
     qemu_mutex_lock(&priv->conn_table_lock);
-    g_hash_table_replace(priv->connections, GUINT_TO_POINTER(node->node_id),
+    TcpConnection *old_conn =
+        g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    if (old_conn) {
+        tcp_connection_ref(old_conn);
+    }
+    g_hash_table_replace(priv->connections, GUINT_TO_POINTER(node_id),
                          new_conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
 
-    node->conn = new_conn;
-    node->is_alive = true;
-    node->last_heartbeat = now;
+    if (old_conn) {
+        tcp_connection_retire(old_conn);
+        tcp_connection_unref(old_conn);
+    }
 
-    rdma_info_report("TCP: Reconnected to node %u", node->node_id);
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    MeshNodeInfo *node =
+        g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    if (node) {
+        node->is_alive = true;
+        node->last_heartbeat = now;
+    }
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    rdma_info_report("TCP: Reconnected to node %u", node_id);
     atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_successes, 1,
                               memory_order_relaxed);
     return true;
+}
+
+/* One node's share of a health-check pass. */
+typedef struct {
+    uint32_t node_id;
+    /* Set, with a copy of the node's address, if the node is due a
+     * reconnection attempt. */
+    bool reconnect;
+    char *hostname;
+    uint16_t port;
+} TcpHealthCheckItem;
+
+/*
+ * One health-check pass: heartbeat every other node, mark nodes that have
+ * stopped answering as dead, and try to reconnect dead ones with
+ * exponential backoff (at most every 60 s).
+ *
+ * The decisions are made in one walk of the mesh table under
+ * mesh_table_lock; everything that blocks -- sends, connect(), retiring a
+ * connection -- happens after the lock is released. Receive threads take
+ * mesh_table_lock too, so holding it across any of those would stall them,
+ * and holding it across a retire, which joins a receive thread, could
+ * deadlock.
+ *
+ * Deaths are broadcast as soon as the walk is done, before any reconnect
+ * attempt: connect() to an unreachable node can block for a long time, and
+ * the other nodes should not wait on it to learn the node is gone.
+ * Successful reconnects are broadcast once, at the end.
+ */
+static void tcp_health_check_pass(TcpBackendPrivate *priv)
+{
+    GArray *items = g_array_new(FALSE, TRUE, sizeof(TcpHealthCheckItem));
+    bool node_died = false;
+    bool node_reconnected = false;
+    time_t now = time(NULL);
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        MeshNodeInfo *node = (MeshNodeInfo *)value;
+        TcpHealthCheckItem item = {.node_id = node->node_id};
+
+        if (node->node_id == priv->local_node_id)
+            continue;
+
+        /* Check if node hasn't responded */
+        time_t dead_sec = now - node->last_heartbeat;
+        if (dead_sec > (time_t)priv->health_check_interval_sec * 3) {
+            if (node->is_alive) {
+                rdma_warn_report("TCP: Node %u failed health "
+                                 "check (last heartbeat: "
+                                 "%ld seconds ago)",
+                                 node->node_id, (long)dead_sec);
+                node->is_alive = false;
+                node_died = true;
+            }
+
+            /* Attempt reconnection with exponential backoff (max 60 s). */
+            time_t backoff = 1;
+            while (backoff * 2 <= dead_sec && backoff < 60)
+                backoff *= 2;
+            if (backoff > 60)
+                backoff = 60;
+
+            if (dead_sec % backoff == 0 && node->hostname) {
+                item.reconnect = true;
+                item.hostname = g_strdup(node->hostname);
+                item.port = node->port;
+            }
+        }
+
+        g_array_append_val(items, item);
+    }
+
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    if (node_died) {
+        tcp_broadcast_mesh_topology(priv);
+    }
+
+    for (guint i = 0; i < items->len; i++) {
+        TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
+
+        /* Send heartbeat request */
+        TcpConnection *conn = tcp_connection_lookup(priv, item->node_id);
+        if (conn && atomic_load(&conn->is_connected)) {
+            qemu_mutex_lock(&conn->lock);
+            tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
+                             atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                                       memory_order_relaxed),
+                             priv->local_node_id, item->node_id, 0, 0);
+            qemu_mutex_unlock(&conn->lock);
+        }
+        tcp_connection_unref(conn);
+
+        if (item->reconnect) {
+            rdma_info_report("TCP: Attempting reconnect "
+                             "to node %u (%s:%u)",
+                             item->node_id, item->hostname, item->port);
+            int fd = tcp_connect_to_remote(item->hostname, item->port);
+            if (fd >= 0 &&
+                tcp_mesh_reconnect_node(priv, item->node_id, item->hostname,
+                                        item->port, fd, now)) {
+                node_reconnected = true;
+            }
+        }
+        g_free(item->hostname);
+    }
+    g_array_free(items, TRUE);
+
+    if (node_reconnected) {
+        tcp_broadcast_mesh_topology(priv);
+    }
 }
 
 /* Manager health check thread */
@@ -2767,70 +2893,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
     rdma_info_report("TCP: Manager health check thread started");
 
     while (priv->health_check_running) {
-        qemu_mutex_lock(&priv->mesh_table_lock);
-
-        GHashTableIter iter;
-        gpointer key, value;
-        g_hash_table_iter_init(&iter, priv->mesh_nodes);
-
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            MeshNodeInfo *node = (MeshNodeInfo *)value;
-
-            if (node->node_id == priv->local_node_id)
-                continue;
-
-            /* Send heartbeat request */
-            if (node->conn && atomic_load(&node->conn->is_connected)) {
-                qemu_mutex_lock(&node->conn->lock);
-                tcp_send_message(node->conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
-                                 atomic_fetch_add_explicit(
-                                     &priv->next_seq, 1, memory_order_relaxed),
-                                 priv->local_node_id, node->node_id, 0, 0);
-                qemu_mutex_unlock(&node->conn->lock);
-            }
-
-            /* Check if node hasn't responded */
-            time_t now = time(NULL);
-            if (now - node->last_heartbeat >
-                priv->health_check_interval_sec * 3) {
-                if (node->is_alive) {
-                    rdma_warn_report("TCP: Node %u failed health "
-                                     "check (last heartbeat: "
-                                     "%ld seconds ago)",
-                                     node->node_id, now - node->last_heartbeat);
-                    node->is_alive = false;
-                    qemu_mutex_unlock(&priv->mesh_table_lock);
-                    tcp_broadcast_mesh_topology(priv);
-                    qemu_mutex_lock(&priv->mesh_table_lock);
-                }
-
-                /*
-                 * Attempt reconnection with
-                 * exponential backoff (max 60 s).
-                 */
-                time_t dead_sec = now - node->last_heartbeat;
-                time_t backoff = 1;
-                while (backoff * 2 <= dead_sec && backoff < 60)
-                    backoff *= 2;
-                if (backoff > 60)
-                    backoff = 60;
-
-                if (dead_sec % backoff == 0 && node->hostname) {
-                    rdma_info_report("TCP: Attempting reconnect "
-                                     "to node %u (%s:%u)",
-                                     node->node_id, node->hostname, node->port);
-                    int fd = tcp_connect_to_remote(node->hostname, node->port);
-                    if (fd >= 0 &&
-                        tcp_mesh_reconnect_node(priv, node, fd, now)) {
-                        qemu_mutex_unlock(&priv->mesh_table_lock);
-                        tcp_broadcast_mesh_topology(priv);
-                        qemu_mutex_lock(&priv->mesh_table_lock);
-                    }
-                }
-            }
-        }
-
-        qemu_mutex_unlock(&priv->mesh_table_lock);
+        tcp_health_check_pass(priv);
 
         /* Sleep for health check interval */
         g_usleep(priv->health_check_interval_sec * G_USEC_PER_SEC);
