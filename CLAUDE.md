@@ -10,13 +10,38 @@ Code must compile warning-free under both clang and gcc.
 Code must pass sanitizer checks (ASAN, LSAN, TSAN, etc.).
 
 Code must be formatted using the version of clang-format we use
-in the CI.
+in the CI (clang-format 18, see below).
 
 ## Other code
 
 Python 3.10 is usually the minimum supported Python standard.
 
+Python code must pass black and pylint.
+
 bash scripts must be shellcheck-clean.
+
+## CI linters
+
+Each of these runs on pull requests and must pass. Run them from the
+top of the tree, which is where CI runs them and where their config
+files are picked up.
+
+- clang-format (`.github/workflows/clang-format.yml`): clang-format 18
+  over every `.c` and `.h` outside `third-party/`, using
+  `.clang-format`.
+- ShellCheck (`shellcheck.yml`): ShellCheck 0.11.0 over every `*.sh`,
+  `*.sh.in` and extension-less executable with a shell shebang. The
+  checks it excludes are listed in the workflow.
+- black and pylint (`pylint.yml`): every `*.py` and extension-less
+  script with a python shebang, except `third-party/`,
+  `nix/analysis/triage/` and `.cmake-format.py`. pylint needs
+  `prometheus/requirements-exporter.txt` installed to resolve
+  ernic-exporter's imports.
+- cmakelint (`cmakelint.yml`): every `CMakeLists.txt` and `*.cmake`
+  outside `third-party/`, using `.cmakelintrc`.
+- codespell (`codespell.yml`): the whole tree, using `.codespellrc`.
+- CodeQL (`codeql.yml`): analyzes the C code. Do not introduce new
+  alerts.
 
 ## Security
 
@@ -34,6 +59,10 @@ warnings that are almost impossible to fix due to things like
 outside or vendored code. If you remove a warning suppression, check
 to see if it is referenced elsewhere in the code to avoid creating
 orphaned macros.
+
+The same rule applies to pylint. Suppress as narrowly as possible
+(`# pylint: disable-next=...` on the one line), with a comment
+saying why.
 
 ## Vendored code
 
