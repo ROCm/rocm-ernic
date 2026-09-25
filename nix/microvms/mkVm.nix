@@ -203,9 +203,6 @@ in
       systemd.enableEmergencyMode = false;
 
       services.getty.autologinUser = "root";
-      # Precomputed hash for the password "test" (usable at the console).
-      users.users.root.hashedPassword =
-        "$6$xyz$LH8r4wzLEMW8IaOSNSaJiXCrfvBsXKjJhBauJQIFsT7xbKkNdM0xQx7gQZt.z6G.xj2wX0qxGm.7eVxJqkDdH0";
 
       environment.systemPackages = with pkgs; [
         coreutils procps util-linux gnugrep selfTest
