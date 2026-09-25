@@ -182,12 +182,22 @@ static int read_exact(int fd, void *buf, size_t len)
  * stack into freshly-zeroed heap "fake stacks", which would hide the poison
  * and make this test vacuously pass. Turn it off for this binary; the
  * address/leak checks the project cares about here are unaffected.
+ *
+ * The runtime looks this hook up by name, so the reserved identifier is
+ * unavoidable.
  */
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-identifier"
+#endif
 const char *__asan_default_options(void);
 const char *__asan_default_options(void)
 {
     return "detect_stack_use_after_return=0";
 }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 /*
  * Address of a local in the broadcast thread's frame, recorded so the caller

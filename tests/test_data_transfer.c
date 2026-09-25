@@ -515,7 +515,7 @@ static void cleanup_resources(struct test_context *ctx)
 
 int main(void)
 {
-    struct test_context ctx = {0};
+    struct test_context ctx = {.context = NULL};
     int ret = 0;
 
     printf(

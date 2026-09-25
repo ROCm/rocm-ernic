@@ -44,32 +44,32 @@
  * single-threaded in the device logic.
  */
 
-void __qatomic_set_impl(int *ptr, int val)
+void qatomic_set_impl(int *ptr, int val)
 {
     *ptr = val;
 }
 
-int __qatomic_read_impl(const int *ptr)
+int qatomic_read_impl(const int *ptr)
 {
     return *ptr;
 }
 
-void __qatomic_inc_impl(int *ptr)
+void qatomic_inc_impl(int *ptr)
 {
     (*ptr)++;
 }
 
-void __qatomic_dec_impl(int *ptr)
+void qatomic_dec_impl(int *ptr)
 {
     (*ptr)--;
 }
 
-void __qatomic_add_impl(int *ptr, int val)
+void qatomic_add_impl(int *ptr, int val)
 {
     *ptr += val;
 }
 
-void __qatomic_sub_impl(int *ptr, int val)
+void qatomic_sub_impl(int *ptr, int val)
 {
     *ptr -= val;
 }

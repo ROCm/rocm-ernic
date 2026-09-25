@@ -321,9 +321,9 @@ int main(int argc, char **argv)
     int ret = 1;
 
     static struct option long_options[] = {
-        {"socket", required_argument, 0, 's'},
-        {"help", no_argument, 0, 'h'},
-        {0, 0, 0, 0}};
+        {"socket", required_argument, NULL, 's'},
+        {"help", no_argument, NULL, 'h'},
+        {NULL, 0, NULL, 0}};
 
     int c;
     while ((c = getopt_long(argc, argv, "s:h", long_options, NULL)) != -1) {
