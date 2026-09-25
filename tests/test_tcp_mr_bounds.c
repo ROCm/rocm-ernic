@@ -587,6 +587,7 @@ static int recv_fixture_start(struct recv_fixture *f)
     memset(&f->priv, 0, sizeof(f->priv));
     memset(&f->backend_dev, 0, sizeof(f->backend_dev));
     memset(&f->dev_res, 0, sizeof(f->dev_res));
+    tcp_private_init_atomics(&f->priv);
 
     f->backend_dev.rdma_dev_res = &f->dev_res;
     f->backend_dev.backend_private = &f->priv;
@@ -598,14 +599,14 @@ static int recv_fixture_start(struct recv_fixture *f)
     tcp_bufpool_init(&f->priv.recv_pool);
 
     memset(&f->conn, 0, sizeof(f->conn));
+    /* Includes the fixture's own reference. It is never dropped, so the
+     * references the receive thread takes and releases on replies can never
+     * free this embedded object. */
+    tcp_connection_init_atomics(&f->conn);
     f->conn.node_id = TEST_PEER_NODE;
     f->conn.sockfd = f->sv[0];
     atomic_store(&f->conn.is_connected, true);
     atomic_store(&f->conn.recv_thread_running, true);
-    /* The fixture's own reference. It is never dropped, so the references
-     * the receive thread takes and releases on replies can never free this
-     * embedded object. */
-    atomic_store(&f->conn.refcount, 1);
     f->conn.priv = &f->priv;
     qemu_mutex_init(&f->conn.lock);
 
@@ -931,6 +932,7 @@ static void run_loopback_write(uint64_t raddr, uint64_t *rdma_write_bytes)
     memset(&backend_dev, 0, sizeof(backend_dev));
     memset(&dev_res, 0, sizeof(dev_res));
     memset(&priv, 0, sizeof(priv));
+    tcp_private_init_atomics(&priv);
     memset(&tqp, 0, sizeof(tqp));
     memset(&qp, 0, sizeof(qp));
     memset(&ctx, 0, sizeof(ctx));

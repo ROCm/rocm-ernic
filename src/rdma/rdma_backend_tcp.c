@@ -28,7 +28,9 @@
 #include "qemu/compiler.h" /* For container_of() */
 #include "rocm-ernic-warnings.h"
 #include <errno.h>
+#include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 #include <glib.h>
 #include <stdio.h>
@@ -79,6 +81,9 @@ _Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
 /* Tunable defaults -- overridable via env vars */
 #define TCP_DEFAULT_LISTEN_BACKLOG    32
 #define TCP_DEFAULT_HEALTH_INTERVAL_S 5
+
+/* A node that has not answered for this many health-check intervals is dead */
+#define TCP_HEALTH_DEAD_INTERVALS 3
 
 static int tcp_env_int(const char *name, int fallback)
 {
@@ -588,6 +593,20 @@ static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
 static int tcp_worker_register_with_manager(TcpBackendPrivate *priv);
 static void *tcp_manager_health_check_thread(void *opaque);
 
+/*
+ * Give the atomic members of a zeroed TcpBackendPrivate their starting
+ * values. Zeroed storage is not enough: C11 requires atomic_init() for an
+ * atomic object that is not static.
+ */
+static void tcp_private_init_atomics(TcpBackendPrivate *priv)
+{
+    atomic_init(&priv->next_seq, 1);
+    atomic_init(&priv->tcp_stats.reconnect_attempts, 0);
+    atomic_init(&priv->tcp_stats.reconnect_successes, 0);
+    atomic_init(&priv->accept_thread_running, false);
+    atomic_init(&priv->health_check_running, false);
+}
+
 static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 {
     if (!backend_dev) {
@@ -838,6 +857,25 @@ static void tcp_connection_destroy_notify(gpointer data)
 }
 
 /*
+ * Stop a connection carrying traffic: mark it down and shut its socket down.
+ * Safe from any thread, including the connection's own receive thread,
+ * because unlike tcp_connection_retire() it does not join that thread. The
+ * receive thread sees the shutdown and exits by itself; whoever retires the
+ * connection later joins it.
+ */
+static void tcp_connection_abort(TcpConnection *conn)
+{
+    atomic_store(&conn->is_connected, false);
+
+    /* shutdown() rather than close(): the descriptor stays valid, and its
+     * number reserved, for users still holding a reference. It wakes the
+     * receive thread's poll() and fails any send blocked on a full buffer. */
+    if (conn->sockfd >= 0) {
+        shutdown(conn->sockfd, SHUT_RDWR);
+    }
+}
+
+/*
  * Take a connection out of service: mark it disconnected, shut its socket
  * down, and stop and join its receive thread. Users still holding a
  * reference see their sends fail rather than hang; the connection itself
@@ -850,18 +888,24 @@ static void tcp_connection_destroy_notify(gpointer data)
  */
 static void tcp_connection_retire(TcpConnection *conn)
 {
-    atomic_store(&conn->is_connected, false);
-
-    /* shutdown() rather than close(): the descriptor stays valid, and its
-     * number reserved, for users still holding a reference. It wakes the
-     * receive thread's poll() and fails any send blocked on a full buffer. */
-    if (conn->sockfd >= 0) {
-        shutdown(conn->sockfd, SHUT_RDWR);
-    }
+    tcp_connection_abort(conn);
 
     if (atomic_exchange(&conn->recv_thread_running, false)) {
         qemu_thread_join(&conn->recv_thread);
     }
+}
+
+/*
+ * Give the atomic members of a zeroed TcpConnection their starting values:
+ * down, no receive thread, and one reference. As with TcpBackendPrivate,
+ * zeroed storage is not enough.
+ */
+static void tcp_connection_init_atomics(TcpConnection *conn)
+{
+    atomic_init(&conn->is_connected, false);
+    atomic_init(&conn->refcount, 1);
+    atomic_init(&conn->recv_thread_running, false);
+    atomic_init(&conn->recv_thread_exited, false);
 }
 
 /* A new connection, holding the single reference returned to the caller. */
@@ -873,10 +917,7 @@ static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
     conn->sockfd = -1;
     conn->remote_host = g_strdup(host);
     conn->remote_port = port;
-    atomic_init(&conn->is_connected, false);
-    atomic_init(&conn->refcount, 1);
-    atomic_init(&conn->recv_thread_running, false);
-    atomic_init(&conn->recv_thread_exited, false);
+    tcp_connection_init_atomics(conn);
     qemu_mutex_init(&conn->lock);
     return conn;
 }
@@ -1283,12 +1324,18 @@ static int tcp_listen_on_port(uint16_t port)
  * The payload may be given in two parts so a caller that already holds a
  * header and a body separately does not have to splice them into one buffer
  * first -- a gather send puts them on the wire as one message either way.
+ *
+ * Gives up once the monotonic clock (g_get_monotonic_time()) passes
+ * @deadline_us, returning -ETIMEDOUT. By then part of the message may
+ * already have been written, leaving the stream mid-message, so the
+ * connection cannot carry anything more.
  */
-static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
-                             const void *payload, size_t payload_len,
-                             const void *payload2, size_t payload2_len,
-                             uint32_t seq, uint32_t src_node, uint32_t dst_node,
-                             uint32_t src_qpn, uint32_t dst_qpn)
+static int tcp_send_message_until(int sockfd, TcpMsgType msg_type,
+                                  const void *payload, size_t payload_len,
+                                  const void *payload2, size_t payload2_len,
+                                  uint32_t seq, uint32_t src_node,
+                                  uint32_t dst_node, uint32_t src_qpn,
+                                  uint32_t dst_qpn, int64_t deadline_us)
 {
     TcpMsgHeader hdr;
     ssize_t ret;
@@ -1359,6 +1406,9 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
         ret = sendmsg(sockfd, &msg, MSG_NOSIGNAL);
         if (ret < 0) {
             if (errno == EAGAIN) {
+                if (g_get_monotonic_time() >= deadline_us) {
+                    return -ETIMEDOUT;
+                }
                 struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
                 poll(&pfd, 1, 5);
                 continue;
@@ -1373,6 +1423,18 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     return 0;
 }
 
+/* Waits for as long as the peer takes to read the whole message. */
+static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
+                             const void *payload, size_t payload_len,
+                             const void *payload2, size_t payload2_len,
+                             uint32_t seq, uint32_t src_node, uint32_t dst_node,
+                             uint32_t src_qpn, uint32_t dst_qpn)
+{
+    return tcp_send_message_until(sockfd, msg_type, payload, payload_len,
+                                  payload2, payload2_len, seq, src_node,
+                                  dst_node, src_qpn, dst_qpn, INT64_MAX);
+}
+
 static int tcp_send_message(int sockfd, TcpMsgType msg_type,
                             const void *payload, size_t payload_len,
                             uint32_t seq, uint32_t src_node, uint32_t dst_node,
@@ -1380,6 +1442,55 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
 {
     return tcp_send_message2(sockfd, msg_type, payload, payload_len, NULL, 0,
                              seq, src_node, dst_node, src_qpn, dst_qpn);
+}
+
+/*
+ * Send a control message -- a heartbeat or a topology broadcast -- on @conn,
+ * giving up if it cannot be delivered within the time it takes to declare a
+ * node dead. Returns 0, or a negative value if the send failed.
+ *
+ * An ordinary send waits for as long as the peer takes to read, and a peer
+ * that has stopped reading while its connection stays up makes that
+ * forever. The health check sends these, so an unbounded send could leave
+ * it unable ever to declare that peer dead, and tcp_fini(), which joins it,
+ * unable to finish. The limit also covers waiting for conn->lock, which a
+ * data-path send to the same peer holds for as long as its own send takes.
+ *
+ * Either way, a peer that cannot take a message in that time has stopped
+ * reading, and a message cut off part way has left the stream mid-message,
+ * so on timeout the connection is aborted. Its receive thread then exits,
+ * and the manager's health check reconnects the node once it is found dead.
+ */
+static int tcp_send_control(TcpBackendPrivate *priv, TcpConnection *conn,
+                            TcpMsgType msg_type, const void *payload,
+                            size_t payload_len, uint32_t dst_node)
+{
+    const time_t timeout_s =
+        (time_t)priv->health_check_interval_sec * TCP_HEALTH_DEAD_INTERVALS;
+    const int64_t deadline_us =
+        g_get_monotonic_time() + (int64_t)timeout_s * G_USEC_PER_SEC;
+    struct timespec lock_deadline;
+    int ret = -ETIMEDOUT;
+
+    /* pthread_mutex_timedlock() takes a CLOCK_REALTIME deadline */
+    clock_gettime(CLOCK_REALTIME, &lock_deadline);
+    lock_deadline.tv_sec += timeout_s;
+
+    if (pthread_mutex_timedlock(&conn->lock.lock, &lock_deadline) == 0) {
+        ret = tcp_send_message_until(
+            conn->sockfd, msg_type, payload, payload_len, NULL, 0,
+            atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
+            priv->local_node_id, dst_node, 0, 0, deadline_us);
+        qemu_mutex_unlock(&conn->lock);
+    }
+
+    if (ret == -ETIMEDOUT) {
+        rdma_warn_report("TCP: Node %u is not reading; dropping its "
+                         "connection",
+                         dst_node);
+        tcp_connection_abort(conn);
+    }
+    return ret;
 }
 
 /*
@@ -2830,24 +2941,29 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
 
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-    /* Broadcast to all connected workers */
-    qemu_mutex_lock(&priv->conn_table_lock);
+    /* Broadcast to all connected workers. The sends happen after the table
+     * lock is released: each can wait on a worker that has stopped reading,
+     * and nothing that needs the table should wait with it. */
+    GPtrArray *targets =
+        g_ptr_array_new_with_free_func(tcp_connection_destroy_notify);
     GHashTableIter conn_iter;
-    g_hash_table_iter_init(&conn_iter, priv->connections);
 
+    qemu_mutex_lock(&priv->conn_table_lock);
+    g_hash_table_iter_init(&conn_iter, priv->connections);
     while (g_hash_table_iter_next(&conn_iter, &key, &value)) {
         TcpConnection *conn = (TcpConnection *)value;
-        if (conn && atomic_load(&conn->is_connected)) {
-            qemu_mutex_lock(&conn->lock);
-            tcp_send_message(conn->sockfd, TCP_MSG_MESH_TOPOLOGY, &topo,
-                             sizeof(TcpMeshTopologyPayload),
-                             atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                       memory_order_relaxed),
-                             priv->local_node_id, conn->node_id, 0, 0);
-            qemu_mutex_unlock(&conn->lock);
+        if (atomic_load(&conn->is_connected)) {
+            g_ptr_array_add(targets, tcp_connection_ref(conn));
         }
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
+
+    for (guint i = 0; i < targets->len; i++) {
+        TcpConnection *conn = g_ptr_array_index(targets, i);
+        tcp_send_control(priv, conn, TCP_MSG_MESH_TOPOLOGY, &topo, sizeof(topo),
+                         conn->node_id);
+    }
+    g_ptr_array_free(targets, TRUE);
 
     rdma_info_report("TCP: Broadcast mesh topology to %u nodes", num_nodes);
 }
@@ -2998,7 +3114,8 @@ static void tcp_health_check_pass(TcpBackendPrivate *priv)
 
         /* Check if node hasn't responded */
         time_t dead_sec = now - node->last_heartbeat;
-        if (dead_sec > (time_t)priv->health_check_interval_sec * 3) {
+        if (dead_sec > (time_t)priv->health_check_interval_sec *
+                           TCP_HEALTH_DEAD_INTERVALS) {
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u failed health "
                                  "check (last heartbeat: "
@@ -3037,12 +3154,8 @@ static void tcp_health_check_pass(TcpBackendPrivate *priv)
         /* Send heartbeat request */
         TcpConnection *conn = tcp_connection_lookup(priv, item->node_id);
         if (conn && atomic_load(&conn->is_connected)) {
-            qemu_mutex_lock(&conn->lock);
-            tcp_send_message(conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
-                             atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                       memory_order_relaxed),
-                             priv->local_node_id, item->node_id, 0, 0);
-            qemu_mutex_unlock(&conn->lock);
+            tcp_send_control(priv, conn, TCP_MSG_HEARTBEAT, NULL, 0,
+                             item->node_id);
         }
         tcp_connection_unref(conn);
 
@@ -3251,13 +3364,10 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->next_mr_handle = 1;
     priv->next_cq_handle = 1;
     priv->next_qpn = 100;
-    atomic_init(&priv->next_seq, 1);
-    atomic_init(&priv->tcp_stats.reconnect_attempts, 0);
-    atomic_init(&priv->tcp_stats.reconnect_successes, 0);
+    tcp_private_init_atomics(priv);
 
     priv->listen_fd = -1;
     priv->is_listening = false;
-    atomic_init(&priv->accept_thread_running, false);
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
@@ -3265,7 +3375,6 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     /* Initialize manager/worker fields */
     priv->is_manager = false;
     priv->mesh_nodes = NULL;
-    atomic_init(&priv->health_check_running, false);
     /* tcp_env_int() only returns positive values */
     priv->health_check_interval_sec = (uint32_t)tcp_env_int(
         "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);

@@ -45,6 +45,11 @@
  * one object. An unregistered connection must be shut down at teardown, and
  * one whose peer has left must be dropped by the next health-check pass.
  *
+ * The stalled-peer case runs a pass against peers that have stopped reading
+ * while their connections stay up. The pass must give up on them within its
+ * limit and drop their connections rather than wait for good, and must not
+ * hold the connection table lock while it waits.
+ *
  * The last five cases run tcp_init() and tcp_fini() themselves, mostly on a
  * manager and two workers in this process, connected over loopback exactly
  * as separate servers would be. The mesh must come up and go down cleanly
@@ -196,6 +201,7 @@ RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
 #define MANAGER_NODE 0u
 #define NODE_A       1u
 #define NODE_B       2u
+#define NODE_C       3u
 
 /* The node ID the manager's accept thread gives a connection until it
  * registers. */
@@ -290,9 +296,13 @@ struct peer {
     int far;
 };
 
-static void fixture_init(struct mesh_fixture *f)
+/*
+ * On the heap rather than the test's stack: the fixture's backend is shared
+ * with the receive threads through every connection's priv pointer.
+ */
+static struct mesh_fixture *fixture_new(void)
 {
-    memset(f, 0, sizeof(*f));
+    struct mesh_fixture *f = g_new0(struct mesh_fixture, 1);
 
     f->backend_dev.backend_private = &f->priv;
     f->priv.backend_dev = &f->backend_dev;
@@ -300,9 +310,7 @@ static void fixture_init(struct mesh_fixture *f)
     f->priv.is_manager = true;
     f->priv.local_node_id = MANAGER_NODE;
     f->priv.next_available_node_id = 1;
-    atomic_init(&f->priv.next_seq, 1);
-    atomic_init(&f->priv.tcp_stats.reconnect_attempts, 0);
-    atomic_init(&f->priv.tcp_stats.reconnect_successes, 0);
+    tcp_private_init_atomics(&f->priv);
 
     f->priv.connections = g_hash_table_new_full(
         lookup_hook_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
@@ -319,12 +327,13 @@ static void fixture_init(struct mesh_fixture *f)
     g_hash_table_insert(
         f->priv.mesh_nodes, GUINT_TO_POINTER(MANAGER_NODE),
         mesh_node_info_new(MANAGER_NODE, "manager.invalid", PEER_PORT));
+    return f;
 }
 
 /*
  * Stop every receive thread still attached to the table, then release the
- * tables. The threads are joined before anything is freed so none of them
- * can be inside a lookup when the table goes away.
+ * tables and the fixture. The threads are joined before anything is freed so
+ * none of them can be inside a lookup when the table goes away.
  */
 static void fixture_destroy(struct mesh_fixture *f)
 {
@@ -337,6 +346,7 @@ static void fixture_destroy(struct mesh_fixture *f)
     qemu_mutex_destroy(&f->priv.lock);
     qemu_mutex_destroy(&f->priv.mesh_table_lock);
     qemu_mutex_destroy(&f->priv.conn_table_lock);
+    g_free(f);
 }
 
 /*
@@ -637,7 +647,7 @@ static int park_sender(struct ionic_send *s, struct mesh_fixture *f,
  */
 static int test_send_vs_reconnect(const char *name)
 {
-    struct mesh_fixture f;
+    struct mesh_fixture *f = fixture_new();
     struct peer a;
     struct ionic_send parked = {0};
     struct ionic_send waiting = {0};
@@ -645,26 +655,25 @@ static int test_send_vs_reconnect(const char *name)
     int new_far = -1;
     int fail = 0;
 
-    fixture_init(&f);
-    if (peer_open(&f, NODE_A, true, &a) != 0 ||
-        peer_register(&f, &a, PEER_HOST, PEER_PORT) != 0) {
+    if (peer_open(f, NODE_A, true, &a) != 0 ||
+        peer_register(f, &a, PEER_HOST, PEER_PORT) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
     uint8_t *bulk = g_malloc0(BULK_LEN);
 
-    if (park_sender(&parked, &f, &a, bulk) != 0) {
+    if (park_sender(&parked, f, &a, bulk) != 0) {
         printf("FAIL %-20s: the bulk send never started\n", name);
         fail = 1;
     } else {
         lookup_hook_arm();
-        if (ionic_send_start(&waiting, &f, NODE_A, small, sizeof(small)) != 0 ||
+        if (ionic_send_start(&waiting, f, NODE_A, small, sizeof(small)) != 0 ||
             !lookup_hook_wait()) {
             printf("FAIL %-20s: the second send never looked node %u up\n",
                    name, NODE_A);
             fail = 1;
-        } else if (reconnect(&f, NODE_A, &new_far) != 0) {
+        } else if (reconnect(f, NODE_A, &new_far) != 0) {
             printf("FAIL %-20s: reconnect failed\n", name);
             fail = 1;
         }
@@ -696,7 +705,7 @@ static int test_send_vs_reconnect(const char *name)
     if (new_far >= 0) {
         close(new_far);
     }
-    fixture_destroy(&f);
+    fixture_destroy(f);
 
     if (!fail) {
         printf("PASS %-20s: sends on the replaced connection failed "
@@ -717,7 +726,7 @@ static int test_send_vs_reconnect(const char *name)
  */
 static int test_relay_vs_reconnect(const char *name)
 {
-    struct mesh_fixture f;
+    struct mesh_fixture *f = fixture_new();
     struct peer a;
     struct peer b;
     struct ionic_send parked = {0};
@@ -725,23 +734,22 @@ static int test_relay_vs_reconnect(const char *name)
     int new_far = -1;
     int fail = 0;
 
-    fixture_init(&f);
-    if (peer_open(&f, NODE_A, true, &a) != 0 ||
-        peer_register(&f, &a, PEER_HOST, PEER_PORT) != 0) {
+    if (peer_open(f, NODE_A, true, &a) != 0 ||
+        peer_register(f, &a, PEER_HOST, PEER_PORT) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
-    if (peer_open(&f, NODE_B, false, &b) != 0 ||
-        peer_register(&f, &b, PEER_HOST, PEER_PORT) != 0) {
+    if (peer_open(f, NODE_B, false, &b) != 0 ||
+        peer_register(f, &b, PEER_HOST, PEER_PORT) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
         close(a.far);
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
     uint8_t *bulk = g_malloc0(BULK_LEN);
 
-    if (park_sender(&parked, &f, &a, bulk) != 0) {
+    if (park_sender(&parked, f, &a, bulk) != 0) {
         printf("FAIL %-20s: the bulk send never started\n", name);
         fail = 1;
     } else {
@@ -753,7 +761,7 @@ static int test_relay_vs_reconnect(const char *name)
             printf("FAIL %-20s: the relay never looked node %u up\n", name,
                    NODE_A);
             fail = 1;
-        } else if (reconnect(&f, NODE_A, &new_far) != 0) {
+        } else if (reconnect(f, NODE_A, &new_far) != 0) {
             printf("FAIL %-20s: reconnect failed\n", name);
             fail = 1;
         }
@@ -790,7 +798,7 @@ static int test_relay_vs_reconnect(const char *name)
     if (new_far >= 0) {
         close(new_far);
     }
-    fixture_destroy(&f);
+    fixture_destroy(f);
     close(b.far);
 
     if (!fail) {
@@ -876,7 +884,7 @@ static time_t next_second(void)
  */
 static int test_health_check_reconnect(const char *name)
 {
-    struct mesh_fixture f;
+    struct mesh_fixture *f = fixture_new();
     struct peer a = {.conn = NULL, .far = -1};
     uint16_t port = 0;
     int acc = -1;
@@ -884,12 +892,11 @@ static int test_health_check_reconnect(const char *name)
     unsigned death_broadcasts = 0;
     int fail = 0;
 
-    fixture_init(&f);
-    f.priv.health_check_interval_sec = 1;
+    f->priv.health_check_interval_sec = 1;
 
     int lfd = listener_open(&port);
-    if (lfd < 0 || peer_open(&f, NODE_A, false, &a) != 0 ||
-        peer_register(&f, &a, "127.0.0.1", port) != 0) {
+    if (lfd < 0 || peer_open(f, NODE_A, false, &a) != 0 ||
+        peer_register(f, &a, "127.0.0.1", port) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
         if (lfd >= 0) {
             close(lfd);
@@ -897,24 +904,32 @@ static int test_health_check_reconnect(const char *name)
         if (a.far >= 0) {
             close(a.far);
         }
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
 
     /* Held across the pass so the old connection can still be inspected
      * after it has been replaced. */
-    TcpConnection *old_conn = tcp_connection_lookup(&f.priv, NODE_A);
+    TcpConnection *old_conn = tcp_connection_lookup(&f->priv, NODE_A);
+    if (!old_conn) {
+        printf("FAIL %-20s: node %u has no connection to replace\n", name,
+               NODE_A);
+        close(lfd);
+        close(a.far);
+        fixture_destroy(f);
+        return 1;
+    }
 
     time_t start = next_second();
-    qemu_mutex_lock(&f.priv.mesh_table_lock);
+    qemu_mutex_lock(&f->priv.mesh_table_lock);
     MeshNodeInfo *node =
-        g_hash_table_lookup(f.priv.mesh_nodes, GUINT_TO_POINTER(NODE_A));
+        g_hash_table_lookup(f->priv.mesh_nodes, GUINT_TO_POINTER(NODE_A));
     node->last_heartbeat = start - SILENT_SEC;
-    qemu_mutex_unlock(&f.priv.mesh_table_lock);
+    qemu_mutex_unlock(&f->priv.mesh_table_lock);
 
-    tcp_health_check_pass(&f.priv);
+    tcp_health_check_pass(&f->priv);
 
-    TcpConnection *new_conn = tcp_connection_lookup(&f.priv, NODE_A);
+    TcpConnection *new_conn = tcp_connection_lookup(&f->priv, NODE_A);
     if (!new_conn || new_conn == old_conn ||
         !atomic_load(&new_conn->is_connected)) {
         printf("FAIL %-20s: node %u's connection was not replaced\n", name,
@@ -958,16 +973,16 @@ static int test_health_check_reconnect(const char *name)
         }
     }
 
-    qemu_mutex_lock(&f.priv.mesh_table_lock);
+    qemu_mutex_lock(&f->priv.mesh_table_lock);
     bool alive = node->is_alive && node->last_heartbeat >= start;
-    qemu_mutex_unlock(&f.priv.mesh_table_lock);
+    qemu_mutex_unlock(&f->priv.mesh_table_lock);
     if (!fail && !alive) {
         printf("FAIL %-20s: node %u was not marked alive after reconnecting\n",
                name, NODE_A);
         fail = 1;
     }
 
-    uint64_t successes = atomic_load(&f.priv.tcp_stats.reconnect_successes);
+    uint64_t successes = atomic_load(&f->priv.tcp_stats.reconnect_successes);
     if (!fail && successes != 1) {
         printf("FAIL %-20s: %" PRIu64 " successful reconnects counted, "
                "expected 1\n",
@@ -977,7 +992,7 @@ static int test_health_check_reconnect(const char *name)
 
     tcp_connection_unref(new_conn);
     tcp_connection_unref(old_conn);
-    fixture_destroy(&f);
+    fixture_destroy(f);
     if (acc >= 0) {
         close(acc);
     }
@@ -1020,20 +1035,19 @@ static unsigned steal_entries(struct mesh_fixture *f, TcpConnection *conn)
  */
 static int test_double_register(const char *name)
 {
-    struct mesh_fixture f;
+    struct mesh_fixture *f = fixture_new();
     struct peer p;
     TcpRegisterNodePayload reg;
     unsigned resps = 0;
     int fail = 0;
 
-    fixture_init(&f);
 
-    if (peer_open(&f, UNASSIGNED_NODE, false, &p) != 0) {
+    if (peer_open(f, UNASSIGNED_NODE, false, &p) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
-    peer_pend(&f, &p);
+    peer_pend(f, &p);
 
     memset(&reg, 0, sizeof(reg));
     g_strlcpy(reg.hostname, PEER_HOST, sizeof(reg.hostname));
@@ -1071,7 +1085,7 @@ static int test_double_register(const char *name)
                name, resps);
         fail = 1;
     }
-    if (!fail && is_pending(&f, p.conn)) {
+    if (!fail && is_pending(f, p.conn)) {
         printf("FAIL %-20s: connection still pending after registering\n",
                name);
         fail = 1;
@@ -1085,7 +1099,7 @@ static int test_double_register(const char *name)
      * a double free at teardown. With no entries the pending set still owns
      * it, and the fixture releases it.
      */
-    unsigned entries = steal_entries(&f, p.conn);
+    unsigned entries = steal_entries(f, p.conn);
     if (!fail && entries != 1) {
         printf("FAIL %-20s: connection is in the table under %u node IDs, "
                "expected 1\n",
@@ -1097,7 +1111,7 @@ static int test_double_register(const char *name)
     }
 
     close(p.far);
-    fixture_destroy(&f);
+    fixture_destroy(f);
 
     if (!fail) {
         printf("PASS %-20s: second registration did not add an owner\n", name);
@@ -1113,23 +1127,22 @@ static int test_double_register(const char *name)
  */
 static int test_pending_teardown(const char *name)
 {
-    struct mesh_fixture f;
+    struct mesh_fixture *f = fixture_new();
     struct peer p;
     uint8_t byte;
     int fail = 0;
 
-    fixture_init(&f);
-    if (peer_open(&f, UNASSIGNED_NODE, false, &p) != 0) {
+    if (peer_open(f, UNASSIGNED_NODE, false, &p) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
-    peer_pend(&f, &p);
+    peer_pend(f, &p);
 
     /* Held so the connection can be inspected after it is retired. */
     TcpConnection *conn = tcp_connection_ref(p.conn);
 
-    tcp_retire_all_connections(&f.priv);
+    tcp_retire_all_connections(&f->priv);
 
     if (atomic_load(&conn->recv_thread_running) ||
         atomic_load(&conn->is_connected)) {
@@ -1147,7 +1160,7 @@ static int test_pending_teardown(const char *name)
     tcp_connection_retire(conn);
     tcp_connection_unref(conn);
     close(p.far);
-    fixture_destroy(&f);
+    fixture_destroy(f);
 
     if (!fail) {
         printf("PASS %-20s: unregistered connection stopped at teardown\n",
@@ -1163,18 +1176,17 @@ static int test_pending_teardown(const char *name)
  */
 static int test_pending_reap(const char *name)
 {
-    struct mesh_fixture f;
+    struct mesh_fixture *f = fixture_new();
     struct peer p;
     int fail = 0;
 
-    fixture_init(&f);
-    f.priv.health_check_interval_sec = 1;
-    if (peer_open(&f, UNASSIGNED_NODE, false, &p) != 0) {
+    f->priv.health_check_interval_sec = 1;
+    if (peer_open(f, UNASSIGNED_NODE, false, &p) != 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
-        fixture_destroy(&f);
+        fixture_destroy(f);
         return 1;
     }
-    peer_pend(&f, &p);
+    peer_pend(f, &p);
 
     /* Held so the connection can be inspected after it is dropped. */
     TcpConnection *conn = tcp_connection_ref(p.conn);
@@ -1189,9 +1201,9 @@ static int test_pending_reap(const char *name)
     }
 
     if (!fail) {
-        tcp_health_check_pass(&f.priv);
+        tcp_health_check_pass(&f->priv);
 
-        if (is_pending(&f, conn)) {
+        if (is_pending(f, conn)) {
             printf("FAIL %-20s: the connection is still pending after the "
                    "pass\n",
                    name);
@@ -1210,11 +1222,178 @@ static int test_pending_reap(const char *name)
     }
 
     tcp_connection_unref(conn);
-    fixture_destroy(&f);
+    fixture_destroy(f);
 
     if (!fail) {
         printf("PASS %-20s: unregistered connection dropped by the pass\n",
                name);
+    }
+    return fail;
+}
+
+/* ---- Peers that stop reading ------------------------------------------ */
+
+/*
+ * How long node A has been silent when the stalled-peer pass runs: past the
+ * three intervals that make it dead, and not a multiple of the 4 s backoff
+ * the pass computes for it, so the pass does not also try to redial it.
+ */
+#define STALLED_SILENT_SEC 5
+
+/* A health-check pass on a thread of its own, so a pass that never returns
+ * fails the case instead of hanging it. */
+struct pass_run {
+    TcpBackendPrivate *priv;
+    pthread_t tid;
+    bool started;
+    _Atomic bool done;
+};
+
+static void *pass_thread(void *opaque)
+{
+    struct pass_run *run = opaque;
+
+    tcp_health_check_pass(run->priv);
+    atomic_store(&run->done, true);
+    return NULL;
+}
+
+/* Fill @fd's send buffer, so the next send on it has to wait for the far
+ * end to read. */
+static int fill_sndbuf(int fd)
+{
+    uint8_t junk[SINK_LEN] = {0};
+
+    for (;;) {
+        ssize_t ret = send(fd, junk, sizeof(junk), MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (ret < 0) {
+            return errno == EAGAIN ? 0 : -1;
+        }
+    }
+}
+
+/*
+ * A health-check pass meets two peers that have stopped reading while their
+ * connections stay up. Node A has gone silent, so the pass declares it dead
+ * and broadcasts that, but a data-path send to A is parked holding A's
+ * connection lock. Node C still counts as alive, but its socket buffer is
+ * full, so the broadcast cannot be written to it. Node B is healthy.
+ *
+ * The pass must not wait on A or C for good: it must give up on each within
+ * its limit, drop their connections -- which also frees the parked sender --
+ * and still deliver the broadcast and a heartbeat to B. While it waits on a
+ * stalled peer it must not hold the connection table lock, which every
+ * lookup needs.
+ */
+static int test_stalled_peer(const char *name)
+{
+    struct mesh_fixture *f = fixture_new();
+    struct peer a = {.conn = NULL, .far = -1};
+    struct peer b = {.conn = NULL, .far = -1};
+    struct peer c = {.conn = NULL, .far = -1};
+    struct ionic_send parked = {0};
+    struct pass_run run = {.priv = &f->priv};
+    const struct timespec settle = {.tv_sec = 0, .tv_nsec = 500000000};
+    unsigned broadcasts = 0;
+    int fail = 0;
+
+    f->priv.health_check_interval_sec = 1;
+    atomic_init(&run.done, false);
+
+    if (peer_open(f, NODE_A, true, &a) != 0 ||
+        peer_register(f, &a, PEER_HOST, PEER_PORT) != 0 ||
+        peer_open(f, NODE_B, false, &b) != 0 ||
+        peer_register(f, &b, PEER_HOST, PEER_PORT) != 0 ||
+        peer_open(f, NODE_C, true, &c) != 0 ||
+        peer_register(f, &c, PEER_HOST, PEER_PORT) != 0 ||
+        fill_sndbuf(c.conn->sockfd) != 0) {
+        printf("FAIL %-20s: fixture setup failed\n", name);
+        fail = 1;
+    }
+    uint8_t *bulk = g_malloc0(BULK_LEN);
+
+    if (!fail && park_sender(&parked, f, &a, bulk) != 0) {
+        printf("FAIL %-20s: the bulk send never started\n", name);
+        fail = 1;
+    }
+
+    if (!fail) {
+        time_t start = next_second();
+        qemu_mutex_lock(&f->priv.mesh_table_lock);
+        MeshNodeInfo *node =
+            g_hash_table_lookup(f->priv.mesh_nodes, GUINT_TO_POINTER(NODE_A));
+        node->last_heartbeat = start - STALLED_SILENT_SEC;
+        qemu_mutex_unlock(&f->priv.mesh_table_lock);
+
+        run.started = pthread_create(&run.tid, NULL, pass_thread, &run) == 0;
+        if (!run.started) {
+            printf("FAIL %-20s: could not start the pass\n", name);
+            fail = 1;
+        }
+    }
+
+    /* By now the pass is waiting on a stalled peer, which takes seconds. */
+    if (!fail) {
+        nanosleep(&settle, NULL);
+        int busy = pthread_mutex_trylock(&f->priv.conn_table_lock.lock);
+        if (busy == 0) {
+            qemu_mutex_unlock(&f->priv.conn_table_lock);
+        } else if (!atomic_load(&run.done)) {
+            printf("FAIL %-20s: the pass held the connection table lock "
+                   "while waiting on a stalled peer\n",
+                   name);
+            fail = 1;
+        }
+    }
+
+    if (run.started && !wait_for_flag(&run.done)) {
+        printf("FAIL %-20s: the pass never gave up on the stalled peers\n",
+               name);
+        fail = 1;
+    }
+
+    if (fail) {
+        unblock_after_failure(&a.far);
+        unblock_after_failure(&c.far);
+    }
+    if (run.started) {
+        pthread_join(run.tid, NULL);
+    }
+    ionic_send_join(&parked);
+
+    if (!fail && (atomic_load(&a.conn->is_connected) ||
+                  atomic_load(&c.conn->is_connected))) {
+        printf("FAIL %-20s: a stalled peer's connection was not dropped\n",
+               name);
+        fail = 1;
+    } else if (!fail && parked.rc != -EIO) {
+        printf("FAIL %-20s: the parked send returned %d, expected -EIO (%d)\n",
+               name, parked.rc, -EIO);
+        fail = 1;
+    } else if (!fail && (read_until(b.far, TCP_MSG_HEARTBEAT,
+                                    TCP_MSG_MESH_TOPOLOGY, &broadcasts) != 0 ||
+                         broadcasts != 1)) {
+        printf("FAIL %-20s: node %u did not get the broadcast and then a "
+               "heartbeat\n",
+               name, NODE_B);
+        fail = 1;
+    } else if (!fail && !atomic_load(&b.conn->is_connected)) {
+        printf("FAIL %-20s: node %u's healthy connection was dropped\n", name,
+               NODE_B);
+        fail = 1;
+    }
+
+    fixture_destroy(f);
+    g_free(bulk);
+    const int fars[] = {a.far, b.far, c.far};
+    for (size_t i = 0; i < G_N_ELEMENTS(fars); i++) {
+        if (fars[i] >= 0) {
+            close(fars[i]);
+        }
+    }
+
+    if (!fail) {
+        printf("PASS %-20s: stalled peers dropped, healthy one served\n", name);
     }
     return fail;
 }
@@ -1272,14 +1451,13 @@ static int node_start(RdmaBackendDev *dev, const char *role, uint16_t port)
 }
 
 /*
- * @dev's connection to @peer, once it has one; NULL if WAIT_MS passes first.
- * A worker's connection to the manager is its manager connection, not a
- * table entry. Returns a reference.
+ * @priv's connection to @peer, once it has one; NULL if WAIT_MS passes
+ * first. A worker's connection to the manager is its manager connection, not
+ * a table entry. Returns a reference.
  */
-static TcpConnection *node_conn(RdmaBackendDev *dev, uint32_t peer)
+static TcpConnection *node_conn(TcpBackendPrivate *priv, uint32_t peer)
 {
     const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
-    TcpBackendPrivate *priv = get_private(dev);
 
     if (!priv->is_manager && peer == MANAGER_NODE) {
         return priv->manager_conn ? tcp_connection_ref(priv->manager_conn)
@@ -1338,6 +1516,8 @@ struct ionic_sink {
 struct mesh {
     RdmaBackendDev dev[MESH_NODES];
     bool up[MESH_NODES];
+    /* Each node's backend, while it is up. */
+    TcpBackendPrivate *priv[MESH_NODES];
     struct ionic_sink sink[MESH_NODES];
 };
 
@@ -1380,12 +1560,20 @@ static int mesh_start(const char *name, struct mesh *m)
                    mesh_node_ids[n]);
             return 1;
         }
-        uint32_t id = get_private(&m->dev[n])->local_node_id;
+        m->priv[n] = get_private(&m->dev[n]);
+        if (!m->priv[n]) {
+            printf("FAIL %-20s: tcp_init() left node %u without a backend\n",
+                   name, mesh_node_ids[n]);
+            return 1;
+        }
+        uint32_t id = m->priv[n]->local_node_id;
         if (id != mesh_node_ids[n]) {
             printf("FAIL %-20s: node %u came up as node %u\n", name,
                    mesh_node_ids[n], id);
             return 1;
         }
+        atomic_init(&m->sink[n].count, 0);
+        atomic_init(&m->sink[n].last_src, 0);
         tcp_backend_set_ionic_recv_cb(&m->dev[n], ionic_sink_recv, &m->sink[n]);
     }
     return 0;
@@ -1402,6 +1590,7 @@ static int mesh_stop_node(const char *name, struct mesh *m, int n)
     }
     tcp_fini(&m->dev[n]);
     m->up[n] = false;
+    m->priv[n] = NULL;
     if (m->dev[n].backend_private) {
         printf("FAIL %-20s: tcp_fini() left node %u's backend in place\n", name,
                mesh_node_ids[n]);
@@ -1477,13 +1666,13 @@ static int test_init_fini(const char *name)
         {MESH_MGR, NODE_A}, {MESH_MGR, NODE_B},     {MESH_A, MANAGER_NODE},
         {MESH_A, NODE_B},   {MESH_B, MANAGER_NODE}, {MESH_B, NODE_A},
     };
-    struct mesh m;
+    struct mesh *m = g_new0(struct mesh, 1);
     TcpConnection *conns[G_N_ELEMENTS(links)] = {NULL};
 
-    int fail = mesh_start(name, &m);
+    int fail = mesh_start(name, m);
 
     for (size_t i = 0; i < G_N_ELEMENTS(links) && !fail; i++) {
-        conns[i] = node_conn(&m.dev[links[i].node], links[i].peer);
+        conns[i] = node_conn(m->priv[links[i].node], links[i].peer);
         if (!conns[i]) {
             printf("FAIL %-20s: node %u never connected to node %u\n", name,
                    mesh_node_ids[links[i].node], links[i].peer);
@@ -1492,9 +1681,10 @@ static int test_init_fini(const char *name)
     }
 
     for (int i = 0; i < MESH_NODES; i++) {
-        int stop_failed = mesh_stop_node(name, &m, fini_order[i]);
+        int stop_failed = mesh_stop_node(name, m, fini_order[i]);
         fail = fail || stop_failed;
     }
+    g_free(m);
 
     for (size_t i = 0; i < G_N_ELEMENTS(links); i++) {
         if (conns[i]) {
@@ -1522,20 +1712,20 @@ static int test_init_fini(const char *name)
  */
 static int test_dead_peer_relay(const char *name)
 {
-    struct mesh m;
+    struct mesh *m = g_new0(struct mesh, 1);
     TcpConnection *a_to_b = NULL;
     TcpConnection *b_to_a = NULL;
 
-    int fail = mesh_start(name, &m);
+    int fail = mesh_start(name, m);
     if (!fail) {
-        a_to_b = node_conn(&m.dev[MESH_A], NODE_B);
-        b_to_a = node_conn(&m.dev[MESH_B], NODE_A);
+        a_to_b = node_conn(m->priv[MESH_A], NODE_B);
+        b_to_a = node_conn(m->priv[MESH_B], NODE_A);
         if (!a_to_b || !b_to_a) {
             printf("FAIL %-20s: the workers never connected\n", name);
             fail = 1;
         }
     }
-    fail = fail || mesh_deliver(name, &m, MESH_A, MESH_B);
+    fail = fail || mesh_deliver(name, m, MESH_A, MESH_B);
 
     if (!fail) {
         tcp_connection_retire(b_to_a);
@@ -1551,10 +1741,11 @@ static int test_dead_peer_relay(const char *name)
             fail = 1;
         }
     }
-    fail = fail || mesh_deliver(name, &m, MESH_A, MESH_B);
-    fail = fail || mesh_deliver(name, &m, MESH_B, MESH_A);
+    fail = fail || mesh_deliver(name, m, MESH_A, MESH_B);
+    fail = fail || mesh_deliver(name, m, MESH_B, MESH_A);
 
-    mesh_stop(name, &m);
+    mesh_stop(name, m);
+    g_free(m);
     tcp_connection_unref(a_to_b);
     tcp_connection_unref(b_to_a);
 
@@ -1578,12 +1769,12 @@ static TcpConnection *mesh_reconnect(const char *name, struct mesh *m,
                                      const TcpConnection *prev, int round)
 {
     const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
-    TcpBackendPrivate *a = get_private(&m->dev[MESH_A]);
+    TcpBackendPrivate *a = m->priv[MESH_A];
 
     int fd = tcp_connect_to_remote(LOOPBACK_HOST, a->listen_port);
-    if (fd < 0 || !tcp_mesh_reconnect_node(get_private(&m->dev[MESH_MGR]),
-                                           NODE_A, LOOPBACK_HOST,
-                                           a->listen_port, fd, time(NULL))) {
+    if (fd < 0 ||
+        !tcp_mesh_reconnect_node(m->priv[MESH_MGR], NODE_A, LOOPBACK_HOST,
+                                 a->listen_port, fd, time(NULL))) {
         printf("FAIL %-20s: reconnect %d could not reach node %u\n", name,
                round, NODE_A);
         return NULL;
@@ -1613,23 +1804,23 @@ static TcpConnection *mesh_reconnect(const char *name, struct mesh *m,
  */
 static int test_manager_reconnect(const char *name)
 {
-    struct mesh m;
+    struct mesh *m = g_new0(struct mesh, 1);
     TcpConnection *to_mgr = NULL;
     TcpConnection *a_to_b = NULL;
     TcpConnection *b_to_a = NULL;
 
-    int fail = mesh_start(name, &m);
+    int fail = mesh_start(name, m);
 
     for (int round = 1; round <= RECONNECTS && !fail; round++) {
-        TcpConnection *next = mesh_reconnect(name, &m, to_mgr, round);
+        TcpConnection *next = mesh_reconnect(name, m, to_mgr, round);
         tcp_connection_unref(to_mgr);
         to_mgr = next;
-        fail = !to_mgr || mesh_deliver(name, &m, MESH_MGR, MESH_A) ||
-               mesh_deliver(name, &m, MESH_A, MESH_MGR);
+        fail = !to_mgr || mesh_deliver(name, m, MESH_MGR, MESH_A) ||
+               mesh_deliver(name, m, MESH_A, MESH_MGR);
     }
 
     if (!fail) {
-        TcpConnection *orig = get_private(&m.dev[MESH_A])->manager_conn;
+        TcpConnection *orig = m->priv[MESH_A]->manager_conn;
         if (!wait_for_flag(&orig->recv_thread_exited) ||
             atomic_load(&orig->is_connected)) {
             printf("FAIL %-20s: node %u's replaced manager connection was not "
@@ -1639,8 +1830,8 @@ static int test_manager_reconnect(const char *name)
         }
     }
     if (!fail) {
-        a_to_b = node_conn(&m.dev[MESH_A], NODE_B);
-        b_to_a = node_conn(&m.dev[MESH_B], NODE_A);
+        a_to_b = node_conn(m->priv[MESH_A], NODE_B);
+        b_to_a = node_conn(m->priv[MESH_B], NODE_A);
         if (!a_to_b || !b_to_a) {
             printf("FAIL %-20s: the workers never connected\n", name);
             fail = 1;
@@ -1654,9 +1845,10 @@ static int test_manager_reconnect(const char *name)
             }
         }
     }
-    fail = fail || mesh_deliver(name, &m, MESH_A, MESH_B);
+    fail = fail || mesh_deliver(name, m, MESH_A, MESH_B);
 
-    mesh_stop(name, &m);
+    mesh_stop(name, m);
+    g_free(m);
     tcp_connection_unref(to_mgr);
     tcp_connection_unref(a_to_b);
     tcp_connection_unref(b_to_a);
@@ -1734,13 +1926,13 @@ static int send_rejected(const char *name, uint16_t port, TcpMsgType type,
  */
 static int test_bad_handshake(const char *name)
 {
-    struct mesh m;
+    struct mesh *m = g_new0(struct mesh, 1);
     TcpHandshakePayload hs = {.node_id = htonl(STRANGER_NODE),
                               .version = htonl(TCP_PROTOCOL_VERSION)};
     int fd = -1;
 
-    int fail = mesh_start(name, &m);
-    uint16_t port = fail ? 0 : get_private(&m.dev[MESH_A])->listen_port;
+    int fail = mesh_start(name, m);
+    uint16_t port = fail ? 0 : m->priv[MESH_A]->listen_port;
 
     fail = fail || send_rejected(name, port, TCP_MSG_HANDSHAKE, NULL, 0,
                                  "a handshake with no payload");
@@ -1773,7 +1965,8 @@ static int test_bad_handshake(const char *name)
         }
     }
 
-    mesh_stop(name, &m);
+    mesh_stop(name, m);
+    g_free(m);
     if (fd >= 0) {
         close(fd);
     }
@@ -1794,7 +1987,7 @@ static int test_bad_handshake(const char *name)
  */
 static int test_init_failure(const char *name)
 {
-    RdmaBackendDev dev;
+    RdmaBackendDev *dev = g_new0(RdmaBackendDev, 1);
     uint16_t port = 0;
     int acc = -1;
     uint8_t byte;
@@ -1803,15 +1996,16 @@ static int test_init_failure(const char *name)
     int lfd = listener_open(&port);
     if (lfd < 0) {
         printf("FAIL %-20s: fixture setup failed\n", name);
+        g_free(dev);
         return 1;
     }
 
-    if (node_start(&dev, "worker", port) == 0) {
+    if (node_start(dev, "worker", port) == 0) {
         printf("FAIL %-20s: registered with a manager that never answered\n",
                name);
-        tcp_fini(&dev);
+        tcp_fini(dev);
         fail = 1;
-    } else if (dev.backend_private) {
+    } else if (dev->backend_private) {
         printf("FAIL %-20s: the failed tcp_init() left a backend in place\n",
                name);
         fail = 1;
@@ -1835,6 +2029,7 @@ static int test_init_failure(const char *name)
         close(acc);
     }
     close(lfd);
+    g_free(dev);
 
     if (!fail) {
         printf("PASS %-20s: failed registration undid tcp_init()\n", name);
@@ -1852,6 +2047,7 @@ static const struct {
     {"double-register", test_double_register},
     {"pending-teardown", test_pending_teardown},
     {"pending-reap", test_pending_reap},
+    {"stalled-peer", test_stalled_peer},
     {"init-fini", test_init_fini},
     {"init-failure", test_init_failure},
     {"dead-peer-relay", test_dead_peer_relay},

@@ -756,14 +756,16 @@ add_test(
 )
 set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# TCP connection lifetime unit test: asserts that a connection replaced by
-# the manager's reconnect path stays valid for a sender already using it, and
-# that a node cannot register one connection under two node IDs.
+# TCP connection lifetime unit test: connections stay valid for users while
+# the manager replaces them, register once, are dropped when their peer
+# stops reading, and are all stopped by tcp_fini(); an in-process manager and
+# two workers cover init, teardown, reconnects and malformed handshakes.
+# Most of its run time is deliberate waiting on timeouts, about 17 s in all.
 add_test(
     NAME tcp-conn-lifetime-unit
     COMMAND $<TARGET_FILE:test_tcp_conn_lifetime>
 )
-set_tests_properties(tcp-conn-lifetime-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+set_tests_properties(tcp-conn-lifetime-unit PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 
 # RDMA resource-table allocator unit test: asserts a full table refuses the
 # next allocation rather than handing back a handle one past the end.
