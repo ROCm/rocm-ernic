@@ -25,14 +25,9 @@
 #include "rocm_ernic_internal.h"
 
 /*
- * QEMU headers -- suppress warnings from upstream code
- * that we do not own.  This is the standard pattern for
- * third-party header inclusions.
+ * QEMU headers. The vendored header trees are SYSTEM include directories,
+ * so the compiler already keeps their warnings quiet.
  */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wredundant-decls"
-#pragma GCC diagnostic ignored "-Wshift-overflow"
-#pragma GCC diagnostic ignored "-Wconversion"
 #include "vmw/pvrdma.h"
 #include "vmw/pvrdma_qp_ops.h"
 #include "rdma_backend.h"
@@ -43,7 +38,6 @@
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 #include "hw/pci/pci.h"
-#pragma GCC diagnostic pop
 
 /*
  * DMA Mapping Tracking

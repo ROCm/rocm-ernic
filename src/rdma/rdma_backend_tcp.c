@@ -26,6 +26,7 @@
 #include "net/eth_rx_inject.h"
 #include "parse_int.h"
 #include "qemu/compiler.h" /* For container_of() */
+#include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -1146,8 +1147,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
 
     /* struct iovec serves readv() as well as writev(), so iov_base is not
      * const even though writev() only reads through it. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
+    ROCM_ERNIC_WARN_CAST_AWAY_CONST_OFF
     if (payload && payload_len > 0) {
         iov[iovcnt].iov_base = (void *)payload;
         iov[iovcnt].iov_len = payload_len;
@@ -1160,7 +1160,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
         total += payload2_len;
         iovcnt++;
     }
-#pragma GCC diagnostic pop
+    ROCM_ERNIC_WARN_CAST_AWAY_CONST_ON
 
     size_t sent = 0;
 

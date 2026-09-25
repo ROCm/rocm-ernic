@@ -36,6 +36,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "rocm-ernic-warnings.h"
+
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
 
@@ -186,18 +188,13 @@ static int read_exact(int fd, void *buf, size_t len)
  * The runtime looks this hook up by name, so the reserved identifier is
  * unavoidable.
  */
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wreserved-identifier"
-#endif
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
 const char *__asan_default_options(void);
 const char *__asan_default_options(void)
 {
     return "detect_stack_use_after_return=0";
 }
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 /*
  * Address of a local in the broadcast thread's frame, recorded so the caller

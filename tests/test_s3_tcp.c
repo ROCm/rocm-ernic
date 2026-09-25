@@ -36,6 +36,7 @@
 #include "s3_target.h"
 #include "s3_tcp.h"
 #include "s3_token.h"
+#include "rocm-ernic-warnings.h"
 
 #define TARGET_IP   0xc0a8c801u /* 192.168.200.1 */
 #define TARGET_PORT 9000
@@ -59,18 +60,13 @@
  * The runtime looks this hook up by name, so the reserved identifier is
  * unavoidable.
  */
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wreserved-identifier"
-#endif
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
 const char *__ubsan_default_options(void);
 const char *__ubsan_default_options(void)
 {
     return "halt_on_error=1";
 }
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 static const uint8_t GUEST_MAC[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 static const uint8_t BCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};

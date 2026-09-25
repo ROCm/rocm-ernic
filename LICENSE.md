@@ -26,6 +26,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 The MIT terms above cover the build system and the deployment and
 automation code: the `CMakeLists.txt` files, `cmake/`, `docs/`, `ansible/`,
 `ci/`, `.github/`, `prometheus/`, `udev/`, `scripts/`, and `service/`.
+They also cover the headers in `shared/`, which carry their own
+third-party notices where they were derived from other projects.
 
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 

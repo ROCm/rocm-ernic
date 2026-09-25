@@ -61,22 +61,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rocm-ernic-warnings.h"
+
 /*
  * Pull in the code under test (including its static functions). rdma_rm.c
  * is vendored, so the warnings it raises are silenced here rather than fixed;
- * the pragmas cover only the #included code.
+ * the suppression covers only the #included code.
  */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wformat"
-#pragma GCC diagnostic ignored "-Wpointer-arith"
-#ifdef __clang__
-/* clang files %p with a non-void pointer under -Wpedantic, not -Wformat. */
-#pragma clang diagnostic ignored "-Wformat-pedantic"
-#endif
+ROCM_ERNIC_WARN_IMPLICIT_CONVERSION_OFF
+ROCM_ERNIC_WARN_SIGN_CONVERSION_OFF
+ROCM_ERNIC_WARN_FORMAT_MISMATCH_OFF
+ROCM_ERNIC_WARN_FORMAT_NONVOID_POINTER_OFF
+ROCM_ERNIC_WARN_VOID_POINTER_ARITH_OFF
 #include "hw/rdma/rdma_rm.c"
-#pragma GCC diagnostic pop
+ROCM_ERNIC_WARN_VOID_POINTER_ARITH_ON
+ROCM_ERNIC_WARN_FORMAT_NONVOID_POINTER_ON
+ROCM_ERNIC_WARN_FORMAT_MISMATCH_ON
+ROCM_ERNIC_WARN_SIGN_CONVERSION_ON
+ROCM_ERNIC_WARN_IMPLICIT_CONVERSION_ON
 
 #include "hw/pci/pci.h" /* declares the pci_dma_* stubs below */
 
