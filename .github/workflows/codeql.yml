@@ -1,0 +1,107 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# CodeQL analysis of the C code
+#
+# CodeQL's C/C++ extractor works by tracing the real compiler invocations,
+# so init -> build -> analyze must all run in the same job. Results show up
+# in the repository's Security tab and as annotations on pull requests.
+#
+# develop is analyzed on every push that touches the code, which gives pull
+# requests a baseline to be compared against, and weekly so that new CodeQL
+# queries are applied to code that has not changed.
+name: rocm-ernic - CodeQL
+
+on:
+  push:
+    branches: [ develop ]
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.cmake'
+      - '**/CMakeLists.txt'
+      - '.github/workflows/codeql.yml'
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.cmake'
+      - '**/CMakeLists.txt'
+      - '.github/workflows/codeql.yml'
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze C code
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # required to upload analysis results
+      security-events: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # build-essential, cmake, ninja-build and pkg-config are preinstalled
+      # on the hosted image. meson, libjson-c-dev and libcmocka-dev are only
+      # needed to build libvfio-user.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev \
+            meson \
+            libjson-c-dev \
+            libcmocka-dev
+
+      # Built before CodeQL is initialized so that only rocm-ernic's own
+      # compilation is traced. Keep the pinned commit in sync with
+      # build-and-test.yml.
+      - name: Build and install libvfio-user
+        run: |
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout 20e9803
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      # c-cpp is CodeQL's name for its C/C++ extractor; only a C compiler
+      # is configured below, so only C is analyzed. security-and-quality
+      # is a superset of security-extended.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+
+      # Plain build: we only want CodeQL to observe the compiler. Debug
+      # keeps optimizations off so the extracted database is closer to the
+      # source.
+      - name: Configure and build rocm-ernic
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc
+          cmake --build build
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        with:
+          category: "/language:c-cpp"
