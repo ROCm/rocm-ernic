@@ -287,18 +287,7 @@ static void fixture_init(struct mesh_fixture *f)
  */
 static void fixture_destroy(struct mesh_fixture *f)
 {
-    qemu_mutex_lock(&f->priv.conn_table_lock);
-    GList *conns = g_hash_table_get_values(f->priv.connections);
-    qemu_mutex_unlock(&f->priv.conn_table_lock);
-
-    for (GList *l = conns; l; l = l->next) {
-        TcpConnection *conn = l->data;
-        if (atomic_load(&conn->recv_thread_running)) {
-            atomic_store(&conn->recv_thread_running, false);
-            qemu_thread_join(&conn->recv_thread);
-        }
-    }
-    g_list_free(conns);
+    tcp_retire_all_connections(&f->priv);
 
     g_hash_table_destroy(f->priv.mesh_nodes);
     g_hash_table_destroy(f->priv.connections);
@@ -348,7 +337,7 @@ static int peer_open(struct mesh_fixture *f, uint32_t node_id,
     p->conn = tcp_connection_new(node_id, PEER_HOST, PEER_PORT);
     p->conn->priv = &f->priv;
     p->conn->sockfd = sv[0];
-    p->conn->is_connected = true;
+    atomic_store(&p->conn->is_connected, true);
     p->far = sv[1];
 
     atomic_store(&p->conn->recv_thread_running, true);
@@ -830,13 +819,14 @@ static int test_double_register(const char *name)
     }
 
     /* Stop the receive thread before touching the table it writes to. */
-    atomic_store(&p.conn->recv_thread_running, false);
-    qemu_thread_join(&p.conn->recv_thread);
+    tcp_connection_retire(p.conn);
 
     /*
-     * Take the connection back out of the table and release it once, however
-     * many entries it had, so a failure here is reported rather than turned
-     * into a double free at teardown.
+     * Take the connection back out of the table and release it. It carries
+     * one reference however many entries share it -- the creation reference,
+     * which the first registration handed to the table -- so it is released
+     * once, and a failure here is reported rather than turned into a double
+     * free at teardown.
      */
     unsigned entries = steal_entries(&f, p.conn);
     if (!fail && entries != 1) {
@@ -845,7 +835,7 @@ static int test_double_register(const char *name)
                name, entries, resps);
         fail = 1;
     }
-    tcp_connection_free(p.conn);
+    tcp_connection_unref(p.conn);
 
     close(p.far);
     fixture_destroy(&f);

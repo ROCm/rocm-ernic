@@ -382,14 +382,35 @@ static void tcp_bufpool_put(TcpBufPool *pool, void *buf, size_t len)
 /* Forward declaration */
 typedef struct TcpBackendPrivate TcpBackendPrivate;
 
-/* Per-connection state */
+/*
+ * Per-connection state.
+ *
+ * A connection is reference counted. The table slot or other field that
+ * publishes it owns one reference, and anything that uses it outside the
+ * lock guarding that table holds another, taken with tcp_connection_ref()
+ * or returned by tcp_connection_lookup(). The last tcp_connection_unref()
+ * frees it.
+ *
+ * Taking a connection out of service is separate from freeing it:
+ * tcp_connection_retire() shuts the socket down and stops the receive
+ * thread, and users still holding a reference see their sends fail. sockfd
+ * is therefore never changed once the connection is published; it is only
+ * closed by the final unref, so the descriptor number cannot be recycled
+ * while a user still holds it.
+ */
 typedef struct {
     uint32_t node_id;
     int sockfd;
     char *remote_host;
     uint16_t remote_port;
     QemuThread recv_thread;
-    bool is_connected;
+    /*
+     * Cleared by tcp_connection_retire(). A hint only: a sender that reads
+     * true just before the connection is retired sends on a shut-down
+     * socket and gets an error back, which is safe.
+     */
+    _Atomic bool is_connected;
+    _Atomic uint32_t refcount;
     /*
      * Stop flag for recv_thread, polled by tcp_recv_thread_per_conn() while
      * a teardown path clears it from another thread. Atomic because a plain
@@ -755,17 +776,13 @@ static void tcp_wr_unmap_sge(TcpQP *tqp, TcpWR *wr)
     }
 }
 
+/*
+ * Release a connection's resources. Called only by the final
+ * tcp_connection_unref(); by then the receive thread has been stopped by
+ * tcp_connection_retire(), or was never started.
+ */
 static void tcp_connection_free(TcpConnection *conn)
 {
-    if (!conn) {
-        return;
-    }
-
-    if (atomic_load(&conn->recv_thread_running)) {
-        atomic_store(&conn->recv_thread_running, false);
-        qemu_thread_join(&conn->recv_thread);
-    }
-
     if (conn->sockfd >= 0) {
         close(conn->sockfd);
     }
@@ -775,12 +792,65 @@ static void tcp_connection_free(TcpConnection *conn)
     g_free(conn);
 }
 
-/* GDestroyNotify adapter for tcp_connection_free() */
-static void tcp_connection_destroy_notify(gpointer data)
+/*
+ * Take a reference on a connection the caller already holds one on, or
+ * reaches under the lock of the table that does. Relaxed ordering is
+ * enough: an existing reference keeps the object alive across the
+ * increment.
+ */
+static TcpConnection *tcp_connection_ref(TcpConnection *conn)
 {
-    tcp_connection_free(data);
+    atomic_fetch_add_explicit(&conn->refcount, 1, memory_order_relaxed);
+    return conn;
 }
 
+/*
+ * Drop a reference; the last one frees the connection. Acquire-release
+ * ordering makes every other holder's use of the object happen-before the
+ * free. Accepts NULL.
+ */
+static void tcp_connection_unref(TcpConnection *conn)
+{
+    if (conn && atomic_fetch_sub_explicit(&conn->refcount, 1,
+                                          memory_order_acq_rel) == 1) {
+        tcp_connection_free(conn);
+    }
+}
+
+/* GDestroyNotify adapter for tables that own a connection reference */
+static void tcp_connection_destroy_notify(gpointer data)
+{
+    tcp_connection_unref(data);
+}
+
+/*
+ * Take a connection out of service: mark it disconnected, shut its socket
+ * down, and stop and join its receive thread. Users still holding a
+ * reference see their sends fail rather than hang; the connection itself
+ * is freed by the last unref.
+ *
+ * The caller holds a reference and must not be the connection's own
+ * receive thread. Because of the join, the caller must also not hold any
+ * lock that receive thread can wait on. Retiring a connection twice is
+ * harmless.
+ */
+static void tcp_connection_retire(TcpConnection *conn)
+{
+    atomic_store(&conn->is_connected, false);
+
+    /* shutdown() rather than close(): the descriptor stays valid, and its
+     * number reserved, for users still holding a reference. It wakes the
+     * receive thread's poll() and fails any send blocked on a full buffer. */
+    if (conn->sockfd >= 0) {
+        shutdown(conn->sockfd, SHUT_RDWR);
+    }
+
+    if (atomic_exchange(&conn->recv_thread_running, false)) {
+        qemu_thread_join(&conn->recv_thread);
+    }
+}
+
+/* A new connection, holding the single reference returned to the caller. */
 static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
                                          uint16_t port)
 {
@@ -789,23 +859,55 @@ static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
     conn->sockfd = -1;
     conn->remote_host = g_strdup(host);
     conn->remote_port = port;
-    conn->is_connected = false;
-    atomic_store(&conn->recv_thread_running, false);
+    atomic_init(&conn->is_connected, false);
+    atomic_init(&conn->refcount, 1);
+    atomic_init(&conn->recv_thread_running, false);
     qemu_mutex_init(&conn->lock);
     return conn;
 }
 
-/* Get connection for a given node ID */
-static TcpConnection *tcp_get_connection(TcpBackendPrivate *priv,
-                                         uint32_t node_id)
+/*
+ * The connection to @node_id, or NULL. Returns a reference the caller must
+ * drop with tcp_connection_unref().
+ */
+static TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv,
+                                            uint32_t node_id)
 {
     TcpConnection *conn;
 
     qemu_mutex_lock(&priv->conn_table_lock);
     conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    if (conn) {
+        tcp_connection_ref(conn);
+    }
     qemu_mutex_unlock(&priv->conn_table_lock);
 
     return conn;
+}
+
+/*
+ * The connection to send traffic for @node_id on: the direct one if it is
+ * up, otherwise the manager connection, since a worker reaches other
+ * workers through the manager's relay. Returns a reference the caller must
+ * drop with tcp_connection_unref(), or NULL if neither is up.
+ */
+static TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv,
+                                        uint32_t node_id)
+{
+    TcpConnection *conn = tcp_connection_lookup(priv, node_id);
+
+    if (conn && atomic_load(&conn->is_connected)) {
+        return conn;
+    }
+    tcp_connection_unref(conn);
+
+    /* manager_conn is set before the backend is published and released only
+     * after every thread that could get here has stopped. */
+    conn = priv->manager_conn;
+    if (conn && atomic_load(&conn->is_connected)) {
+        return tcp_connection_ref(conn);
+    }
+    return NULL;
 }
 
 /* Mesh node management helpers */
@@ -1111,7 +1213,7 @@ static int tcp_listen_on_port(uint16_t port)
 /*
  * The payload may be given in two parts so a caller that already holds a
  * header and a body separately does not have to splice them into one buffer
- * first -- writev sends them as one message either way.
+ * first -- a gather send puts them on the wire as one message either way.
  */
 static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
                              const void *payload, size_t payload_len,
@@ -1146,8 +1248,8 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     iov[0].iov_base = &hdr;
     iov[0].iov_len = sizeof(hdr);
 
-    /* struct iovec serves readv() as well as writev(), so iov_base is not
-     * const even though writev() only reads through it. */
+    /* struct iovec serves receives as well as sends, so iov_base is not
+     * const even though sendmsg() only reads through it. */
     ROCM_ERNIC_WARN_CAST_AWAY_CONST_OFF
     if (payload && payload_len > 0) {
         iov[iovcnt].iov_base = (void *)payload;
@@ -1167,7 +1269,7 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
 
     while (sent < total) {
         struct iovec cur[3];
-        int cur_cnt = 0;
+        size_t cur_cnt = 0;
         size_t skip = sent;
 
         for (int i = 0; i < iovcnt; i++) {
@@ -1181,7 +1283,11 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
             skip = 0;
         }
 
-        ret = writev(sockfd, cur, cur_cnt);
+        /* sendmsg() rather than writev() for MSG_NOSIGNAL: a peer that
+         * resets, or a connection retired mid-send, fails the send with
+         * EPIPE instead of raising SIGPIPE and killing the process. */
+        struct msghdr msg = {.msg_iov = cur, .msg_iovlen = cur_cnt};
+        ret = sendmsg(sockfd, &msg, MSG_NOSIGNAL);
         if (ret < 0) {
             if (errno == EAGAIN) {
                 struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
@@ -1467,22 +1573,16 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                 g_free(recv_wr);
 
                                 TcpConnection *sc =
-                                    tcp_get_connection(priv, hdr.src_node_id);
-                                if ((!sc || !sc->is_connected) &&
-                                    priv->manager_conn &&
-                                    priv->manager_conn->is_connected)
-                                    sc = priv->manager_conn;
-                                if (sc && sc->is_connected) {
+                                    tcp_route_to_node(priv, hdr.src_node_id);
+                                if (sc) {
                                     qemu_mutex_lock(&sc->lock);
-                                    if (sc->sockfd >= 0) {
-                                        tcp_send_message(
-                                            sc->sockfd, TCP_MSG_COMPLETION,
-                                            NULL, 0, hdr.seq,
-                                            priv->local_node_id,
-                                            hdr.src_node_id, hdr.dst_qpn,
-                                            hdr.src_qpn);
-                                    }
+                                    tcp_send_message(
+                                        sc->sockfd, TCP_MSG_COMPLETION, NULL, 0,
+                                        hdr.seq, priv->local_node_id,
+                                        hdr.src_node_id, hdr.dst_qpn,
+                                        hdr.src_qpn);
                                     qemu_mutex_unlock(&sc->lock);
+                                    tcp_connection_unref(sc);
                                 }
                             } else {
                                 TcpPendingData *pd = g_new0(TcpPendingData, 1);
@@ -1561,23 +1661,18 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                         /* Send completion ACK back to sender */
                         TcpConnection *src_conn =
-                            tcp_get_connection(priv, hdr.src_node_id);
-                        if ((!src_conn || !src_conn->is_connected) &&
-                            priv->manager_conn &&
-                            priv->manager_conn->is_connected)
-                            src_conn = priv->manager_conn;
-                        if (src_conn && src_conn->is_connected) {
+                            tcp_route_to_node(priv, hdr.src_node_id);
+                        if (src_conn) {
                             qemu_mutex_lock(&src_conn->lock);
-                            if (src_conn->sockfd >= 0) {
-                                tcp_send_message(
-                                    src_conn->sockfd, TCP_MSG_COMPLETION, NULL,
-                                    0, hdr.seq, priv->local_node_id,
-                                    hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
-                                rdma_info_report(
-                                    "TCP: Sent completion ACK to node %u",
-                                    hdr.src_node_id);
-                            }
+                            tcp_send_message(
+                                src_conn->sockfd, TCP_MSG_COMPLETION, NULL, 0,
+                                hdr.seq, priv->local_node_id, hdr.src_node_id,
+                                hdr.dst_qpn, hdr.src_qpn);
                             qemu_mutex_unlock(&src_conn->lock);
+                            tcp_connection_unref(src_conn);
+                            rdma_info_report(
+                                "TCP: Sent completion ACK to node %u",
+                                hdr.src_node_id);
                         }
                     } else if (payload && hdr.msg_len > 0) {
                         /* No recv WR available - buffer the data */
@@ -1707,7 +1802,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 g_hash_table_insert(priv->mesh_nodes,
                                     GUINT_TO_POINTER(assigned_id), node);
 
-                /* Add to connections table */
+                /* The table takes over the reference the accept thread
+                 * created the connection with. */
                 qemu_mutex_lock(&priv->conn_table_lock);
                 g_hash_table_insert(priv->connections,
                                     GUINT_TO_POINTER(assigned_id), conn);
@@ -1727,7 +1823,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 /*
                  * conn->lock serialises writes to this socket.
                  * The data path holds it across multi-megabyte
-                 * writev()s, so an unlocked control message here
+                 * sends, so an unlocked control message here
                  * would interleave into the middle of one and the
                  * peer would read a header from the payload.
                  * Released before broadcasting: that path takes
@@ -1857,11 +1953,11 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     if (peer_conn->sockfd < 0) {
                         rdma_error_report("TCP: Failed to connect to peer %u",
                                           peer_id);
-                        tcp_connection_free(peer_conn);
+                        tcp_connection_unref(peer_conn);
                         continue;
                     }
 
-                    peer_conn->is_connected = true;
+                    atomic_store(&peer_conn->is_connected, true);
 
                     /* Send handshake */
                     if (tcp_send_handshake(peer_conn, priv->local_node_id,
@@ -1869,7 +1965,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                         rdma_error_report(
                             "TCP: Failed to send handshake to peer %u",
                             peer_id);
-                        tcp_connection_free(peer_conn);
+                        tcp_connection_unref(peer_conn);
                         continue;
                     }
 
@@ -1882,7 +1978,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                        tcp_recv_thread_per_conn, peer_conn,
                                        QEMU_THREAD_JOINABLE);
 
-                    /* Add to connections table */
+                    /* The table takes over the creation reference */
                     g_hash_table_insert(priv->connections,
                                         GUINT_TO_POINTER(peer_id), peer_conn);
 
@@ -2040,13 +2136,18 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                             uint32_t nid = GPOINTER_TO_UINT(fk);
                             if (nid == hdr.src_node_id)
                                 continue;
+                            /* Each target keeps its reference until its
+                             * send below, after the mesh lock is dropped. */
                             TcpConnection *fwd_conn =
-                                tcp_get_connection(priv, nid);
-                            if (fwd_conn && fwd_conn->is_connected &&
-                                fwd_conn->sockfd >= 0 && nfwd < 64) {
+                                tcp_connection_lookup(priv, nid);
+                            if (fwd_conn &&
+                                atomic_load(&fwd_conn->is_connected) &&
+                                nfwd < 64) {
                                 fwd_targets[nfwd].conn = fwd_conn;
                                 fwd_targets[nfwd].node_id = nid;
                                 nfwd++;
+                            } else {
+                                tcp_connection_unref(fwd_conn);
                             }
                         }
                         qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -2060,6 +2161,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                 hdr.msg_len, hdr.src_node_id,
                                 fwd_targets[fi].node_id);
                             qemu_mutex_unlock(&fwd_targets[fi].conn->lock);
+                            tcp_connection_unref(fwd_targets[fi].conn);
                             if (fwd_rc != 0 && tcp_mesh_debug()) {
                                 tcp_mesh_warn_rate_limited(
                                     "TCP mesh: manager ETH relay send "
@@ -2096,9 +2198,9 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 } else if (priv->is_manager) {
                     /* Worker-to-worker: relay to the addressed node. */
                     TcpConnection *fwd =
-                        tcp_get_connection(priv, hdr.dst_node_id);
+                        tcp_connection_lookup(priv, hdr.dst_node_id);
 
-                    if (fwd && fwd->is_connected && fwd->sockfd >= 0) {
+                    if (fwd && atomic_load(&fwd->is_connected)) {
                         qemu_mutex_lock(&fwd->lock);
                         tcp_send_message(fwd->sockfd, TCP_MSG_IONIC, payload,
                                          hdr.msg_len, hdr.seq, hdr.src_node_id,
@@ -2110,6 +2212,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                           "from node %u to node %u",
                                           hdr.src_node_id, hdr.dst_node_id);
                     }
+                    tcp_connection_unref(fwd);
                 }
                 break;
             }
@@ -2176,17 +2279,14 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 tcp_update_stats(priv, dlen, IBV_WC_RECV);
 
                 TcpConnection *src_conn =
-                    tcp_get_connection(priv, hdr.src_node_id);
-                if ((!src_conn || !src_conn->is_connected) &&
-                    priv->manager_conn && priv->manager_conn->is_connected)
-                    src_conn = priv->manager_conn;
-                if (src_conn && src_conn->is_connected &&
-                    src_conn->sockfd >= 0) {
+                    tcp_route_to_node(priv, hdr.src_node_id);
+                if (src_conn) {
                     qemu_mutex_lock(&src_conn->lock);
                     tcp_send_message(src_conn->sockfd, TCP_MSG_COMPLETION, NULL,
                                      0, hdr.seq, priv->local_node_id,
                                      hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
                     qemu_mutex_unlock(&src_conn->lock);
+                    tcp_connection_unref(src_conn);
                 }
                 break;
             }
@@ -2232,18 +2332,15 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 tcp_update_stats(priv, dlen, IBV_WC_SEND);
 
                 TcpConnection *src_conn =
-                    tcp_get_connection(priv, hdr.src_node_id);
-                if ((!src_conn || !src_conn->is_connected) &&
-                    priv->manager_conn && priv->manager_conn->is_connected)
-                    src_conn = priv->manager_conn;
-                if (src_conn && src_conn->is_connected &&
-                    src_conn->sockfd >= 0) {
+                    tcp_route_to_node(priv, hdr.src_node_id);
+                if (src_conn) {
                     qemu_mutex_lock(&src_conn->lock);
                     tcp_send_message(src_conn->sockfd, TCP_MSG_RDMA_READ_RESP,
                                      host_src, dlen, hdr.seq,
                                      priv->local_node_id, hdr.src_node_id,
                                      hdr.dst_qpn, hdr.src_qpn);
                     qemu_mutex_unlock(&src_conn->lock);
+                    tcp_connection_unref(src_conn);
                 }
                 break;
             }
@@ -2401,14 +2498,13 @@ static void *tcp_accept_thread(void *opaque)
         if (priv->is_manager) {
             /* Manager mode: accept connection and let receive thread handle
              * REGISTER_NODE */
-            conn = g_new0(TcpConnection, 1);
-            conn->node_id = 0xFFFFFFFF; /* Unknown until registration */
+            /* Node ID unknown until registration */
+            conn =
+                tcp_connection_new(0xFFFFFFFF, inet_ntoa(client_addr.sin_addr),
+                                   ntohs(client_addr.sin_port));
             conn->sockfd = sockfd;
-            conn->remote_host = g_strdup(inet_ntoa(client_addr.sin_addr));
-            conn->remote_port = ntohs(client_addr.sin_port);
-            conn->is_connected = true;
+            atomic_store(&conn->is_connected, true);
             conn->priv = priv;
-            qemu_mutex_init(&conn->lock);
 
             /* Start receive thread - it will handle REGISTER_NODE */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
@@ -2502,17 +2598,14 @@ static void *tcp_accept_thread(void *opaque)
                 continue;
             }
 
-            /* Create connection object */
-            conn = g_new0(TcpConnection, 1);
-            conn->node_id = remote_node_id;
+            conn = tcp_connection_new(remote_node_id,
+                                      inet_ntoa(client_addr.sin_addr),
+                                      ntohs(client_addr.sin_port));
             conn->sockfd = sockfd;
-            conn->remote_host = g_strdup(inet_ntoa(client_addr.sin_addr));
-            conn->remote_port = ntohs(client_addr.sin_port);
-            conn->is_connected = true;
+            atomic_store(&conn->is_connected, true);
             conn->priv = priv;
-            qemu_mutex_init(&conn->lock);
 
-            /* Add to connection table */
+            /* The table takes over the creation reference */
             g_hash_table_insert(priv->connections,
                                 GUINT_TO_POINTER(remote_node_id), conn);
             qemu_mutex_unlock(&priv->conn_table_lock);
@@ -2591,7 +2684,7 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
 
     while (g_hash_table_iter_next(&conn_iter, &key, &value)) {
         TcpConnection *conn = (TcpConnection *)value;
-        if (conn && conn->is_connected && conn->sockfd >= 0) {
+        if (conn && atomic_load(&conn->is_connected)) {
             qemu_mutex_lock(&conn->lock);
             tcp_send_message(conn->sockfd, TCP_MSG_MESH_TOPOLOGY, &topo,
                              sizeof(TcpMeshTopologyPayload),
@@ -2619,30 +2712,27 @@ static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, MeshNodeInfo *node,
     atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_attempts, 1,
                               memory_order_relaxed);
 
+    /* Kept alive by the connection table's reference until the replace
+     * below drops it. Users holding their own reference keep it past that,
+     * and see their sends on it fail. */
     TcpConnection *old_conn = node->conn;
 
     if (old_conn) {
-        atomic_store(&old_conn->recv_thread_running, false);
-        qemu_thread_join(&old_conn->recv_thread);
-        if (old_conn->sockfd >= 0) {
-            close(old_conn->sockfd);
-        }
-        old_conn->sockfd = -1;
-        old_conn->is_connected = false;
+        tcp_connection_retire(old_conn);
     }
 
     TcpConnection *new_conn =
         tcp_connection_new(node->node_id, node->hostname, node->port);
     new_conn->priv = priv;
     new_conn->sockfd = fd;
-    new_conn->is_connected = true;
+    atomic_store(&new_conn->is_connected, true);
 
     if (tcp_send_handshake(new_conn, priv->local_node_id, TCP_MSG_HANDSHAKE) <
         0) {
         rdma_error_report(
             "TCP: Failed to send handshake after reconnect to node %u",
             node->node_id);
-        tcp_connection_free(new_conn);
+        tcp_connection_unref(new_conn);
         return false;
     }
 
@@ -2652,6 +2742,8 @@ static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, MeshNodeInfo *node,
     qemu_thread_create(&new_conn->recv_thread, tname, tcp_recv_thread_per_conn,
                        new_conn, QEMU_THREAD_JOINABLE);
 
+    /* The table takes over new_conn's creation reference and drops its
+     * reference to old_conn. */
     qemu_mutex_lock(&priv->conn_table_lock);
     g_hash_table_replace(priv->connections, GUINT_TO_POINTER(node->node_id),
                          new_conn);
@@ -2688,8 +2780,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
                 continue;
 
             /* Send heartbeat request */
-            if (node->conn && node->conn->is_connected &&
-                node->conn->sockfd >= 0) {
+            if (node->conn && atomic_load(&node->conn->is_connected)) {
                 qemu_mutex_lock(&node->conn->lock);
                 tcp_send_message(node->conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
                                  atomic_fetch_add_explicit(
@@ -2762,7 +2853,8 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     }
     hostname[sizeof(hostname) - 1] = '\0';
 
-    /* Connect to manager */
+    /* Connect to manager. priv holds the creation reference until
+     * teardown. */
     priv->manager_conn =
         tcp_connection_new(0, priv->manager_host, priv->manager_port);
     priv->manager_conn->priv = priv;
@@ -2772,12 +2864,12 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     if (priv->manager_conn->sockfd < 0) {
         rdma_error_report("TCP: Failed to connect to manager at %s:%u",
                           priv->manager_host, priv->manager_port);
-        tcp_connection_free(priv->manager_conn);
+        tcp_connection_unref(priv->manager_conn);
         priv->manager_conn = NULL;
         return -1;
     }
 
-    priv->manager_conn->is_connected = true;
+    atomic_store(&priv->manager_conn->is_connected, true);
 
     /* Start receive thread for manager connection */
     char thread_name[32];
@@ -2850,6 +2942,36 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
 /*
  * Backend Lifecycle
  */
+
+/*
+ * Retire every connection, so no receive thread is left running. The
+ * manager connection goes first: on a worker, its receive thread is what
+ * adds peer connections to the table.
+ *
+ * Called at teardown, after the accept and health-check threads have
+ * stopped and before anything a receive thread uses is destroyed.
+ */
+static void tcp_retire_all_connections(TcpBackendPrivate *priv)
+{
+    if (priv->manager_conn) {
+        tcp_connection_retire(priv->manager_conn);
+    }
+
+    /* Retiring joins receive threads, which take conn_table_lock, so take
+     * references under the lock and retire outside it. */
+    qemu_mutex_lock(&priv->conn_table_lock);
+    GList *conns = g_hash_table_get_values(priv->connections);
+    for (GList *it = conns; it; it = it->next) {
+        tcp_connection_ref(it->data);
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    for (GList *it = conns; it; it = it->next) {
+        tcp_connection_retire(it->data);
+        tcp_connection_unref(it->data);
+    }
+    g_list_free(conns);
+}
 
 static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 {
@@ -3061,22 +3183,27 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     return 0;
 
 error:
-    if (priv->listen_fd >= 0) {
-        close(priv->listen_fd);
-    }
     if (priv->health_check_running) {
         priv->health_check_running = false;
         qemu_thread_join(&priv->health_check_thread);
     }
+    /* Stopped before the listen socket closes, as in tcp_fini(): the
+     * accept loop only exits once it sees the flag. */
+    if (priv->accept_thread_running) {
+        priv->accept_thread_running = false;
+        qemu_thread_join(&priv->accept_thread);
+    }
+    if (priv->listen_fd >= 0) {
+        close(priv->listen_fd);
+    }
+    tcp_retire_all_connections(priv);
     if (priv->mesh_nodes) {
         g_hash_table_destroy(priv->mesh_nodes);
     }
     if (priv->mesh_table_lock.initialized) {
         qemu_mutex_destroy(&priv->mesh_table_lock);
     }
-    if (priv->manager_conn) {
-        tcp_connection_free(priv->manager_conn);
-    }
+    tcp_connection_unref(priv->manager_conn);
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
@@ -3121,6 +3248,9 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
         priv->listen_fd = -1;
     }
 
+    /* Stop every receive thread before freeing anything they use */
+    tcp_retire_all_connections(priv);
+
     /* Clean up manager/worker specific resources */
     if (priv->mesh_nodes) {
         g_hash_table_destroy(priv->mesh_nodes);
@@ -3128,14 +3258,12 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     if (priv->mesh_table_lock.initialized) {
         qemu_mutex_destroy(&priv->mesh_table_lock);
     }
-    if (priv->manager_conn) {
-        tcp_connection_free(priv->manager_conn);
-    }
+    tcp_connection_unref(priv->manager_conn);
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
 
-    /* Clean up all connections (threads are stopped in tcp_connection_free) */
+    /* Drops the table's references, freeing the connections */
     g_hash_table_destroy(priv->connections);
 
     g_hash_table_destroy(priv->pds);
@@ -3617,7 +3745,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
     TcpQP *tqp;
     TcpWR *wr;
-    TcpConnection *conn;
+    TcpConnection *conn = NULL;
     uint32_t seq;
     int ret;
 
@@ -3791,12 +3919,9 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
-    conn = tcp_get_connection(priv, dst_node);
-    if ((!conn || !conn->is_connected) && priv->manager_conn &&
-        priv->manager_conn->is_connected) {
-        conn = priv->manager_conn;
-    }
-    if (!conn || !conn->is_connected) {
+    /* Held until the send completes; `fail` drops it on the error paths. */
+    conn = tcp_route_to_node(priv, dst_node);
+    if (!conn) {
         rdma_error_report("TCP: No connection to node %u", dst_node);
         goto fail;
     }
@@ -3984,6 +4109,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         ret = -1;
     }
     qemu_mutex_unlock(&conn->lock);
+    tcp_connection_unref(conn);
+    conn = NULL;
 
     if (ret < 0) {
         goto fail;
@@ -3995,6 +4122,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     return;
 
 fail:
+    tcp_connection_unref(conn);
     qemu_mutex_lock(&priv->lock);
     g_queue_remove(tqp->send_queue, wr);
     qemu_mutex_unlock(&priv->lock);
@@ -4078,18 +4206,17 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         tcp_wr_unmap_sge(tqp, wr);
 
         TcpConnection *src_conn =
-            tcp_get_connection(priv, pending->src_node_id);
-        if (src_conn && src_conn->is_connected) {
+            tcp_connection_lookup(priv, pending->src_node_id);
+        if (src_conn && atomic_load(&src_conn->is_connected)) {
             qemu_mutex_lock(&src_conn->lock);
-            if (src_conn->sockfd >= 0) {
-                seq = atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                memory_order_relaxed);
-                tcp_send_message(src_conn->sockfd, TCP_MSG_COMPLETION, NULL, 0,
-                                 seq, priv->local_node_id, pending->src_node_id,
-                                 qpn, pending->src_qpn);
-            }
+            seq = atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                            memory_order_relaxed);
+            tcp_send_message(src_conn->sockfd, TCP_MSG_COMPLETION, NULL, 0, seq,
+                             priv->local_node_id, pending->src_node_id, qpn,
+                             pending->src_qpn);
             qemu_mutex_unlock(&src_conn->lock);
         }
+        tcp_connection_unref(src_conn);
 
         g_free(pending->data);
         g_free(pending);
@@ -4103,18 +4230,18 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     qemu_mutex_unlock(&priv->lock);
 
     /* Get connection */
-    conn = tcp_get_connection(priv, dst_node);
-    if (!conn || !conn->is_connected) {
+    conn = tcp_connection_lookup(priv, dst_node);
+    if (!conn || !atomic_load(&conn->is_connected)) {
+        tcp_connection_unref(conn);
         return;
     }
 
     /* Send POST_RECV message over TCP */
     qemu_mutex_lock(&conn->lock);
-    if (conn->sockfd >= 0) {
-        tcp_send_message(conn->sockfd, TCP_MSG_POST_RECV, wr, sizeof(*wr), seq,
-                         priv->local_node_id, dst_node, qpn, tqp->remote_qpn);
-    }
+    tcp_send_message(conn->sockfd, TCP_MSG_POST_RECV, wr, sizeof(*wr), seq,
+                     priv->local_node_id, dst_node, qpn, tqp->remote_qpn);
     qemu_mutex_unlock(&conn->lock);
+    tcp_connection_unref(conn);
 
     rdma_info_report("TCP: Posted recv to QP %u, %u SGEs", qpn, num_sge);
 }
@@ -4360,12 +4487,8 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
         return -EINVAL;
 
     /* A worker has no direct socket to another worker; the manager relays. */
-    conn = tcp_get_connection(priv, dst_node);
-    if ((!conn || !conn->is_connected || conn->sockfd < 0) &&
-        priv->manager_conn && priv->manager_conn->is_connected)
-        conn = priv->manager_conn;
-
-    if (!conn || !conn->is_connected || conn->sockfd < 0) {
+    conn = tcp_route_to_node(priv, dst_node);
+    if (!conn) {
         rdma_error_report("TCP: no connection to node %u for ionic message",
                           dst_node);
         return -ENOTCONN;
@@ -4377,6 +4500,7 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
         priv->local_node_id, dst_node, 0, 0);
     qemu_mutex_unlock(&conn->lock);
+    tcp_connection_unref(conn);
 
     return rc < 0 ? -EIO : 0;
 }

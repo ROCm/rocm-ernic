@@ -600,8 +600,12 @@ static int recv_fixture_start(struct recv_fixture *f)
     memset(&f->conn, 0, sizeof(f->conn));
     f->conn.node_id = TEST_PEER_NODE;
     f->conn.sockfd = f->sv[0];
-    f->conn.is_connected = true;
+    atomic_store(&f->conn.is_connected, true);
     atomic_store(&f->conn.recv_thread_running, true);
+    /* The fixture's own reference. It is never dropped, so the references
+     * the receive thread takes and releases on replies can never free this
+     * embedded object. */
+    atomic_store(&f->conn.refcount, 1);
     f->conn.priv = &f->priv;
     qemu_mutex_init(&f->conn.lock);
 
