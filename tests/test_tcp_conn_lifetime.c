@@ -45,10 +45,14 @@
  * one object. An unregistered connection must be shut down at teardown, and
  * one whose peer has left must be dropped by the next health-check pass.
  *
- * The last two cases run tcp_init() and tcp_fini() themselves: a manager and
- * two workers in this process, connected over loopback exactly as separate
- * servers would be, taken down while their connections are live; and a
- * worker whose tcp_init() fails after it has started threads.
+ * The last four cases run tcp_init() and tcp_fini() themselves, mostly on a
+ * manager and two workers in this process, connected over loopback exactly
+ * as separate servers would be. The mesh must come up and go down cleanly
+ * with its connections live; a worker whose tcp_init() fails after it has
+ * started threads must undo them; a worker whose direct link to another
+ * worker dies must fall back to the manager's relay; and a worker the
+ * manager reconnects to must take up each new connection, not just the
+ * first.
  *
  * The static functions are reached by #including the translation unit. The
  * receive threads are real, so qemu_thread_create()/qemu_thread_join() are
@@ -1317,38 +1321,48 @@ static int check_released(const char *name, TcpConnection *conn, uint32_t node,
 }
 
 /*
- * A manager and two workers brought up by tcp_init() as the server does it:
- * each worker registers, the manager tells the workers about each other, and
- * worker A, the lower-numbered, dials worker B. tcp_fini() then takes them
- * down with their connections live: worker A first, with the whole mesh up;
- * then the manager, with B still attached; then B, whose peers are both
- * gone.
- *
- * Every tcp_fini() must stop every thread its backend started and release
- * every connection, so once all three are down each connection has been
- * retired and the test's reference is the only one left. On the sanitizer
- * builds this case also checks that no thread outlived the backend it
- * belongs to, and that nothing leaked.
+ * An in-process mesh: a manager and two workers, each a backend brought up
+ * by tcp_init() as the server does it, talking over loopback.
  */
-static int test_init_fini(const char *name)
+enum { MESH_MGR, MESH_A, MESH_B, MESH_NODES };
+
+static const uint32_t mesh_node_ids[MESH_NODES] = {MANAGER_NODE, NODE_A,
+                                                   NODE_B};
+
+/* Counts the ionic messages a node's backend delivers to it. */
+struct ionic_sink {
+    _Atomic uint32_t count;
+    _Atomic uint32_t last_src;
+};
+
+struct mesh {
+    RdmaBackendDev dev[MESH_NODES];
+    bool up[MESH_NODES];
+    struct ionic_sink sink[MESH_NODES];
+};
+
+static void ionic_sink_recv(void *opaque, uint32_t src_node, const void *buf,
+                            size_t len)
 {
-    enum { MGR, WA, WB, N_NODES };
-    static const uint32_t node_ids[N_NODES] = {MANAGER_NODE, NODE_A, NODE_B};
-    /* Brought up in index order and taken down in this one. */
-    static const int fini_order[N_NODES] = {WA, MGR, WB};
-    /* Each node's connections, by the node at the far end. */
-    static const struct {
-        int node;
-        uint32_t peer;
-    } links[] = {
-        {MGR, NODE_A}, {MGR, NODE_B},      {WA, MANAGER_NODE},
-        {WA, NODE_B},  {WB, MANAGER_NODE}, {WB, NODE_A},
-    };
-    RdmaBackendDev dev[N_NODES];
-    bool up[N_NODES] = {false};
-    TcpConnection *conns[G_N_ELEMENTS(links)] = {NULL};
+    struct ionic_sink *sink = opaque;
+
+    (void)buf;
+    (void)len;
+    atomic_store(&sink->last_src, src_node);
+    atomic_fetch_add(&sink->count, 1);
+}
+
+/*
+ * Bring the nodes up in index order: each worker registers, and the manager
+ * tells the workers about each other, so worker A, the lower-numbered, dials
+ * worker B. Returns 1, having reported it, if a node fails to come up; the
+ * caller must still call mesh_stop().
+ */
+static int mesh_start(const char *name, struct mesh *m)
+{
     uint16_t port = 0;
-    int fail = 0;
+
+    memset(m, 0, sizeof(*m));
 
     /* The manager's tcp_fini() waits out the health check's sleep. */
     setenv("ERNIC_TCP_HEALTH_INTERVAL", "1", 1);
@@ -1358,46 +1372,136 @@ static int test_init_fini(const char *name)
         return 1;
     }
 
-    for (int n = 0; n < N_NODES && !fail; n++) {
-        up[n] = node_start(&dev[n], n == MGR ? "manager" : "worker", port) == 0;
-        if (!up[n]) {
+    for (int n = 0; n < MESH_NODES; n++) {
+        m->up[n] = node_start(&m->dev[n], n == MESH_MGR ? "manager" : "worker",
+                              port) == 0;
+        if (!m->up[n]) {
             printf("FAIL %-20s: tcp_init() failed for node %u\n", name,
-                   node_ids[n]);
-            fail = 1;
-        } else if (get_private(&dev[n])->local_node_id != node_ids[n]) {
-            printf("FAIL %-20s: node %u came up as node %u\n", name,
-                   node_ids[n], get_private(&dev[n])->local_node_id);
-            fail = 1;
+                   mesh_node_ids[n]);
+            return 1;
         }
+        uint32_t id = get_private(&m->dev[n])->local_node_id;
+        if (id != mesh_node_ids[n]) {
+            printf("FAIL %-20s: node %u came up as node %u\n", name,
+                   mesh_node_ids[n], id);
+            return 1;
+        }
+        tcp_backend_set_ionic_recv_cb(&m->dev[n], ionic_sink_recv, &m->sink[n]);
     }
+    return 0;
+}
+
+/*
+ * tcp_fini() node @n, if it is up. Returns 1, having reported it, if the
+ * backend is left in place.
+ */
+static int mesh_stop_node(const char *name, struct mesh *m, int n)
+{
+    if (!m->up[n]) {
+        return 0;
+    }
+    tcp_fini(&m->dev[n]);
+    m->up[n] = false;
+    if (m->dev[n].backend_private) {
+        printf("FAIL %-20s: tcp_fini() left node %u's backend in place\n", name,
+               mesh_node_ids[n]);
+        return 1;
+    }
+    return 0;
+}
+
+/* Take down every node still up. */
+static void mesh_stop(const char *name, struct mesh *m)
+{
+    for (int n = 0; n < MESH_NODES; n++) {
+        (void)mesh_stop_node(name, m, n);
+    }
+}
+
+/*
+ * Send an ionic message from node @from to node @to, by whatever route the
+ * sender's backend picks, and wait for it to arrive. Returns 1, having
+ * reported it, if the send fails or nothing arrives within WAIT_MS.
+ */
+static int mesh_deliver(const char *name, struct mesh *m, int from, int to)
+{
+    const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
+    const uint8_t hdr[16] = {0};
+    struct ionic_sink *sink = &m->sink[to];
+    uint32_t before = atomic_load(&sink->count);
+
+    int rc = tcp_backend_send_ionic_v(&m->dev[from], mesh_node_ids[to], hdr,
+                                      sizeof(hdr), NULL, 0);
+    if (rc != 0) {
+        printf("FAIL %-20s: node %u could not send to node %u: %d\n", name,
+               mesh_node_ids[from], mesh_node_ids[to], rc);
+        return 1;
+    }
+    for (int ms = 0; ms < WAIT_MS; ms++) {
+        if (atomic_load(&sink->count) != before) {
+            if (atomic_load(&sink->last_src) != mesh_node_ids[from]) {
+                printf("FAIL %-20s: node %u's message to node %u arrived as "
+                       "from node %u\n",
+                       name, mesh_node_ids[from], mesh_node_ids[to],
+                       atomic_load(&sink->last_src));
+                return 1;
+            }
+            return 0;
+        }
+        nanosleep(&tick, NULL);
+    }
+    printf("FAIL %-20s: node %u's message to node %u never arrived\n", name,
+           mesh_node_ids[from], mesh_node_ids[to]);
+    return 1;
+}
+
+/*
+ * The whole mesh is brought up, then tcp_fini() takes it down with its
+ * connections live: worker A first, with the whole mesh up; then the
+ * manager, with B still attached; then B, whose peers are both gone.
+ *
+ * Every tcp_fini() must stop every thread its backend started and release
+ * every connection, so once all three are down each connection has been
+ * retired and the test's reference is the only one left. On the sanitizer
+ * builds this case also checks that no thread outlived the backend it
+ * belongs to, and that nothing leaked.
+ */
+static int test_init_fini(const char *name)
+{
+    static const int fini_order[MESH_NODES] = {MESH_A, MESH_MGR, MESH_B};
+    /* Each node's connections, by the node at the far end. */
+    static const struct {
+        int node;
+        uint32_t peer;
+    } links[] = {
+        {MESH_MGR, NODE_A}, {MESH_MGR, NODE_B},     {MESH_A, MANAGER_NODE},
+        {MESH_A, NODE_B},   {MESH_B, MANAGER_NODE}, {MESH_B, NODE_A},
+    };
+    struct mesh m;
+    TcpConnection *conns[G_N_ELEMENTS(links)] = {NULL};
+
+    int fail = mesh_start(name, &m);
 
     for (size_t i = 0; i < G_N_ELEMENTS(links) && !fail; i++) {
-        conns[i] = node_conn(&dev[links[i].node], links[i].peer);
+        conns[i] = node_conn(&m.dev[links[i].node], links[i].peer);
         if (!conns[i]) {
             printf("FAIL %-20s: node %u never connected to node %u\n", name,
-                   node_ids[links[i].node], links[i].peer);
+                   mesh_node_ids[links[i].node], links[i].peer);
             fail = 1;
         }
     }
 
-    for (int i = 0; i < N_NODES; i++) {
-        int n = fini_order[i];
-        if (up[n]) {
-            tcp_fini(&dev[n]);
-            if (!fail && dev[n].backend_private) {
-                printf("FAIL %-20s: tcp_fini() left node %u's backend in "
-                       "place\n",
-                       name, node_ids[n]);
-                fail = 1;
-            }
-        }
+    for (int i = 0; i < MESH_NODES; i++) {
+        int stop_failed = mesh_stop_node(name, &m, fini_order[i]);
+        fail = fail || stop_failed;
     }
 
     for (size_t i = 0; i < G_N_ELEMENTS(links); i++) {
         if (conns[i]) {
             if (!fail) {
-                fail = check_released(name, conns[i], node_ids[links[i].node],
-                                      links[i].peer);
+                fail =
+                    check_released(name, conns[i], mesh_node_ids[links[i].node],
+                                   links[i].peer);
             }
             tcp_connection_unref(conns[i]);
         }
@@ -1406,6 +1510,159 @@ static int test_init_fini(const char *name)
     if (!fail) {
         printf("PASS %-20s: three-node mesh came up and went down cleanly\n",
                name);
+    }
+    return fail;
+}
+
+/*
+ * The direct connection between the workers dies: B drops its end. A's
+ * receive thread sees the close, and A must then stop using the connection
+ * and reach B through the manager's relay instead of sending into the dead
+ * socket for good. B, whose end was retired, must do the same.
+ */
+static int test_dead_peer_relay(const char *name)
+{
+    struct mesh m;
+    TcpConnection *a_to_b = NULL;
+    TcpConnection *b_to_a = NULL;
+
+    int fail = mesh_start(name, &m);
+    if (!fail) {
+        a_to_b = node_conn(&m.dev[MESH_A], NODE_B);
+        b_to_a = node_conn(&m.dev[MESH_B], NODE_A);
+        if (!a_to_b || !b_to_a) {
+            printf("FAIL %-20s: the workers never connected\n", name);
+            fail = 1;
+        }
+    }
+    fail = fail || mesh_deliver(name, &m, MESH_A, MESH_B);
+
+    if (!fail) {
+        tcp_connection_retire(b_to_a);
+        if (!wait_for_flag(&a_to_b->recv_thread_exited)) {
+            printf("FAIL %-20s: node %u never saw node %u close the "
+                   "connection\n",
+                   name, NODE_A, NODE_B);
+            fail = 1;
+        } else if (atomic_load(&a_to_b->is_connected)) {
+            printf("FAIL %-20s: node %u's dead connection to node %u is "
+                   "still marked connected\n",
+                   name, NODE_A, NODE_B);
+            fail = 1;
+        }
+    }
+    fail = fail || mesh_deliver(name, &m, MESH_A, MESH_B);
+    fail = fail || mesh_deliver(name, &m, MESH_B, MESH_A);
+
+    mesh_stop(name, &m);
+    tcp_connection_unref(a_to_b);
+    tcp_connection_unref(b_to_a);
+
+    if (!fail) {
+        printf("PASS %-20s: dead worker link fell back to the relay\n", name);
+    }
+    return fail;
+}
+
+/* How many times manager-reconnect has the manager redial worker A. */
+#define RECONNECTS 3
+
+/*
+ * One reconnect of worker A by the manager's health-check code, over a
+ * fresh connection to A's listen port, after which A must use the new
+ * connection. @prev is A's connection to the manager before the reconnect,
+ * held by the caller so its address cannot be reused. Returns A's new
+ * connection to the manager, with a reference, or NULL, having reported it.
+ */
+static TcpConnection *mesh_reconnect(const char *name, struct mesh *m,
+                                     const TcpConnection *prev, int round)
+{
+    const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
+    TcpBackendPrivate *a = get_private(&m->dev[MESH_A]);
+
+    int fd = tcp_connect_to_remote(LOOPBACK_HOST, a->listen_port);
+    if (fd < 0 || !tcp_mesh_reconnect_node(get_private(&m->dev[MESH_MGR]),
+                                           NODE_A, LOOPBACK_HOST,
+                                           a->listen_port, fd, time(NULL))) {
+        printf("FAIL %-20s: reconnect %d could not reach node %u\n", name,
+               round, NODE_A);
+        return NULL;
+    }
+
+    for (int ms = 0; ms < WAIT_MS; ms++) {
+        TcpConnection *conn = tcp_connection_lookup(a, MANAGER_NODE);
+        if (conn && conn != prev && atomic_load(&conn->is_connected)) {
+            return conn;
+        }
+        tcp_connection_unref(conn);
+        nanosleep(&tick, NULL);
+    }
+    printf("FAIL %-20s: node %u did not take up reconnect %d\n", name, NODE_A,
+           round);
+    return NULL;
+}
+
+/*
+ * The manager's health check reconnects worker A several times, as it does
+ * whenever A goes quiet for too long. A must take up every new connection,
+ * not just the first, and traffic must flow both ways over each.
+ *
+ * The first reconnect also leaves A's original manager connection dead, so
+ * afterwards A must reach B through the manager over the connection the
+ * manager dialed: once the direct link to B goes, that is A's only route.
+ */
+static int test_manager_reconnect(const char *name)
+{
+    struct mesh m;
+    TcpConnection *to_mgr = NULL;
+    TcpConnection *a_to_b = NULL;
+    TcpConnection *b_to_a = NULL;
+
+    int fail = mesh_start(name, &m);
+
+    for (int round = 1; round <= RECONNECTS && !fail; round++) {
+        TcpConnection *next = mesh_reconnect(name, &m, to_mgr, round);
+        tcp_connection_unref(to_mgr);
+        to_mgr = next;
+        fail = !to_mgr || mesh_deliver(name, &m, MESH_MGR, MESH_A) ||
+               mesh_deliver(name, &m, MESH_A, MESH_MGR);
+    }
+
+    if (!fail) {
+        TcpConnection *orig = get_private(&m.dev[MESH_A])->manager_conn;
+        if (!wait_for_flag(&orig->recv_thread_exited) ||
+            atomic_load(&orig->is_connected)) {
+            printf("FAIL %-20s: node %u's replaced manager connection was not "
+                   "marked down\n",
+                   name, NODE_A);
+            fail = 1;
+        }
+    }
+    if (!fail) {
+        a_to_b = node_conn(&m.dev[MESH_A], NODE_B);
+        b_to_a = node_conn(&m.dev[MESH_B], NODE_A);
+        if (!a_to_b || !b_to_a) {
+            printf("FAIL %-20s: the workers never connected\n", name);
+            fail = 1;
+        } else {
+            tcp_connection_retire(b_to_a);
+            if (!wait_for_flag(&a_to_b->recv_thread_exited)) {
+                printf("FAIL %-20s: node %u never saw node %u close the "
+                       "connection\n",
+                       name, NODE_A, NODE_B);
+                fail = 1;
+            }
+        }
+    }
+    fail = fail || mesh_deliver(name, &m, MESH_A, MESH_B);
+
+    mesh_stop(name, &m);
+    tcp_connection_unref(to_mgr);
+    tcp_connection_unref(a_to_b);
+    tcp_connection_unref(b_to_a);
+
+    if (!fail) {
+        printf("PASS %-20s: every manager reconnect was taken up\n", name);
     }
     return fail;
 }
@@ -1480,6 +1737,8 @@ static const struct {
     {"pending-reap", test_pending_reap},
     {"init-fini", test_init_fini},
     {"init-failure", test_init_failure},
+    {"dead-peer-relay", test_dead_peer_relay},
+    {"manager-reconnect", test_manager_reconnect},
 };
 
 /*
