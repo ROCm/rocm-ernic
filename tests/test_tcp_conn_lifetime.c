@@ -1811,6 +1811,23 @@ static int test_manager_reconnect(const char *name)
 
     int fail = mesh_start(name, m);
 
+    /*
+     * The workers learn about each other from the topology the manager
+     * broadcasts when B registers, and that can still be on its way to A
+     * when mesh_start() returns. A reconnect retires the connection it is
+     * travelling on; the health check would broadcast again after the
+     * reconnect, but this test reconnects without it. So the link must be
+     * up before the first reconnect.
+     */
+    if (!fail) {
+        a_to_b = node_conn(m->priv[MESH_A], NODE_B);
+        b_to_a = node_conn(m->priv[MESH_B], NODE_A);
+        if (!a_to_b || !b_to_a) {
+            printf("FAIL %-20s: the workers never connected\n", name);
+            fail = 1;
+        }
+    }
+
     for (int round = 1; round <= RECONNECTS && !fail; round++) {
         TcpConnection *next = mesh_reconnect(name, m, to_mgr, round);
         tcp_connection_unref(to_mgr);
@@ -1830,19 +1847,12 @@ static int test_manager_reconnect(const char *name)
         }
     }
     if (!fail) {
-        a_to_b = node_conn(m->priv[MESH_A], NODE_B);
-        b_to_a = node_conn(m->priv[MESH_B], NODE_A);
-        if (!a_to_b || !b_to_a) {
-            printf("FAIL %-20s: the workers never connected\n", name);
+        tcp_connection_retire(b_to_a);
+        if (!wait_for_flag(&a_to_b->recv_thread_exited)) {
+            printf("FAIL %-20s: node %u never saw node %u close the "
+                   "connection\n",
+                   name, NODE_A, NODE_B);
             fail = 1;
-        } else {
-            tcp_connection_retire(b_to_a);
-            if (!wait_for_flag(&a_to_b->recv_thread_exited)) {
-                printf("FAIL %-20s: node %u never saw node %u close the "
-                       "connection\n",
-                       name, NODE_A, NODE_B);
-                fail = 1;
-            }
         }
     }
     fail = fail || mesh_deliver(name, m, MESH_A, MESH_B);

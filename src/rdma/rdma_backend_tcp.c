@@ -2902,7 +2902,14 @@ static void *tcp_accept_thread(void *opaque)
  * Manager/Worker Helper Functions
  */
 
-/* Broadcast mesh topology to all connected workers (manager only) */
+/*
+ * Broadcast mesh topology to all connected workers (manager only).
+ *
+ * A broadcast that overlaps a reconnect can reach a node over the connection
+ * being replaced and be lost for that node. Every reconnect is followed by a
+ * broadcast of its own (see tcp_health_check_pass()), so the node still ends
+ * up with the current topology.
+ */
 static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
 {
     if (!priv->is_manager) {
