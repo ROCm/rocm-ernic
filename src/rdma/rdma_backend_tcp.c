@@ -2606,6 +2606,67 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
     rdma_info_report("TCP: Broadcast mesh topology to %u nodes", num_nodes);
 }
 
+/*
+ * Replace @node's connection with a new one over @fd, a socket already
+ * connected to the node. Takes ownership of @fd whether or not it succeeds.
+ * The caller holds mesh_table_lock.
+ *
+ * Returns true if the new connection was installed.
+ */
+static bool tcp_mesh_reconnect_node(TcpBackendPrivate *priv, MeshNodeInfo *node,
+                                    int fd, time_t now)
+{
+    atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_attempts, 1,
+                              memory_order_relaxed);
+
+    TcpConnection *old_conn = node->conn;
+
+    if (old_conn) {
+        atomic_store(&old_conn->recv_thread_running, false);
+        qemu_thread_join(&old_conn->recv_thread);
+        if (old_conn->sockfd >= 0) {
+            close(old_conn->sockfd);
+        }
+        old_conn->sockfd = -1;
+        old_conn->is_connected = false;
+    }
+
+    TcpConnection *new_conn =
+        tcp_connection_new(node->node_id, node->hostname, node->port);
+    new_conn->priv = priv;
+    new_conn->sockfd = fd;
+    new_conn->is_connected = true;
+
+    if (tcp_send_handshake(new_conn, priv->local_node_id, TCP_MSG_HANDSHAKE) <
+        0) {
+        rdma_error_report(
+            "TCP: Failed to send handshake after reconnect to node %u",
+            node->node_id);
+        tcp_connection_free(new_conn);
+        return false;
+    }
+
+    char tname[32];
+    snprintf(tname, sizeof(tname), "tcp-recv-%u", node->node_id);
+    atomic_store(&new_conn->recv_thread_running, true);
+    qemu_thread_create(&new_conn->recv_thread, tname, tcp_recv_thread_per_conn,
+                       new_conn, QEMU_THREAD_JOINABLE);
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    g_hash_table_replace(priv->connections, GUINT_TO_POINTER(node->node_id),
+                         new_conn);
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    node->conn = new_conn;
+    node->is_alive = true;
+    node->last_heartbeat = now;
+
+    rdma_info_report("TCP: Reconnected to node %u", node->node_id);
+    atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_successes, 1,
+                              memory_order_relaxed);
+    return true;
+}
+
 /* Manager health check thread */
 static void *tcp_manager_health_check_thread(void *opaque)
 {
@@ -2668,68 +2729,12 @@ static void *tcp_manager_health_check_thread(void *opaque)
                                      "to node %u (%s:%u)",
                                      node->node_id, node->hostname, node->port);
                     int fd = tcp_connect_to_remote(node->hostname, node->port);
-                    if (fd >= 0) {
-                        atomic_fetch_add_explicit(
-                            &priv->tcp_stats.reconnect_attempts, 1,
-                            memory_order_relaxed);
-
-                        TcpConnection *old_conn = node->conn;
-
-                        if (old_conn) {
-                            atomic_store(&old_conn->recv_thread_running, false);
-                            qemu_thread_join(&old_conn->recv_thread);
-                            if (old_conn->sockfd >= 0) {
-                                close(old_conn->sockfd);
-                            }
-                            old_conn->sockfd = -1;
-                            old_conn->is_connected = false;
-                        }
-
-                        TcpConnection *new_conn = tcp_connection_new(
-                            node->node_id, node->hostname, node->port);
-                        new_conn->priv = priv;
-                        new_conn->sockfd = fd;
-                        new_conn->is_connected = true;
-
-                        if (tcp_send_handshake(new_conn, priv->local_node_id,
-                                               TCP_MSG_HANDSHAKE) < 0) {
-                            rdma_error_report("TCP: Failed to send handshake "
-                                              "after reconnect to node %u",
-                                              node->node_id);
-                            tcp_connection_free(new_conn);
-                            goto reconnect_done;
-                        }
-
-                        char tname[32];
-                        snprintf(tname, sizeof(tname), "tcp-recv-%u",
-                                 node->node_id);
-                        atomic_store(&new_conn->recv_thread_running, true);
-                        qemu_thread_create(&new_conn->recv_thread, tname,
-                                           tcp_recv_thread_per_conn, new_conn,
-                                           QEMU_THREAD_JOINABLE);
-
-                        qemu_mutex_lock(&priv->conn_table_lock);
-                        g_hash_table_replace(priv->connections,
-                                             GUINT_TO_POINTER(node->node_id),
-                                             new_conn);
-                        qemu_mutex_unlock(&priv->conn_table_lock);
-
-                        node->conn = new_conn;
-                        node->is_alive = true;
-                        node->last_heartbeat = now;
-
-                        rdma_info_report("TCP: Reconnected to "
-                                         "node %u",
-                                         node->node_id);
-                        atomic_fetch_add_explicit(
-                            &priv->tcp_stats.reconnect_successes, 1,
-                            memory_order_relaxed);
-
+                    if (fd >= 0 &&
+                        tcp_mesh_reconnect_node(priv, node, fd, now)) {
                         qemu_mutex_unlock(&priv->mesh_table_lock);
                         tcp_broadcast_mesh_topology(priv);
                         qemu_mutex_lock(&priv->mesh_table_lock);
                     }
-                reconnect_done:;
                 }
             }
         }
