@@ -1,14 +1,14 @@
 # rocm-ernic
 
 [![License](https://img.shields.io/badge/License-MIT%20%7C%20GPL--2.0--or--later-blue.svg)][license]
-[![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml/badge.svg)][ci-build]
-[![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
-[![clang-format](https://github.com/ROCm/rocm-ernic/actions/workflows/clang-format.yml/badge.svg)][ci-clang-format]
-[![ShellCheck](https://github.com/ROCm/rocm-ernic/actions/workflows/shellcheck.yml/badge.svg)][ci-shellcheck]
-[![pylint](https://github.com/ROCm/rocm-ernic/actions/workflows/pylint.yml/badge.svg)][ci-pylint]
-[![cmakelint](https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml/badge.svg)][ci-cmakelint]
-[![CodeQL](https://github.com/ROCm/rocm-ernic/actions/workflows/codeql.yml/badge.svg)][ci-codeql]
-[![System Tests](https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml/badge.svg)][ci-system-tests]
+[![Build](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/build-and-test.yml?label=Build)][ci-build]
+[![Docs](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/docs-check.yml?label=Docs)][ci-docs]
+[![clang-format](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/clang-format.yml?label=clang-format)][ci-clang-format]
+[![ShellCheck](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/shellcheck.yml?label=ShellCheck)][ci-shellcheck]
+[![pylint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/pylint.yml?label=pylint)][ci-pylint]
+[![cmakelint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/cmakelint.yml?label=cmakelint)][ci-cmakelint]
+[![CodeQL](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/codeql.yml?label=CodeQL)][ci-codeql]
+[![System Tests](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/system-tests.yml?label=System%20Tests)][ci-system-tests]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-rdma.json)][perf-trends]
