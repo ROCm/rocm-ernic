@@ -45,14 +45,14 @@
  * one object. An unregistered connection must be shut down at teardown, and
  * one whose peer has left must be dropped by the next health-check pass.
  *
- * The last four cases run tcp_init() and tcp_fini() themselves, mostly on a
+ * The last five cases run tcp_init() and tcp_fini() themselves, mostly on a
  * manager and two workers in this process, connected over loopback exactly
  * as separate servers would be. The mesh must come up and go down cleanly
  * with its connections live; a worker whose tcp_init() fails after it has
  * started threads must undo them; a worker whose direct link to another
- * worker dies must fall back to the manager's relay; and a worker the
- * manager reconnects to must take up each new connection, not just the
- * first.
+ * worker dies must fall back to the manager's relay; a worker the manager
+ * reconnects to must take up each new connection, not just the first; and
+ * a worker sent malformed handshakes must refuse them and carry on.
  *
  * The static functions are reached by #including the translation unit. The
  * receive threads are real, so qemu_thread_create()/qemu_thread_join() are
@@ -1667,6 +1667,123 @@ static int test_manager_reconnect(const char *name)
     return fail;
 }
 
+/* A node ID no member of the mesh has. */
+#define STRANGER_NODE 7u
+
+/*
+ * A blocking connection to @port on loopback whose reads time out rather
+ * than block forever, or -1.
+ */
+static int dial_loopback(uint16_t port)
+{
+    const struct timeval tmo = {.tv_sec = WAIT_MS / 1000, .tv_usec = 0};
+    struct sockaddr_in addr;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/*
+ * Dial @port, send one message of @type carrying @len bytes of @payload,
+ * and check the far end then closes the connection without answering.
+ * Returns 1, having reported it as @what, if it does not.
+ */
+static int send_rejected(const char *name, uint16_t port, TcpMsgType type,
+                         const void *payload, uint32_t len, const char *what)
+{
+    uint8_t byte;
+    int fd = dial_loopback(port);
+
+    if (fd < 0 ||
+        send_msg(fd, type, STRANGER_NODE, NODE_A, payload, len) != 0) {
+        printf("FAIL %-20s: could not send %s\n", name, what);
+    } else {
+        ssize_t ret = recv(fd, &byte, 1, 0);
+        if (ret == 0 || (ret < 0 && errno == ECONNRESET)) {
+            close(fd);
+            return 0;
+        }
+        printf("FAIL %-20s: %s was not refused\n", name, what);
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+    return 1;
+}
+
+/*
+ * Anyone who can reach a worker's listen port can send it a malformed
+ * handshake, and the worker must refuse it and carry on. A handshake too
+ * short to hold its payload, or with none at all, must be refused rather
+ * than read past its end. A message that is not a handshake, followed by a
+ * connection that closes without sending anything, must not free the first
+ * message's payload twice. After all that the worker must still answer a
+ * well-formed handshake.
+ */
+static int test_bad_handshake(const char *name)
+{
+    struct mesh m;
+    TcpHandshakePayload hs = {.node_id = htonl(STRANGER_NODE),
+                              .version = htonl(TCP_PROTOCOL_VERSION)};
+    int fd = -1;
+
+    int fail = mesh_start(name, &m);
+    uint16_t port = fail ? 0 : get_private(&m.dev[MESH_A])->listen_port;
+
+    fail = fail || send_rejected(name, port, TCP_MSG_HANDSHAKE, NULL, 0,
+                                 "a handshake with no payload");
+    fail = fail ||
+           send_rejected(name, port, TCP_MSG_HANDSHAKE, &hs, sizeof(hs.node_id),
+                         "a handshake with a short payload");
+    fail = fail || send_rejected(name, port, TCP_MSG_HEARTBEAT, &hs, sizeof(hs),
+                                 "a message other than a handshake");
+
+    if (!fail) {
+        fd = dial_loopback(port);
+        if (fd < 0) {
+            printf("FAIL %-20s: could not connect to node %u\n", name, NODE_A);
+            fail = 1;
+        } else {
+            close(fd);
+        }
+    }
+
+    if (!fail) {
+        fd = dial_loopback(port);
+        if (fd < 0 ||
+            send_msg(fd, TCP_MSG_HANDSHAKE, STRANGER_NODE, NODE_A, &hs,
+                     sizeof(hs)) != 0 ||
+            read_until(fd, TCP_MSG_HANDSHAKE_RESP, TCP_MSG_HANDSHAKE_RESP,
+                       NULL) != 0) {
+            printf("FAIL %-20s: node %u no longer answers a handshake\n", name,
+                   NODE_A);
+            fail = 1;
+        }
+    }
+
+    mesh_stop(name, &m);
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    if (!fail) {
+        printf("PASS %-20s: malformed handshakes refused\n", name);
+    }
+    return fail;
+}
+
 /*
  * A worker whose manager accepts the connection and then never answers gives
  * up when registration times out. By then tcp_init() has started the accept
@@ -1739,6 +1856,7 @@ static const struct {
     {"init-failure", test_init_failure},
     {"dead-peer-relay", test_dead_peer_relay},
     {"manager-reconnect", test_manager_reconnect},
+    {"bad-handshake", test_bad_handshake},
 };
 
 /*

@@ -1450,11 +1450,20 @@ static int tcp_send_eth_frame_nonblock(int sockfd, const void *payload,
     return 0;
 }
 
+/*
+ * Receive one message. On success *payload holds hdr->msg_len bytes, which
+ * the caller must release, or is NULL if the message has none. On failure
+ * *payload is NULL.
+ */
 static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                             TcpBufPool *pool)
 {
     ssize_t ret;
     size_t total_recv = 0;
+
+    /* Every return leaves *payload defined, so a caller that frees it on an
+     * early failure never frees what it passed in. */
+    *payload = NULL;
 
     /* Receive header */
     while (total_recv < sizeof(*hdr)) {
@@ -2690,6 +2699,17 @@ static void *tcp_accept_thread(void *opaque)
                 if (payload) {
                     g_free(payload);
                 }
+                continue;
+            }
+
+            /* Anyone can connect here, so the length is the sender's word
+             * and the payload may be short or missing altogether. */
+            if (hdr.msg_len < sizeof(TcpHandshakePayload)) {
+                rdma_error_report("TCP: Handshake too short: %u bytes",
+                                  hdr.msg_len);
+                close(sockfd);
+                g_free(payload);
+                payload = NULL;
                 continue;
             }
 
