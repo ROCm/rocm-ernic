@@ -2,18 +2,23 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-#
-# ernicctl -- admin CLI for the rocm-ernic systemd service.
-#
-# Manages rocm-ernic server instances, VM lifecycle,
-# hotplug, and driver distribution.  Uses only the
-# Python 3 standard library (no pip dependencies).
-# Requires socat on the host for QMP communication.
-#
-# Install: /usr/local/bin/ernicctl
+
+# ernicctl has to ship as a single stdlib-only file
+# pylint: disable=too-many-lines
+
+"""Admin CLI for the rocm-ernic systemd service.
+
+Manages rocm-ernic server instances, VM lifecycle, hotplug, and driver
+distribution.  Uses only the Python 3 standard library (no pip
+dependencies).  Requires socat on the host for QMP communication.
+
+Install: /usr/local/bin/ernicctl
+"""
 
 import argparse
+import glob
 import json
+import math
 import os
 import pathlib
 import pwd
@@ -22,6 +27,7 @@ import signal
 import subprocess
 import sys
 import time
+from difflib import get_close_matches
 
 # ── Defaults (overridden by env) ──────────────────
 
@@ -40,9 +46,7 @@ DEFAULTS = {
     "ERNIC_TAP_BRIDGE": "ernicbr0",
     "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/patches",
     "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
-    "ERNIC_QEMU_MINIMAL": os.path.expanduser(
-        "~/Projects/qemu-minimal"
-    ),
+    "ERNIC_QEMU_MINIMAL": os.path.expanduser("~/Projects/qemu-minimal"),
     "ERNIC_QEMU_PATH": "/opt/qemu-v10.1.2/bin/",
     "ERNIC_VM_IMAGE_DIR": "",
     "ERNIC_VM_NAME": "stebates-test-vm",
@@ -62,7 +66,7 @@ def load_env():
     """Merge defaults, env file, and process env."""
     cfg = dict(DEFAULTS)
     if os.path.isfile(ENV_FILE):
-        with open(ENV_FILE) as fh:
+        with open(ENV_FILE, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -75,9 +79,7 @@ def load_env():
         if key in os.environ:
             cfg[key] = os.environ[key]
     if not cfg["ERNIC_VM_IMAGE_DIR"]:
-        cfg["ERNIC_VM_IMAGE_DIR"] = os.path.join(
-            cfg["ERNIC_QEMU_MINIMAL"], "images"
-        )
+        cfg["ERNIC_VM_IMAGE_DIR"] = os.path.join(cfg["ERNIC_QEMU_MINIMAL"], "images")
     return cfg
 
 
@@ -86,9 +88,7 @@ CFG = load_env()
 RUN_DIR = CFG["ERNIC_RUN_DIR"]
 LOG_DIR = CFG["ERNIC_LOG_DIR"]
 MANIFEST = os.path.join(RUN_DIR, "instances.json")
-LAUNCHER = (
-    "/usr/local/libexec/rocm-ernic/rocm-ernic-launcher"
-)
+LAUNCHER = "/usr/local/libexec/rocm-ernic/rocm-ernic-launcher"
 
 
 def guest_driver_modules():
@@ -138,10 +138,14 @@ def _ssh_config_prefix():
 def _ssh_vm_host_key_opts():
     """Non-interactive VM ssh/scp: no strict host key prompts or known_hosts writes."""
     return [
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "CheckHostIP=no",
-        "-o", "LogLevel=ERROR",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "CheckHostIP=no",
+        "-o",
+        "LogLevel=ERROR",
     ]
 
 
@@ -173,19 +177,23 @@ def _effective_vm_ssh_identity():
 
 # ── Manifest helpers ─────────────────────────────
 
+
 def read_manifest():
+    """Return the instances manifest, or an empty one if there is none."""
     if not os.path.isfile(MANIFEST):
         return {"instances": []}
-    with open(MANIFEST) as fh:
+    with open(MANIFEST, encoding="utf-8") as fh:
         return json.load(fh)
 
 
 def write_manifest(data):
-    with open(MANIFEST, "w") as fh:
+    """Replace the instances manifest with data."""
+    with open(MANIFEST, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
 
 
 def find_instance(manifest, inst_id):
+    """Return the manifest entry for inst_id, or None."""
     for inst in manifest["instances"]:
         if inst["id"] == inst_id:
             return inst
@@ -193,6 +201,7 @@ def find_instance(manifest, inst_id):
 
 
 def pid_alive(pid):
+    """Return whether a process with this PID exists."""
     try:
         os.kill(pid, 0)
         return True
@@ -201,6 +210,7 @@ def pid_alive(pid):
 
 
 # ── Stats helpers ────────────────────────────────
+
 
 def parse_stats_file(path):
     """Parse a .stats text file into {key: value}.
@@ -213,7 +223,7 @@ def parse_stats_file(path):
     if not os.path.isfile(path):
         return result
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if " : " not in line:
@@ -236,10 +246,9 @@ def count_qps(path):
     if not os.path.isfile(path):
         return count
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
-                if line.strip().startswith("QP ") \
-                        and line.strip().endswith(":"):
+                if line.strip().startswith("QP ") and line.strip().endswith(":"):
                     count += 1
     except OSError:
         pass
@@ -276,11 +285,8 @@ def read_all_stats():
 
     Returns {instance_id_int: stats_dict}.
     """
-    import glob
     result = {}
-    for sf in glob.glob(
-        os.path.join(RUN_DIR, "*.stats")
-    ):
+    for sf in glob.glob(os.path.join(RUN_DIR, "*.stats")):
         name = pathlib.Path(sf).stem
         try:
             inst_id = int(name)
@@ -292,6 +298,7 @@ def read_all_stats():
 
 # ── QMP helpers ──────────────────────────────────
 
+
 def _qmp_socat_raw(qmp_socket, payload, timeout=10):
     """Run one QMP session (payload may include multiple lines).
 
@@ -299,11 +306,14 @@ def _qmp_socat_raw(qmp_socket, payload, timeout=10):
     error occurs.  Does not print or exit.
     """
     try:
+        # Failure is reported through the return value
+        # pylint: disable-next=subprocess-run-check
         result = subprocess.run(
             ["socat", "-", f"UNIX-CONNECT:{qmp_socket}"],
             input=payload,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout,
         )
         return result.stdout
@@ -316,16 +326,11 @@ def _qmp_socat_raw(qmp_socket, payload, timeout=10):
 def qmp_send(qmp_socket, command):
     """Send a QMP command via socat and return the
     raw response string."""
-    payload = (
-        '{"execute":"qmp_capabilities"}\n'
-        + command
-        + "\n"
-    )
+    payload = '{"execute":"qmp_capabilities"}\n' + command + "\n"
     out = _qmp_socat_raw(qmp_socket, payload, timeout=10)
     if out is None:
         print(
-            "ERROR: socat is required for QMP."
-            "  Install: sudo apt install socat",
+            "ERROR: socat is required for QMP.  Install: sudo apt install socat",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -352,6 +357,7 @@ def _parse_qmp_stdout(stdout):
     return objs
 
 
+# pylint: disable-next=too-many-return-statements
 def _load1m_from_monitor_return_string(text):
     """Parse load1m from ``human-monitor-command`` return (JSON text)."""
     if not text or not isinstance(text, str):
@@ -377,6 +383,7 @@ def _load1m_from_monitor_return_string(text):
     return None
 
 
+# pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
 def _guest_load_from_qmp(qmp_socket, debug=False):
     """Load factor (1m load / vCPU) via QMP + guest agent.
 
@@ -444,15 +451,15 @@ def _guest_load_from_qmp(qmp_socket, debug=False):
             except (TypeError, ValueError):
                 pass
     if load1m is None and guest_qmp_missing:
-        hmp = json.dumps({
-            "execute": "human-monitor-command",
-            "arguments": {"command-line": "guest-get-load"},
-        })
+        hmp = json.dumps(
+            {
+                "execute": "human-monitor-command",
+                "arguments": {"command-line": "guest-get-load"},
+            }
+        )
         payload2 = (
             '{"execute":"qmp_capabilities"}\n'
-            '{"execute":"query-cpus-fast"}\n'
-            + hmp
-            + "\n"
+            '{"execute":"query-cpus-fast"}\n' + hmp + "\n"
         )
         if debug:
             print(
@@ -466,14 +473,12 @@ def _guest_load_from_qmp(qmp_socket, debug=False):
                 if not isinstance(obj, dict) or "error" in obj:
                     if debug and isinstance(obj, dict) and "error" in obj:
                         print(
-                            f"[ernicctl VM_LOAD qmp] hmp fallback error:"
-                            f" {obj!r}",
+                            f"[ernicctl VM_LOAD qmp] hmp fallback error: {obj!r}",
                             file=sys.stderr,
                         )
                     continue
                 ret = obj.get("return")
-                if isinstance(ret, list) and ret and isinstance(
-                        ret[0], dict):
+                if isinstance(ret, list) and ret and isinstance(ret[0], dict):
                     if "cpu-index" in ret[0] or "thread-id" in ret[0]:
                         ncpu = len(ret)
                 elif isinstance(ret, str):
@@ -515,70 +520,84 @@ def _guest_load_from_qmp(qmp_socket, debug=False):
     return f"{factor:.2f}"
 
 
-def qmp_device_add(qmp_socket, device_id, root_port,
-                   vfio_socket):
-    cmd = json.dumps({
-        "execute": "device_add",
-        "arguments": {
-            "driver": "vfio-user-pci",
-            "id": device_id,
-            "bus": root_port,
-            "socket": {
-                "path": vfio_socket,
-                "type": "unix",
+def qmp_device_add(qmp_socket, device_id, root_port, vfio_socket):
+    """Hot-plug a vfio-user device into the VM; return whether it worked."""
+    cmd = json.dumps(
+        {
+            "execute": "device_add",
+            "arguments": {
+                "driver": "vfio-user-pci",
+                "id": device_id,
+                "bus": root_port,
+                "socket": {
+                    "path": vfio_socket,
+                    "type": "unix",
+                },
             },
-        },
-    })
+        }
+    )
     resp = qmp_send(qmp_socket, cmd)
     if '"error"' in resp:
-        print(f"ERROR: device_add failed: {resp}",
-              file=sys.stderr)
+        print(f"ERROR: device_add failed: {resp}", file=sys.stderr)
         return False
     return True
 
 
 def qmp_device_del(qmp_socket, device_id):
-    cmd = json.dumps({
-        "execute": "device_del",
-        "arguments": {"id": device_id},
-    })
+    """Hot-unplug a device from the VM."""
+    cmd = json.dumps(
+        {
+            "execute": "device_del",
+            "arguments": {"id": device_id},
+        }
+    )
     resp = qmp_send(qmp_socket, cmd)
     if '"error"' in resp:
-        print(f"WARNING: device_del: {resp}",
-              file=sys.stderr)
+        print(f"WARNING: device_del: {resp}", file=sys.stderr)
     return True
 
 
 def qmp_quit(qmp_socket):
+    """Ask QEMU to quit."""
     cmd = '{"execute":"quit"}'
     qmp_send(qmp_socket, cmd)
 
 
 # ── SSH helper ───────────────────────────────────
 
+
 def guest_ssh(ssh_user, ssh_port, command):
+    """Run command in the guest over SSH and return the CompletedProcess."""
     ident = _effective_vm_ssh_identity()
     ssh_cmd = [
         "ssh",
         *_ssh_config_prefix(),
         *_ssh_vm_host_key_opts(),
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
     ]
     if ident:
         ssh_cmd += [
-            "-o", "IdentitiesOnly=yes",
-            "-i", ident,
+            "-o",
+            "IdentitiesOnly=yes",
+            "-i",
+            ident,
         ]
     ssh_cmd += [
-        "-p", str(ssh_port),
+        "-p",
+        str(ssh_port),
         _ssh_vm_target(ssh_user),
         command,
     ]
+    # Callers differ on whether a failed command is fatal
+    # pylint: disable-next=subprocess-run-check
     return subprocess.run(
         ssh_cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
 
@@ -593,7 +612,7 @@ def _first_float_line(text):
             x = float(t)
         except ValueError:
             continue
-        if not (x == x):  # NaN
+        if math.isnan(x):
             continue
         if x < 0 or x > 999:
             continue
@@ -601,11 +620,12 @@ def _first_float_line(text):
     return None
 
 
-def _get_vm_guest_load_ssh(vm, user, port, debug=False, label=""):
+# pylint: disable-next=too-many-locals
+def _get_vm_guest_load_ssh(user, port, debug=False, label=""):
     """Load factor from guest /proc/loadavg over SSH (fallback)."""
     cmd = (
         'n=$(nproc); [ "$n" -lt 1 ] && n=1; '
-        "awk -v n=\"$n\" 'NR==1{printf \"%.2f\\n\", $1/n}' /proc/loadavg"
+        'awk -v n="$n" \'NR==1{printf "%.2f\\n", $1/n}\' /proc/loadavg'
     )
     ident = _effective_vm_ssh_identity()
     primary = _cfg_vm_ssh_host()
@@ -619,24 +639,32 @@ def _get_vm_guest_load_ssh(vm, user, port, debug=False, label=""):
             "ssh",
             *_ssh_config_prefix(),
             *_ssh_vm_host_key_opts(),
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=4",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=4",
         ]
         if ident:
             ssh_base += [
-                "-o", "IdentitiesOnly=yes",
-                "-i", ident,
+                "-o",
+                "IdentitiesOnly=yes",
+                "-i",
+                ident,
             ]
         ssh_base += [
-            "-p", str(port),
+            "-p",
+            str(port),
             target,
             cmd,
         ]
         try:
+            # The return code is checked below, to retry via localhost
+            # pylint: disable-next=subprocess-run-check
             result = subprocess.run(
                 ssh_base,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=8,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -648,11 +676,7 @@ def _get_vm_guest_load_ssh(vm, user, port, debug=False, label=""):
             or "Temporary failure in name resolution" in err_blob
         )
         if result.returncode != 0:
-            if (
-                hi == 0
-                and unresolvable
-                and len(hosts) > 1
-            ):
+            if hi == 0 and unresolvable and len(hosts) > 1:
                 if debug:
                     print(
                         f"[ernicctl VM_LOAD ssh{label}] retrying"
@@ -710,12 +734,13 @@ def _get_vm_guest_load(inst, debug=False):
     port = vm.get("ssh_port")
     if not port:
         return "-"
-    user = vm.get("ssh_user") or CFG.get(
-        "ERNIC_VM_SSH_USER", "ubuntu"
-    )
+    user = vm.get("ssh_user") or CFG.get("ERNIC_VM_SSH_USER", "ubuntu")
     label = f" inst={inst.get('id')}"
     sf = _get_vm_guest_load_ssh(
-        vm, user, port, debug=debug, label=label,
+        user,
+        port,
+        debug=debug,
+        label=label,
     )
     if sf is not None:
         return sf
@@ -736,12 +761,13 @@ def _get_vm_guest_load(inst, debug=False):
 
 # ── Subcommands: service lifecycle ───────────────
 
+
 def _get_uptime(pid):
     """Return process uptime in seconds, or None."""
     try:
-        with open("/proc/uptime") as f:
+        with open("/proc/uptime", encoding="utf-8") as f:
             sys_up = float(f.read().split()[0])
-        with open(f"/proc/{pid}/stat") as f:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
             fields = f.read().rsplit(") ", 1)[1]
             start_ticks = int(fields.split()[19])
         hz = os.sysconf("SC_CLK_TCK")
@@ -809,13 +835,9 @@ def _get_byte_cols(stats):
         return "-", "-"
     ip_tx = stats.get("total_ip_bytes_tx", 0)
     ip_rx = stats.get("total_ip_bytes_rx", 0)
-    rdma_tx = (
-        stats.get("total_bytes_sent", 0)
-        + stats.get("total_bytes_rdma_write", 0)
-    )
-    rdma_rx = (
-        stats.get("total_bytes_received", 0)
-        + stats.get("total_bytes_rdma_read", 0)
+    rdma_tx = stats.get("total_bytes_sent", 0) + stats.get("total_bytes_rdma_write", 0)
+    rdma_rx = stats.get("total_bytes_received", 0) + stats.get(
+        "total_bytes_rdma_read", 0
     )
     return (
         format_txrx(ip_tx, ip_rx),
@@ -844,7 +866,9 @@ def _delta_stats(s1, s2):
     return out
 
 
+# pylint: disable-next=too-many-locals,too-many-statements
 def cmd_status(args):
+    """Show instance status."""
     m = read_manifest()
     rate = getattr(args, "rate", None)
     dbg = getattr(args, "debug_vm_load", False)
@@ -852,65 +876,43 @@ def cmd_status(args):
     all_stats = read_all_stats()
 
     if rate:
-        snap1 = {k: dict(v) for k, v in
-                 all_stats.items()}
+        snap1 = {k: dict(v) for k, v in all_stats.items()}
         time.sleep(rate)
         all_stats = read_all_stats()
         for iid in all_stats:
-            all_stats[iid] = _delta_stats(
-                snap1.get(iid, {}), all_stats[iid]
-            ) or {}
+            all_stats[iid] = _delta_stats(snap1.get(iid, {}), all_stats[iid]) or {}
 
     if args.json:
         for inst in m["instances"]:
             iid = inst["id"]
             alive = pid_alive(inst["pid"])
-            inst["state"] = (
-                "running" if alive else "dead"
-            )
-            inst["log_file"] = os.path.join(
-                LOG_DIR, f"{iid}.log"
-            )
-            up = _get_uptime(inst["pid"]) if alive \
-                else None
-            inst["uptime_seconds"] = (
-                int(up) if up is not None else None
-            )
+            inst["state"] = "running" if alive else "dead"
+            inst["log_file"] = os.path.join(LOG_DIR, f"{iid}.log")
+            up = _get_uptime(inst["pid"]) if alive else None
+            inst["uptime_seconds"] = int(up) if up is not None else None
             vm = inst.get("vm")
-            if vm and vm.get("attached") \
-                    and vm.get("launched_at"):
-                vm_up = time.time() \
-                    - vm["launched_at"]
-            elif vm and vm.get("attached") \
-                    and vm.get("vm_pid"):
+            if vm and vm.get("attached") and vm.get("launched_at"):
+                vm_up = time.time() - vm["launched_at"]
+            elif vm and vm.get("attached") and vm.get("vm_pid"):
                 vm_up = _get_uptime(vm.get("vm_pid"))
             else:
                 vm_up = None
-            inst["vm_uptime_seconds"] = (
-                int(vm_up) if vm_up is not None
-                else None
-            )
+            inst["vm_uptime_seconds"] = int(vm_up) if vm_up is not None else None
             st = all_stats.get(iid, {})
-            inst["ip_bytes_tx"] = st.get(
-                "total_ip_bytes_tx", 0)
-            inst["ip_bytes_rx"] = st.get(
-                "total_ip_bytes_rx", 0)
-            inst["rdma_bytes_tx"] = (
-                st.get("total_bytes_sent", 0)
-                + st.get("total_bytes_rdma_write", 0)
+            inst["ip_bytes_tx"] = st.get("total_ip_bytes_tx", 0)
+            inst["ip_bytes_rx"] = st.get("total_ip_bytes_rx", 0)
+            inst["rdma_bytes_tx"] = st.get("total_bytes_sent", 0) + st.get(
+                "total_bytes_rdma_write", 0
             )
-            inst["rdma_bytes_rx"] = (
-                st.get("total_bytes_received", 0)
-                + st.get("total_bytes_rdma_read", 0)
+            inst["rdma_bytes_rx"] = st.get("total_bytes_received", 0) + st.get(
+                "total_bytes_rdma_read", 0
             )
             vm_j = inst.get("vm")
-            if vm_j and vm_j.get("attached") and vm_j.get(
-                    "ssh_port"):
+            if vm_j and vm_j.get("attached") and vm_j.get("ssh_port"):
                 lf_s = _get_vm_guest_load(inst, debug=dbg)
                 try:
                     inst["vm_guest_load"] = (
-                        float(lf_s) if lf_s not in ("-", "?")
-                        else None
+                        float(lf_s) if lf_s not in ("-", "?") else None
                     )
                 except ValueError:
                     inst["vm_guest_load"] = None
@@ -920,14 +922,10 @@ def cmd_status(args):
         return
 
     if not m["instances"]:
-        print("No instances found.  Service may not"
-              " be running.")
+        print("No instances found.  Service may not be running.")
         return
 
-    print(
-        f"Device: ionic 1dd8:100a "
-        f"(TAP {CFG['ERNIC_TAP_PREFIX']}<id>)"
-    )
+    print(f"Device: ionic 1dd8:100a (TAP {CFG['ERNIC_TAP_PREFIX']}<id>)")
     print()
 
     fmt = (
@@ -935,11 +933,24 @@ def cmd_status(args):
         " {:<19} {:<30} {:<12} {:<10}"
         " {:<8} {:<5} {:<15} {:<15} {}"
     )
-    print(fmt.format(
-        "ID", "ROLE", "PID", "STATE", "UPTIME",
-        "MAC", "SOCKET", "VM", "VM_UPTIME",
-        "VM_LOAD", "GPU", "IP (TX/RX)", "RDMA (TX/RX)", "LOG",
-    ))
+    print(
+        fmt.format(
+            "ID",
+            "ROLE",
+            "PID",
+            "STATE",
+            "UPTIME",
+            "MAC",
+            "SOCKET",
+            "VM",
+            "VM_UPTIME",
+            "VM_LOAD",
+            "GPU",
+            "IP (TX/RX)",
+            "RDMA (TX/RX)",
+            "LOG",
+        )
+    )
     for inst in m["instances"]:
         alive = pid_alive(inst["pid"])
         state = "running" if alive else "dead"
@@ -949,32 +960,30 @@ def cmd_status(args):
         vm_gpu = _get_vm_gpu(inst)
         st = all_stats.get(inst["id"], {})
         ip_col, rdma_col = _get_byte_cols(st)
-        uptime = format_duration(
-            _get_uptime(inst["pid"]) if alive
-            else None
+        uptime = format_duration(_get_uptime(inst["pid"]) if alive else None)
+        logfile = os.path.join(LOG_DIR, f"{inst['id']}.log")
+        print(
+            fmt.format(
+                inst["id"],
+                inst["role"],
+                inst["pid"] if alive else 0,
+                state,
+                uptime,
+                inst["mac"],
+                inst["socket"],
+                vm_info,
+                vm_up,
+                vm_load,
+                vm_gpu,
+                ip_col,
+                rdma_col,
+                logfile,
+            )
         )
-        logfile = os.path.join(
-            LOG_DIR, f"{inst['id']}.log"
-        )
-        print(fmt.format(
-            inst["id"],
-            inst["role"],
-            inst["pid"] if alive else 0,
-            state,
-            uptime,
-            inst["mac"],
-            inst["socket"],
-            vm_info,
-            vm_up,
-            vm_load,
-            vm_gpu,
-            ip_col,
-            rdma_col,
-            logfile,
-        ))
 
 
 def cmd_start(_args):
+    """Start the service."""
     subprocess.run(
         ["systemctl", "start", "rocm-ernic"],
         check=True,
@@ -982,6 +991,7 @@ def cmd_start(_args):
 
 
 def cmd_stop(_args):
+    """Stop the service."""
     subprocess.run(
         ["systemctl", "stop", "rocm-ernic"],
         check=True,
@@ -989,6 +999,7 @@ def cmd_stop(_args):
 
 
 def cmd_restart(_args):
+    """Restart the service."""
     subprocess.run(
         ["systemctl", "restart", "rocm-ernic"],
         check=True,
@@ -996,6 +1007,7 @@ def cmd_restart(_args):
 
 
 def cmd_reload(_args):
+    """Reload the service configuration."""
     subprocess.run(
         ["systemctl", "reload", "rocm-ernic"],
         check=True,
@@ -1003,29 +1015,26 @@ def cmd_reload(_args):
 
 
 def cmd_logs(args):
+    """Tail instance logs."""
     inst_id = args.instance
     if inst_id:
         logfile = os.path.join(LOG_DIR, f"{inst_id}.log")
         if not os.path.isfile(logfile):
             print(f"No log file for instance {inst_id}.")
             return
-        subprocess.run(["tail", "-f", logfile])
+        subprocess.run(["tail", "-f", logfile], check=True)
     else:
-        import glob
-        logs = sorted(
-            glob.glob(os.path.join(LOG_DIR, "*.log"))
-        )
+        logs = sorted(glob.glob(os.path.join(LOG_DIR, "*.log")))
         if not logs:
             print("No log files found.")
             return
-        subprocess.run(["tail", "-f"] + logs)
+        subprocess.run(["tail", "-f"] + logs, check=True)
 
 
 def _stats_summary_row(iid, stats, sf):
     """Build one summary-table row for an instance."""
     if not stats:
-        return (str(iid), "-", "-", "-",
-                "-", "-", "-", "-", "-", "-")
+        return (str(iid), "-", "-", "-", "-", "-", "-", "-", "-", "-")
     conn = stats.get("connection", "-")
     if isinstance(conn, str) and len(conn) > 10:
         conn = conn[:10]
@@ -1051,43 +1060,45 @@ def _stats_summary_row(iid, stats, sf):
     cmds = stats.get("commands", 0)
     ints = stats.get("interrupts", 0)
     qps = count_qps(sf)
-    flr = stats.get(
-        "reset_count", stats.get("flr_reset_count", 0))
+    flr = stats.get("reset_count", stats.get("flr_reset_count", 0))
     return (
-        str(iid), conn, ip_col, sr_col,
-        rw_col, mmio_col,
-        str(cmds), str(ints),
-        str(qps), str(flr),
+        str(iid),
+        conn,
+        ip_col,
+        sr_col,
+        rw_col,
+        mmio_col,
+        str(cmds),
+        str(ints),
+        str(qps),
+        str(flr),
     )
 
 
 def _print_stats_summary(inst_id):
     """Print a one-row-per-instance summary table."""
-    import glob
-    fmt = (
-        "{:<4} {:<11} {:<15} {:<15}"
-        " {:<15} {:<15}"
-        " {:<7} {:<7} {:<4} {}"
-    )
-    print(fmt.format(
-        "ID", "CONN",
-        "IP (TX/RX)", "RDMA-SR (TX/RX)",
-        "RDMA-RW (R/W)", "MMIO (R/W)",
-        "CMDS", "INTS", "QPS", "FLR",
-    ))
-    if inst_id:
-        sf = os.path.join(
-            RUN_DIR, f"{inst_id}.stats"
+    fmt = "{:<4} {:<11} {:<15} {:<15} {:<15} {:<15} {:<7} {:<7} {:<4} {}"
+    print(
+        fmt.format(
+            "ID",
+            "CONN",
+            "IP (TX/RX)",
+            "RDMA-SR (TX/RX)",
+            "RDMA-RW (R/W)",
+            "MMIO (R/W)",
+            "CMDS",
+            "INTS",
+            "QPS",
+            "FLR",
         )
+    )
+    if inst_id:
+        sf = os.path.join(RUN_DIR, f"{inst_id}.stats")
         stats = parse_stats_file(sf)
         row = _stats_summary_row(inst_id, stats, sf)
         print(fmt.format(*row))
     else:
-        for sf in sorted(
-            glob.glob(
-                os.path.join(RUN_DIR, "*.stats")
-            )
-        ):
+        for sf in sorted(glob.glob(os.path.join(RUN_DIR, "*.stats"))):
             name = pathlib.Path(sf).stem
             try:
                 iid = int(name)
@@ -1099,6 +1110,7 @@ def _print_stats_summary(inst_id):
 
 
 def cmd_stats(args):
+    """Show instance stats."""
     if getattr(args, "summary", False):
         _print_stats_summary(args.instance)
         return
@@ -1107,29 +1119,30 @@ def cmd_stats(args):
     if inst_id:
         sf = os.path.join(RUN_DIR, f"{inst_id}.stats")
         if os.path.isfile(sf):
-            with open(sf) as fh:
+            with open(sf, encoding="utf-8") as fh:
                 print(fh.read())
         else:
-            print(f"No stats file for instance"
-                  f" {inst_id}.")
+            print(f"No stats file for instance {inst_id}.")
     else:
-        import glob
-        for sf in sorted(
-            glob.glob(os.path.join(RUN_DIR, "*.stats"))
-        ):
+        for sf in sorted(glob.glob(os.path.join(RUN_DIR, "*.stats"))):
             name = pathlib.Path(sf).stem
             print(f"=== Instance {name} ===")
-            with open(sf) as fh:
+            with open(sf, encoding="utf-8") as fh:
                 print(fh.read())
 
 
 # ── Subcommands: dynamic mesh ────────────────────
 
+
 def cmd_add_instance(_args):
+    """Add a new worker to the mesh."""
+    # The return code is checked below, after the output is printed
+    # pylint: disable-next=subprocess-run-check
     result = subprocess.run(
         [LAUNCHER, "--add-instance"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     print(result.stdout, end="")
     if result.returncode != 0:
@@ -1138,19 +1151,22 @@ def cmd_add_instance(_args):
 
 
 def cmd_remove_instance(args):
+    """Remove an instance from the mesh."""
     inst_id = args.instance
     m = read_manifest()
     inst = find_instance(m, inst_id)
     if inst and inst.get("vm") and inst["vm"]:
         if inst["vm"].get("attached"):
-            print(f"Detaching instance {inst_id}"
-                  " from VM first...")
+            print(f"Detaching instance {inst_id} from VM first...")
             _do_detach(inst, unload_driver=False)
 
+    # The return code is checked below, after the output is printed
+    # pylint: disable-next=subprocess-run-check
     result = subprocess.run(
         [LAUNCHER, "--remove-instance", str(inst_id)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     print(result.stdout, end="")
     if result.returncode != 0:
@@ -1159,30 +1175,24 @@ def cmd_remove_instance(args):
 
 
 def cmd_attach(args):
+    """Hot-plug an instance into a running VM."""
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
-        print(f"ERROR: Instance {args.instance}"
-              " not found.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} not found.", file=sys.stderr)
         sys.exit(1)
     if not pid_alive(inst["pid"]):
-        print(f"ERROR: Instance {args.instance}"
-              " is not running.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} is not running.", file=sys.stderr)
         sys.exit(1)
 
     device_id = args.device_id or f"ernic{args.instance}"
     root_port = args.root_port or "pcie-vfu.1"
-    ssh_port = args.ssh_port or int(
-        CFG["ERNIC_VM_SSH_BASE_PORT"]
-    ) + args.instance - 1
+    ssh_port = args.ssh_port or int(CFG["ERNIC_VM_SSH_BASE_PORT"]) + args.instance - 1
     ssh_user = args.ssh_user or CFG["ERNIC_VM_SSH_USER"]
 
-    print(f"Hot-plugging instance {args.instance}"
-          f" into VM (QMP: {args.qmp})...")
+    print(f"Hot-plugging instance {args.instance} into VM (QMP: {args.qmp})...")
 
-    if qmp_device_add(
-        args.qmp, device_id, root_port, inst["socket"]
-    ):
+    if qmp_device_add(args.qmp, device_id, root_port, inst["socket"]):
         inst["vm"] = {
             "qmp_socket": args.qmp,
             "device_id": device_id,
@@ -1205,8 +1215,7 @@ def _do_detach(inst, unload_driver=False):
     if unload_driver and vm.get("ssh_port"):
         print("Unloading guest driver via SSH...")
         rmmod = "; ".join(
-            f"sudo rmmod {mod} 2>/dev/null"
-            for mod in guest_driver_modules()
+            f"sudo rmmod {mod} 2>/dev/null" for mod in guest_driver_modules()
         )
         guest_ssh(
             vm.get("ssh_user", "ubuntu"),
@@ -1223,27 +1232,27 @@ def _do_detach(inst, unload_driver=False):
 
 
 def cmd_detach(args):
+    """Hot-unplug an instance from its VM."""
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
-        print(f"ERROR: Instance {args.instance}"
-              " not found.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} not found.", file=sys.stderr)
         sys.exit(1)
     if not inst.get("vm") or not inst["vm"]:
-        print(f"Instance {args.instance}"
-              " is not attached to a VM.")
+        print(f"Instance {args.instance} is not attached to a VM.")
         return
     _do_detach(inst, unload_driver=args.unload_driver)
     write_manifest(m)
     print(f"Instance {args.instance} detached.")
 
 
+# pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
 def cmd_hot_reload(args):
+    """Run a full hot-reload cycle for an instance."""
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
-        print(f"ERROR: Instance {args.instance}"
-              " not found.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} not found.", file=sys.stderr)
         sys.exit(1)
 
     vm = inst.get("vm")
@@ -1261,9 +1270,7 @@ def cmd_hot_reload(args):
     # Step 2: rebuild (optional)
     if not args.no_build:
         print("Step 2/6: Rebuilding server...")
-        project_root = os.environ.get(
-            "ERNIC_PROJECT_ROOT", "/usr/local"
-        )
+        project_root = os.environ.get("ERNIC_PROJECT_ROOT", "/usr/local")
         build_dir = os.path.join(project_root, "build")
         if os.path.isdir(build_dir):
             subprocess.run(
@@ -1298,36 +1305,38 @@ def cmd_hot_reload(args):
     backend = (
         f"tcp:manager:listen:{CFG['ERNIC_TCP_PORT']}"
         if inst["role"] == "manager"
-        else f"tcp:worker:"
-             f"{CFG['ERNIC_MANAGER_IP']}:"
-             f"{CFG['ERNIC_TCP_PORT']}"
+        else f"tcp:worker:{CFG['ERNIC_MANAGER_IP']}:{CFG['ERNIC_TCP_PORT']}"
     )
 
     stats = os.path.join(RUN_DIR, f"{inst['id']}.stats")
-    logfile = os.path.join(
-        LOG_DIR, f"{inst['id']}.log"
-    )
+    logfile = os.path.join(LOG_DIR, f"{inst['id']}.log")
     cmd = [
         CFG["ERNIC_BIN"],
         *server_mode_args(inst["id"]),
-        "--socket", sock_path,
-        "--stats-file", stats,
-        "--mac", inst["mac"],
-        "--backend", backend,
-        "--log-file", logfile,
-        "--log-level", level,
+        "--socket",
+        sock_path,
+        "--stats-file",
+        stats,
+        "--mac",
+        inst["mac"],
+        "--backend",
+        backend,
+        "--log-file",
+        logfile,
+        "--log-level",
+        level,
     ]
 
+    # The server outlives this command, so it is not waited for
+    # pylint: disable-next=consider-using-with
     proc = subprocess.Popen(cmd)
 
     for _ in range(30):
-        if os.path.exists(sock_path) \
-                and pathlib.Path(sock_path).is_socket():
+        if os.path.exists(sock_path) and pathlib.Path(sock_path).is_socket():
             break
         time.sleep(0.5)
     else:
-        print("ERROR: Socket not created.",
-              file=sys.stderr)
+        print("ERROR: Socket not created.", file=sys.stderr)
         sys.exit(1)
 
     if proc.poll() is not None:
@@ -1349,8 +1358,7 @@ def cmd_hot_reload(args):
             inst["vm"] = dict(vm_snapshot)
             inst["vm"]["attached"] = True
         else:
-            print("WARNING: Re-attach failed.",
-                  file=sys.stderr)
+            print("WARNING: Re-attach failed.", file=sys.stderr)
     else:
         print("Step 5/6: No VM to re-attach.")
 
@@ -1360,17 +1368,19 @@ def cmd_hot_reload(args):
         tarball = CFG["ERNIC_DRIVER_TARBALL"]
         if os.path.isfile(tarball):
             ssh_port = vm_snapshot.get("ssh_port", 2222)
-            ssh_user = vm_snapshot.get(
-                "ssh_user", "ubuntu"
+            ssh_user = vm_snapshot.get("ssh_user", "ubuntu")
+            subprocess.run(
+                [
+                    "scp",
+                    *_ssh_config_prefix(),
+                    *_ssh_vm_host_key_opts(),
+                    "-P",
+                    str(ssh_port),
+                    tarball,
+                    f"{ssh_user}@{_cfg_vm_ssh_host()}:/tmp/",
+                ],
+                check=True,
             )
-            subprocess.run([
-                "scp",
-                *_ssh_config_prefix(),
-                *_ssh_vm_host_key_opts(),
-                "-P", str(ssh_port),
-                tarball,
-                f"{ssh_user}@{_cfg_vm_ssh_host()}:/tmp/",
-            ])
             guest_ssh(
                 ssh_user,
                 ssh_port,
@@ -1385,35 +1395,29 @@ def cmd_hot_reload(args):
         print("Step 6/6: Skipping driver update.")
 
     write_manifest(m)
-    print(f"Hot-reload complete for instance"
-          f" {args.instance} (PID {inst['pid']}).")
+    print(f"Hot-reload complete for instance {args.instance} (PID {inst['pid']}).")
 
 
 # ── Subcommands: driver distribution ─────────────
 
+
 def cmd_driver_pack(_args):
-    pack_script = (
-        "/usr/local/libexec/rocm-ernic"
-        "/rocm-ernic-driver-pack"
-    )
+    """Build the driver tarball."""
+    pack_script = "/usr/local/libexec/rocm-ernic/rocm-ernic-driver-pack"
     if os.path.isfile(pack_script):
         subprocess.run([pack_script], check=True)
     else:
-        script_dir = os.path.dirname(
-            os.path.abspath(__file__)
-        )
-        alt = os.path.join(
-            script_dir, "rocm-ernic-driver-pack"
-        )
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        alt = os.path.join(script_dir, "rocm-ernic-driver-pack")
         if os.path.isfile(alt):
             subprocess.run([alt], check=True)
         else:
-            print("ERROR: driver-pack script not"
-                  " found.", file=sys.stderr)
+            print("ERROR: driver-pack script not found.", file=sys.stderr)
             sys.exit(1)
 
 
 def cmd_driver_push(args):
+    """Push the driver tarball to a VM."""
     tarball = CFG["ERNIC_DRIVER_TARBALL"]
     if not os.path.isfile(tarball):
         print(f"Tarball not found: {tarball}")
@@ -1424,14 +1428,18 @@ def cmd_driver_push(args):
     target = args.target
 
     print(f"Copying {tarball} to {target}:/tmp/ ...")
-    subprocess.run([
-        "scp",
-        *_ssh_config_prefix(),
-        *_ssh_vm_host_key_opts(),
-        "-P", port,
-        tarball,
-        f"{target}:/tmp/",
-    ], check=True)
+    subprocess.run(
+        [
+            "scp",
+            *_ssh_config_prefix(),
+            *_ssh_vm_host_key_opts(),
+            "-P",
+            port,
+            tarball,
+            f"{target}:/tmp/",
+        ],
+        check=True,
+    )
 
     if args.install:
         print("Running installer on remote host...")
@@ -1440,7 +1448,8 @@ def cmd_driver_push(args):
             host = user
             user = CFG["ERNIC_VM_SSH_USER"]
         guest_ssh(
-            user, int(port),
+            user,
+            int(port),
             "cd /tmp && tar xzf"
             " rocm-ernic-driver.tar.gz"
             " && cd rocm-ernic-driver"
@@ -1451,109 +1460,111 @@ def cmd_driver_push(args):
 
 # ── Subcommands: VM management ───────────────────
 
+
+# pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
 def cmd_vm_launch(args):
+    """Launch a VM for an instance."""
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
-        print(f"ERROR: Instance {args.instance}"
-              " not found.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} not found.", file=sys.stderr)
         sys.exit(1)
     if not pid_alive(inst["pid"]):
-        print(f"ERROR: Instance {args.instance}"
-              " is not running.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} is not running.", file=sys.stderr)
         sys.exit(1)
 
-    run_vm = os.path.join(
-        CFG["ERNIC_QEMU_MINIMAL"], "qemu", "run-vm"
-    )
+    run_vm = os.path.join(CFG["ERNIC_QEMU_MINIMAL"], "qemu", "run-vm")
     if not os.path.isfile(run_vm):
-        print(f"ERROR: run-vm not found: {run_vm}",
-              file=sys.stderr)
+        print(f"ERROR: run-vm not found: {run_vm}", file=sys.stderr)
         sys.exit(1)
 
-    ssh_port = args.ssh_port or (
-        int(CFG["ERNIC_VM_SSH_BASE_PORT"])
-        + args.instance - 1
-    )
+    ssh_port = args.ssh_port or (int(CFG["ERNIC_VM_SSH_BASE_PORT"]) + args.instance - 1)
     vm_name = args.vm_name or CFG["ERNIC_VM_NAME"]
     vcpus = str(args.vcpus or CFG["ERNIC_VM_VCPUS"])
     mem = str(args.mem or CFG["ERNIC_VM_MEM"])
 
     image_dir = CFG["ERNIC_VM_IMAGE_DIR"]
-    overlay = os.path.join(
-        image_dir, f"{vm_name}.qcow2"
-    )
+    overlay = os.path.join(image_dir, f"{vm_name}.qcow2")
     backing = CFG.get("ERNIC_VM_BACKING", "")
     if not os.path.isfile(overlay):
         if backing and os.path.isfile(backing):
             gen_vm = os.path.join(
                 CFG["ERNIC_QEMU_MINIMAL"],
-                "qemu", "gen-vm",
+                "qemu",
+                "gen-vm",
             )
             if os.path.isfile(gen_vm):
                 print("Creating overlay via gen-vm:")
                 print(f"  backing: {backing}")
                 print(f"  overlay: {overlay}")
                 gen_env = dict(os.environ)
-                gen_env.update({
-                    "VM_NAME": vm_name,
-                    "IMAGES": image_dir,
-                    "BACKING_FILE": backing,
-                })
+                gen_env.update(
+                    {
+                        "VM_NAME": vm_name,
+                        "IMAGES": image_dir,
+                        "BACKING_FILE": backing,
+                    }
+                )
                 subprocess.run(
-                    [gen_vm], env=gen_env, check=True,
+                    [gen_vm],
+                    env=gen_env,
+                    check=True,
                 )
             else:
                 print("Creating overlay via qemu-img:")
                 print(f"  backing: {backing}")
                 print(f"  overlay: {overlay}")
-                subprocess.run([
-                    "qemu-img", "create",
-                    "-F", "qcow2",
-                    "-b", backing,
-                    "-f", "qcow2",
-                    overlay,
-                ], check=True)
+                subprocess.run(
+                    [
+                        "qemu-img",
+                        "create",
+                        "-F",
+                        "qcow2",
+                        "-b",
+                        backing,
+                        "-f",
+                        "qcow2",
+                        overlay,
+                    ],
+                    check=True,
+                )
         elif backing:
             print(
-                f"ERROR: Backing file not found:"
-                f" {backing}",
+                f"ERROR: Backing file not found: {backing}",
                 file=sys.stderr,
             )
             sys.exit(1)
         else:
             print(
-                f"ERROR: VM image not found:"
-                f" {overlay}",
+                f"ERROR: VM image not found: {overlay}",
                 file=sys.stderr,
             )
             print(
-                "Set ERNIC_VM_BACKING in the env file"
-                " to auto-create overlays.",
+                "Set ERNIC_VM_BACKING in the env file to auto-create overlays.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-    qmp_sock = os.path.join(
-        RUN_DIR, f"qmp-{args.instance}.sock"
-    )
+    qmp_sock = os.path.join(RUN_DIR, f"qmp-{args.instance}.sock")
 
     env = dict(os.environ)
-    env.update({
-        "QEMU_PATH": CFG["ERNIC_QEMU_PATH"],
-        "VM_NAME": vm_name,
-        "IMAGES": CFG["ERNIC_VM_IMAGE_DIR"],
-        "SSH_PORT": str(ssh_port),
-        "VCPUS": vcpus,
-        "VMEM": mem,
-        # "disable" falls back to TCG, which is far
-        # slower but lets functional tests run where
-        # /dev/kvm is unavailable (unprivileged CI,
-        # nested virt without KVM exposed).
-        "KVM": os.environ.get("KVM", "enable"),
-        "VFIO_USERDEV": inst["socket"],
-        "QMP_SOCKET": qmp_sock,
-    })
+    env.update(
+        {
+            "QEMU_PATH": CFG["ERNIC_QEMU_PATH"],
+            "VM_NAME": vm_name,
+            "IMAGES": CFG["ERNIC_VM_IMAGE_DIR"],
+            "SSH_PORT": str(ssh_port),
+            "VCPUS": vcpus,
+            "VMEM": mem,
+            # "disable" falls back to TCG, which is far
+            # slower but lets functional tests run where
+            # /dev/kvm is unavailable (unprivileged CI,
+            # nested virt without KVM exposed).
+            "KVM": os.environ.get("KVM", "enable"),
+            "VFIO_USERDEV": inst["socket"],
+            "QMP_SOCKET": qmp_sock,
+        }
+    )
 
     if backing:
         env["BACKING_SHARED"] = "true"
@@ -1566,9 +1577,7 @@ def cmd_vm_launch(args):
     if pci_hostdev:
         env["PCI_HOSTDEV"] = pci_hostdev
 
-    pci_mmio_bridge = getattr(
-        args, "pci_mmio_bridge", False
-    )
+    pci_mmio_bridge = getattr(args, "pci_mmio_bridge", False)
     if pci_mmio_bridge:
         env["PCI_MMIO_BRIDGE"] = "true"
 
@@ -1600,10 +1609,10 @@ def cmd_vm_launch(args):
     if nvme > 0:
         print(f"  NVMe SSDs:   {nvme}")
 
-    logfile = os.path.join(
-        LOG_DIR, f"vm-{args.instance}.log"
-    )
-    with open(logfile, "w") as lf:
+    logfile = os.path.join(LOG_DIR, f"vm-{args.instance}.log")
+    with open(logfile, "w", encoding="utf-8") as lf:
+        # The VM outlives this command, so it is not waited for
+        # pylint: disable-next=consider-using-with
         proc = subprocess.Popen(
             [run_vm],
             env=env,
@@ -1619,9 +1628,7 @@ def cmd_vm_launch(args):
         "device_id": device_id,
         "root_port": root_port,
         "ssh_port": ssh_port,
-        "ssh_user": (
-            args.ssh_user or CFG["ERNIC_VM_SSH_USER"]
-        ),
+        "ssh_user": (args.ssh_user or CFG["ERNIC_VM_SSH_USER"]),
         "attached": True,
         "vm_pid": proc.pid,
         "vm_name": vm_name,
@@ -1631,22 +1638,20 @@ def cmd_vm_launch(args):
     write_manifest(m)
     print(f"VM started (PID {proc.pid}).")
     print(f"Log: {logfile}")
-    print(f"SSH: ssh -p {ssh_port}"
-          f" {_ssh_vm_target(inst['vm']['ssh_user'])}")
+    print(f"SSH: ssh -p {ssh_port} {_ssh_vm_target(inst['vm']['ssh_user'])}")
 
 
 def cmd_vm_stop(args):
+    """Stop a VM."""
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
-        print(f"ERROR: Instance {args.instance}"
-              " not found.", file=sys.stderr)
+        print(f"ERROR: Instance {args.instance} not found.", file=sys.stderr)
         sys.exit(1)
 
     vm = inst.get("vm")
     if not vm:
-        print(f"Instance {args.instance}"
-              " has no VM attached.")
+        print(f"Instance {args.instance} has no VM attached.")
         return
 
     vm_pid = vm.get("vm_pid")
@@ -1670,13 +1675,20 @@ def cmd_vm_stop(args):
 
 
 def cmd_vm_list(_args):
+    """List running VMs."""
     m = read_manifest()
     has_vms = False
     fmt = "{:<4} {:<12} {:<7} {:<10} {:<30} {}"
-    print(fmt.format(
-        "ID", "VM_NAME", "VM_PID",
-        "SSH_PORT", "QMP_SOCKET", "STATE",
-    ))
+    print(
+        fmt.format(
+            "ID",
+            "VM_NAME",
+            "VM_PID",
+            "SSH_PORT",
+            "QMP_SOCKET",
+            "STATE",
+        )
+    )
     for inst in m["instances"]:
         vm = inst.get("vm")
         if not vm:
@@ -1685,40 +1697,46 @@ def cmd_vm_list(_args):
         vm_pid = vm.get("vm_pid", 0)
         alive = pid_alive(vm_pid) if vm_pid else False
         state = "running" if alive else "stopped"
-        print(fmt.format(
-            inst["id"],
-            vm.get("vm_name", "-"),
-            vm_pid if alive else 0,
-            vm.get("ssh_port", "-"),
-            vm.get("qmp_socket", "-"),
-            state,
-        ))
+        print(
+            fmt.format(
+                inst["id"],
+                vm.get("vm_name", "-"),
+                vm_pid if alive else 0,
+                vm.get("ssh_port", "-"),
+                vm.get("qmp_socket", "-"),
+                state,
+            )
+        )
     if not has_vms:
         print("No VMs attached to any instance.")
 
 
 # ── Argument parser ──────────────────────────────
 
+
+# pylint: disable-next=too-many-statements
 def build_parser():
+    """Build the command-line parser."""
     p = argparse.ArgumentParser(
         prog="ernicctl",
-        description=(
-            "Admin CLI for the rocm-ernic"
-            " systemd service."
-        ),
+        description="Admin CLI for the rocm-ernic systemd service.",
     )
     sub = p.add_subparsers(dest="command")
 
     # -- service lifecycle --
     sp = sub.add_parser(
-        "status", help="Show instance status",
+        "status",
+        help="Show instance status",
     )
     sp.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Output as JSON",
     )
     sp.add_argument(
-        "--rate", type=int, default=None,
+        "--rate",
+        type=int,
+        default=None,
         metavar="SECS",
         help="Show byte deltas over SECS seconds",
     )
@@ -1731,29 +1749,40 @@ def build_parser():
     sub.add_parser("start", help="Start the service")
     sub.add_parser("stop", help="Stop the service")
     sub.add_parser(
-        "restart", help="Restart the service",
+        "restart",
+        help="Restart the service",
     )
     sub.add_parser(
-        "reload", help="Reload service configuration",
+        "reload",
+        help="Reload service configuration",
     )
 
     sp = sub.add_parser(
-        "logs", help="Tail instance logs",
+        "logs",
+        help="Tail instance logs",
     )
     sp.add_argument(
-        "instance", nargs="?", type=int, default=None,
+        "instance",
+        nargs="?",
+        type=int,
+        default=None,
         help="Instance ID (omit for all)",
     )
 
     sp = sub.add_parser(
-        "stats", help="Show instance stats",
+        "stats",
+        help="Show instance stats",
     )
     sp.add_argument(
-        "instance", nargs="?", type=int, default=None,
+        "instance",
+        nargs="?",
+        type=int,
+        default=None,
         help="Instance ID (omit for all)",
     )
     sp.add_argument(
-        "--summary", action="store_true",
+        "--summary",
+        action="store_true",
         help="Concise one-row-per-instance table",
     )
 
@@ -1768,7 +1797,9 @@ def build_parser():
         help="Remove an instance from the mesh",
     )
     sp.add_argument(
-        "instance", type=int, help="Instance ID",
+        "instance",
+        type=int,
+        help="Instance ID",
     )
 
     sp = sub.add_parser(
@@ -1776,16 +1807,21 @@ def build_parser():
         help="Hot-plug instance into a running VM",
     )
     sp.add_argument(
-        "instance", type=int, help="Instance ID",
+        "instance",
+        type=int,
+        help="Instance ID",
     )
     sp.add_argument(
-        "--qmp", required=True,
+        "--qmp",
+        required=True,
         help="QMP socket path",
     )
     sp.add_argument("--device-id", default=None)
     sp.add_argument("--root-port", default=None)
     sp.add_argument(
-        "--ssh-port", type=int, default=None,
+        "--ssh-port",
+        type=int,
+        default=None,
     )
     sp.add_argument("--ssh-user", default=None)
 
@@ -1794,10 +1830,13 @@ def build_parser():
         help="Hot-unplug instance from its VM",
     )
     sp.add_argument(
-        "instance", type=int, help="Instance ID",
+        "instance",
+        type=int,
+        help="Instance ID",
     )
     sp.add_argument(
-        "--unload-driver", action="store_true",
+        "--unload-driver",
+        action="store_true",
         help="rmmod guest driver before detaching",
     )
 
@@ -1806,14 +1845,18 @@ def build_parser():
         help="Full hot-reload cycle for an instance",
     )
     sp.add_argument(
-        "instance", type=int, help="Instance ID",
+        "instance",
+        type=int,
+        help="Instance ID",
     )
     sp.add_argument(
-        "--no-build", action="store_true",
+        "--no-build",
+        action="store_true",
         help="Skip the rebuild step",
     )
     sp.add_argument(
-        "--update-driver", action="store_true",
+        "--update-driver",
+        action="store_true",
         help="Push and reload guest driver",
     )
 
@@ -1828,14 +1871,18 @@ def build_parser():
         help="Push driver tarball to a VM",
     )
     sp.add_argument(
-        "target", help="SSH target (user@host)",
+        "target",
+        help="SSH target (user@host)",
     )
     sp.add_argument(
-        "--port", type=int, default=22,
+        "--port",
+        type=int,
+        default=22,
         help="SSH port (default 22)",
     )
     sp.add_argument(
-        "--install", action="store_true",
+        "--install",
+        action="store_true",
         help="Run installer after copying",
     )
 
@@ -1845,56 +1892,74 @@ def build_parser():
         help="Launch a VM for an instance",
     )
     sp.add_argument(
-        "instance", type=int, help="Instance ID",
+        "instance",
+        type=int,
+        help="Instance ID",
     )
     sp.add_argument("--vm-name", default=None)
     sp.add_argument(
-        "--ssh-port", type=int, default=None,
+        "--ssh-port",
+        type=int,
+        default=None,
     )
     sp.add_argument(
-        "--ssh-user", default=None,
+        "--ssh-user",
+        default=None,
     )
     sp.add_argument(
-        "--vcpus", type=int, default=None,
+        "--vcpus",
+        type=int,
+        default=None,
     )
     sp.add_argument(
-        "--mem", type=int, default=None,
+        "--mem",
+        type=int,
+        default=None,
         help="VM memory in MB",
     )
     sp.add_argument(
-        "--pci-hostdev", default=None,
-        help="PCI BDF address(es) for vfio-pci"
-             " passthrough (comma-separated)",
+        "--pci-hostdev",
+        default=None,
+        help="PCI BDF address(es) for vfio-pci passthrough (comma-separated)",
     )
     sp.add_argument(
         "--pci-mmio-bridge",
-        action="store_true", default=False,
+        action="store_true",
+        default=False,
         help="Enable pci-mmio-bridge device",
     )
     sp.add_argument(
-        "--extra-hostfwd", default=None,
+        "--extra-hostfwd",
+        default=None,
         help="Extra QEMU hostfwd rules appended to"
-             " the user netdev (e.g."
-             " ,hostfwd=tcp::9150-:9100)",
+        " the user netdev (e.g."
+        " ,hostfwd=tcp::9150-:9100)",
     )
     sp.add_argument(
-        "--nvme", type=int, default=0,
+        "--nvme",
+        type=int,
+        default=0,
         help="Number of emulated NVMe SSDs (0=none)",
     )
     sp.add_argument(
-        "--qemu-aio", default=None,
+        "--qemu-aio",
+        default=None,
         help="Override QEMU AIO backend (native/threads/io_uring)",
     )
 
     sp = sub.add_parser(
-        "vm-stop", help="Stop a VM",
+        "vm-stop",
+        help="Stop a VM",
     )
     sp.add_argument(
-        "instance", type=int, help="Instance ID",
+        "instance",
+        type=int,
+        help="Instance ID",
     )
 
     sub.add_parser(
-        "vm-list", help="List running VMs",
+        "vm-list",
+        help="List running VMs",
     )
 
     return p
@@ -1923,24 +1988,22 @@ DISPATCH = {
 
 def suggest_command(invalid):
     """Suggest the closest valid command."""
-    from difflib import get_close_matches
-    matches = get_close_matches(
-        invalid, DISPATCH.keys(), n=1, cutoff=0.5
-    )
+    matches = get_close_matches(invalid, DISPATCH.keys(), n=1, cutoff=0.5)
     if matches:
         return matches[0]
     return None
 
 
 def main():
+    """Parse the command line and run the subcommand."""
     parser = build_parser()
-    if len(sys.argv) > 1 \
-            and sys.argv[1] not in DISPATCH \
-            and not sys.argv[1].startswith("-"):
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1] not in DISPATCH
+        and not sys.argv[1].startswith("-")
+    ):
         suggestion = suggest_command(sys.argv[1])
-        msg = (
-            f"Unknown command: '{sys.argv[1]}'."
-        )
+        msg = f"Unknown command: '{sys.argv[1]}'."
         if suggestion:
             msg += f" Did you mean '{suggestion}'?"
         print(f"ERROR: {msg}", file=sys.stderr)

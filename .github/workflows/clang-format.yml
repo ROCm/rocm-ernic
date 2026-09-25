@@ -1,0 +1,62 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Check that the C sources match .clang-format
+name: rocm-ernic - clang-format
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - '**.c'
+      - '**.h'
+      - '.clang-format'
+      - '.github/workflows/clang-format.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-format:
+    name: Check C formatting
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned to a major version: each clang-format release changes the
+      # output for some inputs, so an unversioned package would reformat
+      # the tree whenever the runner image moved to a newer one.
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+
+      # Everything tracked except third-party/, which is vendored and
+      # formatted to its upstream's style rather than ours.
+      - name: Run clang-format check
+        run: |
+          mapfile -t files < <(git ls-files -- '*.c' '*.h' ':!:third-party/')
+
+          needs_format=0
+          for file in "${files[@]}"; do
+            if ! clang-format-18 --dry-run --Werror "$file" 2>/dev/null; then
+              echo "::error file=${file}::${file} needs formatting"
+              clang-format-18 "$file" | diff -u "$file" - || true
+              echo ""
+              needs_format=1
+            fi
+          done
+
+          if [ "$needs_format" -ne 0 ]; then
+            echo "To fix, run clang-format-18 -i on the files above."
+            exit 1
+          fi
+
+          echo "All ${#files[@]} files are properly formatted."

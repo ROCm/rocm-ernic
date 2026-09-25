@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  rocm-ernic-codespell:
-    name: "rocm-ernic: Check for spelling errors"
+  codespell:
+    name: Check spelling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

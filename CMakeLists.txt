@@ -93,8 +93,7 @@ if(NOT VFIO_USER_FOUND)
             /usr/include
         DOC "Path to libvfio-user headers"
     )
-    if(NOT VFIO_USER_FALLBACK_LIB OR
-       NOT VFIO_USER_FALLBACK_INC)
+    if(NOT VFIO_USER_FALLBACK_LIB OR NOT VFIO_USER_FALLBACK_INC)
         message(FATAL_ERROR
           "libvfio-user not found via pkg-config, in "
           "/usr/local, or on CMAKE_PREFIX_PATH.\n"

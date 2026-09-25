@@ -1,0 +1,6 @@
+# cmakelint configuration for rocm-ernic
+# https://github.com/cmake-lint/cmake-lint
+#
+# Line length is impractical for CMake generator expressions and
+# version strings.
+filter=-linelength

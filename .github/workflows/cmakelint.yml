@@ -1,0 +1,55 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run cmakelint over the CMake files
+name: rocm-ernic - cmakelint
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - '**.cmake'
+      - '**/CMakeLists.txt'
+      - '.cmakelintrc'
+      - '.github/workflows/cmakelint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cmakelint:
+    name: Lint CMake files
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install cmakelint
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cmakelint
+
+      # Run from the top of the tree: cmakelint reads .cmakelintrc from
+      # the current directory.
+      - name: Lint CMake files
+        run: |
+          mapfile -t files < <(git ls-files -- \
+            'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' ':!:third-party/')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No CMake files found!"
+            exit 1
+          fi
+          echo "Linting the following files:"
+          printf '%s\n' "${files[@]}"
+          cmakelint "${files[@]}"

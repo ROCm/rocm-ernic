@@ -60,13 +60,15 @@ if(ERNIC_BUILD_DOCS)
       "${ERNIC_DOC_PATH}/xml")
 
     set(ERNIC_DOXYFILE_INPUT
-      "${CMAKE_SOURCE_DIR}/src/rocm_ernic_internal.h \
-       ${CMAKE_SOURCE_DIR}/src/rocm_ernic_compat.h \
-       ${CMAKE_SOURCE_DIR}/src/ionic_eth_emu.h \
-       ${CMAKE_SOURCE_DIR}/src/ionic_rdma_devcmd.h \
-       ${CMAKE_SOURCE_DIR}/src/ionic_adminq.h \
-       ${CMAKE_SOURCE_DIR}/src/ionic_datapath.h"
+      "${CMAKE_SOURCE_DIR}/src/rocm_ernic_internal.h"
+      "${CMAKE_SOURCE_DIR}/src/rocm_ernic_compat.h"
+      "${CMAKE_SOURCE_DIR}/src/ionic_eth_emu.h"
+      "${CMAKE_SOURCE_DIR}/src/ionic_rdma_devcmd.h"
+      "${CMAKE_SOURCE_DIR}/src/ionic_adminq.h"
+      "${CMAKE_SOURCE_DIR}/src/ionic_datapath.h"
     )
+    # Doxygen's INPUT is space-separated, not a CMake list
+    list(JOIN ERNIC_DOXYFILE_INPUT " " ERNIC_DOXYFILE_INPUT)
     # Configure Doxyfile (substitutes @VARIABLES@)
     configure_file(
       ${CMAKE_SOURCE_DIR}/docs/Doxyfile.in

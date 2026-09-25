@@ -1,0 +1,48 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts
+name: rocm-ernic - ShellCheck
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - '**.sh'
+      - '**.sh.in'
+      - 'service/**'
+      - '.github/workflows/shellcheck.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: Lint shell scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The action finds *.sh files plus any executable, extension-less file
+      # with a shell shebang (service/rocm-ernic-launcher and friends), so
+      # new scripts are picked up without editing this file. *.sh.in
+      # templates match neither rule and are added explicitly.
+      #
+      # The ShellCheck version is pinned because new releases add and split
+      # checks: 0.11.0 moved "function only invoked via trap" out of SC2317
+      # into the new SC2329, which is why both are excluded below.
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
+        env:
+          SHELLCHECK_OPTS: -e SC2024,SC2034,SC2086,SC2154,SC2164,SC2181,SC2317,SC2329
+        with:
+          version: v0.11.0
+          ignore_paths: third-party
+          additional_files: .sh.in
