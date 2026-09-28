@@ -31,6 +31,9 @@
       AFTER="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
       [ "$BEFORE" = "$AFTER" ] || echo __ERNIC_PCIIDS_UPDATED__
   register: ernic_update_pciids
+  retries: "{{ ernic_guest_build_deps_retries }}"
+  delay: "{{ ernic_guest_build_deps_delay }}"
+  until: ernic_update_pciids is success
   changed_when: >-
     '__ERNIC_PCIIDS_UPDATED__' in ernic_update_pciids.stdout
 
