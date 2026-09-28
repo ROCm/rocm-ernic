@@ -748,14 +748,14 @@ jobs:
         echo "=== lspci -nn -s $PCI_BDF ==="
         LSPCI_NN="$(sudo lspci -nn -s "$PCI_BDF")"
         printf '%s\n' "$LSPCI_NN"
-        printf '%s\n' "$LSPCI_NN" | grep -F 'Ethernet controller [0200]'
-        printf '%s\n' "$LSPCI_NN" | grep -F 'DSC Ethernet [1dd8:1002]'
 
         echo "=== lspci -nnv -s $PCI_BDF ==="
         LSPCI_NNV="$(sudo lspci -nnv -s "$PCI_BDF")"
         printf '%s\n' "$LSPCI_NNV"
+        printf '%s\n' "$LSPCI_NNV" | grep -F 'Ethernet controller [0200]'
+        printf '%s\n' "$LSPCI_NNV" | grep -F '[1dd8:1002]'
         printf '%s\n' "$LSPCI_NNV" \
-          | grep -F 'ROCm Emulated RDMA NIC [1dd8:5400]'
+          | grep -F 'Subsystem: Pensando Systems, Inc. ROCm Emulated RDMA NIC [1dd8:5400]'
         EOFVM
 
     - name: NVMe-oF end-to-end tests (Ansible)
