@@ -60,13 +60,7 @@
       printf '%s\n' "$LSPCI_NNV" | grep -F '[0200]'
       printf '%s\n' "$LSPCI_NNV" | grep -F '[{{ ernic_device_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_id | regex_replace("^0x", "") }}]'
       printf '%s\n' "$LSPCI_NNV" | grep -F "$SUBSYSTEM_ID"
-      if printf '%s\n' "$LSPCI_NNV" | grep -F "ROCm Emulated RDMA NIC $SUBSYSTEM_ID"; then
-        :
-      elif printf '%s\n' "$LSPCI_NNV" | grep -F 'Subsystem:' | grep -F "Device $SUBSYSTEM_ID"; then
-        echo 'pci.ids has not yet published the ROCm subsystem name' >&2
-      else
-        exit 1
-      fi
+      printf '%s\n' "$LSPCI_NNV" | grep -F "ROCm Emulated RDMA NIC $SUBSYSTEM_ID"
   register: ernic_guest_lspci_verify
   changed_when: false
 
