@@ -11,8 +11,9 @@ rocm-ernic presents a single PCIe device to the guest:
      - Guest driver
    * - ``1dd8:1002`` / ``1dd8:5400``
      - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
-       with the patches in ``patches/`` applied, and the
-       upstream ``providers/ionic`` in rdma-core
+       with the UC queue-pair patch in ``patches/``
+       applied, and the upstream ``providers/ionic`` in
+       rdma-core
 
 The server emulates the register and queue protocol of the
 AMD Pensando ionic NIC, so the guest runs a driver that is
