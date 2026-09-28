@@ -41,9 +41,9 @@
 # that drift is silent -- no rename, no probe -- and surfaces much
 # later as a missing RDMA device with an empty ibv_devices.
 #
-# Read from sysfs rather than lspci: pciutils is not something this
-# role installs, and a missing binary would turn the check into a
-# false negative.
+# Read from sysfs rather than lspci: preflight runs before
+# driver_common.yml installs pciutils and refreshes pci.ids, and a
+# missing binary here would turn the check into a false negative.
 - name: Look for the emulated NIC on the PCI bus
   ansible.builtin.shell:
     executable: /bin/bash

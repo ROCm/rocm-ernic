@@ -7,6 +7,46 @@
 # package by the time this runs.
 
 ---
+- name: Install pciutils for pci.ids refresh and lspci verification
+  ansible.builtin.apt:
+    name: pciutils
+    state: present
+    update_cache: true
+    lock_timeout: "{{ ernic_dpkg_lock_wait }}"
+  register: ernic_guest_pciutils_result
+  retries: "{{ ernic_guest_build_deps_retries }}"
+  delay: "{{ ernic_guest_build_deps_delay }}"
+  until: ernic_guest_pciutils_result is success
+
+- name: Refresh pci.ids in the guest
+  ansible.builtin.command:
+    cmd: update-pciids
+  changed_when: true
+
+- name: Verify lspci resolves the emulated NIC name
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
+        [ "$(cat "$dev/vendor")" = {{ ernic_device_vendor_id | quote }} ] || continue
+        [ "$(cat "$dev/device")" = {{ ernic_device_id | quote }} ] || continue
+        [ "$(cat "$dev/subsystem_vendor")" = {{ ernic_device_subsystem_vendor_id | quote }} ] || continue
+        [ "$(cat "$dev/subsystem_device")" = {{ ernic_device_subsystem_id | quote }} ] || continue
+        basename "$dev"
+        break
+      done)"
+      [ -n "$PCI_BDF" ]
+
+      LSPCI_NNV="$(lspci -nnv -s "$PCI_BDF")"
+      printf '%s\n' "$LSPCI_NNV"
+      printf '%s\n' "$LSPCI_NNV" | grep -F '[0200]'
+      printf '%s\n' "$LSPCI_NNV" | grep -F '[{{ ernic_device_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_id | regex_replace("^0x", "") }}]'
+      printf '%s\n' "$LSPCI_NNV" | grep -F '[{{ ernic_device_subsystem_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_subsystem_id | regex_replace("^0x", "") }}]'
+      printf '%s\n' "$LSPCI_NNV" | grep -F 'ROCm Emulated RDMA NIC'
+  register: ernic_guest_lspci_verify
+  changed_when: false
+
 # Installed before the modules load, so the devices come up with
 # their stable names the first time round.
 - name: Copy the rocm-ernic udev rules
