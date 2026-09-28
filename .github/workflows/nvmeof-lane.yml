@@ -487,7 +487,7 @@ jobs:
         # provisioning.
         #
         # The PCI function itself is a different matter: QEMU attached
-        # the vfio-user device at boot, so 1dd8:100a is on the bus from
+        # the vfio-user device at boot, so 1dd8:1002 is on the bus from
         # the first second.  This step used to end every probe in
         # `|| echo "... not found"`, so a guest that never saw the
         # device passed it exactly like a guest that did.  Assert it:
@@ -502,12 +502,12 @@ jobs:
         echo ""
         PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
           [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
-          [ "$(cat "$dev/device")" = '0x100a' ] || continue
+          [ "$(cat "$dev/device")" = '0x1002' ] || continue
           basename "$dev"
           break
         done)"
         if [ -z "$PCI_BDF" ]; then
-          echo "✗ ionic PCI function 1dd8:100a not present on the guest bus"
+          echo "✗ ionic PCI function 1dd8:1002 not present on the guest bus"
           echo "  The vfio-user device did not attach.  Check the server"
           echo "  log and the QEMU console for the vfio-user handshake."
           exit 1
@@ -523,7 +523,7 @@ jobs:
           echo "✗ ionic PCI function present, but subsystem is ${SUBSYSTEM_VENDOR#0x}:${SUBSYSTEM_DEVICE#0x}"
           exit 1
         fi
-        echo "✓ ionic PCI function 1dd8:100a present with subsystem 1dd8:5400"
+        echo "✓ ionic PCI function 1dd8:1002 present with subsystem 1dd8:5400"
 
         echo ""
         echo "=== Kernel modules (informational, pre-provisioning) ==="
@@ -718,6 +718,40 @@ jobs:
 
         echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
         echo "✓ $DEVICE is PORT_ACTIVE and the controller is up"
+
+    - name: Refresh pci.ids and verify the lspci name
+      shell: bash
+      run: |
+        echo "=== Refreshing pci.ids and verifying lspci naming ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
+        set -euo pipefail
+
+        command -v update-pciids >/dev/null
+        sudo update-pciids
+
+        PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
+          [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
+          [ "$(cat "$dev/device")" = '0x1002' ] || continue
+          basename "$dev"
+          break
+        done)"
+        [ -n "$PCI_BDF" ]
+
+        echo "=== lspci -nn -s $PCI_BDF ==="
+        LSPCI_NN="$(sudo lspci -nn -s "$PCI_BDF")"
+        printf '%s\n' "$LSPCI_NN"
+        printf '%s\n' "$LSPCI_NN" | grep -F 'Ethernet controller [0200]'
+        printf '%s\n' "$LSPCI_NN" | grep -F 'DSC Ethernet [1dd8:1002]'
+
+        echo "=== lspci -nnv -s $PCI_BDF ==="
+        LSPCI_NNV="$(sudo lspci -nnv -s "$PCI_BDF")"
+        printf '%s\n' "$LSPCI_NNV"
+        printf '%s\n' "$LSPCI_NNV" \
+          | grep -F 'ROCm Emulated RDMA NIC [1dd8:5400]'
+        EOFVM
 
     - name: NVMe-oF end-to-end tests (Ansible)
       shell: bash

@@ -38,7 +38,8 @@ Verify the build by starting the server with the loopback backend:
   --backend loopback --verbose
 ```
 
-That presents the emulated ionic device (`1dd8:100a`) to any client that
+That presents the emulated ionic device (`1dd8:1002`, subsystem
+`1dd8:5400`) to any client that
 connects to the socket.
 
 ## Building rocm-ernic

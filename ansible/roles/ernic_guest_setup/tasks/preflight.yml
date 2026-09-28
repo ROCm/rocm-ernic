@@ -34,8 +34,8 @@
       ibdev".  Relaunch it with more vCPUs (ernic_vm_vcpus, or
       --vcpus on ernicctl vm-launch).
 
-# The device id is a compile-time constant in the server
-# (src/rocm_ernic_server.c) and a literal in
+# The device and subsystem ids are compile-time constants in the
+# server (src/rocm_ernic_server.c) and literals in
 # udev/99-rocm-ernic.rules, so a device server older or newer than
 # this checkout presents an id nothing matches.  Left to itself
 # that drift is silent -- no rename, no probe -- and surfaces much
@@ -54,9 +54,13 @@
       for d in /sys/bus/pci/devices/*; do
         v=$(< "$d/vendor") || continue
         p=$(< "$d/device") || continue
-        echo "${d##*/} $v:$p"
+        sv=$(< "$d/subsystem_vendor") || continue
+        sd=$(< "$d/subsystem_device") || continue
+        echo "${d##*/} $v:$p subsystem $sv:$sd"
         if [ "$v" = {{ ernic_device_vendor_id | quote }} ] &&
-           [ "$p" = {{ ernic_device_id | quote }} ]; then
+           [ "$p" = {{ ernic_device_id | quote }} ] &&
+           [ "$sv" = {{ ernic_device_subsystem_vendor_id | quote }} ] &&
+           [ "$sd" = {{ ernic_device_subsystem_id | quote }} ]; then
           found=0
         fi
       done
@@ -71,12 +75,14 @@
       - ernic_preflight_pci.rc == 0
     fail_msg: >-
       No PCI device {{ ernic_device_vendor_id }}:{{ ernic_device_id }}
-      in this guest.  That is the pair udev/99-rocm-ernic.rules
-      matches on and the pair the rocm-ernic device server presents
-      (it logs "VID:DID" at startup) -- if the server is a different
-      build from this checkout, nothing renames the NIC and nothing
-      probes ionic_rdma, and the run would otherwise fail much later
-      with an empty ibv_devices.  PCI devices this guest can see
+      with subsystem {{ ernic_device_subsystem_vendor_id }}:{{
+      ernic_device_subsystem_id }} in this guest. That is the tuple
+      udev/99-rocm-ernic.rules matches on and the tuple the
+      rocm-ernic device server presents (it logs "VID:DID" and
+      "SSVID:SDID" at startup) -- if the server is a different build
+      from this checkout, nothing renames the NIC and nothing probes
+      ionic_rdma, and the run would otherwise fail much later with an
+      empty ibv_devices. PCI devices this guest can see
       ({{ ernic_preflight_pci.stdout_lines | default([]) | length }}
       total, first {{ ernic_preflight_max_report }} shown):
       {{ ernic_preflight_pci.stdout_lines | default([])

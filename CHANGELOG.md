@@ -6,10 +6,10 @@
 
 * `-L` / `--log-level` and the `ERNIC_LOG_LEVEL` environment variable select
   the server log verbosity (`none`, `error`, `warn`, `info`, `debug`).
-* The server presents an AMD Pensando ionic NIC (`1dd8:100a`) so the guest can
-  use the upstream Linux `ionic` and `ionic_rdma` drivers. The guest-side
-  patches live in `patches/` and are built into a DKMS package by the
-  `ERNIC_BUILD_KMOD` targets.
+* The server presents an AMD Pensando ionic NIC (`1dd8:1002`, subsystem
+  `1dd8:5400`) so the guest can use the upstream Linux `ionic` and
+  `ionic_rdma` drivers. The guest-side patch in `patches/` is built into a DKMS
+  package by the `ERNIC_BUILD_KMOD` targets.
 * `-T` / `--tap IFNAME` attaches the emulated Ethernet interface to a host TAP,
   giving the guest a routable Ethernet segment with working ARP, ICMP, and
   TCP/IP.
@@ -62,10 +62,10 @@
 
 ### Changed
 
-* The emulated device now identifies as `1dd8:100a` — the Pensando vendor ID
-  the upstream driver already claims, with a device ID outside the range real
-  hardware uses — rather than `1022:8001`. A guest image built for an older
-  release needs its udev rules and `pci.ids` entry updated to match.
+* The emulated device now identifies as `1dd8:1002` with subsystem
+  `1dd8:5400`, rather than `1022:8001`. A guest image built for an older
+  release needs its udev rules updated to match and should refresh `pci.ids`
+  with `update-pciids` for the current `lspci` name.
 * Guest Ethernet leaves through a host TAP, so each instance needs its own TAP
   enslaved to a shared bridge for guest-to-guest IP. The `ernic_host_setup`
   role creates them from `ERNIC_TAP_PREFIX` / `ERNIC_TAP_BRIDGE`, and

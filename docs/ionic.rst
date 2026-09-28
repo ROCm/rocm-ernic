@@ -9,7 +9,7 @@ rocm-ernic presents a single PCIe device to the guest:
 
    * - VID:DID / SSVID:SDID
      - Guest driver
-   * - ``1dd8:100a`` / ``1dd8:5400``
+   * - ``1dd8:1002`` / ``1dd8:5400``
      - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
        with the patches in ``patches/`` applied, and the
        upstream ``providers/ionic`` in rdma-core
@@ -17,9 +17,9 @@ rocm-ernic presents a single PCIe device to the guest:
 The server emulates the register and queue protocol of the
 AMD Pensando ionic NIC, so the guest runs a driver that is
 already in mainline Linux rather than one that only exists
-here. The driver source is near-stock --- two small patches,
-one of them a device-ID addition --- but the guest itself is
-**not** a stock cloud image. It needs a mainline kernel
+here. The driver source is near-stock --- one small RDMA
+patch --- but the guest itself is **not** a stock cloud
+image. It needs a mainline kernel
 matching ``IONIC_KERNEL_REF`` and the headers to build
 against, which no Ubuntu release ships. Nothing in this repo
 bakes such an image either: the guest is the published
@@ -28,14 +28,12 @@ bakes such an image either: the guest is the published
 fetched by ``scripts/fetch-guest-image.sh``. See the warning
 below.
 
-The Pensando vendor ID ``0x1dd8`` is kept, because that is
-what the upstream driver claims, but device ID ``0x100a``
-sits outside the range real hardware uses (``0x1002`` and
-``0x1003``) so an emulated device can never be confused with
-a physical DSC on the same host. The registered subsystem ID
-``0x5400`` lets ``pci.ids`` name just this function
-``ROCm Emulated RDMA NIC`` while leaving the underlying
-vendor/device pair intact for the upstream driver.
+The Pensando vendor ID ``0x1dd8`` is kept, and the emulated
+PF now uses the upstream device ID ``0x1002``. The
+registered subsystem ID ``0x5400`` lets ``pci.ids`` name
+just this function ``ROCm Emulated RDMA NIC`` while leaving
+the underlying vendor/device pair intact for the upstream
+driver.
 
 Starting the Server
 -------------------
@@ -178,9 +176,6 @@ Patches currently carried:
 
    * - Patch
      - Purpose
-   * - ``0001-ionic-add-AMD-emulated-ionic-device-id.patch``
-     - Adds ``1dd8:100a`` to the ionic PCI ID table so the
-       upstream driver binds to the emulated device.
    * - ``0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch``
      - Allocates an address handle for UC queue pairs, which
        the upstream RDMA driver otherwise omits.
@@ -236,7 +231,8 @@ Loading and Verifying
    sudo modprobe ionic
    sudo modprobe ionic_rdma
 
-   lspci -nnv -d 1dd8:100a | grep '\[1dd8:5400\]'
+   sudo update-pciids
+   lspci -nnv -d 1dd8:1002 | grep '\[1dd8:5400\]'
    ip link                  # the LIF appears as a normal netdev
    ibv_devices              # the RDMA device appears here
 
@@ -286,7 +282,7 @@ Testing
 
 ``tests/test_ionic_ci.sh`` is registered with CTest as
 ``ionic-ci`` and needs no VM. It checks that the server
-starts on each backend, announces ``1dd8:100a`` with
+starts on each backend, announces ``1dd8:1002`` with
 subsystem ``1dd8:5400``, reports the expected BAR and MSI-X
 geometry, shuts down cleanly on ``SIGTERM``, attaches to a
 TAP when one is available, comes up with no extra flags, and

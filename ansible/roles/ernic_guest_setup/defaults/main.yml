@@ -73,7 +73,9 @@ ernic_ionic_min_vcpus: 4
 # revision of rocm-ernic presents something else, and the drift is
 # otherwise silent -- nothing renames, nothing probes.
 ernic_device_vendor_id: "0x1dd8"
-ernic_device_id: "0x100a"
+ernic_device_id: "0x1002"
+ernic_device_subsystem_vendor_id: "0x1dd8"
+ernic_device_subsystem_id: "0x5400"
 ernic_guest_preflight_device: true
 # A guest has a handful of PCI devices, so the failure message lists
 # them; run the role against something larger and the list is the
@@ -132,19 +134,6 @@ ernic_guest_modules:
 # removes entries a previous run wrote, rather than just declining
 # to write new ones.
 ernic_guest_modules_persist: true
-
-# ── lspci naming ─────────────────────────────────
-# Cosmetic, and usually a no-op: the emulated NIC reuses a real
-# vendor-assigned pair, and current hwdata already lists
-# 1dd8:100a as "DSC Serial Port Controller". tasks/pci_ids.yml only
-# adds the registered 1dd8:5400 subsystem name below on a guest whose
-# pci.ids lacks that subsystem entry.
-# scripts/pci.ids.rocm-ernic is the canonical copy of the entry;
-# keep the two in step.
-ernic_guest_pciids: true
-ernic_guest_pciids_vendor: "1dd8"
-ernic_guest_pciids_device: "100a"
-ernic_guest_pciids_entry: "1dd8  5400  ROCm Emulated RDMA NIC"
 
 # ── Guest NIC ────────────────────────────────────
 ernic_nic_name: rocm-ernic0
