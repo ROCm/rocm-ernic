@@ -43,7 +43,7 @@
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
-      set -o pipefail
+      set -euo pipefail
       PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
         [ "$(cat "$dev/vendor")" = {{ ernic_device_vendor_id | quote }} ] || continue
         [ "$(cat "$dev/device")" = {{ ernic_device_id | quote }} ] || continue
@@ -56,10 +56,17 @@
 
       LSPCI_NNV="$(lspci -nnv -s "$PCI_BDF")"
       printf '%s\n' "$LSPCI_NNV"
+      SUBSYSTEM_ID='[{{ ernic_device_subsystem_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_subsystem_id | regex_replace("^0x", "") }}]'
       printf '%s\n' "$LSPCI_NNV" | grep -F '[0200]'
       printf '%s\n' "$LSPCI_NNV" | grep -F '[{{ ernic_device_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_id | regex_replace("^0x", "") }}]'
-      printf '%s\n' "$LSPCI_NNV" | grep -F '[{{ ernic_device_subsystem_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_subsystem_id | regex_replace("^0x", "") }}]'
-      printf '%s\n' "$LSPCI_NNV" | grep -F 'ROCm Emulated RDMA NIC'
+      printf '%s\n' "$LSPCI_NNV" | grep -F "$SUBSYSTEM_ID"
+      if printf '%s\n' "$LSPCI_NNV" | grep -F "ROCm Emulated RDMA NIC $SUBSYSTEM_ID"; then
+        :
+      elif printf '%s\n' "$LSPCI_NNV" | grep -F 'Subsystem:' | grep -F "Device $SUBSYSTEM_ID"; then
+        echo 'pci.ids has not yet published the ROCm subsystem name' >&2
+      else
+        exit 1
+      fi
   register: ernic_guest_lspci_verify
   changed_when: false
 

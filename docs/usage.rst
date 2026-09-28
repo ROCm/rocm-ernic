@@ -39,9 +39,11 @@ The Emulated Device
 
 The server emulates an AMD Pensando ionic NIC
 (``1dd8:1002``) with subsystem ``1dd8:5400``, driven by the
-upstream Linux ``ionic`` and ``ionic_rdma`` modules. With a
-current ``pci.ids`` database, ``lspci`` names that subsystem
-``ROCm Emulated RDMA NIC``. There is nothing to select.
+upstream Linux ``ionic`` and ``ionic_rdma`` modules. Once the
+``1dd8:5400`` entry is published in ``pci.ids``, ``lspci``
+names that subsystem ``ROCm Emulated RDMA NIC`` after
+``update-pciids``; until then it displays ``Device [1dd8:5400]``.
+There is nothing to select.
 
 ``--tap IFNAME`` (short ``-T``) attaches the emulated
 Ethernet interface to an existing host TAP. Create the TAP up

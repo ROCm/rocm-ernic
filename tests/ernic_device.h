@@ -32,8 +32,8 @@
 
 #include <infiniband/verbs.h>
 
-#define ERNIC_PCI_VENDOR_ID 0x1dd8u
-#define ERNIC_PCI_DEVICE_ID 0x1002u
+#define ERNIC_PCI_VENDOR_ID           0x1dd8u
+#define ERNIC_PCI_DEVICE_ID           0x1002u
 #define ERNIC_PCI_SUBSYSTEM_VENDOR_ID 0x1dd8u
 #define ERNIC_PCI_SUBSYSTEM_DEVICE_ID 0x5400u
 
@@ -83,8 +83,7 @@ static inline int ernic_device_tuple_matches(const char *name)
                                &subsystem_vendor) &&
            ernic_read_hex_attr(name, "device/subsystem_device",
                                &subsystem_device) &&
-           vendor == ERNIC_PCI_VENDOR_ID &&
-           device == ERNIC_PCI_DEVICE_ID &&
+           vendor == ERNIC_PCI_VENDOR_ID && device == ERNIC_PCI_DEVICE_ID &&
            subsystem_vendor == ERNIC_PCI_SUBSYSTEM_VENDOR_ID &&
            subsystem_device == ERNIC_PCI_SUBSYSTEM_DEVICE_ID;
 }

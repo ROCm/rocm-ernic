@@ -31,9 +31,11 @@ below.
 
 The Pensando vendor ID ``0x1dd8`` is kept, and the emulated
 PF now uses the upstream device ID ``0x1002``. The
-registered subsystem ID ``0x5400`` lets ``pci.ids`` name
-just this function ``ROCm Emulated RDMA NIC`` while leaving
-the underlying vendor/device pair intact for the upstream
+subsystem ID ``0x5400`` distinguishes this function from
+physical PFs with the same vendor/device pair. Once its
+entry is published in ``pci.ids``, ``lspci`` will name it
+``ROCm Emulated RDMA NIC`` after ``update-pciids``. The
+underlying vendor/device pair remains intact for the upstream
 driver.
 
 Starting the Server
