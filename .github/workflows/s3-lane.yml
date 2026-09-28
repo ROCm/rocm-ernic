@@ -416,6 +416,8 @@ jobs:
         PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
           [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
           [ "$(cat "$dev/device")" = '0x1002' ] || continue
+          [ "$(cat "$dev/subsystem_vendor")" = '0x1dd8' ] || continue
+          [ "$(cat "$dev/subsystem_device")" = '0x5400' ] || continue
           basename "$dev"
           break
         done)"
@@ -620,6 +622,8 @@ jobs:
         PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
           [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
           [ "$(cat "$dev/device")" = '0x1002' ] || continue
+          [ "$(cat "$dev/subsystem_vendor")" = '0x1dd8' ] || continue
+          [ "$(cat "$dev/subsystem_device")" = '0x5400' ] || continue
           basename "$dev"
           break
         done)"
