@@ -27,6 +27,7 @@
       BEFORE=
       [ ! -r "$PCI_IDS" ] || BEFORE="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
       update-pciids
+      [ -r "$PCI_IDS" ]
       AFTER="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
       [ "$BEFORE" = "$AFTER" ] || echo __ERNIC_PCIIDS_UPDATED__
   register: ernic_update_pciids
