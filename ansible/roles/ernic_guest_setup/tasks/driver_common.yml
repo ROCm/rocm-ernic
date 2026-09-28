@@ -19,9 +19,19 @@
   until: ernic_guest_pciutils_result is success
 
 - name: Refresh pci.ids in the guest
-  ansible.builtin.command:
-    cmd: update-pciids
-  changed_when: true
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      PCI_IDS=/usr/share/misc/pci.ids
+      BEFORE=
+      [ ! -r "$PCI_IDS" ] || BEFORE="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
+      update-pciids
+      AFTER="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
+      [ "$BEFORE" = "$AFTER" ] || echo __ERNIC_PCIIDS_UPDATED__
+  register: ernic_update_pciids
+  changed_when: >-
+    '__ERNIC_PCIIDS_UPDATED__' in ernic_update_pciids.stdout
 
 - name: Verify lspci resolves the emulated NIC name
   ansible.builtin.shell:
