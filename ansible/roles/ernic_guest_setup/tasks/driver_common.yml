@@ -22,11 +22,11 @@
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
-      set -o pipefail
+      set -euo pipefail
       # This role provisions the Ubuntu-based guest images from this
       # repo, and on those pciutils installs pci.ids here.
       PCI_IDS=/usr/share/misc/pci.ids
-      BEFORE=
+      BEFORE=''
       [ ! -r "$PCI_IDS" ] || BEFORE="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
       update-pciids
       [ -r "$PCI_IDS" ]
@@ -125,8 +125,8 @@
   register: ernic_ibv_devices_output
   changed_when: false
 
-# Identifies the device by PCI vendor ID rather than by name.  The
-# name is rewritten twice during boot and says nothing about which
+# Identifies the device by the emulated PCI tuple rather than by name.
+# The name is rewritten twice during boot and says nothing about which
 # driver bound the device; the substring test this replaced accepted
 # any line containing "ionic", which on a host with a real Pensando
 # NIC would have passed without the emulated device existing at all.
@@ -143,7 +143,11 @@
     that:
       - ernic_rdma_dev_name.stdout | trim | length > 0
     fail_msg: >-
-      No RDMA device with PCI vendor 0x1dd8 found. ibv_devices output:
+      No RDMA device matching PCI
+      {{ ernic_device_vendor_id }}:{{ ernic_device_id }}
+      subsystem
+      {{ ernic_device_subsystem_vendor_id }}:{{ ernic_device_subsystem_id }}
+      found. ibv_devices output:
       {{ ernic_ibv_devices_output.stdout }}
 
 # The script module runs over a pty, so stdout arrives with a trailing

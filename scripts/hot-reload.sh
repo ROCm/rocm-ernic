@@ -270,7 +270,7 @@ guest_ssh 'sudo modprobe ionic && sudo modprobe ionic_rdma' || \
 
 # --- verify ---------------------------------------------------
 log_info "Verifying RDMA device..."
-# Identify by PCI vendor ID, not by name.  The guest's RDMA device is
+# Identify by the emulated PCI tuple, not by name.  The guest's RDMA device is
 # renamed twice during boot (see scripts/find-rdma-device.sh), and the
 # old rocep|mlx|qedr|rxe pattern matched real hardware that has nothing
 # to do with this driver -- a host with a ConnectX card reported

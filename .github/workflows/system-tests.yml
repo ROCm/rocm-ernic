@@ -710,7 +710,7 @@ jobs:
         fi
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
-        # Identify the device by PCI vendor ID rather than by name.  The
+        # Identify the device by the emulated PCI tuple rather than by name.  The
         # name is rewritten twice during boot -- kernel ionic_%d, then
         # 60-rdma-persistent-naming.rules to rocep<bus>s<slot>, then
         # 99-rocm-ernic.rules to rocm-rdma-ernic<n> -- so it says nothing
@@ -748,42 +748,6 @@ jobs:
 
         echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
         echo "✓ Loopback backend VM test passed ($DEVICE, PORT_ACTIVE)"
-
-    - name: Refresh pci.ids and verify the lspci name
-      shell: bash
-      run: |
-        echo "=== Refreshing pci.ids and verifying lspci naming ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
-        set -euo pipefail
-
-        command -v update-pciids >/dev/null
-        sudo update-pciids
-
-        PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
-          [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
-          [ "$(cat "$dev/device")" = '0x1002' ] || continue
-          [ "$(cat "$dev/subsystem_vendor")" = '0x1dd8' ] || continue
-          [ "$(cat "$dev/subsystem_device")" = '0x5400' ] || continue
-          basename "$dev"
-          break
-        done)"
-        [ -n "$PCI_BDF" ]
-
-        echo "=== lspci -nn -s $PCI_BDF ==="
-        LSPCI_NN="$(sudo lspci -nn -s "$PCI_BDF")"
-        printf '%s\n' "$LSPCI_NN"
-
-        echo "=== lspci -nnv -s $PCI_BDF ==="
-        LSPCI_NNV="$(sudo lspci -nnv -s "$PCI_BDF")"
-        printf '%s\n' "$LSPCI_NNV"
-        printf '%s\n' "$LSPCI_NNV" | grep -F '[0200]'
-        printf '%s\n' "$LSPCI_NNV" | grep -F '[1dd8:1002]'
-        printf '%s\n' "$LSPCI_NNV" | grep -F '[1dd8:5400]'
-        printf '%s\n' "$LSPCI_NNV" | grep -F 'ROCm Emulated RDMA NIC'
-        EOFVM
 
     - name: RDMA payload verification (rdma_verify)
       shell: bash
@@ -2137,7 +2101,7 @@ jobs:
         echo "=== Verifying RDMA devices ==="
         VM_USER="${{ steps.vm_info.outputs.vm_user }}"
 
-        # Discover the device per guest by PCI vendor ID rather than by
+        # Discover the device per guest by the emulated PCI tuple rather than by
         # name -- see the same lookup in the loopback job, and
         # scripts/find-rdma-device.sh for why the name cannot be relied
         # on.

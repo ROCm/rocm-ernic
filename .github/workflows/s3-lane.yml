@@ -574,7 +574,7 @@ jobs:
         fi
         grep -m1 "s3 bucket" /tmp/vfu_server.log
 
-        # Same device detection as every other lane: by PCI vendor ID,
+        # Same device detection as every other lane: by the emulated PCI tuple,
         # never by name.  See scripts/find-rdma-device.sh.
         DEVICE=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
           'sh -s' < scripts/find-rdma-device.sh | tr -d '\r') || true
@@ -605,42 +605,6 @@ jobs:
 
         echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
         echo "✓ $DEVICE is PORT_ACTIVE and the object store is up"
-
-    - name: Refresh pci.ids and verify the lspci name
-      shell: bash
-      run: |
-        echo "=== Refreshing pci.ids and verifying lspci naming ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
-        set -euo pipefail
-
-        command -v update-pciids >/dev/null
-        sudo update-pciids
-
-        PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
-          [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
-          [ "$(cat "$dev/device")" = '0x1002' ] || continue
-          [ "$(cat "$dev/subsystem_vendor")" = '0x1dd8' ] || continue
-          [ "$(cat "$dev/subsystem_device")" = '0x5400' ] || continue
-          basename "$dev"
-          break
-        done)"
-        [ -n "$PCI_BDF" ]
-
-        echo "=== lspci -nn -s $PCI_BDF ==="
-        LSPCI_NN="$(sudo lspci -nn -s "$PCI_BDF")"
-        printf '%s\n' "$LSPCI_NN"
-
-        echo "=== lspci -nnv -s $PCI_BDF ==="
-        LSPCI_NNV="$(sudo lspci -nnv -s "$PCI_BDF")"
-        printf '%s\n' "$LSPCI_NNV"
-        printf '%s\n' "$LSPCI_NNV" | grep -F '[0200]'
-        printf '%s\n' "$LSPCI_NNV" | grep -F '[1dd8:1002]'
-        printf '%s\n' "$LSPCI_NNV" | grep -F '[1dd8:5400]'
-        printf '%s\n' "$LSPCI_NNV" | grep -F 'ROCm Emulated RDMA NIC'
-        EOFVM
 
     - name: S3-over-RDMA end-to-end tests (Ansible)
       shell: bash
