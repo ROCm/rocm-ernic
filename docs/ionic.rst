@@ -115,14 +115,18 @@ Two Guests on One Bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 A single TAP with an address on it is enough for host-to-guest
-traffic, but every two-VM test in ``ansible/playbooks/`` needs
-guest-to-guest IP on ``192.168.200.x``: ``sanity-tests.yml``
-pings it, ``tcp-performance-tests.yml`` runs iperf3 over it,
-and ``performance-tests.yml`` uses it for the out-of-band
-exchange in perftest. That traffic leaves through the TAP
-rather than through the rocm-ernic TCP mesh, so each instance
-needs its own TAP and all of them need to share one host
-bridge:
+traffic. The TCP backend can also forward guest Ethernet frames
+between instances directly, so a two-VM mesh does not need any
+special QEMU ``vfio-user-pci`` receive-path option beyond the
+shared-memory setup shown in :doc:`usage`.
+
+The two-VM playbooks in ``ansible/playbooks/`` use a different
+setup on purpose: they put guest-to-guest IP on a shared host
+bridge at ``192.168.200.x`` so the host can observe and debug
+that segment, and so the same path works for ping, iperf3 and
+the out-of-band exchange in perftest. When you follow those
+playbooks, each instance needs its own TAP and all of them need
+to share one host bridge:
 
 .. code-block:: bash
 
@@ -146,6 +150,32 @@ The bridge carries no IP of its own by default; the guests
 address each other directly across it. Set
 ``ernic_tap_bridge_ip`` if the host needs to join the segment
 for debugging.
+
+Troubleshooting Two-VM Mesh RX Stalls
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If one guest transmits ARP or ping traffic, the peer's server
+log shows a successful ``TCP_MSG_ETH_FRAME`` delivery, QEMU
+receives the vfio-user message, and the guest still shows no
+RX completions or RX-interrupt increments, check these first:
+
+- Make sure the server binary you are running includes the
+  masked-vector MSI-X fix described in ``CHANGELOG.md``.
+  Before that fix, an RX interrupt raised while the guest still
+  had the vector masked was dropped instead of replayed on
+  unmask, so the peer guest never woke to drain the receive
+  queue even though the frame had already reached QEMU.
+- If you are using the Ansible/service-managed two-VM lab
+  rather than the pure TCP mesh, verify that every
+  ``${ERNIC_TAP_PREFIX}<n>`` TAP exists and is enslaved to the
+  common bridge. ``ansible/roles/ernic_host_setup/tasks/tap.yml``
+  sets this up and the service starts without Ethernet if a TAP
+  is missing.
+- There is no known QEMU 11.1 ``vfio-user-pci`` knob specific
+  to this symptom. Once QEMU is receiving vfio-user traffic and
+  issuing the eventfd write for the vector, the remaining
+  failure is usually in the guest-facing RX queue or interrupt
+  path rather than in a transport option.
 
 The transmit path gathers the head fragment plus any
 scatter-gather elements out of guest memory and writes the
