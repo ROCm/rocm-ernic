@@ -23,6 +23,8 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
+      # This role provisions the Ubuntu-based guest images from this
+      # repo, and on those pciutils installs pci.ids here.
       PCI_IDS=/usr/share/misc/pci.ids
       BEFORE=
       [ ! -r "$PCI_IDS" ] || BEFORE="$(sha256sum "$PCI_IDS" | awk '{print $1}')"
