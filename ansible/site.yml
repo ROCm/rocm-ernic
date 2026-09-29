@@ -14,7 +14,8 @@
 #   1. Host setup   -- build, install, configure service, TAPs
 #   2. Guest setup  -- ionic DKMS driver, rdma-core, NIC config
 #   3. Sanity tests -- ping, netcat, perftest
-#   4. Performance  -- iperf3 and RDMA perftest sweeps
+#   4. Tutorial     -- upstream RDMA-Tutorial examples
+#   5. Performance  -- iperf3 and RDMA perftest sweeps
 #
 # The guests are not created here and must already be running
 # by phase 2.  Phase 1 also stops any that are running, unless
@@ -47,7 +48,8 @@
 #   guest-setup -- phase 2 only
 #   test        -- all test phases
 #   sanity      -- phase 3 only
-#   perf        -- phase 4 (tcp-perf + rdma-perf)
+#   tutorial    -- phase 4 only
+#   perf        -- phase 5 (tcp-perf + rdma-perf)
 
 ---
 - name: "Phase 1: Host setup"
@@ -66,10 +68,14 @@
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [test, sanity]
 
-- name: "Phase 4a: TCP/IP performance tests (iperf3)"
+- name: "Phase 4: RDMA tutorial examples"
+  ansible.builtin.import_playbook: playbooks/tutorial-tests.yml
+  tags: [test, tutorial]
+
+- name: "Phase 5a: TCP/IP performance tests (iperf3)"
   ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
   tags: [test, perf, tcp-perf]
 
-- name: "Phase 4b: RDMA performance tests (perftest)"
+- name: "Phase 5b: RDMA performance tests (perftest)"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
   tags: [test, perf, rdma-perf]

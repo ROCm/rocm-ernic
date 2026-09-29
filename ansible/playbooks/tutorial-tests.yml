@@ -1,0 +1,16 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run selected examples from the upstream RDMA-Tutorial across
+# two rocm-ernic guest VMs.
+
+---
+- name: RDMA tutorial examples
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - role: ernic_rdma_tutorial

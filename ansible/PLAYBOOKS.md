@@ -101,6 +101,9 @@ ansible-playbook playbooks/guest-setup.yml
 # Sanity tests (iperf3 + perftest)
 ansible-playbook playbooks/sanity-tests.yml
 
+# RDMA tutorial examples
+ansible-playbook playbooks/tutorial-tests.yml
+
 # NVMe-oF against the in-process controller.  Needs only one
 # guest, and the instance must have been started on the
 # nvmeof backend (--backend nvmeof:size=256M,bs=4096).
@@ -181,7 +184,8 @@ ansible/                  # this directory is the collection
 ├── roles/                # Shipped to Galaxy
 │   ├── ernic_source/         # Resolve/clone the checkout
 │   ├── ernic_guest_setup/    # Driver + rdma-core + NIC
-│   └── ernic_host_setup/     # Build, service, vfio-pci
+│   ├── ernic_host_setup/     # Build, service, vfio-pci
+│   └── ernic_rdma_tutorial/  # Run RDMA-Tutorial examples
 │                         # ── below: repo-local, build_ignore'd
 ├── ansible.cfg           # Ansible configuration
 ├── PLAYBOOKS.md          # this file
@@ -192,14 +196,16 @@ ansible/                  # this directory is the collection
 │   └── all.yml           # Site configuration
 ├── inventory/
 │   └── hosts.yml         # Static inventory
-└── playbooks/
-    ├── host-setup.yml         # -> ernic_host_setup
-    ├── vm-register.yml        # instances.json -> ernic_vms
-    ├── guest-setup.yml        # -> ernic_guest_setup
-    ├── sanity-tests.yml       # iperf3 + perftest
-    ├── nvmeof-tests.yml       # NVMe-oF, one guest
-    ├── tcp-performance-tests.yml  # iperf3 sweeps
-    └── performance-tests.yml  # Full BW/lat sweeps
+├── playbooks/
+│   ├── host-setup.yml         # -> ernic_host_setup
+│   ├── vm-register.yml        # instances.json -> ernic_vms
+│   ├── guest-setup.yml        # -> ernic_guest_setup
+│   ├── sanity-tests.yml       # iperf3 + perftest
+│   ├── tutorial-tests.yml     # RDMA-Tutorial examples
+│   ├── nvmeof-tests.yml       # NVMe-oF, one guest
+│   ├── tcp-performance-tests.yml  # iperf3 sweeps
+│   ├── s3-tests.yml           # S3 over RDMA, one guest
+│   └── performance-tests.yml  # Full BW/lat sweeps
 ```
 
 ## How It Works
@@ -229,6 +235,13 @@ ansible/                  # this directory is the collection
    perftest tools (`ib_send_bw`, `ibv_rc_pingpong`) for
    RDMA verification.
 
+5. **tutorial-tests** clones the upstream
+   [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial)
+   on the two guests, checks out selected example commits,
+   builds them, and runs the corresponding server/client
+   pair over the rocm-ernic RDMA link. By default it covers
+   Example 1 (send/recv) and Example 2 (RDMA write).
+
    **nvmeof-tests** is the odd one out, and is numbered with
    no phase of its own because it is not part of the
    sequence: it needs a single guest, not a pair. The
@@ -248,7 +261,7 @@ ansible/                  # this directory is the collection
    would run it unconditionally. Developers run the play
    directly.
 
-5. **performance-tests** runs the full bandwidth and latency
+6. **performance-tests** runs the full bandwidth and latency
    sweeps matching the test report format: `ib_send_bw`,
    `ib_write_bw`, `ib_read_bw` across 12 message sizes
    (4 KB to 8 MB), the same for `ib_send_lat`,
@@ -256,3 +269,4 @@ ansible/                  # this directory is the collection
    reliability at 64 KB and `ibv_rc_pingpong` rounds.
    Timestamped CSV files are written to
    `docs/perf-results/` for easy before/after comparison.
+

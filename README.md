@@ -9,6 +9,7 @@
 [![cmakelint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/cmakelint.yml?label=cmakelint)][ci-cmakelint]
 [![CodeQL](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/codeql.yml?label=CodeQL)][ci-codeql]
 [![System Tests](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/system-tests.yml?label=System%20Tests)][ci-system-tests]
+[![Self-Hosted CI](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/self-hosted-ci.yml?label=Self-Hosted%20CI)][ci-self-hosted]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-rdma.json)][perf-trends]
@@ -57,7 +58,8 @@ uses the existing Galaxy release flow under [`ansible/`](ansible/).
 
 Full documentation lives in the [`docs/`](docs/) directory and covers building,
 architecture, usage, the kernel driver, the systemd service, testing, and the
-API reference.
+API reference. The published testing guide also tracks the self-hosted tutorial
+lane that runs the upstream RDMA-Tutorial examples over rocm-ernic.
 
 ## License
 
@@ -77,6 +79,7 @@ SPDX declaration says otherwise. The per-file SPDX header is authoritative; see
 [ci-cmakelint]: https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml
 [ci-codeql]: https://github.com/ROCm/rocm-ernic/actions/workflows/codeql.yml
 [ci-system-tests]: https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml
+[ci-self-hosted]: https://github.com/ROCm/rocm-ernic/actions/workflows/self-hosted-ci.yml
 [guest-kernel]: https://github.com/ROCm/rocm-ernic/blob/develop/docs/performance.rst
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
 [libvfio]: https://github.com/nutanix/libvfio-user
