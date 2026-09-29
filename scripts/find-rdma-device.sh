@@ -19,8 +19,9 @@ ERNIC_PCI_VENDOR_ID=0x1dd8
 ERNIC_PCI_DEVICE_ID=0x1002
 ERNIC_PCI_SUBSYSTEM_VENDOR_ID=0x1dd8
 ERNIC_PCI_SUBSYSTEM_DEVICE_ID=0x5400
+SYSFS_ROOT=${ERNIC_SYSFS_ROOT:-/sys}
 
-for vendor_attr in /sys/class/infiniband/*/device/vendor; do
+for vendor_attr in "$SYSFS_ROOT"/class/infiniband/*/device/vendor; do
     [ -r "$vendor_attr" ] || continue
     device_dir=${vendor_attr%/vendor}
     read -r vendor_id < "$vendor_attr" || continue

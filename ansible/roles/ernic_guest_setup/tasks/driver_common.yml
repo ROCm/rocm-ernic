@@ -39,7 +39,7 @@
   changed_when: >-
     '__ERNIC_PCIIDS_UPDATED__' in ernic_update_pciids.stdout
 
-- name: Verify lspci resolves the emulated NIC name
+- name: Verify lspci reports the emulated NIC PCI identity
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
@@ -60,9 +60,22 @@
       printf '%s\n' "$LSPCI_NNV" | grep -F '[0200]'
       printf '%s\n' "$LSPCI_NNV" | grep -F '[{{ ernic_device_vendor_id | regex_replace("^0x", "") }}:{{ ernic_device_id | regex_replace("^0x", "") }}]'
       printf '%s\n' "$LSPCI_NNV" | grep -F "$SUBSYSTEM_ID"
-      printf '%s\n' "$LSPCI_NNV" | grep -F "ROCm Emulated RDMA NIC $SUBSYSTEM_ID"
+      if printf '%s\n' "$LSPCI_NNV" |
+        grep -Fq "ROCm Emulated RDMA NIC $SUBSYSTEM_ID"; then
+        echo __ERNIC_PCIIDS_SUBSYSTEM_LABEL_FOUND__
+      else
+        echo __ERNIC_PCIIDS_SUBSYSTEM_LABEL_MISSING__
+      fi
   register: ernic_guest_lspci_verify
   changed_when: false
+
+- name: Warn when pci.ids has no subsystem label yet
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: the refreshed pci.ids does not yet name subsystem
+      {{ ernic_device_subsystem_vendor_id }}:{{ ernic_device_subsystem_id }}
+      as ROCm Emulated RDMA NIC; lspci confirms the numeric IDs.
+  when: "'__ERNIC_PCIIDS_SUBSYSTEM_LABEL_MISSING__' in ernic_guest_lspci_verify.stdout"
 
 # Installed before the modules load, so the devices come up with
 # their stable names the first time round.

@@ -16,6 +16,7 @@ basic PCI configuration space queries:
 - Socket connection to server
 - PCI Vendor ID verification (Pensando: ``0x1dd8``)
 - PCI Device ID verification (ROCm ERNIC: ``0x1002``)
+- PCI subsystem verification (ROCm ERNIC: ``0x1dd8:0x5400``)
 - PCI Class Code verification (Network Controller)
 - PCI Header Type verification (Type 0)
 - BAR register reads
@@ -38,6 +39,13 @@ Comprehensive RDMA data transfer test using libibverbs:
 
 Requires an RDMA device (via the guest ``ionic_rdma`` driver
 or real hardware). Skipped if no device is found.
+
+find-rdma-device-tuple
+^^^^^^^^^^^^^^^^^^^^^^^
+
+A shell test registered with CTest. It uses a synthetic sysfs tree to verify
+RDMA discovery requires the emulated vendor/device/subsystem tuple and rejects
+near matches.
 
 test_rdma_cm
 ^^^^^^^^^^^^

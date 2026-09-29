@@ -83,6 +83,13 @@ Shell test for the emulated ionic device, registered with CTest as
 - 1: Test failure
 - 77: Skipped (server binary not built)
 
+### test_find_rdma_device.sh
+
+Shell test registered with CTest as `find-rdma-device-tuple`. It uses a
+synthetic sysfs tree to verify the shared RDMA-device lookup accepts the
+emulated vendor/device/subsystem tuple and rejects devices that differ in
+any tuple field.
+
 ## Running Tests
 
 ### Quick Local Test

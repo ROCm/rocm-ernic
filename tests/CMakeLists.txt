@@ -578,6 +578,14 @@ set_tests_properties(pci-config-test PROPERTIES
     RUN_SERIAL TRUE
 )
 
+# RDMA device discovery must match the complete emulated PCI tuple, not
+# a physical Pensando function with a shared vendor or device ID.
+add_test(
+    NAME find-rdma-device-tuple
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_find_rdma_device.sh
+)
+set_tests_properties(find-rdma-device-tuple PROPERTIES TIMEOUT 30)
+
 # test_data_transfer, test_write_imm and test_rdma_cm are deliberately not
 # registered with CTest. They need a real RDMA device, which no host running
 # ctest has -- hosted runners and the self-hosted pool both run ctest outside

@@ -11,10 +11,11 @@ breaking_changes:
     device is the only one the collection provisions, so passing
     ``-e ernic_device_mode=...`` now has no effect.
   - >-
-    The emulated device moved from ``1022:8001`` to the Pensando vendor id
-    at ``1dd8:100a``, matching the ionic hardware the guest driver is
-    written for.  A guest image built for an earlier release needs its
-    ``pci.ids`` entry updated for ``lspci`` to name the device.
+    The emulated device moved from ``1022:8001`` to the official Pensando
+    PCI identity ``1dd8:1002`` with subsystem ``1dd8:5400``.  The guest
+    refreshes the upstream ``pci.ids`` database; until its subsystem name
+    is published there, setup warns while continuing to verify the
+    numeric IDs.
 removed_features:
   - >-
     The out-of-tree ``rocm_ernic_eth`` / ``rocm_ernic_rdma`` driver path and
