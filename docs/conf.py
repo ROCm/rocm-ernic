@@ -1,15 +1,17 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MIT
+
+# Sphinx reads its settings from lowercase module-level names
+# pylint: disable=invalid-name
 
 """Sphinx configuration for rocm-ernic documentation."""
 
 project = "rocm-ernic"
 author = "Advanced Micro Devices, Inc."
-copyright = (
-    "2025-2026 Advanced Micro Devices, Inc. "
-    "All rights reserved."
-)
+# pylint: disable=redefined-builtin
+copyright = "2025-2026 Advanced Micro Devices, Inc. All rights reserved."
+# pylint: enable=redefined-builtin
 
 version = "0.2.0"
 release = version
@@ -18,6 +20,10 @@ release = version
 
 extensions = [
     "breathe",
+    # Emits .nojekyll into the build.  Pages serves this site from a
+    # branch, so without it Jekyll runs and strips _static/ -- the
+    # whole site loses its CSS.
+    "sphinx.ext.githubpages",
 ]
 
 # -- Breathe (Doxygen XML import) --------------------------------
@@ -44,20 +50,25 @@ suppress_warnings = [
 
 html_theme = "sphinx_book_theme"
 html_theme_options = {
-    "repository_url": (
-        "https://github.com/ROCm/rocm-ernic"
-    ),
+    "repository_url": ("https://github.com/ROCm/rocm-ernic"),
     "use_repository_button": True,
     "show_toc_level": 2,
 }
 html_title = f"rocm-ernic {version}"
-# docs/perf-history holds the nightly perf charts and the
-# shields.io endpoint badges (badge-rdma.json, badge-tcp.json)
-# that README.md points at. Publishing it as html_static_path
-# copies its contents into the built site's _static/, so once
-# docs-deploy pushes the build to GitHub Pages the badges are
-# reachable at a stable URL. sphinx-build is invoked with -c
-# pointing at a separate configured-conf.py directory (see
-# cmake/ErnicDocumentation.cmake), so this path must be
-# absolute rather than relative to the docs/ source tree.
-html_static_path = ["@CMAKE_SOURCE_DIR@/docs/perf-history"]
+# No user static directory. docs/perf-history used to be published
+# here, on the understanding that it was how README.md's shields
+# reached a stable URL. It was not: the shields point at
+# perf/badge-*.json on gh-pages, written directly by
+# .github/actions/publish-perf, and the _static/ copies were built
+# from whatever was committed to develop -- the "no data" placeholders,
+# permanently, with no badge-s3.json at all once the S3 lane was
+# added. Nothing read them.
+#
+# The charts do not need this either: publish-perf.py includes them
+# with `.. raw:: html :file: perf-history/chart-*.html`, resolved
+# against the source tree and inlined into the page.
+#
+# Set explicitly rather than left to Sphinx's ["_static"] default,
+# which would warn on every build about a directory this project
+# does not have.
+html_static_path = []

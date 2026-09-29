@@ -11,7 +11,7 @@
  *
  * Wire formats are defined in ionic_fw.h (kernel-tools pinned ref).
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -101,7 +101,15 @@ enum ionic_v1_admin_op {
 #define MAX_AQ     4
 #define MAX_CQ_MAP 256
 #define MAX_QP_MAP 256
-#define MAX_MR_MAP 256
+/*
+ * One entry per region the rdma_rm table can hold.  At 256 against a
+ * 1024-entry table, every MR past the 256th was created successfully and then
+ * had no map entry, so DESTROY_MR could not resolve its handle and silently
+ * dropped it -- leaking the resource for the lifetime of the process.  An
+ * nvme-rdma connect allocates 128 regions per queue, so that ceiling was
+ * reached two queues in.
+ */
+#define MAX_MR_MAP IONIC_MAX_MR
 
 /* enum ionic_mrf_bits: the low 12 bits are IB access flags. */
 #define IONIC_MRF_ACCESS_MASK 0x0fffu
@@ -139,21 +147,21 @@ struct ionic_adminq_ctx {
 
     /* The driver names CQs by its own cqid; rdma_rm hands back its own
      * handles.  CREATE_QP references CQs by cqid, so keep the translation. */
-    struct {
+    struct ionic_cq_map_entry {
         bool valid;
         uint32_t cq_id;
         uint32_t handle;
     } cq_map[MAX_CQ_MAP];
 
     /* Same translation for QPs: the driver's qpid vs the backend's QPN. */
-    struct {
+    struct ionic_qp_map_entry {
         bool valid;
         uint32_t qp_id;
         uint32_t qpn;
     } qp_map[MAX_QP_MAP];
 
     /* And for MRs: the driver's mrid vs the backend's handle. */
-    struct {
+    struct ionic_mr_map_entry {
         bool valid;
         uint32_t mr_id;
         uint32_t handle;
@@ -195,7 +203,7 @@ static void adminq_map_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
 {
     for (int i = 0; i < MAX_CQ_MAP; i++) {
         if (!ctx->cq_map[i].valid || ctx->cq_map[i].cq_id == cq_id) {
-            ctx->cq_map[i] = (typeof(ctx->cq_map[0])){
+            ctx->cq_map[i] = (struct ionic_cq_map_entry){
                 .valid = true, .cq_id = cq_id, .handle = handle};
             return;
         }
@@ -221,7 +229,7 @@ static void adminq_map_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id,
 {
     for (int i = 0; i < MAX_QP_MAP; i++) {
         if (!ctx->qp_map[i].valid || ctx->qp_map[i].qp_id == qp_id) {
-            ctx->qp_map[i] = (typeof(ctx->qp_map[0])){
+            ctx->qp_map[i] = (struct ionic_qp_map_entry){
                 .valid = true, .qp_id = qp_id, .qpn = qpn};
             return;
         }
@@ -249,18 +257,24 @@ static void adminq_unmap_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id)
             ctx->qp_map[i].valid = false;
 }
 
-static void adminq_map_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
+/*
+ * Returns false when there is no room.  The caller must then fail the command
+ * and release the resource it just allocated: an unmapped MR cannot be found
+ * again by DESTROY_MR, so keeping it would leak it permanently.
+ */
+static bool adminq_map_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
                           uint32_t handle)
 {
     for (int i = 0; i < MAX_MR_MAP; i++) {
         if (!ctx->mr_map[i].valid || ctx->mr_map[i].mr_id == mr_id) {
-            ctx->mr_map[i] = (typeof(ctx->mr_map[0])){
+            ctx->mr_map[i] = (struct ionic_mr_map_entry){
                 .valid = true, .mr_id = mr_id, .handle = handle};
-            return;
+            return true;
         }
     }
     vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: MR map full, mr_id=%u",
             mr_id);
+    return false;
 }
 
 static bool adminq_lookup_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
@@ -337,16 +351,6 @@ void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
             "ionic_adminq: registered AQ[%d] aq_dma=%#lx depth=%u "
             "cq_dma=%#lx cq_depth=%u cq_id=%u eq_id=%u",
             aq_idx, aq_dma, r->aq_depth, cq_dma, r->cq_depth, cq_id, eq_id);
-}
-
-void ionic_adminq_set_resources(struct ionic_adminq_ctx *ctx, void *dev_res,
-                                void *backend_dev)
-{
-    /* dev_res and backend_dev are not stored directly — we use the
-     * ionic_rm_* compat wrappers via pvrdma_handle instead. */
-    (void)dev_res;
-    (void)backend_dev;
-    /* pvrdma_handle must be set separately via ionic_adminq_set_pvrdma. */
 }
 
 void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
@@ -837,7 +841,15 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
-        adminq_map_mr(ctx, mr_id, mr_handle);
+        /* Give the resource straight back rather than reporting a success the
+         * guest can never undo.  The driver surfaces this as the -ENOMEM its
+         * ib_alloc_mr() already knows how to unwind. */
+        if (!adminq_map_mr(ctx, mr_id, mr_handle)) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_MR %u: MR map full, rejecting", mr_id);
+            ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
+            return 1;
+        }
 
         uint64_t va, length, dma_addr;
         uint32_t map_count;
@@ -867,8 +879,15 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         mrid = le32toh(mrid);
         uint32_t mr_id = mrid & 0x00ffffffu;
         ionic_datapath_unregister_mr(ctx->dp, mrid);
-        if (!adminq_lookup_mr(ctx, mr_id, &mr_handle))
-            return 0;
+        /* A miss now means the resource is stranded: nothing else holds the
+         * handle.  It used to be reported as success, which is how the table
+         * filled up without a single line in the log. */
+        if (!adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
+            vfu_log(ctx->vfu_ctx, LOG_WARNING,
+                    "ionic_adminq DESTROY_MR %u: no mapping; resource leaked",
+                    mr_id);
+            return 1;
+        }
         ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
         adminq_unmap_mr(ctx, mr_id);
         return 0;
@@ -897,6 +916,9 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         memcpy(&qp_id, body, 4);
         qp_id = le32toh(qp_id);
         ionic_datapath_unregister_qp(ctx->dp, qp_id);
+        /* Per-QP stats are keyed on the driver-side qp_id, not the resource
+         * manager's qpn, so drop them here while qp_id is still in hand. */
+        pvrdma_qp_stats_forget(ctx->pvrdma_handle, qp_id);
         if (!adminq_lookup_qp(ctx, qp_id, &qpn))
             return 0;
         ionic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);
@@ -1014,7 +1036,93 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         return 0;
     }
 
-    case IONIC_V1_ADMIN_QUERY_QP:
+    case IONIC_V1_ADMIN_QUERY_QP: {
+        /* ionic_admin_query_qp body (34 bytes):
+         *   le64 hdr_dma_addr [0:7]   (AH header template, only when IB_QP_AV)
+         *   le64 sq_dma_addr  [8:15]
+         *   le64 rq_dma_addr  [16:23]
+         *   le32 ah_id        [24:27]
+         *   le32 id_ver       [28:31]  (qpid | ver<<24)
+         *   le16 dbid_flags   [32:33]
+         *
+         * The answer is not the completion: the driver reads it out of the
+         * two buffers it DMA-mapped, and both are zeroed before the command,
+         * so succeeding without writing them reports a QP in RESET.  That is
+         * what ibv_query_qp saw while this was a stub. */
+        if (len < 34 || !ctx->pvrdma_handle) {
+            return 0;
+        }
+
+        uint64_t sq_dma, rq_dma;
+        uint32_t id_ver;
+        memcpy(&sq_dma, body + 8, 8);
+        sq_dma = le64toh(sq_dma);
+        memcpy(&rq_dma, body + 16, 8);
+        rq_dma = le64toh(rq_dma);
+        memcpy(&id_ver, body + 28, 4);
+        id_ver = le32toh(id_ver);
+
+        uint32_t qp_id = id_ver & 0x00ffffffu;
+        uint32_t qpn;
+        if (!adminq_lookup_qp(ctx, qp_id, &qpn)) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq QUERY_QP: unknown qp_id=%u", qp_id);
+            return 1;
+        }
+
+        uint8_t state = 0, path_mtu = 3 /* IBV_MTU_1024 */;
+        uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
+        if (ionic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
+                              &dest_qpn, &access, &rq_psn, &sq_psn) != 0) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP %u: failed",
+                    qp_id);
+            return 1;
+        }
+
+        /* ionic numbers its QP states as IB does, so the state needs no
+         * translation; the MTU does, because the driver subtracts 7 from the
+         * low nibble to recover the ibv_mtu enum. */
+        uint16_t flags = 0;
+        if (access & (1u << 1)) /* IBV_ACCESS_REMOTE_WRITE */
+            flags |= 1u << 0;   /* IONIC_QPF_REMOTE_WRITE */
+        if (access & (1u << 2)) /* IBV_ACCESS_REMOTE_READ */
+            flags |= 1u << 1;   /* IONIC_QPF_REMOTE_READ */
+        if (access & (1u << 3)) /* IBV_ACCESS_REMOTE_ATOMIC */
+            flags |= 1u << 2;   /* IONIC_QPF_REMOTE_ATOMIC */
+
+        /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
+        uint8_t sqbuf[20] = {0};
+        uint16_t flags_be = htobe16(flags);
+        uint32_t dest_be = htobe32(dest_qpn);
+        uint32_t rq_psn_be = htobe32(rq_psn & 0xffffffu);
+        memcpy(sqbuf + 2, &flags_be, 2);
+        memcpy(sqbuf + 8, &dest_be, 4);
+        memcpy(sqbuf + 16, &rq_psn_be, 4);
+
+        /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
+         * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
+         * limits, so 1 is the single outstanding operation ionic_datapath
+         * actually supports. */
+        uint8_t rqbuf[12] = {0};
+        rqbuf[0] = (uint8_t)((state & 0x0fu) << 4 | ((path_mtu + 7) & 0x0fu));
+        rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
+        rqbuf[2] = 1;
+        rqbuf[3] = 1;
+        uint32_t sq_psn_be = htobe32(sq_psn & 0xffffffu);
+        memcpy(rqbuf + 4, &sq_psn_be, 4);
+        memcpy(rqbuf + 8, &flags_be, 2);
+
+        if (sq_dma && dma_write(ctx->vfu_ctx, sq_dma, sqbuf, sizeof(sqbuf)) < 0)
+            return 1;
+        if (rq_dma && dma_write(ctx->vfu_ctx, rq_dma, rqbuf, sizeof(rqbuf)) < 0)
+            return 1;
+
+        vfu_log(ctx->vfu_ctx, LOG_INFO,
+                "ionic_adminq QUERY_QP qp_id=%u qpn=%u state=%u dest_qpn=%u",
+                qp_id, qpn, state, dest_qpn);
+        return 0;
+    }
+
     case IONIC_V1_ADMIN_CREATE_AH:
     case IONIC_V1_ADMIN_QUERY_AH:
     case IONIC_V1_ADMIN_DESTROY_AH:

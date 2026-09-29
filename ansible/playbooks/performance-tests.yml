@@ -36,7 +36,8 @@
     # a bare ssh to a healthy guest can block indefinitely, and one
     # did -- a 25-minute hang on a two-second command.
     vm1_ssh: >-
-      ssh -o StrictHostKeyChecking=no
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
       -o BatchMode=yes
       -o ConnectTimeout=15
@@ -45,7 +46,8 @@
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
-      ssh -o StrictHostKeyChecking=no
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
       -o BatchMode=yes
       -o ConnectTimeout=15
@@ -55,7 +57,6 @@
       {{ ernic_vm_ssh_user }}@localhost
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
-    rdma_dev: rocm-rdma-ernic0
 
     bw_iters: "{{ ernic_perf_bw_iters | default(1000) }}"
     lat_iters: "{{ ernic_perf_lat_iters | default(50) }}"
@@ -149,24 +150,34 @@
       changed_when: false
       failed_when: false
 
+    # Identifies the device by PCI vendor ID rather than by name: the
+    # name is rewritten twice during boot and says nothing about which
+    # driver bound the device.  See scripts/find-rdma-device.sh.
     - name: Detect RDMA device name on VM1
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: >-
-          set -o pipefail;
-          {{ vm1_ssh }}
-          'ibv_devices
-          | grep -oE "rocm-rdma-ernic[0-9]+|rocep[0-9]+s[0-9]+"
-          | head -1'
+          {{ vm1_ssh }} 'sh -s'
+          < {{ ernic_project_root }}/scripts/find-rdma-device.sh
       register: rdma_dev_detect
       changed_when: false
       failed_when: false
 
+    # No default here.  Falling back to a hard-coded name hands every
+    # RDMA test below a device that was never there, and they then
+    # fail against it instead of reporting that detection came up
+    # empty.
+    - name: Assert an RDMA device was detected on VM1
+      ansible.builtin.assert:
+        that:
+          - rdma_dev_detect.stdout | trim | length > 0
+        fail_msg: >-
+          No RDMA device with PCI vendor 0x1dd8 found on VM1, so the
+          driver did not bind or the port never came up.
+
     - name: Set RDMA device name
       ansible.builtin.set_fact:
-        rdma_dev: >-
-          {{ rdma_dev_detect.stdout | trim
-             | default('rocm-rdma-ernic0', true) }}
+        rdma_dev: "{{ rdma_dev_detect.stdout | trim }}"
 
     - name: Create results directory
       ansible.builtin.file:
@@ -342,9 +353,15 @@
             exit 0
           fi
 
-          TMIN=$(echo "$LINE"  | awk '{print $4}')
+          # perftest column order is
+          #   bytes iters t_min t_max t_typical t_avg t_stdev 99% 99.9%
+          # so the minimum is $3 and the maximum is $4.  Reading $4/$5/$6
+          # as min/typical/max put t_max in the lat_min_us column and
+          # t_avg in lat_max_us, which is why every published row had a
+          # "minimum" larger than its "typical".
+          TMIN=$(echo "$LINE"  | awk '{print $3}')
+          TMAX=$(echo "$LINE"  | awk '{print $4}')
           TTYP=$(echo "$LINE"  | awk '{print $5}')
-          TMAX=$(echo "$LINE"  | awk '{print $6}')
 
           echo "{{ item.0.label }},$SZ,$TMIN,$TTYP,$TMAX" \
             >> "{{ lat_csv }}"
@@ -560,9 +577,13 @@
           - "Reliability runs: {{ bw_verbs | length * (rel_runs | int) + (rel_runs | int) }}"
           - "Failures:         {{ fail_count.stdout | default('0') }}"
 
+    # `column` is not in every image these plays run in -- the CI
+    # container has no bsdmainutils -- and this is a pretty-printer.
+    # Falling back to the raw CSV keeps a formatting gap from failing
+    # a job that has already measured everything it was asked to.
     - name: Display bandwidth CSV
       ansible.builtin.shell:
-        cmd: "column -t -s, {{ bw_csv }}"
+        cmd: "column -t -s, {{ bw_csv }} 2>/dev/null || cat {{ bw_csv }}"
       register: bw_table
       changed_when: false
 
@@ -572,7 +593,7 @@
 
     - name: Display latency CSV
       ansible.builtin.shell:
-        cmd: "column -t -s, {{ lat_csv }}"
+        cmd: "column -t -s, {{ lat_csv }} 2>/dev/null || cat {{ lat_csv }}"
       register: lat_table
       changed_when: false
 
@@ -582,7 +603,7 @@
 
     - name: Display reliability CSV
       ansible.builtin.shell:
-        cmd: "column -t -s, {{ rel_csv }}"
+        cmd: "column -t -s, {{ rel_csv }} 2>/dev/null || cat {{ rel_csv }}"
       register: rel_table
       changed_when: false
 

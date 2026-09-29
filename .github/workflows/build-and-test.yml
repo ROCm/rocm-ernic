@@ -1,0 +1,282 @@
+name: rocm-ernic - Build and Test
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - 'src/**'
+      - 'third-party/**'
+      - 'tests/**'
+      - 'service/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/build-and-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }}, ${{ matrix.build_type }}, ${{ matrix.sanitizer }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        compiler: [gcc, clang]
+        # `asan` builds with -DERNIC_USE_SANITIZERS=ON, which turns on
+        # ASan + LSan + UBSan together; `tsan` builds with
+        # -DERNIC_USE_THREAD_SANITIZER=ON. The two are mutually exclusive
+        # (cmake/ErnicSanitizers.cmake makes that a hard error), hence one
+        # leg each rather than a combined build.
+        sanitizer: [ 'off', asan, tsan ]
+        # Release is not just "Debug with -O3". It is the only configuration
+        # that exercises three things Debug cannot:
+        #
+        #   - the optimisation-dependent warnings. ERNIC_WERROR is ON, and
+        #     -Wstrict-overflow=4, -Wunsafe-loop-optimizations,
+        #     -Wnull-dereference and -Wmaybe-uninitialized are all dataflow
+        #     warnings that GCC only issues once the optimiser has run.
+        #   - _FORTIFY_SOURCE=3. Both compiler-options modules gate it on
+        #     the flags matching -O[2-3s], so the Debug legs compile with it
+        #     off entirely.
+        #   - NDEBUG, which compiles out assert().
+        #
+        # The optimiser also reorders and caches aggressively at -O3, which
+        # is what makes the Release tsan legs a stronger race check than the
+        # Debug ones (see the -Og note in the configure step below).
+        build_type: [Debug, Release]
+
+    # UBSan's default is to print a diagnostic and keep going with a zero
+    # exit status, so without halt_on_error the asan legs would report
+    # success over real undefined behaviour. ASan and LSan already exit
+    # non-zero on a finding; detect_leaks is spelled out rather than left
+    # to the platform default.
+    #
+    # TSan already fails the run on a race (exitcode defaults to 66), so
+    # halt_on_error only changes *when* it stops -- at the first race rather
+    # than after the test finishes. Set for a faster, less noisy failure,
+    # not because the leg would otherwise pass over a race.
+    #
+    # Each is ignored by the legs with no matching runtime to read it.
+    env:
+      ASAN_OPTIONS: detect_leaks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      TSAN_OPTIONS: halt_on_error=1
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      
+      - name: Cache apt packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-build-and-test-${{ hashFiles('.github/workflows/build-and-test.yml') }}
+          restore-keys: apt-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-build-and-test-
+
+      # build-essential, cmake, ninja-build and pkg-config are preinstalled
+      # on the hosted image, so only the things it does not ship are listed.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev
+
+      - name: Cache libvfio-user build
+        id: cache-libvfio-user
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/lib/x86_64-linux-gnu/libvfio-user*
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+            /usr/include/vfio-user
+          key: libvfio-user-20e9803-${{ matrix.os }}
+
+      - name: Clone and build libvfio-user
+        if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
+        run: |
+          # meson and libjson-c-dev build libvfio-user and libcmocka-dev
+          # builds its tests; nothing else in this job needs them, and the
+          # cache key is static, so installing them here keeps them off the
+          # steady-state cache-hit path.
+          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
+          # This version includes the vfu_setup_device_dma() max_regions
+          # parameter added in f3742ed9 (#835).
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout 20e9803
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: Reload ldconfig after cache restore
+        if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+      
+      - name: Configure project with CMake
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+          BUILD_TYPE: ${{ matrix.build_type }}
+        run: |
+          asan=OFF
+          tsan=OFF
+          case "$SANITIZER" in
+            asan) asan=ON ;;
+            tsan) tsan=ON ;;
+          esac
+
+          # Only the Debug legs need their optimisation level adjusted, and
+          # only for tsan. Debug is -O0, which makes a weaker tsan leg than
+          # it looks: the compiler does not reorder or cache enough to
+          # expose the races a production build will hit. Measured against
+          # the reintroduced recv_thread_running race, gcc reports 1 race at
+          # -O0 but 2 at -Og, so this is not theoretical.
+          #
+          # -Og rather than -O1 because it is the level designed to pair
+          # with -g, and it detects identically here -- the same comparison
+          # gives -Og and -O1 the same race count on both compilers.
+          # (profiler-hub-sanitizers.yml in rocm-systems uses -O1 for the
+          # same underlying reason.)
+          #
+          # Release is left at its stock -O3 -DNDEBUG. Overriding it the way
+          # the Debug legs do would defeat the point of the leg: -Og is a
+          # *lower* optimisation level than -O3, so forcing it here would
+          # make the Release tsan run a weaker check than the code it is
+          # meant to model, and would drop the NDEBUG and _FORTIFY_SOURCE=3
+          # coverage that justifies the leg in the first place.
+          build_type_flags=()
+          if [ "$BUILD_TYPE" = "Debug" ]; then
+            debug_flags="-g"
+            if [ "$SANITIZER" = "tsan" ]; then
+              debug_flags="-g -Og"
+            fi
+            build_type_flags+=("-DCMAKE_C_FLAGS_DEBUG=$debug_flags")
+          fi
+
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER=${{ matrix.compiler }} \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            "${build_type_flags[@]}" \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DERNIC_WERROR=ON \
+            -DERNIC_USE_SANITIZERS=$asan \
+            -DERNIC_USE_THREAD_SANITIZER=$tsan
+      
+      - name: Build project
+        run: cmake --build build
+      
+      - name: Verify rdma_cm protocol symbols
+        run: |
+          echo "=== Verifying rdma_cm_proto.c symbols ==="
+          if nm build/rocm-ernic 2>/dev/null | grep -q "rdma_cm_process_message"; then
+            echo "✓ rdma_cm_process_message symbol found in binary"
+          else
+            echo "⚠️  rdma_cm_process_message symbol not found (may be inlined)"
+          fi
+      
+      - name: Verify binaries exist
+        run: |
+          ls -lh build/rocm-ernic
+          ls -lh build/tests/test_pci_client
+          ls -lh build/tests/test_data_transfer
+          file build/rocm-ernic
+          file build/tests/test_pci_client
+          file build/tests/test_data_transfer
+      
+      - name: Check binary dependencies
+        run: |
+          echo "=== rocm-ernic dependencies ==="
+          ldd build/rocm-ernic
+          echo ""
+          echo "=== test_pci_client dependencies ==="
+          ldd build/tests/test_pci_client
+          echo ""
+          echo "=== test_data_transfer dependencies ==="
+          ldd build/tests/test_data_transfer
+      
+      # Every registered test runs on a hosted runner now -- the three that
+      # needed a real RDMA device moved into the VM system tests, so a
+      # Skipped line here means something is wrong rather than absent.
+      #
+      # TEST_WRAP is the ASLR workaround for the tsan legs: TSan maps a large
+      # fixed shadow region at startup and aborts with "unexpected memory
+      # mapping" when the loader has already randomised something into it.
+      # Ubuntu 24.04 ships 32 bits of mmap entropy, which is enough for that
+      # to happen on essentially every run -- unwrapped, 13 of 14 tests die
+      # before main().
+      #
+      # `setarch -R` is used rather than `sysctl -w vm.mmap_rnd_bits=28`
+      # because it needs no privileges. The sysctl is the other standard fix
+      # and is what rocprofiler-sdk uses, but vm.* sysctls are not namespaced
+      # and not every runner grants passwordless sudo, so it has to be
+      # arranged out-of-band on the host; hipfile-sanitizers.yml carries a
+      # note about exactly that. Empty on the non-tsan legs.
+      - name: Run tests
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          TEST_WRAP=""
+          if [ "$SANITIZER" = "tsan" ]; then
+            TEST_WRAP="setarch $(uname -m) -R"
+          fi
+          $TEST_WRAP ctest --test-dir build --output-on-failure \
+            --output-junit build/Testing/ctest-junit.xml
+
+      - name: Test loopback backend configurations
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          echo "=== Testing loopback backend configurations ==="
+          TEST_WRAP=""
+          if [ "$SANITIZER" = "tsan" ]; then
+            TEST_WRAP="setarch $(uname -m) -R"
+          fi
+          # No fallback branch: a missing script used to silently downgrade
+          # this step to a weaker startup check that could not detect a
+          # backend regression.
+          SERVER_BIN=build/rocm-ernic \
+          TEST_BIN=build/tests/test_data_transfer \
+          $TEST_WRAP tests/test_loopback_ci.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizer }}
+          path: build/Testing/
+          retention-days: 7
+
+      # A single leg publishes binaries: gcc, Release, uninstrumented.
+      #
+      # Release because that is what anyone downloading these would want to
+      # run, gcc because it is the reference compiler, and uninstrumented
+      # because a sanitizer build is a check rather than an artifact and
+      # cannot run without its runtime anyway.
+      #
+      # Gating on all three matters now that build_type is in the matrix:
+      # the old `sanitizer == 'off'` condition would match four legs, and
+      # since artifact names must be unique within a run, the three extra
+      # uploads would be a hard failure rather than a silent duplicate.
+      - name: Upload binaries
+        if: >-
+          success() && matrix.sanitizer == 'off'
+          && matrix.compiler == 'gcc' && matrix.build_type == 'Release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binaries-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}
+          path: |
+            build/rocm-ernic
+            build/tests/test_pci_client
+            build/tests/test_data_transfer
+          retention-days: 7

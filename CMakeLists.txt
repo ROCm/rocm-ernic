@@ -1,6 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MIT
 
 # Top-level CMake file for rocm-ernic
 
@@ -28,6 +28,10 @@ project(rocm-ernic
     DESCRIPTION "Emulated RDMA NIC for Virtual Machines"
     LANGUAGES C
 )
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
 # Set the list of build types for ccmake/CMake GUI
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
@@ -69,6 +73,10 @@ if(NOT VFIO_USER_FOUND)
     # because pkg_check_modules already created INTERNAL cache
     # entries (e.g. VFIO_USER_INCLUDEDIR) that would shadow
     # find_library / find_path results.
+    # No NO_DEFAULT_PATH: the default search also covers
+    # CMAKE_PREFIX_PATH, which is what the failure message below
+    # tells the user to set for a non-standard prefix such as
+    # ~/.local.
     find_library(VFIO_USER_FALLBACK_LIB
         NAMES vfio-user
         HINTS
@@ -76,7 +84,6 @@ if(NOT VFIO_USER_FOUND)
             /usr/local/lib/x86_64-linux-gnu
             /usr/lib
             /usr/lib/x86_64-linux-gnu
-        NO_DEFAULT_PATH
         DOC "Path to libvfio-user library"
     )
     find_path(VFIO_USER_FALLBACK_INC
@@ -84,17 +91,17 @@ if(NOT VFIO_USER_FOUND)
         HINTS
             /usr/local/include
             /usr/include
-        NO_DEFAULT_PATH
         DOC "Path to libvfio-user headers"
     )
-    if(NOT VFIO_USER_FALLBACK_LIB OR
-       NOT VFIO_USER_FALLBACK_INC)
+    if(NOT VFIO_USER_FALLBACK_LIB OR NOT VFIO_USER_FALLBACK_INC)
         message(FATAL_ERROR
-          "libvfio-user not found via pkg-config or in "
-          "/usr/local.\n"
+          "libvfio-user not found via pkg-config, in "
+          "/usr/local, or on CMAKE_PREFIX_PATH.\n"
           "Install it from "
           "https://github.com/nutanix/libvfio-user\n"
-          "or set CMAKE_PREFIX_PATH to its install location."
+          "then either add its pkgconfig dir to "
+          "PKG_CONFIG_PATH or set CMAKE_PREFIX_PATH to its "
+          "install prefix (e.g. -DCMAKE_PREFIX_PATH=$ENV{HOME}/.local)."
         )
     endif()
     set(VFIO_USER_INCLUDE_DIRS
@@ -133,41 +140,37 @@ endif()
 # Source file groups
 # ---------------------------------------------------------------
 
-# RDMA backend sources from QEMU port
-# Note: rdma.c excluded -- only contains QEMU type registration
+# Upstream QEMU/VMware code, under Oracle / Red Hat copyright.
+# Not ours to fix
+set(ERNIC_VENDORED_SOURCES
+    third-party/qemu/hw/rdma/rdma_backend.c
+    third-party/qemu/hw/rdma/rdma_rm.c
+    third-party/qemu/hw/rdma/rdma_utils.c
+    third-party/qemu/hw/rdma/vmw/pvrdma_qp_ops.c
+)
+
+# The QEMU APIs the vendored code calls, implemented for a standalone
+# process
+set(QEMU_COMPAT_SOURCES
+    src/qemu-compat/error-report.c
+    src/qemu-compat/qemu_stubs.c
+    src/qemu-compat/qemu_type_stubs.c
+)
+
+# RDMA backends (none, loopback, TCP mesh) behind the vendored device model
 set(RDMA_BACKEND_SOURCES
-    src/from-qemu/hw/rdma/rdma_backend.c
-    src/from-qemu/hw/rdma/rdma_backend_core.c
-    src/from-qemu/hw/rdma/rdma_backend_none.c
-    src/from-qemu/hw/rdma/rdma_backend_loopback.c
-    src/from-qemu/hw/rdma/rdma_backend_tcp.c
-    src/from-qemu/hw/rdma/rdma_utils.c
-    src/from-qemu/hw/rdma/rdma_rm.c
+    src/rdma/rdma_backend_core.c
+    src/rdma/rdma_backend_none.c
+    src/rdma/rdma_backend_loopback.c
+    src/rdma/rdma_backend_tcp.c
+    src/rdma/pvrdma_stats.c
 )
 
-# PVRDMA device sources from QEMU port
-set(PVRDMA_DEVICE_SOURCES
-    src/from-qemu/hw/rdma/vmw/pvrdma_cmd.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_dev_ring.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_main.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_qp_ops.c
-    src/from-qemu/hw/rdma/vmw/pvrdma_eth.c
-)
-
-# Utility sources
-set(UTILITY_SOURCES
-    src/from-qemu/utils/error-report.c
-    src/from-qemu/utils/dhcp_server.c
-    src/from-qemu/utils/dhcp_proxy.c
-    src/from-qemu/utils/eth_rx_inject.c
-    src/from-qemu/utils/tcp_conn.c
-    src/from-qemu/utils/rdma_cm_proto.c
-)
-
-# QEMU stub implementations
-set(QEMU_STUB_SOURCES
-    src/from-qemu/qemu-stubs/qemu_stubs.c
-    src/from-qemu/qemu-stubs/qemu_type_stubs.c
+# DHCP, RDMA CM and Ethernet frame injection for the emulated network
+set(NET_SOURCES
+    src/net/dhcp_server.c
+    src/net/eth_rx_inject.c
+    src/net/rdma_cm_proto.c
 )
 
 # Compatibility bridge layer
@@ -175,13 +178,27 @@ set(BRIDGE_SOURCES
     src/rocm_ernic_compat.c
 )
 
-# ionic emulation layer (replaces PVRDMA for the ionic migration path)
+# ionic emulation layer -- the device the guest actually sees
 set(IONIC_EMU_SOURCES
     src/ionic_eth_emu.c
     src/ionic_eth_net.c
     src/ionic_rdma_devcmd.c
     src/ionic_adminq.c
     src/ionic_datapath.c
+)
+
+# In-process NVMe-oF controller reached over the emulated fabric
+set(NVMEOF_SOURCES
+    src/nvmeof_target.c
+    src/nvmeof_cm.c
+)
+
+# In-process S3-over-RDMA object store, reached in-band over the emulated NIC
+set(S3_SOURCES
+    src/s3_token.c
+    src/s3_http.c
+    src/s3_target.c
+    src/s3_tcp.c
 )
 
 # Main server implementation
@@ -193,10 +210,12 @@ set(ALL_SOURCES
     ${SERVER_SOURCES}
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
+    ${NVMEOF_SOURCES}
+    ${S3_SOURCES}
     ${RDMA_BACKEND_SOURCES}
-    ${PVRDMA_DEVICE_SOURCES}
-    ${UTILITY_SOURCES}
-    ${QEMU_STUB_SOURCES}
+    ${NET_SOURCES}
+    ${QEMU_COMPAT_SOURCES}
+    ${ERNIC_VENDORED_SOURCES}
 )
 
 # ---------------------------------------------------------------
@@ -214,12 +233,20 @@ else()
     set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDE_DIRS}")
 endif()
 
+# src/rdma is searched directly because the vendored sources include
+# rdma_backend_ops.h and pvrdma_comp_ctx.h by bare name.
 target_include_directories(rocm-ernic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/from-qemu/include/qemu-extra
+    ${CMAKE_SOURCE_DIR}/src/rdma
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
 )
 
+# The vendored header trees are SYSTEM includes so their warnings stay
+# quiet
 target_include_directories(rocm-ernic SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -236,19 +263,11 @@ target_compile_options(rocm-ernic PRIVATE
     -g
 )
 
-# Suppress strict warnings for QEMU-ported upstream code.
-# These files are derived from QEMU and will not be
-# modified to fix sign-conversion, format, packed,
-# switch-enum, etc. warnings.  Our own code (src/*.c,
-# tests/) still gets full warnings via
-# ernic_set_compiler_flags().
-set(QEMU_PORTED_SOURCES
-    ${RDMA_BACKEND_SOURCES}
-    ${PVRDMA_DEVICE_SOURCES}
-    ${UTILITY_SOURCES}
-    ${QEMU_STUB_SOURCES}
-)
-set_source_files_properties(${QEMU_PORTED_SOURCES}
+# Suppress strict warnings under third-party/
+#
+# Vendored code is not ours to fix.
+set_source_files_properties(
+    ${ERNIC_VENDORED_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 
@@ -266,9 +285,13 @@ target_link_libraries(rocm-ernic PRIVATE
 
 ernic_set_compiler_flags(rocm-ernic)
 
+# Off by default so a downstream or distro build is never broken by a
+# warning from a compiler version we have not seen. CI passes
+# -DERNIC_WERROR=ON on every lane that compiles the project, so new
+# warnings still fail the build where it matters.
 option(ERNIC_WERROR
   "Treat compiler warnings as errors for project code"
-  ON)
+  OFF)
 
 if(ERNIC_WERROR)
     target_compile_options(rocm-ernic PRIVATE -Werror)
@@ -280,19 +303,16 @@ endif()
 add_subdirectory(tests)
 
 # ---------------------------------------------------------------
-# Install
-# ---------------------------------------------------------------
-include(ErnicInstall)
-
-# ---------------------------------------------------------------
 # Kernel module (DKMS)
 # ---------------------------------------------------------------
 include(ErnicKernelModule)
 
 # ---------------------------------------------------------------
-# rdma-core with rocm_ernic provider
+# Install
 # ---------------------------------------------------------------
-include(ErnicRdmaCore)
+# Must follow ErnicKernelModule: the install rules record
+# IONIC_KERNEL_REF, which is defined there.
+include(ErnicInstall)
 
 # ---------------------------------------------------------------
 # Documentation (optional, requires -DERNIC_BUILD_DOCS=ON)
@@ -328,12 +348,6 @@ message("    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
 message("")
 message("  Kernel module (DKMS):")
 message("    ERNIC_BUILD_KMOD : ${ERNIC_BUILD_KMOD}")
-message("")
-message("  rdma-core:")
-message("    ERNIC_RDMA_CORE_BUILD :"
-  " ${ERNIC_RDMA_CORE_BUILD}")
-message("    RDMA_CORE_VERSION     :"
-  " ${RDMA_CORE_VERSION}")
 message("")
 message("  Documentation:")
 message("    Build docs : ${ERNIC_BUILD_DOCS}")

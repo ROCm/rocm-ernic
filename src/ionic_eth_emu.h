@@ -1,7 +1,7 @@
 /*
  * ionic_eth_emu.h — ionic Ethernet admin protocol emulator interface
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -85,9 +85,34 @@ int ionic_eth_emu_attach_tap(struct ionic_eth_emu *emu, const char *ifname,
                              char *out_ifname, size_t out_ifname_len);
 
 /*
- * Move any frames waiting on the host backend into the guest's Rx ring.
- * Must be called from the thread that owns the vfio-user context; the
- * server's main loop does this on every iteration.
+ * Give an in-process endpoint first refusal on every frame the guest
+ * transmits.
+ *
+ * The filter returns true when the frame was addressed to it and has been
+ * consumed, in which case the frame is not forwarded to the host backend.
+ * This is what lets a service such as the S3 control plane sit on the
+ * emulated wire at its own IP address without a TAP interface, and what
+ * lets it keep working when there is one.
+ */
+typedef bool (*ionic_eth_tx_filter_fn)(void *ctx, const void *frame,
+                                       size_t len);
+void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_tx_filter_fn fn, void *ctx);
+
+/*
+ * Hand a received frame to the emulated LIF from a thread that may not DMA
+ * (the TCP mesh receive thread).  The frame is copied onto an internal queue
+ * and delivered to the guest by the next ionic_eth_emu_poll_rx().
+ *
+ * Returns 0 on success, -ENOSPC when the queue is full, or -EINVAL.
+ */
+int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
+                                 size_t len);
+
+/*
+ * Move any frames waiting on the host backend or on the off-thread queue
+ * into the guest's Rx ring.  Must be called from the thread that owns the
+ * vfio-user context; the server's main loop does this on every iteration.
  */
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu);
 

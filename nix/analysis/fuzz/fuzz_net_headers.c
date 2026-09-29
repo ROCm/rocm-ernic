@@ -21,6 +21,8 @@
 
 #include "net_headers.h"
 
+#include "fuzz_harness.h"
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     uint8_t *frame = malloc(size ? size : 1);

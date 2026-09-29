@@ -1,0 +1,127 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Register already-running VMs into the ernic_vms
+# inventory group.
+#
+# The only input is the launcher's own instance manifest,
+# so this works for both entry points: ci/jobs/vm-up.sh
+# brings VMs up unprivileged for the self-hosted CI, and
+# the rocm-ernic service does it on the developer path.
+# Everything downstream (guest-setup, sanity, performance)
+# depends on the group this builds.
+
+---
+- name: Register running VMs in inventory
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    # Three different failures below all mean "no running VMs", and
+    # all have the same recovery, so it is written once.  The trap
+    # worth naming is that site.yml's own phase 1 stops running
+    # guests whenever ernic_restart_existing is true -- its default
+    # -- so launching them and then running site.yml destroys the
+    # very guests this play needs.
+    ernic_vm_guidance: >-
+      The VMs must be up and running before this point; neither
+      site.yml nor ci-site.yml launches them.  On the developer
+      path the service has to be installed before it can launch
+      anything, so the order is: "ansible-playbook site.yml --tags
+      host-setup", then "sudo ernicctl vm-launch <id>" once per
+      instance, then "ansible-playbook site.yml -e
+      ernic_restart_existing=false".  Without that last override
+      phase 1 stops the guests again before this play runs.  VMs
+      brought up by ci/jobs/vm-up.sh are the CI path: drive those
+      with ci-site.yml, which imports no host-setup play.
+
+  tasks:
+
+    # Slurping a missing path fails with a bare module error naming
+    # a file under /run, which tells the operator nothing about how
+    # to fix it.  Stat first so this case gets the same guidance as
+    # the other two.
+    - name: Check for the instance manifest
+      ansible.builtin.stat:
+        path: "{{ ernic_run_dir }}/instances.json"
+      register: ernic_manifest_stat
+
+    - name: Fail if the instance manifest is missing
+      ansible.builtin.fail:
+        msg: >-
+          No instance manifest at
+          {{ ernic_run_dir }}/instances.json, so no rocm-ernic
+          VMs are running.  {{ ernic_vm_guidance }}
+      when: not ernic_manifest_stat.stat.exists
+
+    - name: Read the instance manifest
+      ansible.builtin.slurp:
+        src: "{{ ernic_run_dir }}/instances.json"
+      register: ernic_manifest_raw
+
+    - name: Parse the instance manifest
+      ansible.builtin.set_fact:
+        ernic_manifest: >-
+          {{ ernic_manifest_raw.content
+             | b64decode | from_json }}
+
+    - name: Fail if no instances are running
+      ansible.builtin.assert:
+        that:
+          - ernic_manifest.instances | length > 0
+        fail_msg: >-
+          No rocm-ernic instances in
+          {{ ernic_run_dir }}/instances.json.
+          {{ ernic_vm_guidance }}
+
+    - name: Fail if any instance has no VM attached
+      ansible.builtin.assert:
+        that:
+          - item.vm is defined
+          - item.vm is not none
+        fail_msg: >-
+          Instance {{ item.id }} has no VM attached in
+          {{ ernic_run_dir }}/instances.json.
+          {{ ernic_vm_guidance }}
+      loop: "{{ ernic_manifest.instances }}"
+      loop_control:
+        label: "instance {{ item.id }}"
+
+    - name: Add CI VMs to the ernic_vms inventory group
+      ansible.builtin.add_host:
+        name: "ernic_vm_{{ item.id }}"
+        groups: ernic_vms
+        ansible_host: localhost
+        ansible_port: "{{ item.vm.ssh_port }}"
+        ansible_user: "{{ item.vm.ssh_user }}"
+        # An inventory key outranks ANSIBLE_PRIVATE_KEY_FILE, so this
+        # omits itself unless a key was named -- that is what keeps the
+        # hosted jobs, which set the env var, authoritative.
+        ansible_ssh_private_key_file: >-
+          {{ ernic_guest_ssh_identity
+             if (ernic_guest_ssh_identity | default('') | trim)
+             else omit }}
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o PasswordAuthentication=no
+          {{ '-o IdentitiesOnly=yes'
+             if (ernic_guest_ssh_identity | default('') | trim) else '' }}
+        vm_index: "{{ item.id }}"
+        vm_ip: "{{ ernic_nic_subnet }}.{{ 10 * item.id }}"
+      loop: "{{ ernic_manifest.instances }}"
+      loop_control:
+        label: >-
+          ernic_vm_{{ item.id }}
+          (port {{ item.vm.ssh_port }})
+
+    - name: Display registered VMs
+      ansible.builtin.debug:
+        msg: >-
+          Registered {{ ernic_manifest.instances | length }}
+          CI VM(s):
+          {{ ernic_manifest.instances
+             | map(attribute='vm.vm_name') | join(', ') }}

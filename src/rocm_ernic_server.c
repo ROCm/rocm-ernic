@@ -7,7 +7,7 @@
  * This version integrates RDMA device logic through a compatibility
  * bridge layer.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -40,17 +40,24 @@
 #include "rocm_ernic_compat.h"
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
+#include "ionic_datapath.h"
+#include "nvmeof_target.h"
+#include "s3_target.h"
+#include "rocm-ernic-warnings.h"
 
-/* AMD device IDs (for vfio-user).
- * DID 0x8000 = deprecated PVRDMA-derived NIC (rocm_ernic_{eth,rdma}.ko
- *              driver); selected with --legacy.
- * DID 0x8001 = ionic-protocol NIC, the default (upstream ionic.ko +
- *              ionic_rdma.ko, patched
- *              via patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch).
- *              Unique DID avoids collisions with Pensando hardware (0x1dd8). */
-#define PCI_VENDOR_ID_AMD             0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC      0x8000 /* legacy PVRDMA */
-#define PCI_DEVICE_ID_AMD_IONIC_ERNIC 0x8001 /* ionic path */
+static const char *get_backend_type_base(const char *backend_str);
+
+/* PCI identity presented over vfio-user.
+ *
+ * We emulate an ionic-protocol NIC, so we claim the Pensando Systems
+ * vendor ID.  The device ID sits outside the range upstream ionic.ko
+ * probes (0x1002 ETH_PF, 0x1003 ETH_VF), which keeps the emulated NIC
+ * distinguishable from real DSC hardware in lspci, udev and pci.ids
+ * at the cost of the one-line ID patch in
+ * patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch. */
+#define PCI_VENDOR_ID_PENSANDO           0x1dd8
+#define PCI_DEVICE_ID_AMD_IONIC_ERNIC    0x100a
+#define PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC 0x5400
 
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
@@ -77,6 +84,27 @@ static void signal_handler(int signo)
             }
         }
     }
+}
+
+/**
+ * Install ``handler`` (or SIG_IGN / SIG_DFL) for ``signo`` with no flags
+ * and an empty mask.  Returns sigaction()'s result.
+ */
+static int set_signal_handler(int signo, void (*handler)(int))
+{
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    /*
+     * glibc defines sa_handler as a macro that expands to a member of the
+     * same name, which clang reports as a recursive macro expansion.
+     */
+    ROCM_ERNIC_WARN_SELF_REFERENTIAL_MACRO_OFF
+    sa.sa_handler = handler;
+    ROCM_ERNIC_WARN_SELF_REFERENTIAL_MACRO_ON
+    sigemptyset(&sa.sa_mask);
+
+    return sigaction(signo, &sa, NULL);
 }
 
 /**
@@ -138,168 +166,65 @@ static int vfu_log_threshold(ErnicLogLevel lvl)
 
 /**
  * BAR0 access callback.
- * In ionic mode: forwarded to ionic_eth_emu (device registers).
- * In legacy PVRDMA mode: MSI-X table pass-through.
+ *
+ * Below IONIC_BAR0_REGS_SIZE is the ionic register window, forwarded to
+ * ionic_eth_emu.  At and above it is the MSI-X table/PBA, a plain shadow
+ * the client reads back.  An access must not straddle the two.
  */
 static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
-    if (dev->ionic_mode && dev->ionic_emu) {
-        if (dev->pvrdma_handle)
-            pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
-
-        /* Below IONIC_BAR0_REGS_SIZE is the ionic register window; at and
-         * above it is the MSI-X table/PBA, which is a plain shadow the
-         * client reads back.  An access must not straddle the two. */
-        if ((size_t)offset + count <= IONIC_BAR0_REGS_SIZE)
-            return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
-                                             is_write);
-
-        if ((size_t)offset < IONIC_BAR0_REGS_SIZE ||
-            (size_t)offset + count > IONIC_BAR0_TOTAL_SIZE) {
-            vfu_log(vfu_ctx, LOG_ERR,
-                    "ionic BAR0 access out of bounds or straddling the "
-                    "register/MSI-X split: offset=%#lx count=%zu",
-                    (unsigned long)offset, count);
-            errno = EINVAL;
-            return -1;
-        }
-
-        size_t msix_off = (size_t)offset - IONIC_BAR0_REGS_SIZE;
-        if (is_write)
-            memcpy((char *)dev->bar0_mem + msix_off, buf, count);
-        else
-            memcpy(buf, (char *)dev->bar0_mem + msix_off, count);
-        return (ssize_t)count;
-    }
-
-    if ((size_t)offset + count > RDMA_BAR0_MSIX_SIZE) {
-        vfu_log(vfu_ctx, LOG_ERR,
-                "BAR0 access out of bounds: offset=%#lx count=%zu",
-                (unsigned long)offset, count);
-        errno = EINVAL;
+    if (!dev->ionic_emu) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR0 access: ionic_emu is NULL!");
+        errno = EFAULT;
         return -1;
     }
-    if (is_write)
-        memcpy((char *)dev->bar0_mem + offset, buf, count);
-    else
-        memcpy(buf, (char *)dev->bar0_mem + offset, count);
+
     if (dev->pvrdma_handle)
         pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
-    return (ssize_t)count;
-}
 
-/**
- * BAR1 (Registers) access callback
- * Forwards to QEMU PVRDMA register handlers via wrapper API
- */
-static ssize_t bar1_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
-                           loff_t offset, bool is_write)
-{
-    rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
-    uint32_t val;
+    if ((size_t)offset + count <= IONIC_BAR0_REGS_SIZE)
+        return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
+                                         is_write);
 
-    /* Defensive checks */
-    if (!dev) {
-        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access: dev is NULL!");
-        errno = EFAULT;
-        return -1;
-    }
-    if (!buf) {
-        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access: buf is NULL!");
-        errno = EFAULT;
-        return -1;
-    }
-    if (!dev->pvrdma_handle) {
-        vfu_log(vfu_ctx, LOG_ERR, "BAR1 access: pvrdma_handle is NULL!");
-        errno = EFAULT;
-        return -1;
-    }
-
-    /* Ensure offset is within valid range (including MAC registers at
-     * 0x60-0x64) */
-    if ((size_t)offset + count > RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)) {
+    if ((size_t)offset < IONIC_BAR0_REGS_SIZE ||
+        (size_t)offset + count > IONIC_BAR0_TOTAL_SIZE) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "BAR1 access out of bounds: offset=%#lx count=%zu",
+                "ionic BAR0 access out of bounds or straddling the "
+                "register/MSI-X split: offset=%#lx count=%zu",
                 (unsigned long)offset, count);
         errno = EINVAL;
         return -1;
     }
 
-    /* Register accesses must be 32-bit aligned */
-    if (count != sizeof(uint32_t) || (offset & 0x3)) {
-        vfu_log(vfu_ctx, LOG_ERR,
-                "BAR1 access not 32-bit aligned: offset=%#lx count=%zu",
-                (unsigned long)offset, count);
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (is_write) {
-        /* Forward write to QEMU register handler via wrapper */
-        memcpy(&val, buf, sizeof(val));
-        pvrdma_regs_write(dev->pvrdma_handle, (hwaddr)offset, val, sizeof(val));
-
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 write: offset=%#lx val=%#x",
-                (unsigned long)offset, val);
-    } else {
-        /* Forward read to QEMU register handler via wrapper */
-        /* Ensure pvrdma_handle is valid before calling */
-        if (!dev->pvrdma_handle) {
-            vfu_log(vfu_ctx, LOG_ERR,
-                    "BAR1 read: pvrdma_handle is NULL at offset=%#lx",
-                    (unsigned long)offset);
-            errno = EFAULT;
-            return -1;
-        }
-
-        val = pvrdma_regs_read(dev->pvrdma_handle, (hwaddr)offset, sizeof(val));
-        memcpy(buf, &val, sizeof(val));
-
-        vfu_log(vfu_ctx, LOG_DEBUG, "BAR1 read: offset=%#lx val=%#x",
-                (unsigned long)offset, val);
-    }
-
+    size_t msix_off = (size_t)offset - IONIC_BAR0_REGS_SIZE;
+    if (is_write)
+        memcpy((char *)dev->bar0_mem + msix_off, buf, count);
+    else
+        memcpy(buf, (char *)dev->bar0_mem + msix_off, count);
     return (ssize_t)count;
 }
 
 /**
- * BAR2 access callback.
- * In ionic mode: doorbell BAR forwarded to ionic_eth_emu.
- * In legacy PVRDMA mode: UAR doorbell forwarded to pvrdma_uar_write/read.
+ * BAR2 (doorbell) access callback, forwarded to ionic_eth_emu.
  */
 static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
 
-    if (dev->ionic_mode && dev->ionic_emu) {
-        /* BAR2 is the doorbell window in both personalities, so it feeds the
-         * same uar_* counters the legacy UAR does. */
-        if (dev->pvrdma_handle)
-            pvrdma_uar_mmio_count(dev->pvrdma_handle, is_write);
-        return ionic_eth_emu_bar2_access(dev->ionic_emu, buf, count, offset,
-                                         is_write);
-    }
-
-    uint32_t val;
-    if ((size_t)offset + count > RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)) {
-        vfu_log(vfu_ctx, LOG_ERR,
-                "BAR2 access out of bounds: offset=%#lx count=%zu",
-                (unsigned long)offset, count);
-        errno = EINVAL;
+    if (!dev->ionic_emu) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR2 access: ionic_emu is NULL!");
+        errno = EFAULT;
         return -1;
     }
-    if (is_write) {
-        memcpy(&val, buf, (count < sizeof(val)) ? count : sizeof(val));
-        pvrdma_uar_write(dev->pvrdma_handle, (hwaddr)offset, val, sizeof(val));
-    } else {
-        val = pvrdma_uar_read(dev->pvrdma_handle, (hwaddr)offset, sizeof(val));
-        memcpy(buf, &val, (count < sizeof(val)) ? count : sizeof(val));
-    }
-    return (ssize_t)count;
+
+    if (dev->pvrdma_handle)
+        pvrdma_uar_mmio_count(dev->pvrdma_handle, is_write);
+    return ionic_eth_emu_bar2_access(dev->ionic_emu, buf, count, offset,
+                                     is_write);
 }
 
 
@@ -379,7 +304,11 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
 
 
 /**
- * Initialize PVRDMA device structure via wrapper API
+ * Initialize the shared RDMA device core via wrapper API.
+ *
+ * This owns the resource manager and the selected RDMA backend.  The
+ * ionic front end sits in front of it; the handle is still called
+ * "pvrdma" because the core is the QEMU PVRDMA port.
  */
 static int pvrdma_device_init(rocm_ernic_dev_t *dev)
 {
@@ -406,7 +335,7 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
     dev->device_initialized = true;
 
     ernic_startup_report(
-        "PVRDMA device initialized successfully with '%s' backend",
+        "RDMA device core initialized successfully with '%s' backend",
         dev->backend_type_str);
 
     return 0;
@@ -414,14 +343,13 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
 
 /**
  * Initialize ionic emulation layer.
- * Used unless --legacy selects the deprecated PVRDMA path.
  */
 static int ionic_device_init(rocm_ernic_dev_t *dev)
 {
-    /* The ionic front end replaces PVRDMA's registers and doorbells, but the
-     * resource manager and backend behind them are shared: without this the
-     * admin queue has no pvrdma_handle and every CREATE_CQ/CREATE_QP is a
-     * no-op stub. */
+    /* The ionic front end owns the registers and doorbells, but the
+     * resource manager and backend behind them come from the shared core:
+     * without this the admin queue has no pvrdma_handle and every
+     * CREATE_CQ/CREATE_QP is a no-op stub. */
     if (pvrdma_device_init(dev) < 0)
         return -1;
 
@@ -458,20 +386,63 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         return -1;
     }
 
+    if (!strcmp(get_backend_type_base(dev->backend_type_str), "nvmeof")) {
+        struct nvmeof_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        nvmeof_target_cfg_defaults(&cfg);
+        if (!nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                     sizeof(err)) ||
+            !ionic_datapath_attach_nvmeof(dev->ionic_dp, &cfg, err,
+                                          sizeof(err))) {
+            fprintf(stderr, "nvmeof backend: %s\n", err);
+            ionic_datapath_destroy(dev->ionic_dp);
+            ionic_rdma_devcmd_destroy(dev->ionic_rdma);
+            ionic_eth_emu_destroy(dev->ionic_emu);
+            dev->ionic_dp = NULL;
+            dev->ionic_emu = NULL;
+            dev->ionic_rdma = NULL;
+            return -1;
+        }
+    }
+
+    if (!strcmp(get_backend_type_base(dev->backend_type_str), "s3")) {
+        struct s3_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        s3_target_cfg_defaults(&cfg);
+        if (!s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                 sizeof(err)) ||
+            !ionic_datapath_attach_s3(dev->ionic_dp, &cfg, err, sizeof(err))) {
+            fprintf(stderr, "s3 backend: %s\n", err);
+            ionic_datapath_destroy(dev->ionic_dp);
+            ionic_rdma_devcmd_destroy(dev->ionic_rdma);
+            ionic_eth_emu_destroy(dev->ionic_emu);
+            dev->ionic_dp = NULL;
+            dev->ionic_emu = NULL;
+            dev->ionic_rdma = NULL;
+            return -1;
+        }
+    }
+
     /* Wire the datapath into the eth emulator's BAR2 handler */
     ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
 
-    dev->ionic_mode = true;
     dev->device_initialized = true;
 
-    printf("ionic emulation initialized (VID:DID %#x:%#x)\n",
-           (unsigned)PCI_VENDOR_ID_AMD,
-           (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+    printf(
+        "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
+        (unsigned)PCI_VENDOR_ID_PENSANDO,
+        (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC,
+        (unsigned)PCI_VENDOR_ID_PENSANDO,
+        (unsigned)PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
     return 0;
 }
 
 /**
- * Setup PCI configuration for PVRDMA device
+ * Setup PCI configuration for the emulated ionic device
  */
 static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
@@ -484,12 +455,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         err(EXIT_FAILURE, "vfu_pci_init() failed");
     }
 
-    /* DID depends on emulation mode:
-     *   ionic mode  → 0x8001 (ionic.ko + ionic_rdma.ko recognise this)
-     *   legacy mode → 0x8000 (rocm_ernic_eth.ko + rocm_ernic_rdma.ko) */
-    uint16_t did = dev->ionic_mode ? PCI_DEVICE_ID_AMD_IONIC_ERNIC
-                                   : PCI_DEVICE_ID_ROCM_ERNIC;
-    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_AMD, did, PCI_VENDOR_ID_AMD, did);
+    /* Patched ionic.ko + ionic_rdma.ko bind to this ID. */
+    uint16_t did = PCI_DEVICE_ID_AMD_IONIC_ERNIC;
+    vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_PENSANDO, did, PCI_VENDOR_ID_PENSANDO,
+                   PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
 
     /* Set PCI class code: Network Controller - Ethernet (RoCEv2) */
     vfu_pci_set_class(vfu_ctx, PCI_BASE_CLASS_NETWORK, /* Base class 0x02 */
@@ -497,8 +466,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                       0x00); /* Prog-if */
 
     ernic_startup_report("rocm-ernic: PCI device configured: vendor=%#x "
-                         "device=%#x",
-                         (unsigned)PCI_VENDOR_ID_AMD, (unsigned)did);
+                         "device=%#x subsystem=%#x:%#x",
+                         (unsigned)PCI_VENDOR_ID_PENSANDO, (unsigned)did,
+                         (unsigned)PCI_VENDOR_ID_PENSANDO,
+                         (unsigned)PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);
 
     return 0;
 }
@@ -506,82 +477,37 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 /**
  * Setup BARs (Base Address Registers).
  *
- * ionic layout  (dev->ionic_mode = true):
- *   BAR0 (64-bit): 32 KB device registers (devcmd + MSI-X ctrl)
- *   BAR2 (64-bit): 4 MB doorbell pages
- *
- * Legacy PVRDMA layout  (dev->ionic_mode = false):
- *   BAR0: 16 KB MSI-X table/PBA
- *   BAR1: 256 B  control registers
- *   BAR2: variable UAR pages
+ *   BAR0 (64-bit): 32 KB device registers (devcmd + MSI-X ctrl),
+ *                  with the MSI-X table/PBA above the register window
+ *   BAR2 (64-bit): 4 MB doorbell pages (BAR1 is skipped per ionic spec)
  */
 static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
     int ret;
 
-    if (dev->ionic_mode) {
-        /* Shadow for the MSI-X table/PBA that sits above the ionic
-         * register window; the register window itself is shadowed inside
-         * ionic_eth_emu. */
-        dev->bar0_mem = calloc(1, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
-        if (!dev->bar0_mem)
-            err(EXIT_FAILURE, "ionic: Failed to allocate BAR0 MSI-X shadow");
-
-        /* ionic BAR0: 32 KB register window + MSI-X table/PBA above it */
-        ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX,
-                               IONIC_BAR0_TOTAL_SIZE, bar0_access,
-                               VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL,
-                               0, -1, 0);
-        if (ret < 0)
-            err(EXIT_FAILURE, "ionic: Failed to setup BAR0");
-
-        /* ionic BAR2: 4 MB doorbell pages (BAR1 is skipped per ionic spec) */
-        ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX,
-                               IONIC_BAR2_DB_SIZE, bar2_access,
-                               VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL,
-                               0, -1, 0);
-        if (ret < 0)
-            err(EXIT_FAILURE, "ionic: Failed to setup BAR2");
-
-        ernic_startup_report(
-            "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
-            (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
-            (size_t)IONIC_BAR2_DB_SIZE);
-        return 0;
-    }
-
-    /* Legacy PVRDMA path */
-    dev->bar0_mem = calloc(1, RDMA_BAR0_MSIX_SIZE);
-    dev->bar1_mem = calloc(1, RDMA_BAR1_REGS_SIZE * sizeof(uint32_t));
-    dev->bar2_mem = calloc(1, RDMA_BAR2_UAR_SIZE);
-    if (!dev->bar0_mem || !dev->bar1_mem || !dev->bar2_mem)
-        err(EXIT_FAILURE, "Failed to allocate BAR memory");
+    /* Shadow for the MSI-X table/PBA that sits above the ionic
+     * register window; the register window itself is shadowed inside
+     * ionic_eth_emu. */
+    dev->bar0_mem = calloc(1, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
+    if (!dev->bar0_mem)
+        err(EXIT_FAILURE, "ionic: Failed to allocate BAR0 MSI-X shadow");
 
     ret = vfu_setup_region(
-        vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, RDMA_BAR0_MSIX_SIZE, bar0_access,
+        vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, IONIC_BAR0_TOTAL_SIZE,
+        bar0_access, VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
+    if (ret < 0)
+        err(EXIT_FAILURE, "ionic: Failed to setup BAR0");
+
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX, IONIC_BAR2_DB_SIZE, bar2_access,
         VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0)
-        err(EXIT_FAILURE, "Failed to setup BAR0");
-
-    ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR1_REGION_IDX,
-                           RDMA_BAR1_REGS_SIZE * sizeof(uint32_t), bar1_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
-                           -1, 0);
-    if (ret < 0)
-        err(EXIT_FAILURE, "Failed to setup BAR1");
-
-    ret = vfu_setup_region(vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX,
-                           RDMA_BAR2_UAR_SIZE * sizeof(uint32_t), bar2_access,
-                           VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
-                           -1, 0);
-    if (ret < 0)
-        err(EXIT_FAILURE, "Failed to setup BAR2");
+        err(EXIT_FAILURE, "ionic: Failed to setup BAR2");
 
     ernic_startup_report(
-        "rocm-ernic: PVRDMA BARs configured: BAR0=%zu BAR1=%zu BAR2=%zu",
-        (size_t)RDMA_BAR0_MSIX_SIZE,
-        (size_t)(RDMA_BAR1_REGS_SIZE * sizeof(uint32_t)),
-        (size_t)(RDMA_BAR2_UAR_SIZE * sizeof(uint32_t)));
+        "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
+        (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
+        (size_t)IONIC_BAR2_DB_SIZE);
 
     return 0;
 }
@@ -598,20 +524,15 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
     ssize_t ret;
 
-/* MSI-X Table and PBA offsets within BAR0
- * Table: starts at offset 0x0, size = vectors * 16 bytes
- * PBA: starts at offset 0x2000 (8KB)
- */
-#define MSIX_TABLE_OFFSET 0x0000
-#define MSIX_PBA_OFFSET   0x2000
-#define MSIX_TABLE_BIR    0 /* Table in BAR 0 */
-#define MSIX_PBA_BIR      0 /* PBA in BAR 0 */
+#define MSIX_TABLE_BIR 0 /* Table in BAR 0 */
+#define MSIX_PBA_BIR   0 /* PBA in BAR 0 */
 
     /* Setup legacy INTx interrupt (required by some guests for PCI compliance)
      */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_INTX_IRQ, 1);
     if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %m");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %s",
+                strerror(errno));
         return (int)ret;
     }
 
@@ -629,20 +550,17 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     msix_cap.next =
         0; /* Will be filled by libvfio-user if there are more caps */
 
-    /* ionic mode needs an interrupt per Ethernet queue pair plus at least
-     * four RDMA EQs; the legacy PVRDMA path uses RDMA_MAX_INTRS (3). */
-    uint32_t nr_intrs =
-        dev->ionic_mode ? IONIC_MSIX_MAX_VECTORS : RDMA_MAX_INTRS;
+    /* One interrupt per Ethernet queue pair plus at least four RDMA EQs. */
+    uint32_t nr_intrs = IONIC_MSIX_MAX_VECTORS;
 
     /* Message Control: bits [10:0] = Table Size-1 */
     msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
 
-    /* In ionic mode the table/PBA must sit above the 32 KB ionic register
-     * window: offset 0 is the DEVI signature ionic_dev_setup() probes and
-     * 0x2000 is intr_ctrl, so the legacy placement would alias both. */
-    uint32_t table_off =
-        dev->ionic_mode ? IONIC_BAR0_MSIX_TABLE : MSIX_TABLE_OFFSET;
-    uint32_t pba_off = dev->ionic_mode ? IONIC_BAR0_MSIX_PBA : MSIX_PBA_OFFSET;
+    /* The table/PBA must sit above the 32 KB ionic register window: offset
+     * 0 is the DEVI signature ionic_dev_setup() probes and 0x2000 is
+     * intr_ctrl, so placing them at the bottom of BAR0 would alias both. */
+    uint32_t table_off = IONIC_BAR0_MSIX_TABLE;
+    uint32_t pba_off = IONIC_BAR0_MSIX_PBA;
 
     /* Table Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
     msix_cap.table = (table_off & 0xFFFFFFF8) | (MSIX_TABLE_BIR & 0x7);
@@ -653,7 +571,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Add MSI-X capability to PCI config space at automatic position (pos=0) */
     ret = vfu_pci_add_capability(vfu_ctx, 0, 0, &msix_cap);
     if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %m");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to add MSI-X capability: %s",
+                strerror(errno));
         return (int)ret;
     }
 
@@ -675,7 +594,8 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Setup interrupt vector count - libvfio-user will manage table/PBA */
     ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_MSIX_IRQ, nr_intrs);
     if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup MSI-X IRQ count: %m");
+        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup MSI-X IRQ count: %s",
+                strerror(errno));
         return (int)ret;
     }
 
@@ -697,8 +617,8 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
-    fprintf(stderr,
-            "  -b, --backend TYPE   RDMA backend: none|loopback|verbs|tcp\n");
+    fprintf(stderr, "  -b, --backend TYPE   RDMA backend: "
+                    "none|loopback|verbs|tcp|nvmeof|s3\n");
     fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -L, --log-level LEVEL Log verbosity: "
                     "none|error|warn|info|debug\n");
@@ -713,30 +633,13 @@ static void usage(const char *progname)
             "  -m, --mac ADDRESS    MAC address (format: XX:XX:XX:XX:XX:XX)\n");
     fprintf(stderr, "                       (default: 72:6f:63:6d:2d:6e, "
                     "rocm-nic)\n");
-    fprintf(stderr, "  -I, --ionic          Use the ionic emulation path "
-                    "(VID:DID 0x1022:0x8001)\n");
-    fprintf(stderr, "                       This is the default; the flag is "
-                    "accepted for\n");
-    fprintf(stderr, "                       compatibility.  Guest uses patched "
-                    "ionic.ko +\n");
-    fprintf(stderr,
-            "                       ionic_rdma.ko.  See: "
-            "patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch\n");
-    fprintf(stderr, "      --legacy         DEPRECATED: use the PVRDMA-derived "
-                    "device\n");
-    fprintf(stderr, "                       (VID:DID 0x1022:0x8000) with the "
-                    "out-of-tree\n");
-    fprintf(stderr, "                       rocm_ernic_eth.ko + "
-                    "rocm_ernic_rdma.ko modules.\n");
-    fprintf(stderr, "                       (alias: --pvrdma)\n");
     fprintf(stderr, "  -T, --tap IFNAME     Attach the emulated NIC to a host "
-                    "TAP interface\n");
-    fprintf(stderr, "                       (not available with --legacy; "
-                    "gives the guest\n");
-    fprintf(stderr, "                       working Ethernet\n");
-    fprintf(stderr, "                       and TCP/IP.  Pre-create it with: "
-                    "ip tuntap add\n");
-    fprintf(stderr, "                       dev IFNAME mode tap user $USER)\n");
+                    "TAP interface,\n");
+    fprintf(stderr, "                       giving the guest working Ethernet "
+                    "and TCP/IP.\n");
+    fprintf(stderr, "                       Pre-create it with: ip tuntap add "
+                    "dev IFNAME\n");
+    fprintf(stderr, "                       mode tap user $USER\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -812,6 +715,55 @@ static void usage(const char *progname)
                     "- Start manager on port 5000\n");
     fprintf(stderr, "                        tcp:worker:192.168.1.100:5000    "
                     "- Worker connects to manager\n");
+    fprintf(stderr, "  nvmeof: in-process NVMe-oF controller the guest can "
+                    "`nvme connect` to\n");
+    fprintf(stderr, "                    Options (comma-separated):\n");
+    fprintf(stderr, "                      size=BYTES   - Namespace size, "
+                    "K/M/G/T suffixes (default: 64M)\n");
+    fprintf(stderr, "                      file=PATH    - Back the namespace "
+                    "with a file instead of RAM\n");
+    fprintf(stderr,
+            "                      bs=NUM       - Block size (default: 512)\n");
+    fprintf(stderr, "                      nqn=NAME     - Subsystem NQN "
+                    "(default: nvmet-test)\n");
+    fprintf(stderr, "                      ip=ADDR      - Target address the "
+                    "guest connects to\n");
+    fprintf(stderr, "                                     (default: "
+                    "192.168.200.1)\n");
+    fprintf(
+        stderr,
+        "                      port=NUM     - Service id (default: 4420)\n");
+    fprintf(stderr, "                      queues=NUM   - Maximum I/O queues "
+                    "(default: 8)\n");
+    fprintf(stderr, "                    Examples:\n");
+    fprintf(stderr, "                      nvmeof                          - "
+                    "64 MiB RAM namespace\n");
+    fprintf(stderr, "                      nvmeof:size=1G,bs=4096          - "
+                    "1 GiB, 4 KiB blocks\n");
+    fprintf(stderr, "                      nvmeof:file=/tmp/ns0.img,size=1G - "
+                    "File-backed namespace\n");
+    fprintf(stderr, "  s3: in-process S3-over-RDMA object store the guest "
+                    "reaches over HTTP\n");
+    fprintf(stderr, "                    Options (comma-separated):\n");
+    fprintf(stderr, "                      bucket=NAME  - Bucket name "
+                    "(default: ernic)\n");
+    fprintf(stderr, "                      size=BYTES   - Store capacity, "
+                    "K/M/G suffixes (default: 256M)\n");
+    fprintf(stderr, "                      objects=NUM  - Maximum live keys "
+                    "(default: 256)\n");
+    fprintf(stderr, "                      ip=ADDR      - Endpoint address the "
+                    "guest talks to\n");
+    fprintf(stderr, "                                     (default: "
+                    "192.168.200.1)\n");
+    fprintf(stderr,
+            "                      port=NUM     - HTTP port (default: 9000)\n");
+    fprintf(stderr, "                      maxpart=BYTES - Largest single RDMA "
+                    "transfer (default: 256M)\n");
+    fprintf(stderr, "                    Examples:\n");
+    fprintf(stderr, "                      s3                              - "
+                    "256 MiB store at 192.168.200.1:9000\n");
+    fprintf(stderr, "                      s3:bucket=bench,size=2G         - "
+                    "Larger store named 'bench'\n");
 }
 
 /**
@@ -832,6 +784,12 @@ static const char *get_backend_type_base(const char *backend_str)
     }
     if (!strncmp(backend_str, "tcp", 3)) {
         return "tcp";
+    }
+    if (!strncmp(backend_str, "nvmeof", 6)) {
+        return "nvmeof";
+    }
+    if (!strncmp(backend_str, "s3", 2)) {
+        return "s3";
     }
     return "none";
 }
@@ -996,6 +954,38 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
         dev->backend_port_num = 1;
     }
 
+    /* Reject a malformed namespace spec now rather than after the guest has
+     * already attached and the failure looks like a device problem. */
+    if (!strcmp(backend_type, "nvmeof")) {
+        struct nvmeof_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        nvmeof_target_cfg_defaults(&cfg);
+        if (!nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                     sizeof(err))) {
+            fprintf(stderr, "Error: nvmeof backend: %s\n", err);
+            fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
+                            "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
+            return -1;
+        }
+    }
+
+    if (!strcmp(backend_type, "s3")) {
+        struct s3_target_cfg cfg;
+        char err[256] = "";
+        const char *opts = strchr(dev->backend_type_str, ':');
+
+        s3_target_cfg_defaults(&cfg);
+        if (!s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                 sizeof(err))) {
+            fprintf(stderr, "Error: s3 backend: %s\n", err);
+            fprintf(stderr, "  Use: --backend s3[:bucket=NAME][,size=256M]"
+                            "[,objects=256][,ip=ADDR][,port=9000]\n");
+            return -1;
+        }
+    }
+
     return 0;
 }
 
@@ -1011,34 +1001,25 @@ int main(int argc, char *argv[])
     const char *tap_ifname = NULL;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
-    struct sigaction sa;
     int ret, opt;
-
-    /* Long-only option codes start above the ASCII range. */
-    enum { OPT_LEGACY = 1000 };
 
     /* Command-line option definitions */
     static struct option long_options[] = {
         /* Common options */
-        {"socket", required_argument, 0, 's'},
-        {"backend", required_argument, 0, 'b'},
-        {"verbose", no_argument, 0, 'v'},
-        {"log-level", required_argument, 0, 'L'},
-        {"stats-file", required_argument, 0, 'S'},
-        {"log-file", required_argument, 0, 'l'},
-        {"mac", required_argument, 0, 'm'},
-        {"help", no_argument, 0, 'h'},
-        /* Device personality.  ionic is the default; --ionic is retained as a
-         * no-op so existing command lines keep working. */
-        {"ionic", no_argument, 0, 'I'},
-        {"legacy", no_argument, 0, OPT_LEGACY},
-        {"pvrdma", no_argument, 0, OPT_LEGACY},
-        {"tap", required_argument, 0, 'T'},
+        {"socket", required_argument, NULL, 's'},
+        {"backend", required_argument, NULL, 'b'},
+        {"verbose", no_argument, NULL, 'v'},
+        {"log-level", required_argument, NULL, 'L'},
+        {"stats-file", required_argument, NULL, 'S'},
+        {"log-file", required_argument, NULL, 'l'},
+        {"mac", required_argument, NULL, 'm'},
+        {"help", no_argument, NULL, 'h'},
+        {"tap", required_argument, NULL, 'T'},
         /* Backend-specific options (verbs only) */
-        {"device", required_argument, 0, 'd'},
-        {"ethdev", required_argument, 0, 'e'},
-        {"port", required_argument, 0, 'p'},
-        {0, 0, 0, 0}};
+        {"device", required_argument, NULL, 'd'},
+        {"ethdev", required_argument, NULL, 'e'},
+        {"port", required_argument, NULL, 'p'},
+        {NULL, 0, NULL, 0}};
 
     /* Allocate device structure */
     dev = calloc(1, sizeof(*dev));
@@ -1051,9 +1032,6 @@ int main(int argc, char *argv[])
         strdup("loopback"); /* Default to "loopback" backend */
     dev->backend_port_num = 1;
     dev->verbose = false;
-    /* ionic is the default personality; --legacy selects the deprecated
-     * PVRDMA device. */
-    dev->ionic_mode = true;
     dev->device_initialized = false;
     dev->device_active = false;
     dev->mac_addr_set = false;
@@ -1067,7 +1045,7 @@ int main(int argc, char *argv[])
     dev->mac_addr[5] = 0x6e;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vL:S:m:l:hIT:", long_options,
+    while ((opt = getopt_long(argc, argv, "s:b:vL:S:m:l:hT:", long_options,
                               NULL)) != -1) {
         switch (opt) {
         /* Common options */
@@ -1131,13 +1109,6 @@ int main(int argc, char *argv[])
                 dev->mac_addr_set = true;
             }
             break;
-        case 'I':
-            /* Accepted for compatibility; ionic is already the default. */
-            dev->ionic_mode = true;
-            break;
-        case OPT_LEGACY:
-            dev->ionic_mode = false;
-            break;
         case 'T':
             tap_ifname = optarg;
             break;
@@ -1179,12 +1150,8 @@ int main(int argc, char *argv[])
     }
 
     /* Setup signal handlers */
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-
-    if (sigaction(SIGINT, &sa, NULL) == -1 ||
-        sigaction(SIGTERM, &sa, NULL) == -1) {
+    if (set_signal_handler(SIGINT, signal_handler) == -1 ||
+        set_signal_handler(SIGTERM, signal_handler) == -1) {
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 
@@ -1207,14 +1174,6 @@ int main(int argc, char *argv[])
             ernic_startup_report("  Eth Device: %s", dev->backend_eth_device);
         }
         ernic_startup_report("  IB Port: %u", dev->backend_port_num);
-    }
-    ernic_startup_report("  Mode: %s", dev->ionic_mode
-                                           ? "ionic (upstream driver path)"
-                                           : "PVRDMA legacy (deprecated)");
-    if (!dev->ionic_mode) {
-        warn_report("--legacy selects the deprecated rocm_ernic driver path; "
-                    "it will be removed in a future release. "
-                    "See docs/ionic.rst.");
     }
 
     /* Remove old socket if it exists - try multiple approaches */
@@ -1248,25 +1207,16 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "vfu_setup_log() failed");
     }
 
-    /* Initialize device emulation.  ionic is the default; --legacy selects
-     * the deprecated PVRDMA path, which is kept working but unmaintained. */
-    if (dev->ionic_mode) {
-        if (ionic_device_init(dev) < 0)
-            err(EXIT_FAILURE, "ionic_device_init() failed");
-    } else {
-        if (pvrdma_device_init(dev) < 0)
-            err(EXIT_FAILURE, "pvrdma_device_init() failed");
-    }
-
+    if (ionic_device_init(dev) < 0)
+        err(EXIT_FAILURE, "ionic_device_init() failed");
 
     /* Set stats file path if provided */
     if (dev->stats_file_path && dev->pvrdma_handle) {
         pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
         pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
                                        dev->backend_type_str);
-        pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_AMD,
-                                 dev->ionic_mode ? PCI_DEVICE_ID_AMD_IONIC_ERNIC
-                                                 : PCI_DEVICE_ID_ROCM_ERNIC);
+        pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_PENSANDO,
+                                 PCI_DEVICE_ID_AMD_IONIC_ERNIC);
         ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
                              "(every ~1 second)",
                              dev->stats_file_path);
@@ -1337,9 +1287,9 @@ int main(int argc, char *argv[])
     /* Attach the host network backend before the first client shows up, so a
      * bad --tap is a startup failure rather than a silently dead link. */
     if (tap_ifname) {
-        if (!dev->ionic_mode || !dev->ionic_emu) {
+        if (!dev->ionic_emu) {
             fprintf(stderr,
-                    "rocm-ernic: --tap is not supported with --legacy\n");
+                    "rocm-ernic: Ethernet emulation is not initialized\n");
             exit(EXIT_FAILURE);
         }
         char assigned[64] = {0};
@@ -1415,11 +1365,11 @@ int main(int argc, char *argv[])
 
             /* ionic: move frames from the host TAP into the guest Rx ring.
              * This has to happen on this thread: only it may DMA. */
-            if (dev->ionic_mode && dev->ionic_emu)
+            if (dev->ionic_emu)
                 ionic_eth_emu_poll_rx(dev->ionic_emu);
 
             /* ionic: poll admin queue rings for new WQEs */
-            if (dev->ionic_mode && dev->ionic_rdma) {
+            if (dev->ionic_rdma) {
                 struct ionic_adminq_ctx *aqctx =
                     ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
                 if (aqctx) {
@@ -1497,11 +1447,8 @@ int main(int argc, char *argv[])
     }
 
     /* Disable signal handlers during cleanup */
-    struct sigaction sa_ignore;
-    memset(&sa_ignore, 0, sizeof(sa_ignore));
-    sa_ignore.sa_handler = SIG_IGN;
-    sigaction(SIGINT, &sa_ignore, NULL);
-    sigaction(SIGTERM, &sa_ignore, NULL);
+    set_signal_handler(SIGINT, SIG_IGN);
+    set_signal_handler(SIGTERM, SIG_IGN);
 
     /* Cleanup */
     vfu_destroy_ctx(vfu_ctx);
@@ -1517,8 +1464,6 @@ int main(int argc, char *argv[])
     free(dev->stats_file_path);
 
     free(dev->bar0_mem);
-    free(dev->bar1_mem);
-    free(dev->bar2_mem);
     free(dev->backend_device_name);
     free(dev->backend_eth_device);
     free(dev->backend_type_str);

@@ -79,6 +79,13 @@ jobs:
   dynamic:
     name: nix dynamic
     needs: select
+    # Without this the job inherits no guard of its own, so on an ordinary PR
+    # -- where `select` is skipped and its outputs are empty --
+    # fromJSON('') fails to expand the matrix and the job lands as `cancelled`
+    # with zero steps, which the PR check list renders as a red X on every
+    # single pull request. fuzz.yml and static-analysis.yml avoid this by
+    # putting their condition directly on a single job.
+    if: needs.select.result == 'success' && needs.select.outputs.tools != ''
     runs-on: ubuntu-24.04
     # Non-merge-blocking: informational only, never gates a PR.
     continue-on-error: true

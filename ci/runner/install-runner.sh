@@ -14,9 +14,8 @@
 # should be made explicitly.  Run register-runner.sh
 # once you have a token.
 #
-# Only the TAP step needs root, and only once: the CI jobs
-# run in the default ionic device mode, where each instance
-# attaches to a TAP enslaved to a shared bridge, and an
+# Only the TAP step needs root, and only once: each server
+# instance attaches to a TAP enslaved to a shared bridge, and an
 # unprivileged runner cannot create those for itself.  Skip
 # it with --skip-taps if the node already has them or you
 # want to run the ip commands by hand.  Persistence across

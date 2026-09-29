@@ -5,9 +5,9 @@
 #   gcc-analyzer  -fanalyzer path-sensitive analysis
 #
 # Extra flags are injected via CMAKE_C_FLAGS. Note the repo applies `-w`
-# per-file to the QEMU-ported sources (CMakeLists.txt:229), so these extra
-# warnings land on our own src/rocm_ernic_*.c — cppcheck / clang-tidy /
-# flawfinder / semgrep cover the ported parsers instead.
+# per-file to the vendored sources under third-party/, so these extra
+# warnings land on our own code under src/ — cppcheck / clang-tidy /
+# flawfinder / semgrep cover the vendored sources instead.
 { ctx, src }:
 
 let

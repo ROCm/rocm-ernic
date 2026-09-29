@@ -12,11 +12,11 @@
 #   fuzz_dhcp_server     dhcp_server_process()      — DHCP packet parser
 #   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
 #
-# Deliberately NOT fuzzed here: eth_rx_inject_frame() and the pvrdma_cmd
-# handlers. Those are DMA/ring plumbing — they memcpy guest data through
-# rdma_pci_dma_map() and manipulate the RDMA resource manager, so a faithful
-# harness needs a fully-wired PVRDMADev (PCI + DMA + backend) fixture rather
-# than a byte buffer. Reaching them meaningfully is a device-emulation
+# Deliberately NOT fuzzed here: eth_rx_inject_frame_mesh_blocking() and the
+# ionic devcmd and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
+# through rdma_pci_dma_map() and manipulate the RDMA resource manager, so a
+# faithful harness needs a fully-wired device (PCI + DMA + backend) fixture
+# rather than a byte buffer. Reaching them meaningfully is a device-emulation
 # harness, tracked as future work; see nix/analysis/fuzz/README.md.
 
 { ctx, src }:
@@ -26,25 +26,29 @@ let
 
   includeFlags = lib.concatStringsSep " " [
     "-Isrc"
-    "-Isrc/from-qemu"
-    "-Isrc/from-qemu/utils"
-    "-Isrc/from-qemu/include/qemu-extra"
+    "-Isrc/net"
+    "-Isrc/qemu-compat/include"
+    "-Ithird-party/qemu/hw/rdma"
   ];
   sanFlags = "-fsanitize=fuzzer,address,undefined -g -O1 -fno-omit-frame-pointer";
 
   symbolizer = "${lib.getBin pkgs.llvm}/bin/llvm-symbolizer";
 
   # name -> extra .c files linked alongside nix/analysis/fuzz/fuzz_<name>.c
+  #
+  # These targets are opt-in, so tests/nix/CMakeLists.txt also builds every
+  # harness against a plain main() during the ordinary CMake build to keep
+  # them from going stale. Add a harness in both places.
   harnesses = [
     { name = "rdma_cm_proto";
       extra = [
-        "src/from-qemu/utils/rdma_cm_proto.c"
-        "src/from-qemu/utils/error-report.c"
+        "src/net/rdma_cm_proto.c"
+        "src/qemu-compat/error-report.c"
       ]; }
     { name = "dhcp_server";
       extra = [
-        "src/from-qemu/utils/dhcp_server.c"
-        "src/from-qemu/utils/error-report.c"
+        "src/net/dhcp_server.c"
+        "src/qemu-compat/error-report.c"
       ]; }
     { name = "net_headers";
       extra = [ ]; }

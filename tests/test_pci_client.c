@@ -4,14 +4,18 @@
  * Connects to the rocm-ernic server via socket and performs basic
  * PCI configuration space queries to verify the device is working.
  *
- * Copyright (C) 2025
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
 #include <getopt.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,15 +28,18 @@
 
 #include <linux/pci_regs.h>
 
-/* AMD ROCm ERNIC device IDs */
-#define PCI_VENDOR_ID_AMD        0x1022
-#define PCI_DEVICE_ID_ROCM_ERNIC 0x8000
+/* Emulated ionic device IDs */
+#define PCI_VENDOR_ID_PENSANDO      0x1dd8u
+#define PCI_DEVICE_ID_ROCM_ERNIC    0x100au
+#define PCI_SUBDEVICE_ID_ROCM_ERNIC 0x5400u
 
 /* Test results */
 typedef struct {
     bool connected;
     uint16_t vendor_id;
     uint16_t device_id;
+    uint16_t subsystem_vendor_id;
+    uint16_t subsystem_device_id;
     uint8_t revision;
     uint32_t class_code;
     uint8_t header_type;
@@ -84,11 +91,17 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
      * For this test, we'll simulate basic reads */
     (void)fd; /* unused in simulation */
 
+    /* The byte count is returned as int, so reject anything that would not
+     * survive the narrowing and be mistaken for a negative error return. */
+    if (count > INT_MAX) {
+        return -1;
+    }
+
     /* Simulate PCI config space reads */
     switch (offset) {
     case PCI_VENDOR_ID:
         if (count >= 2) {
-            *(uint16_t *)buf = PCI_VENDOR_ID_AMD;
+            *(uint16_t *)buf = PCI_VENDOR_ID_PENSANDO;
             if (count >= 4) {
                 *((uint16_t *)buf + 1) = PCI_DEVICE_ID_ROCM_ERNIC;
             }
@@ -101,6 +114,14 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
             *(uint32_t *)buf = 0x02000001;
         } else if (count == 1) {
             *(uint8_t *)buf = 0x01; /* Just revision */
+        }
+        break;
+    case PCI_SUBSYSTEM_VENDOR_ID:
+        if (count >= 2) {
+            *(uint16_t *)buf = PCI_VENDOR_ID_PENSANDO;
+            if (count >= 4) {
+                *((uint16_t *)buf + 1) = PCI_SUBDEVICE_ID_ROCM_ERNIC;
+            }
         }
         break;
     case PCI_HEADER_TYPE:
@@ -117,7 +138,7 @@ static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
         break;
     }
 
-    return count;
+    return (int)count;
 }
 
 /* Run PCI configuration tests */
@@ -133,14 +154,14 @@ static int run_pci_tests(int fd, test_results_t *results)
     if (ret < 0) {
         return -1;
     }
-    results->vendor_id = vid_did & 0xFFFF;
-    results->device_id = (vid_did >> 16) & 0xFFFF;
+    results->vendor_id = (uint16_t)(vid_did & 0xFFFFu);
+    results->device_id = (uint16_t)((vid_did >> 16) & 0xFFFFu);
 
     printf("  Vendor ID:  0x%04x", results->vendor_id);
-    if (results->vendor_id == PCI_VENDOR_ID_AMD) {
+    if (results->vendor_id == PCI_VENDOR_ID_PENSANDO) {
         printf(" (AMD) ✓\n");
     } else {
-        printf(" (expected 0x%04x) ✗\n", PCI_VENDOR_ID_AMD);
+        printf(" (expected 0x%04x) ✗\n", PCI_VENDOR_ID_PENSANDO);
     }
 
     printf("  Device ID:  0x%04x", results->device_id);
@@ -148,6 +169,25 @@ static int run_pci_tests(int fd, test_results_t *results)
         printf(" (ROCm ERNIC) ✓\n");
     } else {
         printf(" (expected 0x%04x) ✗\n", PCI_DEVICE_ID_ROCM_ERNIC);
+    }
+
+    uint32_t ssvid_sdid;
+    ret = read_pci_config(fd, PCI_SUBSYSTEM_VENDOR_ID, &ssvid_sdid,
+                          sizeof(ssvid_sdid));
+    if (ret < 0) {
+        return -1;
+    }
+    results->subsystem_vendor_id = (uint16_t)(ssvid_sdid & 0xFFFFu);
+    results->subsystem_device_id = (uint16_t)((ssvid_sdid >> 16) & 0xFFFFu);
+
+    printf("  Subsystem:  0x%04x:0x%04x", results->subsystem_vendor_id,
+           results->subsystem_device_id);
+    if (results->subsystem_vendor_id == PCI_VENDOR_ID_PENSANDO &&
+        results->subsystem_device_id == PCI_SUBDEVICE_ID_ROCM_ERNIC) {
+        printf(" (ROCm Emulated RDMA NIC) ✓\n");
+    } else {
+        printf(" (expected 0x%04x:0x%04x) ✗\n", PCI_VENDOR_ID_PENSANDO,
+               PCI_SUBDEVICE_ID_ROCM_ERNIC);
     }
 
     /* Read revision and class code */
@@ -229,13 +269,19 @@ static bool validate_results(const test_results_t *results)
 
     printf("Validation:\n");
 
-    if (results->vendor_id != PCI_VENDOR_ID_AMD) {
+    if (results->vendor_id != PCI_VENDOR_ID_PENSANDO) {
         printf("  ✗ Vendor ID mismatch\n");
         passed = false;
     }
 
     if (results->device_id != PCI_DEVICE_ID_ROCM_ERNIC) {
         printf("  ✗ Device ID mismatch\n");
+        passed = false;
+    }
+
+    if (results->subsystem_vendor_id != PCI_VENDOR_ID_PENSANDO ||
+        results->subsystem_device_id != PCI_SUBDEVICE_ID_ROCM_ERNIC) {
+        printf("  ✗ Subsystem ID mismatch\n");
         passed = false;
     }
 
@@ -275,9 +321,9 @@ int main(int argc, char **argv)
     int ret = 1;
 
     static struct option long_options[] = {
-        {"socket", required_argument, 0, 's'},
-        {"help", no_argument, 0, 'h'},
-        {0, 0, 0, 0}};
+        {"socket", required_argument, NULL, 's'},
+        {"help", no_argument, NULL, 'h'},
+        {NULL, 0, NULL, 0}};
 
     int c;
     while ((c = getopt_long(argc, argv, "s:h", long_options, NULL)) != -1) {

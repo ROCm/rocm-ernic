@@ -4,7 +4,7 @@
  * This file implements the wrapper functions that isolate QEMU code from
  * our libvfio-user server. Only this file includes QEMU headers.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -25,31 +25,19 @@
 #include "rocm_ernic_internal.h"
 
 /*
- * QEMU headers -- suppress warnings from upstream code
- * that we do not own.  This is the standard pattern for
- * third-party header inclusions.
+ * QEMU headers. The vendored header trees are SYSTEM include directories,
+ * so the compiler already keeps their warnings quiet.
  */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wredundant-decls"
-#pragma GCC diagnostic ignored "-Wshift-overflow"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wpacked"
-#include "from-qemu/hw/rdma/vmw/pvrdma.h"
-#include "from-qemu/hw/rdma/vmw/pvrdma_qp_ops.h"
-#include "from-qemu/hw/rdma/rdma_backend.h"
-#include "from-qemu/hw/rdma/rdma_backend_ops.h"
-#include "from-qemu/hw/rdma/rdma_rm.h"
-#include "from-qemu/hw/rdma/rdma_utils.h"
-#include "from-qemu/utils/dhcp_server.h"
-#include "from-qemu/utils/dhcp_proxy.h"
-#include "from-qemu/include/qemu-extra/standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "from-qemu/include/qemu-extra/standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
-#include "from-qemu/include/qemu-extra/hw/pci/pci.h"
-#pragma GCC diagnostic pop
-
-/* Forward declaration -- defined later in this file,
- * also referenced via extern in pvrdma_main.c. */
-void pvrdma_dsr_flush(void *handle);
+#include "vmw/pvrdma.h"
+#include "vmw/pvrdma_qp_ops.h"
+#include "rdma_backend.h"
+#include "rdma/rdma_backend_ops.h"
+#include "rdma_rm.h"
+#include "rdma_utils.h"
+#include "net/dhcp_server.h"
+#include "standard-headers/rdma/vmw_pvrdma-abi.h"
+#include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
+#include "hw/pci/pci.h"
 
 /*
  * DMA Mapping Tracking
@@ -190,7 +178,7 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     pvrdma->dev_attr.max_sge = MAX_SGE; /* Required for calculations below */
 
     /* Calculate dynamic device capabilities (from init_dev_caps in
-     * pvrdma_main.c) */
+     * upstream QEMU's hw/rdma/vmw/pvrdma_main.c) */
     {
         size_t pg_tbl_bytes =
             PVRDMA_PG_TBL_PAGES * PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
@@ -225,10 +213,6 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
         rdma_info_report("  max_srq_wr=%d", pvrdma->dev_attr.max_srq_wr);
     }
 
-    /* Initialize DSR info */
-    pvrdma->dsr_info.dsr = NULL;
-    pvrdma->dsr_info.dma = 0;
-
     /* Initialize stats */
     memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
     pvrdma->stats.qp_stats =
@@ -240,13 +224,10 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     /* Set interrupt mask to 0 (interrupts enabled) */
     pvrdma->interrupt_mask = 0;
 
-    rdma_info_report("PVRDMA device created (handle=%p)", pvrdma);
+    rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
     return (pvrdma_handle_t)pvrdma;
 }
-
-/* Forward declaration */
-void free_dsr(PVRDMADev *dev);
 
 void pvrdma_device_destroy(pvrdma_handle_t handle)
 {
@@ -283,9 +264,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         pvrdma->stats.stats_fp = NULL;
     }
 
-    /* Free DSR and all DMA mappings properly */
-    free_dsr(pvrdma);
-
     /* Free device names */
     free(pvrdma->backend_device_name);
     free(pvrdma->backend_eth_device_name);
@@ -317,14 +295,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         return -EINVAL;
     }
 
-    /* Initialize registers - must be done before driver probes */
-    /* Use set_reg_val() for proper address-to-index conversion */
-    set_reg_val(pvrdma, PVRDMA_REG_VERSION, PVRDMA_HW_VERSION);
-    set_reg_val(pvrdma, PVRDMA_REG_ERR, 0xFFFF);
-
-    rdma_info_report("PVRDMA version register initialized to %d",
-                     PVRDMA_HW_VERSION);
-
     /* Initialize RDMA backend with selected backend type */
     const char *backend_config =
         pvrdma
@@ -344,13 +314,13 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     /* CRITICAL: Link backend_dev to the device resources */
     pvrdma->backend_dev.rdma_dev_res = &pvrdma->rdma_dev_res;
     rdma_info_report("Linked backend_dev to rdma_dev_res at %p",
-                     pvrdma->backend_dev.rdma_dev_res);
+                     (void *)pvrdma->backend_dev.rdma_dev_res);
 
     /* CRITICAL: Set PCIDevice pointer for DMA operations */
     /* PVRDMADev has PCIDevice parent_obj as first field, so we can cast */
     pvrdma->backend_dev.dev = (PCIDevice *)pvrdma;
     rdma_info_report("Set backend_dev->dev to PCIDevice at %p",
-                     pvrdma->backend_dev.dev);
+                     (void *)pvrdma->backend_dev.dev);
 
     /* Initialize DHCP server for loopback mode and TCP manager mode */
     if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_LOOPBACK) {
@@ -393,9 +363,9 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         }
         rdma_info_report("DHCP server initialized for TCP manager mode");
     }
-    /* Note: DHCP proxy for TCP worker mode is initialized lazily in
-     * pvrdma_eth.c when the first DHCP request is received, since the manager
-     * connection may not be ready at device realize time */
+    /* Note: DHCP proxy for TCP worker mode is initialized lazily when the
+     * first DHCP request is received, since the manager connection may not
+     * be ready at device realize time */
 
     /* Query device capabilities from backend to populate dev_attr */
     if (pvrdma->backend_dev.backend_ops &&
@@ -422,7 +392,7 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     /* Initialize resource manager AFTER querying device capabilities */
     rdma_info_report("pvrdma_device_realize: About to call rdma_rm_init, "
                      "pvrdma=%p, &pvrdma->rdma_dev_res=%p",
-                     pvrdma, &pvrdma->rdma_dev_res);
+                     (void *)pvrdma, (void *)&pvrdma->rdma_dev_res);
     if (rdma_rm_init(&pvrdma->rdma_dev_res, &pvrdma->dev_attr) < 0) {
         rdma_error_report("Failed to initialize resource manager");
         return -EIO;
@@ -441,80 +411,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     rdma_info_report("PVRDMA device realized successfully");
 
     return 0;
-}
-
-/*
- * Register Access (BAR1)
- */
-
-void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                       unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    /* Forward to QEMU register write implementation */
-    pvrdma_regs_write_impl(pvrdma, offset, value, size);
-}
-
-uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    uint32_t val = 0;
-
-    if (!pvrdma) {
-        rdma_warn_report("pvrdma_regs_read: handle is NULL, returning 0");
-        return 0;
-    }
-
-    /* Forward to QEMU register read implementation */
-    val = (uint32_t)pvrdma_regs_read_impl(pvrdma, offset, size);
-
-    /* Ensure we never return an error value that could be misinterpreted */
-    /* If the implementation returns an error (negative), return 0 instead */
-    if ((int32_t)val < 0) {
-        rdma_warn_report("pvrdma_regs_read: implementation returned error "
-                         "value %d for offset 0x%lx, returning 0",
-                         (int32_t)val, offset);
-        return 0;
-    }
-
-    return val;
-}
-
-/*
- * UAR Access (BAR2)
- */
-
-void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                      unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        rdma_error_report(">>> WRAPPER: pvrdma handle is NULL!");
-        return;
-    }
-
-    /* Forward to QEMU UAR write implementation */
-    pvrdma_uar_write_impl(pvrdma, offset, value, size);
-}
-
-uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    uint32_t val = 0;
-
-    if (!pvrdma) {
-        return 0;
-    }
-
-    val = (uint32_t)pvrdma_uar_read_impl(pvrdma, offset, size);
-
-    return val;
 }
 
 void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
@@ -621,6 +517,75 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
     }
 }
 
+void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
+                              bool is_send)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (!qp) {
+        return;
+    }
+
+    if (is_send) {
+        qp->doorbell_send++;
+    } else {
+        qp->doorbell_recv++;
+    }
+}
+
+void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
+                         unsigned int pvrdma_opcode)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (!qp) {
+        return;
+    }
+
+    qp->wqes_processed++;
+    if (pvrdma_opcode < G_N_ELEMENTS(qp->wqes_by_opcode)) {
+        qp->wqes_by_opcode[pvrdma_opcode]++;
+    }
+}
+
+void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    PVRDMAQPStats *qp;
+
+    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
+    if (qp) {
+        qp->cqes_posted++;
+    }
+}
+
+void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!pvrdma || !pvrdma->stats.qp_stats || qp_id == PVRDMA_STAT_NO_QP) {
+        return;
+    }
+
+    g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -628,36 +593,6 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
 /*
  * Statistics
  */
-
-void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *regs_reads, uint64_t *regs_writes,
-                      uint64_t *uar_writes, uint64_t *interrupts,
-                      uint64_t *uar_reads, uint64_t *bar0_reads,
-                      uint64_t *bar0_writes)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    if (commands)
-        *commands = pvrdma->stats.commands;
-    if (regs_reads)
-        *regs_reads = pvrdma->stats.regs_reads;
-    if (regs_writes)
-        *regs_writes = pvrdma->stats.regs_writes;
-    if (uar_writes)
-        *uar_writes = pvrdma->stats.uar_writes;
-    if (interrupts)
-        *interrupts = pvrdma->stats.interrupts;
-    if (uar_reads)
-        *uar_reads = pvrdma->stats.uar_reads;
-    if (bar0_reads)
-        *bar0_reads = pvrdma->stats.bar0_reads;
-    if (bar0_writes)
-        *bar0_writes = pvrdma->stats.bar0_writes;
-}
 
 void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
 {
@@ -784,7 +719,8 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     }
 
     if (!dev->vfu_ctx) {
-        rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)", dev);
+        rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)",
+                          (void *)dev);
         rdma_error_report(
             "  This means vfu_ctx was not set in pvrdma_device_create");
         if (plen)
@@ -867,43 +803,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     DMA_MAP_UNLOCK();
 
     return host_addr;
-}
-
-/*
- * Helper: Flush DSR writes by doing put/get cycle
- * This ensures cache coherency and notifies libvfio-user/QEMU of changes.
- */
-void pvrdma_dsr_flush(void *handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    dma_addr_t dsr_guest_addr = pvrdma->dsr_info.dma;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-
-    GHashTableIter iter;
-    gpointer key, value;
-    g_hash_table_iter_init(&iter, dma_map_table);
-
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        dma_mapping_t *mapping = (dma_mapping_t *)value;
-
-        if (mapping->guest_addr == dsr_guest_addr) {
-            if (mapping->vfu_ctx && mapping->sg) {
-                vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-            }
-
-            mapping->host_addr = NULL;
-            mapping->iov.iov_base = NULL;
-            mapping->iov.iov_len = 0;
-
-            DMA_MAP_UNLOCK();
-            return;
-        }
-    }
-
-    DMA_MAP_UNLOCK();
-    rdma_error_report("pvrdma_dsr_flush: ERROR - DSR mapping not found!");
 }
 
 /*
@@ -1052,14 +951,6 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
                             pd_handle, 0);
 }
 
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    if (!pvrdma)
-        return;
-    rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
-}
-
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
@@ -1102,34 +993,6 @@ void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
     rdma_rm_dealloc_mr(&pvrdma->rdma_dev_res, mr_handle);
 }
 
-int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
-                            const uint64_t *sge_va, const uint32_t *sge_len,
-                            const uint32_t *sge_lkey, uint32_t num_sge,
-                            uint8_t opcode)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
-        return -EINVAL;
-    if (num_sge == 0 || num_sge > 32)
-        return -EINVAL;
-
-    RdmaRmQP *rm_qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
-    if (!rm_qp)
-        return -ENOENT;
-
-    /* The ionic datapath posts its own CQEs directly via post_data_cqe(), so a
-     * backend completion would be a duplicate.  There is also no
-     * CompHandlerCtx to hand to rdma_backend_post_send(), and every completion
-     * path dereferences it, so the backend post is skipped for all backends
-     * until the ionic path grows a real per-request context.  The QP lookup
-     * above is kept so an unknown QPN is still rejected. */
-    (void)sge_va;
-    (void)sge_len;
-    (void)sge_lkey;
-    (void)opcode;
-    return 0;
-}
-
 int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
@@ -1160,6 +1023,42 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                              &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
 }
 
+int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
+                      uint8_t *path_mtu, uint32_t *dest_qpn,
+                      uint32_t *access_flags, uint32_t *rq_psn,
+                      uint32_t *sq_psn)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    struct ibv_qp_attr attr;
+    struct ibv_qp_init_attr init_attr;
+    int ret;
+
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+
+    ret = rdma_rm_query_qp(
+        &pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn, &attr,
+        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_ACCESS_FLAGS |
+            IBV_QP_RQ_PSN | IBV_QP_SQ_PSN,
+        &init_attr);
+    if (ret)
+        return ret;
+
+    if (state)
+        *state = (uint8_t)attr.qp_state;
+    if (path_mtu)
+        *path_mtu = (uint8_t)attr.path_mtu;
+    if (dest_qpn)
+        *dest_qpn = attr.dest_qp_num;
+    if (access_flags)
+        *access_flags = (uint32_t)attr.qp_access_flags;
+    if (rq_psn)
+        *rq_psn = attr.rq_psn;
+    if (sq_psn)
+        *sq_psn = attr.sq_psn;
+    return 0;
+}
+
 /* pvrdma_get_dev_resources is retained in the header for potential future use
  * but is currently unused — the ionic path uses the ionic_rm_* wrappers above
  * instead. */
@@ -1187,16 +1086,6 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
 
     memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
     return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
-}
-
-int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
-                    size_t len)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma)
-        return -EINVAL;
-    return tcp_backend_send_ionic(&pvrdma->backend_dev, dst_node, buf, len);
 }
 
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,

@@ -1,0 +1,40 @@
+/*
+ * QEMU VMWARE paravirtual RDMA QP Operations
+ *
+ * Copyright (C) 2018 Oracle
+ * Copyright (C) 2018 Red Hat Inc
+ *
+ * Authors:
+ *     Yuval Shaia <yuval.shaia@oracle.com>
+ *     Marcel Apfelbaum <marcel@redhat.com>
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
+ *
+ */
+
+#ifndef PVRDMA_QP_OPS_H
+#define PVRDMA_QP_OPS_H
+
+#include "pvrdma.h"
+
+int pvrdma_qp_ops_init(void);
+void pvrdma_qp_ops_fini(void);
+void pvrdma_drain_deferred_completions(void);
+
+void pvrdma_queue_recv_work_completion(PVRDMADev *dev, uint32_t recv_cq_handle,
+                                       uint64_t recv_guest_wr_id,
+                                       uint32_t byte_len, uint32_t src_qp_num);
+
+/* Variant used by RDMA WRITE_WITH_IMM: the completion carries the
+ * immediate data in network order and the RECV_RDMA_WITH_IMM opcode
+ * with the IBV_WC_WITH_IMM flag set, matching what a real HCA
+ * delivers to the responder's receive queue. */
+void pvrdma_queue_recv_imm_work_completion(
+    PVRDMADev *dev, uint32_t recv_cq_handle, uint32_t recv_qp_handle,
+    uint64_t recv_guest_wr_id, uint32_t byte_len, uint32_t src_qp_num,
+    uint32_t imm_data);
+
+#endif

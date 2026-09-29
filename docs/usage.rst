@@ -19,6 +19,11 @@ Start the server with a UNIX socket and the desired backend:
      --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
      --log-level info
 
+   # In-process NVMe-oF controller the guest can connect to
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend nvmeof:size=1G,bs=4096 --tap ernic0
+
    # No backend (minimal stubs)
    ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \
@@ -29,32 +34,31 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0
 
-Device Personality
-------------------
+The Emulated Device
+-------------------
 
-No flag is needed: ionic is the default. The server emulates
-an AMD Pensando ionic NIC (``1022:8001``) driven by the
-upstream Linux ``ionic`` and ``ionic_rdma`` modules.
-``--ionic`` (short ``-I``) is still accepted and does
-nothing, so existing scripts keep working.
-
-``--legacy`` (alias ``--pvrdma``) selects the deprecated
-PVRDMA-derived device (``1022:8000``) driven by the companion
-module in ``driver/``, and prints a warning saying so.
+The server emulates an AMD Pensando ionic NIC
+(``1dd8:100a``) with subsystem ``1dd8:5400``, driven by the
+upstream Linux ``ionic`` and ``ionic_rdma`` modules. With a
+current ``pci.ids`` database, ``lspci`` names that subsystem
+``ROCm Emulated RDMA NIC``. There is nothing to select.
 
 ``--tap IFNAME`` (short ``-T``) attaches the emulated
-Ethernet interface to an existing host TAP. It is
-incompatible with ``--legacy``; the server exits with a
-diagnostic if both are given. Create the TAP up front, owned
-by the user running the server:
+Ethernet interface to an existing host TAP. Create the TAP up
+front, owned by the user running the server:
 
 .. code-block:: bash
 
    sudo ip tuntap add dev ernic0 mode tap user "$USER"
 
-The backend selection is independent of the personality:
-``--backend`` governs the RDMA data path, ``--tap`` the
-Ethernet one. See :doc:`ionic` for the full picture.
+The two paths are independent: ``--backend`` governs the RDMA
+data path, ``--tap`` the Ethernet one. See :doc:`ionic` for
+the full picture.
+
+``nvmeof`` is the odd one out: rather than carrying guest
+RDMA traffic somewhere, it answers it, presenting an NVMe
+over Fabrics target the guest connects to with stock
+``nvme connect -t rdma``. See :doc:`nvmeof`.
 
 Log Levels
 ----------
@@ -125,22 +129,13 @@ required.
    "socket":{"path":"/tmp/vfio-user-rocm-ernic.sock",\
    "type":"unix"}}'
 
-Inside the guest, load the kernel driver and verify:
-
-.. code-block:: bash
-
-   sudo modprobe rocm_ernic
-   lspci -nn | grep 1022:8000
-   ibv_devices
-
-In ionic mode the guest loads the upstream modules against
-the ``1022:8001`` device instead:
+Inside the guest, load the upstream modules and verify:
 
 .. code-block:: bash
 
    sudo modprobe ionic
    sudo modprobe ionic_rdma
-   lspci -nn | grep 1022:8001
+   lspci -nnv -d 1dd8:100a | grep '\[1dd8:5400\]'
    ibv_devices
 
 Statistics Collection

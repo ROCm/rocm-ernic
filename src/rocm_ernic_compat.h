@@ -4,7 +4,7 @@
  * This header provides a clean wrapper API that isolates QEMU header
  * dependencies. Only vfu_compat_bridge.c sees QEMU internals.
  *
- * Copyright (C) 2025 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -65,54 +65,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle);
  */
 int pvrdma_device_realize(pvrdma_handle_t handle);
 
-/*
- * Register Access (BAR1)
- */
-
-/**
- * pvrdma_regs_write - Write to PVRDMA register
- * @handle: Device handle
- * @offset: Register offset
- * @value: Value to write
- * @size: Access size (typically 4 for 32-bit)
- */
-void pvrdma_regs_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                       unsigned size);
-
-/**
- * pvrdma_regs_read - Read from PVRDMA register
- * @handle: Device handle
- * @offset: Register offset
- * @size: Access size (typically 4 for 32-bit)
- *
- * Returns: Register value
- */
-uint32_t pvrdma_regs_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
-
-/*
- * UAR Access (BAR2)
- */
-
-/**
- * pvrdma_uar_write - Write to User Access Region (doorbell)
- * @handle: Device handle
- * @offset: UAR offset
- * @value: Value to write
- * @size: Access size
- */
-void pvrdma_uar_write(pvrdma_handle_t handle, hwaddr offset, uint32_t value,
-                      unsigned size);
-
-/**
- * pvrdma_uar_read - Read from User Access Region
- * @handle: Device handle
- * @offset: UAR offset
- * @size: Access size
- *
- * Returns: UAR value
- */
-uint32_t pvrdma_uar_read(pvrdma_handle_t handle, hwaddr offset, unsigned size);
-
 /**
  * pvrdma_bar0_mmio_count - Record a BAR0 (MSI-X) MMIO access for statistics
  * @handle: Device handle
@@ -125,8 +77,8 @@ void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
  * @handle: Device handle
  * @is_write: true for write, false for read
  *
- * The legacy UAR and the ionic BAR2 doorbell page are the same thing to these
- * counters, so both personalities share uar_reads/uar_writes.
+ * The ionic BAR2 doorbell page is what these counters see; the names
+ * uar_reads/uar_writes are kept from the PVRDMA UAR they used to count.
  */
 void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
 
@@ -174,6 +126,46 @@ enum pvrdma_stat_op {
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
                              uint64_t bytes, enum pvrdma_stat_op op);
 
+/**
+ * pvrdma_qp_doorbell_count - Record one doorbell ring against a QP
+ * @handle: Device handle
+ * @qp_id: QP the doorbell targets
+ * @is_send: true for the send queue, false for the receive queue
+ *
+ * One increment per ring, not per WQE the ring drains.
+ */
+void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
+                              bool is_send);
+
+/**
+ * pvrdma_qp_wqe_count - Record one processed send WQE against a QP
+ * @handle: Device handle
+ * @qp_id: QP that owns the WQE
+ * @pvrdma_opcode: PVRDMA_WR_* index, or >= 18 to count only the total
+ *
+ * Callers on the ionic path must translate their own opcode space first; see
+ * ionic_op_to_pvrdma_wr() in ionic_datapath.c.
+ */
+void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
+                         unsigned int pvrdma_opcode);
+
+/**
+ * pvrdma_qp_cqe_count - Record one completion posted to a QP's CQ
+ * @handle: Device handle
+ * @qp_id: QP the completion belongs to
+ */
+void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id);
+
+/**
+ * pvrdma_qp_stats_forget - Drop the per-QP counters for a destroyed QP
+ * @handle: Device handle
+ * @qp_id: QP being destroyed
+ *
+ * pvrdma_get_qp_stats() inserts lazily and never evicts, so without this the
+ * exported QP count only ever grows and destroyed QPs keep reporting.
+ */
+void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
+
 /*
  * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */
@@ -181,24 +173,6 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
 /*
  * Statistics
  */
-
-/**
- * pvrdma_get_stats - Get device statistics
- * @handle: Device handle
- * @commands: Pointer to receive command count (optional)
- * @regs_reads: Pointer to receive register read count (optional)
- * @regs_writes: Pointer to receive register write count (optional)
- * @uar_writes: Pointer to receive UAR write count (optional)
- * @interrupts: Pointer to receive interrupt count (optional)
- * @uar_reads: Pointer to receive UAR read count (optional)
- * @bar0_reads: Pointer to receive BAR0 read count (optional)
- * @bar0_writes: Pointer to receive BAR0 write count (optional)
- */
-void pvrdma_get_stats(pvrdma_handle_t handle, uint64_t *commands,
-                      uint64_t *regs_reads, uint64_t *regs_writes,
-                      uint64_t *uar_writes, uint64_t *interrupts,
-                      uint64_t *uar_reads, uint64_t *bar0_reads,
-                      uint64_t *bar0_writes);
 
 /**
  * pvrdma_set_stats_file - Set statistics output file path
@@ -291,11 +265,6 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle);
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);
 
 /**
- * ionic_rm_dealloc_pd - Free a protection domain
- */
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle);
-
-/**
  * ionic_rm_alloc_qp - Allocate a queue pair
  * @handle:        pvrdma device handle
  * @pd_handle:     protection domain handle
@@ -331,23 +300,6 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
 void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle);
 
 /**
- * ionic_backend_post_send - Post a send WQE to the RDMA backend
- *
- * @qpn:         QP number (handle) in rdma_rm
- * @sge_va:      Array of SGE virtual addresses (guest VAs, host-order)
- * @sge_len:     Array of SGE lengths
- * @sge_lkey:    Array of SGE local keys
- * @num_sge:     Number of SGE entries
- * @opcode:      ionic v1 WQE opcode (IONIC_V1_OP_SEND etc.)
- *
- * Returns 0 on success, -errno on failure.
- */
-int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
-                            const uint64_t *sge_va, const uint32_t *sge_len,
-                            const uint32_t *sge_lkey, uint32_t num_sge,
-                            uint8_t opcode);
-
-/**
  * ionic_rm_modify_qp - Modify a queue pair's state
  * @qpn:        QP number (handle)
  * @attr_mask:  IB attr mask (big-endian u32 from WQE, we convert)
@@ -360,6 +312,23 @@ int ionic_backend_post_send(pvrdma_handle_t handle, uint32_t qpn,
 int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes);
+
+/**
+ * ionic_rm_query_qp - Read a queue pair's attributes back out of rdma_rm
+ * @qpn:          QP number (handle)
+ * @state:        ibv_qp_state the device holds for the QP
+ * @path_mtu:     ibv_mtu enum
+ * @dest_qpn:     peer QPN, 0 when the backend tracks none
+ * @access_flags: ibv_access_flags bitmask
+ * @rq_psn:       receive PSN the guest last set, 0 if it never set one
+ * @sq_psn:       send PSN the guest last set, 0 if it never set one
+ *
+ * Any out parameter may be NULL.  Returns 0 on success, -errno on failure.
+ */
+int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
+                      uint8_t *path_mtu, uint32_t *dest_qpn,
+                      uint32_t *access_flags, uint32_t *rq_psn,
+                      uint32_t *sq_psn);
 
 /**
  * Mesh access for the ionic data path.
@@ -378,7 +347,7 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
                                    const void *buf, size_t len);
 
 /*
- * Largest single message ionic_mesh_send() accepts, header included.  Mirrors
+ * Largest single message ionic_mesh_sendv() accepts, header included.  Mirrors
  * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp.c, which static-asserts the two
  * agree.
  */
@@ -387,9 +356,7 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes);
-int ionic_mesh_send(pvrdma_handle_t handle, uint32_t dst_node, const void *buf,
-                    size_t len);
-/* As above, but header and body stay separate all the way down to writev. */
+/* Header and body stay separate all the way down to writev. */
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len);
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,

@@ -12,7 +12,11 @@
  * accepted), and a positive well-formed DISCOVER that must still yield an
  * OFFER after the fix.
  *
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <arpa/inet.h>
@@ -22,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dhcp_server.h"
+#include "net/dhcp_server.h"
 
 #define NULL_REQUEST ((size_t) - 1)
 

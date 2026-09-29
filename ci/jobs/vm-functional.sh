@@ -75,10 +75,8 @@ _ci_ansible_run() {
         -e "ernic_vm_ssh_base_port=${CI_VM_SSH_BASE_PORT}" \
         -e "ernic_vm_ssh_user=${CI_VM_SSH_USER}" \
         -e "ernic_vm_name_base=${CI_VM_NAME_BASE}" \
-        -e "ernic_golden_image=false" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
-        -e "ernic_device_mode=${CI_ERNIC_MODE}" \
         "$@" </dev/null
 }
 
@@ -103,8 +101,7 @@ group_end
 # the two guests, the functional run has proven nothing.
 
 probe_rdma_device() {
-    vm_ssh "$1" 'ibv_devices' \
-        | grep -qE 'rocm-rdma-ernic|rocep|ionic'
+    [ -n "$(guest_rdma_dev "$1")" ]
 }
 
 probe_port_active() {
@@ -112,14 +109,17 @@ probe_port_active() {
 }
 
 # Device name and NIC address are discovered rather than
-# assumed: the guest names the device from its GUID and
-# the play assigns .10/.20 from ernic_nic_subnet.
+# assumed: the guest renames the RDMA device twice during
+# boot and the play assigns .10/.20 from ernic_nic_subnet.
+#
+# The lookup matches on PCI vendor ID rather than on name.
+# Taking the first line of ibv_devices, as this did, picks
+# up whatever else the guest happens to have; matching on
+# name instead goes stale the next time the udev policy
+# changes.  See scripts/find-rdma-device.sh.
 guest_rdma_dev() {
-    # Single-quoted on purpose: the awk body must reach
-    # the guest shell unexpanded.
-    # shellcheck disable=SC2016
-    vm_ssh "$1" \
-        'ibv_devices | awk "NR>2 {print \$1; exit}"' \
+    vm_ssh "$1" 'sh -s' \
+        < "${PROJECT_ROOT}/scripts/find-rdma-device.sh" \
         | tr -d '\r'
 }
 
@@ -134,9 +134,12 @@ guest_rdma_ip() {
 # NIC carries RDMA traffic.
 probe_pingpong() {
     local dev1 dev2 ip1
-    dev1="$(guest_rdma_dev 1)"
-    dev2="$(guest_rdma_dev 2)"
-    ip1="$(guest_rdma_ip 1)"
+    # `|| true` because the lookup now exits non-zero when there is no
+    # device, and errexit would take that before the empty-check below
+    # could name which of the three came back blank.
+    dev1="$(guest_rdma_dev 1)" || true
+    dev2="$(guest_rdma_dev 2)" || true
+    ip1="$(guest_rdma_ip 1)" || true
 
     if [ -z "${dev1}" ] || [ -z "${dev2}" ] || [ -z "${ip1}" ]; then
         log_error "could not discover RDMA device/address" \
@@ -144,8 +147,16 @@ probe_pingpong() {
         return 1
     fi
 
-    vm_ssh 1 "nohup ibv_rc_pingpong -d ${dev1} -g 1 -n 50 \
-        >/tmp/ci-pingpong.log 2>&1 & echo ok" >/dev/null
+    # A transient unit, not nohup: the guest image ships
+    # KillUserProcesses=yes, so anything left behind in the login
+    # session dies the moment this ssh returns and the client then
+    # fails to connect.  This is what the Ansible plays already do
+    # for their perftest servers.
+    vm_ssh 1 "systemctl --user stop ci-pingpong 2>/dev/null; \
+        systemd-run --user --collect --unit=ci-pingpong \
+            -p StandardOutput=file:/tmp/ci-pingpong.log \
+            -p StandardError=append:/tmp/ci-pingpong.log \
+            ibv_rc_pingpong -d ${dev1} -g 1 -n 50" >/dev/null
     sleep 3
 
     local out

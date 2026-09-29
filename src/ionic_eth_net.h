@@ -1,7 +1,7 @@
 /*
  * ionic_eth_net.h — host network backend for the emulated ionic NIC
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

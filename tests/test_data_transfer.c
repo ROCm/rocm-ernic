@@ -1,24 +1,30 @@
-// SPDX-License-Identifier: MIT
 /**
  * Comprehensive Data Transfer Test
  *
  * Tests actual send/recv operations with the loopback backend
  * Verifies data integrity and pattern generation
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
-
-#define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <threads.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <time.h>
-#include <unistd.h>
 #include <infiniband/verbs.h>
 
-#define BUFFER_SIZE    4096
-#define NUM_ITERATIONS 10
-#define TEST_PATTERN   0xAB
+#include "ernic_device.h"
+
+#define BUFFER_SIZE  4096
+#define TEST_PATTERN 0xABu
 
 /* Test pattern types to verify */
 typedef enum {
@@ -66,25 +72,23 @@ static int setup_resources(struct test_context *ctx)
     /* Get device list */
     dev_list = ibv_get_device_list(&num_devices);
     if (!dev_list || num_devices == 0) {
-        fprintf(stderr, "No RDMA devices found - skipping test\n");
+        int pinned = ernic_requested_device() != NULL;
+
+        ernic_report_no_device(pinned ? ERNIC_DEVICE_MISMATCH
+                                      : ERNIC_DEVICE_ABSENT);
         ibv_free_device_list(dev_list); /* Free even if NULL is safe */
-        return -2;                      /* Special code to indicate skip */
+        return pinned ? -1 : -2;
     }
 
-    /* Find a rocm_ernic device; skip if none present */
-    struct ibv_device *target = NULL;
-    for (int i = 0; i < num_devices; i++) {
-        const char *name = ibv_get_device_name(dev_list[i]);
-        if (name && (strncmp(name, "rocm_ernic", 10) == 0 ||
-                     strncmp(name, "rocep", 5) == 0)) {
-            target = dev_list[i];
-            break;
-        }
-    }
+    enum ernic_device_result lookup;
+    struct ibv_device *target =
+        ernic_find_device(dev_list, num_devices, &lookup);
+
     if (!target) {
-        fprintf(stderr, "No rocm_ernic device found - skipping test\n");
+        ernic_report_no_device(lookup);
         ibv_free_device_list(dev_list);
-        return -2;
+        /* -2 means skip; a named-but-absent device is an outright error. */
+        return lookup == ERNIC_DEVICE_MISMATCH ? -1 : -2;
     }
 
     ctx->context = ibv_open_device(target);
@@ -268,7 +272,9 @@ static int poll_completions(struct test_context *ctx, int expected_sends,
 
         attempts++;
         if (n == 0) {
-            usleep(100); /* Small delay if no completions */
+            /* Small delay if no completions */
+            const struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000};
+            thrd_sleep(&delay, NULL);
         }
     }
 
@@ -288,7 +294,8 @@ static int test_basic_send_recv(struct test_context *ctx)
     struct ibv_sge send_sge, recv_sge;
     struct ibv_send_wr send_wr, *bad_send_wr;
     struct ibv_recv_wr recv_wr, *bad_recv_wr;
-    size_t test_size = 1024;
+    /* uint32_t to match ibv_sge.length; must not exceed the registered MR. */
+    const uint32_t test_size = 1024;
 
     print_header("Test 1: Basic Send/Recv");
 
@@ -297,7 +304,7 @@ static int test_basic_send_recv(struct test_context *ctx)
     memset(ctx->recv_buf, 0, BUFFER_SIZE);
 
     printf("Prepared buffers:\n");
-    printf("  Send: %zu bytes of 0x%02x\n", test_size, TEST_PATTERN);
+    printf("  Send: %" PRIu32 " bytes of 0x%02x\n", test_size, TEST_PATTERN);
     printf("  Recv: cleared\n\n");
 
     /* Post receive first */
@@ -332,7 +339,7 @@ static int test_basic_send_recv(struct test_context *ctx)
         fprintf(stderr, "Failed to post send\n");
         return -1;
     }
-    printf("✓ Posted send WR (%zu bytes)\n\n", test_size);
+    printf("✓ Posted send WR (%" PRIu32 " bytes)\n\n", test_size);
 
     /* Poll for completions */
     printf("Polling for completions...\n");
@@ -360,17 +367,18 @@ static int test_multiple_transfers(struct test_context *ctx)
     struct ibv_sge send_sge, recv_sge;
     struct ibv_send_wr send_wr, *bad_send_wr;
     struct ibv_recv_wr recv_wr, *bad_recv_wr;
-    int num_ops = 5;
-    size_t test_size = 512;
+    const unsigned int num_ops = 5;
+    /* uint32_t to match ibv_sge.length; must not exceed the registered MR. */
+    const uint32_t test_size = 512;
 
     print_header("Test 2: Multiple Sequential Transfers");
 
-    printf("Performing %d send/recv pairs (%zu bytes each)...\n\n", num_ops,
-           test_size);
+    printf("Performing %u send/recv pairs (%" PRIu32 " bytes each)...\n\n",
+           num_ops, test_size);
 
-    for (int i = 0; i < num_ops; i++) {
+    for (unsigned int i = 0; i < num_ops; i++) {
         /* Prepare buffers */
-        memset(ctx->send_buf, 0x10 + i, test_size);
+        memset(ctx->send_buf, (int)(0x10u + i), test_size);
         memset(ctx->recv_buf, 0, test_size);
 
         /* Post receive */
@@ -379,12 +387,12 @@ static int test_multiple_transfers(struct test_context *ctx)
         recv_sge.lkey = ctx->recv_mr->lkey;
 
         memset(&recv_wr, 0, sizeof(recv_wr));
-        recv_wr.wr_id = 100 + i;
+        recv_wr.wr_id = 100u + i;
         recv_wr.sg_list = &recv_sge;
         recv_wr.num_sge = 1;
 
         if (ibv_post_recv(ctx->qp, &recv_wr, &bad_recv_wr)) {
-            fprintf(stderr, "Failed to post recv %d\n", i);
+            fprintf(stderr, "Failed to post recv %u\n", i);
             return -1;
         }
 
@@ -394,47 +402,48 @@ static int test_multiple_transfers(struct test_context *ctx)
         send_sge.lkey = ctx->send_mr->lkey;
 
         memset(&send_wr, 0, sizeof(send_wr));
-        send_wr.wr_id = 100 + i;
+        send_wr.wr_id = 100u + i;
         send_wr.sg_list = &send_sge;
         send_wr.num_sge = 1;
         send_wr.opcode = IBV_WR_SEND;
         send_wr.send_flags = IBV_SEND_SIGNALED;
 
         if (ibv_post_send(ctx->qp, &send_wr, &bad_send_wr)) {
-            fprintf(stderr, "Failed to post send %d\n", i);
+            fprintf(stderr, "Failed to post send %u\n", i);
             return -1;
         }
 
-        printf("Transfer %d: posted send/recv\n", i + 1);
+        printf("Transfer %u: posted send/recv\n", i + 1u);
 
         /* Poll for this pair's completions */
         int prev_sends = ctx->completed_sends;
         int prev_recvs = ctx->completed_recvs;
 
         if (poll_completions(ctx, prev_sends + 1, prev_recvs + 1) < 0) {
-            fprintf(stderr, "Failed to complete transfer %d\n", i);
+            fprintf(stderr, "Failed to complete transfer %u\n", i);
             return -1;
         }
     }
 
-    printf("\n✓ All %d transfers completed successfully!\n", num_ops);
+    printf("\n✓ All %u transfers completed successfully!\n", num_ops);
     return 0;
 }
 
 static int test_varying_sizes(struct test_context *ctx)
 {
-    size_t sizes[] = {64, 256, 1024, 2048, 4096};
-    int num_sizes = sizeof(sizes) / sizeof(sizes[0]);
+    /* uint32_t to match ibv_sge.length; none may exceed the registered MR. */
+    static const uint32_t sizes[] = {64, 256, 1024, 2048, 4096};
+    const size_t num_sizes = sizeof(sizes) / sizeof(sizes[0]);
 
     print_header("Test 3: Varying Transfer Sizes");
 
-    for (int i = 0; i < num_sizes; i++) {
+    for (size_t i = 0; i < num_sizes; i++) {
         struct ibv_sge send_sge, recv_sge;
         struct ibv_send_wr send_wr, *bad_send_wr;
         struct ibv_recv_wr recv_wr, *bad_recv_wr;
-        size_t size = sizes[i];
+        const uint32_t size = sizes[i];
 
-        printf("Testing %zu bytes...\n", size);
+        printf("Testing %" PRIu32 " bytes...\n", size);
 
         /* Post receive */
         recv_sge.addr = (uintptr_t)ctx->recv_buf;
@@ -442,7 +451,7 @@ static int test_varying_sizes(struct test_context *ctx)
         recv_sge.lkey = ctx->recv_mr->lkey;
 
         memset(&recv_wr, 0, sizeof(recv_wr));
-        recv_wr.wr_id = 200 + i;
+        recv_wr.wr_id = 200u + i;
         recv_wr.sg_list = &recv_sge;
         recv_wr.num_sge = 1;
 
@@ -457,7 +466,7 @@ static int test_varying_sizes(struct test_context *ctx)
         send_sge.lkey = ctx->send_mr->lkey;
 
         memset(&send_wr, 0, sizeof(send_wr));
-        send_wr.wr_id = 200 + i;
+        send_wr.wr_id = 200u + i;
         send_wr.sg_list = &send_sge;
         send_wr.num_sge = 1;
         send_wr.opcode = IBV_WR_SEND;
@@ -473,11 +482,11 @@ static int test_varying_sizes(struct test_context *ctx)
         int prev_recvs = ctx->completed_recvs;
 
         if (poll_completions(ctx, prev_sends + 1, prev_recvs + 1) < 0) {
-            fprintf(stderr, "Failed at size %zu\n", size);
+            fprintf(stderr, "Failed at size %" PRIu32 "\n", size);
             return -1;
         }
 
-        printf("  ✓ %zu bytes completed\n", size);
+        printf("  ✓ %" PRIu32 " bytes completed\n", size);
     }
 
     printf("\n✓ All size variations completed!\n");
@@ -506,7 +515,7 @@ static void cleanup_resources(struct test_context *ctx)
 
 int main(void)
 {
-    struct test_context ctx = {0};
+    struct test_context ctx = {.context = NULL};
     int ret = 0;
 
     printf(

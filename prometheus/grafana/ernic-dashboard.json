@@ -87,7 +87,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "ernic_instances_total",
+          "expr": "ernic_instances",
           "legendFormat": "Instances",
           "refId": "A"
         }
@@ -201,7 +201,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "ernic_vms_total",
+          "expr": "ernic_vms",
           "legendFormat": "VMs",
           "refId": "A"
         }

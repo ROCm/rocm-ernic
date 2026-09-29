@@ -2,17 +2,11 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Install the guest kernel driver for the active device mode, then
-# run the mode-independent load-and-verify steps.
+# Install the guest kernel driver, then run the load-and-verify steps.
 
 ---
 - name: Build and install the ionic kernel modules
   ansible.builtin.include_tasks: driver_ionic.yml
-  when: ernic_device_mode != 'legacy'
-
-- name: Build and install the deprecated rocm_ernic driver
-  ansible.builtin.include_tasks: driver_legacy.yml
-  when: ernic_device_mode == 'legacy'
 
 - name: Load the driver and verify the RDMA device
   ansible.builtin.include_tasks: driver_common.yml

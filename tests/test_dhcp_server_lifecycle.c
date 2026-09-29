@@ -11,7 +11,11 @@
  * Table-driven over the number of distinct clients that obtain a lease
  * (zero, one, several, and a full pool), plus a destroy(NULL) corner case.
  *
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <arpa/inet.h>
@@ -21,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dhcp_server.h"
+#include "net/dhcp_server.h"
 
 /* Small pool (10.0.0.2 .. 10.0.0.6) so "full pool" is cheap to fill. */
 static DhcpServer *make_server(void)

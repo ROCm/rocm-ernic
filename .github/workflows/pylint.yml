@@ -1,0 +1,83 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run black and pylint over the Python files
+name: rocm-ernic - pylint
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - '**.py'
+      - 'service/ernicctl'
+      - 'prometheus/ernic-exporter'
+      - 'prometheus/requirements-exporter.txt'
+      - '.github/workflows/pylint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pylint:
+    name: Lint Python files
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      # ernic-exporter's requirements are needed so pylint can resolve
+      # its prometheus_client imports.
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install black pylint
+          python -m pip install -r prometheus/requirements-exporter.txt
+
+      # *.py plus extension-less scripts with a python shebang
+      # (service/ernicctl, prometheus/ernic-exporter). third-party/ and
+      # nix/analysis/triage/ (adapted from xdp2) are vendored, and
+      # .cmake-format.py is cmakelang configuration that is only valid
+      # Python inside cmakelang's own evaluator.
+      - name: Find Python files
+        run: |
+          git ls-files -- ':!:third-party/' ':!:nix/analysis/triage/' \
+            ':!:.cmake-format.py' |
+            while IFS= read -r file; do
+              if [[ "$file" == *.py ]]; then
+                echo "$file"
+              elif [[ "${file##*/}" != *.* ]] &&
+                head -n1 -- "$file" | grep -Eqs '^#!.*python'; then
+                echo "$file"
+              fi
+            done > "$RUNNER_TEMP/python-files"
+          if [ ! -s "$RUNNER_TEMP/python-files" ]; then
+            echo "::error::No Python files found!"
+            exit 1
+          fi
+          echo "Linting the following files:"
+          cat "$RUNNER_TEMP/python-files"
+
+      - name: Check formatting with black
+        id: black
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/python-files"
+          python -m black --check --diff "${files[@]}"
+
+      # Runs even when black fails so a single push reports both
+      - name: Lint with pylint
+        if: ${{ success() || steps.black.outcome == 'failure' }}
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/python-files"
+          python -m pylint "${files[@]}"

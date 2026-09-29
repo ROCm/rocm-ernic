@@ -14,7 +14,7 @@
 ernic_source_dir: ""
 
 ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
-ernic_source_repo_version: "main"
+ernic_source_repo_version: "develop"
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
 
 # Re-clone even when the checkout already exists.

@@ -17,8 +17,8 @@ EXTRACT_ALL            = YES
 EXTRACT_PRIVATE        = NO
 EXTRACT_STATIC         = YES
 
-# Exclude QEMU-derived code (not our public API)
-EXCLUDE_PATTERNS       = */from-qemu/*
+# Exclude vendored code (not our public API)
+EXCLUDE_PATTERNS       = */third-party/*
 
 # XML output for Breathe (Sphinx integration)
 GENERATE_HTML          = NO

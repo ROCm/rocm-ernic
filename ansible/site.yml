@@ -4,90 +4,78 @@
 #
 # Master playbook for rocm-ernic integration testing.
 #
-# Imports all plays in order:
-#   1.  Host setup    -- build, install, configure service
-#   2.  VM creation   -- golden image, launch VMs
-#   3.  Guest setup   -- driver, rdma-core, NIC config
-#   4.  Sanity tests  -- ping, netcat, perftest
-#   5.  Tutorial      -- upstream RDMA-Tutorial examples
-#   6a. TCP/IP perf   -- iperf3 throughput
-#   6b. RDMA perf     -- BW/lat sweeps, reliability
-#   7a. GPU tests     -- xio-tester 2-node GPU RDMA
-#   7b. GPU perftest  -- rocm-xio GPU-initiated perftest
-#   8.  Stress tests  -- multi-QP, soak, churn
+# The guest image is not built here.  It is a published
+# artifact from batesste-ci-images -- flavour `ionic`, which
+# bakes the pinned mainline kernel, the RDMA userspace and the
+# build toolchain -- fetched by scripts/fetch-guest-image.sh or
+# by ci/jobs/vm-up.sh.  This playbook starts from that image.
+#
+# Phases:
+#   1. Host setup   -- build, install, configure service, TAPs
+#   2. Guest setup  -- ionic DKMS driver, rdma-core, NIC config
+#   3. Sanity tests -- ping, netcat, perftest
+#   4. Tutorial     -- upstream RDMA-Tutorial examples
+#   5. Performance  -- iperf3 and RDMA perftest sweeps
+#
+# The guests are not created here and must already be running
+# by phase 2.  Phase 1 also stops any that are running, unless
+# ernic_restart_existing is false, so launching them and then
+# running this playbook plain would destroy them: install the
+# service first, launch the VMs with it, then run the rest with
+# the teardown turned off.
 #
 # Usage:
 #   cd ansible
-#   ansible-playbook site.yml
+#   ansible-playbook site.yml --tags host-setup
+#   sudo ernicctl vm-launch 1     # once per instance
+#   ansible-playbook site.yml -e ernic_restart_existing=false
+#
+# VMs brought up by ci/jobs/vm-up.sh are the CI path; drive
+# those with ci-site.yml, which imports no host-setup play.
 #
 # Override variables with -e:
 #   ansible-playbook site.yml -e ernic_instances=4
 #   ansible-playbook site.yml -e ernic_build=false
 #
-# Run the full suite with GPU passthrough:
-#   ansible-playbook site.yml \
-#       -e ernic_gpu_passthrough=true
-#
 # Select phases by tag (--tags / --skip-tags):
-#   ansible-playbook site.yml --tags perf
-#   ansible-playbook site.yml --tags gpu
-#   ansible-playbook site.yml --tags perf,gpu-perf
-#   ansible-playbook site.yml --tags test
-#   ansible-playbook site.yml --skip-tags stress
+#   ansible-playbook site.yml --tags setup
+#   ansible-playbook site.yml --tags sanity
+#   ansible-playbook site.yml --skip-tags perf
 #
 # Available tags:
-#   setup      -- all setup phases (host-setup,
-#                 vm-create, guest-setup)
-#   host-setup -- phase 1 only
-#   vm-create  -- phase 2 only
-#   guest-setup -- phase 3 only
-#   test       -- all test phases
-#   sanity     -- phase 4 only
-#   tutorial   -- phase 5 only
-#   tcp-perf   -- phase 6a only (iperf3)
-#   perf       -- phase 6b only (RDMA perftest)
-#   gpu        -- phases 7a + 7b
-#   gpu-test   -- phase 7a only
-#   gpu-perf   -- phase 7b only
-#   stress     -- phase 8 only
+#   setup       -- host-setup + guest-setup
+#   host-setup  -- phase 1 only
+#   guest-setup -- phase 2 only
+#   test        -- all test phases
+#   sanity      -- phase 3 only
+#   tutorial    -- phase 4 only
+#   perf        -- phase 5 (tcp-perf + rdma-perf)
 
 ---
 - name: "Phase 1: Host setup"
   ansible.builtin.import_playbook: playbooks/host-setup.yml
   tags: [setup, host-setup]
 
-- name: "Phase 2: VM creation"
-  ansible.builtin.import_playbook: playbooks/vm-create.yml
-  tags: [setup, vm-create]
+- name: "Register the running VMs in inventory"
+  ansible.builtin.import_playbook: playbooks/vm-register.yml
+  tags: [always]
 
-- name: "Phase 3: Guest setup"
+- name: "Phase 2: Guest setup"
   ansible.builtin.import_playbook: playbooks/guest-setup.yml
   tags: [setup, guest-setup]
 
-- name: "Phase 4: Sanity tests"
+- name: "Phase 3: Sanity tests"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [test, sanity]
 
-- name: "Phase 5: RDMA tutorial examples"
+- name: "Phase 4: RDMA tutorial examples"
   ansible.builtin.import_playbook: playbooks/tutorial-tests.yml
   tags: [test, tutorial]
 
-- name: "Phase 6a: TCP/IP performance tests (iperf3)"
+- name: "Phase 5a: TCP/IP performance tests (iperf3)"
   ansible.builtin.import_playbook: playbooks/tcp-performance-tests.yml
-  tags: [test, tcp-perf]
+  tags: [test, perf, tcp-perf]
 
-- name: "Phase 6b: CPU-based RDMA performance tests (perftest)"
+- name: "Phase 5b: RDMA performance tests (perftest)"
   ansible.builtin.import_playbook: playbooks/performance-tests.yml
-  tags: [test, perf, cpu-rdma-perf]
-
-- name: "Phase 7a: GPU RDMA tests (xio-tester)"
-  ansible.builtin.import_playbook: playbooks/gpu-tests.yml
-  tags: [test, gpu, gpu-xio-tester]
-
-- name: "Phase 7b: GPU perftest (perftest-xio via rocm-xio)"
-  ansible.builtin.import_playbook: playbooks/gpu-perftest.yml
-  tags: [test, gpu, gpu-perftest-xio]
-
-- name: "Phase 8: TCP/IP and RDMA Stress tests"
-  ansible.builtin.import_playbook: playbooks/stress-tests.yml
-  tags: [test, stress]
+  tags: [test, perf, rdma-perf]

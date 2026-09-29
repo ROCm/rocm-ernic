@@ -1,8 +1,4 @@
-/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
- * Copyright (c) Gluesys Inc. and Jihyeon Gim. All rights reserved.
- *
- * SPDX-License-Identifier: MIT
- *
+/*
  * Loopback WRITE_WITH_IMM responder-delivery test.
  *
  * Pairs two RC QPs on one rocm_ernic device, then runs several
@@ -14,8 +10,17 @@
  * receive wr_id, and the payload length. The payload itself is
  * compared against the data written into the remote buffer.
  *
- * Exits 0 when every iteration passes, 77 when no rocm_ernic device
- * is present (CTest skip), and 1 on any validation failure.
+ * Exits 0 when every iteration passes, 77 when no emulated device is
+ * present (CTest skip), and 1 on any validation failure. Set
+ * $RDMA_DEVICE to pin the device; it then exits 1 rather than 77 if
+ * that device is absent. See ernic_device.h.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * Copyright (c) Gluesys Inc. and Jihyeon Gim. All rights reserved.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -32,32 +37,13 @@
 
 #include <infiniband/verbs.h>
 
+#include "ernic_device.h"
+
 #define ITERATIONS    4
 #define PAYLOAD_LEN   64
 #define BUFFER_LEN    4096 /* page-sized so the MR chunk count divides cleanly */
 #define POLL_TRIES    2000
 #define POLL_DELAY_US 1000
-
-static struct ibv_device *find_rocm_ernic(struct ibv_device **list, int n)
-{
-    for (int i = 0; i < n; i++) {
-        const char *name;
-
-        if (!list[i])
-            continue;
-        name = ibv_get_device_name(list[i]);
-        /*
-         * The kernel registers the device as rocm_ernic%d. Systems
-         * with persistent RDMA naming see a PCI-topology name such
-         * as rocep0s4, and the rocm-ernic udev rule renames it to
-         * rocm-rdma-ernic0. Match all three.
-         */
-        if (strstr(name, "rocm_ernic") || strstr(name, "rocep") ||
-            strstr(name, "rocm-rdma-ernic"))
-            return list[i];
-    }
-    return NULL;
-}
 
 /* Bounded poll for a single completion. Returns 0 on success, -1 on
  * timeout or poll error. */
@@ -98,20 +84,24 @@ int main(void)
     int ndev;
     int it;
     uint32_t seed;
+    enum ernic_device_result lookup;
 
     dev_list = ibv_get_device_list(&ndev);
     if (!dev_list || ndev < 1) {
-        fprintf(stderr, "No IB devices found - skipping test\n");
+        lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
+                                          : ERNIC_DEVICE_ABSENT;
+        ernic_report_no_device(lookup);
         if (dev_list)
             ibv_free_device_list(dev_list);
-        return 77; /* CTest skip code */
+        return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
 
-    ibdev = find_rocm_ernic(dev_list, ndev);
+    ibdev = ernic_find_device(dev_list, ndev, &lookup);
     if (!ibdev) {
-        fprintf(stderr, "No rocm_ernic device found - skipping test\n");
+        ernic_report_no_device(lookup);
         ibv_free_device_list(dev_list);
-        return 77; /* CTest skip code */
+        /* A named-but-absent device is a real failure, not a skip. */
+        return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
 
     ctx = ibv_open_device(ibdev);
@@ -254,7 +244,7 @@ int main(void)
     printf("seed=%" PRIu32 "\n", seed);
 
     for (it = 0; it < ITERATIONS; it++) {
-        uint64_t recv_wr_id = 0x5245435632494d4dULL + (uint64_t)it;
+        uint64_t recv_wr_id = UINT64_C(0x5245435632494d4d) + (uint64_t)it;
         uint32_t imm = (uint32_t)rand();
         struct ibv_sge rsge, wsge;
         struct ibv_recv_wr rwr;
@@ -303,7 +293,7 @@ int main(void)
         }
         if (wc.status != IBV_WC_SUCCESS || wc.opcode != IBV_WC_RDMA_WRITE) {
             fprintf(stderr, "iter %d: sender wc status=%d opcode=%d\n", it,
-                    wc.status, wc.opcode);
+                    (int)wc.status, (int)wc.opcode);
             goto out;
         }
 
@@ -315,8 +305,8 @@ int main(void)
         }
         printf("iter %d: recv wc status=%d opcode=%d flags=%#x imm=%08" PRIx32
                " bytes=%u wr_id=%" PRIx64 "\n",
-               it, wc.status, wc.opcode, wc.wc_flags, ntohl(wc.imm_data),
-               wc.byte_len, wc.wr_id);
+               it, (int)wc.status, (int)wc.opcode, wc.wc_flags,
+               ntohl(wc.imm_data), wc.byte_len, wc.wr_id);
         if (wc.status != IBV_WC_SUCCESS ||
             wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM ||
             !(wc.wc_flags & IBV_WC_WITH_IMM) || ntohl(wc.imm_data) != imm ||

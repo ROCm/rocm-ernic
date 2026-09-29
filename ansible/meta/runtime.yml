@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 ---
-# Set by the dependency chain, not by anything this collection
-# uses directly: sbates130272.batesste >=2.3.0 pulls
-# community.general >=13.3.0, which requires ansible-core >=2.18.
+# Set by community.general >=13.3.0, the collection's one
+# dependency, which itself requires ansible-core >=2.18.  Through
+# 0.1.0 this floor arrived indirectly, via sbates130272.batesste.
 requires_ansible: ">=2.18.0"

@@ -9,7 +9,11 @@
  * Table-driven: positive (small-message echo), negative (NULL / zero-length
  * rejected), and boundary/corner cases around the 4- and 32-byte edges.
  *
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <stddef.h>
@@ -18,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "rdma_cm_proto.h"
+#include "net/rdma_cm_proto.h"
 
 #define RESP_CAP     2048
 #define NULL_PAYLOAD ((size_t) - 1)

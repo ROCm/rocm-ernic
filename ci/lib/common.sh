@@ -37,12 +37,7 @@ CI_LOG_DIR="${CI_LOG_DIR:-${CI_WORK}/log}"
 ERNIC_INSTANCES="${ERNIC_INSTANCES:-2}"
 ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6420}"
 
-# Device personality under test.  ionic (1022:8001) is the
-# default everywhere; legacy selects the deprecated PVRDMA
-# device and is only reachable via workflow_dispatch.
-CI_ERNIC_MODE="${CI_ERNIC_MODE:-ionic}"
-
-# In ionic mode each instance attaches to a TAP enslaved to a
+# Each instance attaches to a TAP enslaved to a
 # shared bridge, which is what carries guest-to-guest IP.  The
 # runner cannot create those unprivileged, so install-runner.sh
 # makes them once as root; ci/doctor.sh checks them.  Distinct
@@ -66,11 +61,37 @@ ERNICCTL="${ERNICCTL:-${PROJECT_ROOT}/service/ernicctl}"
 
 CI_VM_NAME_BASE="${CI_VM_NAME_BASE:-rocm-ernic-ci-vm}"
 CI_VM_SSH_BASE_PORT="${CI_VM_SSH_BASE_PORT:-2350}"
-CI_VM_SSH_USER="${CI_VM_SSH_USER:-ubuntu}"
 CI_VM_VCPUS="${CI_VM_VCPUS:-8}"
 CI_VM_MEM="${CI_VM_MEM:-16384}"
 CI_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR:-/opt/qemu-images}"
-CI_VM_BACKING="${CI_VM_BACKING:-/opt/qemu-images/backing/rocm-ernic-may-27-vm-backing.qcow2}"
+
+# ── Guest image ───────────────────────────────────
+#
+# The same artifact the GitHub jobs pull and the same one
+# ansible/group_vars/all.yml points at, so all three lanes
+# test one guest.  Keep the tag equal to GUEST_ARTIFACT_TAG
+# in .github/workflows/system-tests.yml and to
+# ernic_vm_artifact_tag in ansible/group_vars/all.yml.
+#
+# Unlike the VM name and ssh port above, the image is NOT
+# deliberately distinct: the backing file is never written
+# at runtime (each VM gets a COW overlay and ernicctl sets
+# BACKING_SHARED=true), so sharing one base is safe and is
+# the whole point of following the published image.
+CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic}"
+CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2}"
+CI_VM_ARTIFACT_DIR="${CI_VM_ARTIFACT_DIR:-${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}}"
+# What the artifact itself ships, as distinct from the CI_VM_* knobs
+# below, which are overridable and say what this lane should use.
+# fetch_guest_image asserts the image against these two, so overriding
+# CI_VM_BACKING to relocate the overlays does not reject the fetch.
+CI_GUEST_IMAGE_DISK="batesste-ci-vm.qcow2"
+CI_GUEST_IMAGE_USER="batesste"
+CI_VM_BACKING="${CI_VM_BACKING:-${CI_VM_ARTIFACT_DIR}/${CI_GUEST_IMAGE_DISK}}"
+# The account and key baked into that image.
+CI_VM_SSH_USER="${CI_VM_SSH_USER:-${CI_GUEST_IMAGE_USER}}"
+CI_VM_SSH_IDENTITY="${CI_VM_SSH_IDENTITY:-${CI_VM_ARTIFACT_DIR}/id_rsa}"
+
 CI_QEMU_MINIMAL="${CI_QEMU_MINIMAL:-${HOME}/Projects/qemu-minimal}"
 CI_QEMU_PATH="${CI_QEMU_PATH:-/opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/}"
 
@@ -151,6 +172,35 @@ sys.stdout.write("\n")
 PY
 }
 
+# Look up the status a named check recorded.  Prints
+# "pass", "fail", or "" when the check has not run.  Lets
+# a job stop after a failure that would make every later
+# check meaningless, without giving up run_check's
+# record-everything behaviour elsewhere.
+check_status() {
+    # check_status <suite> <name>
+    local suite="$1" name="$2"
+    local f="${CI_RESULTS}/${suite}.jsonl"
+    [ -f "$f" ] || return 0
+    python3 - "$f" "$name" <<'PY'
+import json, sys
+path, want = sys.argv[1], sys.argv[2]
+status = ""
+with open(path) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("name") == want:
+            status = rec.get("status", "")
+print(status)
+PY
+}
+
 # Run a named check, time it, and record pass/fail.
 # Never aborts the job: the report is the source of
 # truth and we want every check attempted.
@@ -190,7 +240,6 @@ ernic_env() {
     export ERNIC_LOG_DIR="${CI_LOG_DIR}"
     export ERNIC_INSTANCES
     export ERNIC_TCP_PORT
-    export ERNIC_DEVICE_MODE="${CI_ERNIC_MODE}"
     export ERNIC_TAP_PREFIX="${CI_TAP_PREFIX}"
     export ERNIC_TAP_BRIDGE="${CI_TAP_BRIDGE}"
     export ERNIC_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR}"
@@ -210,13 +259,40 @@ vm_ssh_port() { echo $(( CI_VM_SSH_BASE_PORT + $1 - 1 )); }
 
 vm_ssh() {
     local n="$1"; shift
+    local id=()
+    # The artifact ships its own key; the guest trusts nothing else.
+    [ -n "${CI_VM_SSH_IDENTITY:-}" ] && [ -f "${CI_VM_SSH_IDENTITY}" ] && \
+        id=(-i "${CI_VM_SSH_IDENTITY}" -o IdentitiesOnly=yes)
     ssh -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o PasswordAuthentication=no \
         -o ConnectTimeout=10 \
         -o LogLevel=ERROR \
+        "${id[@]}" \
         -p "$(vm_ssh_port "$n")" \
         "${CI_VM_SSH_USER}@localhost" "$@"
+}
+
+# Pull the pinned guest image if it is not already on disk.
+# Idempotent and cheap on a hit; see scripts/fetch-guest-image.sh.
+#
+# The --expect-* values are the ones this file hardcodes alongside the
+# tag, so they are the ones that can drift away from it.  They come from
+# CI_GUEST_IMAGE_* rather than CI_VM_SSH_USER and CI_VM_BACKING, which
+# are documented overrides: pointing the overlays at a different backing
+# disk is a lane decision and says nothing about what the registry
+# shipped.  The script checks the guest kernel against IONIC_KERNEL_REF
+# and the README badge on its own.
+fetch_guest_image() {
+    "${PROJECT_ROOT}/scripts/fetch-guest-image.sh" \
+        --repo "${CI_GUEST_ARTIFACT_REPO}" \
+        --tag "${CI_GUEST_ARTIFACT_TAG}" \
+        --dest "${CI_VM_ARTIFACT_DIR}" \
+        --project-root "${PROJECT_ROOT}" \
+        --expect-user "${CI_GUEST_IMAGE_USER}" \
+        --expect-disk "${CI_GUEST_IMAGE_DISK}" \
+        --expect-release resolute \
+        --expect-flavour ionic
 }
 
 # ── Preflight ─────────────────────────────────────
@@ -267,15 +343,20 @@ PY
 # Verify each guest is actually provisioned: RDMA device
 # present, port active, and an address on the emulated NIC.
 #
-# The perf job clones fresh guests from the golden image, so
+# The perf job clones fresh guests from the backing image, so
 # skipping guest-setup leaves them with no driver and no
 # address.  Every measurement then records FAIL, which reads
 # like a device regression rather than a setup mistake.
 require_guests_ready() {
     local i ok=0
     for i in $(seq 1 "${ERNIC_INSTANCES}"); do
-        if ! vm_ssh "${i}" 'ibv_devices' 2>/dev/null \
-                | grep -qE 'rocm-rdma-ernic|rocep|ionic'; then
+        # By PCI vendor ID, not by name: the RDMA device is
+        # renamed twice during boot, so any name pattern is a
+        # snapshot of one moment in that sequence.  See
+        # scripts/find-rdma-device.sh.
+        if ! vm_ssh "${i}" 'sh -s' \
+                < "${PROJECT_ROOT}/scripts/find-rdma-device.sh" \
+                >/dev/null 2>&1; then
             log_error "guest ${i}: no RDMA device"
             ok=1
             continue
@@ -303,8 +384,6 @@ require_guests_ready() {
 # them the launcher starts every instance with no Ethernet and
 # each guest-to-guest test fails on its own, far from the cause.
 require_taps() {
-    [ "${CI_ERNIC_MODE}" = "ionic" ] || return 0
-
     local i tap ok=0 uid
     uid="$(id -u)"
     for i in $(seq 1 "${ERNIC_INSTANCES}"); do

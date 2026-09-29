@@ -1,6 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MIT
 
 # Extract git SHA information at configure time for embedding
 # in the binary. Falls back to safe defaults when git is not

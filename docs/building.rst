@@ -41,8 +41,14 @@ Installation
 
    sudo cmake --install build
 
-By default the binary installs to ``/usr/local/bin/rocm-ernic``.
+By default the binary installs to ``/usr/local/bin/rocm-ernic``,
+and that is the only file a default install places.
 Override the destination with ``-DCMAKE_INSTALL_PREFIX=<path>``.
+
+Configure with ``-DERNIC_INSTALL_SERVICE=ON`` to additionally
+install the systemd units, ``ernicctl``, the launcher, the
+Prometheus exporter, and the ionic driver patches;
+:doc:`service` lists the full set of installed files.
 
 Build Options
 -------------
@@ -57,6 +63,12 @@ Build Options
    * - ``CMAKE_BUILD_TYPE``
      - ``Debug``
      - Build type (Debug, Release, RelWithDebInfo, etc.)
+   * - ``ERNIC_WERROR``
+     - ``OFF``
+     - Treat compiler warnings as errors for project code.
+       Off by default so a build with an unfamiliar compiler
+       is never broken by a new warning; CI turns it on
+       (see :ref:`werror-policy`)
    * - ``ERNIC_USE_SANITIZERS``
      - ``OFF``
      - Enable ASAN / LSAN / UBSAN
@@ -78,14 +90,52 @@ Build Options
      - ``v7.2.4``
      - Linux kernel tag or SHA the ionic sources are fetched
        from; must be ``v6.18`` or newer
+   * - ``IONIC_KERNEL_REPO``
+     - kernel.org stable
+     - Linux kernel git repository the ionic sources are
+       fetched from
+   * - ``ERNIC_INSTALL_SERVICE``
+     - ``OFF``
+     - Also install the systemd units, ``ernicctl``, the
+       launcher, and the Prometheus exporter
+       (see :doc:`service`)
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix
 
+.. _werror-policy:
+
+Warnings as Errors
+------------------
+
+``ERNIC_WERROR`` adds ``-Werror`` to the project's own
+sources and to the test targets. The vendored QEMU sources
+under ``third-party/`` are compiled with ``-w`` regardless,
+so the flag only governs code this project maintains.
+
+It defaults to ``OFF`` so that a packager or downstream
+consumer building with a compiler version we have not tested
+is never blocked by a newly-introduced warning. That
+tolerance is not extended to our own CI: every lane that
+compiles the project configures with ``-DERNIC_WERROR=ON``,
+so a new warning fails the build before it can merge.
+
+Developers should build with it on, matching CI:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DERNIC_WERROR=ON
+
+The ``nix`` static-analysis, dynamic-analysis, and fuzz
+builds are the one exception; they configure with it off
+because gcc 15 and current clang emit warnings on the
+QEMU-ported headers that these builds cannot suppress.
+Those lanes are informational and do not gate merges.
+
 Guest ionic Modules
 -------------------
 
-The guest-side driver for ``--ionic`` mode is the upstream
+The guest-side driver is the upstream
 Linux ionic driver with the patches in ``patches/`` applied.
 Configure with ``-DERNIC_BUILD_KMOD=ON`` to get the DKMS
 targets, and run them in the guest:

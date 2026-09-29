@@ -2,20 +2,22 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-#
-# check-stdlib-imports.py
-#
-# Verify that a Python script imports only from the
-# standard library.  ernicctl ships as a single file that
-# has to run on a bare host with no pip packages
-# available, so a stray third-party import breaks it in
-# exactly the environments it exists to manage.
-#
-# Usage:
-#   scripts/check-stdlib-imports.py [FILE...]
-#
-# Defaults to service/ernicctl.  Exits non-zero and lists
-# the offending module names if any are found.
+
+# The hyphenated script name is not a valid module name
+# pylint: disable=invalid-name
+
+"""Verify that a Python script imports only from the standard library.
+
+ernicctl ships as a single file that has to run on a bare host with no
+pip packages available, so a stray third-party import breaks it in
+exactly the environments it exists to manage.
+
+Usage:
+  scripts/check-stdlib-imports.py [FILE...]
+
+Defaults to service/ernicctl.  Exits non-zero and lists the offending
+module names if any are found.
+"""
 
 import ast
 import sys
@@ -25,7 +27,7 @@ DEFAULT_TARGETS = ["service/ernicctl"]
 
 def offending_imports(path):
     """Return the sorted non-stdlib top-level modules."""
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=path)
 
     stdlib = set(sys.stdlib_module_names)
@@ -49,6 +51,7 @@ def offending_imports(path):
 
 
 def main(argv):
+    """Check each file named in argv (or the defaults); return the exit status."""
     targets = argv[1:] or DEFAULT_TARGETS
     failed = False
 

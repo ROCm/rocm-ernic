@@ -7,8 +7,8 @@ producing functional and performance reports.
 
 The GitHub-hosted workflows in `.github/workflows/` can
 only build and unit-test. Everything that needs KVM, a
-golden VM image or two guests talking RDMA to each other
-runs here instead.
+provisioned guest image or two guests talking RDMA to
+each other runs here instead.
 
 ## Design
 
@@ -43,24 +43,52 @@ performance sweeps, and the CI drives those plays
 directly through `ansible/ci-site.yml`.
 
 `site.yml` is the developer entry point and needs root:
-it installs to `/usr/local`, drives systemd, and builds
-the golden image over `qemu-nbd`. `ci-site.yml` skips
-all of that. It assumes `ci/jobs/vm-up.sh` has already
-brought VMs up unprivileged, and supplies only the
-inventory registration those plays need, via
-`ansible/playbooks/ci-vm-register.yml`.
+it installs to `/usr/local`, drives systemd, and binds
+devices to `vfio-pci`. `ci-site.yml` skips all of that.
+It assumes `ci/jobs/vm-up.sh` has already brought VMs up
+unprivileged, and supplies only the inventory registration
+those plays need, via `ansible/playbooks/vm-register.yml`
+-- the same play the developer path uses.
 
-The golden backing image is treated as a **prebuilt
-input**, not something CI regenerates. Creating one
-needs `qemu-nbd` and root; see
-`ansible/playbooks/vm-create.yml`.
+The guest disk is **pulled from the registry**, not
+regenerated. `vm-up.sh` fetches the artifact named by
+`CI_GUEST_ARTIFACT_TAG` through
+`scripts/fetch-guest-image.sh` and unpacks it under
+`CI_VM_ARTIFACT_DIR`, skipping the download when that tag
+is already present. Needing no root is the point: baking a
+guest image locally needs `qemu-nbd` and root, and pinning
+the tag means CI tests the same image the hosted workflow
+does. The image itself is built elsewhere, by the `ionic`
+flavour of [batesste-ci-images][ref-ci-images].
+
+The fetch is also the gate. `fetch_guest_image` in
+`lib/common.sh` passes the login account, disk name, release
+and flavour the artifact is known to ship, and the script
+rejects an image whose `vm-info.json` disagrees, or whose
+kernel is below 6.18, skewed from `IONIC_KERNEL_REF`, or
+different from the badge on `README.md`. Those checks run
+after the kilobyte metadata pull and before the 3.7 GB disk
+pull, so a wrong image fails in seconds rather than forty
+minutes into a lane. The expectations come from
+`CI_GUEST_IMAGE_USER` and `CI_GUEST_IMAGE_DISK`, not from
+`CI_VM_SSH_USER` and `CI_VM_BACKING`, so overriding either of
+those knobs still fetches.
+
+Keep the tag equal to `GUEST_ARTIFACT_TAG`
+in `.github/workflows/system-tests.yml` and
+`ernic_vm_artifact_tag` in `ansible/group_vars/all.yml`.
+
+The backing qcow2 is never written at runtime -- each VM
+gets its own overlay -- so unlike the VM names and SSH
+ports, the image is deliberately *not* made distinct per
+checkout.
 
 ## Tiers
 
 | Tier | Job | Needs KVM |
 |---|---|---|
 | 1 | build, ctest, loopback backend | no |
-| 2 | two-VM RDMA functional | yes |
+| 2 | two-VM RDMA functional, one-VM NVMe-oF | yes |
 | 3 | performance sweeps | yes |
 
 Tier 1 is fully self-contained and is the gate for
@@ -111,7 +139,7 @@ Override with `--root` or `CI_RUNNER_ROOT` if your node
 lays out local storage differently.
 
 `install-runner.sh` also creates the TAP interfaces the
-default ionic device mode needs — `ernic-ci-br0` plus one
+emulated ionic device needs — `ernic-ci-br0` plus one
 `ernic-ci-tapN` per instance, owned by the runner user.
 That is the one step needing root, and it needs it once:
 jobs themselves never use `sudo`, and an unprivileged
@@ -122,7 +150,6 @@ test fails one at a time without saying why, so
 front. Pass `--skip-taps` if the node already has them or
 you would rather run the `ip` commands by hand; without
 passwordless `sudo` the step warns and skips itself.
-Legacy mode (`CI_ERNIC_MODE=legacy`) needs none of this.
 
 This deliberately stops short of registering. Mint a
 registration token at
@@ -165,7 +192,7 @@ without feedback.
 Fork pull requests **are** runnable, via the `pr` input:
 
 ```bash
-gh workflow run self-hosted-ci.yml --ref main -f pr=123
+gh workflow run self-hosted-ci.yml --ref develop -f pr=123
 ```
 
 or just `/run-ci` on the pull request.
@@ -211,7 +238,7 @@ usable from any pull request or issue:
 
 | Command | Runs |
 |---|---|
-| `/run-ci` | build, loopback and two-VM RDMA functional |
+| `/run-ci` | build, loopback, two-VM RDMA and NVMe-oF functional |
 | `/run-ci build` | build, ctest and loopback only |
 | `/run-ci functional` | same as bare `/run-ci` |
 | `/run-ci full` | functional plus performance sweeps |
@@ -247,7 +274,7 @@ pull request.
 Note that `workflow_dispatch` only resolves workflows
 present on the default branch. Both
 `self-hosted-ci.yml` and `ci-command.yml` must be merged
-to `main` before the command works, even when targeting
+to `develop` before the command works, even when targeting
 a topic branch.
 
 ## Reporting back
@@ -263,52 +290,150 @@ their outcome is the run's own status and the job summary.
 
 ## Publishing performance trends
 
-The nightly publishes its medians to the docs site at
+The scheduled run publishes its medians to the docs site at
 <https://rocm.github.io/rocm-ernic/>, under *Performance
 trends*.
 
-`ci/report/publish-perf.py` appends one record per run to
-`docs/perf-history/history.jsonl`, regenerates
-`docs/perf-trends.rst`, and commits both to `main`. That
-commit is pushed with the job's own `GITHUB_TOKEN`, which
-GitHub's loop-prevention rule exempts from starting other
-workflow runs -- `docs-deploy`'s `push` trigger would not
-fire on it either way, `[skip ci]` or not -- so the report
-job dispatches `docs-deploy.yml` explicitly (`workflow_dispatch`,
-needs `actions: write`) right after the push to rebuild Pages.
+All three badges are fed on identical terms. `system-tests.yml`
+is the single entry point, and both of its publishing lanes --
+the two-VM one for `perftest`/`iperf3`, the NVMe-oF one for the
+fio sweep -- hand off to the same composite action,
+`.github/actions/publish-perf`. There is one copy of the commit,
+push and Pages-dispatch logic, so a bug in it is fixed once rather
+than per lane.
 
-Each record carries the device mode it was measured in, and
-the script refuses to append a run whose mode differs from
-the previous record unless `--allow-mode-change` is passed
-(the `allow_mode_change` dispatch input). One series that
-silently spans a guest-stack change reads as a regression
-rather than a switch; the switch-over point is annotated on
-the generated page. Legacy runs never publish at all.
+### Nothing CI writes lands on `develop`
 
-The same run writes `docs/perf-history/badge-rdma.json` and
-`badge-tcp.json`, one shields.io [endpoint badge][shields-endpoint]
-each for the most recent RDMA (`ib_send_bw`, 1 MiB, peak GB/s)
-and TCP/IP (`iperf3`, sustained GB/s) bandwidth, falling back to
-the latest prior run that has a value so one bad sweep does not
-grey out a badge. `docs/conf.py` publishes the whole of
-`docs/perf-history` (charts, history, badges, this file) as
-`html_static_path`, so once Pages rebuilds the badges are
+`develop` is source only. The published site and the data behind it
+live on the orphan `gh-pages` branch, which is also what GitHub
+Pages serves (Settings > Pages > "Deploy from a branch",
+`gh-pages` / root):
+
+```
+/                    built Sphinx HTML
+/.nojekyll
+/perf/history.jsonl  the durable record, one JSON object per run
+/perf/badge-*.json   the shields the README points at
+```
+
+`perf/` has no leading underscore deliberately, so it is served
+even if `.nojekyll` is ever lost.
+
+A publishing lane clones `gh-pages`, copies `perf/history.jsonl`
+into `docs/perf-history/`, runs `ci/report/publish-perf.py` to
+append its record and refresh the badges, copies both back into
+`perf/` and pushes. It never touches the built HTML, so a perf
+run cannot disturb the site.
+
+That push is made with the job's own `GITHUB_TOKEN`, which
+GitHub's loop-prevention rule exempts from starting other workflow
+runs, so the lane then dispatches `docs-deploy.yml` explicitly
+(`workflow_dispatch`, needs `actions: write`) to rebuild the site.
+`docs-deploy` fetches `perf/history.jsonl` back off `gh-pages`,
+renders the trend page from it (`publish-perf.py --render-only`),
+builds Sphinx and `rsync -a --delete --exclude perf/`s the result
+onto `gh-pages`. The exclusion is what keeps the two halves of the
+branch from clobbering each other.
+
+The badges are therefore correct the moment a lane pushes: they no
+longer wait on a Sphinx build, which is what left run `35270045274`
+publishing a real number behind a stale shield.
+
+`docs/perf-history/history.jsonl` is committed to `develop` **empty**,
+with `"no data"` badges and a stub `docs/perf-trends.rst`, so a
+local `make docs` or a pull request build still renders a complete
+site with no toctree warnings. To see the real page locally, fetch
+the history first:
+
+```sh
+git show origin/gh-pages:perf/history.jsonl \
+    > docs/perf-history/history.jsonl
+python3 ci/report/publish-perf.py --render-only --docs-dir docs
+```
+
+### Only GitHub-hosted runs publish
+
+Every published number comes off a GitHub-hosted runner. The
+self-hosted lane still sweeps, reports and gates regressions, but
+its figures stay in the run's artifacts and never reach the docs
+site or the shields.
+
+The reason is comparability. A GitHub runner has noisy neighbours
+and no fixed CPU; `hpe-rack-15` has neither. Interleaving the two
+in one series produces a chart whose every other point is a step
+change in the machine rather than in the code, which is exactly the
+signal the trend exists to show. Publishing from one class of
+machine keeps the line meaningful even though it is the noisier
+class.
+
+`publish-perf.py --runner` records the class on each history entry
+(`github-hosted` or `self-hosted`), and the page charts each class
+on its own axes. Records written before that flag existed carry no
+`runner` key and are read as `self-hosted`, which is where they
+came from. The shields read the `github-hosted` series only: a
+fallback across classes would put a lab-node number behind a label
+the README presents as a GitHub-hosted one.
+
+### The shields
+
+Each publishing run writes one shields.io [endpoint badge][shields-endpoint]
+per transport into `docs/perf-history/`, each falling back to the
+latest prior run *of the same runner class* that has a value, so one
+bad sweep does not grey a badge out:
+
+| File | Metric | Written by |
+| --- | --- | --- |
+| `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `system-tests.yml` |
+| `badge-tcp.json` | `iperf3`, sustained GB/s | `system-tests.yml` |
+| `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `system-tests.yml` |
+
+The lane copies them to `perf/` on `gh-pages`, so each badge is
 reachable at
-`https://rocm.github.io/rocm-ernic/_static/badge-rdma.json` and
-`.../badge-tcp.json`. README.md links the RDMA one; the TCP
-badge is not linked yet since no nightly has produced a real
-number for it, and a "no data" badge on the front page reads as
-a broken project rather than a pending measurement -- link it
-once the first nightly with TCP data has published.
+`https://rocm.github.io/rocm-ernic/perf/badge-<name>.json` as soon
+as that push lands -- no doc build in between.
+
+README.md links all three. All three currently ship with a
+committed `"no data"` placeholder: the `github-hosted` series
+starts empty, and the RDMA and TCP numbers that were there before
+came off the lab node, so continuing to show them under these
+labels would be a wrong answer rather than a stale one. The
+placeholder matters -- without a file at that URL shields.io
+renders an *error*, which looks far worse than a grey "no data".
+Expect real numbers after the first green `system-tests` run on
+`develop`, whether scheduled or dispatched by hand.
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
-Only a clean full-tier nightly on `main` publishes.
-Pull request runs are excluded by the same condition that
-guards the baseline: with the `pr` input `github.ref` still
-says `main`, so `inputs.pr == ''` is what actually
-distinguishes them. A pull request's numbers describe the
-pull request, not `main`.
+### Publishing on demand
+
+Waiting for 04:23 UTC is optional. `system-tests.yml` takes a
+`workflow_dispatch` with a `publish` boolean (default true), so a
+manual run against `develop` fills all three shields:
+
+```bash
+gh workflow run system-tests.yml --ref develop
+```
+
+Pass `-f publish=false` to exercise the sweeps without touching
+the history -- useful when the sweep itself is what you are
+testing. Dispatching anything other than `--ref develop` sweeps but
+never publishes, by the same rule below.
+
+Budget for it: the two-VM lane boots two guests and runs for the
+best part of an hour, so this is not a quick way to refresh a
+badge. The NVMe-oF lane finishes much sooner and pushes as soon
+as it does, rather than waiting for its slower sibling.
+
+The workflow does not cancel in-progress runs on `develop`, so a
+dispatch will not kill a scheduled run part-way through its push;
+the two queue instead.
+
+Only a green run on `develop` publishes. Pull request runs never
+do -- a pull request's numbers describe the pull request, not
+`develop` -- and on `system-tests.yml` they do not even sweep:
+the two perf plays are minutes of `perftest` and `iperf3` on top
+of a job that already runs the best part of an hour, for numbers
+that would be discarded.
 
 Charts are inline SVG with no JavaScript and no extra build
 dependency. Each message size gets its own panel and its own
@@ -319,9 +444,15 @@ show. Every chart is also rendered as a table, which is both
 the accessible reading and the relief required for the one
 palette colour that sits below 3:1 on the light surface.
 
-Publishing never fails a run. If `main` moved underneath the
-job and the commit cannot be rebased on, it warns and leaves
-the run's real result alone.
+Publishing never fails a run. Every git step in the publish
+block warns and exits 0 rather than propagating: if `develop`
+moved underneath the job, if the push is rejected, or if git
+cannot read the repository at all, the run keeps the result it
+actually earned. That last case is not hypothetical -- these
+lanes run in a container, where the workspace arrives owned by
+another uid and `actions/checkout`'s `safe.directory` entry is
+out of scope, so the publish block marks the workspace safe
+itself before touching git.
 
 ## Running jobs by hand
 
@@ -333,8 +464,44 @@ bash ci/jobs/build.sh          # configure, build, ctest
 bash ci/jobs/loopback.sh       # loopback backend suite
 bash ci/jobs/vm-up.sh          # boot the CI VMs
 bash ci/jobs/vm-functional.sh  # RDMA functional tests
+bash ci/jobs/vm-nvmeof.sh      # NVMe-oF functional tests
 bash ci/jobs/perf.sh           # performance sweeps
 bash ci/jobs/vm-down.sh        # tear down
+```
+
+`vm-nvmeof.sh` is the one lane that needs a different VM
+bring-up: the controller lives inside the instance, so a
+single guest talking to a single server is a complete
+fabric and the instances have to be started on the nvmeof
+backend.
+
+It aims the connect at the controller's queue ceiling -- `-i
+$NVMEOF_QUEUES -W $NVMEOF_QUEUES` -- and then asserts that
+`/sys/class/nvme/nvmeN/queue_count` agrees. Unpinned,
+`nvme-rdma` asks for one I/O queue per online CPU, so the lane
+would cover whatever the runner happened to have rather than
+what the controller advertises. Both flags are needed: each of
+`-i`, `-W` and `-P` is clamped to the CPU count separately and
+then summed, so `-i 8` on its own tops out at the vCPU count.
+
+`NVMEOF_QUEUES` defaults to the `queues=` key of
+`ERNIC_BACKEND` -- eight when the key is absent, which is the
+server's own default -- so the documented `queues=4`
+reproduction in `docs/nvmeof-performance.rst` asserts against
+five queues rather than nine. The expectation is computed as
+`min(2 * min(queues, nproc), queues) + 1`; a guest with fewer
+than half the ceiling in vCPUs cannot reach it, and that is
+logged rather than failed.
+
+Export both, rather than prefixing a single command: all
+three scripts read them, and `ERNIC_INSTANCES` defaults to 2.
+
+```bash
+export ERNIC_INSTANCES=1
+export ERNIC_BACKEND=nvmeof:size=256M,bs=4096
+bash ci/jobs/vm-up.sh
+bash ci/jobs/vm-nvmeof.sh
+bash ci/jobs/vm-down.sh
 ```
 
 Useful overrides:
@@ -344,17 +511,27 @@ Useful overrides:
 | `CI_WORK` | `/var/tmp/ernic-ci-work` | workspace root |
 | `CI_BUILD_TYPE` | `Release` | CMake build type |
 | `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
-| `CI_ERNIC_MODE` | `ionic` | `legacy` for the deprecated driver |
 | `CI_TAP_PREFIX` | `ernic-ci-tap` | per-instance TAP name prefix |
 | `CI_TAP_BRIDGE` | `ernic-ci-br0` | bridge the TAPs are enslaved to |
 | `ERNIC_INSTANCES` | `2` | number of VMs |
 | `CI_VM_SSH_BASE_PORT` | `2350` | first guest ssh port |
 | `CI_KEEP_OVERLAYS` | `false` | keep qcow2 after teardown |
+| `CI_GUEST_ARTIFACT_REPO` | see `ci/lib/common.sh` | OCI repo holding the guest image |
+| `CI_GUEST_ARTIFACT_TAG` | see `ci/lib/common.sh` | image tag to pull |
+| `CI_VM_ARTIFACT_DIR` | `${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}` | where it is unpacked |
+| `CI_VM_BACKING` | the artifact's qcow2 | backing disk for the overlays |
+| `CI_VM_SSH_USER` | `batesste` | guest login account |
+| `CI_VM_SSH_IDENTITY` | the artifact's `id_rsa` | key used for guest ssh |
+| `CI_VM_VCPUS` | `8` | guest vCPUs |
+| `NVMEOF_QUEUES` | `ERNIC_BACKEND`'s `queues=`, else `8` | queue ceiling the connect aims at |
 
 VM names and ports are deliberately distinct from the
 interactive defaults in `/etc/rocm-ernic/rocm-ernic.env`
 so a CI run can never disturb a developer's VMs on the
 same box. Teardown only ever matches VMs it launched.
+The guest image is the exception, for the reason given
+above: it is read-only at runtime, and sharing it is what
+makes CI and the developer path test the same thing.
 
 ## Reports
 
@@ -388,7 +565,7 @@ Latency metrics are inverted so that "worse" is always
 negative. The script exits non-zero on any functional
 failure or regression, which is what gates the workflow.
 
-Only a clean tier-3 run on `main` updates the baseline,
+Only a clean tier-3 run on `develop` updates the baseline,
 so a failing or partial run can never quietly lower the
 bar.
 
@@ -420,3 +597,5 @@ whichever way the noise happened to fall. The baseline
 lives under `$CI_WORK`, not in git, because it describes
 one host: numbers from this node are not meaningful on
 another. Rebuilding a node means recapturing it.
+
+[ref-ci-images]: https://github.com/sbates130272/batesste-ci-images

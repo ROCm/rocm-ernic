@@ -21,9 +21,7 @@
 # instance to its TAP if the interface already exists.
 - name: Create the host bridge and per-instance TAP interfaces
   ansible.builtin.include_tasks: tap.yml
-  when:
-    - ernic_device_mode == 'ionic'
-    - ernic_tap_setup | bool
+  when: ernic_tap_setup | bool
 
 - name: Configure and start the rocm-ernic service
   ansible.builtin.include_tasks: service.yml

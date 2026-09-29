@@ -3,23 +3,49 @@
 # SPDX-License-Identifier: MIT
 
 ---
-# ── Device mode ──────────────────────────────────
-# ionic  : upstream ionic.ko + ionic_rdma.ko built from patched
-#          kernel sources (VID:DID 1022:8001).  The default.
-# legacy : DEPRECATED out-of-tree rocm_ernic modules (1022:8000).
-ernic_device_mode: ionic
-
 # ── Phase gates ──────────────────────────────────
 ernic_guest_agent: true
+ernic_guest_build_deps: false
+ernic_guest_memlock: true
 ernic_build_rdma_core: true
 ernic_install_driver: true
 ernic_configure_nic: true
 ernic_set_hostname: true
 
+# ── Build toolchain ──────────────────────────────
+# Only installed when ernic_guest_build_deps is set; see
+# tasks/build_deps.yml for why it is off by default.  This is the
+# set .github/workflows/system-tests.yml installs by hand before
+# calling this role, which is the evidence that it is sufficient.
+ernic_guest_build_deps_packages:
+  - dkms
+  - git
+  - build-essential
+  - cmake
+  - ninja-build
+  - pkg-config
+  - libnl-3-dev
+  - libnl-route-3-dev
+  - libudev-dev
+  - python3-docutils
+  # Not a build dependency, and the reason this gate is on at all in
+  # this repo: iperf3 is what tcp-performance-tests.yml measures
+  # with, and the ionic image's packages/ionic.txt does not list it.
+  - iperf3
+# A guest reaching the archive over user-mode NAT routinely races a
+# mirror; the hosted jobs retry for the same reason.
+ernic_guest_build_deps_retries: 3
+ernic_guest_build_deps_delay: 5
+
 # ── Staging paths inside the guest ───────────────
-ernic_guest_driver_dir: /tmp/driver
-ernic_guest_provider_dir: /tmp/rdma-core-provider
 ernic_guest_stamp_dir: /usr/local/share/rocm-ernic
+# Written only by a source build that installed into /usr, and the
+# only durable evidence that dpkg's own files were overwritten.  The
+# provider stamp cannot serve: the guest image writes one for a
+# provider that came from the archive, so a stamp records which
+# provider is installed, not where it came from.
+ernic_guest_source_stamp: >-
+  {{ ernic_guest_stamp_dir }}/source-built.stamp
 
 # ── ionic kernel modules ─────────────────────────
 # The patches and the two helper scripts are staged here; the
@@ -30,29 +56,62 @@ ernic_guest_ionic_dir: /tmp/ionic
 ernic_ionic_source_dir: /var/tmp/ionic-src
 # The kernel ref itself (ernic_ionic_kernel_ref, defaulting to the
 # IONIC_KERNEL_REF pin in cmake/ErnicKernelModule.cmake) is owned
-# by the ernic_source role, which ernic_image_prep shares.
+# by the ernic_source role.
 # drivers/infiniband/hw/ionic was merged for 6.18; older guest
 # kernels cannot build the RDMA half.
 ernic_ionic_min_kernel: "6.18"
+# IONIC_EQ_COUNT_MIN in the upstream driver.  A guest below this
+# builds the modules fine and then fails to probe; see the assert in
+# tasks/preflight.yml.
+ernic_ionic_min_vcpus: 4
+
+# ── Preflight ────────────────────────────────────
+# The PCI pair the device server presents and
+# udev/99-rocm-ernic.rules matches.  Duplicated from those (the
+# rules are a static file this role copies verbatim), so preflight
+# can name the pair it looked for.  A server built from a different
+# revision of rocm-ernic presents something else, and the drift is
+# otherwise silent -- nothing renames, nothing probes.
+ernic_device_vendor_id: "0x1dd8"
+ernic_device_id: "0x100a"
+ernic_guest_preflight_device: true
+# A guest has a handful of PCI devices, so the failure message lists
+# them; run the role against something larger and the list is the
+# message.  Capped rather than dropped -- the presented id is the
+# whole point of printing it.
+ernic_preflight_max_report: 24
 
 # ── DKMS ─────────────────────────────────────────
-# A fresh id each run, so setup-rocm-ernic-dkms.sh cannot
+# A fresh id each run, so the DKMS setup script cannot
 # short-circuit on "already installed" while the staged
-# sources under ernic_guest_driver_dir have changed.
+# sources have changed.
 ernic_dkms_pkg_version: >-
   0.2.0-p{{ lookup('pipe', 'date +%s') }}
 
 # ── rdma-core provider build ─────────────────────
-ernic_rdma_core_version: "62.0"
+# 61.0 is what resolute packages (61.0-2ubuntu3), and its stock
+# ibverbs-providers already carries libionic at the same rdmav59
+# ABI a 62.0 source build produces.  The ionic guest image writes
+# a provider.stamp saying so, so rdma_core.yml skips the build
+# entirely -- which is the point: building at job time made every
+# lane of every run depend on the GitHub release CDN, and that CDN
+# returned 500 for the 62.0 tarball on 2026-09-16 and failed a run.
+# Raise this only for a provider genuinely newer than the archive's.
+# The apt holds follow the source build rather than this version, so
+# they come back on their own once one happens.
+ernic_rdma_core_version: "61.0"
 ernic_rdma_core_url: >-
   https://github.com/linux-rdma/rdma-core/releases/download/v{{
   ernic_rdma_core_version }}/rdma-core-{{
   ernic_rdma_core_version }}.tar.gz
 ernic_rdma_core_build_dir: /tmp/rdma-core-build
 ernic_rdma_core_prefix: /usr
-# The build above installs over the distro's rdma-core, so apt must
-# not be allowed to put the packaged libraries back -- only our
-# build has an ionic provider.  Ignored unless the prefix is /usr.
+# A source build installs over the distro's rdma-core, so apt must
+# not be allowed to put the packaged libraries back -- only that
+# build has an ionic provider.  Ignored unless the prefix is /usr,
+# and applied only to a guest this role actually built from source:
+# a guest running the archive's own provider is left unheld, so it
+# keeps taking security updates.
 ernic_rdma_core_hold: true
 ernic_rdma_core_hold_packages:
   - rdma-core
@@ -61,28 +120,54 @@ ernic_rdma_core_hold_packages:
   - ibverbs-providers
 
 # ── Kernel modules ───────────────────────────────
-ernic_guest_modules_ionic:
+ernic_guest_modules:
   - ib_core
   - ib_uverbs
   - ionic
   - ionic_rdma
-ernic_guest_modules_legacy:
-  - ib_core
-  - ib_uverbs
-  - rocm_ernic_eth
-  - rocm_ernic_rdma
-ernic_guest_modules: >-
-  {{ ernic_guest_modules_legacy
-     if ernic_device_mode == 'legacy'
-     else ernic_guest_modules_ionic }}
+# Write /etc/modules-load.d entries as well as loading now, so a
+# rebooted guest comes back with its RDMA device.  ionic_rdma is
+# the one that needs it; see the comment in tasks/driver_common.yml
+# for why the other three are belt and braces.  Setting this false
+# removes entries a previous run wrote, rather than just declining
+# to write new ones.
+ernic_guest_modules_persist: true
+
+# ── lspci naming ─────────────────────────────────
+# Cosmetic, and usually a no-op: the emulated NIC reuses a real
+# vendor-assigned pair, and current hwdata already lists
+# 1dd8:100a as "DSC Serial Port Controller". tasks/pci_ids.yml only
+# adds the registered 1dd8:5400 subsystem name below on a guest whose
+# pci.ids lacks that subsystem entry.
+# scripts/pci.ids.rocm-ernic is the canonical copy of the entry;
+# keep the two in step.
+ernic_guest_pciids: true
+ernic_guest_pciids_vendor: "1dd8"
+ernic_guest_pciids_device: "100a"
+ernic_guest_pciids_entry: "1dd8  5400  ROCm Emulated RDMA NIC"
 
 # ── Guest NIC ────────────────────────────────────
 ernic_nic_name: rocm-ernic0
 ernic_nic_prefix: 24
-# Per-host values.  vm-create.yml / ci-vm-register.yml supply
+# The /24 the emulated NICs share.  Also a group var in this repo,
+# because the test plays interpolate it at play level where role
+# defaults are not in scope; the two must agree.
+#
+# vm-register.yml derives each guest's address as
+# "{{ ernic_nic_subnet }}.{{ 10 * vm_index }}" -- so instance 1 is
+# .10 and instance 2 is .20, which is what sanity-tests.yml,
+# performance-tests.yml and tcp-performance-tests.yml expect of a
+# two-guest mesh.  A consumer addressing guests by hand should
+# follow the same arithmetic if it wants those plays to work.
+ernic_nic_subnet: "192.168.200"
+# Per-host values.  vm-register.yml supplies
 # vm_index and vm_ip via add_host; a static inventory can set
 # these directly instead.
 ernic_guest_vm_index: "{{ vm_index | default(1) }}"
+# Deliberately empty rather than derived from the subnet and the
+# index: two guests that both fell back to index 1 would silently
+# take the same address, which surfaces much later as an
+# unexplained test failure.  nic.yml asserts on it instead.
 ernic_guest_vm_ip: "{{ vm_ip | default('') }}"
 ernic_vm_name_base: rocm-ernic-vm
 
@@ -106,7 +191,7 @@ ernic_rocm_xio_dir: /opt/rocm-xio
 ernic_ionic_gda_patch_dir: >-
   {{ ernic_rocm_xio_dir }}/rdma-core/ionic-gda
 
-# rocm-xio cmake command line, assembled per device mode.
+# rocm-xio cmake command line.
 ernic_rocm_xio_cmake_base:
   - cmake
   - -S
@@ -124,12 +209,6 @@ ernic_rocm_xio_cmake_ionic:
   - -DGDA_IONIC=ON
   - -DGDA_BNXT=OFF
   - -DRDMA_CORE_BUILD=OFF
-ernic_rocm_xio_cmake_legacy:
-  - -DGDA_ERNIC=ON
-  - "-DERNIC_PROJECT_DIR={{ ernic_rocm_xio_stub_dir }}"
-# rocm-xio wants an ERNIC_PROJECT_DIR laid out like the
-# rocm-ernic repo; only the provider directory is used.
-ernic_rocm_xio_stub_dir: /opt/rocm-ernic-stub
 
 # ── Timing ───────────────────────────────────────
 # A freshly booted guest runs unattended-upgrades, which holds

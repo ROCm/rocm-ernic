@@ -79,8 +79,9 @@ Per-tool targets: `analysis-clang-tidy`, `analysis-cppcheck`,
 
 Triage (`nix/analysis/triage/`) loads every tool's report, drops noise and
 out-of-scope paths, deduplicates, cross-references findings flagged by
-multiple tools, and ranks by priority. `src/from-qemu/utils/` and
-`hw/rdma/` (the untrusted-input parsers) are treated as security-sensitive.
+multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and the
+vendored `third-party/qemu/hw/rdma/` (the untrusted-input paths) are
+treated as security-sensitive.
 
 ## Dynamic analysis
 
@@ -176,8 +177,8 @@ each run was driven through its `run-<arch>-tests` target to a green verdict.
 **What the full-VM run actually checks** (`x86_64` / `aarch64` / `riscv64`):
 the guest boots a minimal NixOS microvm, starts the cross-built server on the
 loopback backend, and runs the PCI-config **test client** against it. The
-client validates the emulated device's config space — Vendor `0x1022` (AMD),
-Device `0x8000` (ROCm ERNIC) — and prints `✓ Test PASSED`; the self-test
+client validates the emulated device's config space — Vendor `0x1dd8`
+(Pensando), Device `0x100a` (ROCm ERNIC) — and prints `✓ Test PASSED`; the self-test
 service then emits `ERNIC Self-Test: SUCCESS` on the serial console, which the
 host-side lifecycle driver (`nix/microvms/lib.nix`) matches to exit 0.
 

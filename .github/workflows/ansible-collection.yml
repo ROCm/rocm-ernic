@@ -15,7 +15,7 @@ name: rocm-ernic - Ansible Collection
   workflow_dispatch: {}
   pull_request:
     branches:
-      - main
+      - develop
     paths:
       - 'ansible/**'
       - '.github/workflows/ansible-collection.yml'
@@ -121,9 +121,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ansible-core
-        run: python3 -m pip install ansible-core
-
+      # ansible-galaxy comes from the image's preinstalled ansible-core,
+      # and building a tarball is this job's only use of it.
       - name: Build the collection
         run: >-
           ansible-galaxy collection build ${{ env.COLLECTION_DIR }}
@@ -192,7 +191,6 @@ jobs:
               - role: sbates130272.rocm_ernic.ernic_rdma_tutorial
                 vars:
                   ernic_rdma_tutorial_tests: false
-              - role: sbates130272.rocm_ernic.ernic_image_prep
               - role: sbates130272.rocm_ernic.ernic_guest_setup
               - role: sbates130272.rocm_ernic.ernic_host_setup
           EOF

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Comprehensive loopback backend testing for CI
 # Tests multiple loopback configurations by verifying server startup
 # Note: Loopback backend doesn't expose RDMA devices directly to host.

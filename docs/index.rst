@@ -15,15 +15,19 @@ Key Features
 ^^^^^^^^^^^^
 
 - Full PCIe device emulation in userspace
-- Two device personalities: the default ionic mode, driven by
-  the upstream Linux ``ionic`` driver, and a deprecated
-  PVRDMA-derived device driven by the companion
-  ``rocm_ernic`` module (see :doc:`ionic`)
+- An AMD Pensando ionic NIC, driven in the guest by the
+  upstream Linux ``ionic`` and ``ionic_rdma`` drivers
+  (see :doc:`ionic`)
 - Memory-mapped BARs (MSI-X, registers, doorbells)
 - MSI-X interrupt support
 - Multiple RDMA backends (loopback, TCP/IP, native verbs)
+- An in-process NVMe-oF target, so one VM and one server
+  are a complete fabric (see :doc:`nvmeof`)
+- An in-process S3-over-RDMA object store, with its own
+  in-band HTTP endpoint on the emulated wire, so the same
+  single VM is a complete object fabric (see :doc:`s3`)
 - Working Ethernet and TCP/IP to the host via a TAP
-  interface in ionic mode
+  interface
 - Comprehensive statistics collection
 
 Quick Start
@@ -32,7 +36,7 @@ Quick Start
 .. code-block:: bash
 
    sudo apt install cmake meson ninja-build pkg-config \
-     libibverbs-dev librdmacm-dev libglib2.0-dev
+     libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev
    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
    cmake --build build
 
@@ -58,11 +62,13 @@ a host TAP:
    architecture
    usage
    ionic
+   nvmeof
+   s3
    service
    monitoring
-   driver
    testing
    performance
+   nvmeof-performance
    perf-trends
 
 .. toctree::
@@ -74,7 +80,7 @@ a host TAP:
 Acknowledgments
 ---------------
 
-The RDMA device logic in ``src/from-qemu/`` is adapted from the
+The RDMA device logic in ``third-party/qemu/`` is adapted from the
 QEMU PVRDMA implementation. The original authors of that work:
 
 - Yuval Shaia <yuval.shaia@oracle.com> (Oracle)
@@ -83,12 +89,18 @@ QEMU PVRDMA implementation. The original authors of that work:
 License
 -------
 
-The project is licensed under the
-`MIT license <https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md>`_.
-Some files carry different licenses per their SPDX headers:
+The build system, documentation, and the deployment and automation code are licensed
+under the
+`MIT license <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_.
+The emulator itself is ``GPL-2.0-or-later``:
 
-- Files under ``src/from-qemu/`` are derived from QEMU and are
-  licensed under ``GPL-2.0-or-later``.
-- Files under ``driver/`` are Linux kernel driver sources and
-  carry ``GPL-2.0 / BSD-2-Clause`` dual licenses as indicated
-  by their SPDX headers.
+- Everything under ``src/``, ``tests/`` and ``third-party/``, and the fuzz
+  harnesses in ``nix/analysis/fuzz/``, which build against ``src/``.
+- The VMware/Linux uAPI headers under
+  ``third-party/qemu/include/standard-headers/`` are instead
+  dual ``GPL-2.0`` / ``BSD-2-Clause``.
+
+The groupings above are a summary; the per-file ``SPDX-License-Identifier``
+notice is authoritative. See
+`LICENSE.md <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_
+for the full statement.

@@ -25,7 +25,7 @@
  *   5. After adminq/notifyq init, ionic.ko calls ionic_auxbus_register() which
  *      creates the ionic.rdma auxiliary device -> ionic_rdma.ko probes it.
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -38,6 +38,7 @@
 #include <syslog.h>
 #include <endian.h>
 #include <sys/mman.h>
+#include <pthread.h>
 
 #include <vfio-user/libvfio-user.h>
 
@@ -293,6 +294,8 @@ struct ionic_eth_emu {
     /* Interrupt controller shadow (per-vector: mask, mask-on-assert). */
     uint32_t intr_mask[IONIC_MSIX_MAX_VECTORS];
     uint32_t intr_mask_assert[IONIC_MSIX_MAX_VECTORS];
+    /* Set when a vector asserted while masked; replayed on unmask. */
+    uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
     struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
@@ -302,8 +305,32 @@ struct ionic_eth_emu {
 
     /* Host network backend, or NULL when Tx is a sink. */
     struct ionic_eth_net *net;
+    /* In-process endpoint offered every Tx frame before the backend. */
+    ionic_eth_tx_filter_fn tx_filter;
+    void *tx_filter_ctx;
     /* Staging buffer for one frame in either direction. */
     uint8_t frame[IONIC_ETH_NET_MTU_MAX];
+
+    /*
+     * Frames handed over by threads that may not DMA -- today only the TCP
+     * mesh receive thread.  Producers append under @inbox_lock; the main
+     * loop drains the queue from ionic_eth_emu_poll_rx().
+     */
+    struct eth_inbox_frame *inbox_head;
+    struct eth_inbox_frame *inbox_tail;
+    unsigned inbox_count;
+    pthread_mutex_t inbox_lock;
+};
+
+/* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
+ * blocking producer stalls above this, which back-pressures the mesh TCP
+ * connection the same way the old PVRDMA Rx ring did. */
+#define ETH_INBOX_MAX_FRAMES 256
+
+struct eth_inbox_frame {
+    struct eth_inbox_frame *next;
+    size_t len;
+    uint8_t data[];
 };
 
 /* -------------------------------------------------------------------------
@@ -352,6 +379,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
         free(emu);
         return NULL;
     }
+    pthread_mutex_init(&emu->inbox_lock, NULL);
 
     /* Initialise dev_info_regs in BAR0 shadow.
      * ionic.ko reads signature at offset 0 to confirm the device is alive,
@@ -388,8 +416,45 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     if (!emu)
         return;
     ionic_eth_net_close(emu->net);
+    while (emu->inbox_head) {
+        struct eth_inbox_frame *f = emu->inbox_head;
+        emu->inbox_head = f->next;
+        free(f);
+    }
+    emu->inbox_tail = NULL;
+    pthread_mutex_destroy(&emu->inbox_lock);
     free(emu->bar2);
     free(emu);
+}
+
+int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
+                                 size_t len)
+{
+    if (!emu || !frame || len == 0 || len > IONIC_ETH_NET_MTU_MAX)
+        return -EINVAL;
+
+    struct eth_inbox_frame *f = malloc(sizeof(*f) + len);
+    if (!f)
+        return -ENOMEM;
+    f->next = NULL;
+    f->len = len;
+    memcpy(f->data, frame, len);
+
+    pthread_mutex_lock(&emu->inbox_lock);
+    if (emu->inbox_count >= ETH_INBOX_MAX_FRAMES) {
+        pthread_mutex_unlock(&emu->inbox_lock);
+        free(f);
+        return -ENOSPC;
+    }
+    if (emu->inbox_tail)
+        emu->inbox_tail->next = f;
+    else
+        emu->inbox_head = f;
+    emu->inbox_tail = f;
+    emu->inbox_count++;
+    pthread_mutex_unlock(&emu->inbox_lock);
+
+    return 0;
 }
 
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
@@ -406,6 +471,13 @@ void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
     emu->dp = dp;
 }
 
+void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_tx_filter_fn fn, void *ctx)
+{
+    emu->tx_filter = fn;
+    emu->tx_filter_ctx = ctx;
+}
+
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq)
 {
@@ -420,6 +492,35 @@ void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, void *handle)
 void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
 {
     memcpy(emu->mac, mac, 6);
+}
+
+/* -------------------------------------------------------------------------
+ * Deliver one MSI-X assertion on an unmasked vector.  Callers must have
+ * established that the vector is in range and currently unmasked.
+ * -------------------------------------------------------------------------
+ */
+static int deliver_irq(struct ionic_eth_emu *emu, int vec)
+{
+    emu->intr_pending[vec] = 0;
+
+    /* Real hardware latches the mask as it asserts when mask_assert is set,
+     * so the driver's NAPI poll runs without a second interrupt racing it. */
+    if (emu->intr_mask_assert[vec])
+        emu->intr_mask[vec] = 1;
+
+    int ret = vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
+    if (!ret)
+        pvrdma_irq_count(emu->pvrdma_handle);
+
+    return ret;
+}
+
+/* Replay an assertion that arrived while the vector was masked. */
+static void unmask_irq(struct ionic_eth_emu *emu, int vec)
+{
+    emu->intr_mask[vec] = 0;
+    if (emu->intr_pending[vec])
+        deliver_irq(emu, vec);
 }
 
 /* -------------------------------------------------------------------------
@@ -472,7 +573,10 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 
             switch (rel % INTR_REG_STRIDE) {
             case INTR_MASK_OFF:
-                emu->intr_mask[vec] = val;
+                if (val)
+                    emu->intr_mask[vec] = val;
+                else
+                    unmask_irq(emu, vec);
                 break;
             case INTR_MASK_ASSERT_OFF:
                 emu->intr_mask_assert[vec] = val;
@@ -482,7 +586,7 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
                  * a vector that mask-on-assert disabled.  Ignoring this pins
                  * the mask after the first interrupt and the queue stalls. */
                 if (val & INTR_CRED_UNMASK)
-                    emu->intr_mask[vec] = 0;
+                    unmask_irq(emu, vec);
                 break;
             default:
                 break;
@@ -1368,9 +1472,10 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     return off;
 }
 
-/* Drain the Tx ring.  Frames go to the host network backend when one is
- * attached; otherwise Tx is a sink, which is still necessary -- without a
- * completion the netdev watchdog fires every five seconds and resets the
+/* Drain the Tx ring.  A registered filter sees each frame first and may
+ * claim it; what it leaves goes to the host network backend when one is
+ * attached.  With neither, Tx is a sink, which is still necessary -- without
+ * a completion the netdev watchdog fires every five seconds and resets the
  * queues. */
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index)
@@ -1386,10 +1491,15 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
     q->prod = prod;
 
     for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
-        if (emu->net) {
+        if (emu->net || emu->tx_filter) {
             size_t len = eth_tx_gather(emu, q, q->head);
             if (len) {
-                ionic_eth_net_send(emu->net, emu->frame, len);
+                bool taken =
+                    emu->tx_filter != NULL &&
+                    emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
+                if (!taken && emu->net) {
+                    ionic_eth_net_send(emu->net, emu->frame, len);
+                }
                 pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
             }
         }
@@ -1473,7 +1583,7 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
 
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 {
-    if (!emu || !emu->net)
+    if (!emu)
         return;
 
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][0];
@@ -1482,7 +1592,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 
     /* Bounded per poll so a busy tap cannot starve the RDMA admin queue. */
     bool delivered = false;
-    for (unsigned n = 0; n < 64; n++) {
+    for (unsigned n = 0; emu->net && n < 64; n++) {
         ssize_t len =
             ionic_eth_net_recv(emu->net, emu->frame, sizeof(emu->frame));
         if (len <= 0)
@@ -1491,6 +1601,38 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0) {
             delivered = true;
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
+        }
+    }
+
+    /* Frames queued by off-thread producers (TCP mesh).  A frame that the
+     * guest has no buffer for is put back at the head so ordering holds and
+     * the producer keeps seeing back-pressure. */
+    for (unsigned n = 0; n < 64; n++) {
+        pthread_mutex_lock(&emu->inbox_lock);
+        struct eth_inbox_frame *f = emu->inbox_head;
+        if (f) {
+            emu->inbox_head = f->next;
+            if (!emu->inbox_head)
+                emu->inbox_tail = NULL;
+            emu->inbox_count--;
+        }
+        pthread_mutex_unlock(&emu->inbox_lock);
+        if (!f)
+            break;
+
+        if (eth_rx_deliver(emu, q, f->data, f->len) == 0) {
+            delivered = true;
+            pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)f->len, false);
+            free(f);
+        } else {
+            pthread_mutex_lock(&emu->inbox_lock);
+            f->next = emu->inbox_head;
+            emu->inbox_head = f;
+            if (!emu->inbox_tail)
+                emu->inbox_tail = f;
+            emu->inbox_count++;
+            pthread_mutex_unlock(&emu->inbox_lock);
+            break;
         }
     }
 
@@ -1535,17 +1677,14 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
 {
     if (vec < 0 || vec >= IONIC_MSIX_MAX_VECTORS)
         return -EINVAL;
-    if (emu->intr_mask[vec])
-        return 0; /* masked */
 
-    /* Real hardware latches the mask as it asserts when mask_assert is set,
-     * so the driver's NAPI poll runs without a second interrupt racing it. */
-    if (emu->intr_mask_assert[vec])
-        emu->intr_mask[vec] = 1;
+    /* Latch rather than drop: every vector starts masked, so an assertion
+     * raised before the driver arms its handler would otherwise be lost and
+     * the queue would wait forever for an interrupt that never comes again. */
+    if (emu->intr_mask[vec]) {
+        emu->intr_pending[vec] = 1;
+        return 0;
+    }
 
-    int ret = vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
-    if (!ret)
-        pvrdma_irq_count(emu->pvrdma_handle);
-
-    return ret;
+    return deliver_irq(emu, vec);
 }

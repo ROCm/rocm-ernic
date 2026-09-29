@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Default device mode: build ionic.ko + ionic_rdma.ko from patched
+# Build ionic.ko + ionic_rdma.ko from patched
 # upstream kernel sources and register them with DKMS as the
 # ionic-ernic package.
 #
@@ -14,6 +14,9 @@
 ---
 # ernic_ionic_ref and ernic_ionic_kver are resolved by the
 # ernic_source role, which main.yml includes first.
+
+# The vCPU floor ionic_rdma needs is asserted in preflight.yml,
+# which main.yml runs before any of the builds.
 
 # drivers/infiniband/hw/ionic landed in 6.18.  On an older guest
 # the Ethernet half builds and the RDMA half does not, which fails
@@ -27,8 +30,7 @@
     fail_msg: >-
       Guest kernel {{ ansible_kernel }} is older than
       {{ ernic_ionic_min_kernel }}; ionic_rdma cannot be built.
-      Update the guest image, or run with
-      -e ernic_device_mode=legacy.
+      Update the guest image.
 
 # The floor above is necessary but nowhere near sufficient.  The
 # ionic sources track IB-core helpers that move between minor
@@ -47,9 +49,9 @@
       Guest kernel {{ ansible_kernel }} does not match the ionic
       sources pinned at {{ ernic_ionic_ref }}; ionic_rdma needs a
       {{ ernic_ionic_kver.split('.')[0:2] | join('.') }}.x kernel.
-      Rebuild the golden image with
-      ernic_image_kernel_mainline=true, or set
-      ernic_ionic_kernel_ref to a tag matching this kernel.
+      Set ernic_ionic_kernel_ref to a tag matching this kernel, or
+      boot a guest image carrying the pinned one -- this collection
+      no longer builds images, so the kernel is the image's choice.
   when: ernic_ionic_kver | length > 0
 
 # The overlays are meant to be identical.  When they are not, the

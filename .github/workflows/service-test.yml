@@ -3,7 +3,7 @@ name: rocm-ernic - Service Tooling Tests
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ develop ]
     paths:
       - 'service/**'
       - 'cmake/ErnicInstall.cmake'
@@ -63,10 +63,10 @@ jobs:
         bash -n service/vm-driver-install.sh.in
         echo "vm-driver-install.sh.in: OK"
 
+    # shellcheck is preinstalled on the hosted image, so this job needs no
+    # apt work at all.
     - name: Shellcheck service scripts
       run: |
-        sudo apt-get update
-        sudo apt-get install -y shellcheck
         shellcheck \
           -e SC2086,SC2154,SC2024,SC2034 \
           -e SC2164,SC2181,SC2317 \
@@ -119,11 +119,13 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+    # cmake, ninja-build and pkg-config are preinstalled on the hosted
+    # image.  Unlike the other workflows the libvfio-user build below is
+    # not cached, so meson and libjson-c-dev are needed on every run.
     - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          cmake ninja-build pkg-config \
           libibverbs-dev librdmacm-dev \
           libglib2.0-dev libjson-c-dev meson \
           libcmocka-dev
@@ -149,7 +151,8 @@ jobs:
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_INSTALL_PREFIX=/tmp/install-test \
-          -DERNIC_INSTALL_SERVICE=ON
+          -DERNIC_INSTALL_SERVICE=ON \
+          -DERNIC_WERROR=ON
 
     - name: Build
       run: cmake --build build
@@ -198,19 +201,18 @@ jobs:
         fi
         check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
         check_file "${PREFIX}/share/rocm-ernic/fetch-ionic-sources.sh"
+        check_file "${PREFIX}/share/rocm-ernic/ionic-kernel-ref"
 
-        echo ""
-        echo "=== Legacy driver source files (deprecated path) ==="
-        ls "${PREFIX}/share/rocm-ernic/driver-legacy/" \
-          | head -20
-        if [ -f \
-          "${PREFIX}/share/rocm-ernic/driver-legacy/rocm_ernic_main.c" \
-        ]; then
-          echo "OK: Legacy driver sources installed"
-        else
-          echo "MISSING: Legacy driver sources"
+        # The pin is captured at install time, so a stale or empty file
+        # here would silently build the guest from the wrong baseline.
+        PIN=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+          cmake/ErnicKernelModule.cmake)
+        GOT=$(cat "${PREFIX}/share/rocm-ernic/ionic-kernel-ref")
+        if [ "$PIN" != "$GOT" ]; then
+          echo "MISMATCH: cmake pins ${PIN}, installed ref is ${GOT}"
           exit 1
         fi
+        echo "OK: installed ionic ref matches the cmake pin (${GOT})"
 
         echo ""
         echo "All service files installed correctly."

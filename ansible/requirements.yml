@@ -12,19 +12,23 @@
 # Consumers outside this repo install it from Galaxy:
 #
 #   - name: sbates130272.rocm_ernic
-#     version: ">=0.1.0"
-
-# community.general used to be capped at <12.0.0 to stay usable on
-# ansible-core 2.16.  batesste 2.3.0 requires community.general
-# >=13.3.0, which requires ansible-core >=2.18, so the cap and the
-# 2.16 floor both had to go; see meta/runtime.yml.
+#     version: ">=0.2.0"
+#
+# Two collections left this list in 0.2.0, both because the play
+# that used them went with the golden-image path:
+# sbates130272.batesste (only ernic_image_prep used it) and
+# ansible.posix (only vm-create.yml did).  That takes this file
+# from six collections and ~29M -- batesste pulls in amazon.aws
+# and community.libvirt -- to one, which is why the hosted
+# workflows can install from it directly again instead of
+# cherry-picking community.general to dodge the round trips.
+#
+# community.general >=13.3.0 is what sets the ansible-core >=2.18
+# floor in meta/runtime.yml; it is now a direct choice rather
+# than something inherited through batesste.
 ---
 collections:
-  - name: sbates130272.batesste
-    version: ">=2.3.0"
-  # Not a collection dependency -- no shipped role uses it.  It is
-  # here because playbooks/vm-create.yml does.
-  - name: ansible.posix
-    version: ">=2.2.2"
+  # community.general.modprobe and .make, used by the guest and
+  # host roles and by playbooks/nvmeof-tests.yml.
   - name: community.general
     version: ">=13.3.0"

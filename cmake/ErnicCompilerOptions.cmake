@@ -1,6 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MIT
 
 # Set compiler flags on target based on the compiler in use.
 #
@@ -16,6 +16,7 @@ include(ErnicSanitizers)
 function(ernic_set_compiler_flags target)
     get_target_property(sources ${target} SOURCES)
     foreach(source IN LISTS sources)
+        unset(compiler_flags)
         get_source_file_property(language ${source} LANGUAGE)
         if(NOT language)
             set(language C)

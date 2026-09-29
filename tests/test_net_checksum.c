@@ -10,7 +10,11 @@
  * odd payload lengths, exercising the odd-byte path), and a determinism
  * check that a NULL payload yields the same result as an empty buffer.
  *
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <stddef.h>
@@ -19,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "net_headers.h"
+#include "net/net_headers.h"
 
 #define NULL_PAYLOAD ((size_t) - 1)
 

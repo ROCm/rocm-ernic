@@ -1,12 +1,20 @@
 # rocm-ernic
 
-[![MIT](https://img.shields.io/badge/License-MIT-blue.svg)][license]
-[![Build](https://github.com/ROCm/rocm-ernic/actions/workflows/build-test.yml/badge.svg)][ci-build]
-[![Docs](https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml/badge.svg)][ci-docs]
-[![Lint](https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml/badge.svg)][ci-lint]
-[![Spelling](https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml/badge.svg)][ci-spell]
+[![License](https://img.shields.io/badge/License-MIT%20%7C%20GPL--2.0--or--later-blue.svg)][license]
+[![Build](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/build-and-test.yml?label=Build)][ci-build]
+[![Docs](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/docs-check.yml?label=Docs)][ci-docs]
+[![clang-format](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/clang-format.yml?label=clang-format)][ci-clang-format]
+[![ShellCheck](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/shellcheck.yml?label=ShellCheck)][ci-shellcheck]
+[![pylint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/pylint.yml?label=pylint)][ci-pylint]
+[![cmakelint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/cmakelint.yml?label=cmakelint)][ci-cmakelint]
+[![CodeQL](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/codeql.yml?label=CodeQL)][ci-codeql]
+[![System Tests](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/system-tests.yml?label=System%20Tests)][ci-system-tests]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
-[![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2F_static%2Fbadge-rdma.json)][perf-trends]
+[![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.3-blue.svg)][guest-kernel]
+[![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-rdma.json)][perf-trends]
+[![TCP/IP bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-tcp.json)][perf-trends]
+[![NVMe-oF 4K read](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-nvmeof.json)][perf-trends]
+[![S3 1M GET](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-s3.json)][perf-trends]
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running
@@ -16,21 +24,19 @@ Userspace emulated RDMA NIC for virtual machines, built on
 [libvfio-user][libvfio]. Provides full RDMA functionality to guest VMs without
 requiring physical RDMA hardware or an in-guest software stack such as
 [Soft-RoCE][softroce]. Backends include loopback (for testing and CI), TCP/IP
-(multi-node without hardware), and native verbs (real InfiniBand HCA
-pass-through).
+(multi-node without hardware), native verbs (real InfiniBand HCA
+pass-through), and nvmeof (an in-process NVMe over Fabrics target, so a single
+VM and a single server instance are a complete fabric — see
+[`docs/nvmeof.rst`](docs/nvmeof.rst)), and s3 (an in-process S3-over-RDMA
+object store with its own in-band HTTP endpoint, so the same single VM is a
+complete object fabric — see [`docs/s3.rst`](docs/s3.rst)).
 
-The server can present two device personalities. By default it emulates an
-AMD Pensando ionic NIC (`1022:8001`), so the guest runs the upstream Linux
-`ionic` and `ionic_rdma` drivers with only the small device-ID and UC
-address-handle patches in [`patches/`](patches/) applied, and the upstream
-`providers/ionic` in rdma-core. `--tap IFNAME` attaches the emulated Ethernet
-interface to a host TAP, giving the guest a real routable segment with working
-ARP, ICMP, and TCP/IP.
-
-`--legacy` (alias `--pvrdma`) selects the older PVRDMA-derived device
-(`1022:8000`) driven by the out-of-tree `rocm_ernic` module in
-[`driver/`](driver/). **That path is deprecated**: it is kept working for
-existing deployments but should not be used for new ones. See
+The server emulates an AMD Pensando ionic NIC (`1dd8:100a`), so the guest runs
+the upstream Linux `ionic` and `ionic_rdma` drivers with only the small
+device-ID and UC address-handle patches in [`patches/`](patches/) applied, and
+the upstream `providers/ionic` in rdma-core. `--tap IFNAME` attaches the
+emulated Ethernet interface to a host TAP, giving the guest a real routable
+segment with working ARP, ICMP, and TCP/IP. See
 [`docs/ionic.rst`](docs/ionic.rst) for details.
 
 ## Installing and Using rocm-ernic
@@ -55,16 +61,23 @@ API reference.
 
 ## License
 
-[MIT](LICENSE.md). Some files carry different licenses per their SPDX headers;
-see [LICENSE.md](LICENSE.md) for details.
+[MIT](LICENSE.md) for the build system, documentation, and the deployment and automation code;
+everything under `src/` and `tests/` is `GPL-2.0-or-later` unless its per-file
+SPDX declaration says otherwise. The per-file SPDX header is authoritative; see
+[LICENSE.md](LICENSE.md) for details.
 
 <!-- References -->
 
-[license]: https://github.com/ROCm/rocm-ernic/blob/main/LICENSE.md
-[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-test.yml
+[license]: https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md
+[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
 [ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
-[ci-lint]: https://github.com/ROCm/rocm-ernic/actions/workflows/lint.yml
-[ci-spell]: https://github.com/ROCm/rocm-ernic/actions/workflows/spell-check.yml
+[ci-clang-format]: https://github.com/ROCm/rocm-ernic/actions/workflows/clang-format.yml
+[ci-shellcheck]: https://github.com/ROCm/rocm-ernic/actions/workflows/shellcheck.yml
+[ci-pylint]: https://github.com/ROCm/rocm-ernic/actions/workflows/pylint.yml
+[ci-cmakelint]: https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml
+[ci-codeql]: https://github.com/ROCm/rocm-ernic/actions/workflows/codeql.yml
+[ci-system-tests]: https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml
+[guest-kernel]: https://github.com/ROCm/rocm-ernic/blob/develop/docs/performance.rst
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
 [libvfio]: https://github.com/nutanix/libvfio-user
 [softroce]: https://man7.org/linux/man-pages/man7/rxe.7.html

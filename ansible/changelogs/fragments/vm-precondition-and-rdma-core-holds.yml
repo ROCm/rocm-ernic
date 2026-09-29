@@ -1,0 +1,34 @@
+---
+bugfixes:
+  - >-
+    ``ernic_guest_setup`` no longer holds ``rdma-core``,
+    ``libibverbs1``, ``librdmacm1`` and ``ibverbs-providers`` on a
+    guest whose provider came from the archive.  The hold was gated
+    on ``ernic_rdma_core_prefix``, which says where a source build
+    would install and not whether one ever ran, so every lane on the
+    published guest image --- where the provider stamp matches and
+    nothing is built --- pinned the distro's own RDMA userspace
+    against its own security updates.  A build into ``/usr`` now
+    records itself at ``ernic_guest_source_stamp``, and the holds
+    follow that record, so they still survive the re-runs that skip
+    the rebuild.
+
+minor_changes:
+  - >-
+    ``vm-register.yml`` now says what to do when no VMs are running.
+    All three ways of reaching it empty-handed --- no manifest at
+    all, a manifest with no instances, and an instance with no VM
+    attached --- carry the same guidance: the guests must already be
+    up, neither ``site.yml`` nor ``ci-site.yml`` launches them, and
+    ``site.yml``'s own host-setup phase stops running guests unless
+    ``ernic_restart_existing`` is false.  A missing manifest used to
+    surface as a bare ``slurp`` error naming a path under ``/run``.
+  - >-
+    ``site.yml``, ``PLAYBOOKS.md`` and ``docs/testing.rst`` document
+    an order that completes.  All three previously told the reader to
+    launch the guests and then run ``site.yml``, which tears those
+    guests down in phase 1 and then fails registration; and the
+    launcher is installed by that same phase, so on a fresh host the
+    documented order could not be followed at all.  They now give the
+    host-setup, launch, provision sequence, and point a mesh brought
+    up by ``ci/jobs/vm-up.sh`` at ``ci-site.yml``.

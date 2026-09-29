@@ -16,6 +16,8 @@
 
 #include "rdma_cm_proto.h"
 
+#include "fuzz_harness.h"
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     /* Copy the input into an exact-size heap buffer so AddressSanitizer

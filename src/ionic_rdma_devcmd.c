@@ -16,7 +16,7 @@
  * We DMA-map the guest ring buffers and store them in our queue table.
  * The admin queue is then serviced by ionic_adminq.c.
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 

@@ -1,4 +1,4 @@
-/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+/*
  *
  * Unit tests for tcp_broadcast_mesh_topology() in rdma_backend_tcp.c.
  *
@@ -20,7 +20,11 @@
  * Table-driven: empty mesh (every slot unused), single node, a few nodes, and
  * a full mesh (no tail at all).
  *
- * SPDX-License-Identifier: MIT
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <stddef.h>
@@ -32,8 +36,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "rocm-ernic-warnings.h"
+
 /* Pull in the code under test (including its static functions) */
-#include "hw/rdma/rdma_backend_tcp.c"
+#include "rdma/rdma_backend_tcp.c"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the topology-broadcast path; they exist
@@ -178,12 +184,17 @@ static int read_exact(int fd, void *buf, size_t len)
  * stack into freshly-zeroed heap "fake stacks", which would hide the poison
  * and make this test vacuously pass. Turn it off for this binary; the
  * address/leak checks the project cares about here are unaffected.
+ *
+ * The runtime looks this hook up by name, so the reserved identifier is
+ * unavoidable.
  */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
 const char *__asan_default_options(void);
 const char *__asan_default_options(void)
 {
     return "detect_stack_use_after_return=0";
 }
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 /*
  * Address of a local in the broadcast thread's frame, recorded so the caller
@@ -212,8 +223,10 @@ static int broadcast_on_poisoned_stack(TcpBackendPrivate *priv)
     pthread_t tid;
     void *stack;
     int ret;
+    long page_sz = sysconf(_SC_PAGESIZE);
 
-    if (posix_memalign(&stack, sysconf(_SC_PAGESIZE), POISON_STACK_SZ) != 0) {
+    if (page_sz <= 0 ||
+        posix_memalign(&stack, (size_t)page_sz, POISON_STACK_SZ) != 0) {
         return -1;
     }
     memset(stack, POISON_BYTE, POISON_STACK_SZ);

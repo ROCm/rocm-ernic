@@ -1,6 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MIT
 
 # Install targets for rocm-ernic.
 
@@ -81,31 +81,7 @@ if(ERNIC_INSTALL_SERVICE)
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
-    # Legacy custom driver source.  DEPRECATED: do not use for new
-    # deployments.  Kept installable so existing --legacy setups keep
-    # working; the ionic path below is the default.
-    if(EXISTS ${CMAKE_SOURCE_DIR}/driver/rocm_ernic_main.c)
-        install(DIRECTORY
-            ${CMAKE_SOURCE_DIR}/driver/
-            DESTINATION ${ERNIC_SHARE_DIR}/driver-legacy
-            FILES_MATCHING
-                PATTERN "*.c"
-                PATTERN "*.h"
-                PATTERN "Makefile"
-                PATTERN "dkms.conf"
-                PATTERN "Kconfig"
-                PATTERN "setup-rocm-ernic-dkms.sh"
-                PATTERN ".*.cmd" EXCLUDE
-                PATTERN "*.ko" EXCLUDE
-                PATTERN "*.o" EXCLUDE
-                PATTERN "*.mod" EXCLUDE
-                PATTERN "*.mod.c" EXCLUDE
-                PATTERN "Module.symvers" EXCLUDE
-                PATTERN "modules.order" EXCLUDE
-        )
-    endif()
-
-    # ionic driver patches and helper scripts (the default path)
+    # ionic driver patches and helper scripts
     install(DIRECTORY
         ${CMAKE_SOURCE_DIR}/patches/
         DESTINATION ${ERNIC_SHARE_DIR}/patches
@@ -114,6 +90,23 @@ if(ERNIC_INSTALL_SERVICE)
     install(PROGRAMS
         ${CMAKE_SOURCE_DIR}/scripts/setup-ionic-dkms.sh
         ${CMAKE_SOURCE_DIR}/scripts/fetch-ionic-sources.sh
+        DESTINATION ${ERNIC_SHARE_DIR}
+    )
+
+    # The pinned ionic ref, materialised so the driver pack ships the
+    # baseline the host was configured with rather than a second
+    # hardcoded copy of it.
+    if(NOT IONIC_KERNEL_REF)
+        message(FATAL_ERROR
+            "IONIC_KERNEL_REF is not set; include ErnicKernelModule "
+            "before ErnicInstall")
+    endif()
+    file(GENERATE
+        OUTPUT ${CMAKE_BINARY_DIR}/ionic-kernel-ref
+        CONTENT "${IONIC_KERNEL_REF}\n"
+    )
+    install(FILES
+        ${CMAKE_BINARY_DIR}/ionic-kernel-ref
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 endif()

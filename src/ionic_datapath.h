@@ -1,7 +1,7 @@
 /*
  * ionic_datapath.h — ionic RDMA data-path emulation interface
  *
- * Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+ * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -14,6 +14,33 @@
 
 struct ionic_eth_emu;
 struct ionic_datapath;
+
+/*
+ * Memory-region budget.
+ *
+ * A stock nvme-rdma initiator runs with register_always, so it pre-allocates
+ * a pool of IONIC_MR_PER_QUEUE regions for every queue it creates -- admin
+ * queue included -- at connect time rather than per I/O.  An N-queue
+ * controller therefore needs (N + 1) * IONIC_MR_PER_QUEUE regions to be
+ * reachable before the first capsule moves.
+ *
+ * IONIC_MAX_MR sizes three tables that all have to hold that many: the
+ * rdma_rm resource table (MAX_MR in third-party/qemu/hw/rdma/rdma_rm_defs.h,
+ * which cannot include this header), the data path's own dp_mr array, and the
+ * admin queue's driver-id-to-handle map.  Whichever is smallest is the real
+ * ceiling, so they are kept equal deliberately.
+ *
+ * It is not sized for the maximum 64 queues: dp_reg_mr() walks the whole
+ * table on every fast registration -- that is, on every NVMe command -- so
+ * the constant is also a per-I/O cost, and 2048 covers the default 8 queues
+ * with headroom without doubling that walk again.  nvmeof_parse_backend()
+ * rejects a queue count that would not fit.
+ */
+#define IONIC_MR_PER_QUEUE 128
+#define IONIC_MAX_MR       2048
+
+/* Largest max_queues that fits the budget, admin queue included. */
+#define IONIC_MAX_MR_QUEUES ((IONIC_MAX_MR / IONIC_MR_PER_QUEUE) - 1)
 
 /*
  * Description of a guest-resident ring or memory region as the driver hands
@@ -82,6 +109,35 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                 uint64_t va, uint64_t length,
                                 const struct ionic_dp_buf_desc *buf);
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey);
+
+/*
+ * Attach the in-process NVMe-oF controller.  Once attached the data path
+ * answers IB CM MADs on the guest's GSI QP and serves NVMe command capsules
+ * sent to the QP numbers that handshake hands out, so a guest running stock
+ * `nvme connect -t rdma` reaches a target without a second node.
+ *
+ * Returns false and fills @err on failure.  The data path owns the controller
+ * from then on and tears it down in ionic_datapath_destroy().
+ */
+struct nvmeof_target_cfg;
+bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
+                                  const struct nvmeof_target_cfg *cfg,
+                                  char *err, size_t errlen);
+
+/*
+ * Attach the in-process S3 object store.  Once attached the emulated NIC
+ * answers ARP, ping and HTTP at the configured address, and an object
+ * request that carries an x-amz-rdma-token moves its payload straight
+ * between the store and the guest buffer the token describes.
+ *
+ * Requires the Ethernet emulator, because the control plane lives on the
+ * emulated wire rather than on a host socket.  Returns false and fills
+ * @err on failure; the data path owns the store from then on.
+ */
+struct s3_target_cfg;
+bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
+                              const struct s3_target_cfg *cfg, char *err,
+                              size_t errlen);
 
 /*
  * Set the pvrdma handle so the datapath can post sends via the backend.

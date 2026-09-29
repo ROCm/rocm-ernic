@@ -12,7 +12,7 @@ name: rocm-ernic - Nix Check
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ develop ]
     paths:
       - 'flake.nix'
       - 'flake.lock'

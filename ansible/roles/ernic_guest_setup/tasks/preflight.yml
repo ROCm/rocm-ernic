@@ -1,0 +1,85 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Cheap checks that run before anything expensive.  Both failures
+# below are ones the guest would otherwise hit only after apt, the
+# rdma-core build and the DKMS build -- and then report as
+# something else entirely.
+
+---
+# ionic_lif_size() derives the RDMA event-queue count from
+# num_online_cpus(), and ionic_create_rdma_admin() refuses anything
+# below IONIC_EQ_COUNT_MIN with a bare -EINVAL.  All the operator
+# sees is "Failed to register ibdev", which names neither CPUs nor
+# queues and reads like a device or driver fault.
+#
+# ansible_processor_nproc is nproc, which is what num_online_cpus()
+# reports; ansible_processor_vcpus counts what the guest was built
+# with, and the two differ once a CPU is offlined.
+- name: Assert the guest has enough vCPUs for the RDMA admin queue
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ansible_processor_nproc
+         | default(ansible_processor_vcpus) | int)
+        >= ernic_ionic_min_vcpus | int
+    fail_msg: >-
+      ionic_rdma needs at least {{ ernic_ionic_min_vcpus }} online
+      CPUs: ionic_lif_size() derives its event-queue count from
+      num_online_cpus() and ionic_create_rdma_admin() rejects fewer
+      than IONIC_EQ_COUNT_MIN.  This guest has
+      {{ ansible_processor_nproc | default(ansible_processor_vcpus) }},
+      so ionic_rdma would fail to probe with "Failed to register
+      ibdev".  Relaunch it with more vCPUs (ernic_vm_vcpus, or
+      --vcpus on ernicctl vm-launch).
+
+# The device id is a compile-time constant in the server
+# (src/rocm_ernic_server.c) and a literal in
+# udev/99-rocm-ernic.rules, so a device server older or newer than
+# this checkout presents an id nothing matches.  Left to itself
+# that drift is silent -- no rename, no probe -- and surfaces much
+# later as a missing RDMA device with an empty ibv_devices.
+#
+# Read from sysfs rather than lspci: pciutils is not something this
+# role installs, and a missing binary would turn the check into a
+# false negative.
+- name: Look for the emulated NIC on the PCI bus
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      shopt -s nullglob
+      found=1
+      for d in /sys/bus/pci/devices/*; do
+        v=$(< "$d/vendor") || continue
+        p=$(< "$d/device") || continue
+        echo "${d##*/} $v:$p"
+        if [ "$v" = {{ ernic_device_vendor_id | quote }} ] &&
+           [ "$p" = {{ ernic_device_id | quote }} ]; then
+          found=0
+        fi
+      done
+      exit "$found"
+  register: ernic_preflight_pci
+  changed_when: false
+  failed_when: false
+
+- name: Assert the emulated NIC is present
+  ansible.builtin.assert:
+    that:
+      - ernic_preflight_pci.rc == 0
+    fail_msg: >-
+      No PCI device {{ ernic_device_vendor_id }}:{{ ernic_device_id }}
+      in this guest.  That is the pair udev/99-rocm-ernic.rules
+      matches on and the pair the rocm-ernic device server presents
+      (it logs "VID:DID" at startup) -- if the server is a different
+      build from this checkout, nothing renames the NIC and nothing
+      probes ionic_rdma, and the run would otherwise fail much later
+      with an empty ibv_devices.  PCI devices this guest can see
+      ({{ ernic_preflight_pci.stdout_lines | default([]) | length }}
+      total, first {{ ernic_preflight_max_report }} shown):
+      {{ ernic_preflight_pci.stdout_lines | default([])
+         | batch(ernic_preflight_max_report | int) | first
+         | default([]) | join(', ') }}
+  when: ernic_guest_preflight_device | bool
