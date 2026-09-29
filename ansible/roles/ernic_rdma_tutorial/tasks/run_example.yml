@@ -46,7 +46,7 @@
       git checkout --force {{ ernic_rdma_tutorial_example.commit }}
       git apply -
       make LIBS="-pthread -lrdmacm -libverbs"' <<'ERNIC_ROCE_PATCH'
-      {{ lookup('ansible.builtin.file', role_path ~ '/files/' ~ ernic_rdma_tutorial_example.name ~ '-roce.patch') }}
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/' ~ ernic_rdma_tutorial_example.name ~ '-roce.patch', rstrip=False) }}
       ERNIC_ROCE_PATCH
   changed_when: true
 
@@ -61,7 +61,7 @@
       git checkout --force {{ ernic_rdma_tutorial_example.commit }}
       git apply -
       make LIBS="-pthread -lrdmacm -libverbs"' <<'ERNIC_ROCE_PATCH'
-      {{ lookup('ansible.builtin.file', role_path ~ '/files/' ~ ernic_rdma_tutorial_example.name ~ '-roce.patch') }}
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/' ~ ernic_rdma_tutorial_example.name ~ '-roce.patch', rstrip=False) }}
       ERNIC_ROCE_PATCH
   changed_when: true
 

@@ -1,8 +1,9 @@
 --- a/ib.c
 +++ b/ib.c
-@@ -4,7 +4,7 @@
+@@ -4,7 +4,8 @@
  #include "ib.h"
  #include "debug.h"
++#include <string.h>
  
 -int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target_lid)
 +int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target_lid, const uint8_t target_gid[16])
