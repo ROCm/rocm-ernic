@@ -1771,7 +1771,7 @@ static TcpConnection *mesh_reconnect(const char *name, struct mesh *m,
     const struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
     TcpBackendPrivate *a = m->priv[MESH_A];
 
-    int fd = tcp_connect_to_remote(LOOPBACK_HOST, a->listen_port);
+    int fd = tcp_connect_to_remote(LOOPBACK_HOST, a->listen_port, NULL);
     if (fd < 0 ||
         !tcp_mesh_reconnect_node(m->priv[MESH_MGR], NODE_A, LOOPBACK_HOST,
                                  a->listen_port, fd, time(NULL))) {

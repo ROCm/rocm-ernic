@@ -1415,6 +1415,9 @@ static int tcp_send_message_until(int sockfd, TcpMsgType msg_type,
     size_t sent = 0;
 
     while (sent < total) {
+        if (g_get_monotonic_time() >= deadline_us)
+            return -ETIMEDOUT;
+
         struct iovec cur[3];
         size_t cur_cnt = 0;
         size_t skip = sent;
@@ -1449,6 +1452,8 @@ static int tcp_send_message_until(int sockfd, TcpMsgType msg_type,
             return -1;
         }
         sent += (size_t)ret;
+        if (sent < total && g_get_monotonic_time() >= deadline_us)
+            return -ETIMEDOUT;
     }
 
     return 0;
@@ -1617,7 +1622,20 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                    0);
         if (ret < 0) {
             if (errno == EAGAIN) {
-                return -EAGAIN;
+                if ((running && !atomic_load(running)) ||
+                    g_get_monotonic_time() >= deadline_us)
+                    return -ETIMEDOUT;
+                struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
+                int remaining = 100;
+                if (deadline_us != INT64_MAX) {
+                    int64_t remaining_us = deadline_us - g_get_monotonic_time();
+                    if (remaining_us / 1000 < remaining)
+                        remaining =
+                            remaining_us > 0 ? (int)(remaining_us / 1000) : 1;
+                }
+                if (poll(&pfd, 1, remaining) < 0 && errno != EINTR)
+                    return -1;
+                continue;
             }
             rdma_error_report("TCP: Failed to receive header: %s",
                               strerror(errno));
