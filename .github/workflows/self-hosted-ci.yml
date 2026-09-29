@@ -230,9 +230,43 @@ jobs:
 
   # Shares the VM work directory with vm-functional, so it runs
   # after it rather than beside it on the same runner.
+  vm-tutorial:
+    name: 2-VM RDMA tutorial
+    needs: [preflight, vm-functional]
+    if: >-
+      needs.preflight.outputs.tier != 'build'
+    runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
+    timeout-minutes: 90
+    env:
+      CI_BUILD_DIR: /var/tmp/ernic-ci-work/build-Release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CI_CHECKOUT_REF }}
+
+      - name: Bring up VMs
+        run: bash ci/jobs/vm-up.sh
+
+      - name: RDMA tutorial examples
+        run: bash ci/jobs/vm-tutorial.sh
+
+      - name: Tear down VMs
+        if: always()
+        run: bash ci/jobs/vm-down.sh
+
+      - name: Upload VM logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vm-tutorial-logs
+          path: /var/tmp/ernic-ci-work/log/
+          if-no-files-found: warn
+
+  # Same shared VM work directory again, so this queues behind
+  # vm-tutorial rather than racing it.
   vm-nvmeof:
     name: 1-VM NVMe-oF functional
-    needs: [preflight, vm-functional]
+    needs: [preflight, vm-tutorial]
     if: >-
       needs.preflight.outputs.tier != 'build'
     runs-on: [self-hosted, linux, x64, rocm-ernic, kvm]
@@ -366,7 +400,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    needs: [preflight, build, loopback, vm-functional, vm-nvmeof, vm-s3, perf]
+    needs: [preflight, build, loopback, vm-functional, vm-tutorial, vm-nvmeof, vm-s3, perf]
     # Report on whatever actually ran, including when an
     # upstream tier was skipped or failed.  Still refuses
     # fork pull requests.
@@ -442,9 +476,10 @@ jobs:
           for r in "${{ needs.preflight.result }}" \
                    "${{ needs.build.result }}" \
                    "${{ needs.loopback.result }}" \
+                   "${{ needs.vm-functional.result }}" \
+                   "${{ needs.vm-tutorial.result }}" \
                    "${{ needs.vm-nvmeof.result }}" \
                    "${{ needs.vm-s3.result }}" \
-                   "${{ needs.vm-functional.result }}" \
                    "${{ needs.perf.result }}"; do
             case "${r}" in
               failure|cancelled) overall=failure ;;
@@ -482,9 +517,10 @@ jobs:
             echo "|---|---|"
             echo "| Build + ctest | ${{ needs.build.result }} |"
             echo "| Loopback | ${{ needs.loopback.result }} |"
+            echo "| 2-VM RDMA functional | ${{ needs.vm-functional.result }} |"
+            echo "| 2-VM RDMA tutorial | ${{ needs.vm-tutorial.result }} |"
             echo "| NVMe-oF (1 VM) | ${{ needs.vm-nvmeof.result }} |"
             echo "| S3 over RDMA (1 VM) | ${{ needs.vm-s3.result }} |"
-            echo "| 2-VM RDMA functional | ${{ needs.vm-functional.result }} |"
             echo "| Performance sweeps | ${{ needs.perf.result }} |"
             echo
             if [ -n "${DETAIL}" ]; then

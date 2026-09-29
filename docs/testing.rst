@@ -261,7 +261,7 @@ The ``ansible/`` directory contains playbooks that automate
 the multi-VM test workflow: building the server, installing
 the systemd service, provisioning already-running guests
 with the driver and the ionic rdma-core provider, and
-running iperf3, perftest and NVMe-oF tests against them. The
+running iperf3, perftest, RDMA-Tutorial examples and NVMe-oF tests against them. The
 guest disk is not built here; see :ref:`ansible-guest-image`.
 
 Prerequisites
@@ -554,15 +554,15 @@ Anything needing KVM, a provisioned guest image, or two
 guests exchanging RDMA traffic runs on a self-hosted runner
 instead, driven by the harness in ``ci/``.
 
-It runs in three tiers:
+It runs in four jobs across three tiers:
 
-============  ===============================  =========
-Tier          Scope                            Needs KVM
-============  ===============================  =========
-1             build, ctest, loopback backend   no
-2             two-VM RDMA functional           yes
-3             performance sweeps               yes
-============  ===============================  =========
+============  ==========================================  =========
+Tier          Scope                                       Needs KVM
+============  ==========================================  =========
+1             build, ctest, loopback backend              no
+2             two-VM RDMA functional and tutorial lanes   yes
+3             performance sweeps                          yes
+============  ==========================================  =========
 
 Tiers 2 and 3 are scheduled onto runners carrying the
 ``kvm`` label, so a node without KVM access stops
@@ -574,7 +574,7 @@ is redirected under a workspace the CI user owns rather
 than ``/run``, ``/var/log`` and ``/usr/local``.
 
 Test logic is not duplicated: ``ansible/ci-site.yml``
-drives the same guest-setup, sanity and performance plays
+drives the same guest-setup, sanity, tutorial and performance plays
 described above, supplying only the inventory
 registration that ``site.yml`` would normally provide.
 
@@ -592,6 +592,7 @@ Run any tier by hand:
    bash ci/jobs/loopback.sh
    bash ci/jobs/vm-up.sh
    bash ci/jobs/vm-functional.sh
+   bash ci/jobs/vm-tutorial.sh
    bash ci/jobs/perf.sh
    bash ci/jobs/vm-down.sh
 
