@@ -1,0 +1,137 @@
+--- a/ib.c
++++ b/ib.c
+@@ -4,7 +4,7 @@
+ #include "ib.h"
+ #include "debug.h"
+ 
+-int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target_lid)
++int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target_lid, const uint8_t target_gid[16])
+ {
+     int ret = 0;
+ 
+@@ -35,13 +35,16 @@
+ 	    .rq_psn             = 0,
+ 	    .max_dest_rd_atomic = 1,
+ 	    .min_rnr_timer      = 12,
+-	    .ah_attr.is_global  = 0,
++	    .ah_attr.is_global  = 1,
+ 	    .ah_attr.dlid       = target_lid,
+ 	    .ah_attr.sl         = IB_SL,
+ 	    .ah_attr.src_path_bits = 0,
+ 	    .ah_attr.port_num      = IB_PORT,
+ 	};
+ 
++	memcpy(qp_attr.ah_attr.grh.dgid.raw, target_gid, 16);
++	qp_attr.ah_attr.grh.sgid_index = 1;
++	qp_attr.ah_attr.grh.hop_limit = 1;
+ 	ret = ibv_modify_qp(qp, &qp_attr,
+ 			    IBV_QP_STATE | IBV_QP_AV |
+ 			    IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+--- a/ib.h
++++ b/ib.h
+@@ -8,7 +8,7 @@
+ #include <infiniband/verbs.h>
+ #include <arpa/inet.h>
+ 
+-#define IB_MTU			IBV_MTU_4096
++#define IB_MTU			IBV_MTU_1024
+ #define IB_PORT			1
+ #define IB_SL			0
+ #define IB_WR_ID_STOP		0xE000000000000000
+@@ -28,6 +28,7 @@
+ 
+ struct QPInfo {
+     uint16_t lid;
++    uint8_t gid[16];
+     uint32_t qp_num;
+     uint32_t rkey;
+     uint64_t raddr;
+@@ -39,7 +40,7 @@
+     MSG_REGULAR,
+ };
+ 
+-int modify_qp_to_rts (struct ibv_qp *qp, uint32_t qp_num, uint16_t lid);
++int modify_qp_to_rts (struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, const uint8_t gid[16]);
+ 
+ int post_send (uint32_t req_size, uint32_t lkey, uint64_t wr_id, 
+ 	       uint32_t imm_data, struct ibv_qp *qp, char *buf);
+--- a/setup_ib.c
++++ b/setup_ib.c
+@@ -10,6 +10,16 @@
+ 
+ struct IBRes ib_res;
+ 
++static int get_local_gid(struct QPInfo *info)
++{
++    union ibv_gid gid = {0};
++    int ret = ibv_query_gid(ib_res.ctx, IB_PORT, 1, &gid);
++    if (ret != 0 || memcmp(gid.raw, (uint8_t[16]){0}, 16) == 0)
++        return -1;
++    memcpy(info->gid, gid.raw, sizeof(info->gid));
++    return 0;
++}
++
+ int connect_qp_server ()
+ {
+     int			ret	      = 0, n = 0;
+@@ -31,6 +41,8 @@
+     /* init local qp_info */
+     local_qp_info.lid	 = ib_res.port_attr.lid; 
+     local_qp_info.qp_num = ib_res.qp->qp_num;
++    ret = get_local_gid(&local_qp_info);
++    check (ret == 0, "Failed to query RoCE GID");
+     local_qp_info.rkey   = ib_res.mr->rkey;
+     local_qp_info.raddr  = (uintptr_t) ib_res.ib_buf;
+ 
+@@ -48,7 +60,7 @@
+ 
+     /* change send QP state to RTS */    	
+     ret = modify_qp_to_rts (ib_res.qp, remote_qp_info.qp_num, 
+-			    remote_qp_info.lid);
++			    remote_qp_info.lid, remote_qp_info.gid);
+     check (ret == 0, "Failed to modify qp to rts");
+ 
+     log (LOG_SUB_HEADER, "Start of IB Config");
+@@ -94,7 +106,9 @@
+     check (peer_sockfd > 0, "Failed to create peer_sockfd");
+ 
+     local_qp_info.lid     = ib_res.port_attr.lid; 
+-    local_qp_info.qp_num  = ib_res.qp->qp_num; 
++    local_qp_info.qp_num  = ib_res.qp->qp_num;
++    ret = get_local_gid(&local_qp_info);
++    check (ret == 0, "Failed to query RoCE GID");
+     local_qp_info.rkey    = ib_res.mr->rkey;
+     local_qp_info.raddr   = (uintptr_t) ib_res.ib_buf;
+    
+@@ -112,7 +126,7 @@
+     
+     /* change QP state to RTS */    	
+     ret = modify_qp_to_rts (ib_res.qp, remote_qp_info.qp_num, 
+-			    remote_qp_info.lid);
++			    remote_qp_info.lid, remote_qp_info.gid);
+     check (ret == 0, "Failed to modify qp to rts");
+ 
+     log (LOG_SUB_HEADER, "IB Config");
+--- a/sock.c
++++ b/sock.c
+@@ -144,10 +144,11 @@
+ int sock_set_qp_info(int sock_fd, struct QPInfo *qp_info)
+ {
+     int n;
+-    struct QPInfo tmp_qp_info;
++    struct QPInfo tmp_qp_info = {0};
+ 
+     tmp_qp_info.lid       = htons(qp_info->lid);
+     tmp_qp_info.qp_num    = htonl(qp_info->qp_num);
++    memcpy(tmp_qp_info.gid, qp_info->gid, sizeof(tmp_qp_info.gid));
+     tmp_qp_info.rkey      = htonl(qp_info->rkey);
+     tmp_qp_info.raddr     = htonll(qp_info->raddr);
+ 
+@@ -170,6 +171,7 @@
+ 
+     qp_info->lid       = ntohs(tmp_qp_info.lid);
+     qp_info->qp_num    = ntohl(tmp_qp_info.qp_num);
++    memcpy(qp_info->gid, tmp_qp_info.gid, sizeof(qp_info->gid));
+     qp_info->rkey      = ntohl(tmp_qp_info.rkey);
+     qp_info->raddr     = ntohll(tmp_qp_info.raddr);
+     

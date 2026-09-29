@@ -3,6 +3,19 @@
 # SPDX-License-Identifier: MIT
 
 ---
+- name: Assert the tutorial revision has a RoCE patch
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ernic_rdma_tutorial_example.name == 'send-recv'
+         and ernic_rdma_tutorial_example.commit ==
+         '65893ec63c9eb004c310e25112c73a80d026c2c3')
+        or
+        (ernic_rdma_tutorial_example.name == 'write'
+         and ernic_rdma_tutorial_example.commit ==
+         'f73736ed7a7d496f9acfc899e5d1997e791718ed')
+    fail_msg: The selected tutorial revision needs a matching RoCE patch.
+
 - name: Normalise the tutorial example name
   ansible.builtin.set_fact:
     ernic_rdma_tutorial_unit: >-
@@ -14,63 +27,43 @@
     ernic_rdma_tutorial_sock_port: >-
       {{ ernic_rdma_tutorial_sock_port_base | int
          + ernic_rdma_tutorial_example_index | int }}
-    ernic_rdma_tutorial_config_content: |
-      servers:
-        {{ ernic_rdma_tutorial_server_hostname }} .. {{ ernic_rdma_tutorial_server_hostname }}
-      clients:
-        {{ ernic_rdma_tutorial_client_hostname }} .. {{ ernic_rdma_tutorial_client_hostname }}
-      num_concurr_msgs:
-        {{ ernic_rdma_tutorial_example.num_concurr_msgs }}
-      msg_size:
-        {{ ernic_rdma_tutorial_example.msg_size }}
+    ernic_rdma_tutorial_args: >-
+      {{ (ernic_rdma_tutorial_example.name == 'write')
+         | ternary(
+           ernic_rdma_tutorial_example.msg_size | string ~ ' '
+           ~ ernic_rdma_tutorial_example.num_concurr_msgs | string ~ ' ',
+           ''
+         ) }}
 
 - name: Build tutorial example on VM1
   ansible.builtin.shell:
     executable: /bin/bash
-    cmd: >-
-      {{ ernic_rdma_tutorial_vm1_ssh }}
-      'set -eu;
-      cd {{ ernic_rdma_tutorial_dir }};
-      git reset --hard HEAD;
-      git clean -fdx;
-      git checkout --force {{ ernic_rdma_tutorial_example.commit }};
-      make'
+    cmd: |
+      {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
+      cd {{ ernic_rdma_tutorial_dir }}
+      git reset --hard HEAD
+      git clean -fdx
+      git checkout --force {{ ernic_rdma_tutorial_example.commit }}
+      git apply -
+      make LIBS="-pthread -lrdmacm -libverbs"' <<'ERNIC_ROCE_PATCH'
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/' ~ ernic_rdma_tutorial_example.name ~ '-roce.patch') }}
+      ERNIC_ROCE_PATCH
   changed_when: true
 
 - name: Build tutorial example on VM2
   ansible.builtin.shell:
     executable: /bin/bash
-    cmd: >-
-      {{ ernic_rdma_tutorial_vm2_ssh }}
-      'set -eu;
-      cd {{ ernic_rdma_tutorial_dir }};
-      git reset --hard HEAD;
-      git clean -fdx;
-      git checkout --force {{ ernic_rdma_tutorial_example.commit }};
-      make'
+    cmd: |
+      {{ ernic_rdma_tutorial_vm2_ssh }} 'set -eu
+      cd {{ ernic_rdma_tutorial_dir }}
+      git reset --hard HEAD
+      git clean -fdx
+      git checkout --force {{ ernic_rdma_tutorial_example.commit }}
+      git apply -
+      make LIBS="-pthread -lrdmacm -libverbs"' <<'ERNIC_ROCE_PATCH'
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/' ~ ernic_rdma_tutorial_example.name ~ '-roce.patch') }}
+      ERNIC_ROCE_PATCH
   changed_when: true
-
-- name: Write tutorial config on VM1
-  ansible.builtin.shell:
-    executable: /bin/bash
-    cmd: |
-      set -o pipefail
-      cat <<'EOF' | {{ ernic_rdma_tutorial_vm1_ssh }} \
-        'cat > {{ ernic_rdma_tutorial_dir }}/{{ ernic_rdma_tutorial_config }}'
-      {{ ernic_rdma_tutorial_config_content }}
-      EOF
-  changed_when: false
-
-- name: Write tutorial config on VM2
-  ansible.builtin.shell:
-    executable: /bin/bash
-    cmd: |
-      set -o pipefail
-      cat <<'EOF' | {{ ernic_rdma_tutorial_vm2_ssh }} \
-        'cat > {{ ernic_rdma_tutorial_dir }}/{{ ernic_rdma_tutorial_config }}'
-      {{ ernic_rdma_tutorial_config_content }}
-      EOF
-  changed_when: false
 
 - name: Start the tutorial server on VM1
   ansible.builtin.shell:
@@ -78,18 +71,17 @@
     cmd: |
       {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
       cd {{ ernic_rdma_tutorial_dir }}
-      if [ -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid ]; then
-        old_pid=$(cat /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid)
-        kill "${old_pid}" 2>/dev/null || true
-        timeout 10 bash -lc "while kill -0 ${old_pid} 2>/dev/null; do sleep 1; done" || true
-        rm -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
-      fi
-      rm -f server*.log client*.log /tmp/{{ ernic_rdma_tutorial_unit }}-server.pid
-      nohup ./rdma-tutorial \
-        {{ ernic_rdma_tutorial_config }} \
-        {{ ernic_rdma_tutorial_sock_port }} \
-        >/tmp/{{ ernic_rdma_tutorial_unit }}-server.stdout 2>&1 </dev/null &
-      echo $! >/tmp/{{ ernic_rdma_tutorial_unit }}-server.pid'
+      systemctl --user stop {{ ernic_rdma_tutorial_unit }} 2>/dev/null || true
+      systemctl --user reset-failed {{ ernic_rdma_tutorial_unit }} 2>/dev/null || true
+      rm -f server.log client.log
+      systemd-run --user --unit={{ ernic_rdma_tutorial_unit }} \
+        -p WorkingDirectory={{ ernic_rdma_tutorial_dir }} \
+        -p StandardOutput=append:/tmp/{{ ernic_rdma_tutorial_unit }}-server.stdout \
+        -p StandardError=append:/tmp/{{ ernic_rdma_tutorial_unit }}-server.stdout \
+        timeout {{ ernic_rdma_tutorial_example.timeout
+                   | default(ernic_rdma_tutorial_timeout) | int }} \
+        ./rdma-tutorial {{ ernic_rdma_tutorial_args }} \
+        {{ ernic_rdma_tutorial_sock_port }}'
   changed_when: true
 
 - name: Wait for the tutorial server to listen
@@ -111,23 +103,23 @@
       timeout {{ ernic_rdma_tutorial_example.timeout
                  | default(ernic_rdma_tutorial_timeout) | int }} \
         ./rdma-tutorial \
-        {{ ernic_rdma_tutorial_config }} \
+        {{ ernic_rdma_tutorial_server_hostname }} \
+        {{ ernic_rdma_tutorial_args }} \
         {{ ernic_rdma_tutorial_sock_port }}'
   register: ernic_rdma_tutorial_client_result
   changed_when: false
   failed_when: false
 
-- name: Wait for the tutorial server log to report completion
+- name: Wait for the tutorial server to exit successfully
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
       {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
-      server_log="{{ ernic_rdma_tutorial_dir }}/server[0].log"
       timeout {{ ernic_rdma_tutorial_example.timeout
                  | default(ernic_rdma_tutorial_timeout) | int }} \
-        bash -lc "until grep -q \"Run Finished\" \
-        \"${server_log}\" 2>/dev/null; \
-        do sleep 1; done"'
+        bash -lc "while [ \"\$(systemctl --user show -P SubState {{ ernic_rdma_tutorial_unit }})\" = running ]; do sleep 1; done"
+      test "$(systemctl --user show -P Result {{ ernic_rdma_tutorial_unit }})" = success
+      test "$(systemctl --user show -P ExecMainStatus {{ ernic_rdma_tutorial_unit }})" = 0'
   register: ernic_rdma_tutorial_server_wait
   changed_when: false
   failed_when: false
@@ -137,7 +129,7 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm1_ssh }}
-      'server_log="{{ ernic_rdma_tutorial_dir }}/server[0].log";
+      'server_log="{{ ernic_rdma_tutorial_dir }}/server.log";
       cat "${server_log}"'
   register: ernic_rdma_tutorial_server_log
   changed_when: false
@@ -148,7 +140,7 @@
     executable: /bin/bash
     cmd: >-
       {{ ernic_rdma_tutorial_vm2_ssh }}
-      'client_log="{{ ernic_rdma_tutorial_dir }}/client[0].log";
+      'client_log="{{ ernic_rdma_tutorial_dir }}/client.log";
       cat "${client_log}"'
   register: ernic_rdma_tutorial_client_log
   changed_when: false

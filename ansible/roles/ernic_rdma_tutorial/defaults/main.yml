@@ -6,7 +6,6 @@
 ernic_rdma_tutorial_tests: true
 ernic_rdma_tutorial_repo: "https://github.com/jcxue/RDMA-Tutorial.git"
 ernic_rdma_tutorial_dir: /tmp/rdma-tutorial
-ernic_rdma_tutorial_config: tutorial.config
 ernic_rdma_tutorial_sock_port_base: 18600
 ernic_rdma_tutorial_timeout: 60
 ernic_rdma_tutorial_server_hostname: saguaro1

@@ -49,8 +49,10 @@ ernic_rdma_tutorial_examples:
     num_concurr_msgs: 1
 ```
 
-Set `ernic_rdma_tutorial_examples` to a smaller or larger list to choose which
-tutorial revisions run.
+Set `ernic_rdma_tutorial_examples` to a subset of the two pinned revisions to
+choose which examples run. Each pinned revision is patched after checkout to
+exchange RoCE GIDs (index 1) and use the guest's 1024-byte active MTU;
+other revisions need their own matching RoCE patch before they can run.
 
 ## Example
 

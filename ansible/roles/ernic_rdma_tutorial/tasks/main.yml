@@ -6,19 +6,20 @@
 - name: Run RDMA tutorial tests
   when: ernic_rdma_tutorial_tests | bool
   block:
-    - name: Assert the tutorial role has two VMs to work with
+    - name: Assert the tutorial role has at least two VMs to work with
       ansible.builtin.assert:
         that:
-          - ernic_instances | int == 2
+          - ernic_instances | int >= 2
           - ernic_rdma_tutorial_examples | length > 0
         fail_msg: >-
-          ernic_rdma_tutorial requires exactly two rocm-ernic VMs and
+          ernic_rdma_tutorial requires at least two rocm-ernic VMs and
           at least one configured example.
 
     - name: Build VM SSH commands for tutorial runs
       ansible.builtin.set_fact:
         ernic_rdma_tutorial_vm1_ssh: >-
-          ssh -o StrictHostKeyChecking=no
+          ssh {{ ernic_guest_ssh_id_opts | default('') }}
+          -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o BatchMode=yes
           -o ConnectTimeout=15
@@ -27,7 +28,8 @@
           -p {{ ernic_vm_ssh_base_port | int }}
           {{ ernic_vm_ssh_user }}@localhost
         ernic_rdma_tutorial_vm2_ssh: >-
-          ssh -o StrictHostKeyChecking=no
+          ssh {{ ernic_guest_ssh_id_opts | default('') }}
+          -o StrictHostKeyChecking=no
           -o UserKnownHostsFile=/dev/null
           -o BatchMode=yes
           -o ConnectTimeout=15
@@ -200,6 +202,16 @@
             index_var: ernic_rdma_tutorial_example_index
 
       always:
+        - name: Stop the tutorial server if still running
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: >-
+              {{ ernic_rdma_tutorial_vm1_ssh }}
+              'systemctl --user stop {{ ernic_rdma_tutorial_unit }}'
+          when: ernic_rdma_tutorial_unit is defined
+          changed_when: false
+          failed_when: false
+
         - name: Remove tutorial /etc/hosts aliases from VM1
           ansible.builtin.shell:
             executable: /bin/bash
