@@ -1209,7 +1209,8 @@ static void tcp_tune_sockbuf(int sockfd)
     }
 }
 
-static int tcp_connect_to_remote(const char *host, uint16_t port)
+static int tcp_connect_to_remote(const char *host, uint16_t port,
+                                 const _Atomic bool *cancel)
 {
     struct addrinfo hints, *res, *rp;
     char port_str[8];
@@ -1233,7 +1234,40 @@ static int tcp_connect_to_remote(const char *host, uint16_t port)
         if (sockfd < 0)
             continue;
 
-        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0)
+        int flags = fcntl(sockfd, F_GETFL, 0);
+        if (flags < 0 || fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(sockfd);
+            sockfd = -1;
+            continue;
+        }
+
+        int connect_ret = connect(sockfd, rp->ai_addr, rp->ai_addrlen);
+        if (connect_ret < 0 && errno == EINPROGRESS) {
+            const int64_t deadline =
+                g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+            while (g_get_monotonic_time() < deadline &&
+                   (!cancel || atomic_load(cancel))) {
+                struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
+                int remaining =
+                    (int)((deadline - g_get_monotonic_time()) / 1000);
+                if (remaining > 100)
+                    remaining = 100;
+                if (poll(&pfd, 1, remaining) <= 0)
+                    continue;
+
+                int error = 0;
+                socklen_t error_len = sizeof(error);
+                if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &error,
+                               &error_len) < 0 ||
+                    error != 0) {
+                    errno = error ? error : ECONNABORTED;
+                    break;
+                }
+                connect_ret = 0;
+                break;
+            }
+        }
+        if (connect_ret == 0)
             break;
 
         close(sockfd);
@@ -1254,9 +1288,6 @@ static int tcp_connect_to_remote(const char *host, uint16_t port)
     tcp_tune_sockbuf(sockfd);
 
     /* Set socket to non-blocking */
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
-
     rdma_info_report("TCP: Connected to %s:%u", host, port);
     return sockfd;
 }
@@ -1567,10 +1598,14 @@ static int tcp_send_eth_frame_nonblock(int sockfd, const void *payload,
  * *payload is NULL.
  */
 static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                            TcpBufPool *pool)
+                            TcpBufPool *pool, const _Atomic bool *running,
+                            int timeout_ms)
 {
     ssize_t ret;
     size_t total_recv = 0;
+    int64_t deadline_us =
+        timeout_ms >= 0 ? g_get_monotonic_time() + (int64_t)timeout_ms * 1000
+                        : INT64_MAX;
 
     /* Every return leaves *payload defined, so a caller that frees it on an
      * early failure never frees what it passed in. */
@@ -1625,8 +1660,21 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                        hdr->msg_len - total_recv, 0);
             if (ret < 0) {
                 if (errno == EAGAIN) {
+                    if ((running && !atomic_load(running)) ||
+                        g_get_monotonic_time() >= deadline_us) {
+                        g_free(*payload);
+                        *payload = NULL;
+                        return -ETIMEDOUT;
+                    }
                     struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
-                    poll(&pfd, 1, 5);
+                    int poll_ms = 5;
+                    if (deadline_us != INT64_MAX) {
+                        int64_t remaining =
+                            (deadline_us - g_get_monotonic_time()) / 1000;
+                        if (remaining < poll_ms)
+                            poll_ms = remaining > 0 ? (int)remaining : 1;
+                    }
+                    poll(&pfd, 1, poll_ms);
                     continue;
                 }
                 rdma_error_report("TCP: Failed to receive payload: %s",
@@ -1680,7 +1728,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
         if (pfd.revents & POLLIN) {
             ret = tcp_recv_message(conn->sockfd, &hdr, &payload,
-                                   conn->priv ? &conn->priv->recv_pool : NULL);
+                                   conn->priv ? &conn->priv->recv_pool : NULL,
+                                   NULL, -1);
             if (ret == -EAGAIN) {
                 continue;
             }
@@ -2151,8 +2200,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     TcpConnection *peer_conn =
                         tcp_connection_new(peer_id, peer_host, peer_port);
                     peer_conn->priv = priv;
-                    peer_conn->sockfd =
-                        tcp_connect_to_remote(peer_host, peer_port);
+                    peer_conn->sockfd = tcp_connect_to_remote(
+                        peer_host, peer_port, &conn->is_connected);
 
                     if (peer_conn->sockfd < 0) {
                         rdma_error_report("TCP: Failed to connect to peer %u",
@@ -2770,7 +2819,8 @@ static void *tcp_accept_thread(void *opaque)
             int recv_ret;
 
             while (retry_count < max_retries) {
-                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL);
+                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL,
+                                            &priv->accept_thread_running, 5000);
                 if (recv_ret == 0) {
                     /* Message received successfully */
                     if (hdr.msg_type == TCP_MSG_HANDSHAKE) {
@@ -2856,9 +2906,25 @@ static void *tcp_accept_thread(void *opaque)
             atomic_store(&conn->is_connected, true);
             conn->priv = priv;
 
+            /*
+             * Publish before sending the response. If the peer stops reading,
+             * teardown must be able to shut down this socket and release the
+             * accept thread.
+             */
+            qemu_mutex_lock(&priv->conn_table_lock);
+            g_hash_table_add(priv->pending_conns, conn);
+            qemu_mutex_unlock(&priv->conn_table_lock);
+
             /* Send handshake response */
-            tcp_send_handshake(conn, priv->local_node_id,
-                               TCP_MSG_HANDSHAKE_RESP);
+            if (tcp_send_handshake(conn, priv->local_node_id,
+                                   TCP_MSG_HANDSHAKE_RESP) < 0) {
+                qemu_mutex_lock(&priv->conn_table_lock);
+                g_hash_table_steal(priv->pending_conns, conn);
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                tcp_connection_retire(conn);
+                tcp_connection_unref(conn);
+                continue;
+            }
 
             /* Start receive thread for this connection */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
@@ -2877,6 +2943,10 @@ static void *tcp_accept_thread(void *opaque)
              * it has not yet been seen to close, and refusing the new one
              * would leave the two nodes with no working connection at all.
              */
+            qemu_mutex_lock(&priv->conn_table_lock);
+            g_hash_table_steal(priv->pending_conns, conn);
+            qemu_mutex_unlock(&priv->conn_table_lock);
+
             TcpConnection *old_conn =
                 tcp_connection_install(priv, remote_node_id, conn);
             if (old_conn) {
@@ -3170,7 +3240,8 @@ static void tcp_health_check_pass(TcpBackendPrivate *priv)
             rdma_info_report("TCP: Attempting reconnect "
                              "to node %u (%s:%u)",
                              item->node_id, item->hostname, item->port);
-            int fd = tcp_connect_to_remote(item->hostname, item->port);
+            int fd = tcp_connect_to_remote(item->hostname, item->port,
+                                           &priv->health_check_running);
             if (fd >= 0 &&
                 tcp_mesh_reconnect_node(priv, item->node_id, item->hostname,
                                         item->port, fd, now)) {
@@ -3223,7 +3294,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
         tcp_connection_new(0, priv->manager_host, priv->manager_port);
     priv->manager_conn->priv = priv;
     priv->manager_conn->sockfd =
-        tcp_connect_to_remote(priv->manager_host, priv->manager_port);
+        tcp_connect_to_remote(priv->manager_host, priv->manager_port, NULL);
 
     if (priv->manager_conn->sockfd < 0) {
         rdma_error_report("TCP: Failed to connect to manager at %s:%u",
@@ -3308,18 +3379,43 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
  */
 
 /*
- * Retire every connection, registered or pending, so no receive thread is
- * left running. The manager connection goes first: on a worker, its receive
- * thread is what adds peer connections to the table.
- *
- * Called at teardown, after the accept and health-check threads have
- * stopped and before anything a receive thread uses is destroyed. With
- * those two threads stopped nothing creates connections any more, so the
- * snapshot below is complete: registration only moves a connection from the
- * pending set to the table, under the same lock.
+ * Abort every connection, registered or pending, before joining any thread.
+ * The manager connection goes first: on a worker, its receive thread is what
+ * adds peer connections to the table.
  */
+static void tcp_abort_all_connections(TcpBackendPrivate *priv)
+{
+    /*
+     * Abort every socket before joining any receive thread. A receive thread
+     * can be relaying through a different connection, so joining in table
+     * order before shutting down the rest can deadlock teardown.
+     */
+    if (priv->manager_conn)
+        tcp_connection_abort(priv->manager_conn);
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    GHashTableIter abort_iter;
+    gpointer abort_key, abort_value;
+    g_hash_table_iter_init(&abort_iter, priv->connections);
+    while (g_hash_table_iter_next(&abort_iter, &abort_key, &abort_value))
+        tcp_connection_abort(abort_value);
+    g_hash_table_iter_init(&abort_iter, priv->pending_conns);
+    while (g_hash_table_iter_next(&abort_iter, &abort_key, &abort_value))
+        tcp_connection_abort(abort_key);
+    qemu_mutex_unlock(&priv->conn_table_lock);
+}
+
 static void tcp_retire_all_connections(TcpBackendPrivate *priv)
 {
+    tcp_abort_all_connections(priv);
+
+    /*
+     * Called after the accept and health-check threads have stopped and before
+     * anything a receive thread uses is destroyed. With those threads stopped
+     * nothing creates connections any more, so this snapshot is complete:
+     * registration only moves a connection from the pending set to the table,
+     * under the same lock.
+     */
     if (priv->manager_conn) {
         tcp_connection_retire(priv->manager_conn);
     }
@@ -3552,6 +3648,7 @@ error:
     if (atomic_exchange(&priv->health_check_running, false)) {
         qemu_thread_join(&priv->health_check_thread);
     }
+    tcp_abort_all_connections(priv);
     /* Stopped before the listen socket closes, as in tcp_fini(): the
      * accept loop only exits once it sees the flag. */
     if (atomic_exchange(&priv->accept_thread_running, false)) {
@@ -3601,6 +3698,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     }
 
     /* Stop accept thread */
+    tcp_abort_all_connections(priv);
     if (atomic_exchange(&priv->accept_thread_running, false)) {
         qemu_thread_join(&priv->accept_thread);
     }
