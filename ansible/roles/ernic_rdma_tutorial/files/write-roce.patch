@@ -60,6 +60,8 @@
 +++ b/setup_ib.c
 @@ -10,6 +10,16 @@
  
++#include <string.h>
++
  struct IBRes ib_res;
  
 +static int get_local_gid(struct QPInfo *info)

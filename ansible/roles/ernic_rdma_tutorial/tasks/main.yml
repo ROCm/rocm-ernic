@@ -64,7 +64,7 @@
             cmd: |
               {{ ernic_rdma_tutorial_vm1_ssh }} 'set -eu
               tmp=$(mktemp)
-              python3 - <<'"'"'"'"'"'"'"'"'PY'"'"'"'"'"'"'"'"' >"${tmp}"
+              python3 - <<'PY' >"${tmp}"
               from pathlib import Path
               path = Path("/etc/hosts")
               marker = "# rocm-ernic-rdma-tutorial"
@@ -94,7 +94,7 @@
             cmd: |
               {{ ernic_rdma_tutorial_vm2_ssh }} 'set -eu
               tmp=$(mktemp)
-              python3 - <<'"'"'"'"'"'"'"'"'PY'"'"'"'"'"'"'"'"' >"${tmp}"
+              python3 - <<'PY' >"${tmp}"
               from pathlib import Path
               path = Path("/etc/hosts")
               marker = "# rocm-ernic-rdma-tutorial"
@@ -207,7 +207,10 @@
             executable: /bin/bash
             cmd: >-
               {{ ernic_rdma_tutorial_vm1_ssh }}
-              'systemctl --user stop {{ ernic_rdma_tutorial_unit }}'
+              'systemctl --user stop {{ ernic_rdma_tutorial_unit }} 2>/dev/null || true;
+              systemctl --user reset-failed {{ ernic_rdma_tutorial_unit }} 2>/dev/null || true;
+              rm -f /tmp/{{ ernic_rdma_tutorial_unit }}-server.stdout
+              rm -f {{ ernic_rdma_tutorial_dir }}/server.pid'
           when: ernic_rdma_tutorial_unit is defined
           changed_when: false
           failed_when: false

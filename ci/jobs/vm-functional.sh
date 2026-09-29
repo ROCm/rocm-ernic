@@ -92,6 +92,11 @@ run_check vm-functional "sanity-tests" \
     ci_ansible --tags sanity
 group_end
 
+group_start "RDMA tutorial examples"
+run_check vm-functional "tutorial-tests" \
+    ci_ansible --tags tutorial
+group_end
+
 # ── Direct connectivity probes ────────────────────
 #
 # The Ansible sanity play uses failed_when: false in
