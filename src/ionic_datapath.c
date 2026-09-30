@@ -97,6 +97,16 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 #define IONIC_V1_FLAG_SIG 0x0008u
 
 /*
+ * Speculative SGE list formats.  A kernel QP asks for them, and the driver
+ * then describes a WQE with more than IONIC_V1_SPEC_FIRST_SGE SGEs as a
+ * table of their lengths (be32 for SPEC32, be16 for SPEC16) filling the
+ * first two SGE slots, with the SGEs themselves starting after it.
+ */
+#define IONIC_V1_FLAG_SPEC32    0x1000u
+#define IONIC_V1_FLAG_SPEC16    0x2000u
+#define IONIC_V1_SPEC_FIRST_SGE 2
+
+/*
  * struct ionic_v1_wqe:
  *   [0:7]   u64  wqe_id (native endian: SQ producer index / RQ meta index)
  *   [8]     u8   op
@@ -1306,10 +1316,24 @@ static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
  * -------------------------------------------------------------------------
  */
 
-static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
+/*
+ * Parse the SGE list of a send or receive WQE.  @wqe_len is how many bytes of
+ * the WQE are actually in @wqe, which bounds the walk whatever the guest put
+ * in num_sge.
+ */
+static void parse_sges(const uint8_t *wqe, uint32_t wqe_len, uint8_t num_sge,
                        struct dp_sge_list *out)
 {
-    uint32_t avail = stride > WQE_PLD_OFF ? stride - WQE_PLD_OFF : 0;
+    uint16_t flags;
+    memcpy(&flags, wqe + 10, 2);
+    flags = be16toh(flags);
+
+    /* A speculative list keeps its length table where the first SGEs go. */
+    uint32_t sgl_off = WQE_PLD_OFF;
+    if (flags & (IONIC_V1_FLAG_SPEC32 | IONIC_V1_FLAG_SPEC16))
+        sgl_off += IONIC_V1_SPEC_FIRST_SGE * 16;
+
+    uint32_t avail = wqe_len > sgl_off ? wqe_len - sgl_off : 0;
     uint32_t max_sge = avail / 16;
 
     out->count = 0;
@@ -1320,7 +1344,7 @@ static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
         max_sge = num_sge;
 
     for (uint32_t i = 0; i < max_sge; i++) {
-        const uint8_t *p = wqe + WQE_PLD_OFF + i * 16;
+        const uint8_t *p = wqe + sgl_off + i * 16;
         uint64_t va;
         uint32_t len, lkey;
         memcpy(&va, p + 0, 8);
@@ -1433,7 +1457,7 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     memcpy(&rq_wqe_id, rwqe + 0, 8);
 
     struct dp_sge_list dst;
-    parse_sges(rwqe, stride, rwqe[9], &dst);
+    parse_sges(rwqe, read_sz, rwqe[9], &dst);
 
     dq->rq_cons++;
 
@@ -2358,7 +2382,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         src.lkey[0] = 0;
         src.total = inl_len;
     } else {
-        parse_sges(wqe, stride, wqe[9], &src);
+        parse_sges(wqe, read_sz, wqe[9], &src);
     }
 
     bool remote = q->ib_qp_type != 1 /* GSI */ && q->ib_qp_type != 4 /* UD */;

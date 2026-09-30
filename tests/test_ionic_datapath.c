@@ -360,7 +360,7 @@ static void check(bool ok, const char *what)
 #define RBUF_OFF(n) (0x7400u + (n) * 0x200u)
 
 #define CQ_ID       1
-#define STRIDE_LOG2 7 /* 128-byte WQEs: header plus six SGEs */
+#define STRIDE_LOG2 8 /* 256-byte WQEs: room for a SPEC16 list */
 #define DEPTH_LOG2  4
 #define CQ_DEPTH    64
 
@@ -438,8 +438,44 @@ static void put_sge(uint8_t *p, uint64_t va, uint32_t len)
     put_be32(p + 12, 0); /* IONIC_DMA_LKEY */
 }
 
-/* Post one receive of RBUF_LEN bytes into buffer @n. */
-static void post_recv(struct inst *in, uint32_t qp, uint32_t n)
+/*
+ * Describe @total bytes at @va as @nsge SGEs, laid out the way the driver's
+ * ionic_prep_pld() does for a kernel QP: past IONIC_V1_SPEC_FIRST_SGE (2)
+ * SGEs it sets SPEC32 (or SPEC16 above 8), puts a table of lengths in the
+ * first 32 bytes of the payload, and starts the SGEs after it.
+ */
+static void put_pld(uint8_t *w, uint64_t va, uint32_t total, uint32_t nsge)
+{
+    uint8_t *sgl = w + WQE_PLD_OFF;
+    uint16_t flags;
+
+    memcpy(&flags, w + 10, 2);
+    flags = be16toh(flags);
+    if (nsge > 2) {
+        flags |= nsge > 8 ? IONIC_V1_FLAG_SPEC16 : IONIC_V1_FLAG_SPEC32;
+        sgl += 32;
+    }
+    flags = htobe16(flags);
+    memcpy(w + 10, &flags, 2);
+    w[9] = (uint8_t)nsge;
+
+    uint32_t chunk = total / nsge;
+    for (uint32_t i = 0; i < nsge; i++) {
+        uint32_t len = i + 1 < nsge ? chunk : total - chunk * (nsge - 1);
+        put_sge(sgl + i * 16, va, len);
+        if (nsge > 8) {
+            uint16_t l16 = htobe16((uint16_t)len);
+            memcpy(w + WQE_PLD_OFF + i * 2, &l16, 2);
+        } else if (nsge > 2) {
+            put_be32(w + WQE_PLD_OFF + i * 4, len);
+        }
+        va += len;
+    }
+}
+
+/* Post one receive of RBUF_LEN bytes into buffer @n, split into @nsge SGEs. */
+static void post_recv_sges(struct inst *in, uint32_t qp, uint32_t n,
+                           uint32_t nsge)
 {
     uint16_t slot = in->rq_prod[qp] % (1u << DEPTH_LOG2);
     uint8_t *w = g_mem + in->base + RQ_OFF(qp - 1) + slot * (1u << STRIDE_LOG2);
@@ -447,9 +483,8 @@ static void post_recv(struct inst *in, uint32_t qp, uint32_t n)
     memset(w, 0, 1u << STRIDE_LOG2);
     uint64_t wqe_id = slot;
     memcpy(w, &wqe_id, 8);
-    w[9] = 1; /* num_sge */
     put_be32(w + 12, RBUF_LEN);
-    put_sge(w + WQE_PLD_OFF, in->base + RBUF_OFF(n), RBUF_LEN);
+    put_pld(w, in->base + RBUF_OFF(n), RBUF_LEN, nsge);
     memset(g_mem + in->base + RBUF_OFF(n), 0xee, RBUF_LEN);
 
     in->rq_prod[qp]++;
@@ -458,9 +493,17 @@ static void post_recv(struct inst *in, uint32_t qp, uint32_t n)
                                 ((uint64_t)(qp & 0xffu) << 24));
 }
 
-/* Post a signalled UD SEND of PAYLOAD bytes through @ah_id to @dest_qpn. */
-static void post_ud_send(struct inst *in, uint32_t qp, uint32_t ah_id,
-                         uint32_t dest_qpn)
+static void post_recv(struct inst *in, uint32_t qp, uint32_t n)
+{
+    post_recv_sges(in, qp, n, 1);
+}
+
+/*
+ * Post a signalled UD SEND of PAYLOAD bytes, gathered from @nsge SGEs,
+ * through @ah_id to @dest_qpn.
+ */
+static void post_ud_send_sges(struct inst *in, uint32_t qp, uint32_t ah_id,
+                              uint32_t dest_qpn, uint32_t nsge)
 {
     uint16_t slot = in->sq_prod[qp] % (1u << DEPTH_LOG2);
     uint8_t *w = g_mem + in->base + SQ_OFF(qp - 1) + slot * (1u << STRIDE_LOG2);
@@ -469,14 +512,13 @@ static void post_ud_send(struct inst *in, uint32_t qp, uint32_t ah_id,
     uint64_t wqe_id = slot;
     memcpy(w, &wqe_id, 8);
     w[8] = IONIC_V1_OP_SEND;
-    w[9] = 1;
     uint16_t flags = htobe16(IONIC_V1_FLAG_SIG);
     memcpy(w + 10, &flags, 2);
     put_be32(w + 16, ah_id);
     put_be32(w + 20, dest_qpn);
     put_be32(w + 24, QKEY_GSI);
     put_be32(w + WQE_SEND_LEN_OFF, PAYLOAD);
-    put_sge(w + WQE_PLD_OFF, in->base + PLD_OFF, PAYLOAD);
+    put_pld(w, in->base + PLD_OFF, PAYLOAD, nsge);
 
     /* A MAD: base version 1, then a recognisable body. */
     uint8_t *p = g_mem + in->base + PLD_OFF;
@@ -488,6 +530,12 @@ static void post_ud_send(struct inst *in, uint32_t qp, uint32_t ah_id,
     ionic_datapath_doorbell(in->dp, DP_QTYPE_SQ,
                             (uint64_t)in->sq_prod[qp] |
                                 ((uint64_t)(qp & 0xffu) << 24));
+}
+
+static void post_ud_send(struct inst *in, uint32_t qp, uint32_t ah_id,
+                         uint32_t dest_qpn)
+{
+    post_ud_send_sges(in, qp, ah_id, dest_qpn, 1);
 }
 
 /* The next unread CQE of this instance's CQ, or NULL if there is none. */
@@ -814,6 +862,39 @@ static void test_remote_rnr_drop_is_silent(void)
     inst_fini(&g_b);
 }
 
+/*
+ * Kernel QPs ask for speculative SGE lists, so a WQE with more than two SGEs
+ * carries a table of lengths ahead of them and flags SPEC32 or SPEC16.  Read
+ * as plain SGEs, that table became a garbage first SGE, and nvmet-rdma's
+ * multi-page RDMA WRITEs failed with "could not gather".  Both the send and
+ * the receive side must skip it.
+ */
+static void test_spec_sge_lists(void)
+{
+    static const uint32_t counts[] = {2, 3, 8, 9};
+
+    for (size_t k = 0; k < sizeof(counts) / sizeof(counts[0]); k++) {
+        uint32_t n = counts[k];
+        char what[96];
+
+        inst_init(&g_a, 0, UINT32_MAX);
+        struct ionic_dp_ah ah = v4_ah(10, 10, SMAC_A, SMAC_A);
+        ionic_datapath_register_ah(g_a.dp, AH_ID, &ah);
+
+        post_recv_sges(&g_a, QP_UD_B, 0, n);
+        post_ud_send_sges(&g_a, QP_UD_A, AH_ID, QP_UD_B, n);
+
+        const uint8_t *rbuf = g_mem + g_a.base + RBUF_OFF(0);
+        const uint8_t *cqe = find_recv(&g_a, QP_UD_B);
+        snprintf(what, sizeof(what),
+                 "spec: %u SGEs each side deliver the payload intact", n);
+        check(cqe && !cqe_error(cqe) && cqe_len(cqe) == RBUF_LEN &&
+                  payload_ok(rbuf, &g_a) && v4_grh_ok(rbuf, 10, 10),
+              what);
+        inst_fini(&g_a);
+    }
+}
+
 int main(void)
 {
     test_local_ud_send();
@@ -824,6 +905,7 @@ int main(void)
     test_ipv6_grh();
     test_unknown_ah_dropped();
     test_remote_rnr_drop_is_silent();
+    test_spec_sge_lists();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);
