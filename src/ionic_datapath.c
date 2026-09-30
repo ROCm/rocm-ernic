@@ -2655,8 +2655,15 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
      * reads key 0 as IONIC_DMA_LKEY and hands back the va as a bus address with
      * no MR lookup and no bound, which is fine for a key our own guest put in a
      * WQE but would let another instance reach any guest physical page.
+     *
+     * A zero-length READ or WRITE reaches no memory, and IB does not check
+     * its R_Key: ib_drain_qp() posts exactly that, with no SGE and so key 0,
+     * to flush a QP on every rdma_cm disconnect.  Atomics always move 8 bytes.
      */
-    if (!rkey &&
+    bool zero_len_rdma = !length && (h->op == IONIC_WIRE_WRITE ||
+                                     h->op == IONIC_WIRE_WRITE_IMM ||
+                                     h->op == IONIC_WIRE_READ_REQ);
+    if (!rkey && !zero_len_rdma &&
         (h->op == IONIC_WIRE_WRITE || h->op == IONIC_WIRE_WRITE_IMM ||
          h->op == IONIC_WIRE_READ_REQ || h->op == IONIC_WIRE_ATOMIC_REQ)) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,

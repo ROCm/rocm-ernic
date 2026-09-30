@@ -895,6 +895,58 @@ static void test_spec_sge_lists(void)
     }
 }
 
+/*
+ * Status of the reply a mesh request drew, read back out of the captured
+ * transmit, or UINT32_MAX when nothing was sent.
+ */
+static uint32_t wire_reply_status(void)
+{
+    const struct ionic_wire_hdr *r = (const struct ionic_wire_hdr *)g_tx;
+    if (!g_tx_count || g_tx_len < sizeof(*r))
+        return UINT32_MAX;
+    return le32toh(r->status);
+}
+
+/*
+ * ib_drain_qp() flushes a QP by posting a zero-length RDMA WRITE with no SGE,
+ * so no rkey, and waiting for it to complete.  A zero-length RDMA operation
+ * touches no memory and IB does not check its R_Key, but the peer rejected
+ * key 0 outright, and every rdma_cm disconnect left an error CQE and a
+ * warning on both sides.  Key 0 with a length still has to be refused: it
+ * would reach guest memory with no MR bound at all.
+ */
+static void test_zero_length_rdma_ignores_rkey(void)
+{
+    static const uint8_t ops[] = {IONIC_WIRE_WRITE, IONIC_WIRE_WRITE_IMM,
+                                  IONIC_WIRE_READ_REQ};
+
+    inst_init(&g_b, HALF, 1);
+    for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        struct ionic_wire_hdr h;
+        char what[96];
+
+        wire_hdr_init(&h, ops[i], QP_UD_A, QP_UD_B, 7);
+        g_tx_count = 0;
+        dp_handle_wire(g_b.dp, 0, (const uint8_t *)&h, sizeof(h), true);
+        snprintf(what, sizeof(what),
+                 "zero-length: wire op %u with rkey 0 completes OK", ops[i]);
+        check(wire_reply_status() == IONIC_STS_OK, what);
+    }
+
+    uint8_t msg[sizeof(struct ionic_wire_hdr) + 8];
+    struct ionic_wire_hdr h;
+    wire_hdr_init(&h, IONIC_WIRE_WRITE, QP_UD_A, QP_UD_B, 8);
+    h.length = htole32(8);
+    h.remote_va = htole64(g_b.base + PLD_OFF);
+    memcpy(msg, &h, sizeof(h));
+    memset(msg + sizeof(h), 0x5a, 8);
+    g_tx_count = 0;
+    dp_handle_wire(g_b.dp, 0, msg, sizeof(msg), true);
+    check(wire_reply_status() == IONIC_STS_REMOTE_ACC_ERR,
+          "zero-length: rkey 0 with a length is still refused");
+    inst_fini(&g_b);
+}
+
 int main(void)
 {
     test_local_ud_send();
@@ -906,6 +958,7 @@ int main(void)
     test_unknown_ah_dropped();
     test_remote_rnr_drop_is_silent();
     test_spec_sge_lists();
+    test_zero_length_rdma_ignores_rkey();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);
