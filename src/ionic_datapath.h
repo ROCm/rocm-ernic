@@ -128,9 +128,12 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 
 /*
- * MR registration.  @lkey is the driver's full mrid (index | key << 24), which
+ * MR registration.  @lkey is the driver's full mrid (index << 8 | key), which
  * is exactly what userspace puts in an SGE.  @va/@length describe the region in
  * the client's address space; @buf resolves it to guest physical pages.
+ *
+ * Unregistering drops the MR whatever key it holds: DESTROY_MR names it by the
+ * key it was created with, which fast registration has usually rotated since.
  */
 void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                 uint64_t va, uint64_t length,

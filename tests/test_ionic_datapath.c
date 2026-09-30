@@ -947,6 +947,76 @@ static void test_zero_length_rdma_ignores_rkey(void)
     inst_fini(&g_b);
 }
 
+/* Live MR table entries whose driver MR index is @index. */
+static uint32_t mr_entries(struct ionic_datapath *dp, uint32_t index)
+{
+    uint32_t n = 0;
+    for (int i = 0; i < MAX_MR; i++)
+        if (dp->mr[i].valid && dp->mr[i].lkey >> 8 == index)
+            n++;
+    return n;
+}
+
+/* Post a fast registration of @key over one page at PLD_OFF. */
+static void post_reg_mr(struct inst *in, uint32_t qp, uint32_t key)
+{
+    uint16_t slot = in->sq_prod[qp] % (1u << DEPTH_LOG2);
+    uint8_t *w = g_mem + in->base + SQ_OFF(qp - 1) + slot * (1u << STRIDE_LOG2);
+    uint64_t v;
+
+    memset(w, 0, 1u << STRIDE_LOG2);
+    w[8] = IONIC_V1_OP_REG_MR;
+    w[9] = (uint8_t)key; /* num_sge_key: the new key byte */
+    put_be32(w + 12, key);
+    v = htobe64(0x10000);
+    memcpy(w + WQE_REG_MR_VA_OFF, &v, 8);
+    v = htobe64(4096);
+    memcpy(w + WQE_REG_MR_LENGTH_OFF, &v, 8);
+    v = htobe64(in->base + PLD_OFF);
+    memcpy(w + WQE_REG_MR_DMA_ADDR_OFF, &v, 8);
+    put_be32(w + WQE_REG_MR_MAP_COUNT_OFF, 1);
+    w[WQE_REG_MR_PAGE_SZ_L2_OFF] = 12;
+
+    in->sq_prod[qp]++;
+    ionic_datapath_doorbell(in->dp, DP_QTYPE_SQ,
+                            (uint64_t)in->sq_prod[qp] |
+                                ((uint64_t)(qp & 0xffu) << 24));
+}
+
+/*
+ * An ionic mrid is (index << 8) | key, and ib_update_fast_reg_key() rotates
+ * the low byte.  Treating the top byte as the key meant every rotation looked
+ * like a different MR, so the stale key was never dropped: an nvme-rdma
+ * initiator against a target that invalidates remotely (nvmet-rdma sends
+ * SEND_WITH_INV, so the host never posts LOCAL_INV) filled the 2048-entry
+ * table after a couple of thousand I/Os, and every I/O after that failed.
+ * DESTROY_MR names the MR by the key it was created with, so it has to drop
+ * whatever key the MR holds by then.
+ */
+static void test_fast_reg_key_rotation(void)
+{
+    const uint32_t index = 0x123;
+    const uint32_t created = (index << 8) | 0x40;
+    struct ionic_dp_buf_desc none = {.map_count = 0};
+
+    inst_init(&g_a, 0, UINT32_MAX);
+    ionic_datapath_register_mr(g_a.dp, created, 0, 0, &none);
+
+    uint32_t key = created;
+    for (int i = 0; i < 600; i++) {
+        key = (key & ~0xffu) | ((key + 1) & 0xffu);
+        post_reg_mr(&g_a, QP_UD_A, key);
+    }
+    check(mr_entries(g_a.dp, index) == 1,
+          "fast-reg: 600 key rotations leave one entry for the MR");
+    check(mr_find(g_a.dp, key) != NULL, "fast-reg: and it holds the new key");
+
+    ionic_datapath_unregister_mr(g_a.dp, created);
+    check(mr_entries(g_a.dp, index) == 0,
+          "fast-reg: DESTROY_MR by the creation key drops the rotated one");
+    inst_fini(&g_a);
+}
+
 int main(void)
 {
     test_local_ud_send();
@@ -959,6 +1029,7 @@ int main(void)
     test_remote_rnr_drop_is_silent();
     test_spec_sge_lists();
     test_zero_length_rdma_ignores_rkey();
+    test_fast_reg_key_rotation();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);

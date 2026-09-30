@@ -956,13 +956,37 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
             m->buf.page_size_log2);
 }
 
-void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
+static void mr_release(struct dp_mr *m)
 {
-    struct dp_mr *m = dp ? mr_find(dp, lkey) : NULL;
-    if (!m)
-        return;
     buf_release(&m->buf);
     m->valid = false;
+}
+
+/* An mrid is (index << IONIC_MRID_INDEX_SHIFT) | key; the index is the MR. */
+#define IONIC_MRID_INDEX_SHIFT 8
+
+/* Drop every key @lkey's MR index holds, except @lkey itself if @keep. */
+static void mr_drop_index(struct ionic_datapath *dp, uint32_t lkey, bool keep)
+{
+    for (int i = 0; i < MAX_MR; i++)
+        if (dp->mr[i].valid && !(keep && dp->mr[i].lkey == lkey) &&
+            dp->mr[i].lkey >> IONIC_MRID_INDEX_SHIFT ==
+                lkey >> IONIC_MRID_INDEX_SHIFT)
+            mr_release(&dp->mr[i]);
+}
+
+void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
+{
+    if (dp)
+        mr_drop_index(dp, lkey, false);
+}
+
+/* LOCAL_INV invalidates the one key it names. */
+static void mr_invalidate(struct ionic_datapath *dp, uint32_t lkey)
+{
+    struct dp_mr *m = mr_find(dp, lkey);
+    if (m)
+        mr_release(m);
 }
 
 /*
@@ -972,17 +996,15 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
  * -- register_always defaults on -- so without it the keyed SGLs the NVMe-oF
  * controller relies on never name a mapped region.
  *
- * ib_update_fast_reg_key() rotates only the top byte, so the previous key for
- * the same MR id has to be dropped or the table fills one rotation at a time.
+ * ib_update_fast_reg_key() rotates the low byte, so the previous key for the
+ * same MR index has to be dropped or the table fills one rotation at a time.
+ * Nothing else is guaranteed to drop it: a target that invalidates remotely
+ * (SEND_WITH_INV, as nvmet-rdma does) spares the initiator its LOCAL_INV.
  */
 static void dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
                       uint32_t key)
 {
-    for (int i = 0; i < MAX_MR; i++) {
-        if (dp->mr[i].valid && dp->mr[i].lkey != key &&
-            (dp->mr[i].lkey & 0x00ffffffu) == (key & 0x00ffffffu))
-            ionic_datapath_unregister_mr(dp, dp->mr[i].lkey);
-    }
+    mr_drop_index(dp, key, true);
 
     uint64_t va, length, dma_addr;
     uint32_t map_count;
@@ -2358,7 +2380,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      */
     if (op == IONIC_V1_OP_REG_MR || op == IONIC_V1_OP_LOCAL_INV) {
         if (op != IONIC_V1_OP_REG_MR)
-            ionic_datapath_unregister_mr(dp, be32toh(imm_be));
+            mr_invalidate(dp, be32toh(imm_be));
         else if (read_sz >= WQE_REG_MR_MIN_SZ)
             dp_reg_mr(dp, wqe, be32toh(imm_be));
         else
