@@ -133,11 +133,12 @@ jobs:
         if: always()
         env:
           TOOL: ${{ matrix.tool }}
+          RUN_OK: ${{ steps.run.outputs.ok }}
         run: |
           {
             echo "## Dynamic analysis — \`$TOOL\`"
             echo ""
-            if [ "${{ steps.run.outputs.ok }}" != "true" ]; then
+            if [ "${RUN_OK}" != "true" ]; then
               echo "> ⚠️ The build did not complete cleanly — see the job log. This check does not block merges."
               echo ""
             fi

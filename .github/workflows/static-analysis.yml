@@ -97,11 +97,13 @@ jobs:
 
       - name: Publish job summary
         if: always()
+        env:
+          ANALYSIS_OK: ${{ steps.analysis.outputs.ok }}
         run: |
           {
             echo "## Static Analysis (nix \`$LEVEL\`)"
             echo ""
-            if [ "${{ steps.analysis.outputs.ok }}" != "true" ]; then
+            if [ "${ANALYSIS_OK}" != "true" ]; then
               echo "> ⚠️ The analysis build did not complete cleanly — see the job log."
               echo "> This check is informational and does not block merges."
               echo ""
