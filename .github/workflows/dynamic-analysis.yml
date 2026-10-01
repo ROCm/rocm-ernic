@@ -1,3 +1,7 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 # Dynamic / memory analysis via the Nix analysis toolkit (nix/analysis/).
 #
 # Instrumented builds that exercise the server on the loopback backend under:

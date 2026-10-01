@@ -1,3 +1,5 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
 # SPDX-License-Identifier: MIT
 #
 # Slash-command dispatcher for the self-hosted CI.

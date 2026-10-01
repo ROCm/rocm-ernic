@@ -1,3 +1,7 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 # GitHub Action to automate the identification of common misspellings in text files
 # https://github.com/codespell-project/codespell
 # https://github.com/codespell-project/actions-codespell

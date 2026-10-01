@@ -1,4 +1,5 @@
-# Copyright Advanced Micro Devices, Inc.
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
 # SPDX-License-Identifier: MIT
 #
 # Pre-commit security gate: fast, PR-side security scanners that run on

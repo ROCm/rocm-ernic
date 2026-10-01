@@ -1,4 +1,5 @@
-# Copyright Advanced Micro Devices, Inc.
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
 # SPDX-License-Identifier: MIT
 #
 # Weekly security scan: runs on a fixed cadence and pushes SARIF findings
