@@ -178,10 +178,16 @@ jobs:
           name: release-assets
           path: dist
 
+      # --repo is required: this job does not check the repository
+      # out, so gh has no git remote to infer it from.
       - name: Create GitHub release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          name: rocm-ernic ${{ needs.build.outputs.version }}
-          make_latest: true
-          generate_release_notes: true
-          files: dist/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "rocm-ernic ${VERSION}" \
+            --latest \
+            --generate-notes \
+            --verify-tag
