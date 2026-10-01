@@ -1,3 +1,7 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 # Opt-in fuzzing via the Nix fuzz harnesses (nix/analysis/fuzz/).
 #
 # libFuzzer harnesses for the untrusted wire-format parsers
