@@ -7,6 +7,9 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Hold new releases back for a week before proposing them.
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
@@ -20,6 +23,8 @@ updates:
       - "/prometheus"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       python:
         patterns:
