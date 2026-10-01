@@ -266,7 +266,7 @@ def format_bytes(n):
     val = float(n)
     for u in units:
         if val < 1024.0 or u == units[-1]:
-            if val == int(val) and val < 10000:
+            if val.is_integer() and val < 10000:
                 return f"{int(val)}{u}"
             if val < 10:
                 return f"{val:.1f}{u}"
