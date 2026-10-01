@@ -3706,11 +3706,15 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
          */
         bool write_failed = false;
 
-        if (is_write && remote_addr && rkey) {
+        if (is_write) {
             RdmaRmMR *target_mr =
                 rdma_rm_get_mr(priv->backend_dev->rdma_dev_res, rkey);
-            /* tcp_mr_range_ok() covers the NULL and NULL-virt cases. */
-            if (tcp_mr_range_ok(target_mr, remote_addr, total_len)) {
+            if (!target_mr) {
+                rdma_error_report("TCP: Local loopback RDMA_WRITE "
+                                  "invalid rkey 0x%x",
+                                  rkey);
+                write_failed = true;
+            } else if (tcp_mr_range_ok(target_mr, remote_addr, total_len)) {
                 char *dst =
                     (char *)target_mr->virt + (remote_addr - target_mr->start);
                 /* Sums a subset of the lengths in total_len, so it is bounded

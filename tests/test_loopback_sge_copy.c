@@ -376,6 +376,64 @@ static int check_translate_bounds(const struct bounds_case *tc)
     return fail;
 }
 
+/* ---- post_send without backend private data ----------------------------
+ *
+ * loopback_fini() clears backend_dev->backend_private, so a send posted
+ * after teardown reaches loopback_post_send() with a valid QP but no private
+ * data. It must return without touching that data. The send is a plain SEND
+ * because that path reads the private data (priv->compute_md5) before
+ * anything else could stop it, so a missing check crashes this test rather
+ * than going unnoticed.
+ *
+ * The opcode is set explicitly: PVRDMA_WR_RDMA_WRITE is 0, so a zeroed or
+ * absent completion context selects RDMA WRITE, whose zero-remote_addr
+ * early exit never reaches the private data.
+ */
+static int check_post_send_no_private(void)
+{
+    const char *name = "post-send-no-private";
+    RdmaBackendDev backend_dev;
+    RdmaBackendQP qp;
+    LoopbackQP lqp;
+    PvrdmaCompHandlerCtx ctx;
+    uint8_t payload[64];
+    struct ibv_sge sge;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    memset(&qp, 0, sizeof(qp));
+    memset(&lqp, 0, sizeof(lqp));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(payload, 0x5A, sizeof(payload));
+
+    ctx.opcode = PVRDMA_WR_SEND;
+    ctx.cqe.opcode = IBV_WC_SEND;
+
+    backend_dev.dev = dummy_pci();
+    backend_dev.backend_private = NULL;
+
+    lqp.qpn = 1;
+    lqp.qp_type = IBV_QPT_RC;
+    lqp.backend_dev = &backend_dev;
+    lqp.send_queue = g_queue_new();
+    lqp.recv_queue = g_queue_new();
+    qemu_mutex_init(&lqp.lock);
+    qp.ibqp = (struct ibv_qp *)&lqp;
+
+    sge.addr = (uint64_t)(uintptr_t)payload;
+    sge.length = sizeof(payload);
+    sge.lkey = 0;
+
+    loopback_post_send(&backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0,
+                       0, &ctx);
+
+    qemu_mutex_destroy(&lqp.lock);
+    g_queue_free(lqp.recv_queue);
+    g_queue_free(lqp.send_queue);
+
+    printf("PASS %-24s: send with no backend private data returned\n", name);
+    return 0;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -457,6 +515,8 @@ int main(void)
             failures += check_translate_bounds(&bounds[i]);
         }
     }
+
+    failures += check_post_send_no_private();
 
     if (failures) {
         printf("loopback_sge_copy: %d check(s) FAILED\n", failures);
