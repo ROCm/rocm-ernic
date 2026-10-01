@@ -121,10 +121,13 @@ jobs:
           python3 "${INSTALL_PREFIX}/bin/ernicctl" --help
 
       - name: Create release archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DEB_ARCH: ${{ steps.arch.outputs.deb_arch }}
         run: |
           set -euo pipefail
-          version="${{ steps.version.outputs.version }}"
-          arch="${{ steps.arch.outputs.deb_arch }}"
+          version="${VERSION}"
+          arch="${DEB_ARCH}"
           mkdir -p dist
           cat > /tmp/rocm-ernic-release-files.txt <<'EOF'
           bin/rocm-ernic

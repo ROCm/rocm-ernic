@@ -158,8 +158,10 @@ jobs:
     - name: Read VM info
       id: vm_info
       shell: bash
+      env:
+        GUEST_IMAGE_DIR: ${{ steps.guest_image.outputs.output_dir }}
       run: |
-        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        OUT="${GUEST_IMAGE_DIR}"
         echo "=== Reading VM info from $OUT/vm-info.json ==="
         if [ ! -f "$OUT/vm-info.json" ]; then
           echo "✗ vm-info.json not found in $OUT"
@@ -371,9 +373,11 @@ jobs:
     
     - name: Start QEMU VM
       shell: bash
+      env:
+        VM_INFO_DISK: ${{ steps.vm_info.outputs.vm_disk }}
       run: |
         echo "=== Starting QEMU VM ==="
-        VM_DISK="${{ steps.vm_info.outputs.vm_disk }}"
+        VM_DISK="${VM_INFO_DISK}"
         SSH_PORT=2222
         
         # Start VM with vfio-user device
@@ -417,11 +421,15 @@ jobs:
     
     - name: Setup SSH keys
       shell: bash
+      env:
+        VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
+        VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
+        VM_INFO_SSH_KEY: ${{ steps.vm_info.outputs.ssh_key }}
       run: |
         echo "=== Setting up SSH keys ==="
-        SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
-        SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
-        SSH_KEY="${{ steps.vm_info.outputs.ssh_key }}"
+        SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
+        SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
+        SSH_KEY="${VM_INFO_SSH_KEY}"
         SSH_PORT="$SSH_PORT"
         
         mkdir -p ~/.ssh
@@ -474,10 +482,12 @@ jobs:
     
     - name: Wait for VM SSH
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Waiting for VM SSH ==="
         SSH_PORT="$SSH_PORT"
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
         
         # Keep ssh's stderr rather than discarding it: "Connection
         # refused" and "Connection timed out" are different faults, and
@@ -1291,8 +1301,10 @@ jobs:
     - name: Read VM info
       id: vm_info
       shell: bash
+      env:
+        GUEST_IMAGE_DIR: ${{ steps.guest_image.outputs.output_dir }}
       run: |
-        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        OUT="${GUEST_IMAGE_DIR}"
         echo "=== Reading VM info from $OUT/vm-info.json ==="
         if [ ! -f "$OUT/vm-info.json" ]; then
           echo "✗ vm-info.json not found in $OUT"
@@ -1375,6 +1387,8 @@ jobs:
     - name: Create the per-VM disk overlays
       id: copy_vm_disk
       shell: bash
+      env:
+        VM_INFO_DISK: ${{ steps.vm_info.outputs.vm_disk }}
       run: |
         set -euo pipefail
         echo "=== Creating per-VM overlays ==="
@@ -1385,7 +1399,7 @@ jobs:
         #
         # Both VMs get one, including the first: with VM 1 writing to the
         # base directly, VM 2's backing file would mutate underneath it.
-        BASE="${{ steps.vm_info.outputs.vm_disk }}"
+        BASE="${VM_INFO_DISK}"
         STEM="$(dirname "$BASE")/$(basename "$BASE" .qcow2)"
         VM_DISK_1="${STEM}.1.qcow2"
         VM_DISK_2="${STEM}.2.qcow2"
@@ -1402,11 +1416,15 @@ jobs:
     
     - name: Setup SSH keys
       shell: bash
+      env:
+        VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
+        VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
+        VM_INFO_SSH_KEY: ${{ steps.vm_info.outputs.ssh_key }}
       run: |
         echo "=== Setting up SSH keys ==="
-        SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
-        SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
-        SSH_KEY="${{ steps.vm_info.outputs.ssh_key }}"
+        SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
+        SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
+        SSH_KEY="${VM_INFO_SSH_KEY}"
         
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
@@ -1863,9 +1881,11 @@ jobs:
 
     - name: Start VM 1
       shell: bash
+      env:
+        COPY_VM_DISK_1: ${{ steps.copy_vm_disk.outputs.vm_disk_1 }}
       run: |
         echo "=== Starting VM 1 ==="
-        VM_DISK_1="${{ steps.copy_vm_disk.outputs.vm_disk_1 }}"
+        VM_DISK_1="${COPY_VM_DISK_1}"
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
@@ -1906,9 +1926,11 @@ jobs:
 
     - name: Start VM 2
       shell: bash
+      env:
+        COPY_VM_DISK_2: ${{ steps.copy_vm_disk.outputs.vm_disk_2 }}
       run: |
         echo "=== Starting VM 2 ==="
-        VM_DISK_2="${{ steps.copy_vm_disk.outputs.vm_disk_2 }}"
+        VM_DISK_2="${COPY_VM_DISK_2}"
         SSH_PORT_2=2223
         
         qemu-system-x86_64 \
@@ -1949,9 +1971,11 @@ jobs:
 
     - name: Wait for VMs to boot
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Waiting for VMs to boot ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
 
         # Keep ssh's stderr rather than discarding it: "Connection
         # refused" and "Connection timed out" are different faults, and
@@ -1991,9 +2015,11 @@ jobs:
 
     - name: Install kernel headers and build tools in VMs (parallel)
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Installing kernel headers and build tools in both VMs ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
 
         # The ionic flavour of the guest image bakes these in, but
         # these jobs run against a generic prebuilt CI qcow2, so the
@@ -2048,9 +2074,11 @@ jobs:
 
     - name: Provision the VMs with the Ansible collection
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Provisioning both guests via ernic_guest_setup ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
         ERNIC_RUN_DIR=/tmp/ernic-ci
         mkdir -p "$ERNIC_RUN_DIR"
 
@@ -2098,9 +2126,11 @@ jobs:
 
     - name: Verify RDMA devices in VMs
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Verifying RDMA devices ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
 
         # Discover the device per guest by PCI vendor ID rather than by
         # name -- see the same lookup in the loopback job, and
@@ -2149,9 +2179,11 @@ jobs:
 
     - name: RDMA sanity suite across the TCP mesh (Ansible)
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Running the sanity play across both guests ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
 
         # The same play ci/jobs/vm-functional.sh runs on the self-hosted
         # path: ping and a netcat echo over the emulated Ethernet, then
@@ -2177,10 +2209,12 @@ jobs:
       # anyway.  Scheduled and dispatched runs sweep.
       if: github.event_name != 'pull_request'
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         set -euo pipefail
         echo "=== perf sweeps across the two guests ==="
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
 
         # The same two plays ci/jobs/perf.sh drives on the self-hosted
         # path -- tcp-performance-tests.yml (iperf3, one sustained rate

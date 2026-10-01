@@ -128,8 +128,10 @@ jobs:
     - name: Read VM info
       id: vm_info
       shell: bash
+      env:
+        GUEST_IMAGE_DIR: ${{ steps.guest_image.outputs.output_dir }}
       run: |
-        OUT="${{ steps.guest_image.outputs.output_dir }}"
+        OUT="${GUEST_IMAGE_DIR}"
         echo "=== Reading VM info from $OUT/vm-info.json ==="
         if [ ! -f "$OUT/vm-info.json" ]; then
           echo "✗ vm-info.json not found in $OUT"
@@ -299,9 +301,11 @@ jobs:
 
     - name: Start QEMU VM
       shell: bash
+      env:
+        VM_INFO_DISK: ${{ steps.vm_info.outputs.vm_disk }}
       run: |
         echo "=== Starting QEMU VM ==="
-        VM_DISK="${{ steps.vm_info.outputs.vm_disk }}"
+        VM_DISK="${VM_INFO_DISK}"
         SSH_PORT=2222
 
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
@@ -341,10 +345,13 @@ jobs:
 
     - name: Setup SSH keys
       shell: bash
+      env:
+        VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
+        VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
       run: |
         echo "=== Setting up SSH keys ==="
-        SSH_KEY_PRIVATE="${{ steps.vm_info.outputs.ssh_key_private }}"
-        SSH_KEY_PUBLIC="${{ steps.vm_info.outputs.ssh_key_public }}"
+        SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
+        SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
         SSH_PORT="$SSH_PORT"
 
         mkdir -p ~/.ssh
@@ -373,10 +380,12 @@ jobs:
 
     - name: Wait for VM SSH
       shell: bash
+      env:
+        VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Waiting for VM SSH ==="
         SSH_PORT="$SSH_PORT"
-        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+        VM_USER="${VM_INFO_USER}"
 
         for i in {1..60}; do
           if ssh $SSH_OPTS -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then

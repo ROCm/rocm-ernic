@@ -81,11 +81,13 @@ jobs:
 
       - name: Publish job summary
         if: always()
+        env:
+          FUZZ_TOTAL: ${{ steps.fuzz.outputs.total }}
         run: |
           {
             echo "## Fuzz (nix) — ${FUZZ_SECONDS}s per harness"
             echo ""
-            total="${{ steps.fuzz.outputs.total }}"
+            total="${FUZZ_TOTAL}"
             if [ -z "$total" ]; then
               echo "> ⚠️ The fuzz run did not complete — see the job log. This check does not block merges."
             elif [ "$total" = "0" ]; then

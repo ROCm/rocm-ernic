@@ -478,6 +478,7 @@ jobs:
           OVERALL: ${{ steps.outcome.outputs.overall }}
           DETAIL: ${{ steps.outcome.outputs.detail }}
           PR: ${{ inputs.pr }}
+          TIER: ${{ needs.preflight.outputs.tier }}
         run: |
           if [ "${OVERALL}" = "success" ]; then
             head="Self-hosted CI passed"
@@ -485,7 +486,7 @@ jobs:
             head="Self-hosted CI failed"
           fi
           {
-            echo "**${head}** on \`${{ runner.name }}\`, tier \`${{ needs.preflight.outputs.tier }}\`."
+            echo "**${head}** on \`${RUNNER_NAME}\`, tier \`${TIER}\`."
             echo
             echo "| Stage | Result |"
             echo "|---|---|"
