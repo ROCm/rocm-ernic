@@ -194,10 +194,11 @@ jobs:
         if: steps.perm.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.issue.pull_request.url || '' }}
         run: |
           set -euo pipefail
 
-          if [ -z "${{ github.event.issue.pull_request.url || '' }}" ]; then
+          if [ -z "${PR_URL}" ]; then
             # A plain issue has no code to test; run the
             # default branch as-is.
             echo "target=default branch" >> "$GITHUB_OUTPUT"
@@ -229,6 +230,7 @@ jobs:
           PR: ${{ steps.ref.outputs.pr }}
           TIER: ${{ steps.parse.outputs.tier }}
           ACCEL: ${{ steps.parse.outputs.accel }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
@@ -240,7 +242,7 @@ jobs:
           # workflow definition must come from trusted code
           # even when the code under test is a fork's.
           args=(--repo "${{ github.repository }}"
-                --ref "${{ github.event.repository.default_branch }}"
+                --ref "${DEFAULT_BRANCH}"
                 -f tier="${TIER}" -f accel="${ACCEL}")
           [ -n "${PR}" ] && args+=(-f pr="${PR}")
           gh workflow run self-hosted-ci.yml "${args[@]}"

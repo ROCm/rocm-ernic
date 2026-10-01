@@ -469,6 +469,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OVERALL: ${{ steps.outcome.outputs.overall }}
           DETAIL: ${{ steps.outcome.outputs.detail }}
+          PR: ${{ inputs.pr }}
         run: |
           if [ "${OVERALL}" = "success" ]; then
             head="Self-hosted CI passed"
@@ -494,9 +495,9 @@ jobs:
             echo "[Full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}); the report is attached as the \`ci-report\` artifact."
           } > body.md
           gh api -X POST \
-            "repos/${{ github.repository }}/issues/${{ inputs.pr }}/comments" \
+            "repos/${{ github.repository }}/issues/${PR}/comments" \
             -F body=@body.md --silent
-          echo "posted result to PR #${{ inputs.pr }}"
+          echo "posted result to PR #${PR}"
 
       - name: Fail if the report found problems
         if: steps.report.outcome != 'success'
