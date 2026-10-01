@@ -11,6 +11,14 @@
 # develop is analyzed on every push that touches the code, which gives pull
 # requests a baseline to be compared against, and weekly so that new CodeQL
 # queries are applied to code that has not changed.
+#
+# Every pull request is analyzed, whether or not it touches C. GitHub's
+# CodeQL check compares a pull request's analyses against all of develop's
+# and gives up if any is missing, so skipping this one would also stop the
+# check from reporting new alerts from the other analyses. The CodeQL job
+# in pr-security-scan.yml uploads one for the workflows themselves
+# (category /language:actions), even though that file's other scanners
+# only produce reports.
 name: rocm-ernic - CodeQL
 
 on:
@@ -24,12 +32,6 @@ on:
       - '.github/workflows/codeql.yml'
   pull_request:
     branches: [ develop ]
-    paths:
-      - '**.c'
-      - '**.h'
-      - '**.cmake'
-      - '**/CMakeLists.txt'
-      - '.github/workflows/codeql.yml'
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:
