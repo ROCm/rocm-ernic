@@ -83,7 +83,7 @@
 #define BACKING_LEN (GUARD_LO + MR_LEN + GUARD_HI)
 
 #define MR_START   16u  /* guest address of the region's first byte */
-#define MR_RKEY    0x42 /* the only handle the stubbed lookup answers for */
+#define MR_RKEY    0x42 /* the fixture MR's handle, unless a case changes it */
 #define GUARD_BYTE 0xC7u
 
 /* Target WRAP_BELOW bytes under mr->virt, copying WRAP_LEN bytes. */
@@ -116,6 +116,7 @@ static uint64_t wrapped_addr(void)
 /* The fixture's single MR, published to the code under test via the
  * rdma_rm_get_mr() stub below. */
 static RdmaRmMR test_mr;
+static uint32_t test_mr_rkey = MR_RKEY; /* the only handle the stub answers */
 static uint8_t *backing;
 
 static void fixture_init(void)
@@ -166,7 +167,7 @@ static int guards_intact(const char *name)
 RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
 {
     (void)dev_res;
-    return mr_handle == MR_RKEY ? &test_mr : NULL;
+    return mr_handle == test_mr_rkey ? &test_mr : NULL;
 }
 void error_report(const char *fmt, ...)
 {
@@ -897,15 +898,17 @@ typedef struct {
 } TestCompCtx;
 
 /*
- * Drive one loopback RDMA_WRITE through tcp_post_send() to `raddr` and report
- * what came back: the completion recorded by the stub and the device's
- * RDMA-write byte counter.
+ * Drive one loopback RDMA_WRITE through tcp_post_send() to `raddr` in the
+ * region named by `rkey`, and report what came back: the completion recorded
+ * by the stub and the device's RDMA-write byte counter. The source is always
+ * SRC_OFFSET into the fixture MR, so only the target varies.
  *
  * The destination node equals the local node, so the request takes the
  * loopback shortcut that copies straight into the target region instead of
  * going to the wire.
  */
-static void run_loopback_write(uint64_t raddr, uint64_t *rdma_write_bytes)
+static void run_loopback_write(uint32_t rkey, uint64_t raddr,
+                               uint64_t *rdma_write_bytes)
 {
     RdmaBackendDev backend_dev;
     RdmaDeviceResources dev_res;
@@ -950,14 +953,14 @@ static void run_loopback_write(uint64_t raddr, uint64_t *rdma_write_bytes)
     qp.ibqp = (struct ibv_qp *)(uintptr_t)qpn;
 
     memset(&sge, 0, sizeof(sge));
-    sge.addr = MR_START + SRC_OFFSET;
+    sge.addr = test_mr.start + SRC_OFFSET;
     sge.length = WRAP_LEN;
-    sge.lkey = MR_RKEY;
+    sge.lkey = test_mr_rkey;
 
     ctx.opcode = PVRDMA_WR_RDMA_WRITE;
     ctx.cqe.opcode = IBV_WC_RDMA_WRITE;
     ctx.remote_addr = raddr;
-    ctx.rkey = MR_RKEY;
+    ctx.rkey = rkey;
 
     completions_reset();
     tcp_post_send(&backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0, 0,
@@ -970,6 +973,85 @@ static void run_loopback_write(uint64_t raddr, uint64_t *rdma_write_bytes)
     g_hash_table_destroy(priv.qps);
     qemu_mutex_destroy(&priv.lock);
     g_free(dev);
+}
+
+/*
+ * Check the outcome of a loopback write that must have been refused: guard
+ * bands intact, exactly one completion and not a successful one, and nothing
+ * added to the RDMA-write counter. Returns 1 if any check failed.
+ */
+static int check_loopback_rejected(const char *name, uint64_t bytes)
+{
+    int fail = 0;
+
+    if (!guards_intact(name)) {
+        fail = 1;
+    }
+
+    /* The caller must be told. This is the assertion the guard bands cannot
+     * make: on a rejection memory is untouched either way. */
+    if (last_completion.count != 1) {
+        printf("FAIL %-22s: %u completions posted, expected exactly 1\n", name,
+               last_completion.count);
+        fail = 1;
+    } else if (last_completion.status == IBV_WC_SUCCESS) {
+        printf("FAIL %-22s: rejected write completed IBV_WC_SUCCESS -- the "
+               "guest is told a write that copied nothing succeeded\n",
+               name);
+        fail = 1;
+    } else if (last_completion.byte_len != 0) {
+        printf("FAIL %-22s: rejected write reported %u bytes, expected 0\n",
+               name, last_completion.byte_len);
+        fail = 1;
+    }
+
+    /* And not billed for bytes that were never written. */
+    if (bytes != 0) {
+        printf("FAIL %-22s: rejected write added %" PRIu64 " bytes to the "
+               "RDMA-write counter, expected 0\n",
+               name, bytes);
+        fail = 1;
+    }
+    return fail;
+}
+
+/*
+ * Check the outcome of a loopback write that must have succeeded: guard bands
+ * intact, `source` copied to the base of the region, exactly one successful
+ * completion, and the full length counted. Returns 1 if any check failed.
+ */
+static int check_loopback_landed(const char *name, const uint8_t *source,
+                                 uint64_t bytes)
+{
+    int fail = 0;
+
+    if (!guards_intact(name)) {
+        fail = 1;
+    }
+
+    if (memcmp(test_mr.virt, source, WRAP_LEN) != 0) {
+        printf("FAIL %-22s: in-bounds loopback write did not land\n", name);
+        fail = 1;
+    }
+
+    if (last_completion.count != 1) {
+        printf("FAIL %-22s: %u completions posted, expected exactly 1\n", name,
+               last_completion.count);
+        fail = 1;
+    } else if (last_completion.status != IBV_WC_SUCCESS) {
+        printf("FAIL %-22s: in-bounds write completed with status %u, "
+               "expected IBV_WC_SUCCESS (%d)\n",
+               name, last_completion.status, IBV_WC_SUCCESS);
+        fail = 1;
+    }
+
+    if (bytes != WRAP_LEN) {
+        printf("FAIL %-22s: in-bounds write added %" PRIu64 " bytes to the "
+               "RDMA-write counter, expected %u\n",
+               name, bytes, WRAP_LEN);
+        fail = 1;
+    }
+    return fail;
 }
 
 /*
@@ -1003,37 +1085,9 @@ static int test_loopback_wrap(void)
     memset(source, ATTACK_BYTE, sizeof(source));
     memcpy((uint8_t *)test_mr.virt + SRC_OFFSET, source, sizeof(source));
 
-    run_loopback_write(wrapped_addr(), &bytes);
+    run_loopback_write(MR_RKEY, wrapped_addr(), &bytes);
 
-    if (!guards_intact(name)) {
-        fail = 1;
-    }
-
-    /* The caller must be told. This is the assertion the guard bands cannot
-     * make: on a rejection memory is untouched either way. */
-    if (last_completion.count != 1) {
-        printf("FAIL %-22s: %u completions posted, expected exactly 1\n", name,
-               last_completion.count);
-        fail = 1;
-    } else if (last_completion.status == IBV_WC_SUCCESS) {
-        printf("FAIL %-22s: rejected write completed IBV_WC_SUCCESS -- the "
-               "guest is told a write that copied nothing succeeded\n",
-               name);
-        fail = 1;
-    } else if (last_completion.byte_len != 0) {
-        printf("FAIL %-22s: rejected write reported %u bytes, expected 0\n",
-               name, last_completion.byte_len);
-        fail = 1;
-    }
-
-    /* And not billed for bytes that were never written. */
-    if (bytes != 0) {
-        printf("FAIL %-22s: rejected write added %" PRIu64 " bytes to the "
-               "RDMA-write counter, expected 0\n",
-               name, bytes);
-        fail = 1;
-    }
-
+    fail = check_loopback_rejected(name, bytes);
     if (!fail) {
         printf("PASS %-22s: wrapped loopback write rejected with an error "
                "completion, guards intact, stats unchanged\n",
@@ -1059,37 +1113,82 @@ static int test_loopback_ok(void)
 
     /* Destination at the region's base: in bounds, and clear of the source
      * at SRC_OFFSET so the copy does not overlap. */
-    run_loopback_write(MR_START, &bytes);
+    run_loopback_write(MR_RKEY, MR_START, &bytes);
 
-    if (!guards_intact(name)) {
-        fail = 1;
+    fail = check_loopback_landed(name, source, bytes);
+    if (!fail) {
+        printf("PASS %-22s: in-bounds loopback write landed, completed "
+               "successfully, counted\n",
+               name);
     }
+    return fail;
+}
 
-    if (memcmp(test_mr.virt, source, WRAP_LEN) != 0) {
-        printf("FAIL %-22s: in-bounds loopback write did not land\n", name);
-        fail = 1;
-    }
+/*
+ * A loopback write whose rkey names no registered region must be refused the
+ * same way as an out-of-bounds one. The address is the fixture region's own
+ * base, valid for the MR the key fails to name, so the only fault is the key.
+ * The guard bands lie outside that region and cannot see a write that lands
+ * inside it, so the destination bytes are checked directly.
+ */
+static int test_loopback_bad_rkey(void)
+{
+    const char *name = "loopback-write-badkey";
+    uint8_t source[WRAP_LEN];
+    uint8_t before[WRAP_LEN];
+    uint64_t bytes = 0;
+    int fail = 0;
 
-    if (last_completion.count != 1) {
-        printf("FAIL %-22s: %u completions posted, expected exactly 1\n", name,
-               last_completion.count);
-        fail = 1;
-    } else if (last_completion.status != IBV_WC_SUCCESS) {
-        printf("FAIL %-22s: in-bounds write completed with status %u, "
-               "expected IBV_WC_SUCCESS (%d)\n",
-               name, last_completion.status, IBV_WC_SUCCESS);
-        fail = 1;
-    }
+    memset(source, ATTACK_BYTE, sizeof(source));
+    memcpy((uint8_t *)test_mr.virt + SRC_OFFSET, source, sizeof(source));
+    memcpy(before, test_mr.virt, sizeof(before));
 
-    if (bytes != WRAP_LEN) {
-        printf("FAIL %-22s: in-bounds write added %" PRIu64 " bytes to the "
-               "RDMA-write counter, expected %u\n",
-               name, bytes, WRAP_LEN);
+    run_loopback_write(MR_RKEY + 1, MR_START, &bytes);
+
+    fail = check_loopback_rejected(name, bytes);
+    if (memcmp(test_mr.virt, before, sizeof(before)) != 0) {
+        printf("FAIL %-22s: write through an unknown rkey changed the "
+               "destination\n",
+               name);
         fail = 1;
     }
 
     if (!fail) {
-        printf("PASS %-22s: in-bounds loopback write landed, completed "
+        printf("PASS %-22s: unknown-rkey loopback write rejected with an "
+               "error completion, destination and stats unchanged\n",
+               name);
+    }
+    return fail;
+}
+
+/*
+ * Neither key 0 nor address 0 means "no target". rkeys are MR table handles,
+ * allocated lowest-free-first, so the first region a guest registers has
+ * rkey 0; and a region may start at guest address 0. A write naming both
+ * must be validated and carried out like any other.
+ */
+static int test_loopback_zero_key(void)
+{
+    const char *name = "loopback-write-zerokey";
+    uint8_t source[WRAP_LEN];
+    uint64_t bytes = 0;
+    int fail;
+
+    test_mr_rkey = 0;
+    test_mr.start = 0;
+
+    memset(source, ATTACK_BYTE, sizeof(source));
+    memcpy((uint8_t *)test_mr.virt + SRC_OFFSET, source, sizeof(source));
+
+    run_loopback_write(0, 0, &bytes);
+
+    fail = check_loopback_landed(name, source, bytes);
+
+    test_mr_rkey = MR_RKEY;
+    test_mr.start = MR_START;
+
+    if (!fail) {
+        printf("PASS %-22s: write to rkey 0 at address 0 landed, completed "
                "successfully, counted\n",
                name);
     }
@@ -1119,6 +1218,12 @@ int main(void)
 
     memset(backing, GUARD_BYTE, BACKING_LEN);
     failures += test_loopback_ok();
+
+    memset(backing, GUARD_BYTE, BACKING_LEN);
+    failures += test_loopback_bad_rkey();
+
+    memset(backing, GUARD_BYTE, BACKING_LEN);
+    failures += test_loopback_zero_key();
 
     fixture_destroy();
 

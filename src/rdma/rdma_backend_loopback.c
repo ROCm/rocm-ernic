@@ -1555,6 +1555,10 @@ static void loopback_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         rdma_error_report("Loopback: post_send on unknown QP");
         return;
     }
+    if (!priv) {
+        rdma_error_report("Loopback: post_send on uninitialized backend");
+        return;
+    }
     rdma_info_report(">>> Loopback: post_send: lqp->qpn=%u, lqp->state=%u",
                      lqp->qpn, lqp->state);
 
