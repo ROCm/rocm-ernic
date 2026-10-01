@@ -121,7 +121,7 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      uses: ./.github/actions/fetch-guest-vm
+      uses: $/.github/actions/fetch-guest-vm
       with:
         tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
@@ -705,7 +705,7 @@ jobs:
         inputs.publish &&
         success() &&
         github.ref == 'refs/heads/develop'
-      uses: ./.github/actions/publish-perf
+      uses: $/.github/actions/publish-perf
       with:
         results: ${{ env.S3_RESULTS }}
         subject: S3 over RDMA

@@ -151,7 +151,7 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      uses: ./.github/actions/fetch-guest-vm
+      uses: $/.github/actions/fetch-guest-vm
       with:
         tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
@@ -1113,7 +1113,7 @@ jobs:
       # with this job's own GITHUB_TOKEN is exempt from triggering
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
-    uses: ./.github/workflows/nvmeof-lane.yml
+    uses: $/.github/workflows/nvmeof-lane.yml
     with:
       # The same rule the two-VM lane publishes under, so the three
       # badges are fed on identical terms: never from a pull request,
@@ -1139,7 +1139,7 @@ jobs:
       # with this job's own GITHUB_TOKEN is exempt from triggering
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
-    uses: ./.github/workflows/s3-lane.yml
+    uses: $/.github/workflows/s3-lane.yml
     with:
       # The same rule the other publishing lanes use, so every badge is
       # fed on identical terms: never from a pull request, and a manual
@@ -1284,7 +1284,7 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      uses: ./.github/actions/fetch-guest-vm
+      uses: $/.github/actions/fetch-guest-vm
       with:
         tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
@@ -2233,7 +2233,7 @@ jobs:
         github.ref == 'refs/heads/develop' &&
         github.event_name != 'pull_request' &&
         (github.event_name != 'workflow_dispatch' || inputs.publish)
-      uses: ./.github/actions/publish-perf
+      uses: $/.github/actions/publish-perf
       with:
         results: ${{ env.PERF_RESULTS }}
         subject: RDMA and TCP
