@@ -111,6 +111,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Reset workspace results
         run: |
@@ -165,6 +166,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Build and test (${{ matrix.build_type }})
         env:
@@ -190,6 +192,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Loopback backend tests
         env:
@@ -209,6 +212,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Bring up VMs
         run: bash ci/jobs/vm-up.sh
@@ -249,6 +253,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Bring up VM
         run: bash ci/jobs/vm-up.sh
@@ -287,6 +292,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Bring up VM
         run: bash ci/jobs/vm-up.sh
@@ -319,6 +325,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Bring up VMs
         run: bash ci/jobs/vm-up.sh
@@ -376,6 +383,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CI_CHECKOUT_REF }}
+          persist-credentials: false
 
       - name: Generate functional and performance report
         id: report
