@@ -3755,20 +3755,35 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
 
     char gidbuf[TCP_GID_STR_LEN];
-    uint32_t resolved = tcp_resolve_node_from_gid(priv, dgid);
+    uint32_t resolved;
 
-    if (resolved == UINT32_MAX) {
-        /*
-         * No node owns this GID.  Fail the transition rather than route to
-         * an arbitrary peer: rdma_rm_modify_qp() turns this into -EIO and
-         * the guest sees the failure at connection setup, where it is
-         * diagnosable, instead of silently writing into the wrong node.
-         */
-        rdma_error_report("TCP: QP %u -> RTR refused: no mesh node owns "
-                          "destination GID %s (check ERNIC_TCP_GUEST_GIDS "
-                          "on every node)",
-                          qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
-        return -EINVAL;
+    /*
+     * An unreliable datagram QP has no destination at this point: UD names
+     * its peer per work request, through the AH on the send, so the
+     * transition carries a zero GID.  Requiring one here rejects every
+     * ordinary UD QP.  Resolution happens in tcp_post_send() instead, and
+     * remote_node_id stays UINT32_MAX so a send that somehow reaches the
+     * connected path cannot fall back to node 0.
+     */
+    if (qp_type == IBV_QPT_UD) {
+        resolved = UINT32_MAX;
+    } else {
+        resolved = tcp_resolve_node_from_gid(priv, dgid);
+
+        if (resolved == UINT32_MAX) {
+            /*
+             * No node owns this GID.  Fail the transition rather than route
+             * to an arbitrary peer: rdma_rm_modify_qp() turns this into
+             * -EIO and the guest sees the failure at connection setup,
+             * where it is diagnosable, instead of silently writing into the
+             * wrong node.
+             */
+            rdma_error_report(
+                "TCP: QP %u -> RTR refused: no mesh node owns destination "
+                "GID %s (check ERNIC_TCP_GUEST_GIDS on every node)",
+                qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
+            return -EINVAL;
+        }
     }
 
     qemu_mutex_lock(&priv->lock);
@@ -3776,16 +3791,24 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     if (tqp) {
         tqp->state = IBV_QPS_RTR;
         tqp->remote_qpn = dqpn;
-        memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
+        if (dgid) {
+            memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
+        }
         tqp->remote_node_id = resolved;
 
-        rdma_info_report("TCP: Resolved GID %s -> node %u",
-                         tcp_gid_str(dgid->raw, gidbuf), resolved);
+        if (qp_type == IBV_QPT_UD) {
+            rdma_info_report("TCP: QP %u -> RTR as UD; destination resolved "
+                             "per send",
+                             qpn);
+        } else {
+            rdma_info_report("TCP: Resolved GID %s -> node %u",
+                             tcp_gid_str(dgid->raw, gidbuf), resolved);
 
-        if (tqp->remote_node_id == priv->local_node_id) {
-            rdma_info_report("TCP: QP %u routed to local node %u "
-                             "(loopback)",
-                             qpn, priv->local_node_id);
+            if (tqp->remote_node_id == priv->local_node_id) {
+                rdma_info_report("TCP: QP %u routed to local node %u "
+                                 "(loopback)",
+                                 qpn, priv->local_node_id);
+            }
         }
 
         tqp->rq_psn = rq_psn;
@@ -3905,7 +3928,28 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
+    /*
+     * UD names its destination per work request rather than at RTR, so the
+     * address to route on is this send's dgid and not anything stored on
+     * the QP.  Connected types resolved their node once, at RTR.
+     */
     uint32_t dst_node = tqp->remote_node_id;
+
+    if (qp_type == IBV_QPT_UD) {
+        dst_node = tcp_resolve_node_from_gid(priv, dgid);
+    }
+
+    if (dst_node == UINT32_MAX) {
+        char gidbuf[TCP_GID_STR_LEN];
+
+        qemu_mutex_unlock(&priv->lock);
+        rdma_error_report("TCP: QP %u send dropped: no mesh node owns "
+                          "destination GID %s",
+                          qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
+        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
+                                   0, qpn, wc_opcode, ctx);
+        return;
+    }
 
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;

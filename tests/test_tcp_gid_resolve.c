@@ -371,6 +371,68 @@ static void test_gid_formatting(void)
           "zero GID rendered as '%s'", buf);
 }
 
+/*
+ * An unreliable-datagram QP must reach RTR without a destination GID.
+ *
+ * UD names its peer per work request, so the INIT->RTR transition carries
+ * a zero GID. Requiring one there rejected every ordinary UD QP with -EIO
+ * once the resolver stopped guessing. remote_node_id must stay UINT32_MAX
+ * rather than the default 0, or a send that misses the per-send lookup
+ * silently goes to the manager.
+ */
+static void test_ud_rtr_needs_no_destination(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    RdmaBackendDev dev;
+    RdmaBackendQP bqp;
+    union ibv_gid zero, known;
+    uint8_t raw[16];
+    TcpQP *tqp;
+    int rc;
+
+    printf("  UD reaches RTR without a destination GID\n");
+
+    memset(&dev, 0, sizeof(dev));
+    memset(&bqp, 0, sizeof(bqp));
+    dev.backend_private = priv;
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    bqp.ibqp = (struct ibv_qp *)(uintptr_t)7u;
+
+    qemu_mutex_init(&priv->lock);
+    priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                      (GDestroyNotify)g_free);
+    tqp = g_new0(TcpQP, 1);
+    tqp->qpn = 7;
+    tqp->remote_node_id = 0; /* the default tcp_create_qp() leaves */
+    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(7u), tqp);
+
+    gid_v4(raw, 11);
+    tcp_gid_table_set(priv, 2, (const uint8_t(*)[16]) & raw, 1);
+    memset(&zero, 0, sizeof(zero));
+    memcpy(known.raw, raw, 16);
+
+    /* UD with no destination: accepted, and left unrouted. */
+    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99, 0, 0, false);
+    CHECK(rc == 0, "UD RTR rejected with rc=%d", rc);
+    CHECK(tqp->remote_node_id == UINT32_MAX,
+          "UD QP left routed to node %u; a send would go there silently",
+          tqp->remote_node_id);
+
+    /* A connected QP still must resolve, and still must fail when it cannot. */
+    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99, 0, 0, false);
+    CHECK(rc != 0, "RC RTR accepted an unresolvable GID");
+
+    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known, 99, 0, 0, false);
+    CHECK(rc == 0, "RC RTR rejected a resolvable GID (rc=%d)", rc);
+    CHECK(tqp->remote_node_id == 2, "RC QP routed to node %u, expected 2",
+          tqp->remote_node_id);
+
+    g_hash_table_destroy(priv->qps);
+    priv->qps = NULL;
+    qemu_mutex_destroy(&priv->lock);
+    priv_free(priv);
+}
+
 int main(void)
 {
     printf("tcp GID resolution unit tests\n");
@@ -382,6 +444,7 @@ int main(void)
     test_env_parsing();
     test_advertisement_tail_is_zeroed();
     test_gid_formatting();
+    test_ud_rtr_needs_no_destination();
 
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);
