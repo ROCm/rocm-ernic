@@ -755,8 +755,12 @@ add_test(
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_tcp_mesh_ci.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+# Generous timeout: the suite starts several servers and waits on mesh
+# convergence, and runs in every build leg including thread-sanitizer
+# Release, where that chain is slow. The script's own budgets are the real
+# bound; this only has to be larger than them.
 set_tests_properties(tcp-mesh-ci PROPERTIES
-    TIMEOUT 180
+    TIMEOUT 420
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"

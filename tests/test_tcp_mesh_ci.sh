@@ -98,8 +98,13 @@ start_node() {
         --log-file "$RUN/$n.log" &
     PIDS+=("$!")
 
+    # Budgets here are upper bounds, not delays: every loop exits as soon
+    # as its condition holds, so a generous one costs nothing on a fast
+    # machine and is the difference between passing and flaking on a
+    # shared runner under a sanitizer. This suite runs in all twelve build
+    # legs, the slowest of which is a thread-sanitizer Release build.
     local elapsed=0
-    while [ $elapsed -lt 20 ]; do
+    while [ $elapsed -lt 80 ]; do
         sleep 0.5; elapsed=$((elapsed + 1))
         [ -S "$RUN/$n.sock" ] && return 0
     done
@@ -111,7 +116,7 @@ start_node() {
 # so polling beats a fixed sleep that is either flaky or slow.
 wait_for() {
     local pattern="$1" file="$2" elapsed=0
-    while [ $elapsed -lt 30 ]; do
+    while [ $elapsed -lt 120 ]; do
         grep -q "$pattern" "$file" 2>/dev/null && return 0
         sleep 0.5; elapsed=$((elapsed + 1))
     done
@@ -164,8 +169,11 @@ pass "unconfigured node registers, warns, and owns no GID"
 echo ""
 echo "Test 3: a contested GID is owned by neither node"
 start_node 5 worker "$GID2" || fail "worker 5 did not start"
-wait_for "claimed by more than one node" "$RUN/1.log" \
-    || { cat "$RUN/1.log"; fail "duplicate GID was accepted silently"; }
+wait_for "claimed by more than one node" "$RUN/1.log" || {
+    echo "--- manager log ---"; cat "$RUN/1.log"
+    echo "--- duplicate claimant log ---"; cat "$RUN/5.log"
+    fail "duplicate GID was accepted silently"
+}
 
 # The original claimant must reach the same verdict. Because every node
 # holds every node's CLAIMS and derives the owner itself, it detects the
