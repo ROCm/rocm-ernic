@@ -164,9 +164,16 @@ pass "unconfigured node registers, warns, and owns no GID"
 echo ""
 echo "Test 3: a contested GID is owned by neither node"
 start_node 5 worker "$GID2" || fail "worker 5 did not start"
-wait_for "already held by node" "$RUN/1.log" \
+wait_for "claimed by more than one node" "$RUN/1.log" \
     || { cat "$RUN/1.log"; fail "duplicate GID was accepted silently"; }
-pass "duplicate GID refused rather than reassigned"
+
+# The original claimant must reach the same verdict. Because every node
+# holds every node's CLAIMS and derives the owner itself, it detects the
+# contest locally rather than being told -- so this checks convergence,
+# not the notification path.
+wait_for "claimed by more than one node" "$RUN/2.log" \
+    || { cat "$RUN/2.log"; fail "the original claimant did not see the contest"; }
+pass "duplicate GID contested on the manager and on the original claimant"
 
 # --- Test 4: the manager refuses a pre-v4 worker ---
 echo ""

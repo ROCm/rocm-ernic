@@ -241,6 +241,12 @@ typedef struct {
 _Static_assert(sizeof(TcpNodeGidsPayload) == 8 + TCP_MAX_NODE_GIDS * 16,
                "TcpNodeGidsPayload must be packed with no padding");
 
+/* A node's advertised set, as held in memory rather than on the wire. */
+typedef struct {
+    uint32_t num_gids;
+    uint8_t gids[TCP_MAX_NODE_GIDS][16];
+} TcpNodeGids;
+
 /*
  * TCP Backend Data Structures
  */
@@ -487,13 +493,24 @@ struct TcpBackendPrivate {
     QemuMutex conn_table_lock;
 
     /*
-     * Guest RoCE GID -> node id, keyed by the full 16 bytes.  Built from
-     * what each node advertises about itself; a destination GID that is not
-     * in here names no node this mesh knows, and the caller must fail rather
-     * than pick one.  Used in both modes, so its lock is its own --
-     * mesh_table_lock is only initialised on the manager.
+     * What each node says it owns: node_id -> TcpNodeGids.  This is the
+     * authoritative record, kept per node rather than per GID so that a
+     * claim is never lost by another node making the same one.
      */
-    GHashTable *gid_nodes;
+    GHashTable *node_gids;
+
+    /*
+     * Derived from node_gids, rebuilt on every change: the full 16 bytes of
+     * a GID -> the single node that claims it, or UINT32_MAX when none or
+     * more than one does.  Lookups are on the RTR and UD send paths, so
+     * they index rather than scan.
+     *
+     * A destination GID absent here, or contested, names no node this mesh
+     * can route to, and the caller must fail rather than pick one.  Used in
+     * both modes, so the lock is its own -- mesh_table_lock is only
+     * initialised on the manager.
+     */
+    GHashTable *gid_owner;
     QemuMutex gid_table_lock;
 
     /* This node's own GIDs, from ERNIC_TCP_GUEST_GIDS. */
@@ -697,64 +714,103 @@ static void tcp_gid_key_free(gpointer key)
 }
 
 /*
- * Replace every GID currently attributed to @node_id with @gids.
+ * Rebuild the GID -> owner index from the per-node claims.
  *
- * A GID another node already claims is NOT taken over.  Two nodes
- * advertising one address is a misconfiguration -- duplicate
- * ERNIC_TCP_GUEST_GIDS, or two guests given the same address -- and
- * letting the last advertisement win would route by arrival order,
- * which is the failure this whole mechanism exists to remove.  The
- * contested GID is dropped instead, so it resolves to nothing and both
- * claimants fail loudly rather than one of them silently receiving the
- * other's traffic.
+ * A GID claimed by exactly one node resolves to it.  A GID claimed by two
+ * or more maps to UINT32_MAX, which resolution treats as unresolved, so a
+ * duplicate address makes both claimants unreachable at it rather than
+ * handing the traffic to whichever advertised last.  Keeping the claims
+ * and deriving this means a contested GID stays contested: a later
+ * advertisement from either claimant, or a third, re-derives the same
+ * answer instead of finding an empty slot to take.
+ *
+ * Caller holds gid_table_lock.
  */
-static void tcp_gid_table_set(TcpBackendPrivate *priv, uint32_t node_id,
-                              const uint8_t (*gids)[16], uint32_t num_gids)
+static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
 {
-    if (!priv || !priv->gid_nodes || num_gids > TCP_MAX_NODE_GIDS)
-        return;
-
-    bool conflict[TCP_MAX_NODE_GIDS] = {false};
-    uint32_t owner[TCP_MAX_NODE_GIDS] = {0};
-
-    qemu_mutex_lock(&priv->gid_table_lock);
-
     GHashTableIter iter;
     gpointer key, value;
 
-    g_hash_table_iter_init(&iter, priv->gid_nodes);
+    g_hash_table_remove_all(priv->gid_owner);
+
+    g_hash_table_iter_init(&iter, priv->node_gids);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
-        if (GPOINTER_TO_UINT(value) == node_id)
-            g_hash_table_iter_remove(&iter);
-    }
+        uint32_t node_id = GPOINTER_TO_UINT(key);
+        const TcpNodeGids *claims = value;
 
-    for (uint32_t i = 0; i < num_gids; i++) {
-        GBytes *k = g_bytes_new(gids[i], 16);
-        gpointer held;
+        for (uint32_t i = 0; i < claims->num_gids; i++) {
+            GBytes *gid = g_bytes_new(claims->gids[i], 16);
+            gpointer held;
 
-        if (g_hash_table_lookup_extended(priv->gid_nodes, k, NULL, &held)) {
-            conflict[i] = true;
-            owner[i] = GPOINTER_TO_UINT(held);
-            g_hash_table_remove(priv->gid_nodes, k);
-            g_bytes_unref(k);
-            continue;
+            if (g_hash_table_lookup_extended(priv->gid_owner, gid, NULL,
+                                             &held) &&
+                GPOINTER_TO_UINT(held) != node_id) {
+                /* Contested: replace the value, keep the existing key. */
+                g_hash_table_insert(priv->gid_owner, gid,
+                                    GUINT_TO_POINTER(UINT32_MAX));
+            } else {
+                g_hash_table_insert(priv->gid_owner, gid,
+                                    GUINT_TO_POINTER(node_id));
+            }
         }
-        g_hash_table_insert(priv->gid_nodes, k, GUINT_TO_POINTER(node_id));
     }
+}
+
+/*
+ * Record @node_id's advertised set, replacing whatever it claimed before.
+ * An empty set withdraws its claims, which is how the manager revokes.
+ */
+static void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
+                               const uint8_t (*gids)[16], uint32_t num_gids)
+{
+    if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
+        return;
+
+    qemu_mutex_lock(&priv->gid_table_lock);
+
+    if (num_gids == 0) {
+        g_hash_table_remove(priv->node_gids, GUINT_TO_POINTER(node_id));
+    } else {
+        TcpNodeGids *claims = g_new0(TcpNodeGids, 1);
+
+        claims->num_gids = num_gids;
+        for (uint32_t i = 0; i < num_gids; i++)
+            memcpy(claims->gids[i], gids[i], 16);
+        g_hash_table_insert(priv->node_gids, GUINT_TO_POINTER(node_id), claims);
+    }
+
+    tcp_gid_index_rebuild(priv);
 
     qemu_mutex_unlock(&priv->gid_table_lock);
 
+    /* Logged outside the lock: rdma_info_report() can block on stderr. */
     char buf[TCP_GID_STR_LEN];
+
+    if (num_gids == 0) {
+        rdma_info_report("TCP: node %u withdrew its GIDs", node_id);
+        return;
+    }
+
     for (uint32_t i = 0; i < num_gids; i++) {
-        if (conflict[i]) {
-            rdma_error_report("TCP: node %u claims GID %s, already held by "
-                              "node %u; dropping it -- neither node is "
-                              "reachable at that address until the "
-                              "duplicate is removed",
-                              node_id, tcp_gid_str(gids[i], buf), owner[i]);
-        } else {
+        uint32_t owner;
+
+        qemu_mutex_lock(&priv->gid_table_lock);
+        GBytes *gid = g_bytes_new_static(gids[i], 16);
+        gpointer held;
+        owner = g_hash_table_lookup_extended(priv->gid_owner, gid, NULL, &held)
+                    ? GPOINTER_TO_UINT(held)
+                    : UINT32_MAX;
+        g_bytes_unref(gid);
+        qemu_mutex_unlock(&priv->gid_table_lock);
+
+        if (owner == node_id) {
             rdma_info_report("TCP: node %u owns GID %s", node_id,
                              tcp_gid_str(gids[i], buf));
+        } else {
+            rdma_error_report("TCP: GID %s is claimed by more than one node "
+                              "including node %u; it resolves to none of "
+                              "them until the duplicate is removed",
+                              tcp_gid_str(gids[i], buf), node_id);
         }
     }
 }
@@ -1990,8 +2046,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                  * them locally too: a QP whose destination is this node's own
                  * guest has to resolve to the local node, not fail.
                  */
-                tcp_gid_table_set(priv, assigned_id, priv->local_gids,
-                                  priv->num_local_gids);
+                tcp_gid_claims_set(priv, assigned_id, priv->local_gids,
+                                   priv->num_local_gids);
 
                 TcpNodeGidsPayload mine;
                 tcp_fill_node_gids(&mine, assigned_id, priv->local_gids,
@@ -2130,25 +2186,41 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 }
 
                 /*
-                 * A worker may only speak for itself.  The manager relays on
-                 * everyone's behalf, so its messages carry someone else's
-                 * node id by design and are trusted; a worker's are not.
+                 * Authorise on the connection, not on the message.  Both
+                 * hdr.src_node_id and the payload's node_id are written by
+                 * the sender, so comparing them to each other proves
+                 * nothing: a worker can set both to a peer's id and replace
+                 * that peer's GIDs mesh-wide.  conn is what the local node
+                 * established.
+                 *
+                 * On the manager a worker speaks only for itself, and only
+                 * once registration has given its connection an id --
+                 * before that conn->node_id is UINT32_MAX and the socket
+                 * has proved nothing at all.
+                 *
+                 * On a worker the only legitimate source is the manager
+                 * relaying on others' behalf, which is the one connection
+                 * this node opened itself.  Matching on src_node_id == 0
+                 * instead would let any peer claim to be the manager.
                  */
-                if (!priv->is_manager && hdr.src_node_id != 0 &&
-                    hdr.src_node_id != node_id) {
-                    rdma_error_report("TCP: node %u tried to claim the GIDs "
-                                      "of node %u; ignoring",
-                                      hdr.src_node_id, node_id);
-                    break;
-                }
-                if (priv->is_manager && hdr.src_node_id != node_id) {
-                    rdma_error_report("TCP: node %u tried to claim the GIDs "
-                                      "of node %u; ignoring",
-                                      hdr.src_node_id, node_id);
+                if (priv->is_manager) {
+                    if (conn->node_id == UINT32_MAX ||
+                        conn->node_id != node_id) {
+                        rdma_error_report(
+                            "TCP: connection for node %u tried to set the "
+                            "GIDs of node %u; ignoring",
+                            conn->node_id, node_id);
+                        break;
+                    }
+                } else if (conn != priv->manager_conn) {
+                    rdma_error_report("TCP: NODE_GIDS for node %u from a "
+                                      "connection that is not the manager; "
+                                      "ignoring",
+                                      node_id);
                     break;
                 }
 
-                tcp_gid_table_set(priv, node_id, adv->gids, num_gids);
+                tcp_gid_claims_set(priv, node_id, adv->gids, num_gids);
 
                 /* Manager fans a worker's advertisement out to the rest. */
                 if (priv->is_manager)
@@ -2769,20 +2841,23 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
 }
 
 /*
- * Manager: push the whole GID table to every worker, one message per node.
- * Called whenever the table changes and when a worker joins, so a late
- * arrival learns about the nodes that registered before it.
+ * Manager: push the authoritative GID set of every known node to every
+ * connection, one message per node.
+ *
+ * Every node, not every node with claims: a node whose claims were all
+ * withdrawn or all lost to a conflict needs an empty set sent for it, or
+ * workers keep resolving its old GIDs forever.  And every connection,
+ * including the node the message is about: that is how a claimant learns
+ * its own advertisement was rejected, which it cannot work out alone.
+ *
+ * Called whenever claims change and when a worker joins, so a late arrival
+ * learns about the nodes that registered before it.
  */
 static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
 {
-    if (!priv->is_manager || !priv->gid_nodes)
+    if (!priv->is_manager || !priv->node_gids || !priv->mesh_nodes)
         return;
 
-    /*
-     * Invert the GID table into one payload per node.  Done under the table
-     * lock, but the sends are not: tcp_send_node_gids() takes connection
-     * locks, which the data path holds across multi-megabyte writes.
-     */
     struct {
         uint32_t node_id;
         uint8_t gids[TCP_MAX_NODE_GIDS][16];
@@ -2790,34 +2865,33 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
     } per_node[64];
     uint32_t nodes = 0;
 
+    /*
+     * Snapshot under the mesh and claim locks; the sends are not, because
+     * tcp_send_node_gids() takes connection locks that the data path holds
+     * across multi-megabyte writes.
+     */
+    qemu_mutex_lock(&priv->mesh_table_lock);
     qemu_mutex_lock(&priv->gid_table_lock);
+
     GHashTableIter iter;
     gpointer key, value;
-    g_hash_table_iter_init(&iter, priv->gid_nodes);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        uint32_t nid = GPOINTER_TO_UINT(value);
-        gsize len = 0;
-        const uint8_t *raw = g_bytes_get_data((GBytes *)key, &len);
-        uint32_t slot;
 
-        if (len != 16)
-            continue;
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, &key, &value) &&
+           nodes < G_N_ELEMENTS(per_node)) {
+        uint32_t nid = GPOINTER_TO_UINT(key);
+        const TcpNodeGids *claims =
+            g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(nid));
 
-        for (slot = 0; slot < nodes; slot++) {
-            if (per_node[slot].node_id == nid)
-                break;
-        }
-        if (slot == nodes) {
-            if (nodes == G_N_ELEMENTS(per_node))
-                continue;
-            per_node[slot].node_id = nid;
-            per_node[slot].num_gids = 0;
-            nodes++;
-        }
-        if (per_node[slot].num_gids < TCP_MAX_NODE_GIDS)
-            memcpy(per_node[slot].gids[per_node[slot].num_gids++], raw, 16);
+        per_node[nodes].node_id = nid;
+        per_node[nodes].num_gids = claims ? claims->num_gids : 0;
+        for (uint32_t i = 0; i < per_node[nodes].num_gids; i++)
+            memcpy(per_node[nodes].gids[i], claims->gids[i], 16);
+        nodes++;
     }
+
     qemu_mutex_unlock(&priv->gid_table_lock);
+    qemu_mutex_unlock(&priv->mesh_table_lock);
 
     for (uint32_t i = 0; i < nodes; i++) {
         TcpNodeGidsPayload payload;
@@ -2832,8 +2906,7 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
         while (g_hash_table_iter_next(&conn_iter, &ck, &cv)) {
             TcpConnection *conn = (TcpConnection *)cv;
 
-            /* A node already knows its own GIDs; it told us. */
-            if (conn && conn->node_id != per_node[i].node_id)
+            if (conn)
                 tcp_send_node_gids(priv, conn, &payload);
         }
         qemu_mutex_unlock(&priv->conn_table_lock);
@@ -3102,7 +3175,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    priv->gid_nodes = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+    priv->node_gids =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
 
     tcp_bufpool_init(&priv->recv_pool);
@@ -3163,7 +3238,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 
         /* The manager's id is fixed, so it can claim its GIDs immediately;
          * a worker has to wait for REGISTER_RESP. */
-        tcp_gid_table_set(priv, 0, priv->local_gids, priv->num_local_gids);
+        tcp_gid_claims_set(priv, 0, priv->local_gids, priv->num_local_gids);
 
         ret = parse_tcp_config_manager(config, &manager_host, &manager_port,
                                        &listen_mode);
@@ -3330,7 +3405,8 @@ error:
     g_hash_table_destroy(priv->qps);
     g_hash_table_destroy(priv->qp_pairs);
     g_hash_table_destroy(priv->connections);
-    g_hash_table_destroy(priv->gid_nodes);
+    g_hash_table_destroy(priv->node_gids);
+    g_hash_table_destroy(priv->gid_owner);
     tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
@@ -3383,7 +3459,8 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
 
     /* Clean up all connections (threads are stopped in tcp_connection_free) */
     g_hash_table_destroy(priv->connections);
-    g_hash_table_destroy(priv->gid_nodes);
+    g_hash_table_destroy(priv->node_gids);
+    g_hash_table_destroy(priv->gid_owner);
 
     g_hash_table_destroy(priv->pds);
     g_hash_table_destroy(priv->mrs);
@@ -3726,7 +3803,7 @@ static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 static uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
                                           const union ibv_gid *dgid)
 {
-    if (!priv || !dgid || !priv->gid_nodes)
+    if (!priv || !dgid || !priv->gid_owner)
         return UINT32_MAX;
 
     GBytes *key = g_bytes_new_static(dgid->raw, 16);
@@ -3734,10 +3811,12 @@ static uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
     gboolean found;
 
     qemu_mutex_lock(&priv->gid_table_lock);
-    found = g_hash_table_lookup_extended(priv->gid_nodes, key, NULL, &value);
+    found = g_hash_table_lookup_extended(priv->gid_owner, key, NULL, &value);
     qemu_mutex_unlock(&priv->gid_table_lock);
     g_bytes_unref(key);
 
+    /* A contested GID is stored as UINT32_MAX, so it falls out here as
+     * unresolved without a separate case. */
     return found ? GPOINTER_TO_UINT(value) : UINT32_MAX;
 }
 
