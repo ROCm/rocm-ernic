@@ -609,24 +609,37 @@ match your environment.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code></p></td>
 <td><p>IP address workers connect to</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_GUEST_GIDS_&lt;n&gt;</span></code></p></td>
+<td><p>derived</p></td>
+<td><p>Comma-separated guest RoCE addresses owned by
+instance <em>n</em>, in <code class="docutils literal notranslate"><span class="pre">inet_pton</span></code> notation. Peers
+match a destination GID against these to pick the
+destination node, so an address missing here is
+unreachable and its peers fail <code class="docutils literal notranslate"><span class="pre">MODIFY_QP</span></code>.
+Defaults to the IPv6 link-local address derived
+from the instance MAC; set it when the guest also
+carries a static address peers will target.
+Passed to the server as
+<code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_GUEST_GIDS</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">warn</span></code></p></td>
 <td><p>Server log verbosity:
 <code class="docutils literal notranslate"><span class="pre">none|error|warn|info|debug</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VERBOSE</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VERBOSE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Deprecated shorthand for
 <code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL=debug</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TAP_PREFIX</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TAP_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ernic-tap</span></code></p></td>
 <td><p>Instance <em>n</em> is started with
 <code class="docutils literal notranslate"><span class="pre">--tap</span> <span class="pre">${ERNIC_TAP_PREFIX}n</span></code>; a missing interface
 is a warning and the instance starts without
 Ethernet</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TAP_BRIDGE</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TAP_BRIDGE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ernicbr0</span></code></p></td>
 <td><p>Host bridge the TAPs are enslaved to, so guests can
 reach each other.  Created by the

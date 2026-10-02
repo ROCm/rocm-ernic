@@ -141,6 +141,18 @@ Server settings
    * - ``ERNIC_MANAGER_IP``
      - ``127.0.0.1``
      - IP address workers connect to
+   * - ``ERNIC_GUEST_GIDS_<n>``
+     - derived
+     - Comma-separated guest RoCE addresses owned by
+       instance *n*, in ``inet_pton`` notation. Peers
+       match a destination GID against these to pick the
+       destination node, so an address missing here is
+       unreachable and its peers fail ``MODIFY_QP``.
+       Defaults to the IPv6 link-local address derived
+       from the instance MAC; set it when the guest also
+       carries a static address peers will target.
+       Passed to the server as
+       ``ERNIC_TCP_GUEST_GIDS``
    * - ``ERNIC_LOG_LEVEL``
      - ``warn``
      - Server log verbosity:

@@ -98,11 +98,6 @@ given.
    # Full per-operation tracing
    ERNIC_LOG_LEVEL=info ./build/rocm-ernic --backend loopback
 
-``ERNIC_DEBUG_MESH=1`` is unaffected: it is a separate
-mesh-specific toggle whose rate-limited diagnostics are
-emitted as ``WARN:`` lines, so they remain visible at the
-default level.
-
 Launching a VM
 --------------
 
