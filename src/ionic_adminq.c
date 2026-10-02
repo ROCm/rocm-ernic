@@ -1015,6 +1015,25 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             uint32_t dest_node =
                 ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
 
+            /*
+             * No mesh node owns this GID -- or the driver supplied no address
+             * at all.  Fail the command rather than let the backend pick a
+             * peer: a wrong node here is a silent write into another guest's
+             * memory, which no later check catches.
+             */
+            if (dest_node == UINT32_MAX) {
+                vfu_log(ctx->vfu_ctx, LOG_ERR,
+                        "ionic_adminq MODIFY_QP %u: no mesh node owns "
+                        "destination gid "
+                        "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
+                        "%02x%02x:%02x%02x:%02x%02x:%02x%02x%s",
+                        qp_id, dgid[0], dgid[1], dgid[2], dgid[3], dgid[4],
+                        dgid[5], dgid[6], dgid[7], dgid[8], dgid[9], dgid[10],
+                        dgid[11], dgid[12], dgid[13], dgid[14], dgid[15],
+                        dgid_valid ? "" : " (no address in the RoCE header)");
+                return 1;
+            }
+
             ionic_datapath_set_dest(ctx->dp, qp_id, qkey_dest_qpn, dest_node);
             uint32_t dest_qpn;
             if (adminq_lookup_qp(ctx, qkey_dest_qpn, &dest_qpn))

@@ -43,7 +43,7 @@ The driver also replays a saved crash input, which reproduces a finding
 from a real fuzz run under ASan without rebuilding via Nix:
 
 ```
-./fuzz_replay_dhcp_server crash-da39a3ee5e6b4b0d
+./fuzz_replay_rdma_cm_proto crash-da39a3ee5e6b4b0d
 ```
 
 ## Harnesses
@@ -51,7 +51,6 @@ from a real fuzz run under ASan without rebuilding via Nix:
 | Harness | Target | Notes |
 |---|---|---|
 | `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
-| `fuzz_dhcp_server` | `dhcp_server_process()` | DHCP packet parser against a created `DhcpServer` |
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
 
 Inputs are copied into an exact-size heap buffer before each call, so
@@ -72,6 +71,6 @@ that is future work.
 
 ## Extending a corpus
 
-Drop representative inputs (a captured DHCP DISCOVER, an rdma_cm SA
-message, a real Ethernet/IP/UDP frame) into `corpus/<harness>/` to speed
+Drop representative inputs (an rdma_cm SA message, a real
+Ethernet/IP/UDP frame) into `corpus/<harness>/` to speed
 up coverage. The build seeds each corpus with a single trivial input.

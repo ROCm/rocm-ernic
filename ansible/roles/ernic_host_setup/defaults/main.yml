@@ -28,12 +28,6 @@ ernic_verbose: "false"
 # logs to WARN/ERROR plus a short startup banner.  Note that
 # ernic_verbose: "true" overrides this with debug.
 ernic_log_level: warn
-
-# When true, /etc/rocm-ernic/rocm-ernic.env sets ERNIC_DEBUG_MESH=1
-# so rocm-ernic logs rate-limited mesh Ethernet diagnostics (EAGAIN
-# drops, inject failures, etc.).  Set false on production hosts to
-# cut log noise.
-ernic_debug_mesh: true
 # When true, each pci_dma_map logs a line (very noisy under load).
 # Use only for short-lived pointer / mapping debugging.
 ernic_debug_dma_map: false
