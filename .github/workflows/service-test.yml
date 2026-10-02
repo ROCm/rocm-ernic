@@ -283,6 +283,68 @@ jobs:
           exit 1
         fi
 
+    - name: Test guest GID derivation
+      run: |
+        echo "=== Testing guest RoCE GID derivation ==="
+        source <(sed -n '/^gen_linklocal_from_mac()/,/^}/p' \
+          service/rocm-ernic-launcher)
+        source <(sed -n '/^get_gids_for_instance()/,/^}/p' \
+          service/rocm-ernic-launcher)
+
+        # Known-good vector, confirmed against a running fleet: a guest with
+        # this MAC autoconfigures exactly this link-local address, and it is
+        # what peers must match to route to that node.
+        GOT=$(gen_linklocal_from_mac 72:6f:63:6d:00:01)
+        if python3 -c "
+        import ipaddress, sys
+        sys.exit(0 if ipaddress.IPv6Address('${GOT}')
+                 == ipaddress.IPv6Address('fe80::706f:63ff:fe6d:1') else 1)"; then
+          echo "OK: EUI-64 derivation matches the observed guest address"
+        else
+          echo "FAIL: derived ${GOT}, expected fe80::706f:63ff:fe6d:1"
+          exit 1
+        fi
+
+        # The universal/local bit must be inverted, per RFC 4291 appendix A.
+        # Getting this backwards yields an address no guest ever assigns, and
+        # the only symptom is that every peer refuses to open QPs to it.
+        FLIPPED=$(gen_linklocal_from_mac 70:6f:63:6d:00:01)
+        if [ "${FLIPPED}" != "${GOT}" ]; then
+          echo "OK: U/L bit inverted, not copied"
+        else
+          echo "FAIL: MACs differing only in the U/L bit gave one address"
+          exit 1
+        fi
+
+        # Distinct instances must not collide.
+        if [ "$(gen_linklocal_from_mac 72:6f:63:6d:00:01)" \
+             != "$(gen_linklocal_from_mac 72:6f:63:6d:00:02)" ]; then
+          echo "OK: Different MACs = different GIDs"
+        else
+          echo "FAIL: Different MACs gave the same GID"
+          exit 1
+        fi
+
+        # An explicit ERNIC_GUEST_GIDS_<n> wins over the derived value, which
+        # is how a guest carrying a static address is reached.
+        export ERNIC_GUEST_GIDS_3="fe80::dead,192.168.100.13"
+        OVERRIDE=$(get_gids_for_instance 3 72:6f:63:6d:00:03)
+        if [ "${OVERRIDE}" = "fe80::dead,192.168.100.13" ]; then
+          echo "OK: Per-instance override honoured"
+        else
+          echo "FAIL: override ignored, got ${OVERRIDE}"
+          exit 1
+        fi
+
+        unset ERNIC_GUEST_GIDS_4
+        if [ "$(get_gids_for_instance 4 72:6f:63:6d:00:04)" \
+             = "$(gen_linklocal_from_mac 72:6f:63:6d:00:04)" ]; then
+          echo "OK: Falls back to the derived link-local when unset"
+        else
+          echo "FAIL: unset override did not fall back to the derived GID"
+          exit 1
+        fi
+
     - name: Test launcher --help
       run: |
         service/rocm-ernic-launcher --badarg 2>&1 \

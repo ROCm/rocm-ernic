@@ -570,14 +570,30 @@ static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
  * Format a GID for a log line.  All 16 bytes: the destination GID is
  * frequently IPv6 link-local, and printing only the tail as a dotted quad
  * renders those as nonsense.  Returns @buf.
+ *
+ * Written out by hand rather than with snprintf("%02x"): under
+ * -Wformat-truncation=2 gcc assumes the worst-case width of a %x conversion
+ * rather than the 2 digits a uint8_t can actually produce, and rejects any
+ * buffer sized for the real output.  Indexing a hex table sidesteps the
+ * format analysis entirely and the length below is then exact.
  */
+/* 8 groups of 4 hex digits, 7 separators, NUL. */
 #define TCP_GID_STR_LEN 40
 static char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN])
 {
-    for (int i = 0; i < 8; i++) {
-        snprintf(buf + i * 5, TCP_GID_STR_LEN - (size_t)(i * 5),
-                 i == 7 ? "%02x%02x" : "%02x%02x:", gid[i * 2], gid[i * 2 + 1]);
+    static const char hex[] = "0123456789abcdef";
+    size_t o = 0;
+
+    for (size_t i = 0; i < 8; i++) {
+        if (i > 0) {
+            buf[o++] = ':';
+        }
+        buf[o++] = hex[gid[i * 2] >> 4];
+        buf[o++] = hex[gid[i * 2] & 0x0f];
+        buf[o++] = hex[gid[i * 2 + 1] >> 4];
+        buf[o++] = hex[gid[i * 2 + 1] & 0x0f];
     }
+    buf[o] = '\0';
     return buf;
 }
 

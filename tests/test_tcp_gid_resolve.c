@@ -332,6 +332,45 @@ static void test_advertisement_tail_is_zeroed(void)
     }
 }
 
+/*
+ * The log formatter must render all 16 bytes and stay inside its buffer.
+ * It is written out by hand to dodge -Wformat-truncation=2, so the length
+ * is maintained rather than computed -- which is exactly the kind of bound
+ * worth pinning.
+ */
+static void test_gid_formatting(void)
+{
+    char buf[TCP_GID_STR_LEN];
+    uint8_t g[16];
+
+    printf("  GID log formatting\n");
+
+    /* The exact GID a fleet guest with MAC 72:6f:63:6d:00:03 autoconfigures. */
+    gid_ll(g, 0x03);
+    g[8] = 0x70;
+    g[9] = 0x6f;
+    g[10] = 0x63;
+    g[13] = 0x6d;
+    CHECK(strcmp(tcp_gid_str(g, buf),
+                 "fe80:0000:0000:0000:706f:63ff:fe6d:0003") == 0,
+          "link-local rendered as '%s'", buf);
+
+    /* Every byte 0xff: the longest output the formatter can produce. */
+    memset(g, 0xff, sizeof(g));
+    const char *all = tcp_gid_str(g, buf);
+    CHECK(strlen(all) == TCP_GID_STR_LEN - 1,
+          "widest GID rendered %zu chars, buffer holds %d incl. NUL",
+          strlen(all), TCP_GID_STR_LEN);
+    CHECK(strcmp(all, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff") == 0,
+          "widest GID rendered as '%s'", all);
+
+    /* All zeroes must still render every group, not an empty string. */
+    memset(g, 0, sizeof(g));
+    CHECK(strcmp(tcp_gid_str(g, buf),
+                 "0000:0000:0000:0000:0000:0000:0000:0000") == 0,
+          "zero GID rendered as '%s'", buf);
+}
+
 int main(void)
 {
     printf("tcp GID resolution unit tests\n");
@@ -342,6 +381,7 @@ int main(void)
     test_multiple_and_replacement();
     test_env_parsing();
     test_advertisement_tail_is_zeroed();
+    test_gid_formatting();
 
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);
