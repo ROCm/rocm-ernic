@@ -513,6 +513,16 @@ struct TcpBackendPrivate {
     GHashTable *gid_owner;
     QemuMutex gid_table_lock;
 
+    /*
+     * Serialises a whole broadcast -- snapshot and fan-out together.
+     * gid_table_lock cannot do it: the sends take connection locks that the
+     * data path holds across multi-megabyte writes, so it has to be dropped
+     * before sending.  Two manager receive threads would then interleave,
+     * and an older snapshot could land after a newer one, leaving workers
+     * with claims the manager has already replaced.
+     */
+    QemuMutex gid_broadcast_lock;
+
     /* This node's own GIDs, from ERNIC_TCP_GUEST_GIDS. */
     uint8_t local_gids[TCP_MAX_NODE_GIDS][16];
     uint32_t num_local_gids;
@@ -2858,6 +2868,9 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
     if (!priv->is_manager || !priv->node_gids || !priv->mesh_nodes)
         return;
 
+    /* Held across both the snapshot and the sends; see the field's comment. */
+    qemu_mutex_lock(&priv->gid_broadcast_lock);
+
     struct {
         uint32_t node_id;
         uint8_t gids[TCP_MAX_NODE_GIDS][16];
@@ -2911,6 +2924,8 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
         }
         qemu_mutex_unlock(&priv->conn_table_lock);
     }
+
+    qemu_mutex_unlock(&priv->gid_broadcast_lock);
 }
 
 /* Manager health check thread */
@@ -3197,6 +3212,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_init(&priv->gid_table_lock);
+    qemu_mutex_init(&priv->gid_broadcast_lock);
 
     priv->num_local_gids = tcp_parse_guest_gids(priv->local_gids);
     if (priv->num_local_gids == 0) {
@@ -3411,6 +3427,7 @@ error:
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
+    qemu_mutex_destroy(&priv->gid_broadcast_lock);
     g_free(priv);
     return -1;
 }
@@ -3472,6 +3489,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
+    qemu_mutex_destroy(&priv->gid_broadcast_lock);
 
     g_free(priv);
     backend_dev->backend_private = NULL;
@@ -4030,6 +4048,14 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return;
     }
 
+    /*
+     * The destination QP is per request for the same reason the node is:
+     * UD carries it on the send, and its RTR had no destination to record.
+     * Request-local rather than written back to the QP, because consecutive
+     * UD sends on one QP legitimately address different peers.
+     */
+    uint32_t dst_qpn = (qp_type == IBV_QPT_UD) ? dqpn : tqp->remote_qpn;
+
     wr = g_new0(TcpWR, 1);
     wr->wr_id = (uint64_t)(uintptr_t)ctx;
     wr->num_sge = 0;
@@ -4273,7 +4299,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
             ret = tcp_send_message(conn->sockfd, TCP_MSG_RDMA_WRITE, buf,
                                    payload_sz, seq, priv->local_node_id,
-                                   dst_node, qpn, tqp->remote_qpn);
+                                   dst_node, qpn, dst_qpn);
             g_free(buf);
             if (ret < 0)
                 rdma_error_report("TCP: RDMA WRITE send failed");
@@ -4290,7 +4316,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
             ret = tcp_send_message(conn->sockfd, TCP_MSG_RDMA_READ_REQ, &oh,
                                    sizeof(oh), seq, priv->local_node_id,
-                                   dst_node, qpn, tqp->remote_qpn);
+                                   dst_node, qpn, dst_qpn);
             if (ret < 0)
                 rdma_error_report("TCP: RDMA READ REQ send failed");
         } else if (total_len <= TCP_COALESCE_THRESHOLD) {
@@ -4314,7 +4340,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
             ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, buf,
                                    payload_sz, seq, priv->local_node_id,
-                                   dst_node, qpn, tqp->remote_qpn);
+                                   dst_node, qpn, dst_qpn);
             g_free(buf);
             if (ret < 0)
                 rdma_error_report("TCP: POST_SEND failed to "
@@ -4328,7 +4354,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
              */
             ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, wr,
                                    sizeof(*wr), seq, priv->local_node_id,
-                                   dst_node, qpn, tqp->remote_qpn);
+                                   dst_node, qpn, dst_qpn);
             if (ret < 0) {
                 rdma_error_report("TCP: POST_SEND header failed "
                                   "to node %u",
@@ -4339,7 +4365,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                         ret = tcp_send_message(
                             conn->sockfd, TCP_MSG_DATA, wr->sge[i].host_addr,
                             wr->sge[i].length, seq, priv->local_node_id,
-                            dst_node, qpn, tqp->remote_qpn);
+                            dst_node, qpn, dst_qpn);
                         if (ret < 0) {
                             rdma_error_report("TCP: DATA send "
                                               "failed");

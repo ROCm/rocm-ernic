@@ -1288,6 +1288,14 @@ def cmd_hot_reload(args):
         print(f"ERROR: Instance {args.instance} not found.", file=sys.stderr)
         sys.exit(1)
 
+    # Resolved before anything is torn down.  guest_gids_for() exits when
+    # it cannot tell what this instance should advertise, and every step
+    # below is destructive -- detaching the VM, killing the server, removing
+    # its socket.  Refusing after those have run takes a working instance
+    # offline, which is worse than the unreachable server the refusal exists
+    # to prevent.
+    gids = guest_gids_for(inst)
+
     vm = inst.get("vm")
     had_vm = vm and vm.get("attached")
     vm_snapshot = dict(vm) if vm else None
@@ -1361,9 +1369,9 @@ def cmd_hot_reload(args):
     ]
 
     # The replacement must advertise the same addresses as the instance it
-    # replaces; see guest_gids_for().
+    # replaces; resolved at the top, before anything was torn down.
     env = dict(os.environ)
-    env["ERNIC_TCP_GUEST_GIDS"] = guest_gids_for(inst)
+    env["ERNIC_TCP_GUEST_GIDS"] = gids
 
     # The server outlives this command, so it is not waited for
     # pylint: disable-next=consider-using-with
