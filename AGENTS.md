@@ -97,6 +97,15 @@ Observed alongside the GID bug, not yet diagnosed against the source:
   **not** confirmed against the code.
 - Node ids are assigned monotonically, so they are not stable across
   runs.
+- **A mesh node can hang on shutdown.** A worker sent SIGTERM logs
+  `TCP backend: Cleaning up` and then blocks in `tcp_fini()` on a futex
+  with its threads still alive — a join against a thread that never
+  returns. The process survives SIGTERM indefinitely and needs SIGKILL.
+  Only the TCP backend does this; a loopback server exits cleanly, which
+  is why `tests/test_ionic_ci.sh` can `kill` and `wait` while
+  `tests/test_tcp_mesh_ci.sh` has to bound its cleanup and escalate.
+  Anything that stops a mesh node — a test harness, systemd, `docker
+  stop` — pays a full termination timeout per node.
 
 Note that nodes are never evicted from `mesh_nodes` — a dead node is
 marked `is_alive = false` and reconnects under the same id — so the GID

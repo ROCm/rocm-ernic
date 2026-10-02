@@ -61,8 +61,9 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
  *   uint8_t  payload[];    // Variable length payload
  */
 
-#define TCP_PROTOCOL_MAGIC     0x52444D41    /* "RDMA" */
-#define TCP_PROTOCOL_VERSION   3u            /* v3: wc_opcode in TcpWR */
+#define TCP_PROTOCOL_MAGIC 0x52444D41 /* "RDMA" */
+/* v4: TCP_MSG_NODE_GIDS, and registration carries a version. */
+#define TCP_PROTOCOL_VERSION   4u
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
 
@@ -149,18 +150,42 @@ typedef struct {
     uint32_t version;
 } __attribute__((packed)) TcpHandshakePayload;
 
-/* Manager/Worker mesh discovery payloads */
+/*
+ * Manager/Worker mesh discovery payloads.
+ *
+ * Both carry a protocol version appended in v4.  Registration had no
+ * version check at all before that: only the peer-to-peer handshake was
+ * gated, and a manager never exchanges one -- it spawns a receive thread
+ * and waits for REGISTER_NODE.  A node running the pre-v4 GID heuristic
+ * could therefore join a v4 mesh, never advertise its GIDs, and keep
+ * routing every peer to one default node on its own side.
+ *
+ * The field is appended rather than inserted so a pre-v4 payload is an
+ * exact prefix, which is what lets the lengths below tell "older peer"
+ * from "corrupt message" and report the former precisely.
+ */
 typedef struct {
     char hostname[256];
     uint16_t port;
     uint32_t requested_node_id; /* 0xFFFFFFFF for auto-assign */
+    uint32_t version;           /* appended in v4 */
 } __attribute__((packed)) TcpRegisterNodePayload;
 
 typedef struct {
     uint32_t assigned_node_id;
     uint32_t num_nodes;
-    uint32_t result; /* int32_t on the wire: 0 = success, negative = error */
+    uint32_t result;  /* int32_t on the wire: 0 = success, negative = error */
+    uint32_t version; /* appended in v4 */
 } __attribute__((packed)) TcpRegisterRespPayload;
+
+/* Sizes before the version field, i.e. what a pre-v4 peer sends. */
+#define TCP_REGISTER_NODE_LEN_V3 262u
+#define TCP_REGISTER_RESP_LEN_V3 12u
+
+_Static_assert(sizeof(TcpRegisterNodePayload) == TCP_REGISTER_NODE_LEN_V3 + 4,
+               "the version field must be appended, not inserted");
+_Static_assert(sizeof(TcpRegisterRespPayload) == TCP_REGISTER_RESP_LEN_V3 + 4,
+               "the version field must be appended, not inserted");
 
 typedef struct {
     uint32_t node_id;
@@ -1760,8 +1785,45 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                if (!payload || hdr.msg_len < sizeof(TcpRegisterNodePayload)) {
+                if (!payload || hdr.msg_len < TCP_REGISTER_NODE_LEN_V3) {
                     rdma_error_report("TCP: Invalid REGISTER_NODE payload");
+                    break;
+                }
+
+                /*
+                 * Refuse a peer that does not speak this protocol version.
+                 * A short payload is one that predates the version field
+                 * entirely; both cases get the same answer, with a result
+                 * the worker surfaces instead of timing out.
+                 */
+                uint32_t peer_version = 0;
+
+                if (hdr.msg_len >= sizeof(TcpRegisterNodePayload)) {
+                    peer_version =
+                        ntohl(((TcpRegisterNodePayload *)payload)->version);
+                }
+
+                if (peer_version != TCP_PROTOCOL_VERSION) {
+                    TcpRegisterRespPayload nak;
+
+                    rdma_error_report(
+                        "TCP: refusing registration from a v%u peer "
+                        "(this mesh is v%u); a peer that predates the GID "
+                        "advertisement routes every destination to one "
+                        "default node",
+                        peer_version, TCP_PROTOCOL_VERSION);
+
+                    memset(&nak, 0, sizeof(nak));
+                    nak.result = htonl((uint32_t)(int32_t)-EPROTO);
+                    nak.version = htonl(TCP_PROTOCOL_VERSION);
+
+                    qemu_mutex_lock(&conn->lock);
+                    tcp_send_message(
+                        conn->sockfd, TCP_MSG_REGISTER_RESP, &nak, sizeof(nak),
+                        atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                                  memory_order_relaxed),
+                        priv->local_node_id, hdr.src_node_id, 0, 0);
+                    qemu_mutex_unlock(&conn->lock);
                     break;
                 }
 
@@ -1823,11 +1885,15 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 rdma_info_report("TCP: Registered node %u at %s:%u",
                                  assigned_id, worker_host, worker_port);
 
-                /* Send registration response */
+                /* Send registration response.  Zeroed first: the whole
+                 * struct goes on the wire, so any field not assigned below
+                 * would put stack contents there. */
                 TcpRegisterRespPayload resp;
+                memset(&resp, 0, sizeof(resp));
                 resp.assigned_node_id = htonl(assigned_id);
                 resp.num_nodes = htonl(g_hash_table_size(priv->mesh_nodes));
                 resp.result = htonl(0); /* Success */
+                resp.version = htonl(TCP_PROTOCOL_VERSION);
 
                 /*
                  * conn->lock serialises writes to this socket.
@@ -1867,7 +1933,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                if (!payload || hdr.msg_len < sizeof(TcpRegisterRespPayload)) {
+                if (!payload || hdr.msg_len < TCP_REGISTER_RESP_LEN_V3) {
                     rdma_error_report("TCP: Invalid REGISTER_RESP payload");
                     break;
                 }
@@ -1876,6 +1942,29 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     (TcpRegisterRespPayload *)payload;
                 uint32_t assigned_id = ntohl(resp->assigned_node_id);
                 int32_t result = (int32_t)ntohl(resp->result);
+
+                /*
+                 * The other half of the check the manager makes: a pre-v4
+                 * manager sends no version and would otherwise admit this
+                 * node to a mesh whose resolver still guesses.  Refusing
+                 * here is what makes the gate work in both directions,
+                 * since an old manager cannot refuse us.
+                 */
+                uint32_t mgr_version = 0;
+
+                if (hdr.msg_len >= sizeof(TcpRegisterRespPayload)) {
+                    mgr_version = ntohl(resp->version);
+                }
+
+                if (mgr_version != TCP_PROTOCOL_VERSION) {
+                    rdma_error_report(
+                        "TCP: manager speaks v%u, this node speaks v%u; "
+                        "refusing to join -- a pre-v%u mesh resolves every "
+                        "destination GID to one default node",
+                        mgr_version, TCP_PROTOCOL_VERSION,
+                        TCP_PROTOCOL_VERSION);
+                    break;
+                }
 
                 if (result != 0) {
                     rdma_error_report("TCP: Registration failed: %d", result);
@@ -2932,6 +3021,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     g_strlcpy(reg.hostname, hostname, sizeof(reg.hostname));
     reg.port = htons(priv->listen_port);
     reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
+    reg.version = htonl(TCP_PROTOCOL_VERSION);
 
     /* Send registration request. Re-registration can happen
      * on reconnect while the manager connection is already

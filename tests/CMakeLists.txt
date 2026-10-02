@@ -746,6 +746,22 @@ set_tests_properties(ionic-ci PROPERTIES
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
 
+# TCP mesh registration suite: GID advertisement across a three-node mesh,
+# an unconfigured node, a contested GID, and the protocol version gate in
+# both directions. Drives real servers over loopback TCP; no VM or RDMA
+# hardware needed. RUN_SERIAL because it starts several servers at once.
+add_test(
+    NAME tcp-mesh-ci
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_tcp_mesh_ci.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_tests_properties(tcp-mesh-ci PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
+
 # NVMe-oF backend CI suite: every documented option spelling starts a server
 # with the namespace it asked for, a file-backed namespace appears on disk at
 # the right size, and bad options are refused before startup.
