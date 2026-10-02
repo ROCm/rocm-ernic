@@ -438,6 +438,28 @@ const char *s3_http_reason(int status)
     }
 }
 
+/*
+ * Format onto the end of @buf at *@off, which must be below @cap, and
+ * advance *@off past what was written.  False if the output did not fit
+ * in full, in which case *@off is left alone.
+ */
+static bool append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+
+static bool append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
+{
+    size_t room = cap - *off;
+    va_list ap;
+
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *off, room, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= room)
+        return false;
+    *off += (size_t)n;
+    return true;
+}
+
 uint8_t *s3_http_response_serialize(const struct s3_http_response *resp,
                                     size_t *out_len)
 {
@@ -452,21 +474,31 @@ uint8_t *s3_http_response_serialize(const struct s3_http_response *resp,
     if (out == NULL)
         return NULL;
 
-    int off = snprintf((char *)out, cap, "HTTP/1.1 %d %s\r\n", resp->status,
+    /* The 128 bytes of slack cover the status line and the two headers
+     * below, so running out of room means that sum has gone stale. */
+    char *text = (char *)out;
+    size_t off = 0;
+    bool fits = append(text, cap, &off, "HTTP/1.1 %d %s\r\n", resp->status,
                        s3_http_reason(resp->status));
-    for (unsigned i = 0; i < resp->nhdr; i++)
-        off += snprintf((char *)out + off, cap - (size_t)off, "%s: %s\r\n",
-                        resp->hdr[i].name, resp->hdr[i].value);
+    for (unsigned i = 0; fits && i < resp->nhdr; i++)
+        fits = append(text, cap, &off, "%s: %s\r\n", resp->hdr[i].name,
+                      resp->hdr[i].value);
 
     /* Content-Length and Connection are ours, not the caller's: getting
      * either wrong desynchronises a keep-alive connection for good. */
-    off += snprintf((char *)out + off, cap - (size_t)off,
-                    "Content-Length: %zu\r\nConnection: %s\r\n\r\n",
-                    resp->body_len, resp->keep_alive ? "keep-alive" : "close");
+    if (fits)
+        fits = append(
+            text, cap, &off, "Content-Length: %zu\r\nConnection: %s\r\n\r\n",
+            resp->body_len, resp->keep_alive ? "keep-alive" : "close");
+
+    if (!fits || cap - off < resp->body_len) {
+        free(out);
+        return NULL;
+    }
 
     if (resp->body_len)
         memcpy(out + off, resp->body, resp->body_len);
 
-    *out_len = (size_t)off + resp->body_len;
+    *out_len = off + resp->body_len;
     return out;
 }

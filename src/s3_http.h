@@ -120,7 +120,8 @@ void s3_http_response_printf(struct s3_http_response *resp, const char *fmt,
 /*
  * Render status line, headers and body into one freshly allocated
  * buffer.  Content-Length is written here, so callers never set it.
- * Returns NULL on allocation failure; the caller frees the result.
+ * Returns NULL on allocation failure or if the response does not fit
+ * the buffer sized for it; the caller frees the result.
  */
 uint8_t *s3_http_response_serialize(const struct s3_http_response *resp,
                                     size_t *out_len);
