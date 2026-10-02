@@ -98,8 +98,13 @@ start_node() {
         --log-file "$RUN/$n.log" &
     PIDS+=("$!")
 
+    # Budgets here are upper bounds, not delays: every loop exits as soon
+    # as its condition holds, so a generous one costs nothing on a fast
+    # machine and is the difference between passing and flaking on a
+    # shared runner under a sanitizer. This suite runs in all twelve build
+    # legs, the slowest of which is a thread-sanitizer Release build.
     local elapsed=0
-    while [ $elapsed -lt 20 ]; do
+    while [ $elapsed -lt 80 ]; do
         sleep 0.5; elapsed=$((elapsed + 1))
         [ -S "$RUN/$n.sock" ] && return 0
     done
@@ -111,7 +116,7 @@ start_node() {
 # so polling beats a fixed sleep that is either flaky or slow.
 wait_for() {
     local pattern="$1" file="$2" elapsed=0
-    while [ $elapsed -lt 30 ]; do
+    while [ $elapsed -lt 120 ]; do
         grep -q "$pattern" "$file" 2>/dev/null && return 0
         sleep 0.5; elapsed=$((elapsed + 1))
     done
@@ -164,9 +169,19 @@ pass "unconfigured node registers, warns, and owns no GID"
 echo ""
 echo "Test 3: a contested GID is owned by neither node"
 start_node 5 worker "$GID2" || fail "worker 5 did not start"
-wait_for "already held by node" "$RUN/1.log" \
-    || { cat "$RUN/1.log"; fail "duplicate GID was accepted silently"; }
-pass "duplicate GID refused rather than reassigned"
+wait_for "claimed by more than one node" "$RUN/1.log" || {
+    echo "--- manager log ---"; cat "$RUN/1.log"
+    echo "--- duplicate claimant log ---"; cat "$RUN/5.log"
+    fail "duplicate GID was accepted silently"
+}
+
+# The original claimant must reach the same verdict. Because every node
+# holds every node's CLAIMS and derives the owner itself, it detects the
+# contest locally rather than being told -- so this checks convergence,
+# not the notification path.
+wait_for "claimed by more than one node" "$RUN/2.log" \
+    || { cat "$RUN/2.log"; fail "the original claimant did not see the contest"; }
+pass "duplicate GID contested on the manager and on the original claimant"
 
 # --- Test 4: the manager refuses a pre-v4 worker ---
 echo ""
@@ -186,15 +201,31 @@ body = b"oldpeer".ljust(256, b"\0") + struct.pack("!H", 9999) \
 assert len(body) == 262, len(body)
 hdr = struct.pack("!IIIIIIII", MAGIC, REGISTER_NODE, len(body), 1, 7, 0, 0, 0)
 
+def read_exact(sock, n):
+    """TCP delivers a stream, not messages: a single recv() can return a
+    prefix of the reply and would flake this check intermittently."""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None          # EOF: short frame
+        buf += chunk
+    return buf
+
+
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10)
 s.sendall(hdr + body)
-data = s.recv(4096)
+head = read_exact(s, 32)
+if head is None:
+    print("  no reply header"); s.close(); sys.exit(1)
+_, msg_type, length = struct.unpack("!III", head[:12])
+payload = read_exact(s, length) if length else b""
 s.close()
 
-if len(data) < 32 + 12:
-    print("  no usable reply:", data[:48]); sys.exit(1)
-_, msg_type, length = struct.unpack("!III", data[:12])
-payload = data[32:32 + length]
+if payload is None or len(payload) < 12:
+    print(f"  short payload: want {length}, got "
+          f"{0 if payload is None else len(payload)}")
+    sys.exit(1)
 _, _, result = struct.unpack("!III", payload[:12])
 if result >= 1 << 31:
     result -= 1 << 32

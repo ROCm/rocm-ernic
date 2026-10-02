@@ -130,7 +130,9 @@ static TcpBackendPrivate *priv_new(void)
 {
     TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
 
-    priv->gid_nodes = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+    priv->node_gids =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
     qemu_mutex_init(&priv->gid_table_lock);
     return priv;
@@ -138,7 +140,8 @@ static TcpBackendPrivate *priv_new(void)
 
 static void priv_free(TcpBackendPrivate *priv)
 {
-    g_hash_table_destroy(priv->gid_nodes);
+    g_hash_table_destroy(priv->node_gids);
+    g_hash_table_destroy(priv->gid_owner);
     qemu_mutex_destroy(&priv->gid_table_lock);
     g_free(priv);
 }
@@ -192,7 +195,7 @@ static void test_three_nodes_resolve_distinctly(void)
 
     for (uint32_t i = 0; i < 3; i++) {
         gid_v4(gids[i], (uint8_t)(11 + i));
-        tcp_gid_table_set(priv, i, (const uint8_t(*)[16]) & gids[i], 1);
+        tcp_gid_claims_set(priv, i, (const uint8_t(*)[16]) & gids[i], 1);
     }
 
     for (uint32_t i = 0; i < 3; i++) {
@@ -215,8 +218,8 @@ static void test_link_local_resolves(void)
 
     gid_ll(a, 0x03);
     gid_ll(b, 0x07);
-    tcp_gid_table_set(priv, 5, (const uint8_t(*)[16]) & a, 1);
-    tcp_gid_table_set(priv, 9, (const uint8_t(*)[16]) & b, 1);
+    tcp_gid_claims_set(priv, 5, (const uint8_t(*)[16]) & a, 1);
+    tcp_gid_claims_set(priv, 9, (const uint8_t(*)[16]) & b, 1);
 
     CHECK(resolve(priv, a) == 5, "first link-local resolved to %u, expected 5",
           resolve(priv, a));
@@ -236,7 +239,7 @@ static void test_unknown_gid_does_not_resolve(void)
 
     gid_v4(known, 11);
     gid_v4(unknown, 12);
-    tcp_gid_table_set(priv, 0, (const uint8_t(*)[16]) & known, 1);
+    tcp_gid_claims_set(priv, 0, (const uint8_t(*)[16]) & known, 1);
 
     CHECK(resolve(priv, unknown) == UINT32_MAX,
           "unknown GID resolved to node %u, expected no match",
@@ -260,13 +263,13 @@ static void test_multiple_and_replacement(void)
 
     gid_v4(pair[0], 11);
     gid_ll(pair[1], 0x11);
-    tcp_gid_table_set(priv, 4, (const uint8_t(*)[16])pair, 2);
+    tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])pair, 2);
 
     CHECK(resolve(priv, pair[0]) == 4, "IPv4 GID of node 4 did not resolve");
     CHECK(resolve(priv, pair[1]) == 4, "link-local of node 4 did not resolve");
 
     gid_v4(replacement[0], 77);
-    tcp_gid_table_set(priv, 4, (const uint8_t(*)[16])replacement, 1);
+    tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])replacement, 1);
 
     CHECK(resolve(priv, replacement[0]) == 4,
           "replacement GID did not resolve");
@@ -371,6 +374,144 @@ static void test_gid_formatting(void)
           "zero GID rendered as '%s'", buf);
 }
 
+/*
+ * An unreliable-datagram QP must reach RTR without a destination GID.
+ *
+ * UD names its peer per work request, so the INIT->RTR transition carries
+ * a zero GID. Requiring one there rejected every ordinary UD QP with -EIO
+ * once the resolver stopped guessing. remote_node_id must stay UINT32_MAX
+ * rather than the default 0, or a send that misses the per-send lookup
+ * silently goes to the manager.
+ */
+static void test_ud_rtr_needs_no_destination(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    RdmaBackendDev dev;
+    RdmaBackendQP bqp;
+    union ibv_gid zero, known;
+    uint8_t raw[16];
+    TcpQP *tqp;
+    int rc;
+
+    printf("  UD reaches RTR without a destination GID\n");
+
+    memset(&dev, 0, sizeof(dev));
+    memset(&bqp, 0, sizeof(bqp));
+    dev.backend_private = priv;
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    bqp.ibqp = (struct ibv_qp *)(uintptr_t)7u;
+
+    qemu_mutex_init(&priv->lock);
+    priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                      (GDestroyNotify)g_free);
+    tqp = g_new0(TcpQP, 1);
+    tqp->qpn = 7;
+    tqp->remote_node_id = 0; /* the default tcp_create_qp() leaves */
+    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(7u), tqp);
+
+    gid_v4(raw, 11);
+    tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16]) & raw, 1);
+    memset(&zero, 0, sizeof(zero));
+    memcpy(known.raw, raw, 16);
+
+    /* UD with no destination: accepted, and left unrouted. */
+    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99, 0, 0, false);
+    CHECK(rc == 0, "UD RTR rejected with rc=%d", rc);
+    CHECK(tqp->remote_node_id == UINT32_MAX,
+          "UD QP left routed to node %u; a send would go there silently",
+          tqp->remote_node_id);
+
+    /* A connected QP still must resolve, and still must fail when it cannot. */
+    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99, 0, 0, false);
+    CHECK(rc != 0, "RC RTR accepted an unresolvable GID");
+
+    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known, 99, 0, 0, false);
+    CHECK(rc == 0, "RC RTR rejected a resolvable GID (rc=%d)", rc);
+    CHECK(tqp->remote_node_id == 2, "RC QP routed to node %u, expected 2",
+          tqp->remote_node_id);
+
+    g_hash_table_destroy(priv->qps);
+    priv->qps = NULL;
+    qemu_mutex_destroy(&priv->lock);
+    priv_free(priv);
+}
+
+/*
+ * A contested GID must stay contested.
+ *
+ * The first attempt at this dropped the entry on conflict, which lost the
+ * fact that it was contested: the next advertisement from either claimant
+ * found an empty slot and took ownership, restoring arrival-order routing
+ * by a longer path. Claims are now kept per node and the owner derived, so
+ * a repeat, a third claimant, and a withdrawal all behave.
+ */
+static void test_contested_gid_stays_contested(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t shared[1][16], own_a[1][16];
+
+    printf("  a contested GID stays contested\n");
+
+    gid_v4(shared[0], 50);
+    gid_v4(own_a[0], 51);
+
+    /* Node 1 alone: resolvable. */
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])shared, 1);
+    CHECK(resolve(priv, shared[0]) == 1, "sole claimant did not resolve");
+
+    /* Node 2 claims it too: neither should resolve. */
+    tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16])shared, 1);
+    CHECK(resolve(priv, shared[0]) == UINT32_MAX,
+          "contested GID resolved to node %u", resolve(priv, shared[0]));
+
+    /* Node 1 re-advertises: must not win it back. */
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])shared, 1);
+    CHECK(resolve(priv, shared[0]) == UINT32_MAX,
+          "re-advertisement took a contested GID (node %u)",
+          resolve(priv, shared[0]));
+
+    /* A third claimant changes nothing. */
+    tcp_gid_claims_set(priv, 3, (const uint8_t(*)[16])shared, 1);
+    CHECK(resolve(priv, shared[0]) == UINT32_MAX,
+          "third claimant took a contested GID (node %u)",
+          resolve(priv, shared[0]));
+
+    /* Withdrawals leave exactly one claimant, which resolves again. */
+    tcp_gid_claims_set(priv, 2, NULL, 0);
+    tcp_gid_claims_set(priv, 3, NULL, 0);
+    CHECK(resolve(priv, shared[0]) == 1,
+          "GID did not recover once only node 1 claimed it (got %u)",
+          resolve(priv, shared[0]));
+
+    /* A conflict must not cost a node its uncontested addresses. */
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])own_a, 1);
+    tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16])shared, 1);
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])shared, 1);
+    CHECK(resolve(priv, shared[0]) == UINT32_MAX, "contest not detected");
+
+    priv_free(priv);
+}
+
+/* An empty advertisement withdraws a node's claims -- how the manager
+ * revokes, and the case a broadcast of surviving entries could not express. */
+static void test_empty_advertisement_withdraws(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t g[1][16];
+
+    printf("  an empty advertisement withdraws a node's GIDs\n");
+
+    gid_v4(g[0], 60);
+    tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 4, "claim did not take effect");
+
+    tcp_gid_claims_set(priv, 4, NULL, 0);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "withdrawn GID still resolves to node %u", resolve(priv, g[0]));
+
+    priv_free(priv);
+}
+
 int main(void)
 {
     printf("tcp GID resolution unit tests\n");
@@ -382,6 +523,9 @@ int main(void)
     test_env_parsing();
     test_advertisement_tail_is_zeroed();
     test_gid_formatting();
+    test_ud_rtr_needs_no_destination();
+    test_contested_gid_stays_contested();
+    test_empty_advertisement_withdraws();
 
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);
