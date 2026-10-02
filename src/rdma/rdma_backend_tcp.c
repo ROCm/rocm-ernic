@@ -22,8 +22,6 @@
 #include "vmw/pvrdma.h"
 #include "hw/pci/pci.h"        /* For pci_dma_map/unmap/sync */
 #include "rocm_ernic_compat.h" /* IONIC_MESH_MAX_MSG, kept in step below */
-#include "net/dhcp_server.h"
-#include "net/eth_rx_inject.h"
 #include "parse_int.h"
 #include "qemu/compiler.h" /* For container_of() */
 #include "rocm-ernic-warnings.h"
@@ -63,9 +61,9 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
  *   uint8_t  payload[];    // Variable length payload
  */
 
-#define TCP_PROTOCOL_MAGIC     0x52444D41 /* "RDMA" */
-#define TCP_PROTOCOL_VERSION   3u         /* v3: wc_opcode in TcpWR */
-#define TCP_MAX_ETH_FRAME_LEN  2048
+#define TCP_PROTOCOL_MAGIC 0x52444D41 /* "RDMA" */
+/* v4: TCP_MSG_NODE_GIDS, and registration carries a version. */
+#define TCP_PROTOCOL_VERSION   4u
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
 
@@ -89,45 +87,6 @@ static int tcp_env_int(const char *name, int fallback)
     return fallback;
 }
 
-/*
- * Verbose mesh Ethernet diagnostics.  Set ERNIC_DEBUG_MESH=1 before
- * starting rocm-ernic to log rate-limited EAGAIN drops, inject failures,
- * and zero-forward cases.  Heavy iperf3 can fill socket buffers; those
- * paths are otherwise silent.
- */
-static int tcp_mesh_debug(void)
-{
-    static int cached = -1;
-
-    if (cached >= 0) {
-        return cached;
-    }
-    const char *v = getenv("ERNIC_DEBUG_MESH");
-
-    if (v && v[0] != '\0' && v[0] != '0') {
-        cached = 1;
-    } else {
-        cached = 0;
-    }
-    return cached;
-}
-
-static void tcp_mesh_warn_rate_limited(const char *msg,
-                                       _Atomic uint64_t *counter,
-                                       uint64_t every)
-{
-    uint64_t n = atomic_fetch_add(counter, 1) + 1;
-
-    if (n == 1 || (every > 0 && (n % every) == 0)) {
-        rdma_warn_report("%s (count=%" PRIu64 ")", msg, n);
-    }
-}
-
-static _Atomic uint64_t mesh_eth_eagain_events;
-static _Atomic uint64_t mesh_eth_truncated_sends;
-static _Atomic uint64_t mesh_eth_inject_fail;
-static _Atomic uint64_t mesh_eth_manager_relay_eagain;
-
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,
     TCP_MSG_HANDSHAKE_RESP,
@@ -147,10 +106,15 @@ typedef enum {
     TCP_MSG_HEARTBEAT,
     TCP_MSG_HEARTBEAT_RESP,
     TCP_MSG_NODE_STATUS,
-    /* DHCP messages */
-    TCP_MSG_DHCP_REQUEST,  /* Worker -> Manager: DHCP request from VM */
-    TCP_MSG_DHCP_RESPONSE, /* Manager -> Worker: DHCP response for VM */
-    TCP_MSG_ETH_FRAME,     /* Node -> Node: raw Ethernet frame */
+    /*
+     * Retired: DHCP request/response and raw Ethernet frame relay.  Guest
+     * TCP/IP rides the host TAP/bridge, so none of the three was ever sent.
+     * The ordinals stay reserved -- renumbering what follows would break the
+     * wire protocol against an unupgraded peer.
+     */
+    TCP_MSG_RESERVED_18,
+    TCP_MSG_RESERVED_19,
+    TCP_MSG_RESERVED_20,
     /* RDMA one-sided operations */
     TCP_MSG_RDMA_WRITE,     /* RDMA Write: DMA to remote MR */
     TCP_MSG_RDMA_READ_REQ,  /* RDMA Read request */
@@ -162,6 +126,12 @@ typedef enum {
      * rdma_rm.
      */
     TCP_MSG_IONIC,
+    /*
+     * A node's own guest RoCE GIDs, so peers can map a destination GID back
+     * to a node id.  Appended last: every ordinal above is already on the
+     * wire and must not move.
+     */
+    TCP_MSG_NODE_GIDS,
 } TcpMsgType;
 
 typedef struct {
@@ -180,18 +150,42 @@ typedef struct {
     uint32_t version;
 } __attribute__((packed)) TcpHandshakePayload;
 
-/* Manager/Worker mesh discovery payloads */
+/*
+ * Manager/Worker mesh discovery payloads.
+ *
+ * Both carry a protocol version appended in v4.  Registration had no
+ * version check at all before that: only the peer-to-peer handshake was
+ * gated, and a manager never exchanges one -- it spawns a receive thread
+ * and waits for REGISTER_NODE.  A node running the pre-v4 GID heuristic
+ * could therefore join a v4 mesh, never advertise its GIDs, and keep
+ * routing every peer to one default node on its own side.
+ *
+ * The field is appended rather than inserted so a pre-v4 payload is an
+ * exact prefix, which is what lets the lengths below tell "older peer"
+ * from "corrupt message" and report the former precisely.
+ */
 typedef struct {
     char hostname[256];
     uint16_t port;
     uint32_t requested_node_id; /* 0xFFFFFFFF for auto-assign */
+    uint32_t version;           /* appended in v4 */
 } __attribute__((packed)) TcpRegisterNodePayload;
 
 typedef struct {
     uint32_t assigned_node_id;
     uint32_t num_nodes;
-    uint32_t result; /* int32_t on the wire: 0 = success, negative = error */
+    uint32_t result;  /* int32_t on the wire: 0 = success, negative = error */
+    uint32_t version; /* appended in v4 */
 } __attribute__((packed)) TcpRegisterRespPayload;
+
+/* Sizes before the version field, i.e. what a pre-v4 peer sends. */
+#define TCP_REGISTER_NODE_LEN_V3 262u
+#define TCP_REGISTER_RESP_LEN_V3 12u
+
+_Static_assert(sizeof(TcpRegisterNodePayload) == TCP_REGISTER_NODE_LEN_V3 + 4,
+               "the version field must be appended, not inserted");
+_Static_assert(sizeof(TcpRegisterRespPayload) == TCP_REGISTER_RESP_LEN_V3 + 4,
+               "the version field must be appended, not inserted");
 
 typedef struct {
     uint32_t node_id;
@@ -229,6 +223,23 @@ typedef struct {
     uint32_t num_nodes;
     TcpMeshNodeInfo nodes[64]; /* Max 64 nodes */
 } __attribute__((packed)) TcpMeshTopologyPayload;
+
+/*
+ * A node's own guest RoCE GIDs, advertised so peers can map a destination
+ * GID back to a node id.  A guest typically has two -- an IPv6 link-local
+ * and whatever global address it is configured with -- so the cap leaves
+ * room without making the message worth fragmenting.
+ */
+#define TCP_MAX_NODE_GIDS 8
+
+typedef struct {
+    uint32_t node_id;
+    uint32_t num_gids;
+    uint8_t gids[TCP_MAX_NODE_GIDS][16];
+} __attribute__((packed)) TcpNodeGidsPayload;
+
+_Static_assert(sizeof(TcpNodeGidsPayload) == 8 + TCP_MAX_NODE_GIDS * 16,
+               "TcpNodeGidsPayload must be packed with no padding");
 
 /*
  * TCP Backend Data Structures
@@ -475,6 +486,20 @@ struct TcpBackendPrivate {
     GHashTable *connections; /* node_id -> TcpConnection* */
     QemuMutex conn_table_lock;
 
+    /*
+     * Guest RoCE GID -> node id, keyed by the full 16 bytes.  Built from
+     * what each node advertises about itself; a destination GID that is not
+     * in here names no node this mesh knows, and the caller must fail rather
+     * than pick one.  Used in both modes, so its lock is its own --
+     * mesh_table_lock is only initialised on the manager.
+     */
+    GHashTable *gid_nodes;
+    QemuMutex gid_table_lock;
+
+    /* This node's own GIDs, from ERNIC_TCP_GUEST_GIDS. */
+    uint8_t local_gids[TCP_MAX_NODE_GIDS][16];
+    uint32_t num_local_gids;
+
     /* Listen socket (for accepting connections) */
     int listen_fd;
     uint16_t listen_port;
@@ -548,6 +573,11 @@ struct TcpBackendPrivate {
 
 /* Forward declarations */
 static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv);
+static void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
+static void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
+                               const uint8_t (*gids)[16], uint32_t num_gids);
+static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
+                               const TcpNodeGidsPayload *payload);
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
                               TcpMsgType msg_type);
 static int tcp_worker_register_with_manager(TcpBackendPrivate *priv);
@@ -559,6 +589,174 @@ static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
         return NULL;
     }
     return (TcpBackendPrivate *)backend_dev->backend_private;
+}
+
+/*
+ * Format a GID for a log line.  All 16 bytes: the destination GID is
+ * frequently IPv6 link-local, and printing only the tail as a dotted quad
+ * renders those as nonsense.  Returns @buf.
+ *
+ * Written out by hand rather than with snprintf("%02x"): under
+ * -Wformat-truncation=2 gcc assumes the worst-case width of a %x conversion
+ * rather than the 2 digits a uint8_t can actually produce, and rejects any
+ * buffer sized for the real output.  Indexing a hex table sidesteps the
+ * format analysis entirely and the length below is then exact.
+ */
+/* 8 groups of 4 hex digits, 7 separators, NUL. */
+#define TCP_GID_STR_LEN 40
+static char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN])
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t o = 0;
+
+    for (size_t i = 0; i < 8; i++) {
+        if (i > 0) {
+            buf[o++] = ':';
+        }
+        buf[o++] = hex[gid[i * 2] >> 4];
+        buf[o++] = hex[gid[i * 2] & 0x0f];
+        buf[o++] = hex[gid[i * 2 + 1] >> 4];
+        buf[o++] = hex[gid[i * 2 + 1] & 0x0f];
+    }
+    buf[o] = '\0';
+    return buf;
+}
+
+/*
+ * Parse ERNIC_TCP_GUEST_GIDS: a comma-separated list of this instance's own
+ * guest RoCE addresses, each in inet_pton() notation.  An IPv4 address is
+ * stored in the ::ffff:a.b.c.d mapped form that adminq_parse_roce_hdr()
+ * builds for a RoCE-over-IPv4 header, so both branches compare equal to what
+ * arrives on the wire.
+ *
+ * A malformed entry is reported and skipped rather than fatal: losing one
+ * address costs connectivity to one peer, which the unresolved-GID error
+ * names, while refusing to start costs the whole node.
+ */
+static uint32_t tcp_parse_guest_gids(uint8_t out[TCP_MAX_NODE_GIDS][16])
+{
+    const char *val = getenv("ERNIC_TCP_GUEST_GIDS");
+    uint32_t n = 0;
+
+    if (!val || !*val)
+        return 0;
+
+    char *dup = g_strdup(val);
+    char *save = NULL;
+
+    for (char *tok = strtok_r(dup, ",", &save); tok;
+         tok = strtok_r(NULL, ",", &save)) {
+        /* Trim through a separate cursor rather than advancing tok: strtok_r
+         * owns the loop variable, and walking it here reads as a second
+         * iteration step. */
+        char *val_s = tok;
+
+        while (*val_s == ' ')
+            val_s++;
+        char *end = val_s + strlen(val_s);
+        while (end > val_s && end[-1] == ' ')
+            *--end = '\0';
+        if (!*val_s)
+            continue;
+
+        if (n == TCP_MAX_NODE_GIDS) {
+            rdma_warn_report("TCP: more than %d entries in "
+                             "ERNIC_TCP_GUEST_GIDS; ignoring the rest",
+                             TCP_MAX_NODE_GIDS);
+            break;
+        }
+
+        struct in6_addr a6;
+        struct in_addr a4;
+
+        if (inet_pton(AF_INET6, val_s, &a6) == 1) {
+            memcpy(out[n], &a6, 16);
+        } else if (inet_pton(AF_INET, val_s, &a4) == 1) {
+            memset(out[n], 0, 16);
+            out[n][10] = 0xff;
+            out[n][11] = 0xff;
+            memcpy(out[n] + 12, &a4, 4);
+        } else {
+            rdma_error_report("TCP: ignoring unparsable GID '%s' in "
+                              "ERNIC_TCP_GUEST_GIDS",
+                              val_s);
+            continue;
+        }
+        n++;
+    }
+
+    g_free(dup);
+    return n;
+}
+
+/* g_bytes_unref() takes GBytes*, not gpointer; casting the pointer type
+ * instead trips -Wcast-function-type-strict under clang. */
+static void tcp_gid_key_free(gpointer key)
+{
+    g_bytes_unref((GBytes *)key);
+}
+
+/*
+ * Replace every GID currently attributed to @node_id with @gids.
+ *
+ * A GID another node already claims is NOT taken over.  Two nodes
+ * advertising one address is a misconfiguration -- duplicate
+ * ERNIC_TCP_GUEST_GIDS, or two guests given the same address -- and
+ * letting the last advertisement win would route by arrival order,
+ * which is the failure this whole mechanism exists to remove.  The
+ * contested GID is dropped instead, so it resolves to nothing and both
+ * claimants fail loudly rather than one of them silently receiving the
+ * other's traffic.
+ */
+static void tcp_gid_table_set(TcpBackendPrivate *priv, uint32_t node_id,
+                              const uint8_t (*gids)[16], uint32_t num_gids)
+{
+    if (!priv || !priv->gid_nodes || num_gids > TCP_MAX_NODE_GIDS)
+        return;
+
+    bool conflict[TCP_MAX_NODE_GIDS] = {false};
+    uint32_t owner[TCP_MAX_NODE_GIDS] = {0};
+
+    qemu_mutex_lock(&priv->gid_table_lock);
+
+    GHashTableIter iter;
+    gpointer key, value;
+
+    g_hash_table_iter_init(&iter, priv->gid_nodes);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (GPOINTER_TO_UINT(value) == node_id)
+            g_hash_table_iter_remove(&iter);
+    }
+
+    for (uint32_t i = 0; i < num_gids; i++) {
+        GBytes *k = g_bytes_new(gids[i], 16);
+        gpointer held;
+
+        if (g_hash_table_lookup_extended(priv->gid_nodes, k, NULL, &held)) {
+            conflict[i] = true;
+            owner[i] = GPOINTER_TO_UINT(held);
+            g_hash_table_remove(priv->gid_nodes, k);
+            g_bytes_unref(k);
+            continue;
+        }
+        g_hash_table_insert(priv->gid_nodes, k, GUINT_TO_POINTER(node_id));
+    }
+
+    qemu_mutex_unlock(&priv->gid_table_lock);
+
+    char buf[TCP_GID_STR_LEN];
+    for (uint32_t i = 0; i < num_gids; i++) {
+        if (conflict[i]) {
+            rdma_error_report("TCP: node %u claims GID %s, already held by "
+                              "node %u; dropping it -- neither node is "
+                              "reachable at that address until the "
+                              "duplicate is removed",
+                              node_id, tcp_gid_str(gids[i], buf), owner[i]);
+        } else {
+            rdma_info_report("TCP: node %u owns GID %s", node_id,
+                             tcp_gid_str(gids[i], buf));
+        }
+    }
 }
 
 /* `bytes` is 64-bit because the counters it feeds are, and because the
@@ -1207,74 +1405,6 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
                              seq, src_node, dst_node, src_qpn, dst_qpn);
 }
 
-/*
- * Non-blocking ETH frame send.  Builds header + payload into a single
- * contiguous buffer and attempts one send(MSG_DONTWAIT).  If the socket
- * buffer is full the frame is silently dropped -- the guest TCP/IP stack
- * will retransmit.  This prevents the main loop from ever blocking on
- * Ethernet forwarding.
- */
-static int tcp_send_eth_frame_nonblock(int sockfd, const void *payload,
-                                       size_t payload_len, uint32_t src_node,
-                                       uint32_t dst_node)
-{
-    uint8_t buf[sizeof(TcpMsgHeader) + TCP_MAX_ETH_FRAME_LEN];
-    TcpMsgHeader *hdr = (TcpMsgHeader *)buf;
-    size_t total = sizeof(*hdr) + payload_len;
-
-    if (payload_len > TCP_MAX_ETH_FRAME_LEN) {
-        return -EMSGSIZE;
-    }
-
-    hdr->magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr->msg_type = htonl(TCP_MSG_ETH_FRAME);
-    hdr->msg_len = htonl((uint32_t)payload_len);
-    hdr->seq = 0;
-    hdr->src_node_id = htonl(src_node);
-    hdr->dst_node_id = htonl(dst_node);
-    hdr->src_qpn = 0;
-    hdr->dst_qpn = 0;
-
-    memcpy(buf + sizeof(*hdr), payload, payload_len);
-
-    ssize_t ret = send(sockfd, buf, total, MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (ret < 0) {
-        if (tcp_mesh_debug()) {
-            tcp_mesh_warn_rate_limited(
-                "TCP mesh: ETH frame send() EAGAIN or error "
-                "(socket buffer likely full under load)",
-                &mesh_eth_eagain_events, 512);
-        }
-        return -EAGAIN;
-    }
-    if ((size_t)ret < total) {
-        /*
-         * Partial write on a non-blocking socket.  Must drain the
-         * remainder to keep the stream in sync.
-         */
-        size_t sent = (size_t)ret;
-        while (sent < total) {
-            struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
-            if (poll(&pfd, 1, 100) <= 0)
-                break;
-            ret = send(sockfd, buf + sent, total - sent,
-                       MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (ret <= 0)
-                break;
-            sent += (size_t)ret;
-        }
-        if (sent < total) {
-            if (tcp_mesh_debug()) {
-                tcp_mesh_warn_rate_limited(
-                    "TCP mesh: truncated ETH frame over TCP "
-                    "(protocol stream may be corrupted)",
-                    &mesh_eth_truncated_sends, 64);
-            }
-        }
-    }
-    return 0;
-}
-
 static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                             TcpBufPool *pool)
 {
@@ -1655,8 +1785,45 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                if (!payload || hdr.msg_len < sizeof(TcpRegisterNodePayload)) {
+                if (!payload || hdr.msg_len < TCP_REGISTER_NODE_LEN_V3) {
                     rdma_error_report("TCP: Invalid REGISTER_NODE payload");
+                    break;
+                }
+
+                /*
+                 * Refuse a peer that does not speak this protocol version.
+                 * A short payload is one that predates the version field
+                 * entirely; both cases get the same answer, with a result
+                 * the worker surfaces instead of timing out.
+                 */
+                uint32_t peer_version = 0;
+
+                if (hdr.msg_len >= sizeof(TcpRegisterNodePayload)) {
+                    peer_version =
+                        ntohl(((TcpRegisterNodePayload *)payload)->version);
+                }
+
+                if (peer_version != TCP_PROTOCOL_VERSION) {
+                    TcpRegisterRespPayload nak;
+
+                    rdma_error_report(
+                        "TCP: refusing registration from a v%u peer "
+                        "(this mesh is v%u); a peer that predates the GID "
+                        "advertisement routes every destination to one "
+                        "default node",
+                        peer_version, TCP_PROTOCOL_VERSION);
+
+                    memset(&nak, 0, sizeof(nak));
+                    nak.result = htonl((uint32_t)(int32_t)-EPROTO);
+                    nak.version = htonl(TCP_PROTOCOL_VERSION);
+
+                    qemu_mutex_lock(&conn->lock);
+                    tcp_send_message(
+                        conn->sockfd, TCP_MSG_REGISTER_RESP, &nak, sizeof(nak),
+                        atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                                  memory_order_relaxed),
+                        priv->local_node_id, hdr.src_node_id, 0, 0);
+                    qemu_mutex_unlock(&conn->lock);
                     break;
                 }
 
@@ -1718,11 +1885,15 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 rdma_info_report("TCP: Registered node %u at %s:%u",
                                  assigned_id, worker_host, worker_port);
 
-                /* Send registration response */
+                /* Send registration response.  Zeroed first: the whole
+                 * struct goes on the wire, so any field not assigned below
+                 * would put stack contents there. */
                 TcpRegisterRespPayload resp;
+                memset(&resp, 0, sizeof(resp));
                 resp.assigned_node_id = htonl(assigned_id);
                 resp.num_nodes = htonl(g_hash_table_size(priv->mesh_nodes));
                 resp.result = htonl(0); /* Success */
+                resp.version = htonl(TCP_PROTOCOL_VERSION);
 
                 /*
                  * conn->lock serialises writes to this socket.
@@ -1744,6 +1915,13 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                 /* Broadcast updated topology to all nodes */
                 tcp_broadcast_mesh_topology(priv);
+
+                /*
+                 * The joining worker missed every advertisement sent before
+                 * it registered, so replay the whole table to everyone.  Its
+                 * own GIDs follow once it sends them.
+                 */
+                tcp_broadcast_gid_table(priv);
                 break;
             }
 
@@ -1755,7 +1933,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                if (!payload || hdr.msg_len < sizeof(TcpRegisterRespPayload)) {
+                if (!payload || hdr.msg_len < TCP_REGISTER_RESP_LEN_V3) {
                     rdma_error_report("TCP: Invalid REGISTER_RESP payload");
                     break;
                 }
@@ -1764,6 +1942,29 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     (TcpRegisterRespPayload *)payload;
                 uint32_t assigned_id = ntohl(resp->assigned_node_id);
                 int32_t result = (int32_t)ntohl(resp->result);
+
+                /*
+                 * The other half of the check the manager makes: a pre-v4
+                 * manager sends no version and would otherwise admit this
+                 * node to a mesh whose resolver still guesses.  Refusing
+                 * here is what makes the gate work in both directions,
+                 * since an old manager cannot refuse us.
+                 */
+                uint32_t mgr_version = 0;
+
+                if (hdr.msg_len >= sizeof(TcpRegisterRespPayload)) {
+                    mgr_version = ntohl(resp->version);
+                }
+
+                if (mgr_version != TCP_PROTOCOL_VERSION) {
+                    rdma_error_report(
+                        "TCP: manager speaks v%u, this node speaks v%u; "
+                        "refusing to join -- a pre-v%u mesh resolves every "
+                        "destination GID to one default node",
+                        mgr_version, TCP_PROTOCOL_VERSION,
+                        TCP_PROTOCOL_VERSION);
+                    break;
+                }
 
                 if (result != 0) {
                     rdma_error_report("TCP: Registration failed: %d", result);
@@ -1782,6 +1983,20 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 rdma_info_report(
                     "TCP: Registered with manager, assigned node_id=%u",
                     assigned_id);
+
+                /*
+                 * The node id is only known now, so this is the first point
+                 * at which this node can say which GIDs are its own.  Record
+                 * them locally too: a QP whose destination is this node's own
+                 * guest has to resolve to the local node, not fail.
+                 */
+                tcp_gid_table_set(priv, assigned_id, priv->local_gids,
+                                  priv->num_local_gids);
+
+                TcpNodeGidsPayload mine;
+                tcp_fill_node_gids(&mine, assigned_id, priv->local_gids,
+                                   priv->num_local_gids);
+                tcp_send_node_gids(priv, conn, &mine);
                 break;
             }
 
@@ -1892,6 +2107,55 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 break;
             }
 
+            case TCP_MSG_NODE_GIDS: {
+                TcpBackendPrivate *priv = conn->priv;
+
+                if (!priv || !payload ||
+                    hdr.msg_len < sizeof(TcpNodeGidsPayload)) {
+                    rdma_error_report("TCP: Invalid NODE_GIDS payload");
+                    break;
+                }
+
+                const TcpNodeGidsPayload *adv =
+                    (const TcpNodeGidsPayload *)payload;
+                uint32_t node_id = ntohl(adv->node_id);
+                uint32_t num_gids = ntohl(adv->num_gids);
+
+                if (num_gids > TCP_MAX_NODE_GIDS) {
+                    rdma_error_report("TCP: NODE_GIDS from node %u claims %u "
+                                      "GIDs, max is %d",
+                                      hdr.src_node_id, num_gids,
+                                      TCP_MAX_NODE_GIDS);
+                    break;
+                }
+
+                /*
+                 * A worker may only speak for itself.  The manager relays on
+                 * everyone's behalf, so its messages carry someone else's
+                 * node id by design and are trusted; a worker's are not.
+                 */
+                if (!priv->is_manager && hdr.src_node_id != 0 &&
+                    hdr.src_node_id != node_id) {
+                    rdma_error_report("TCP: node %u tried to claim the GIDs "
+                                      "of node %u; ignoring",
+                                      hdr.src_node_id, node_id);
+                    break;
+                }
+                if (priv->is_manager && hdr.src_node_id != node_id) {
+                    rdma_error_report("TCP: node %u tried to claim the GIDs "
+                                      "of node %u; ignoring",
+                                      hdr.src_node_id, node_id);
+                    break;
+                }
+
+                tcp_gid_table_set(priv, node_id, adv->gids, num_gids);
+
+                /* Manager fans a worker's advertisement out to the rest. */
+                if (priv->is_manager)
+                    tcp_broadcast_gid_table(priv);
+                break;
+            }
+
             case TCP_MSG_HEARTBEAT: {
                 TcpBackendPrivate *priv = conn->priv;
                 if (!priv)
@@ -1935,140 +2199,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
             case TCP_MSG_HEARTBEAT_RESP: {
                 /* Acknowledgement — no action needed. */
-                break;
-            }
-
-            case TCP_MSG_DHCP_REQUEST: {
-                /* Manager receives DHCP request from worker's VM */
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv || !priv->is_manager) {
-                    rdma_error_report(
-                        "TCP: DHCP_REQUEST received by non-manager");
-                    break;
-                }
-
-                if (!payload || hdr.msg_len < sizeof(struct dhcp_packet)) {
-                    rdma_error_report("TCP: Invalid DHCP_REQUEST payload");
-                    break;
-                }
-
-                /* Get PVRDMADev from backend_dev->dev */
-                /* PCIDevice is first field of PVRDMADev */
-                PVRDMADev *pvrdma = (PVRDMADev *)priv->backend_dev->dev;
-                if (!pvrdma || !pvrdma->dhcp_server) {
-                    rdma_error_report("TCP: No DHCP server available");
-                    break;
-                }
-
-                /* Process DHCP request */
-                const struct dhcp_packet *dhcp_req =
-                    (const struct dhcp_packet *)payload;
-                struct dhcp_packet dhcp_resp;
-                size_t resp_len = dhcp_server_process(
-                    (DhcpServer *)pvrdma->dhcp_server, dhcp_req, hdr.msg_len,
-                    &dhcp_resp, sizeof(dhcp_resp));
-
-                if (resp_len > 0) {
-                    /* Send DHCP response back to worker */
-                    /* Serialised against the data path; see the
-                     * REGISTER_RESP send above. */
-                    qemu_mutex_lock(&conn->lock);
-                    int send_ret = tcp_send_message(
-                        conn->sockfd, TCP_MSG_DHCP_RESPONSE, &dhcp_resp,
-                        resp_len,
-                        atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                  memory_order_relaxed),
-                        priv->local_node_id, hdr.src_node_id, 0, 0);
-                    qemu_mutex_unlock(&conn->lock);
-                    if (send_ret < 0) {
-                        rdma_error_report(
-                            "TCP: Failed to send DHCP response to node %u",
-                            hdr.src_node_id);
-                    } else {
-                        rdma_info_report(
-                            "TCP: Sent DHCP response (%zu bytes) to node %u",
-                            resp_len, hdr.src_node_id);
-                    }
-                } else {
-                    rdma_warn_report(
-                        "TCP: DHCP server returned no response for request "
-                        "from node %u",
-                        hdr.src_node_id);
-                }
-                break;
-            }
-
-            case TCP_MSG_DHCP_RESPONSE: {
-                /* Worker receives DHCP response from manager.  Logged
-                 * only: nothing consumes the response on this path. */
-                rdma_info_report("TCP: Received DHCP_RESPONSE from manager");
-                break;
-            }
-
-            case TCP_MSG_ETH_FRAME: {
-                TcpBackendPrivate *priv = conn->priv;
-                if (hdr.msg_len > TCP_MAX_ETH_FRAME_LEN) {
-                    rdma_error_report("TCP: ETH frame too large: %u",
-                                      hdr.msg_len);
-                    break;
-                }
-                if (priv && priv->backend_dev && payload && hdr.msg_len > 0) {
-                    PVRDMADev *pvrdma_dev =
-                        container_of(priv->backend_dev, PVRDMADev, backend_dev);
-                    int inj = eth_rx_inject_frame_mesh_blocking(
-                        pvrdma_dev, payload, hdr.msg_len);
-                    if (inj != 0 && tcp_mesh_debug()) {
-                        tcp_mesh_warn_rate_limited(
-                            "TCP mesh: eth_rx_inject_frame_mesh_blocking "
-                            "failed (RX disabled, map error, or frame too "
-                            "large for descriptor)",
-                            &mesh_eth_inject_fail, 128);
-                    }
-
-                    if (priv->is_manager) {
-                        struct {
-                            TcpConnection *conn;
-                            uint32_t node_id;
-                        } fwd_targets[64];
-                        int nfwd = 0;
-
-                        qemu_mutex_lock(&priv->mesh_table_lock);
-                        GHashTableIter fwd_iter;
-                        gpointer fk, fv;
-                        g_hash_table_iter_init(&fwd_iter, priv->mesh_nodes);
-                        while (g_hash_table_iter_next(&fwd_iter, &fk, &fv)) {
-                            uint32_t nid = GPOINTER_TO_UINT(fk);
-                            if (nid == hdr.src_node_id)
-                                continue;
-                            TcpConnection *fwd_conn =
-                                tcp_get_connection(priv, nid);
-                            if (fwd_conn && fwd_conn->is_connected &&
-                                fwd_conn->sockfd >= 0 && nfwd < 64) {
-                                fwd_targets[nfwd].conn = fwd_conn;
-                                fwd_targets[nfwd].node_id = nid;
-                                nfwd++;
-                            }
-                        }
-                        qemu_mutex_unlock(&priv->mesh_table_lock);
-
-                        for (int fi = 0; fi < nfwd; fi++) {
-                            int fwd_rc;
-
-                            qemu_mutex_lock(&fwd_targets[fi].conn->lock);
-                            fwd_rc = tcp_send_eth_frame_nonblock(
-                                fwd_targets[fi].conn->sockfd, payload,
-                                hdr.msg_len, hdr.src_node_id,
-                                fwd_targets[fi].node_id);
-                            qemu_mutex_unlock(&fwd_targets[fi].conn->lock);
-                            if (fwd_rc != 0 && tcp_mesh_debug()) {
-                                tcp_mesh_warn_rate_limited(
-                                    "TCP mesh: manager ETH relay send "
-                                    "failed (likely EAGAIN)",
-                                    &mesh_eth_manager_relay_eagain, 512);
-                            }
-                        }
-                    }
-                }
                 break;
             }
 
@@ -2606,6 +2736,110 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
     rdma_info_report("TCP: Broadcast mesh topology to %u nodes", num_nodes);
 }
 
+/*
+ * Build the advertisement for @node_id's GIDs.  The whole fixed-size struct
+ * goes on the wire including the unused slots, so it is zeroed first -- the
+ * same stack-disclosure trap tcp_broadcast_mesh_topology() guards against.
+ */
+static void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
+                               const uint8_t (*gids)[16], uint32_t num_gids)
+{
+    memset(out, 0, sizeof(*out));
+    if (num_gids > TCP_MAX_NODE_GIDS)
+        num_gids = TCP_MAX_NODE_GIDS;
+    out->node_id = htonl(node_id);
+    out->num_gids = htonl(num_gids);
+    for (uint32_t i = 0; i < num_gids; i++)
+        memcpy(out->gids[i], gids[i], 16);
+}
+
+/* Send one advertisement on an already-locked-free connection. */
+static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
+                               const TcpNodeGidsPayload *payload)
+{
+    if (!conn || !conn->is_connected || conn->sockfd < 0)
+        return;
+
+    qemu_mutex_lock(&conn->lock);
+    tcp_send_message(
+        conn->sockfd, TCP_MSG_NODE_GIDS, payload, sizeof(*payload),
+        atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
+        priv->local_node_id, conn->node_id, 0, 0);
+    qemu_mutex_unlock(&conn->lock);
+}
+
+/*
+ * Manager: push the whole GID table to every worker, one message per node.
+ * Called whenever the table changes and when a worker joins, so a late
+ * arrival learns about the nodes that registered before it.
+ */
+static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
+{
+    if (!priv->is_manager || !priv->gid_nodes)
+        return;
+
+    /*
+     * Invert the GID table into one payload per node.  Done under the table
+     * lock, but the sends are not: tcp_send_node_gids() takes connection
+     * locks, which the data path holds across multi-megabyte writes.
+     */
+    struct {
+        uint32_t node_id;
+        uint8_t gids[TCP_MAX_NODE_GIDS][16];
+        uint32_t num_gids;
+    } per_node[64];
+    uint32_t nodes = 0;
+
+    qemu_mutex_lock(&priv->gid_table_lock);
+    GHashTableIter iter;
+    gpointer key, value;
+    g_hash_table_iter_init(&iter, priv->gid_nodes);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        uint32_t nid = GPOINTER_TO_UINT(value);
+        gsize len = 0;
+        const uint8_t *raw = g_bytes_get_data((GBytes *)key, &len);
+        uint32_t slot;
+
+        if (len != 16)
+            continue;
+
+        for (slot = 0; slot < nodes; slot++) {
+            if (per_node[slot].node_id == nid)
+                break;
+        }
+        if (slot == nodes) {
+            if (nodes == G_N_ELEMENTS(per_node))
+                continue;
+            per_node[slot].node_id = nid;
+            per_node[slot].num_gids = 0;
+            nodes++;
+        }
+        if (per_node[slot].num_gids < TCP_MAX_NODE_GIDS)
+            memcpy(per_node[slot].gids[per_node[slot].num_gids++], raw, 16);
+    }
+    qemu_mutex_unlock(&priv->gid_table_lock);
+
+    for (uint32_t i = 0; i < nodes; i++) {
+        TcpNodeGidsPayload payload;
+
+        tcp_fill_node_gids(&payload, per_node[i].node_id, per_node[i].gids,
+                           per_node[i].num_gids);
+
+        qemu_mutex_lock(&priv->conn_table_lock);
+        GHashTableIter conn_iter;
+        gpointer ck, cv;
+        g_hash_table_iter_init(&conn_iter, priv->connections);
+        while (g_hash_table_iter_next(&conn_iter, &ck, &cv)) {
+            TcpConnection *conn = (TcpConnection *)cv;
+
+            /* A node already knows its own GIDs; it told us. */
+            if (conn && conn->node_id != per_node[i].node_id)
+                tcp_send_node_gids(priv, conn, &payload);
+        }
+        qemu_mutex_unlock(&priv->conn_table_lock);
+    }
+}
+
 /* Manager health check thread */
 static void *tcp_manager_health_check_thread(void *opaque)
 {
@@ -2787,6 +3021,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     g_strlcpy(reg.hostname, hostname, sizeof(reg.hostname));
     reg.port = htons(priv->listen_port);
     reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
+    reg.version = htonl(TCP_PROTOCOL_VERSION);
 
     /* Send registration request. Re-registration can happen
      * on reconnect while the manager connection is already
@@ -2867,6 +3102,8 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->gid_nodes = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                            tcp_gid_key_free, NULL);
 
     tcp_bufpool_init(&priv->recv_pool);
 
@@ -2884,6 +3121,14 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
+    qemu_mutex_init(&priv->gid_table_lock);
+
+    priv->num_local_gids = tcp_parse_guest_gids(priv->local_gids);
+    if (priv->num_local_gids == 0) {
+        rdma_warn_report("TCP: ERNIC_TCP_GUEST_GIDS is unset or empty; this "
+                         "node advertises no GIDs and peers will refuse to "
+                         "open QPs to it");
+    }
 
     /* Initialize manager/worker fields */
     priv->is_manager = false;
@@ -2915,6 +3160,10 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->mode = TCP_MODE_MANAGER;
         priv->is_manager = true;
         priv->local_node_id = 0; /* Manager is always node 0 */
+
+        /* The manager's id is fixed, so it can claim its GIDs immediately;
+         * a worker has to wait for REGISTER_RESP. */
+        tcp_gid_table_set(priv, 0, priv->local_gids, priv->num_local_gids);
 
         ret = parse_tcp_config_manager(config, &manager_host, &manager_port,
                                        &listen_mode);
@@ -3081,9 +3330,11 @@ error:
     g_hash_table_destroy(priv->qps);
     g_hash_table_destroy(priv->qp_pairs);
     g_hash_table_destroy(priv->connections);
+    g_hash_table_destroy(priv->gid_nodes);
     tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->gid_table_lock);
     g_free(priv);
     return -1;
 }
@@ -3132,6 +3383,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
 
     /* Clean up all connections (threads are stopped in tcp_connection_free) */
     g_hash_table_destroy(priv->connections);
+    g_hash_table_destroy(priv->gid_nodes);
 
     g_hash_table_destroy(priv->pds);
     g_hash_table_destroy(priv->mrs);
@@ -3142,6 +3394,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->gid_table_lock);
 
     g_free(priv);
     backend_dev->backend_private = NULL;
@@ -3461,36 +3714,31 @@ static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 /*
  * Resolve a destination GID to a mesh node id.
  *
- * GID index 0 (from tcp_add_gid) carries the node id directly in raw[15].
- * GID index 1+ is the IPv4-mapped address the guest kernel builds, where
- * raw[10..11] == 0xff,0xff and raw[12..15] hold the IPv4 address; raw[15] is
- * then the last IP octet, not a node id.  VM addresses follow
- * <subnet>.<(node_id + 1) * 10>, so the last octet resolves the node.
+ * An exact match on all 16 bytes against what the nodes advertised about
+ * themselves (TCP_MSG_NODE_GIDS, sourced from ERNIC_TCP_GUEST_GIDS).  There
+ * is deliberately no rule that derives a node id from part of a GID: the
+ * guest kernel builds these addresses, nothing constrains them to encode a
+ * node id, and guessing routed every peer to one node.
  *
- * An IPv6 link-local GID (fe80::/10) is neither: it is the EUI-64 of the port
- * MAC, so its last byte is a MAC octet and means nothing here.  The ionic
- * driver reports one at GID index 0, so this case has to be rejected rather
- * than run through the raw[15] rule.
- *
- * Returns UINT32_MAX when the GID says nothing useful, leaving the caller to
- * apply its own default-peer policy.
+ * Returns UINT32_MAX when the GID names no node this mesh knows.  Callers
+ * must fail -- picking a default delivers the traffic to the wrong node.
  */
-static uint32_t tcp_resolve_node_from_gid(const union ibv_gid *dgid)
+static uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
+                                          const union ibv_gid *dgid)
 {
-    if (!dgid)
+    if (!priv || !dgid || !priv->gid_nodes)
         return UINT32_MAX;
 
-    if (dgid->raw[0] == 0xfe && (dgid->raw[1] & 0xc0) == 0x80)
-        return UINT32_MAX;
+    GBytes *key = g_bytes_new_static(dgid->raw, 16);
+    gpointer value;
+    gboolean found;
 
-    if (!(dgid->raw[10] == 0xff && dgid->raw[11] == 0xff))
-        return (uint32_t)dgid->raw[15];
+    qemu_mutex_lock(&priv->gid_table_lock);
+    found = g_hash_table_lookup_extended(priv->gid_nodes, key, NULL, &value);
+    qemu_mutex_unlock(&priv->gid_table_lock);
+    g_bytes_unref(key);
 
-    uint8_t last = dgid->raw[15];
-    if (last >= 10 && (last % 10) == 0)
-        return (uint32_t)(last / 10) - 1;
-
-    return UINT32_MAX;
+    return found ? GPOINTER_TO_UINT(value) : UINT32_MAX;
 }
 
 static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
@@ -3506,34 +3754,33 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return -EINVAL;
     }
 
+    char gidbuf[TCP_GID_STR_LEN];
+    uint32_t resolved = tcp_resolve_node_from_gid(priv, dgid);
+
+    if (resolved == UINT32_MAX) {
+        /*
+         * No node owns this GID.  Fail the transition rather than route to
+         * an arbitrary peer: rdma_rm_modify_qp() turns this into -EIO and
+         * the guest sees the failure at connection setup, where it is
+         * diagnosable, instead of silently writing into the wrong node.
+         */
+        rdma_error_report("TCP: QP %u -> RTR refused: no mesh node owns "
+                          "destination GID %s (check ERNIC_TCP_GUEST_GIDS "
+                          "on every node)",
+                          qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
+        return -EINVAL;
+    }
+
     qemu_mutex_lock(&priv->lock);
     tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
     if (tqp) {
         tqp->state = IBV_QPS_RTR;
         tqp->remote_qpn = dqpn;
-        if (dgid) {
-            memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
-        }
+        memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
+        tqp->remote_node_id = resolved;
 
-        if (dgid) {
-            uint32_t resolved = tcp_resolve_node_from_gid(dgid);
-
-            if (resolved != UINT32_MAX) {
-                tqp->remote_node_id = resolved;
-            } else if (priv->mode == TCP_MODE_WORKER) {
-                tqp->remote_node_id = 0;
-            } else {
-                tqp->remote_node_id = 1;
-            }
-
-            rdma_info_report("TCP: Resolved GID %u.%u.%u.%u -> node %u",
-                             dgid->raw[12], dgid->raw[13], dgid->raw[14],
-                             dgid->raw[15], tqp->remote_node_id);
-        } else if (priv->mode == TCP_MODE_WORKER) {
-            tqp->remote_node_id = 0;
-        } else {
-            tqp->remote_node_id = (priv->local_node_id == 0) ? 1 : 0;
-        }
+        rdma_info_report("TCP: Resolved GID %s -> node %u",
+                         tcp_gid_str(dgid->raw, gidbuf), resolved);
 
         if (tqp->remote_node_id == priv->local_node_id) {
             rdma_info_report("TCP: QP %u routed to local node %u "
@@ -4307,20 +4554,13 @@ uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
                                    const union ibv_gid *dgid)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    uint32_t node;
 
     if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
         return UINT32_MAX;
 
-    node = tcp_resolve_node_from_gid(dgid);
-    if (node != UINT32_MAX)
-        return node;
-
-    /* Same default-peer policy tcp_qp_state_rtr applies: with two instances
-     * the peer is unambiguous even when the GID says nothing. */
-    if (priv->mode == TCP_MODE_WORKER)
-        return 0;
-    return priv->local_node_id == 0 ? 1 : 0;
+    /* UINT32_MAX on a miss, with no default peer: see
+     * tcp_resolve_node_from_gid(). The caller fails the command. */
+    return tcp_resolve_node_from_gid(priv, dgid);
 }
 
 void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,

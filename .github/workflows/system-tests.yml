@@ -1569,6 +1569,15 @@ jobs:
         # healthy the TAPs are.  rocm-ernic-launcher passes a distinct
         # MAC per instance for the same reason; this is that, spelled
         # out, because the job does not go through the launcher.
+        # Each instance declares the guest RoCE addresses it owns, so
+        # peers can map a destination GID back to a node id.  Both forms
+        # are listed because the two consumers differ: sanity-tests.yml
+        # runs ib_send_bw with -x 1, the IPv4-mapped GID, while a guest
+        # also autoconfigures the link-local derived from --mac below.
+        # The IPv4 values track ernic_nic_subnet and the .10/.20 scheme
+        # in ansible/roles/ernic_guest_setup/defaults/main.yml; change
+        # them together.
+        ERNIC_TCP_GUEST_GIDS="fe80::a0:d1ff:fe00:1,192.168.200.10" \
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-server1.sock \
           --backend tcp:manager:listen:${{ env.TCP_PORT }} \
@@ -1676,6 +1685,8 @@ jobs:
         # See server 1: the second TAP on the same bridge is what gives
         # this guest a peer at layer 2, and the MAC is what lets the two
         # guests tell each other apart on it.
+        # See server 1 for why both address forms are listed.
+        ERNIC_TCP_GUEST_GIDS="fe80::a0:d1ff:fe00:2,192.168.200.20" \
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-server2.sock \
           --backend tcp:worker:$MANAGER_HOST:${{ env.TCP_PORT }} \

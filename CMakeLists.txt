@@ -166,10 +166,8 @@ set(RDMA_BACKEND_SOURCES
     src/rdma/pvrdma_stats.c
 )
 
-# DHCP, RDMA CM and Ethernet frame injection for the emulated network
+# RDMA CM protocol handling for the emulated network
 set(NET_SOURCES
-    src/net/dhcp_server.c
-    src/net/eth_rx_inject.c
     src/net/rdma_cm_proto.c
 )
 

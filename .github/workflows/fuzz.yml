@@ -5,7 +5,7 @@
 # Opt-in fuzzing via the Nix fuzz harnesses (nix/analysis/fuzz/).
 #
 # libFuzzer harnesses for the untrusted wire-format parsers
-# (rdma_cm_process_message, dhcp_server_process, net_headers parsers), each
+# (rdma_cm_process_message and the net_headers parsers), each
 # built with -fsanitize=fuzzer,address,undefined.
 #
 # This job is OPT-IN and INFORMATIONAL — it does not run on ordinary pushes
@@ -95,7 +95,7 @@ jobs:
             if [ -z "$total" ]; then
               echo "> ⚠️ The fuzz run did not complete — see the job log. This check does not block merges."
             elif [ "$total" = "0" ]; then
-              echo "✅ No crashes found across the harnesses (rdma_cm_proto, dhcp_server, net_headers)."
+              echo "✅ No crashes found across the harnesses (rdma_cm_proto, net_headers)."
             else
               echo "🐛 **$total crash input(s) found.** Crash inputs and symbolized repros are in the **fuzz-report** artifact."
             fi

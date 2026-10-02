@@ -167,52 +167,6 @@ target_link_options(test_rdma_cm_proto PRIVATE ${ERNIC_PARSER_TEST_SAN})
 target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
 
-add_executable(test_dhcp_server_process
-    test_dhcp_server_process.c
-    ${CMAKE_SOURCE_DIR}/src/net/dhcp_server.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
-)
-target_include_directories(test_dhcp_server_process PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-)
-# Vendored header trees are SYSTEM includes.
-target_include_directories(test_dhcp_server_process SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-)
-target_compile_definitions(test_dhcp_server_process PRIVATE _GNU_SOURCE)
-target_compile_options(test_dhcp_server_process PRIVATE
-    ${ERNIC_PARSER_TEST_SAN})
-target_link_options(test_dhcp_server_process PRIVATE ${ERNIC_PARSER_TEST_SAN})
-target_link_directories(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARY_DIRS})
-target_link_libraries(test_dhcp_server_process PRIVATE ${GLIB2_LIBRARIES})
-
-# -- DHCP server lifecycle / leak test ---------------------------
-# Reuses the shared ERNIC_UNIT_TEST_SAN flags (ASan + LeakSanitizer + UBSan)
-# so a leak in the DHCP server's create/destroy path fails the test.
-add_executable(test_dhcp_server_lifecycle
-    test_dhcp_server_lifecycle.c
-    ${CMAKE_SOURCE_DIR}/src/net/dhcp_server.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
-)
-target_include_directories(test_dhcp_server_lifecycle PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-)
-# Vendored header trees are SYSTEM includes.
-target_include_directories(test_dhcp_server_lifecycle SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-)
-target_compile_definitions(test_dhcp_server_lifecycle PRIVATE _GNU_SOURCE)
-target_compile_options(test_dhcp_server_lifecycle PRIVATE
-    ${ERNIC_UNIT_TEST_SAN})
-target_link_options(test_dhcp_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
-target_link_directories(test_dhcp_server_lifecycle PRIVATE
-    ${GLIB2_LIBRARY_DIRS})
-target_link_libraries(test_dhcp_server_lifecycle PRIVATE ${GLIB2_LIBRARIES})
-
 # Strict integer parser (parse_int.h) unit test (header-only).
 add_executable(test_parse_int test_parse_int.c)
 target_include_directories(test_parse_int PRIVATE
@@ -428,6 +382,36 @@ target_link_directories(test_tcp_mesh_topology PRIVATE
 target_link_libraries(test_tcp_mesh_topology PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# TCP GID -> node resolution test. Like the mesh-topology test it #includes
+# the TCP backend translation unit to reach its static helpers and stubs the
+# backend's externals; resolution needs only the GID table, so no socket or
+# thread is involved.
+add_executable(test_tcp_gid_resolve test_tcp_gid_resolve.c)
+target_include_directories(test_tcp_gid_resolve PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
+)
+# Vendored and third-party header trees are SYSTEM includes, matching the
+# main target. The #included translation unit is reached through src, so
+# it is warning-checked.
+target_include_directories(test_tcp_gid_resolve SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_tcp_gid_resolve PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_tcp_gid_resolve PRIVATE
+    ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_tcp_gid_resolve PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_tcp_gid_resolve PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_tcp_gid_resolve PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # TCP memory-region bounds test. Like the mesh-topology test it #includes the
 # TCP backend translation unit to reach its static helpers and stubs the
 # backend's externals; the wire-driven cases run the real receive thread over
@@ -533,8 +517,6 @@ set(ERNIC_TEST_TARGETS
     test_write_imm
     test_net_checksum
     test_rdma_cm_proto
-    test_dhcp_server_process
-    test_dhcp_server_lifecycle
     test_parse_int
     test_nvmeof_target
     test_nvmeof_cm
@@ -547,6 +529,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_query_qp
     test_ionic_cq_arm
     test_tcp_mesh_topology
+    test_tcp_gid_resolve
     test_tcp_mr_bounds
     test_rdma_res_tbl
     test_qemu_stubs
@@ -607,20 +590,6 @@ add_test(
     COMMAND $<TARGET_FILE:test_rdma_cm_proto>
 )
 set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
-
-# DHCP server packet parser unit test (table-driven, ASan-instrumented)
-add_test(
-    NAME dhcp-server-process-unit
-    COMMAND $<TARGET_FILE:test_dhcp_server_process>
-)
-set_tests_properties(dhcp-server-process-unit PROPERTIES TIMEOUT 30)
-
-# DHCP server lifecycle / leak test (table-driven, ASan+LSan)
-add_test(
-    NAME dhcp-server-lifecycle-unit
-    COMMAND $<TARGET_FILE:test_dhcp_server_lifecycle>
-)
-set_tests_properties(dhcp-server-lifecycle-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # Strict integer parser unit test (table-driven, ASan-instrumented)
 add_test(
@@ -717,6 +686,14 @@ add_test(
 )
 set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
+# TCP GID -> node resolution unit test: exact 16-byte matching, no-match
+# failure, and the zero-filled advertisement tail.
+add_test(
+    NAME tcp-gid-resolve-unit
+    COMMAND $<TARGET_FILE:test_tcp_gid_resolve>
+)
+set_tests_properties(tcp-gid-resolve-unit PROPERTIES TIMEOUT 30)
+
 # TCP memory-region bounds unit test: asserts that remote addresses whose
 # addr+len wraps 64 bits are rejected rather than resolving to a host pointer
 # below the registered region.
@@ -764,6 +741,22 @@ add_test(
 )
 set_tests_properties(ionic-ci PROPERTIES
     TIMEOUT 60
+    RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
+
+# TCP mesh registration suite: GID advertisement across a three-node mesh,
+# an unconfigured node, a contested GID, and the protocol version gate in
+# both directions. Drives real servers over loopback TCP; no VM or RDMA
+# hardware needed. RUN_SERIAL because it starts several servers at once.
+add_test(
+    NAME tcp-mesh-ci
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_tcp_mesh_ci.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_tests_properties(tcp-mesh-ci PROPERTIES
+    TIMEOUT 180
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"

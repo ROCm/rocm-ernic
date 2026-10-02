@@ -17,7 +17,7 @@
  * and-run smoke test ctest registers). With arguments, replays those files
  * instead, which reproduces a crash input saved by a real fuzz run:
  *
- *     ./fuzz_replay_dhcp_server crash-da39a3ee5e6b4b0d
+ *     ./fuzz_replay_rdma_cm_proto crash-da39a3ee5e6b4b0d
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -40,8 +40,7 @@
 /*
  * Input lengths for the generated smoke run. Chosen to straddle the
  * boundaries the harnessed parsers care about: nothing, a single byte, an
- * Ethernet header, an Ethernet+IP+TCP header, and either side of the
- * 548-byte minimum dhcp_server_process() enforces.
+ * Ethernet header, an Ethernet+IP+TCP header, and a few larger sizes.
  */
 static const size_t generated_sizes[] = {0, 1, 14, 54, 64, 547, 548, 1024};
 

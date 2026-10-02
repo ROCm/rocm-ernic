@@ -34,7 +34,6 @@
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rdma_utils.h"
-#include "net/dhcp_server.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 #include "hw/pci/pci.h"
@@ -274,13 +273,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         pvrdma->tcp_connections = NULL;
     }
 
-    /* Free the DHCP server (created in pvrdma_device_realize for loopback
-     * and TCP-manager modes). Without this it leaks at shutdown. */
-    if (pvrdma->dhcp_server) {
-        dhcp_server_destroy((DhcpServer *)pvrdma->dhcp_server);
-        pvrdma->dhcp_server = NULL;
-    }
-
     free(pvrdma);
 
     rdma_info_report("PVRDMA device destroyed");
@@ -321,51 +313,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     pvrdma->backend_dev.dev = (PCIDevice *)pvrdma;
     rdma_info_report("Set backend_dev->dev to PCIDevice at %p",
                      (void *)pvrdma->backend_dev.dev);
-
-    /* Initialize DHCP server for loopback mode and TCP manager mode */
-    if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_LOOPBACK) {
-        /* Default DHCP configuration: 192.168.100.0/24 */
-        uint32_t server_ip = inet_addr("192.168.100.1");
-        uint32_t subnet_mask = inet_addr("255.255.255.0");
-        uint32_t router_ip = inet_addr("192.168.100.1");
-        uint32_t dns_server = inet_addr("192.168.100.1");
-        uint32_t ip_pool_start = inet_addr("192.168.100.10");
-        uint32_t ip_pool_end = inet_addr("192.168.100.254");
-        uint32_t lease_time = 3600; /* 1 hour */
-
-        pvrdma->dhcp_server =
-            dhcp_server_create(server_ip, subnet_mask, router_ip, dns_server,
-                               ip_pool_start, ip_pool_end, lease_time);
-        if (!pvrdma->dhcp_server) {
-            rdma_error_report("Failed to create DHCP server");
-            return -ENOMEM;
-        }
-        rdma_info_report("DHCP server initialized for loopback mode");
-    } else if (pvrdma->backend_dev.backend_type == RDMA_BACKEND_TYPE_TCP &&
-               backend_config && strstr(backend_config, "manager:")) {
-        /* TCP manager mode: Initialize DHCP server for allocating addresses
-         * to netdev devices in VMs on connecting worker servers */
-        /* Default DHCP configuration: 192.168.100.0/24 */
-        uint32_t server_ip = inet_addr("192.168.100.1");
-        uint32_t subnet_mask = inet_addr("255.255.255.0");
-        uint32_t router_ip = inet_addr("192.168.100.1");
-        uint32_t dns_server = inet_addr("192.168.100.1");
-        uint32_t ip_pool_start = inet_addr("192.168.100.10");
-        uint32_t ip_pool_end = inet_addr("192.168.100.254");
-        uint32_t lease_time = 3600; /* 1 hour */
-
-        pvrdma->dhcp_server =
-            dhcp_server_create(server_ip, subnet_mask, router_ip, dns_server,
-                               ip_pool_start, ip_pool_end, lease_time);
-        if (!pvrdma->dhcp_server) {
-            rdma_error_report("Failed to create DHCP server");
-            return -ENOMEM;
-        }
-        rdma_info_report("DHCP server initialized for TCP manager mode");
-    }
-    /* Note: DHCP proxy for TCP worker mode is initialized lazily when the
-     * first DHCP request is received, since the manager connection may not
-     * be ready at device realize time */
 
     /* Query device capabilities from backend to populate dev_attr */
     if (pvrdma->backend_dev.backend_ops &&

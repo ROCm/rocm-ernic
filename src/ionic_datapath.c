@@ -817,6 +817,20 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
             dest_node_id == dp->local_node ? " (local)" : "");
 }
 
+/*
+ * This node's mesh id, or UINT32_MAX when no mesh backend is attached --
+ * the sentinel dp_is_remote() uses to keep every peer local on loopback,
+ * nvmeof and s3 runs.  Callers use it to tell "there is no mesh here" from
+ * "the mesh has no node for this GID", which are both UINT32_MAX out of
+ * ionic_dp_node_from_gid().
+ */
+uint32_t ionic_dp_local_node(struct ionic_datapath *dp)
+{
+    if (!dp || !dp->pvrdma_handle)
+        return UINT32_MAX;
+    return ionic_mesh_local_node(dp->pvrdma_handle);
+}
+
 uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
 {
     if (!dp || !dp->pvrdma_handle)

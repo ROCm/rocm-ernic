@@ -268,11 +268,20 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
     (void)dest_qp_id;
     (void)dest_node_id;
 }
+/* UINT32_MAX = no mesh backend attached, which is the loopback case. */
+static uint32_t g_local_node = UINT32_MAX;
+static uint32_t g_node_from_gid;
+
+uint32_t ionic_dp_local_node(struct ionic_datapath *dp)
+{
+    (void)dp;
+    return g_local_node;
+}
 uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
 {
     (void)dp;
     (void)dgid;
-    return 0;
+    return g_node_from_gid;
 }
 
 void pvrdma_adminq_count(pvrdma_handle_t handle)
@@ -320,6 +329,8 @@ static void ctx_reset(void)
     g_sq_psn = 0x123456;
     g_query_rc = 0;
     g_queried_qpn = 0;
+    g_local_node = UINT32_MAX;
+    g_node_from_gid = 0;
 }
 
 /* The 34-byte ionic_admin_query_qp body the driver posts. */
@@ -497,9 +508,62 @@ static void test_short_body_writes_nothing(void)
     check("short-body-wrote-nothing", g_mem[RQ_GPA] == 0 && g_mem[SQ_GPA] == 0);
 }
 
+/*
+ * MODIFY_QP must only reject an unresolved destination GID when a mesh
+ * backend is actually attached.
+ *
+ * ionic_dp_node_from_gid() returns UINT32_MAX for two unrelated reasons:
+ * no mesh is attached (loopback, nvmeof, s3 -- every peer is local and the
+ * node id is never consulted), or the mesh is attached and no node owns
+ * the GID. Treating the first as an error fails every MODIFY_QP on the
+ * non-mesh backends, which is a regression this pins.
+ */
+static void build_modify_body(uint8_t *body, uint32_t qp_id)
+{
+    uint32_t attr_mask_be = htobe32(1u << 20); /* IB_QP_DEST_QPN */
+    uint32_t id_ver = htole32(qp_id | (1u << 24));
+
+    memset(body, 0, 60);
+    memcpy(body + 0, &attr_mask_be, 4);
+    memcpy(body + 56, &id_ver, 4);
+}
+
+static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
+{
+    uint8_t body[60];
+
+    /* No mesh: UINT32_MAX is the "everything is local" sentinel. */
+    ctx_reset();
+    build_modify_body(body, QP_ID);
+    g_local_node = UINT32_MAX;
+    g_node_from_gid = UINT32_MAX;
+    check("loopback-modify-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body, sizeof(body)) ==
+              0);
+
+    /* Mesh attached and no node owns the GID: must fail, not guess. */
+    ctx_reset();
+    build_modify_body(body, QP_ID);
+    g_local_node = 0;
+    g_node_from_gid = UINT32_MAX;
+    check("mesh-modify-unresolved-rejected",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body, sizeof(body)) !=
+              0);
+
+    /* Mesh attached and the GID resolves: must proceed. */
+    ctx_reset();
+    build_modify_body(body, QP_ID);
+    g_local_node = 0;
+    g_node_from_gid = 2;
+    check("mesh-modify-resolved-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body, sizeof(body)) ==
+              0);
+}
+
 int main(void)
 {
     test_state_reaches_the_side_buffer();
+    test_modify_qp_unresolved_gid_only_fails_on_a_mesh();
     test_every_state_round_trips();
     test_access_flags_are_translated();
     test_dest_qpn_is_reported();

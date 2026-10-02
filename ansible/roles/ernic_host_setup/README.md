@@ -69,7 +69,6 @@ ernic_tcp_port: 6320
 ernic_manager_ip: 127.0.0.1
 ernic_log_level: warn           # none|error|warn|info|debug
 ernic_verbose: "false"          # deprecated shorthand for debug
-ernic_debug_mesh: true
 ernic_debug_dma_map: false
 
 ernic_gpu_passthrough: true

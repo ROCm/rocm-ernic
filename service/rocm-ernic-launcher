@@ -75,6 +75,36 @@ get_mac_for_instance() {
     fi
 }
 
+# IPv6 link-local address the guest's RoCE interface will autoconfigure:
+# fe80::/64 plus the EUI-64 of its MAC (insert ff:fe in the middle, flip
+# the universal/local bit).  Deterministic, so it can be derived rather
+# than configured -- but see get_gids_for_instance, which lets the
+# operator override it when the guest uses a different address.
+gen_linklocal_from_mac() {
+    local mac="$1"
+    local b1 b2 b3 b4 b5 b6
+    IFS=':' read -r b1 b2 b3 b4 b5 b6 <<< "${mac}"
+    b1=$(printf '%02x' $(( 0x${b1} ^ 0x02 )))
+    printf 'fe80::%s%s:%sff:fe%s:%s%s\n' \
+        "${b1}" "${b2}" "${b3}" "${b4}" "${b5}" "${b6}"
+}
+
+# The guest RoCE GIDs this instance owns, as a comma-separated list for
+# ERNIC_TCP_GUEST_GIDS.  Peers match a destination GID against these to
+# route to the right node, so an instance whose guest uses an address not
+# listed here is unreachable -- set ERNIC_GUEST_GIDS_<n> for anything
+# beyond the derived link-local (a static IPv4, say).
+get_gids_for_instance() {
+    local idx="$1" mac="$2"
+    local var="ERNIC_GUEST_GIDS_${idx}"
+    local val="${!var:-}"
+    if [ -n "${val}" ]; then
+        echo "${val}"
+    else
+        gen_linklocal_from_mac "${mac}"
+    fi
+}
+
 wait_for_socket() {
     local path="$1"
     local timeout="${2:-15}"
@@ -197,6 +227,10 @@ start_instance() {
             "instance ${id} starts without Ethernet"
     fi
 
+    local gids
+    gids="$(get_gids_for_instance "${id}" "${mac}")"
+
+    ERNIC_TCP_GUEST_GIDS="${gids}" \
     ${ERNIC_BIN} \
         "${mode_args[@]}" \
         --socket "${sock}" \

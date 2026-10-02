@@ -82,16 +82,5 @@ ernic_add_fuzz_replay(rdma_cm_proto
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 
-ernic_add_fuzz_replay(dhcp_server
-    ${CMAKE_SOURCE_DIR}/src/net/dhcp_server.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
-)
-# Only this harness defines LLVMFuzzerInitialize(); the driver calls it
-# behind this define rather than a weak symbol, which gcc and clang treat
-# differently when statically linked.
-target_compile_definitions(fuzz_replay_dhcp_server PRIVATE
-    FUZZ_HARNESS_HAS_INITIALIZE
-)
-
 # net_headers.h is header-only, so this harness links no extra sources.
 ernic_add_fuzz_replay(net_headers)

@@ -240,6 +240,6 @@ ernic_rocm_xio_commit: ""
 
 # ── Feature gates ────────────────────────────────
 ernic_build: true
-# ernic_debug_mesh / ernic_debug_dma_map are ernic_host_setup
-# role defaults (mesh diagnostics on, pci_dma_map logging off).
+# ernic_debug_dma_map is an ernic_host_setup role default
+# (pci_dma_map logging off).
 ernic_tests: true

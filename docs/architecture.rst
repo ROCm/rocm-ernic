@@ -94,8 +94,7 @@ implementations, described under `Backends`_ below.
 Network Services (``src/net/``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The DHCP server, the RDMA CM wire protocol, and Ethernet frame
-injection into the emulated NIC's receive path.
+The RDMA CM wire protocol.
 
 ionic Emulation (``src/ionic_*.c``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

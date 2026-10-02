@@ -224,25 +224,6 @@ int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
     (void)len;
     return 0;
 }
-size_t dhcp_server_process(DhcpServer *server, const struct dhcp_packet *req,
-                           size_t req_len, struct dhcp_packet *resp,
-                           size_t max_resp_len)
-{
-    (void)server;
-    (void)req;
-    (void)req_len;
-    (void)resp;
-    (void)max_resp_len;
-    return 0;
-}
-int eth_rx_inject_frame_mesh_blocking(PVRDMADev *dev, const void *frame_data,
-                                      size_t len)
-{
-    (void)dev;
-    (void)frame_data;
-    (void)len;
-    return 0;
-}
 /*
  * Recorded completions.
  *
