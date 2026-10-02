@@ -178,7 +178,7 @@ each run was driven through its `run-<arch>-tests` target to a green verdict.
 the guest boots a minimal NixOS microvm, starts the cross-built server on the
 loopback backend, and runs the PCI-config **test client** against it. The
 client validates the emulated device's config space — Vendor `0x1dd8`
-(Pensando), Device `0x100a` (ROCm ERNIC) — and prints `✓ Test PASSED`; the self-test
+(Pensando), Device `0x1002` (ROCm ERNIC) — and prints `✓ Test PASSED`; the self-test
 service then emits `ERNIC Self-Test: SUCCESS` on the serial console, which the
 host-side lifecycle driver (`nix/microvms/lib.nix`) matches to exit 0.
 

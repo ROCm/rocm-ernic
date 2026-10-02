@@ -31,7 +31,7 @@ Host                            hpe-rack-15.adc.amd.com
 Host kernel                     6.8.0-124-generic
 Guest                           Ubuntu 26.04 LTS, kernel 7.2.3
 Guest vCPUs / memory            16 / 32 GiB
-Emulated device                 ``1dd8:100a`` (ionic)
+Emulated device                 ``1dd8:1002`` (ionic)
 Active MTU                      1024 bytes
 Backend                         ``nvmeof:size=8G,bs=4096,``
                                 ``file=/var/tmp/ernic-ns0.img,queues=4``

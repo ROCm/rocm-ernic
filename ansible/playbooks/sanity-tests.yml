@@ -44,7 +44,7 @@
 
   tasks:
 
-    # Identifies the device by PCI vendor ID rather than by name: the
+    # Identifies the device by the emulated PCI tuple rather than by name: the
     # name is rewritten twice during boot and says nothing about which
     # driver bound the device.  See scripts/find-rdma-device.sh.
     - name: Detect RDMA device name on VM1
@@ -66,8 +66,9 @@
         that:
           - rdma_dev_detect.stdout | trim | length > 0
         fail_msg: >-
-          No RDMA device with PCI vendor 0x1dd8 found on VM1, so the
-          driver did not bind or the port never came up.
+          No RDMA device matching PCI 0x1dd8:0x1002 subsystem
+          0x1dd8:0x5400 found on VM1, so the driver did not bind or the
+          port never came up.
 
     - name: Set RDMA device name
       ansible.builtin.set_fact:

@@ -24,7 +24,8 @@ is not.
 
 ## TAP networking
 
-The server presents `1dd8:100a` and each instance attaches to a host TAP.
+The server presents `1dd8:1002` with subsystem `1dd8:5400`, and each instance
+attaches to a host TAP.
 
 Guest Ethernet leaves through the TAP rather than the rocm-ernic
 TCP mesh, so every TAP is enslaved to a shared bridge — otherwise the guests

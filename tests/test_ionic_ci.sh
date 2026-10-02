@@ -79,8 +79,8 @@ pass "socket appeared"
 
 # --- Test 2: correct PCI identity ---
 echo ""
-echo "Test 2: VID:DID 0x1dd8:0x100a, SSVID:SDID 0x1dd8:0x5400"
-grep -q "VID:DID 0x1dd8:0x100a" "$LOG" || fail "VID:DID not found in log"
+echo "Test 2: VID:DID 0x1dd8:0x1002, SSVID:SDID 0x1dd8:0x5400"
+grep -q "VID:DID 0x1dd8:0x1002" "$LOG" || fail "VID:DID not found in log"
 grep -q "SSVID:SDID 0x1dd8:0x5400" "$LOG" || fail "SSID:SDID not found in log"
 pass "PCI identity correct"
 
@@ -119,7 +119,7 @@ pass "server exited on SIGTERM"
 echo ""
 echo "Test 7: none backend"
 start_server none || fail "server did not start with none backend"
-grep -q "VID:DID 0x1dd8:0x100a" "$LOG" || fail "VID:DID not in none backend log"
+grep -q "VID:DID 0x1dd8:0x1002" "$LOG" || fail "VID:DID not in none backend log"
 grep -q "SSVID:SDID 0x1dd8:0x5400" "$LOG" || fail "SSID:SDID not in none backend log"
 pass "none backend works"
 
@@ -164,7 +164,7 @@ while [ $elapsed -lt 10 ]; do
     [ -S "$SOCKET" ] && break
     kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
 done
-grep -q "VID:DID 0x1dd8:0x100a" "$LOG" || {
+grep -q "VID:DID 0x1dd8:0x1002" "$LOG" || {
     cat "$LOG"
     fail "server did not announce the ionic device"
 }

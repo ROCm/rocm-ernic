@@ -32,17 +32,11 @@ minor_changes:
     up and the counters symlink remain run-time only, so a rebooted
     guest is not test-ready without re-running the role.
   - >-
-    ``ernic_guest_setup`` writes the ``pci.ids`` entry for the emulated
-    NIC, behind ``ernic_guest_pciids``, and
-    ``scripts/pci.ids.rocm-ernic`` returns as the canonical copy
-    carrying ``1dd8:100a`` rather than the retired ``1022:8000``.  On a
-    current guest this is a no-op and says so: hwdata already lists
-    ``1dd8:100a`` as ``DSC Serial Port Controller``, since the emulated
-    device reuses a vendor-assigned pair.  The entry is added only
-    where the vendor block does not list the device at all, because
-    pciutils rejects a ``pci.ids`` containing a duplicate device id
-    outright --- ``lspci`` then exits non-zero having resolved no names
-    for any device on the bus.
+    ``ernic_guest_setup`` refreshes the system ``pci.ids`` database before
+    checking the emulated device's numeric PCI identity with ``lspci``.
+    The device uses ``1dd8:1002`` with subsystem ``1dd8:5400``.  Until the
+    upstream database publishes the subsystem description, setup warns
+    that the name is unresolved rather than failing the guest setup.
   - >-
     ``ernic_nic_subnet`` is an ``ernic_guest_setup`` default rather than
     only a repo group var, and the role documents the addressing the

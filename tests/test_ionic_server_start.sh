@@ -56,7 +56,7 @@ fi
 
 # Verify ionic mode banner in the log
 if grep -q "ionic emulation initialized" "$LOG" && \
-   grep -q "VID:DID 0x1dd8:0x100a" "$LOG" && \
+   grep -q "VID:DID 0x1dd8:0x1002" "$LOG" && \
    grep -q "SSVID:SDID 0x1dd8:0x5400" "$LOG"; then
     echo "✓ ionic banner found in server log"
 else

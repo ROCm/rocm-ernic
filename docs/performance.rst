@@ -39,7 +39,7 @@ are not comparable, and neither is wrong.
 ==============================  ==========================================
 Component                       Value
 ==============================  ==========================================
-Emulated device                 ``1dd8:100a`` (ionic)
+Emulated device                 ``1dd8:1002`` (ionic)
 Guest driver                    upstream ``ionic`` + ``ionic_rdma``
                                 (DKMS, ``IONIC_KERNEL_REF``)
 rdma-core                       v62.0, upstream ``providers/ionic``

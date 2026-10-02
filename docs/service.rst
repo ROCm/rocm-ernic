@@ -281,7 +281,7 @@ liveness state, uptime, and log file path:
 
 .. code-block:: text
 
-   Device: ionic 1dd8:100a (TAP ernic-tap<id>)
+   Device: ionic 1dd8:1002 (TAP ernic-tap<id>)
 
    ID  ROLE      PID    STATE      UPTIME     MAC                SOCKET                         VM           IP (TX/RX)      RDMA (TX/RX)    LOG
    1   manager   12345  running    2h15m      02:a1:b2:c3:d4:01  /run/rocm-ernic/1.sock         67890:2222   1.2K/3.4K       45M/12M         /var/log/rocm-ernic/1.log

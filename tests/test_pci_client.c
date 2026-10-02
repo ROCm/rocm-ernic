@@ -30,7 +30,7 @@
 
 /* Emulated ionic device IDs */
 #define PCI_VENDOR_ID_PENSANDO      0x1dd8u
-#define PCI_DEVICE_ID_ROCM_ERNIC    0x100au
+#define PCI_DEVICE_ID_ROCM_ERNIC    0x1002u
 #define PCI_SUBDEVICE_ID_ROCM_ERNIC 0x5400u
 
 /* Test results */

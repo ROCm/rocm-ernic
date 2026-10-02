@@ -925,7 +925,7 @@ def cmd_status(args):
         print("No instances found.  Service may not be running.")
         return
 
-    print(f"Device: ionic 1dd8:100a (TAP {CFG['ERNIC_TAP_PREFIX']}<id>)")
+    print(f"Device: ionic 1dd8:1002 (TAP {CFG['ERNIC_TAP_PREFIX']}<id>)")
     print()
 
     fmt = (
