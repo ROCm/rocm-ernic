@@ -621,12 +621,17 @@ static uint32_t tcp_parse_guest_gids(uint8_t out[TCP_MAX_NODE_GIDS][16])
 
     for (char *tok = strtok_r(dup, ",", &save); tok;
          tok = strtok_r(NULL, ",", &save)) {
-        while (*tok == ' ')
-            tok++;
-        char *end = tok + strlen(tok);
-        while (end > tok && end[-1] == ' ')
+        /* Trim through a separate cursor rather than advancing tok: strtok_r
+         * owns the loop variable, and walking it here reads as a second
+         * iteration step. */
+        char *val_s = tok;
+
+        while (*val_s == ' ')
+            val_s++;
+        char *end = val_s + strlen(val_s);
+        while (end > val_s && end[-1] == ' ')
             *--end = '\0';
-        if (!*tok)
+        if (!*val_s)
             continue;
 
         if (n == TCP_MAX_NODE_GIDS) {
@@ -639,9 +644,9 @@ static uint32_t tcp_parse_guest_gids(uint8_t out[TCP_MAX_NODE_GIDS][16])
         struct in6_addr a6;
         struct in_addr a4;
 
-        if (inet_pton(AF_INET6, tok, &a6) == 1) {
+        if (inet_pton(AF_INET6, val_s, &a6) == 1) {
             memcpy(out[n], &a6, 16);
-        } else if (inet_pton(AF_INET, tok, &a4) == 1) {
+        } else if (inet_pton(AF_INET, val_s, &a4) == 1) {
             memset(out[n], 0, 16);
             out[n][10] = 0xff;
             out[n][11] = 0xff;
@@ -649,7 +654,7 @@ static uint32_t tcp_parse_guest_gids(uint8_t out[TCP_MAX_NODE_GIDS][16])
         } else {
             rdma_error_report("TCP: ignoring unparsable GID '%s' in "
                               "ERNIC_TCP_GUEST_GIDS",
-                              tok);
+                              val_s);
             continue;
         }
         n++;
@@ -666,12 +671,26 @@ static void tcp_gid_key_free(gpointer key)
     g_bytes_unref((GBytes *)key);
 }
 
-/* Replace every GID currently attributed to @node_id with @gids. */
+/*
+ * Replace every GID currently attributed to @node_id with @gids.
+ *
+ * A GID another node already claims is NOT taken over.  Two nodes
+ * advertising one address is a misconfiguration -- duplicate
+ * ERNIC_TCP_GUEST_GIDS, or two guests given the same address -- and
+ * letting the last advertisement win would route by arrival order,
+ * which is the failure this whole mechanism exists to remove.  The
+ * contested GID is dropped instead, so it resolves to nothing and both
+ * claimants fail loudly rather than one of them silently receiving the
+ * other's traffic.
+ */
 static void tcp_gid_table_set(TcpBackendPrivate *priv, uint32_t node_id,
                               const uint8_t (*gids)[16], uint32_t num_gids)
 {
     if (!priv || !priv->gid_nodes || num_gids > TCP_MAX_NODE_GIDS)
         return;
+
+    bool conflict[TCP_MAX_NODE_GIDS] = {false};
+    uint32_t owner[TCP_MAX_NODE_GIDS] = {0};
 
     qemu_mutex_lock(&priv->gid_table_lock);
 
@@ -685,16 +704,33 @@ static void tcp_gid_table_set(TcpBackendPrivate *priv, uint32_t node_id,
     }
 
     for (uint32_t i = 0; i < num_gids; i++) {
-        g_hash_table_insert(priv->gid_nodes, g_bytes_new(gids[i], 16),
-                            GUINT_TO_POINTER(node_id));
+        GBytes *k = g_bytes_new(gids[i], 16);
+        gpointer held;
+
+        if (g_hash_table_lookup_extended(priv->gid_nodes, k, NULL, &held)) {
+            conflict[i] = true;
+            owner[i] = GPOINTER_TO_UINT(held);
+            g_hash_table_remove(priv->gid_nodes, k);
+            g_bytes_unref(k);
+            continue;
+        }
+        g_hash_table_insert(priv->gid_nodes, k, GUINT_TO_POINTER(node_id));
     }
 
     qemu_mutex_unlock(&priv->gid_table_lock);
 
     char buf[TCP_GID_STR_LEN];
     for (uint32_t i = 0; i < num_gids; i++) {
-        rdma_info_report("TCP: node %u owns GID %s", node_id,
-                         tcp_gid_str(gids[i], buf));
+        if (conflict[i]) {
+            rdma_error_report("TCP: node %u claims GID %s, already held by "
+                              "node %u; dropping it -- neither node is "
+                              "reachable at that address until the "
+                              "duplicate is removed",
+                              node_id, tcp_gid_str(gids[i], buf), owner[i]);
+        } else {
+            rdma_info_report("TCP: node %u owns GID %s", node_id,
+                             tcp_gid_str(gids[i], buf));
+        }
     }
 }
 

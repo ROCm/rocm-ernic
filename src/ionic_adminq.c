@@ -1016,12 +1016,17 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                 ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
 
             /*
-             * No mesh node owns this GID -- or the driver supplied no address
-             * at all.  Fail the command rather than let the backend pick a
-             * peer: a wrong node here is a silent write into another guest's
-             * memory, which no later check catches.
+             * UINT32_MAX means two different things.  With no mesh backend
+             * attached -- loopback, nvmeof, s3 -- it is the sentinel for
+             * "every peer is local", which the datapath relies on
+             * (ionic_datapath.c, dp_is_remote()), and the destination node
+             * is never consulted.  With a mesh attached it means no node
+             * owns this GID, and that must fail: a wrong node there is a
+             * silent write into another guest's memory that nothing
+             * downstream catches.  Only the second is an error.
              */
-            if (dest_node == UINT32_MAX) {
+            if (dest_node == UINT32_MAX &&
+                ionic_dp_local_node(ctx->dp) != UINT32_MAX) {
                 vfu_log(ctx->vfu_ctx, LOG_ERR,
                         "ionic_adminq MODIFY_QP %u: no mesh node owns "
                         "destination gid "
