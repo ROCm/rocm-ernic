@@ -345,6 +345,46 @@ jobs:
           exit 1
         fi
 
+    - name: Test hot-reload preserves guest GIDs
+      run: |
+        echo "=== Testing hot-reload GID preservation ==="
+        # A hot-reloaded instance must advertise the same addresses as the
+        # one it replaces. Peers route by matching them, so a restart that
+        # loses or guesses them is a node no peer can reach, and nothing
+        # downstream reports it.
+        python3 - <<'EOF'
+        import io, contextlib, sys, types
+
+        src = open("service/ernicctl").read()
+        mod = types.ModuleType("ernicctl")
+        mod.__dict__["__name__"] = "not_main"
+        exec(compile(src, "service/ernicctl", "exec"), mod.__dict__)
+        resolve = mod.guest_gids_for
+
+        got = resolve({"id": 1, "gids": "fe80::1,192.168.100.11"})
+        assert got == "fe80::1,192.168.100.11", got
+        print("OK: manifest value is used")
+
+        # A manifest written before GIDs were recorded still has the
+        # operator's explicit configuration to fall back on.
+        mod.CFG["ERNIC_GUEST_GIDS_2"] = "fe80::2"
+        assert resolve({"id": 2, "gids": ""}) == "fe80::2"
+        print("OK: falls back to ERNIC_GUEST_GIDS_<n>")
+
+        # With neither, refuse rather than start an unreachable server.
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                resolve({"id": 9, "gids": ""})
+        except SystemExit as exc:
+            assert exc.code != 0, exc.code
+            assert "No guest GIDs recorded" in err.getvalue()
+            print("OK: refuses when no addresses are known")
+        else:
+            print("FAIL: started an instance with no GIDs")
+            sys.exit(1)
+        EOF
+
     - name: Test launcher --help
       run: |
         service/rocm-ernic-launcher --badarg 2>&1 \

@@ -193,15 +193,31 @@ body = b"oldpeer".ljust(256, b"\0") + struct.pack("!H", 9999) \
 assert len(body) == 262, len(body)
 hdr = struct.pack("!IIIIIIII", MAGIC, REGISTER_NODE, len(body), 1, 7, 0, 0, 0)
 
+def read_exact(sock, n):
+    """TCP delivers a stream, not messages: a single recv() can return a
+    prefix of the reply and would flake this check intermittently."""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None          # EOF: short frame
+        buf += chunk
+    return buf
+
+
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10)
 s.sendall(hdr + body)
-data = s.recv(4096)
+head = read_exact(s, 32)
+if head is None:
+    print("  no reply header"); s.close(); sys.exit(1)
+_, msg_type, length = struct.unpack("!III", head[:12])
+payload = read_exact(s, length) if length else b""
 s.close()
 
-if len(data) < 32 + 12:
-    print("  no usable reply:", data[:48]); sys.exit(1)
-_, msg_type, length = struct.unpack("!III", data[:12])
-payload = data[32:32 + length]
+if payload is None or len(payload) < 12:
+    print(f"  short payload: want {length}, got "
+          f"{0 if payload is None else len(payload)}")
+    sys.exit(1)
 _, _, result = struct.unpack("!III", payload[:12])
 if result >= 1 << 31:
     result -= 1 << 32

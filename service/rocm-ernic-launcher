@@ -135,7 +135,10 @@ manifest_init() {
 
 manifest_add_instance() {
     local id="$1" role="$2" pid="$3"
-    local mac="$4" sock="$5"
+    local mac="$4" sock="$5" gids="$6"
+    # gids is recorded so ernicctl can restart this instance with the same
+    # advertised addresses without re-deriving them. Peers route by matching
+    # them, so a restart that guesses differently is a node nobody can reach.
     python3 -c "
 import json, sys
 m = json.load(open('${MANIFEST}'))
@@ -145,6 +148,7 @@ m['instances'].append({
     'pid': ${pid},
     'mac': '${mac}',
     'socket': '${sock}',
+    'gids': '${gids}',
     'vm': None
 })
 json.dump(m, open('${MANIFEST}', 'w'), indent=2)
@@ -256,7 +260,7 @@ start_instance() {
 
     chmod 666 "${sock}" 2>/dev/null || true
     manifest_add_instance \
-        "${id}" "${role}" "${pid}" "${mac}" "${sock}"
+        "${id}" "${role}" "${pid}" "${mac}" "${sock}" "${gids}"
     log_info "Started instance ${id}" \
         "(${role}, PID ${pid}, MAC ${mac})"
 }

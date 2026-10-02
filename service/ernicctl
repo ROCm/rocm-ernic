@@ -96,6 +96,39 @@ def guest_driver_modules():
     return ["ionic_rdma", "ionic"]
 
 
+def guest_gids_for(inst):
+    """The guest RoCE addresses this instance advertises.
+
+    Peers route by matching a destination GID against what each node
+    advertised, so an instance restarted without its addresses is one no
+    peer can reach -- and nothing downstream reports that, which is why
+    this refuses rather than starting an unreachable server.
+
+    Preference order is the manifest first, because the launcher resolved
+    it there and a restart must reproduce exactly what the running
+    instance had, then the env file for a manifest written before this was
+    recorded. The MAC-derived fallback deliberately lives only in the
+    launcher: duplicating it here is how the two drift.
+    """
+    gids = (inst.get("gids") or "").strip()
+    if gids:
+        return gids
+
+    gids = CFG.get(f"ERNIC_GUEST_GIDS_{inst['id']}", "").strip()
+    if gids:
+        return gids
+
+    print(
+        f"ERROR: No guest GIDs recorded for instance {inst['id']}.\n"
+        f"       Restarting it now would advertise no addresses and no peer\n"
+        f"       could reach it. Set ERNIC_GUEST_GIDS_{inst['id']} in the\n"
+        f"       environment file, or restart the service so the launcher\n"
+        f"       records them.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def server_mode_args(instance_id):
     """Per-instance command line for the server, matching the launcher."""
     tap = f"{CFG['ERNIC_TAP_PREFIX']}{instance_id}"
@@ -1327,9 +1360,14 @@ def cmd_hot_reload(args):
         level,
     ]
 
+    # The replacement must advertise the same addresses as the instance it
+    # replaces; see guest_gids_for().
+    env = dict(os.environ)
+    env["ERNIC_TCP_GUEST_GIDS"] = guest_gids_for(inst)
+
     # The server outlives this command, so it is not waited for
     # pylint: disable-next=consider-using-with
-    proc = subprocess.Popen(cmd)
+    proc = subprocess.Popen(cmd, env=env)
 
     for _ in range(30):
         if os.path.exists(sock_path) and pathlib.Path(sock_path).is_socket():
