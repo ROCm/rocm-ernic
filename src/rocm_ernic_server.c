@@ -911,13 +911,13 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
             /* Override with parsed values if not set via command-line */
             if (device && !dev->backend_device_name) {
                 dev->backend_device_name = device;
-            } else if (device) {
+            } else {
                 free(device); /* Command-line takes precedence */
             }
 
             if (ethdev && !dev->backend_eth_device) {
                 dev->backend_eth_device = ethdev;
-            } else if (ethdev) {
+            } else {
                 free(ethdev); /* Command-line takes precedence */
             }
 
@@ -1072,9 +1072,7 @@ int main(int argc, char *argv[])
             break;
         case 'S':
             /* Store stats file path - will be set after device init */
-            if (dev->stats_file_path) {
-                free(dev->stats_file_path);
-            }
+            free(dev->stats_file_path);
             dev->stats_file_path = strdup(optarg);
             break;
         case 'l':
