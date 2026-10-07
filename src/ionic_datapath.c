@@ -42,6 +42,7 @@
 
 #include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
+#include "net/net_headers.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
 #include "rocm_ernic_compat.h"
@@ -112,6 +113,10 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
  */
 #define WQE_PLD_OFF      32
 #define WQE_SEND_LEN_OFF 28
+
+/* The send body's addressing fields, which only a UD or GSI WQE uses. */
+#define WQE_UD_AH_ID_OFF    16
+#define WQE_UD_DEST_QPN_OFF 20
 
 /* struct ionic_v1_common_bdy.rdma overlays the send body: two be32 halves of
  * the remote va at 16/20, then the remote rkey, then the shared length. */
@@ -235,6 +240,20 @@ struct dp_mr {
     struct dp_buf buf;
 };
 
+struct dp_ah {
+    bool valid;
+    struct ionic_dp_ah a;
+};
+
+/*
+ * What a UD or GSI receive completion reports about its sender.  NULL where a
+ * caller has no real sender to describe, and a placeholder is synthesized.
+ */
+struct dp_ud_src {
+    uint8_t smac[6];
+    bool ipv4;
+};
+
 struct dp_sge_list {
     uint64_t va[MAX_SGE];
     uint32_t len[MAX_SGE];
@@ -271,6 +290,7 @@ enum ionic_wire_op {
     IONIC_WIRE_ATOMIC_REQ,
     IONIC_WIRE_ATOMIC_RESP,
     IONIC_WIRE_ACK,
+    IONIC_WIRE_UD_SEND,
 };
 
 /* Little-endian on the wire, except @imm_be which is passed through in the
@@ -290,6 +310,19 @@ struct ionic_wire_hdr {
     uint64_t remote_va;
     uint64_t swap_add;
     uint64_t compare;
+} __attribute__((packed));
+
+/*
+ * IONIC_WIRE_UD_SEND payload prefix.  A UD receive reports the sender's link
+ * layer in its completion, and the sender's AH is the only place that is
+ * known, so it travels with the datagram, along with the CQE receive opcode
+ * (SEND or SEND_IMM).  The GRH and then the SEND payload follow; @length in
+ * the header counts both.
+ */
+struct ionic_wire_ud {
+    uint8_t smac[6];
+    uint8_t ipv4;
+    uint8_t recv_op;
 } __attribute__((packed));
 
 /*
@@ -356,6 +389,7 @@ struct ionic_datapath {
 
     struct ionic_qp_ring *qp; /* indexed by driver qp_id */
     struct ionic_cq_ring *cq; /* indexed by driver cq_id */
+    struct dp_ah *ah;         /* indexed by driver ah_id */
     struct dp_mr mr[MAX_MR];
 
     uint32_t qp_count;
@@ -575,9 +609,11 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
 
     dp->qp = calloc(MAX_QP, sizeof(*dp->qp));
     dp->cq = calloc(MAX_CQ, sizeof(*dp->cq));
-    if (!dp->qp || !dp->cq) {
+    dp->ah = calloc(IONIC_MAX_AH, sizeof(*dp->ah));
+    if (!dp->qp || !dp->cq || !dp->ah) {
         free(dp->qp);
         free(dp->cq);
+        free(dp->ah);
         free(dp);
         return NULL;
     }
@@ -694,6 +730,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
         buf_release(&dp->mr[i].buf);
     free(dp->qp);
     free(dp->cq);
+    free(dp->ah);
     free(dp);
 }
 
@@ -836,6 +873,30 @@ uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
     if (!dp || !dp->pvrdma_handle)
         return UINT32_MAX;
     return ionic_mesh_node_from_gid(dp->pvrdma_handle, dgid);
+}
+
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const struct ionic_dp_ah *ah)
+{
+    if (!dp || !ah || ah_id >= IONIC_MAX_AH)
+        return;
+    dp->ah[ah_id].a = *ah;
+    dp->ah[ah_id].valid = true;
+
+    const uint8_t *g = ah->dgid;
+    vfu_log(dp->vfu_ctx, LOG_DEBUG,
+            "ionic_datapath: AH %u -> %02x:%02x:%02x:%02x:%02x:%02x gid "
+            "%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+            ah_id, ah->dmac[0], ah->dmac[1], ah->dmac[2], ah->dmac[3],
+            ah->dmac[4], ah->dmac[5], g[8], g[9], g[10], g[11], g[12], g[13],
+            g[14], g[15]);
+}
+
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
+{
+    if (!dp || ah_id >= IONIC_MAX_AH)
+        return;
+    memset(&dp->ah[ah_id], 0, sizeof(dp->ah[ah_id]));
 }
 
 static struct dp_mr *mr_find(struct ionic_datapath *dp, uint32_t lkey)
@@ -1186,7 +1247,7 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
 static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
                          uint32_t qid, uint64_t rq_wqe_id, uint32_t src_qpn,
                          uint8_t recv_op, uint32_t imm_be, uint32_t byte_len,
-                         bool error, const uint8_t *src_mac)
+                         bool error, const struct dp_ud_src *ud)
 {
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
@@ -1200,11 +1261,13 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
      * A UD or GSI completion is only usable if it also names the sender's
      * link layer: the driver turns src_mac and the IPv4 bit into
      * IB_WC_WITH_SMAC and a network_hdr_type, and ib_cm refuses a MAD whose
-     * work completion has neither.
+     * work completion has neither.  The network type also tells ib_mad where
+     * in the GRH to find the addresses it answers to.
      */
-    if (src_mac) {
-        qpn_op |= CQE_RECV_IS_IPV4;
-        memcpy(body + 12, src_mac, 6);
+    if (ud) {
+        if (ud->ipv4)
+            qpn_op |= CQE_RECV_IS_IPV4;
+        memcpy(body + 12, ud->smac, 6);
     }
     qpn_op = htobe32(qpn_op);
     memcpy(body + 8, &qpn_op, 4);
@@ -1341,12 +1404,16 @@ static void dp_src_mac(struct ionic_datapath *dp, uint32_t src_qp_id,
  * @src describes the payload.  For a local send it names guest memory and
  * @src_host is NULL; for one that arrived from a peer instance @src_host
  * points at the received bytes and only @src->total is meaningful.
+ *
+ * @ud_src describes the sender of a UD or GSI datagram for the completion;
+ * pass NULL when there is no real sender and a placeholder should be made up.
+ * It is ignored for connected QPs.
  */
 static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
                             uint32_t dst_qp_id, uint32_t src_qp_id,
                             const struct dp_sge_list *src,
                             const uint8_t *src_host, uint8_t recv_op,
-                            uint32_t imm_be)
+                            uint32_t imm_be, const struct dp_ud_src *ud_src)
 {
     if (dq->rq_cons == dq->rq_prod)
         return -1;
@@ -1429,15 +1496,17 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
                             PVRDMA_STAT_RECV);
 
     /* GSI (1) and UD (4) receives carry a source MAC; nothing else does. */
-    uint8_t smac[6];
+    struct dp_ud_src made_up = {.ipv4 = true};
     bool ud = dq->ib_qp_type == 1 || dq->ib_qp_type == 4;
-    if (ud)
-        dp_src_mac(dp, src_qp_id, smac);
+    if (ud && !ud_src) {
+        dp_src_mac(dp, src_qp_id, made_up.smac);
+        ud_src = &made_up;
+    }
 
     cq_post_recv(
         dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op, imm_be,
         truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR) : copied,
-        truncated, ud ? smac : NULL);
+        truncated, ud ? ud_src : NULL);
 
     return copied;
 }
@@ -1971,7 +2040,7 @@ static bool dp_nvmeof_gsi(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     struct dp_sge_list in = {.count = 0,
                              .total = (uint32_t)(IB_GRH_SIZE + res.rsp_len)};
     if (deliver_recv(dp, q, qp_id, 1 /* the peer's GSI QP is also QP1 */, &in,
-                     buf, CQE_RECV_OP_SEND, 0) < 0)
+                     buf, CQE_RECV_OP_SEND, 0, NULL) < 0)
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: nvmeof CM reply dropped, no GSI receive");
     return true;
@@ -2020,12 +2089,213 @@ static bool dp_nvmeof_rc_send(struct ionic_datapath *dp,
     }
 
     struct dp_sge_list in = {.count = 0, .total = NVME_CQE_SIZE};
-    if (deliver_recv(dp, q, qp_id, q->dest_qp_id, &in, rsp, CQE_RECV_OP_SEND,
-                     0) < 0)
+    if (deliver_recv(dp, q, qp_id, q->dest_qp_id, &in, rsp, CQE_RECV_OP_SEND, 0,
+                     NULL) < 0)
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u has no receive for a response capsule",
                 qp_id);
     return true;
+}
+
+/* -------------------------------------------------------------------------
+ * UD and GSI sends
+ *
+ * A connected QP learns its peer once, from MODIFY_QP; a UD or GSI WQE names
+ * its own destination every time, as an address handle plus a remote QPN.
+ * This is the path every rdma_cm handshake takes -- the IB CM runs as MADs
+ * on QP1 -- so it has to reach the peer's QP1 on whichever instance owns the
+ * destination address, and arrive in the form the guest's ib_mad expects.
+ * -------------------------------------------------------------------------
+ */
+
+/* The largest datagram a RoCE path MTU allows. */
+#define DP_UD_MAX_PAYLOAD 4096u
+
+/* RoCEv2 framing around a UD payload: UDP, BTH, DETH, and the trailing ICRC. */
+#define DP_ROCEV2_UD_OVERHEAD (8u + 12u + 8u + 4u)
+
+/*
+ * Build the 40-byte global route header a UD receive starts with.  ib_mad
+ * reads the MAD at offset IB_GRH_SIZE whatever the network type, and answers
+ * a request by turning this header back into an address: for RoCEv2 over
+ * IPv4 from the IPv4 header in its last 20 bytes, otherwise from the GIDs at
+ * offsets 8 and 24 where struct ib_grh keeps them.
+ */
+static void dp_ud_grh(uint8_t grh[IB_GRH_SIZE], const struct ionic_dp_ah *ah,
+                      uint32_t paylen)
+{
+    /* Bounded by DP_UD_MAX_PAYLOAD, so this fits the 16-bit length fields. */
+    uint16_t wire_len = (uint16_t)(paylen + DP_ROCEV2_UD_OVERHEAD);
+
+    memset(grh, 0, IB_GRH_SIZE);
+
+    if (ah->ipv4) {
+        struct ip_header ip;
+
+        memset(&ip, 0, sizeof(ip));
+        ip.version_ihl = 0x45;
+        ip.total_len = htons((uint16_t)(sizeof(ip) + wire_len));
+        ip.frag_off = htons(0x4000); /* DF, as RoCEv2 sets it */
+        ip.ttl = 64;
+        ip.protocol = IP_PROTOCOL_UDP;
+        memcpy(&ip.src_ip, ah->sgid + 12, 4);
+        memcpy(&ip.dst_ip, ah->dgid + 12, 4);
+        ip.checksum = ip_checksum(&ip, sizeof(ip));
+        memcpy(grh + IB_GRH_SIZE - sizeof(ip), &ip, sizeof(ip));
+        return;
+    }
+
+    uint16_t pl = htobe16(wire_len);
+    grh[0] = 0x60; /* IPv6 */
+    memcpy(grh + 4, &pl, 2);
+    grh[6] = IP_PROTOCOL_UDP;
+    grh[7] = 64;
+    memcpy(grh + 8, ah->sgid, 16);
+    memcpy(grh + 24, ah->dgid, 16);
+}
+
+/*
+ * Find the mesh node that owns @ah's destination.  Sets *@node to it, or to
+ * UINT32_MAX when that is this instance, and returns true.  Returns false
+ * when a mesh is attached and no node owns the destination GID: the datagram
+ * is unroutable, and delivering it locally instead would hand a peer's MAD
+ * to our own guest.  A datagram to our own source address never leaves,
+ * whether or not this instance advertised that address.
+ */
+static bool dp_ud_node(struct ionic_datapath *dp, const struct ionic_dp_ah *ah,
+                       uint32_t *node)
+{
+    *node = UINT32_MAX;
+    if (dp->local_node == UINT32_MAX || !memcmp(ah->dgid, ah->sgid, 16))
+        return true;
+
+    uint32_t owner = ionic_dp_node_from_gid(dp, ah->dgid);
+    if (owner == UINT32_MAX)
+        return false;
+    if (owner != dp->local_node)
+        *node = owner;
+    return true;
+}
+
+static bool dp_qp_is_ud(const struct ionic_qp_ring *q)
+{
+    return q->ib_qp_type == 1 /* GSI */ || q->ib_qp_type == 4 /* UD */;
+}
+
+/*
+ * Deliver a datagram (GRH already in front) to a local QP.  UD has no
+ * acknowledgement to carry a failure back, so one with nowhere to land is
+ * dropped, as it would be on the wire.  Returns false only when the QP exists
+ * but has no receive posted yet, so a caller that can wait may retry.
+ */
+static bool dp_ud_deliver(struct ionic_datapath *dp, uint32_t dst_qp_id,
+                          uint32_t src_qp_id, const uint8_t *dgram,
+                          uint32_t len, uint8_t recv_op, uint32_t imm_be,
+                          const struct dp_ud_src *from)
+{
+    struct ionic_qp_ring *dq =
+        dst_qp_id < dp->qp_count && dp->qp[dst_qp_id].valid ? &dp->qp[dst_qp_id]
+                                                            : NULL;
+
+    if (!dq || !dp_qp_is_ud(dq)) {
+        vfu_log(dp->vfu_ctx, LOG_DEBUG,
+                "ionic_datapath: datagram from QP %u to non-UD QP %u dropped",
+                src_qp_id, dst_qp_id);
+        return true;
+    }
+
+    struct dp_sge_list in = {.count = 0, .total = len};
+    return deliver_recv(dp, dq, dst_qp_id, src_qp_id, &in, dgram, recv_op,
+                        imm_be, from) >= 0;
+}
+
+static void dp_ud_send(struct ionic_datapath *dp, uint32_t qp_id,
+                       const uint8_t *wqe, const struct dp_sge_list *src,
+                       uint8_t recv_op, uint32_t imm_be)
+{
+    uint32_t ah_id, dest_qpn;
+    memcpy(&ah_id, wqe + WQE_UD_AH_ID_OFF, 4);
+    memcpy(&dest_qpn, wqe + WQE_UD_DEST_QPN_OFF, 4);
+    ah_id = be32toh(ah_id);
+    dest_qpn = be32toh(dest_qpn) & 0xffffffu;
+
+    if (ah_id >= IONIC_MAX_AH || !dp->ah[ah_id].valid) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u UD send through unknown AH %u", qp_id,
+                ah_id);
+        return;
+    }
+    if (src->total > DP_UD_MAX_PAYLOAD) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u UD send of %u bytes exceeds the MTU",
+                qp_id, src->total);
+        return;
+    }
+
+    const struct ionic_dp_ah *ah = &dp->ah[ah_id].a;
+    uint32_t node;
+    if (!dp_ud_node(dp, ah, &node)) {
+        const uint8_t *g = ah->dgid;
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u UD send dropped: no mesh node owns "
+                "destination gid "
+                "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
+                "%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                qp_id, g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8],
+                g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+        return;
+    }
+
+    struct ionic_wire_ud ud;
+    uint8_t dgram[IB_GRH_SIZE + DP_UD_MAX_PAYLOAD];
+    uint32_t len = IB_GRH_SIZE + src->total;
+
+    memset(&ud, 0, sizeof(ud));
+    memcpy(ud.smac, ah->smac, 6);
+    ud.ipv4 = ah->ipv4;
+    ud.recv_op = recv_op;
+
+    dp_ud_grh(dgram, ah, src->total);
+    dp_fault_clear(dp);
+    if (dp_gather(dp, src, dgram + IB_GRH_SIZE, src->total) != src->total) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u could not gather %u UD bytes", qp_id,
+                src->total);
+        return;
+    }
+
+    if (node == UINT32_MAX) {
+        struct dp_ud_src from = {.ipv4 = ah->ipv4};
+        memcpy(from.smac, ah->smac, 6);
+
+        if (!dp_ud_deliver(dp, dest_qpn, qp_id, dgram, len, recv_op, imm_be,
+                           &from)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u has no posted receive, dropping "
+                    "datagram from QP %u",
+                    dest_qpn, qp_id);
+            return;
+        }
+    } else {
+        struct ionic_wire_hdr hdr;
+        uint8_t msg[sizeof(ud) + sizeof(dgram)];
+
+        wire_hdr_init(&hdr, IONIC_WIRE_UD_SEND, qp_id, dest_qpn, 0);
+        hdr.imm_be = imm_be;
+        hdr.length = htole32(len);
+        memcpy(msg, &ud, sizeof(ud));
+        memcpy(msg + sizeof(ud), dgram, len);
+
+        if (dp_mesh_tx(dp, node, &hdr, msg, (uint32_t)sizeof(ud) + len) != 0) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u datagram to node %u failed", qp_id,
+                    node);
+            return;
+        }
+    }
+
+    pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, src->total,
+                            PVRDMA_STAT_SEND);
 }
 
 static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
@@ -2133,6 +2403,10 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             break;
         if (remote && dp_nvmeof_rc_send(dp, q, qp_id, &src))
             break;
+        if (!remote) {
+            dp_ud_send(dp, qp_id, wqe, &src, recv_op, imm_be);
+            break;
+        }
 
         uint32_t dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
         struct ionic_qp_ring *dq = dst_id < dp->qp_count && dp->qp[dst_id].valid
@@ -2144,8 +2418,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     dst_id);
             break;
         }
-        if (deliver_recv(dp, dq, dst_id, qp_id, &src, NULL, recv_op, imm_be) <
-            0)
+        if (deliver_recv(dp, dq, dst_id, qp_id, &src, NULL, recv_op, imm_be,
+                         NULL) < 0)
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u has no posted receive, dropping "
                     "%u bytes from QP %u",
@@ -2206,7 +2480,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             struct dp_sge_list written = {.count = 0, .total = moved};
             if (dq)
                 deliver_recv(dp, dq, dst_id, qp_id, &written, NULL,
-                             CQE_RECV_OP_RDMA_IMM, imm_be);
+                             CQE_RECV_OP_RDMA_IMM, imm_be, NULL);
         }
         break;
     }
@@ -2390,7 +2664,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     src_node, dst_qp_id);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else if (deliver_recv(dp, dq, dst_qp_id, src_qp_id, &src, payload,
-                                recv_op, h->imm_be) < 0) {
+                                recv_op, h->imm_be, NULL) < 0) {
             /* RNR: nothing has been consumed, so the message can simply wait
              * for the guest to post a receive. */
             if (allow_retry)
@@ -2403,6 +2677,38 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
             status = IONIC_STS_RNR_RETRY_EXCEEDED;
         }
         dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
+        break;
+    }
+
+    case IONIC_WIRE_UD_SEND: {
+        /* No reply either way: UD is unacknowledged. */
+        const struct ionic_wire_ud *ud = (const struct ionic_wire_ud *)payload;
+
+        if (payload_len < sizeof(*ud) + IB_GRH_SIZE ||
+            length != payload_len - sizeof(*ud)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: malformed datagram from node %u",
+                    src_node);
+            break;
+        }
+
+        struct dp_ud_src from = {.ipv4 = ud->ipv4 != 0};
+        memcpy(from.smac, ud->smac, 6);
+
+        /* The opcode lands in CQE bits it could overflow; UD has only two. */
+        uint8_t ud_op = ud->recv_op == CQE_RECV_OP_SEND_IMM
+                            ? CQE_RECV_OP_SEND_IMM
+                            : CQE_RECV_OP_SEND;
+
+        if (!dp_ud_deliver(dp, dst_qp_id, src_qp_id, payload + sizeof(*ud),
+                           length, ud_op, h->imm_be, &from)) {
+            if (allow_retry)
+                return false;
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u posted no receive within %u ms, "
+                    "dropping datagram from node %u",
+                    dst_qp_id, RNR_RETRY_MS, src_node);
+        }
         break;
     }
 
@@ -2425,7 +2731,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
             if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
                 struct dp_sge_list written = {.count = 0, .total = n};
                 deliver_recv(dp, dq, dst_qp_id, src_qp_id, &written, NULL,
-                             CQE_RECV_OP_RDMA_IMM, h->imm_be);
+                             CQE_RECV_OP_RDMA_IMM, h->imm_be, NULL);
             }
         }
         dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);

@@ -228,6 +228,11 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
+/* The driver allocates ah ids below nahs_per_lif; the data path indexes
+ * its AH table by them. */
+_Static_assert(IONIC_NAHS_PER_LIF == IONIC_MAX_AH,
+               "nahs_per_lif must match the data path's AH table");
+
 /* Number of emulated EQs / AQs we report in LIF identity */
 #define IONIC_EMU_EQ_COUNT   32
 #define IONIC_EMU_AQ_COUNT   4

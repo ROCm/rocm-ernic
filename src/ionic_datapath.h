@@ -43,6 +43,13 @@ struct ionic_datapath;
 #define IONIC_MAX_MR_QUEUES ((IONIC_MAX_MR / IONIC_MR_PER_QUEUE) - 1)
 
 /*
+ * Address handles.  The LIF identity advertises this many (nahs_per_lif), and
+ * the driver allocates ah ids below it, so the data path's AH table is sized
+ * to match.
+ */
+#define IONIC_MAX_AH (1u << 15)
+
+/*
  * Description of a guest-resident ring or memory region as the driver hands
  * it to us: either a direct DMA address (map_count <= 1) or the address of a
  * page table of map_count le64 page addresses.
@@ -100,6 +107,25 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
  */
 uint32_t ionic_dp_local_node(struct ionic_datapath *dp);
 uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid);
+
+/*
+ * A UD address handle, decoded from the RoCE header template CREATE_AH hands
+ * over.  A UD or GSI WQE names its destination only by ah_id, so this is the
+ * one place the peer's address and our own source address are stated.  GIDs
+ * are 16 bytes, IPv4 in the ::ffff:a.b.c.d mapped form; @ipv4 says which
+ * network header the template carried.
+ */
+struct ionic_dp_ah {
+    uint8_t sgid[16];
+    uint8_t dgid[16];
+    uint8_t smac[6];
+    uint8_t dmac[6];
+    bool ipv4;
+};
+
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const struct ionic_dp_ah *ah);
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 
 /*
  * MR registration.  @lkey is the driver's full mrid (index | key << 24), which

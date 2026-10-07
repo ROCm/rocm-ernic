@@ -387,6 +387,24 @@ target_link_directories(test_ionic_cq_arm PRIVATE
 target_link_libraries(test_ionic_cq_arm PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
+# ionic data path WQE test. It #includes the datapath translation unit and
+# backs the DMA entry points with a plain buffer, so a work request can be
+# followed from the WQE to the receive buffer and CQE, and a mesh message
+# carried by hand between two data path instances.
+add_executable(test_ionic_datapath test_ionic_datapath.c)
+target_include_directories(test_ionic_datapath PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_datapath SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_datapath PRIVATE _GNU_SOURCE)
+target_compile_options(test_ionic_datapath PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_datapath PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_libraries(test_ionic_datapath PRIVATE pthread)
+
 # TCP mesh-topology broadcast test. It #includes the TCP backend translation
 # unit to reach its static helpers and stubs the backend's externals, so no
 # RDMA subsystem link is needed; the broadcast goes over a socketpair.
@@ -564,6 +582,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_port_info
     test_ionic_query_qp
     test_ionic_cq_arm
+    test_ionic_datapath
     test_tcp_mesh_topology
     test_tcp_gid_resolve
     test_tcp_mr_bounds
@@ -741,6 +760,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_cq_arm>
 )
 set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
+
+# ionic data path unit test: asserts a UD or GSI SEND is delivered to the QP
+# and node its address handle names, behind a GRH, rather than looped back
+# into the sender's own receive queue.
+add_test(
+    NAME ionic-datapath-unit
+    COMMAND $<TARGET_FILE:test_ionic_datapath>
+)
+set_tests_properties(ionic-datapath-unit PROPERTIES TIMEOUT 30)
 
 # TCP mesh-topology broadcast unit test: asserts the unused node slots in the
 # fixed-size payload are zeroed rather than carrying stack contents.

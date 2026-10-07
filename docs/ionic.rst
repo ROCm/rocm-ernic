@@ -315,17 +315,22 @@ Working:
   ``IB_WR_LOCAL_INV`` as local work requests, which is what
   a stock ``nvme-rdma`` initiator uses to produce the keys
   in its keyed SGLs
+- UD and GSI sends, routed by the address handle and remote
+  QPN in the WQE: ``CREATE_AH`` records the RoCE header
+  template, and the datagram reaches that QP on whichever
+  instance owns the destination GID, behind a 40-byte GRH.
+  That is what ``rdma_cm`` needs, since the IB CM runs as
+  MADs on QP1, so ``nvme connect -t rdma`` from one guest to
+  an in-kernel ``nvmet-rdma`` target in another works over
+  the ``tcp`` mesh. The guests still need IP between them
+  for address resolution (``--tap`` on a shared bridge, see
+  `Two Guests on One Bridge`_), and every address a peer
+  targets must be advertised by the instance that owns it
+  (``ERNIC_GUEST_GIDS_<n>``, see :doc:`service`). A datagram
+  to an address no instance advertised is dropped
 
 Not yet working:
 
-- ``rdma_cm`` connection establishment between two guests,
-  and therefore ``rping``: only the link-local GID is
-  populated, and GSI traffic is not forwarded between
-  endpoints. The ``nvmeof`` backend sidesteps this by
-  answering the CM exchange inside the server rather than
-  routing it to a peer, so ``nvme connect -t rdma`` has a
-  responder even though guest-to-guest ``rdma_cm`` does not
-  (see :doc:`nvmeof`)
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
 - The PCI Express capability is not advertised, so the guest

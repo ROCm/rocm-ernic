@@ -451,24 +451,25 @@ static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
  * template built by ib_ud_header_pack() with the BTH and DETH trimmed off:
  * Ethernet, an optional 802.1Q tag, IPv4 or IPv6, then UDP.  The destination
  * address in it is the only statement of which peer the QP is being pointed
- * at -- the WQEs themselves never name one.
+ * at -- an RC WQE never names one, and a UD WQE names only the AH.
  *
- * Fills @dgid with the destination GID (IPv4 in the ::ffff:a.b.c.d mapped
- * form the rest of the stack expects) and @dmac with the destination MAC.
- * Returns 1 on success, 0 if the template could not be parsed.
+ * Fills @out with both ends' GIDs (IPv4 in the ::ffff:a.b.c.d mapped form the
+ * rest of the stack expects), both MACs, and the network type.  Returns 1 on
+ * success, 0 if the template could not be parsed.
  */
 static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
-                                 uint32_t len, uint8_t dgid[16],
-                                 uint8_t dmac[6])
+                                 uint32_t len, struct ionic_dp_ah *out)
 {
     uint8_t hdr[128];
 
+    memset(out, 0, sizeof(*out));
     if (len < 14 || len > sizeof(hdr))
         return 0;
     if (dma_read(ctx->vfu_ctx, gpa, hdr, len) < 0)
         return 0;
 
-    memcpy(dmac, hdr, 6);
+    memcpy(out->dmac, hdr, 6);
+    memcpy(out->smac, hdr + 6, 6);
 
     uint32_t off = 12;
     uint16_t ethertype = (uint16_t)((hdr[off] << 8) | hdr[off + 1]);
@@ -481,20 +482,22 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
     }
     off += 2;
 
-    if (ethertype == 0x0800) { /* IPv4: daddr at +16 */
+    if (ethertype == 0x0800) { /* IPv4: saddr at +12, daddr at +16 */
         if (off + 20 > len)
             return 0;
-        memset(dgid, 0, 16);
-        dgid[10] = 0xff;
-        dgid[11] = 0xff;
-        memcpy(dgid + 12, hdr + off + 16, 4);
+        out->sgid[10] = out->sgid[11] = 0xff;
+        memcpy(out->sgid + 12, hdr + off + 12, 4);
+        out->dgid[10] = out->dgid[11] = 0xff;
+        memcpy(out->dgid + 12, hdr + off + 16, 4);
+        out->ipv4 = true;
         return 1;
     }
 
-    if (ethertype == 0x86dd) { /* IPv6: daddr at +24 */
+    if (ethertype == 0x86dd) { /* IPv6: saddr at +8, daddr at +24 */
         if (off + 40 > len)
             return 0;
-        memcpy(dgid, hdr + off + 24, 16);
+        memcpy(out->sgid, hdr + off + 8, 16);
+        memcpy(out->dgid, hdr + off + 24, 16);
         return 1;
     }
 
@@ -987,9 +990,9 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         uint32_t ah_id_len;
         bool dgid_valid = false;
         uint64_t ah_dma;
-        uint8_t dgid[16] = {0};
-        uint8_t dmac[6] = {0};
+        struct ionic_dp_ah path;
 
+        memset(&path, 0, sizeof(path));
         memcpy(&ah_id_len, body + 32, 4);
         ah_id_len = le32toh(ah_id_len);
         memcpy(&ah_dma, body + 48, 8);
@@ -997,8 +1000,10 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         uint32_t hdr_len = ah_id_len >> 24;
         if (hdr_len && ah_dma)
-            dgid_valid =
-                adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, dmac);
+            dgid_valid = adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, &path);
+
+        const uint8_t *dgid = path.dgid;
+        const uint8_t *dmac = path.dmac;
 
         if (dgid_valid)
             vfu_log(ctx->vfu_ctx, LOG_DEBUG,
@@ -1147,10 +1152,59 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         return 0;
     }
 
-    case IONIC_V1_ADMIN_CREATE_AH:
+    case IONIC_V1_ADMIN_CREATE_AH: {
+        /* ionic_admin_create_ah body (24 bytes):
+         *   le64 dma_addr     [0:7]    header template
+         *   le32 length       [8:11]   template length
+         *   le32 pd_id        [12:15]
+         *   le32 id_ver       [16:19]  ah_id
+         *   le16 dbid_flags   [20:21]
+         *   u8   csum_profile [22]
+         *   u8   crypto       [23]
+         *
+         * A UD WQE carries only the ah_id, so without this record a datagram
+         * has no destination at all.  A template we cannot read is logged and
+         * still succeeds, as every AH did before it was recorded: the guest
+         * then fails at the first send through it, not at create time.
+         */
+        if (len < 20)
+            return 0;
+
+        uint64_t hdr_dma;
+        uint32_t hdr_len, ah_id;
+        struct ionic_dp_ah ah;
+
+        memcpy(&hdr_dma, body + 0, 8);
+        memcpy(&hdr_len, body + 8, 4);
+        memcpy(&ah_id, body + 16, 4);
+        hdr_dma = le64toh(hdr_dma);
+        hdr_len = le32toh(hdr_len);
+        ah_id = le32toh(ah_id);
+
+        if (!adminq_parse_roce_hdr(ctx, hdr_dma, hdr_len, &ah)) {
+            vfu_log(ctx->vfu_ctx, LOG_WARNING,
+                    "ionic_adminq CREATE_AH %u: unreadable header template "
+                    "(%u bytes)",
+                    ah_id, hdr_len);
+            return 0;
+        }
+        ionic_datapath_register_ah(ctx->dp, ah_id, &ah);
+        return 0;
+    }
+
+    case IONIC_V1_ADMIN_DESTROY_AH: {
+        /* ionic_admin_destroy_ah body: le32 ah_id [0:3] */
+        uint32_t ah_id;
+
+        if (len < 4)
+            return 0;
+        memcpy(&ah_id, body, 4);
+        ionic_datapath_unregister_ah(ctx->dp, le32toh(ah_id));
+        return 0;
+    }
+
     case IONIC_V1_ADMIN_QUERY_AH:
-    case IONIC_V1_ADMIN_DESTROY_AH:
-        /* Remaining opcodes: stub */
+        /* The driver answers query_ah from its own copy of the template. */
         (void)body;
         (void)len;
         vfu_log(ctx->vfu_ctx, LOG_WARNING,

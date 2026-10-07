@@ -14,6 +14,10 @@
  * both. The translation unit is #included to reach dispatch_wqe(), and its
  * external symbols are stubbed.
  *
+ * CREATE_AH and DESTROY_AH share the same harness: another command that was
+ * a stub, whose header template is the only place a UD destination is ever
+ * stated, and which is checked here for what it hands the data path.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -282,6 +286,27 @@ uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
     (void)dp;
     (void)dgid;
     return g_node_from_gid;
+}
+
+/* The last AH the admin queue handed to the data path, and whether it did. */
+static struct ionic_dp_ah g_ah;
+static uint32_t g_ah_id;
+static bool g_ah_registered;
+static bool g_ah_unregistered;
+
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const struct ionic_dp_ah *ah)
+{
+    (void)dp;
+    g_ah = *ah;
+    g_ah_id = ah_id;
+    g_ah_registered = true;
+}
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
+{
+    (void)dp;
+    g_ah_id = ah_id;
+    g_ah_unregistered = true;
 }
 
 void pvrdma_adminq_count(pvrdma_handle_t handle)
@@ -560,6 +585,164 @@ static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
               0);
 }
 
+/* ---- CREATE_AH / DESTROY_AH ------------------------------------------- */
+
+#define AH_HDR_GPA 1024u
+#define AH_ID      0x1234u
+
+/*
+ * The 24-byte ionic_admin_create_ah body, pointing at a template the test
+ * has already put at AH_HDR_GPA.
+ */
+static void build_ah_body(uint8_t *body, uint32_t hdr_len)
+{
+    uint64_t dma = htole64(AH_HDR_GPA);
+    uint32_t l = htole32(hdr_len), id = htole32(AH_ID);
+
+    memset(body, 0, 24);
+    memcpy(body + 0, &dma, 8);
+    memcpy(body + 8, &l, 4);
+    memcpy(body + 16, &id, 4);
+}
+
+static const uint8_t DMAC[6] = {0x72, 0x6f, 0x63, 0x6d, 0x00, 0x02};
+static const uint8_t SMAC[6] = {0x72, 0x6f, 0x63, 0x6d, 0x00, 0x01};
+
+/* Ethernet, optionally an 802.1Q tag, then @ethertype; returns its length. */
+static uint32_t put_eth(uint8_t *h, uint16_t ethertype, bool vlan)
+{
+    uint32_t off = 12;
+
+    memcpy(h, DMAC, 6);
+    memcpy(h + 6, SMAC, 6);
+    if (vlan) {
+        h[off++] = 0x81;
+        h[off++] = 0x00;
+        h[off++] = 0x00;
+        h[off++] = 0x05;
+    }
+    h[off++] = (uint8_t)(ethertype >> 8);
+    h[off++] = (uint8_t)ethertype;
+    return off;
+}
+
+/*
+ * What ib_ud_header_pack() leaves once the driver trims BTH and DETH: an
+ * IPv4 RoCEv2 path from 192.168.200.20 to 192.168.200.10.
+ */
+static uint32_t put_v4_template(bool vlan)
+{
+    uint8_t *h = g_mem + AH_HDR_GPA;
+    uint32_t off = put_eth(h, 0x0800, vlan);
+    uint8_t *ip = h + off;
+    static const uint8_t saddr[4] = {192, 168, 200, 20};
+    static const uint8_t daddr[4] = {192, 168, 200, 10};
+
+    ip[0] = 0x45;
+    ip[9] = 17;
+    memcpy(ip + 12, saddr, 4);
+    memcpy(ip + 16, daddr, 4);
+    return off + 20 + 8; /* IPv4 + UDP */
+}
+
+static bool v4_mapped(const uint8_t *gid, uint8_t last)
+{
+    static const uint8_t prefix[12] = {0, 0, 0, 0, 0,    0,
+                                       0, 0, 0, 0, 0xff, 0xff};
+    return !memcmp(gid, prefix, 12) && gid[12] == 192 && gid[13] == 168 &&
+           gid[14] == 200 && gid[15] == last;
+}
+
+/*
+ * The regression: CREATE_AH was a stub, so the data path never learned where
+ * a UD WQE's ah_id pointed and could not route a single CM MAD.
+ */
+static void test_create_ah_records_the_path(void)
+{
+    uint8_t body[24];
+
+    ctx_reset();
+    g_ah_registered = false;
+    build_ah_body(body, put_v4_template(false));
+
+    check("create-ah-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_AH, body, 24) == 0);
+    check("create-ah-registered", g_ah_registered && g_ah_id == AH_ID);
+    check("create-ah-ipv4", g_ah.ipv4);
+    check("create-ah-sgid-is-saddr", v4_mapped(g_ah.sgid, 20));
+    check("create-ah-dgid-is-daddr", v4_mapped(g_ah.dgid, 10));
+    check("create-ah-macs",
+          !memcmp(g_ah.dmac, DMAC, 6) && !memcmp(g_ah.smac, SMAC, 6));
+}
+
+/* An 802.1Q tag shifts the IP header by four bytes. */
+static void test_create_ah_vlan(void)
+{
+    uint8_t body[24];
+
+    ctx_reset();
+    g_ah_registered = false;
+    build_ah_body(body, put_v4_template(true));
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_AH, body, 24);
+    check("create-ah-vlan-registered", g_ah_registered);
+    check("create-ah-vlan-addresses",
+          v4_mapped(g_ah.sgid, 20) && v4_mapped(g_ah.dgid, 10));
+}
+
+static void test_create_ah_ipv6(void)
+{
+    uint8_t body[24];
+    uint8_t *h = g_mem + AH_HDR_GPA;
+
+    ctx_reset();
+    g_ah_registered = false;
+    uint32_t off = put_eth(h, 0x86dd, false);
+    h[off] = 0x60;
+    for (uint32_t i = 0; i < 16; i++) {
+        h[off + 8 + i] = (uint8_t)(0xa0 + i);  /* saddr */
+        h[off + 24 + i] = (uint8_t)(0xb0 + i); /* daddr */
+    }
+    build_ah_body(body, off + 40 + 8);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_AH, body, 24);
+
+    check("create-ah-ipv6-registered", g_ah_registered && !g_ah.ipv4);
+    check("create-ah-ipv6-gids",
+          g_ah.sgid[0] == 0xa0 && g_ah.sgid[15] == 0xaf &&
+              g_ah.dgid[0] == 0xb0 && g_ah.dgid[15] == 0xbf);
+}
+
+/* A template that cannot be read registers nothing, but does not fail. */
+static void test_create_ah_bad_template(void)
+{
+    uint8_t body[24];
+
+    ctx_reset();
+    g_ah_registered = false;
+    put_eth(g_mem + AH_HDR_GPA, 0x88b5, false); /* not IP */
+    build_ah_body(body, 64);
+    check("create-ah-bad-template-succeeds",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_AH, body, 24) == 0);
+    check("create-ah-bad-template-unregistered", !g_ah_registered);
+
+    ctx_reset();
+    build_ah_body(body, 4096); /* longer than any template */
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_AH, body, 24);
+    check("create-ah-oversized-unregistered", !g_ah_registered);
+}
+
+static void test_destroy_ah(void)
+{
+    uint8_t body[4];
+    uint32_t id = htole32(AH_ID);
+
+    ctx_reset();
+    g_ah_unregistered = false;
+    memcpy(body, &id, 4);
+    check("destroy-ah-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_AH, body, 4) == 0);
+    check("destroy-ah-unregistered", g_ah_unregistered && g_ah_id == AH_ID);
+}
+
 int main(void)
 {
     test_state_reaches_the_side_buffer();
@@ -571,6 +754,11 @@ int main(void)
     test_unknown_qp_fails();
     test_query_failure_fails_the_command();
     test_short_body_writes_nothing();
+    test_create_ah_records_the_path();
+    test_create_ah_vlan();
+    test_create_ah_ipv6();
+    test_create_ah_bad_template();
+    test_destroy_ah();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
