@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -32,6 +33,7 @@ static int write_attr(const char *attribute, unsigned int value)
     char path[512];
     FILE *file;
     int length;
+    int fd;
     int result;
 
     length = snprintf(path, sizeof(path),
@@ -40,9 +42,15 @@ static int write_attr(const char *attribute, unsigned int value)
     if (length < 0 || (size_t)length >= sizeof(path))
         return 0;
 
-    file = fopen(path, "w");
-    if (!file)
+    /* open() rather than fopen() so the fixture never depends on umask. */
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (fd < 0)
         return 0;
+    file = fdopen(fd, "w");
+    if (!file) {
+        (void)close(fd);
+        return 0;
+    }
     result = fprintf(file, "%#x\n", value) >= 0;
     if (fclose(file) != 0)
         result = 0;
