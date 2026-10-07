@@ -415,10 +415,11 @@
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> / <code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">1dd8:1002</span></code> / <code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code></p></td>
 <td><p>Upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> + <code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code>,
-with the patches in <code class="docutils literal notranslate"><span class="pre">patches/</span></code> applied, and the
-upstream <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> in rdma-core</p></td>
+with the UC queue-pair patch in <code class="docutils literal notranslate"><span class="pre">patches/</span></code>
+applied, and the upstream <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> in
+rdma-core</p></td>
 </tr>
 </tbody>
 </table>
@@ -426,23 +427,23 @@ upstream <code class="docutils literal notranslate"><span class="pre">providers/
 <p>The server emulates the register and queue protocol of the
 AMD Pensando ionic NIC, so the guest runs a driver that is
 already in mainline Linux rather than one that only exists
-here. The driver source is near-stock — two small patches,
-one of them a device-ID addition — but the guest itself is
-<strong>not</strong> a stock cloud image. It needs a mainline kernel
+here. The driver source is near-stock — one small RDMA
+patch — but the guest itself is <strong>not</strong> a stock cloud
+image. It needs a mainline kernel
 matching <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> and the headers to build
 against, which no Ubuntu release ships. Nothing in this repo
 bakes such an image either: the guest is the published
 <code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour of <a class="reference external" href="https://github.com/sbates130272/batesste-ci-images">batesste-ci-images</a>,
 fetched by <code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code>. See the warning
 below.</p>
-<p>The Pensando vendor ID <code class="docutils literal notranslate"><span class="pre">0x1dd8</span></code> is kept, because that is
-what the upstream driver claims, but device ID <code class="docutils literal notranslate"><span class="pre">0x100a</span></code>
-sits outside the range real hardware uses (<code class="docutils literal notranslate"><span class="pre">0x1002</span></code> and
-<code class="docutils literal notranslate"><span class="pre">0x1003</span></code>) so an emulated device can never be confused with
-a physical DSC on the same host. The registered subsystem ID
-<code class="docutils literal notranslate"><span class="pre">0x5400</span></code> lets <code class="docutils literal notranslate"><span class="pre">pci.ids</span></code> name just this function
-<code class="docutils literal notranslate"><span class="pre">ROCm</span> <span class="pre">Emulated</span> <span class="pre">RDMA</span> <span class="pre">NIC</span></code> while leaving the underlying
-vendor/device pair intact for the upstream driver.</p>
+<p>The Pensando vendor ID <code class="docutils literal notranslate"><span class="pre">0x1dd8</span></code> is kept, and the emulated
+PF now uses the upstream device ID <code class="docutils literal notranslate"><span class="pre">0x1002</span></code>. The
+subsystem ID <code class="docutils literal notranslate"><span class="pre">0x5400</span></code> distinguishes this function from
+physical PFs with the same vendor/device pair. Once its
+entry is published in <code class="docutils literal notranslate"><span class="pre">pci.ids</span></code>, <code class="docutils literal notranslate"><span class="pre">lspci</span></code> will name it
+<code class="docutils literal notranslate"><span class="pre">ROCm</span> <span class="pre">Emulated</span> <span class="pre">RDMA</span> <span class="pre">NIC</span></code> after <code class="docutils literal notranslate"><span class="pre">update-pciids</span></code>. The
+underlying vendor/device pair remains intact for the upstream
+driver.</p>
 <section id="starting-the-server">
 <h2>Starting the Server<a class="headerlink" href="#starting-the-server" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
@@ -581,11 +582,7 @@ patches in <code class="docutils literal notranslate"><span class="pre">patches/
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0001-ionic-add-AMD-emulated-ionic-device-id.patch</span></code></p></td>
-<td><p>Adds <code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> to the ionic PCI ID table so the
-upstream driver binds to the emulated device.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch</span></code></p></td>
 <td><p>Allocates an address handle for UC queue pairs, which
 the upstream RDMA driver otherwise omits.</p></td>
 </tr>
@@ -636,7 +633,8 @@ the DKMS build.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic
 sudo<span class="w"> </span>modprobe<span class="w"> </span>ionic_rdma
 
-lspci<span class="w"> </span>-nnv<span class="w"> </span>-d<span class="w"> </span>1dd8:100a<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s1">'\[1dd8:5400\]'</span>
+sudo<span class="w"> </span>update-pciids
+lspci<span class="w"> </span>-nnv<span class="w"> </span>-d<span class="w"> </span>1dd8:1002<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s1">'\[1dd8:5400\]'</span>
 ip<span class="w"> </span>link<span class="w">                  </span><span class="c1"># the LIF appears as a normal netdev</span>
 ibv_devices<span class="w">              </span><span class="c1"># the RDMA device appears here</span>
 </pre></div>
@@ -684,7 +682,7 @@ immediately rather than guessing a ref.</p>
 <h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">tests/test_ionic_ci.sh</span></code> is registered with CTest as
 <code class="docutils literal notranslate"><span class="pre">ionic-ci</span></code> and needs no VM. It checks that the server
-starts on each backend, announces <code class="docutils literal notranslate"><span class="pre">1dd8:100a</span></code> with
+starts on each backend, announces <code class="docutils literal notranslate"><span class="pre">1dd8:1002</span></code> with
 subsystem <code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code>, reports the expected BAR and MSI-X
 geometry, shuts down cleanly on <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>, attaches to a
 TAP when one is available, comes up with no extra flags, and

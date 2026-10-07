@@ -376,6 +376,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-programs">Test Programs</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-pci-client">test_pci_client</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-data-transfer">test_data_transfer</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-rdma-device-tuple">find-rdma-device-tuple</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
@@ -430,7 +431,8 @@ basic PCI configuration space queries:</p>
 <ul class="simple">
 <li><p>Socket connection to server</p></li>
 <li><p>PCI Vendor ID verification (Pensando: <code class="docutils literal notranslate"><span class="pre">0x1dd8</span></code>)</p></li>
-<li><p>PCI Device ID verification (ROCm ERNIC: <code class="docutils literal notranslate"><span class="pre">0x100a</span></code>)</p></li>
+<li><p>PCI Device ID verification (ROCm ERNIC: <code class="docutils literal notranslate"><span class="pre">0x1002</span></code>)</p></li>
+<li><p>PCI subsystem verification (ROCm ERNIC: <code class="docutils literal notranslate"><span class="pre">0x1dd8:0x5400</span></code>)</p></li>
 <li><p>PCI Class Code verification (Network Controller)</p></li>
 <li><p>PCI Header Type verification (Type 0)</p></li>
 <li><p>BAR register reads</p></li>
@@ -453,6 +455,12 @@ basic PCI configuration space queries:</p>
 <p>Requires an RDMA device (via the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver
 or real hardware). Skipped if no device is found.</p>
 </section>
+<section id="find-rdma-device-tuple">
+<h3>find-rdma-device-tuple<a class="headerlink" href="#find-rdma-device-tuple" title="Link to this heading">#</a></h3>
+<p>A shell test registered with CTest. It uses a synthetic sysfs tree to verify
+RDMA discovery requires the emulated vendor/device/subsystem tuple and rejects
+near matches.</p>
+</section>
 <section id="test-rdma-cm">
 <h3>test_rdma_cm<a class="headerlink" href="#test-rdma-cm" title="Link to this heading">#</a></h3>
 <p>RDMA Connection Manager test using libibverbs. Validates
@@ -465,7 +473,7 @@ CTest as <code class="docutils literal notranslate"><span class="pre">ionic-ci</
 <ul class="simple">
 <li><p>Server starts on the <code class="docutils literal notranslate"><span class="pre">loopback</span></code> and <code class="docutils literal notranslate"><span class="pre">none</span></code> backends,
 and with no extra flags at all</p></li>
-<li><p>PCI identity is <code class="docutils literal notranslate"><span class="pre">0x1dd8:0x100a</span></code></p></li>
+<li><p>PCI identity is <code class="docutils literal notranslate"><span class="pre">0x1dd8:0x1002</span></code></p></li>
 <li><p>BAR geometry is 64 KB BAR0 (32 KB register window) and
 4 MB BAR2, with 32 MSI-X vectors</p></li>
 <li><p>Clean shutdown on <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code></p></li>
@@ -1028,6 +1036,7 @@ this is a public repository.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-programs">Test Programs</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-pci-client">test_pci_client</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-data-transfer">test_data_transfer</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-rdma-device-tuple">find-rdma-device-tuple</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
