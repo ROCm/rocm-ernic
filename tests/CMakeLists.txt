@@ -127,6 +127,19 @@ target_link_libraries(test_write_imm PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
+# Fixture-backed tests for the C-side emulated RDMA device lookup.
+add_executable(test_ernic_device test_ernic_device.c)
+target_compile_definitions(test_ernic_device PRIVATE
+    _POSIX_C_SOURCE=200809L
+    ERNIC_SYSFS_INFINIBAND="${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture/class/infiniband"
+    ERNIC_TEST_FIXTURE_ROOT="${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture"
+)
+target_include_directories(test_ernic_device PRIVATE
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_options(test_ernic_device PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ernic_device PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # net_headers.h checksum helpers are header-only and self-contained.
 add_executable(test_net_checksum test_net_checksum.c)
 target_include_directories(test_net_checksum PRIVATE
@@ -513,6 +526,7 @@ set(ERNIC_TEST_TARGETS
     test_pci_client
     test_data_transfer
     test_rdma_cm
+    test_ernic_device
     test_rdma_backend_query_port
     test_write_imm
     test_net_checksum
@@ -557,6 +571,23 @@ add_test(
         $<TARGET_FILE:rocm-ernic>
 )
 set_tests_properties(pci-config-test PROPERTIES
+    TIMEOUT 30
+    RUN_SERIAL TRUE
+)
+
+# RDMA device discovery must match the complete emulated PCI tuple, not
+# a physical Pensando function with a shared vendor or device ID.
+add_test(
+    NAME find-rdma-device-tuple
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_find_rdma_device.sh
+)
+set_tests_properties(find-rdma-device-tuple PROPERTIES TIMEOUT 30)
+
+add_test(
+    NAME ernic-device-tuple-unit
+    COMMAND $<TARGET_FILE:test_ernic_device>
+)
+set_tests_properties(ernic-device-tuple-unit PROPERTIES
     TIMEOUT 30
     RUN_SERIAL TRUE
 )

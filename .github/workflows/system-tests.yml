@@ -532,7 +532,7 @@ jobs:
         # provisioning.
         #
         # The PCI function itself is a different matter: QEMU attached
-        # the vfio-user device at boot, so 1dd8:100a is on the bus from
+        # the vfio-user device at boot, so 1dd8:1002 is on the bus from
         # the first second.  This step used to end every probe in
         # `|| echo "... not found"`, so a guest that never saw the
         # device passed it exactly like a guest that did.  Assert it:
@@ -547,12 +547,14 @@ jobs:
         echo ""
         PCI_BDF="$(for dev in /sys/bus/pci/devices/*; do
           [ "$(cat "$dev/vendor")" = '0x1dd8' ] || continue
-          [ "$(cat "$dev/device")" = '0x100a' ] || continue
+          [ "$(cat "$dev/device")" = '0x1002' ] || continue
+          [ "$(cat "$dev/subsystem_vendor")" = '0x1dd8' ] || continue
+          [ "$(cat "$dev/subsystem_device")" = '0x5400' ] || continue
           basename "$dev"
           break
         done)"
         if [ -z "$PCI_BDF" ]; then
-          echo "✗ ionic PCI function 1dd8:100a not present on the guest bus"
+          echo "✗ ionic PCI function 1dd8:1002 not present on the guest bus"
           echo "  The vfio-user device did not attach.  Check the server"
           echo "  log and the QEMU console for the vfio-user handshake."
           exit 1
@@ -568,7 +570,7 @@ jobs:
           echo "✗ ionic PCI function present, but subsystem is ${SUBSYSTEM_VENDOR#0x}:${SUBSYSTEM_DEVICE#0x}"
           exit 1
         fi
-        echo "✓ ionic PCI function 1dd8:100a present with subsystem 1dd8:5400"
+        echo "✓ ionic PCI function 1dd8:1002 present with subsystem 1dd8:5400"
 
         echo ""
         echo "=== Kernel modules (informational, pre-provisioning) ==="
@@ -610,10 +612,10 @@ jobs:
         echo "::error::galaxy install failed after 3 attempts"
         exit 1
 
-    - name: Install kernel headers and build tools in VM
+    - name: Install kernel headers, build tools and pciutils in VM
       shell: bash
       run: |
-        echo "=== Installing kernel headers and build tools in VM ==="
+        echo "=== Installing kernel headers, build tools and pciutils in VM ==="
         SSH_PORT="$SSH_PORT"
         VM_USER="$VM_USER"
         ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
@@ -647,6 +649,7 @@ jobs:
         for i in 1 2 3 4 5; do
           sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
             ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+            pciutils \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
@@ -721,7 +724,7 @@ jobs:
         fi
         echo "✓ ERNIC server still running (PID $SERVER_PID)"
 
-        # Identify the device by PCI vendor ID rather than by name.  The
+        # Identify the device by the emulated PCI tuple rather than by name.  The
         # name is rewritten twice during boot -- kernel ionic_%d, then
         # 60-rdma-persistent-naming.rules to rocep<bus>s<slot>, then
         # 99-rocm-ernic.rules to rocm-rdma-ernic<n> -- so it says nothing
@@ -2145,7 +2148,7 @@ jobs:
         echo "=== Verifying RDMA devices ==="
         VM_USER="${VM_INFO_USER}"
 
-        # Discover the device per guest by PCI vendor ID rather than by
+        # Discover the device per guest by the emulated PCI tuple rather than by
         # name -- see the same lookup in the loopback job, and
         # scripts/find-rdma-device.sh for why the name cannot be relied
         # on.

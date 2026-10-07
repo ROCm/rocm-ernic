@@ -50,13 +50,11 @@ static const char *get_backend_type_base(const char *backend_str);
 /* PCI identity presented over vfio-user.
  *
  * We emulate an ionic-protocol NIC, so we claim the Pensando Systems
- * vendor ID.  The device ID sits outside the range upstream ionic.ko
- * probes (0x1002 ETH_PF, 0x1003 ETH_VF), which keeps the emulated NIC
- * distinguishable from real DSC hardware in lspci, udev and pci.ids
- * at the cost of the one-line ID patch in
- * patches/0001-ionic-add-AMD-emulated-ionic-device-id.patch. */
+ * vendor ID and the upstream ionic PF device ID.  The registered
+ * 1dd8:5400 subsystem tuple distinguishes rocm-ernic from physical DSC
+ * hardware in pci.ids output. */
 #define PCI_VENDOR_ID_PENSANDO           0x1dd8
-#define PCI_DEVICE_ID_AMD_IONIC_ERNIC    0x100a
+#define PCI_DEVICE_ID_AMD_IONIC_ERNIC    0x1002
 #define PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC 0x5400
 
 /* PCI Class Codes (from linux/pci_ids.h) */
@@ -455,7 +453,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         err(EXIT_FAILURE, "vfu_pci_init() failed");
     }
 
-    /* Patched ionic.ko + ionic_rdma.ko bind to this ID. */
+    /* Upstream ionic.ko + ionic_rdma.ko bind to this ID. */
     uint16_t did = PCI_DEVICE_ID_AMD_IONIC_ERNIC;
     vfu_pci_set_id(vfu_ctx, PCI_VENDOR_ID_PENSANDO, did, PCI_VENDOR_ID_PENSANDO,
                    PCI_SUBDEVICE_ID_AMD_IONIC_ERNIC);

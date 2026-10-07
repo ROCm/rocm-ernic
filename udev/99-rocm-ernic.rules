@@ -5,7 +5,7 @@
 # rocm-ernic persistent device naming rules.
 #
 # Renames network interfaces and InfiniBand devices
-# created by rocm-ernic (1dd8:100a, upstream ionic driver)
+# created by rocm-ernic (1dd8:1002, upstream ionic driver)
 # to stable names, so guests always see rocm-ernic<n> and
 # rocm-rdma-ernic<n>.
 #
@@ -18,12 +18,15 @@
 #
 # Renames the Ethernet interface from the default
 # PCI-topology name (e.g. enp1s0) to rocm-ernic0.
-# The device-ID guard is what keeps this off real
-# Pensando hardware, which the same driver also binds.
+# The subsystem-ID guard is what keeps this off
+# real Pensando hardware, which the same driver
+# also binds.
 
 SUBSYSTEM=="net", ACTION=="add", \
   ATTR{device/vendor}=="0x1dd8", \
-  ATTR{device/device}=="0x100a", \
+  ATTR{device/device}=="0x1002", \
+  ATTR{device/subsystem_vendor}=="0x1dd8", \
+  ATTR{device/subsystem_device}=="0x5400", \
   DRIVERS=="ionic", \
   NAME="rocm-ernic%n"
 
@@ -64,7 +67,9 @@ SUBSYSTEM=="net", ACTION=="add", \
 SUBSYSTEM=="infiniband", ACTION=="add", \
   DRIVERS=="ionic|ionic_rdma", \
   ATTRS{vendor}=="0x1dd8", \
-  ATTRS{device}=="0x100a", \
+  ATTRS{device}=="0x1002", \
+  ATTRS{subsystem_vendor}=="0x1dd8", \
+  ATTRS{subsystem_device}=="0x5400", \
   RUN+="/bin/sh -c 'pci=/sys$devpath; pci=${pci%/infiniband/*}; \
     for ibdev in $pci/infiniband/*; do \
       [ -d $ibdev ] || continue; \

@@ -279,7 +279,7 @@ ibv_devices || echo "No RDMA devices found"
 
 echo ""
 echo "=== Device Info ==="
-# Identify by PCI vendor ID, not by name.  The device is renamed twice
+# Identify by the emulated PCI tuple, not by name.  The device is renamed twice
 # during boot (see scripts/find-rdma-device.sh), and the old
 # rocep|mlx|qedr|rxe pattern matched real hardware that has nothing to
 # do with this driver -- so a host with a ConnectX card passed whether
@@ -326,4 +326,3 @@ else
 fi
 
 # Cleanup will happen via trap
-

@@ -13,7 +13,7 @@ performs basic PCI configuration space queries.
 **Tests Performed:**
 - Socket connection to server
 - PCI Vendor ID verification (Pensando: 0x1dd8)
-- PCI Device ID verification (ROCm ERNIC: 0x100a)
+- PCI Device ID verification (ROCm ERNIC: 0x1002)
 - PCI subsystem verification (Pensando: 0x1dd8, ROCm ERNIC: 0x5400)
 - PCI Class Code verification (Network Controller, Ethernet:
   0x02 00 00)
@@ -61,7 +61,7 @@ Shell test for the emulated ionic device, registered with CTest as
 
 **Tests Performed:**
 - Server starts on the `loopback` and `none` backends
-- PCI identity verification (ionic ERNIC: `0x1dd8:0x100a`,
+- PCI identity verification (ionic ERNIC: `0x1dd8:0x1002`,
   subsystem `0x1dd8:0x5400`)
 - BAR geometry (64K BAR0 with a 32K register window, 4M BAR2)
 - MSI-X vector count (32)
@@ -82,6 +82,13 @@ Shell test for the emulated ionic device, registered with CTest as
 - 0: All tests passed
 - 1: Test failure
 - 77: Skipped (server binary not built)
+
+### test_find_rdma_device.sh
+
+Shell test registered with CTest as `find-rdma-device-tuple`. It uses a
+synthetic sysfs tree to verify the shared RDMA-device lookup accepts the
+emulated vendor/device/subsystem tuple and rejects devices that differ in
+any tuple field.
 
 ## Running Tests
 

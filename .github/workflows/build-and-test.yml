@@ -227,7 +227,7 @@ jobs:
       # and not every runner grants passwordless sudo, so it has to be
       # arranged out-of-band on the host; hipfile-sanitizers.yml carries a
       # note about exactly that. Empty on the non-tsan legs.
-      - name: Run tests
+      - name: Verify ionic PCI identity without a VM
         env:
           SANITIZER: ${{ matrix.sanitizer }}
         run: |
@@ -236,6 +236,18 @@ jobs:
             TEST_WRAP="setarch $(uname -m) -R"
           fi
           $TEST_WRAP ctest --test-dir build --output-on-failure \
+            -R '^ionic-ci$'
+
+      - name: Run remaining tests
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          TEST_WRAP=""
+          if [ "$SANITIZER" = "tsan" ]; then
+            TEST_WRAP="setarch $(uname -m) -R"
+          fi
+          $TEST_WRAP ctest --test-dir build --output-on-failure \
+            -E '^ionic-ci$' \
             --output-junit build/Testing/ctest-junit.xml
 
       - name: Test loopback backend configurations

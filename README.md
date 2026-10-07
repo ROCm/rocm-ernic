@@ -31,10 +31,11 @@ VM and a single server instance are a complete fabric — see
 object store with its own in-band HTTP endpoint, so the same single VM is a
 complete object fabric — see [`docs/s3.rst`](docs/s3.rst)).
 
-The server emulates an AMD Pensando ionic NIC (`1dd8:100a`), so the guest runs
-the upstream Linux `ionic` and `ionic_rdma` drivers with only the small
-device-ID and UC address-handle patches in [`patches/`](patches/) applied, and
-the upstream `providers/ionic` in rdma-core. `--tap IFNAME` attaches the
+The server emulates an AMD Pensando ionic NIC (`1dd8:1002`, subsystem
+`1dd8:5400`), so the guest runs the upstream Linux `ionic` and
+`ionic_rdma` drivers with only the small UC address-handle patch in
+[`patches/`](patches/) applied, and the upstream `providers/ionic` in
+rdma-core. `--tap IFNAME` attaches the
 emulated Ethernet interface to a host TAP, giving the guest a real routable
 segment with working ARP, ICMP, and TCP/IP. See
 [`docs/ionic.rst`](docs/ionic.rst) for details.

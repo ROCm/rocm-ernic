@@ -18,7 +18,7 @@
 ernic_project_root: "{{ playbook_dir }}/../.."
 
 # ── Device ───────────────────────────────────────
-# The server presents 1dd8:100a and the guest drives it with
+# The server presents 1dd8:1002 and the guest drives it with
 # patched upstream ionic.ko / ionic_rdma.ko.  Guest Ethernet
 # leaves through a host TAP on ernic_tap_bridge.
 

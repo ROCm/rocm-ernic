@@ -6,10 +6,10 @@ and optionally rocm-xio for GPU-initiated transfers.
 
 ## Device
 
-The guest drives PCI device `1dd8:100a` with the upstream `ionic` and
-`ionic_rdma` modules, built by DKMS from patched upstream kernel sources as
-the `ionic-ernic` package, against stock rdma-core with its upstream
-`providers/ionic`. rocm-xio is built with `GDA_IONIC=ON` and
+The guest drives PCI device `1dd8:1002` with subsystem `1dd8:5400`, using the
+upstream `ionic` and `ionic_rdma` modules, built by DKMS from patched upstream
+kernel sources as the `ionic-ernic` package, against stock rdma-core with its
+upstream `providers/ionic`. rocm-xio is built with `GDA_IONIC=ON` and
 `RDMA_CORE_BUILD=OFF`. udev names the devices `rocm-ernic0` and
 `rocm-rdma-ernic0`.
 
@@ -36,7 +36,7 @@ Phases, each behind a flag:
 | Guest agent | `qemu-guest-agent` for QMP `guest-get-load` | `ernic_guest_agent` |
 | Stage sources | push `patches/` and the ionic helper scripts from the controller | always |
 | rdma-core | download, patch or inject the provider, build, install, stamp | `ernic_build_rdma_core` |
-| Driver | fetch and patch the ionic sources, DKMS build, udev rules, `pci.ids`, modprobe with `modules-load.d`, `ibv_devices` checks | `ernic_install_driver` |
+| Driver | fetch and patch the ionic sources, DKMS build, udev rules, modprobe with `modules-load.d`, `ibv_devices` checks | `ernic_install_driver` |
 | NIC | hostname, `/etc/hosts`, address on `ernic_nic_name` | `ernic_configure_nic` |
 | rocm-xio | build, `rocm-xio.ko`, `xio-tester` | `ernic_gpu_passthrough` |
 
@@ -93,11 +93,9 @@ ernic_ionic_min_kernel: "6.18"
 ernic_ionic_min_vcpus: 4
 
 # Boot-time state. modules-load.d entries so a rebooted guest keeps
-# its RDMA device, and the pci.ids subsystem entry so lspci names the
-# NIC "ROCm Emulated RDMA NIC" once hwdata knows 1dd8:100a.
-# Both used to be the golden image's business and are the role's now.
+# its RDMA device. For current lspci names, refresh pci.ids in the
+# guest with update-pciids.
 ernic_guest_modules_persist: true
-ernic_guest_pciids: true
 
 # Phase gates
 ernic_guest_agent: true
