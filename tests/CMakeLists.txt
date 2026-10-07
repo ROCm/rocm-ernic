@@ -323,6 +323,27 @@ target_compile_definitions(test_ionic_intr_pending PRIVATE
 target_compile_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# ionic PORT_INIT port-info test. It #includes the eth emulator translation
+# unit and backs the DMA entry points with a plain buffer, so the structure
+# the driver reads its link speed out of can be inspected directly -- no
+# guest, no VM and no vfio-user socket.
+add_executable(test_ionic_port_info test_ionic_port_info.c)
+target_include_directories(test_ionic_port_info PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+# Third-party headers are SYSTEM includes, matching the main target, so
+# their warnings stay quiet while the ionic sources under test are still
+# warning-checked.
+target_include_directories(test_ionic_port_info SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_port_info PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
 # side buffers the driver reads its answer out of can be inspected directly.
@@ -540,6 +561,7 @@ set(ERNIC_TEST_TARGETS
     test_s3_tcp
     test_loopback_sge_copy
     test_ionic_intr_pending
+    test_ionic_port_info
     test_ionic_query_qp
     test_ionic_cq_arm
     test_tcp_mesh_topology
@@ -691,6 +713,17 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_intr_pending>
 )
 set_tests_properties(ionic-intr-pending-unit PROPERTIES TIMEOUT 30)
+
+# ionic PORT_INIT unit test: asserts the port-info block the driver reads is
+# actually published. While PORT_INIT was a stub it stayed zeroed, the
+# transceiver read back as absent, ionic_get_link_ksettings() resolved
+# PORT_NONE and never assigned a speed -- so ethtool reported "Unknown!" and
+# UCX refused to build an endpoint on a device with bandwidth 0.
+add_test(
+    NAME ionic-port-info-unit
+    COMMAND $<TARGET_FILE:test_ionic_port_info>
+)
+set_tests_properties(ionic-port-info-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and

@@ -116,12 +116,48 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_CMD_LIF_INIT        21
 #define IONIC_PORT_OPER_STATUS_UP 1
 #define IONIC_LIF_INFO_STATUS_OFF 256u
-#define IONIC_CMD_LIF_RESET       22
-#define IONIC_CMD_LIF_GETATTR     23
-#define IONIC_CMD_LIF_SETATTR     24
-#define IONIC_CMD_Q_IDENTIFY      39
-#define IONIC_CMD_Q_INIT          40
-#define IONIC_CMD_Q_CONTROL       41
+
+/* struct ionic_port_info, as the driver lays it out in the DMA area whose
+ * address arrives in PORT_INIT.  Offsets rather than a struct because only
+ * these fields are published; the sprom and statistics blocks that follow
+ * are left as the driver allocated them.
+ *
+ *   union ionic_port_config   config;   0   (__le32 words[64])
+ *   struct ionic_port_status  status;   256 (__packed)
+ *       __le32 id;                      256
+ *       __le32 speed;                   260
+ *       u8     status;                  264
+ *       __le16 link_down_count;         265
+ *       u8     fec_type;                267
+ *       u8     rsvd[48];                268
+ *       struct ionic_xcvr_status xcvr;  316
+ *           u8     state;               316
+ *           u8     phy;                 317
+ *           __le16 pid;                 318
+ */
+#define IONIC_PORT_INFO_CONFIG_SPEED_OFF  0u
+#define IONIC_PORT_INFO_CONFIG_MTU_OFF    4u
+#define IONIC_PORT_INFO_CONFIG_STATE_OFF  8u
+#define IONIC_PORT_INFO_STATUS_SPEED_OFF  260u
+#define IONIC_PORT_INFO_STATUS_STATUS_OFF 264u
+#define IONIC_PORT_INFO_XCVR_STATE_OFF    316u
+#define IONIC_PORT_INFO_XCVR_PHY_OFF      317u
+#define IONIC_PORT_INFO_XCVR_PID_OFF      318u
+/* Everything above the highest field written, so one DMA write covers it. */
+#define IONIC_PORT_INFO_PUBLISHED_LEN 320u
+
+#define IONIC_PORT_ADMIN_STATE_UP    2
+#define IONIC_XCVR_STATE_INSERTED    1
+#define IONIC_PHY_TYPE_COPPER        1
+#define IONIC_XCVR_PID_QSFP_100G_CR4 1
+#define IONIC_ETH_LINK_SPEED_MBPS    100000
+#define IONIC_ETH_MTU                9000
+#define IONIC_CMD_LIF_RESET          22
+#define IONIC_CMD_LIF_GETATTR        23
+#define IONIC_CMD_LIF_SETATTR        24
+#define IONIC_CMD_Q_IDENTIFY         39
+#define IONIC_CMD_Q_INIT             40
+#define IONIC_CMD_Q_CONTROL          41
 
 /* Completion status codes (enum ionic_status_code in ionic_if.h) */
 #define IONIC_RC_SUCCESS 0
@@ -340,6 +376,8 @@ struct eth_inbox_frame {
 static void process_devcmd(struct ionic_eth_emu *emu);
 static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
                             uint8_t *comp, uint8_t *data);
+static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                             uint8_t *comp);
 static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                 uint8_t *comp, uint8_t *data);
 static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
@@ -753,12 +791,16 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         comp[0] = 0;
         break;
 
-    case IONIC_CMD_PORT_IDENTIFY:
     case IONIC_CMD_PORT_INIT:
+        handle_port_init(emu, cmd, comp);
+        break;
+
+    case IONIC_CMD_PORT_IDENTIFY:
     case IONIC_CMD_PORT_RESET:
     case IONIC_CMD_PORT_GETATTR:
     case IONIC_CMD_PORT_SETATTR:
-        /* Stub: return success, data zeroed = sane defaults. */
+        /* Stub: return success, data zeroed = sane defaults.  PORT_INIT is
+         * handled above because the driver reads the area it points at. */
         comp[0] = 0;
         break;
 
@@ -1019,6 +1061,80 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
 
     comp[0] = 0; /* status OK */
     comp[1] = 1; /* version   */
+}
+
+/* -------------------------------------------------------------------------
+ * PORT_INIT (opcode 11)
+ *
+ * Publishes the port identity into the DMA area the driver passes in.
+ *
+ * This is what makes `ethtool` report a link speed, and it is less direct
+ * than it looks.  ionic_get_link_ksettings() takes the speed and duplex from
+ * lif->info->status -- which LIF_INIT below already fills in with 100 Gbps
+ * and a live carrier -- but only inside:
+ *
+ *     if (ks->base.port != PORT_NONE) {
+ *             ks->base.speed = le32_to_cpu(lif->info->status.link_speed);
+ *             ...
+ *     }
+ *
+ * and ks->base.port comes from port_info->status.xcvr: PORT_DA for a copper
+ * phy or a recognised copper transceiver, PORT_FIBRE for fiber, PORT_NONE
+ * otherwise.  While this command was a stub the whole structure stayed zero,
+ * so the transceiver read back as absent, the port resolved to PORT_NONE,
+ * and the assignment above never ran.  The result was a NIC that logs
+ * "Link up - 100 Gbps" while ethtool reports:
+ *
+ *     Supported link modes:   Not reported
+ *     Speed: Unknown!
+ *     Duplex: Half
+ *
+ * That is not cosmetic.  UCX derives a TCP device's bandwidth from the
+ * ethtool speed, so a zero made it refuse to build an endpoint address
+ * ("failed to unpack address, invalid bandwidth 0.00") and every NIXL agent
+ * -- and therefore every LMCache MP server -- died at startup on a guest
+ * that could see this NIC.
+ *
+ * Declaring a QSFP 100G CR4 transceiver is what resolves the port to PORT_DA.
+ * It also populates the supported link modes, which otherwise read "Not
+ * reported".
+ * -------------------------------------------------------------------------
+ */
+static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                             uint8_t *comp)
+{
+    /* cmd layout: opcode(1) index(1) rsvd(6) info_pa(8) rsvd2(48) */
+    uint64_t info_pa;
+    memcpy(&info_pa, cmd + 8, 8);
+    info_pa = le64toh(info_pa);
+
+    if (info_pa) {
+        uint8_t info[IONIC_PORT_INFO_PUBLISHED_LEN];
+        uint32_t speed = le32(IONIC_ETH_LINK_SPEED_MBPS);
+        uint32_t mtu = le32(IONIC_ETH_MTU);
+        uint16_t pid = le16(IONIC_XCVR_PID_QSFP_100G_CR4);
+
+        memset(info, 0, sizeof(info));
+        memcpy(info + IONIC_PORT_INFO_CONFIG_SPEED_OFF, &speed, 4);
+        memcpy(info + IONIC_PORT_INFO_CONFIG_MTU_OFF, &mtu, 4);
+        info[IONIC_PORT_INFO_CONFIG_STATE_OFF] = IONIC_PORT_ADMIN_STATE_UP;
+        memcpy(info + IONIC_PORT_INFO_STATUS_SPEED_OFF, &speed, 4);
+        info[IONIC_PORT_INFO_STATUS_STATUS_OFF] = IONIC_PORT_OPER_STATUS_UP;
+        info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
+        info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_COPPER;
+        memcpy(info + IONIC_PORT_INFO_XCVR_PID_OFF, &pid, 2);
+
+        if (eth_dma_rw(emu->vfu_ctx, info_pa, info, sizeof(info), true) < 0)
+            vfu_log(emu->vfu_ctx, LOG_ERR,
+                    "ionic_eth_emu: PORT_INIT: port info write to %#lx failed",
+                    (unsigned long)info_pa);
+    }
+
+    comp[0] = 0; /* status OK */
+
+    vfu_log(emu->vfu_ctx, LOG_INFO,
+            "ionic_eth_emu: PORT_INIT speed=%uMbps info_pa=%#lx",
+            (unsigned)IONIC_ETH_LINK_SPEED_MBPS, (unsigned long)info_pa);
 }
 
 /* -------------------------------------------------------------------------
