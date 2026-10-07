@@ -9,7 +9,11 @@
 ---
 - name: Install pciutils for pci.ids refresh and lspci verification
   ansible.builtin.apt:
-    name: pciutils
+    # update-pciids downloads through curl, wget or lynx and fails if
+    # the guest has none of them, so pull curl in alongside pciutils.
+    name:
+      - pciutils
+      - curl
     state: present
     update_cache: true
     lock_timeout: "{{ ernic_dpkg_lock_wait }}"
