@@ -185,7 +185,44 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_RDMA_ADMIN_OPCODES 19
 
 /* Page table and MR counts for emulated device */
-#define IONIC_NPTS_PER_LIF  (1u << 20) /* 1M page table entries */
+/* 2M page table entries. This is the knob that sets the guest's maximum
+ * memory-region size, and it is not obvious from here, so: the driver does
+ *
+ *   attr->max_mr_size = dev->lif_cfg.npts_per_lif * PAGE_SIZE / 2;
+ *   (drivers/infiniband/hw/ionic/ionic_ibdev.c:37)
+ *
+ * -- an explicit halving, presumably for page-table headroom. At the previous
+ * (1u << 20) that reported 1048576 * 4096 / 2 = 0x80000000, i.e. 2 GiB, which
+ * reads like something truncating a 4 GiB constant and is not: it is this
+ * formula working as intended. 1u << 21 reports 4 GiB.
+ *
+ * Nothing is allocated from this value on either side -- the emulator uses it
+ * only in the LIF_IDENTIFY response below, and the driver uses it only for
+ * max_mr_size and max_fast_reg_page_list_len (ionic_ibdev.c:37,74) -- so
+ * raising it costs no memory.
+ *
+ * It matters because LMCache registers its whole L1 arena as ONE memory
+ * region (nixl_impl.py:341), so max_mr_size is a hard ceiling on per-node L1.
+ *
+ * WHY SO LARGE. Real HCAs advertise max_mr_size as effectively unbounded
+ * (ConnectX-class parts report UINT64_MAX) and let pinnable host memory be
+ * the real limit. A small advertised cap is an emulation artifact that
+ * surfaces as a mystifying ENOMEM from ibv_reg_mr long before the host is
+ * anywhere near out of memory, so match the hardware convention and let
+ * memory do the limiting.
+ *
+ * 1u << 31 reports 2^31 * 4096 / 2 = 2^42 = 4 TiB. The arithmetic is safe:
+ * npts_per_lif is u32 and PAGE_SIZE is unsigned long, so the product is done
+ * in 64 bits, and max_fast_reg_page_list_len (npts/2 = 2^30) still fits the
+ * u32 it is assigned to. A literal 0xFFFFFFFF is avoided deliberately -- it
+ * would be ~8 TiB but reads like a sentinel.
+ *
+ * MAX_MR_SIZE in third-party/qemu/hw/rdma/rdma_rm_defs.h (1UL << 32) does NOT
+ * constrain this: it is referenced only by rocm_ernic_compat.c's pvrdma
+ * dev_attr, which the ionic guest driver never reads, and no registration
+ * path validates against it.
+ */
+#define IONIC_NPTS_PER_LIF  (1u << 31) /* 2G PTEs -> 4 TiB max_mr_size */
 #define IONIC_NMRS_PER_LIF  (1u << 17) /* 128K MRs              */
 #define IONIC_NAHS_PER_LIF  (1u << 15) /* 32K AHs               */
 #define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
