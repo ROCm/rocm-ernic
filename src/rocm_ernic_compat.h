@@ -260,6 +260,34 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe,
 void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle);
 
 /**
+ * ionic_rm_alloc_srq - Allocate a shared receive queue
+ * @pd_handle: protection domain the SRQ belongs to
+ * @srq_limit: low-watermark at which the device raises an SRQ_LIMIT event
+ * @srq_handle: output: allocated SRQ handle
+ */
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle);
+
+/**
+ * ionic_rm_dealloc_srq - Free a shared receive queue
+ */
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle);
+
+/**
+ * ionic_rm_modify_srq - Change an SRQ's low-watermark
+ */
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit);
+
+/**
+ * ionic_rm_query_srq - Read back an SRQ's attributes
+ */
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge,
+                       uint32_t *srq_limit);
+
+/**
  * ionic_rm_alloc_pd - Allocate a protection domain
  */
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);

@@ -57,8 +57,15 @@ __pycache__/
 # Patch files (exclude patches/ directory which ships driver patches)
 *.patch
 *.diff
+# Both levels: the single-star form does not reach a subdirectory, so
+# patches/srq/*.patch stayed ignored and the SRQ series was invisible to
+# git status -- which looks like "nothing to commit" rather than "your
+# patches are not in the tree", and ships a branch whose CI cannot find
+# the series it is meant to apply.
 !patches/*.patch
 !patches/*.diff
+!patches/**/*.patch
+!patches/**/*.diff
 
 # Log files
 *.log

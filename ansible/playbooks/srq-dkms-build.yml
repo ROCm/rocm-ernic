@@ -1,0 +1,32 @@
+---
+# Build the SRQ-capable ionic drivers as a DKMS package.
+#
+#   ansible-playbook playbooks/srq-dkms-build.yml
+#
+# Runs against localhost by default: this is a build gate, not a provisioning
+# step, and needs no ernic, no guest and no RDMA device -- only dkms, git,
+# make and headers for the running kernel. It answers "does the SRQ driver
+# still compile?", which is the one question we can answer today, before any
+# guest image carries the driver.
+#
+# To build on a guest and install rather than just compile:
+#
+#   ansible-playbook -i inventory/hosts.yml playbooks/srq-dkms-build.yml \
+#       -e ernic_srq_dkms_install=true -l <guest> \
+#       -e ernic_srq_dkms_scripts_dir=<path on the guest>/scripts \
+#       -e ernic_srq_dkms_patches_dir=<path on the guest>/patches/srq
+#
+# Both paths must be overridden for a remote host: the role invokes
+# the two scripts ON the target, but their defaults are playbook_dir-
+# relative, i.e. controller paths, so they only resolve where the
+# checkout already is. ci/jobs/vm-srq.sh stages the scripts and the
+# patch series into the guest and drives them over ssh instead, which
+# is the worked example of doing this remotely.
+#
+# The refs it builds are in roles/ernic_srq_dkms/defaults/main.yml, pinned as
+# SHAs because rdma/for-next is rebased.
+- name: Build the SRQ ionic DKMS modules
+  hosts: "{{ srq_dkms_hosts | default('localhost') }}"
+  gather_facts: true
+  roles:
+    - role: ernic_srq_dkms

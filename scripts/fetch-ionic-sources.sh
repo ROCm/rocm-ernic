@@ -62,9 +62,16 @@ cd "${SOURCE_DIR}"
 git init -q .
 git remote add origin "${KERNEL_REPO}"
 git sparse-checkout init --cone
+# include/uapi/rdma carries ionic-abi.h, the userspace ABI the driver and
+# rdma-core agree on. It is not optional for the SRQ series, which adds the
+# `srqid` field there: without this path a `git am` of those patches fails on
+# a file that is not in the checkout, and a DKMS build would otherwise
+# compile against the RUNNING kernel's older ionic-abi.h and silently lose
+# the new field.
 git sparse-checkout set \
     'drivers/net/ethernet/pensando/ionic' \
-    'drivers/infiniband/hw/ionic'
+    'drivers/infiniband/hw/ionic' \
+    'include/uapi/rdma'
 
 # "git clone --branch" only accepts a tag or branch, so fetch into an empty
 # repository instead: that also resolves a bare SHA.  Fall back to a full

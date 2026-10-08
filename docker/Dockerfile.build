@@ -1,0 +1,102 @@
+# Build rocm-ernic and run its non-VM test suite in a container.
+#
+#   docker build -f docker/Dockerfile.build -t rocm-ernic:dev .
+#   docker run --rm rocm-ernic:dev ctest --test-dir /src/build --output-on-failure
+#
+# This exists so the unit tests can be run without a host that has
+# libvfio-user, libibverbs and a matching glib installed -- and, more to the
+# point, without a VM. Everything under `ctest -L unit` here is in-process:
+# the tests #include the translation unit under test and stub its externals,
+# so no guest, no qemu and no vfio-user socket is involved.
+#
+# The dependency versions mirror .github/workflows/build-and-test.yml so a
+# local failure means the same thing a CI failure does. libvfio-user in
+# particular is pinned to the same commit; it is not API-stable, and
+# vfu_setup_device_dma()'s max_regions parameter arrived in f3742ed9.
+
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE} AS build
+
+ARG LIBVFIO_USER_COMMIT=20e9803
+ARG BUILD_TYPE=Debug
+# OFF by default: a sanitizer build is slower and the point of this image is a
+# fast inner loop. CI covers asan/tsan separately.
+ARG USE_SANITIZERS=OFF
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build pkg-config git ca-certificates \
+        libibverbs-dev librdmacm-dev libglib2.0-dev \
+        meson libjson-c-dev libcmocka-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned, and pinned to the same commit CI uses. libvfio-user is not
+# API-stable between commits, so a drift here produces a compile error in
+# rocm-ernic's own sources rather than anywhere obviously related.
+RUN git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user \
+    && cd /tmp/libvfio-user \
+    && git checkout ${LIBVFIO_USER_COMMIT} \
+    && meson setup build --prefix=/usr -Dwarning_level=0 \
+    && ninja -C build \
+    && ninja -C build install \
+    && ldconfig \
+    && rm -rf /tmp/libvfio-user
+
+WORKDIR /src
+COPY . /src
+
+# -DERNIC_WERROR=ON to match CI: without it a new warning scrolls past here
+# and fails there instead.
+RUN cmake -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DERNIC_WERROR=ON \
+        -DERNIC_USE_SANITIZERS=${USE_SANITIZERS} \
+    && cmake --build build
+
+# Default to the tests that need nothing outside this container. The VM lanes
+# (ionic-ci, loopback, nvmeof, s3) are deliberately not run here.
+CMD ["ctest", "--test-dir", "/src/build", "--output-on-failure", \
+     "-R", "unit"]
+
+#################### RUNTIME ####################
+# The device server on its own, as a drop-in ERNIC_IMAGE for a qemu-minimal
+# compose stack:
+#
+#   docker build -f docker/Dockerfile.build --target runtime \
+#       -t rocm-ernic:local .
+#
+# Separate from the build stage because that one carries a compiler, meson
+# and the whole libvfio-user source tree, none of which a fleet needs N
+# copies of.
+FROM ${BASE_IMAGE} AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime shared libraries only. iproute2 and the shell are here because the
+# scale-out stack's ERNIC_TAP entrypoint waits for its tap device in /bin/sh
+# before exec'ing the server.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libibverbs1 librdmacm1 libglib2.0-0t64 libjson-c5 \
+        iproute2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# libvfio-user is built from source in the build stage and installed into
+# /usr, so take it from there rather than rebuilding it here.
+COPY --from=build /usr/lib/x86_64-linux-gnu/libvfio-user.so* \
+                  /usr/lib/x86_64-linux-gnu/
+COPY --from=build /src/build/rocm-ernic /usr/local/bin/rocm-ernic
+RUN ldconfig \
+    && rocm-ernic --help > /dev/null 2>&1 \
+    || rocm-ernic --version > /dev/null 2>&1 \
+    || ldd /usr/local/bin/rocm-ernic
+
+# The stats directory the -S flag writes into; the stack mounts a tmpfs over
+# it, but a bare `docker run` should not fail for want of the path.
+RUN mkdir -p /run/ernic-stats /run/vfu
+
+ENTRYPOINT []
+CMD ["rocm-ernic", "--help"]

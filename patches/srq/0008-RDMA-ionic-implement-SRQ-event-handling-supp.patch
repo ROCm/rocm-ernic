@@ -1,0 +1,206 @@
+From 4dd2160af277acf8f2897a2ec7df4352a7ca50bd Mon Sep 17 00:00:00 2001
+From: Amit Kumar <a.k@amd.com>
+Date: Wed, 30 Sep 2026 14:51:11 +0530
+Subject: RDMA/ionic: implement SRQ event handling support
+
+Introduce SRQ event types and associated events. Report these events
+through the SRQ event handler during event processing.
+
+Signed-off-by: Amit Kumar <a.k@amd.com>
+Signed-off-by: Abhijit Gangurde <abhijit.gangurde@amd.com>
+Link: https://patch.msgid.link/20260930092111.3176738-6-abhijit.gangurde@amd.com
+Signed-off-by: Leon Romanovsky <leon@kernel.org>
+---
+ drivers/infiniband/hw/ionic/ionic_admin.c       | 47 +++++++++++++++++++++++++
+ drivers/infiniband/hw/ionic/ionic_controlpath.c | 12 +++++++
+ drivers/infiniband/hw/ionic/ionic_fw.h          |  6 +++-
+ drivers/infiniband/hw/ionic/ionic_ibdev.c       |  4 +++
+ drivers/infiniband/hw/ionic/ionic_ibdev.h       | 10 ++++++
+ 5 files changed, 78 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/infiniband/hw/ionic/ionic_admin.c b/drivers/infiniband/hw/ionic/ionic_admin.c
+index 93c01bd40d78d..0ccd869ad8e6a 100644
+--- a/drivers/infiniband/hw/ionic/ionic_admin.c
++++ b/drivers/infiniband/hw/ionic/ionic_admin.c
+@@ -945,6 +945,49 @@ out:
+ 	kref_put(&qp->qp_kref, ionic_qp_complete);
+ }
+ 
++static void ionic_srq_event(struct ionic_ibdev *dev, u32 srqid, u8 code)
++{
++	unsigned long irqflags;
++	struct ionic_srq *srq;
++	struct ib_event ibev;
++
++	xa_lock_irqsave(&dev->srq_tbl, irqflags);
++	srq = xa_load(&dev->srq_tbl, srqid);
++	if (srq)
++		kref_get(&srq->kref);
++	xa_unlock_irqrestore(&dev->srq_tbl, irqflags);
++
++	if (!srq) {
++		ibdev_dbg(&dev->ibdev,
++			  "missing srqid %#x code %u\n", srqid, code);
++		return;
++	}
++
++	ibev.device = &dev->ibdev;
++	ibev.element.srq = &srq->ibsrq;
++
++	switch (code) {
++	case IONIC_V1_EQE_SRQ_LIMIT_REACHED:
++		ibev.event = IB_EVENT_SRQ_LIMIT_REACHED;
++		break;
++
++	case IONIC_V1_EQE_SRQ_ERR:
++		ibev.event = IB_EVENT_SRQ_ERR;
++		break;
++
++	default:
++		ibdev_dbg(&dev->ibdev,
++			  "unrecognized srqid %#x code %u\n", srqid, code);
++		goto out;
++	}
++
++	if (srq->ibsrq.event_handler)
++		srq->ibsrq.event_handler(&ibev, srq->ibsrq.srq_context);
++
++out:
++	kref_put(&srq->kref, ionic_srq_complete);
++}
++
+ static u16 ionic_poll_eq(struct ionic_eq *eq, u16 budget)
+ {
+ 	struct ionic_ibdev *dev = eq->dev;
+@@ -978,6 +1021,10 @@ static u16 ionic_poll_eq(struct ionic_eq *eq, u16 budget)
+ 			ionic_qp_event(dev, qid, code);
+ 			break;
+ 
++		case IONIC_V1_EQE_TYPE_SRQ:
++			ionic_srq_event(dev, qid, code);
++			break;
++
+ 		default:
+ 			ibdev_dbg(&dev->ibdev,
+ 				  "unknown event %#x type %u\n", evt, type);
+diff --git a/drivers/infiniband/hw/ionic/ionic_controlpath.c b/drivers/infiniband/hw/ionic/ionic_controlpath.c
+index 3e7354361e40c..18ad967812f50 100644
+--- a/drivers/infiniband/hw/ionic/ionic_controlpath.c
++++ b/drivers/infiniband/hw/ionic/ionic_controlpath.c
+@@ -3058,6 +3058,13 @@ int ionic_create_srq(struct ib_srq *ibsrq, struct ib_srq_init_attr *attr,
+ 			goto err_srq_cmd;
+ 	}
+ 
++	kref_init(&srq->kref);
++	init_completion(&srq->rel_comp);
++
++	rc = xa_insert_irq(&dev->srq_tbl, srq->rq.qid, srq, GFP_KERNEL);
++	if (rc)
++		goto err_srq_cmd;
++
+ 	ionic_pgtbl_unbuf(dev, &buf);
+ 
+ 	attr->attr.max_wr = srq->rq.q.mask;
+@@ -3081,6 +3088,11 @@ int ionic_destroy_srq(struct ib_srq *ibsrq, struct ib_udata *udata)
+ 	struct ionic_srq *srq = to_ionic_srq(ibsrq);
+ 	int rc;
+ 
++	if (xa_erase_irq(&dev->srq_tbl, srq->rq.qid)) {
++		kref_put(&srq->kref, ionic_srq_complete);
++		wait_for_completion(&srq->rel_comp);
++	}
++
+ 	rc = ionic_destroy_srq_cmd(dev, srq->rq.qid);
+ 	if (rc)
+ 		return rc;
+diff --git a/drivers/infiniband/hw/ionic/ionic_fw.h b/drivers/infiniband/hw/ionic/ionic_fw.h
+index a3991c34aece2..1db67fcb9a539 100644
+--- a/drivers/infiniband/hw/ionic/ionic_fw.h
++++ b/drivers/infiniband/hw/ionic/ionic_fw.h
+@@ -1013,7 +1013,7 @@ enum ionic_v1_eqe_evt_bits {
+ 	/* cq error events */
+ 	IONIC_V1_EQE_CQ_ERR		= 8,
+ 
+-	/* qp and srq events */
++	/* qp events */
+ 	IONIC_V1_EQE_TYPE_QP		= 1,
+ 	/* qp normal events */
+ 	IONIC_V1_EQE_SRQ_LEVEL		= 0,
+@@ -1024,6 +1024,10 @@ enum ionic_v1_eqe_evt_bits {
+ 	IONIC_V1_EQE_QP_ERR		= 8,
+ 	IONIC_V1_EQE_QP_ERR_REQUEST	= 9,
+ 	IONIC_V1_EQE_QP_ERR_ACCESS	= 10,
++	/* srq events */
++	IONIC_V1_EQE_TYPE_SRQ		= 2,
++	IONIC_V1_EQE_SRQ_LIMIT_REACHED	= 0,
++	IONIC_V1_EQE_SRQ_ERR		= 1,
+ };
+ 
+ enum ionic_tfp_csum_profiles {
+diff --git a/drivers/infiniband/hw/ionic/ionic_ibdev.c b/drivers/infiniband/hw/ionic/ionic_ibdev.c
+index 8a43ae9451ec7..b4d4544bb7acb 100644
+--- a/drivers/infiniband/hw/ionic/ionic_ibdev.c
++++ b/drivers/infiniband/hw/ionic/ionic_ibdev.c
+@@ -318,6 +318,8 @@ static void ionic_destroy_ibdev(struct ionic_ibdev *dev)
+ 	xa_destroy(&dev->qp_tbl);
+ 	WARN_ON(!xa_empty(&dev->cq_tbl));
+ 	xa_destroy(&dev->cq_tbl);
++	WARN_ON(!xa_empty(&dev->srq_tbl));
++	xa_destroy(&dev->srq_tbl);
+ 	ib_dealloc_device(&dev->ibdev);
+ }
+ 
+@@ -336,6 +338,7 @@ static struct ionic_ibdev *ionic_create_ibdev(struct ionic_aux_dev *ionic_adev)
+ 
+ 	xa_init_flags(&dev->qp_tbl, XA_FLAGS_LOCK_IRQ);
+ 	xa_init_flags(&dev->cq_tbl, XA_FLAGS_LOCK_IRQ);
++	xa_init_flags(&dev->srq_tbl, XA_FLAGS_LOCK_IRQ);
+ 
+ 	ionic_init_resids(dev);
+ 
+@@ -388,6 +391,7 @@ err_reset:
+ 	ionic_destroy_resids(dev);
+ 	xa_destroy(&dev->qp_tbl);
+ 	xa_destroy(&dev->cq_tbl);
++	xa_destroy(&dev->srq_tbl);
+ 	ib_dealloc_device(&dev->ibdev);
+ 
+ 	return ERR_PTR(rc);
+diff --git a/drivers/infiniband/hw/ionic/ionic_ibdev.h b/drivers/infiniband/hw/ionic/ionic_ibdev.h
+index 3ee7416427fd0..f8d580dd4d950 100644
+--- a/drivers/infiniband/hw/ionic/ionic_ibdev.h
++++ b/drivers/infiniband/hw/ionic/ionic_ibdev.h
+@@ -92,6 +92,7 @@ struct ionic_ibdev {
+ 
+ 	struct xarray		qp_tbl;
+ 	struct xarray		cq_tbl;
++	struct xarray		srq_tbl;
+ 
+ 	struct ionic_resid_bits	inuse_dbid;
+ 	struct ionic_resid_bits	inuse_pdid;
+@@ -270,6 +271,8 @@ struct ionic_rq {
+ struct ionic_srq {
+ 	struct ib_srq		ibsrq;
+ 	struct ionic_rq		rq;
++	struct kref		kref;
++	struct completion	rel_comp;
+ 	u16			srq_limit;
+ 	u8			udma_idx;
+ };
+@@ -466,6 +469,13 @@ static inline bool ionic_fw_has_qid_alloc(struct ionic_ibdev *dev,
+ 	return dev->lif_cfg.alloc_qid_cap & qtype;
+ }
+ 
++static inline void ionic_srq_complete(struct kref *kref)
++{
++	struct ionic_srq *srq = container_of(kref, struct ionic_srq, kref);
++
++	complete(&srq->rel_comp);
++}
++
+ /* ionic_admin.c */
+ extern struct workqueue_struct *ionic_evt_workq;
+ void ionic_admin_post(struct ionic_ibdev *dev, struct ionic_admin_wr *wr);
+-- 
+cgit 1.3.1-korg
+

@@ -1,0 +1,55 @@
+---
+# Build the SRQ-capable ionic drivers once per known-good kernel ref.
+#
+# See defaults/main.yml for why this is refs rather than patches, and why it
+# is a separate role from ernic_guest_setup.
+
+- name: Assert at least one source ref is configured
+  ansible.builtin.assert:
+    that: ernic_srq_dkms_sources | length > 0
+    fail_msg: >-
+      ernic_srq_dkms_sources is empty, so this role would report success
+      without building anything. Pin at least one ref that carries the SRQ
+      series.
+
+# dkms and the kernel headers are the build's own dependencies. They are
+# asserted rather than installed: this role runs on hosts whose package set
+# is somebody else's decision, and installing a kernel-headers package on a
+# host whose running kernel does not match it is a way to build against the
+# wrong tree.
+- name: Check the build prerequisites are present
+  become: true
+  ansible.builtin.command:
+    cmd: "{{ item }} --version"
+  changed_when: false
+  failed_when: false
+  register: ernic_srq_dkms_prereq
+  loop:
+    - dkms
+    - git
+    - make
+
+- name: Fail clearly when a prerequisite is missing
+  ansible.builtin.assert:
+    that: item.rc == 0
+    fail_msg: >-
+      {{ item.item }} is not available on this host. The SRQ DKMS build needs
+      dkms, git and make, plus headers for the running kernel
+      ({{ ansible_kernel }}).
+  loop: "{{ ernic_srq_dkms_prereq.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Build the SRQ driver for each known-good ref
+  ansible.builtin.include_tasks: build_one.yml
+  loop: "{{ ernic_srq_dkms_sources }}"
+  loop_control:
+    loop_var: ernic_srq_src
+    label: "{{ ernic_srq_src.ref[:12] }}"
+
+- name: Report what was built
+  ansible.builtin.debug:
+    msg: >-
+      Built the SRQ ionic DKMS modules for
+      {{ ernic_srq_dkms_sources | length }} ref(s):
+      {{ ernic_srq_dkms_sources | map(attribute='ref') | map('truncate', 12, true, '') | join(', ') }}

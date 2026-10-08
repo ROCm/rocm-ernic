@@ -1,0 +1,27 @@
+# Keep the host's build tree out of the image.
+#
+# Not a size optimisation. CMakeCache.txt records the absolute path it was
+# generated in, so a host build/ copied into /src makes the container's
+# configure fail outright:
+#
+#   CMake Error: The current CMakeCache.txt directory /src/build/CMakeCache.txt
+#   is different than the directory /home/<user>/.../build where CMakeCache.txt
+#   was created.
+#
+# That is a confusing failure to hit from a clean checkout, because it depends
+# on whether someone happened to run cmake on the host first.
+build/
+build-*/
+
+.git/
+.github/
+*.o
+*.so
+*.so.*
+compile_commands.json
+
+# Editor and OS noise.
+.vscode/
+.idea/
+*.swp
+.DS_Store

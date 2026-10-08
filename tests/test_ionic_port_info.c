@@ -376,9 +376,107 @@ static void test_write_stays_within_the_published_window(void)
     ionic_eth_emu_destroy(emu);
 }
 
+/* ---- SRQ capability in LIF_IDENTIFY ------------------------------------ */
+
+/*
+ * These are offset tests, because an offset is the only thing here that can
+ * be wrong silently. Get srq_qtype's position wrong and the guest still
+ * probes, still attaches, and simply reports max_srq as whatever rcq_sign_bit
+ * and stats_type happen to spell -- there is no error anywhere to notice.
+ *
+ * The layout is union ionic_lif_identity's rdma section (ionic_if.h, as
+ * extended by the SRQ series in rdma/for-next).
+ */
+static void test_srq_qtype_is_not_the_sixth_qtype(void)
+{
+    /* The trap: five contiguous qtypes, then a four-byte gap of stats_type,
+     * rsvd and rcq_sign_bit before srq_qtype. Striding past eq_qtype lands
+     * on stats_type, 4 bytes short. */
+    CHECK(LIF_ID_SRQ_QTYPE_OFF == 32u + 5u * 12u + 4u,
+          "srq_qtype is not four bytes past the fifth qtype slot");
+    CHECK(LIF_ID_SRQ_QTYPE_OFF == 96u, "srq_qtype offset drifted from 96");
+    CHECK(LIF_ID_ALLOC_QID_CAP_OFF == LIF_ID_SRQ_QTYPE_OFF + 12u + 5u,
+          "alloc_qid_cap is not rsvd2[5] past the end of srq_qtype");
+}
+
+static void test_srq_capability_is_published(void)
+{
+    struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
+    uint8_t data[DEVCMD_DATA_SIZE];
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16] = {0};
+    uint32_t qid_count;
+
+    memset(data, 0xaa, sizeof(data)); /* poison: prove we write every field */
+    handle_lif_identify(emu, cmd, comp, data);
+
+    const uint8_t *rdma = data + LIF_ID_RDMA_OFF;
+    const uint8_t *srq = rdma + LIF_ID_SRQ_QTYPE_OFF;
+
+    CHECK(srq[0] == IONIC_RDMA_QTYPE_SRQ, "srq_qtype.qtype is %u, expected %u",
+          srq[0], (unsigned)IONIC_RDMA_QTYPE_SRQ);
+
+    memcpy(&qid_count, srq + 4, 4);
+    /* This is the value the driver copies into max_srq. Zero here is exactly
+     * the state that makes UCX drop rc_verbs and leaves nixl with ud_verbs,
+     * which cannot do one-sided RDMA at all. */
+    CHECK(le32toh(qid_count) == IONIC_EMU_SRQ_COUNT,
+          "srq_qtype.qid_count is %u, expected %u", le32toh(qid_count),
+          (unsigned)IONIC_EMU_SRQ_COUNT);
+
+    CHECK((rdma[LIF_ID_ALLOC_QID_CAP_OFF] & IONIC_LIF_RDMA_ALLOC_QID_SRQ) != 0,
+          "alloc_qid_cap does not claim SRQ qid allocation");
+
+    ionic_eth_emu_destroy(emu);
+}
+
+/*
+ * Both halves of ionic_query_device()'s gate, together. Either one alone
+ * leaves max_srq at zero, and the symptom is identical in both cases, so a
+ * test that only checked the count would pass while the feature stayed dead.
+ */
+static void test_srq_gate_needs_count_and_alloc_bit(void)
+{
+    struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
+    uint8_t data[DEVCMD_DATA_SIZE];
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16] = {0};
+    uint32_t qid_count;
+
+    memset(data, 0, sizeof(data));
+    handle_lif_identify(emu, cmd, comp, data);
+
+    const uint8_t *rdma = data + LIF_ID_RDMA_OFF;
+    memcpy(&qid_count, rdma + LIF_ID_SRQ_QTYPE_OFF + 4, 4);
+
+    CHECK(le32toh(qid_count) != 0 &&
+              (rdma[LIF_ID_ALLOC_QID_CAP_OFF] & IONIC_LIF_RDMA_ALLOC_QID_SRQ),
+          "the guest's SRQ gate is not satisfied: count=%u cap=0x%02x",
+          le32toh(qid_count), rdma[LIF_ID_ALLOC_QID_CAP_OFF]);
+
+    ionic_eth_emu_destroy(emu);
+}
+
+/*
+ * The capability is useless without the opcodes to act on it: the driver
+ * gates each SRQ command on `admin_opcodes <= IONIC_V1_ADMIN_<op>`, so a
+ * watermark of 19 refuses CREATE_SRQ (26) through DESTROY_SRQ (29) however
+ * the identity is filled in.
+ */
+static void test_admin_opcode_watermark_covers_srq(void)
+{
+    CHECK(IONIC_RDMA_ADMIN_OPCODES > 29,
+          "admin_opcodes watermark %u does not reach DESTROY_SRQ (29)",
+          (unsigned)IONIC_RDMA_ADMIN_OPCODES);
+}
+
 int main(void)
 {
     test_published_offsets_match_the_driver_layout();
+    test_srq_qtype_is_not_the_sixth_qtype();
+    test_srq_capability_is_published();
+    test_srq_gate_needs_count_and_alloc_bit();
+    test_admin_opcode_watermark_covers_srq();
     test_transceiver_is_published();
     test_speed_is_non_zero();
     test_port_is_up();
