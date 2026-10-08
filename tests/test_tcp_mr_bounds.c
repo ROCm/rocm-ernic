@@ -573,7 +573,7 @@ static int recv_fixture_start(struct recv_fixture *f)
     f->backend_dev.rdma_dev_res = &f->dev_res;
     f->backend_dev.backend_private = &f->priv;
     f->priv.backend_dev = &f->backend_dev;
-    f->priv.local_node_id = TEST_LOCAL_NODE;
+    atomic_store(&f->priv.local_node_id, TEST_LOCAL_NODE);
     f->priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&f->priv.conn_table_lock);
     qemu_mutex_init(&f->priv.lock);
@@ -919,7 +919,7 @@ static void run_loopback_write(uint32_t rkey, uint64_t raddr,
     backend_dev.backend_private = &priv;
     backend_dev.dev = (PCIDevice *)dev;
     priv.backend_dev = &backend_dev;
-    priv.local_node_id = TEST_LOCAL_NODE;
+    atomic_store(&priv.local_node_id, TEST_LOCAL_NODE);
     priv.qps = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&priv.lock);
 
