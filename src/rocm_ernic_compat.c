@@ -889,6 +889,63 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     rdma_rm_dealloc_cq(&pvrdma->rdma_dev_res, cq_handle);
 }
 
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, pd_handle, max_wr, max_sge,
+                             srq_limit, srq_handle, NULL);
+}
+
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_srq(&pvrdma->rdma_dev_res, srq_handle);
+}
+
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    struct ibv_srq_attr attr = {.srq_limit = srq_limit};
+
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    /* IBV_SRQ_LIMIT only: the depth is fixed at create time, and the guest
+     * driver's modify path carries nothing else (ionic_admin_modify_srq is
+     * qid + low_wqes_limit). */
+    return rdma_rm_modify_srq(&pvrdma->rdma_dev_res, srq_handle, &attr,
+                              IBV_SRQ_LIMIT);
+}
+
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    struct ibv_srq_attr attr = {0};
+    int ret;
+
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+
+    ret = rdma_rm_query_srq(&pvrdma->rdma_dev_res, srq_handle, &attr);
+    if (ret)
+        return ret;
+
+    if (max_wr)
+        *max_wr = attr.max_wr;
+    if (max_sge)
+        *max_sge = attr.max_sge;
+    if (srq_limit)
+        *srq_limit = attr.srq_limit;
+    return 0;
+}
+
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;

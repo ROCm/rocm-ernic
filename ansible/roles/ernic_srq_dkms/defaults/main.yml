@@ -1,0 +1,57 @@
+---
+# Build the SRQ-capable ionic drivers as a DKMS package, against each kernel
+# ref known to carry the support.
+#
+# WHY THIS IS SEPARATE FROM ernic_guest_setup. That role builds the driver the
+# guest is going to RUN, pinned to the one ref its kernel matches
+# (driver_ionic.yml asserts the two agree on major.minor). This role answers a
+# different question -- "does the SRQ driver still build?" -- across several
+# refs, on a machine that may have no ernic at all. It is a build gate, not a
+# provisioning step, and defaults to --build-only for that reason.
+#
+# WHICH BASE, AND WHY IT IS PATCHED. The five upstream SRQ commits apply to
+# no mainline tag on their own -- measured:
+#
+#   v7.2                all five fail
+#   v7.2.9 (stable)     all five fail; its ionic is identical to v7.2
+#   v7.3-rc6            net-side applies, all four RDMA patches fail
+#
+# The RDMA half depends on three earlier rdma/for-next commits. Carrying those
+# as 0001-0003 in patches/srq makes the whole series apply cleanly to
+# v7.3-rc6, which is what this builds.
+#
+# Building straight from an rdma/for-next SHA would also work and needs no
+# patches, but that branch is rebased and force-pushed: a pin there tests
+# something different every run and a regression cannot be bisected to a
+# change of ours. A tag plus an explicit, reviewable series is the trade this
+# makes. See patches/srq/README.md.
+ernic_srq_dkms_sources:
+  - ref: v7.3-rc6
+    repo: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+    note: >-
+      Mainline rc, plus patches/srq. Move to the 7.4 release tag and drop
+      0001-0008 once the series lands there.
+
+# The patch series applied on top of the ref above. Note this REPLACES the
+# default patches/ directory rather than adding to it, which is why
+# patches/srq carries a copy of this repo's own UC address-handle patch as
+# 0009 -- without it an SRQ build would silently lose a fix the normal build
+# has.
+ernic_srq_dkms_patches_dir: "{{ playbook_dir }}/../../patches/srq"
+
+ernic_srq_dkms_source_root: /var/tmp/ionic-srq-src
+
+# Build, do not install. This role runs on build hosts and in CI where the
+# running kernel is not the guest's and installing would register modules
+# nothing is going to load. Set false only on a guest you intend to run the
+# result on.
+ernic_srq_dkms_install: false
+
+# Fail rather than skip when a ref turns out not to carry SRQ after all.
+# A silent skip here is the bad outcome: the build would succeed, produce a
+# driver with no SRQ, and the first sign of trouble would be a guest
+# reporting max_srq=0 with no indication why.
+ernic_srq_dkms_require_srq: true
+
+# Where the repo's own scripts live, relative to the playbook.
+ernic_srq_dkms_scripts_dir: "{{ playbook_dir }}/../scripts"

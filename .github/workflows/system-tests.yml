@@ -74,7 +74,6 @@ env:
   # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
   # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
   # the build inputs, so a rebuild from the same sources republishes it.
-  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 
 jobs:
   system-test-loopback-vm:
@@ -92,6 +91,14 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
+
+    # The guest image pin, from the one file that holds it. Loading it into
+    # the job environment keeps $GUEST_ARTIFACT_TAG usable in later shell
+    # steps (diagnostics name the image they expected) without any lane
+    # carrying its own copy of the tag.
+    - name: Load the guest image pin
+      shell: bash
+      run: cat ci/guest-image.env >> "$GITHUB_ENV"
 
     - name: Select QEMU accelerator and guest size
       shell: bash
@@ -847,6 +854,63 @@ jobs:
         fi
         echo "✓ WRITE_WITH_IMM guest smoke passed"
 
+    # SRQ, and the one step in this file where exit 77 is a legitimate pass.
+    #
+    # Every other guest test here asserts a device that is known present, so
+    # a skip means the test did not run and is treated as a failure. SRQ is
+    # different: the capability comes from the guest's ionic_rdma, and the
+    # series that adds it is in rdma/for-next, not in the guest image this
+    # lane pins. Until that image is rebuilt on a kernel carrying it, the
+    # device reports max_srq=0 and the test skips.
+    #
+    # It is registered now rather than later so that the day the guest image
+    # gains the driver this starts exercising the emulator's SRQ path with no
+    # workflow change -- and if the emulator side regresses in the meantime,
+    # the failure shows up the moment the image lands rather than during a
+    # bring-up.
+    - name: SRQ guest smoke (build and run test_srq)
+      shell: bash
+      run: |
+        echo "=== SRQ guest smoke on $RDMA_DEVICE ==="
+        SSH_PORT="$SSH_PORT"
+        VM_USER="$VM_USER"
+        ssh $SSH_OPTS -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/srq-smoke"
+        scp $SSH_OPTS -P "$SSH_PORT" \
+          tests/test_srq.c tests/ernic_device.h \
+          "${VM_USER}@localhost:/tmp/srq-smoke/"
+
+        set +e
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
+        set -e
+        cd /tmp/srq-smoke
+        gcc -O2 -Wall -Wextra \
+          -o test_srq test_srq.c \
+          $(pkg-config --cflags --libs libibverbs)
+        set +e
+        timeout 30s ./test_srq
+        exit $?
+        EOFVM
+        SRQ_EXIT=$?
+        set -e
+
+        if [ "$SRQ_EXIT" -eq 77 ]; then
+          echo "○ SRQ smoke skipped: the guest driver reports max_srq=0."
+          echo "  Expected until $GUEST_ARTIFACT_TAG is rebuilt on a kernel"
+          echo "  carrying the ionic SRQ series (rdma/for-next). The"
+          echo "  emulator side is still covered by the unit tests, and the"
+          echo "  self-hosted vm-srq lane (ci/jobs/vm-srq.sh) builds that"
+          echo "  driver itself rather than waiting for the image, so it"
+          echo "  treats 77 as a failure where this step tolerates it."
+          exit 0
+        fi
+        if [ "$SRQ_EXIT" -ne 0 ]; then
+          echo "✗ SRQ guest smoke failed (exit $SRQ_EXIT)"
+          exit 1
+        fi
+        echo "✓ SRQ guest smoke passed"
+
     # These two used to be registered with CTest, where they ran on a host
     # with no RDMA device, returned 77 and were reported as passes.  They
     # are no longer registered; this is the only place they run, and here a
@@ -1058,6 +1122,179 @@ jobs:
         fi
         echo "✓ Sweep complete, regression checks passed"
 
+    # ── SRQ against a driver that can actually do it ──────────────
+    #
+    # The "SRQ guest smoke" step earlier in this job tolerates exit 77,
+    # because the pinned guest image ships ionic built from
+    # IONIC_KERNEL_REF -- which predates the upstream SRQ series and
+    # reports max_srq=0.  That makes it a capability probe, not a test:
+    # it has never once exercised the emulator's SRQ adminq handlers.
+    #
+    # These two steps close that gap by rebuilding the guest driver from
+    # patches/srq first.  They run last on purpose: they swap the ionic
+    # modules out from under the guest, so anything after them would be
+    # testing a different driver than the one the lane booted.
+    #
+    # The sources are fetched and patched on the RUNNER, not in the
+    # guest.  The runner is known to reach git.kernel.org -- the ionic
+    # Driver Patches workflow does exactly this -- whereas the guest's
+    # outbound path is user-mode NAT that nothing else in this lane
+    # depends on, and a network failure in there would read as a patch
+    # failure.
+    #
+    # continue-on-error until ci/guest-image.env is repinned: the series
+    # needs a 7.3 kernel and the image runs 7.2, and ionic tracks
+    # IB-core helpers that move between minor releases, so the build may
+    # well not survive the mismatch.  The first run is what settles
+    # that; until it does, a known gap must not wedge the lane.  Drop
+    # both continue-on-error lines once this is green.
+    - name: Build the SRQ-capable ionic driver in the VM
+      id: srq_build
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # The ref comes from the role defaults, which is the single
+        # source for "which kernel carries SRQ".  A copy here would let
+        # this lane keep testing the old one after a bump.
+        SRQ_DEFAULTS=ansible/roles/ernic_srq_dkms/defaults/main.yml
+        SRQ_REF=$(sed -n \
+          '/^ernic_srq_dkms_sources:/,/^[a-z]/ s/^  *- *ref: *//p' \
+          "$SRQ_DEFAULTS" | head -1)
+        if [ -z "$SRQ_REF" ]; then
+          echo "::error::could not read the SRQ kernel ref from $SRQ_DEFAULTS"
+          exit 1
+        fi
+        echo "SRQ kernel ref: $SRQ_REF"
+
+        KVER=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+                 'uname -r' | tr -d '\r')
+        want=$(sed -E 's/^v//; s/-rc[0-9]+$//; s/^([0-9]+\.[0-9]+).*/\1/' \
+               <<<"$SRQ_REF")
+        got=$(sed -E 's/^([0-9]+\.[0-9]+).*/\1/' <<<"$KVER")
+        echo "guest kernel: $KVER (${got}), SRQ sources: ${SRQ_REF} (${want})"
+        if [ "$want" != "$got" ]; then
+          echo "::warning::guest kernel ${got} but SRQ sources are ${want}."
+          echo "  ionic tracks IB-core helpers that move between minor"
+          echo "  releases, so this build may fail for that reason alone."
+          echo "  The fix is to repin ci/guest-image.env ($GUEST_ARTIFACT_TAG)"
+          echo "  to an image on a ${want} kernel -- not to patch around it."
+        fi
+
+        git config --global user.email "ci@rocm-ernic.invalid"
+        git config --global user.name "rocm-ernic CI"
+
+        echo "=== Fetching and patching ionic sources on the runner ==="
+        ./scripts/fetch-ionic-sources.sh \
+          --source-dir /tmp/ionic-srq-src \
+          --kernel-ref "$SRQ_REF" \
+          --patches-dir "$PWD/patches/srq"
+
+        # The guard the ernic_srq_dkms role applies, for the same reason:
+        # a ref predating the series fetches and builds fine and yields a
+        # driver with no SRQ, which surfaces far downstream as max_srq=0
+        # with nothing pointing back here.
+        if ! grep -qE 'ionic_create_srq_cmd|\.create_srq[[:space:]]*=' \
+             /tmp/ionic-srq-src/drivers/infiniband/hw/ionic/ionic_controlpath.c; then
+          echo "::error::$SRQ_REF has no create_srq verb; wrong ref?"
+          exit 1
+        fi
+        echo "✓ patched sources carry SRQ"
+
+        echo "=== Shipping sources into the guest ==="
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          'rm -rf /var/tmp/srq && mkdir -p /var/tmp/srq'
+        # Exclude .git: setup-ionic-dkms.sh stages files, not history,
+        # and the pack is most of the transfer.
+        tar -C /tmp --exclude=.git -cf - ionic-srq-src \
+          | ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+              'tar -C /var/tmp/srq -xf -'
+        tar -cf - scripts/setup-ionic-dkms.sh \
+          | ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+              'tar -C /var/tmp/srq -xf - && chmod +x /var/tmp/srq/scripts/*.sh'
+
+        echo "=== Building and installing the DKMS package ==="
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "sudo /var/tmp/srq/scripts/setup-ionic-dkms.sh \
+             --source-dir /var/tmp/srq/ionic-srq-src \
+             --kernel-ref $SRQ_REF"
+
+        echo "=== Reloading the ionic modules ==="
+        # ionic_rdma first: it holds a reference on ionic.  The emulated
+        # device is not hot-unpluggable, so this is a module cycle.
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        set -e
+        sudo modprobe -r ionic_rdma 2>/dev/null || true
+        sudo modprobe -r ionic 2>/dev/null || true
+        sudo depmod -a
+        sudo modprobe ionic
+        sudo modprobe ionic_rdma
+        sleep 5
+        # updates/extra/dkms in the path, not just "a module loaded":
+        # modprobe happily reloads the image's original driver if the
+        # install did not replace it, and then the test below would be
+        # covering the very thing this step exists to replace.
+        modinfo ionic_rdma | grep -E '^(filename|version|srcversion)'
+        modinfo ionic_rdma | grep -qE 'filename:.*(updates|extra|dkms)'
+        EOFVM
+
+        echo "srq_driver=installed" >> "$GITHUB_OUTPUT"
+        echo "✓ SRQ-capable ionic driver installed and loaded"
+
+    - name: SRQ functional test against the rebuilt driver
+      if: steps.srq_build.outputs.srq_driver == 'installed'
+      continue-on-error: true
+      shell: bash
+      run: |
+        echo "=== SRQ functional test on $RDMA_DEVICE ==="
+
+        # max_srq is the single number the whole SRQ effort exists to
+        # move off zero: UCX's rc_verbs transport declines a device
+        # reporting max_srq=0, leaving ud_verbs, which has no one-sided
+        # RDMA -- which is why NIXL and LMCache P2P fell back to TCP.
+        MAXSRQ=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          'ibv_devinfo -v 2>/dev/null | grep -iE "^[[:space:]]*max_srq:"' \
+          | head -1 | tr -dc '0-9')
+        echo "max_srq=${MAXSRQ:-<none>}"
+        if [ -z "$MAXSRQ" ] || [ "$MAXSRQ" -eq 0 ]; then
+          echo "✗ the rebuilt driver still reports max_srq=0"
+          exit 1
+        fi
+
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "mkdir -p /tmp/srq-test"
+        scp $SSH_OPTS -P "$SSH_PORT" \
+          tests/test_srq.c tests/ernic_device.h \
+          "${VM_USER}@localhost:/tmp/srq-test/"
+
+        set +e
+        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
+        set -e
+        cd /tmp/srq-test
+        gcc -O2 -Wall -Wextra -o test_srq test_srq.c \
+          $(pkg-config --cflags --libs libibverbs)
+        set +e
+        timeout 60s ./test_srq
+        exit $?
+        EOFVM
+        SRQ_EXIT=$?
+        set -e
+
+        # 77 is the test's "this device cannot do SRQ" skip.  The smoke
+        # step earlier tolerates it; here it means the rebuild above
+        # silently did nothing, so it is a failure like any other.
+        if [ "$SRQ_EXIT" -eq 77 ]; then
+          echo "✗ test_srq skipped (max_srq=0) after installing the SRQ driver"
+          exit 1
+        fi
+        if [ "$SRQ_EXIT" -ne 0 ]; then
+          echo "✗ SRQ functional test failed (exit $SRQ_EXIT)"
+          exit 1
+        fi
+        echo "✓ SRQ functional test passed against the rebuilt driver"
+
     - name: Show logs
       if: always()
       run: |
@@ -1199,6 +1436,14 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
+
+    # The guest image pin, from the one file that holds it. Loading it into
+    # the job environment keeps $GUEST_ARTIFACT_TAG usable in later shell
+    # steps (diagnostics name the image they expected) without any lane
+    # carrying its own copy of the tag.
+    - name: Load the guest image pin
+      shell: bash
+      run: cat ci/guest-image.env >> "$GITHUB_ENV"
 
     - name: Select QEMU accelerator and guest size
       shell: bash

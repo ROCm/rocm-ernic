@@ -457,11 +457,46 @@ typedef struct {
     GQueue *send_queue;
     GQueue *recv_queue;
 
+    /* The shared receive queue this QP was bound to at create time, or NULL
+     * for the usual per-QP receive queue. When set, recv_queue above is left
+     * empty and every receive is taken from the SRQ instead -- see
+     * tcp_qp_pop_recv_wr(). Not owned here; the SRQ outlives the QP and is
+     * freed by tcp_destroy_srq(). */
+    TcpSRQ *srq;
+
     /* Pending data buffer for when no recv WR is available */
     GQueue *pending_data; /* Queue of buffered data payloads */
 
     QemuMutex lock;
 } TcpQP;
+
+/*
+ * Take the next receive WR for this QP.
+ *
+ * A QP created with an SRQ posts nothing to its own recv_queue -- the guest
+ * posts to the SRQ instead -- so the incoming SEND/DATA path has to look
+ * there or the receive never completes. Reading only tqp->recv_queue is what
+ * made advertising max_srq a hang rather than a feature.
+ *
+ * Returns NULL when no buffer is available, which both callers already treat
+ * as "stash the payload in pending_data".
+ */
+static TcpWR *tcp_qp_pop_recv_wr(TcpQP *tqp)
+{
+    TcpWR *wr;
+
+    if (tqp->srq == NULL) {
+        return g_queue_pop_head(tqp->recv_queue);
+    }
+
+    /* The SRQ has its own lock: it is shared between QPs, so it can be
+     * drained concurrently by another QP's receive path. */
+    qemu_mutex_lock(&tqp->srq->lock);
+    wr = g_queue_pop_head(tqp->srq->recv_queue);
+    qemu_mutex_unlock(&tqp->srq->lock);
+
+    return wr;
+}
 
 /* Multi-node configuration modes */
 typedef enum {
@@ -1632,7 +1667,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                              * data. Process the same way as
                              * a DATA message.
                              */
-                            TcpWR *recv_wr = g_queue_pop_head(tqp->recv_queue);
+                            TcpWR *recv_wr = tcp_qp_pop_recv_wr(tqp);
                             if (recv_wr) {
                                 uint32_t bytes_copied = 0;
                                 const char *src =
@@ -1717,7 +1752,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                                  GUINT_TO_POINTER(hdr.dst_qpn));
                 if (tqp && tqp->rcq) {
                     /* Pop the receive WR */
-                    TcpWR *recv_wr = g_queue_pop_head(tqp->recv_queue);
+                    TcpWR *recv_wr = tcp_qp_pop_recv_wr(tqp);
                     if (recv_wr && payload && hdr.msg_len > 0) {
                         /* Copy data to receive buffer */
                         uint32_t bytes_copied = 0;
@@ -3749,6 +3784,12 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     tqp->remote_node_id = 0; /* Default to node 0 (manager) */
     tqp->send_queue = g_queue_new();
     tqp->recv_queue = g_queue_new();
+    /* Bind the SRQ if the guest supplied one. The parameter has always been
+     * here and was always dropped, so a QP created against an SRQ got a
+     * private receive queue that nothing ever posted to -- the receives went
+     * to the SRQ and were never consumed. recv_queue is still allocated
+     * above: it stays empty in this case, and destroy frees it either way. */
+    tqp->srq = srq ? (TcpSRQ *)(uintptr_t)srq->ibsrq : NULL;
     tqp->pending_data = g_queue_new();
     qemu_mutex_init(&tqp->lock);
 

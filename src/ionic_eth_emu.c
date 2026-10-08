@@ -178,11 +178,42 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_RDMA_QTYPE_RQ 7
 #define IONIC_RDMA_QTYPE_CQ 8
 #define IONIC_RDMA_QTYPE_EQ 9
+/* Next free logical qtype. The driver takes this value from the identity
+ * rather than assuming one, so the number is ours to choose; it only has to
+ * not collide with the five above. */
+#define IONIC_RDMA_QTYPE_SRQ 10
+
+/* Byte offsets within the rdma section of union ionic_lif_identity. Literal
+ * because srq_qtype does not follow the other qtypes contiguously -- see the
+ * comment at the write site. */
+#define LIF_ID_SRQ_QTYPE_OFF     96
+#define LIF_ID_ALLOC_QID_CAP_OFF 113
+
+/* enum ionic_lif_rdma_alloc_qid: which queue types firmware allocates qids
+ * for. CQ is BIT(0) and is not claimed here -- CREATE_CQ still takes the
+ * driver's cqid. */
+#define IONIC_LIF_RDMA_ALLOC_QID_SRQ (1u << 1)
 
 /* Emulated RDMA capability version (must match ionic_fw.h expectations) */
-#define IONIC_RDMA_VERSION       1
-#define IONIC_RDMA_QP_OPCODES    16
-#define IONIC_RDMA_ADMIN_OPCODES 19
+#define IONIC_RDMA_VERSION    1
+#define IONIC_RDMA_QP_OPCODES 16
+/*
+ * Highest admin opcode supported, plus one. The driver gates each command on
+ * this watermark rather than on a per-opcode bitmap:
+ *
+ *   if (dev->lif_cfg.admin_opcodes <= IONIC_V1_ADMIN_CREATE_SRQ)
+ *           return -EOPNOTSUPP;
+ *
+ * so 19 (the old IONIC_V1_ADMIN_OPCODES_MAX) refuses CREATE_SRQ=26 ..
+ * DESTROY_SRQ=29 and the guest reports no SRQ no matter what the identity
+ * advertises. 30 is the new OPCODES_MAX.
+ *
+ * This also nominally claims 19-25, which upstream has left unassigned for
+ * series still in flight. That is safe only because unassigned means the
+ * driver never emits them; revisit when those land, since claiming an opcode
+ * we do not handle is how a guest command hangs rather than fails.
+ */
+#define IONIC_RDMA_ADMIN_OPCODES 30
 
 /* Page table and MR counts for emulated device */
 /* 2M page table entries. This is the knob that sets the guest's maximum
@@ -229,10 +260,14 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
 /* Number of emulated EQs / AQs we report in LIF identity */
-#define IONIC_EMU_EQ_COUNT   32
-#define IONIC_EMU_AQ_COUNT   4
-#define IONIC_EMU_QP_COUNT   (1u << 15)
-#define IONIC_EMU_CQ_COUNT   (1u << 16)
+#define IONIC_EMU_EQ_COUNT 32
+#define IONIC_EMU_AQ_COUNT 4
+#define IONIC_EMU_QP_COUNT (1u << 15)
+#define IONIC_EMU_CQ_COUNT (1u << 16)
+/* Becomes the guest's max_srq verbatim. Sized like the QP pool: an SRQ costs
+ * a GQueue and a lock in the backend, so the number is a ceiling rather than
+ * an allocation. */
+#define IONIC_EMU_SRQ_COUNT  (1u << 15)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
 /* Ethernet Tx/Rx queue pairs offered to the LIF. */
@@ -1095,6 +1130,45 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(eq + 4, &u, 4);
     u = le32(0);
     memcpy(eq + 8, &u, 4);
+
+    /*
+     * srq_qtype, and NOT at rdma+32+5*QTYPE_SZ. The five qtypes above are
+     * contiguous, but srq_qtype is not the sixth: union ionic_lif_identity
+     * puts four bytes between the end of eq_qtype and the start of it --
+     *
+     *     struct ionic_lif_logical_qtype eq_qtype;   rdma+80 .. 91
+     *     __le16 stats_type;                         rdma+92
+     *     u8     rsvd;                               rdma+94
+     *     u8     rcq_sign_bit;                       rdma+95
+     *     struct ionic_lif_logical_qtype srq_qtype;  rdma+96 .. 107
+     *     u8     rsvd2[5];                           rdma+108
+     *     u8     alloc_qid_cap;                      rdma+113
+     *
+     * -- so the usual stride arithmetic lands on stats_type and the driver
+     * reads a qid_count built out of rcq_sign_bit. Offsets are literal here
+     * for that reason. (ionic_if.h, the SRQ series in rdma/for-next.)
+     */
+    uint8_t *srq = rdma + LIF_ID_SRQ_QTYPE_OFF;
+    srq[0] = IONIC_RDMA_QTYPE_SRQ;
+    u = le32(IONIC_EMU_SRQ_COUNT);
+    memcpy(srq + 4, &u, 4); /* qid_count -- becomes the guest's max_srq */
+    u = le32(0);
+    memcpy(srq + 8, &u, 4); /* qid_base */
+
+    /*
+     * Both halves of the gate are required. ionic_query_device() reports an
+     * SRQ capability only when the count is non-zero AND the matching
+     * alloc-qid bit is set:
+     *
+     *   if (dev->lif_cfg.srq_count &&
+     *       ionic_fw_has_qid_alloc(dev, IONIC_LIF_RDMA_ALLOC_QID_SRQ))
+     *           attr->max_srq = dev->lif_cfg.srq_count;
+     *
+     * The bit is also a promise we can keep: it says firmware allocates the
+     * SRQ qid, which is what handle_create_srq_op() does -- it assigns the id
+     * and DMAs it back, rather than honouring the one the driver sent.
+     */
+    rdma[LIF_ID_ALLOC_QID_CAP_OFF] = IONIC_LIF_RDMA_ALLOC_QID_SRQ;
 
     comp[0] = 0; /* status OK */
     comp[1] = 1; /* version   */

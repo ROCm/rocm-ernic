@@ -36,12 +36,20 @@ ernic_instances: 2
 # toolchain and perftest on a resolute userspace.
 #
 # scripts/fetch-guest-image.sh and ci/jobs/vm-up.sh pull it.
-# Keep the tag equal to GUEST_ARTIFACT_TAG in
-# .github/workflows/system-tests.yml so all lanes test one guest.
+#
+# Repo and tag are read from ci/guest-image.env rather than written here.
+# That file is the only place the pin lives -- the GitHub lanes load it into
+# their environment and ci/lib/common.sh sources it -- so a bump is one edit
+# and cannot leave this role pointing at an older guest than CI tests.
 ernic_vm_artifact_repo: >-
-  docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
-ernic_vm_artifact_tag: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
-ernic_vm_artifact_info_type: application/vnd.batesste.vm-info.v1
+  {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_REPO type=properties
+     file=' ~ playbook_dir ~ '/../ci/guest-image.env') }}
+ernic_vm_artifact_tag: >-
+  {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_TAG type=properties
+     file=' ~ playbook_dir ~ '/../ci/guest-image.env') }}
+ernic_vm_artifact_info_type: >-
+  {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_INFO_TYPE type=properties
+     file=' ~ playbook_dir ~ '/../ci/guest-image.env') }}
 # Tag-scoped, so bumping the tag cannot silently reuse the old disk.
 ernic_vm_artifact_dir: >-
   {{ ernic_vm_image_dir }}/artifacts/{{ ernic_vm_artifact_tag }}

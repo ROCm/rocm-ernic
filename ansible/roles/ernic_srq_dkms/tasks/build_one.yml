@@ -1,0 +1,65 @@
+---
+# One kernel ref: fetch the sources, prove they actually carry SRQ, build.
+#
+# Included per-ref from main.yml with ernic_srq_src set to the list entry.
+
+- name: "Set the checkout path for {{ ernic_srq_src.ref[:12] }}"
+  ansible.builtin.set_fact:
+    ernic_srq_dir: "{{ ernic_srq_dkms_source_root }}/{{ ernic_srq_src.ref }}"
+
+- name: "Fetch ionic sources at {{ ernic_srq_src.ref[:12] }}"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      {{ ernic_srq_dkms_scripts_dir }}/fetch-ionic-sources.sh
+      --source-dir {{ ernic_srq_dir }}
+      --kernel-ref {{ ernic_srq_src.ref }}
+      --repo {{ ernic_srq_src.repo }}
+      --patches-dir {{ ernic_srq_dkms_patches_dir }}
+    creates: "{{ ernic_srq_dir }}/drivers/infiniband/hw/ionic"
+
+# The check that makes a wrong ref loud.
+#
+# Without it, a ref that predates the series fetches fine, builds fine, and
+# produces an ionic_rdma with no SRQ at all -- which surfaces much later as a
+# guest reporting max_srq=0, with nothing pointing back at this role. Grep
+# for the verb implementation rather than the string "srq": IONIC_QPT_SRQ and
+# the IB_USER_VERBS_CMD_*_SRQ command bits are present in the protocol header
+# even in trees with no SRQ support, so a bare grep matches both.
+- name: "Confirm {{ ernic_srq_src.ref[:12] }} actually carries SRQ support"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      grep -lE 'ionic_create_srq_cmd|\.create_srq[[:space:]]*='
+      {{ ernic_srq_dir }}/drivers/infiniband/hw/ionic/ionic_controlpath.c
+  register: ernic_srq_probe
+  changed_when: false
+  failed_when: false
+
+- name: "Fail when {{ ernic_srq_src.ref[:12] }} has no SRQ support"
+  when:
+    - ernic_srq_dkms_require_srq | bool
+    - ernic_srq_probe.rc != 0
+  ansible.builtin.fail:
+    msg: >-
+      {{ ernic_srq_src.ref }} does not implement SRQ: no create_srq verb in
+      ionic_controlpath.c. Building it would produce a driver that reports
+      max_srq=0, which is exactly the state this role exists to avoid. The
+      series is in rdma/for-next; pick a ref that contains
+      "RDMA/ionic: add Shared receive queue (SRQ) support", or set
+      ernic_srq_dkms_require_srq=false to build it anyway.
+
+- name: "Build the DKMS modules for {{ ernic_srq_src.ref[:12] }}"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      {{ ernic_srq_dkms_scripts_dir }}/setup-ionic-dkms.sh
+      --source-dir {{ ernic_srq_dir }}
+      --kernel-ref {{ ernic_srq_src.ref }}
+      {{ '--build-only' if not (ernic_srq_dkms_install | bool) else '' }}
+  changed_when: true
+  register: ernic_srq_build
+
+- name: "Show the build result for {{ ernic_srq_src.ref[:12] }}"
+  ansible.builtin.debug:
+    msg: "{{ ernic_srq_build.stdout_lines[-8:] | default([]) }}"

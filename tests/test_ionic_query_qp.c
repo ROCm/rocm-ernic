@@ -177,6 +177,44 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     (void)handle;
     (void)cq_handle;
 }
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle)
+{
+    (void)handle;
+    (void)pd_handle;
+    (void)max_wr;
+    (void)max_sge;
+    (void)srq_limit;
+    *srq_handle = 1;
+    return 0;
+}
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+{
+    (void)handle;
+    (void)srq_handle;
+}
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit)
+{
+    (void)handle;
+    (void)srq_handle;
+    (void)srq_limit;
+    return 0;
+}
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
+{
+    (void)handle;
+    (void)srq_handle;
+    if (max_wr)
+        *max_wr = 16;
+    if (max_sge)
+        *max_sge = 2;
+    if (srq_limit)
+        *srq_limit = 0;
+    return 0;
+}
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
