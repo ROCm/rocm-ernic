@@ -2592,15 +2592,35 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     }
 
     /*
-     * Send-side completion.  RC/UC "remote" work requests are retired by a
-     * running MSN sequence; everything else by the SQ index (NPG).  The driver
-     * needs the MSN for every remote WQE, signalled or not, so it can advance
-     * sq_msn_cons; NPG CQEs are only useful when the WQE asked to be signalled.
+     * Send-side completion. RC/UC "remote" work requests are retired by a
+     * running MSN sequence; everything else by the SQ index (NPG). Both are
+     * needed for EVERY WQE, signalled or not.
+     *
+     * The signalled-only version of the NPG case was a deadlock. The driver
+     * retires its send queue in ionic_poll_send() by walking sq_meta from
+     * sq.cons and refusing to step over an entry that has no completion:
+     *
+     *     if (!meta->remote && !meta->local_comp)
+     *             goto out_empty;
+     *
+     * local_comp is set by ionic_comp_npg() for the one index a CQE names,
+     * and whether a user-visible work completion is produced is decided
+     * after that, by meta->signal. So the signal flag selects what the
+     * driver reports; it does not select what the device must report. Skip
+     * an unsignalled WQE here and sq.cons stops at it forever: the queue
+     * fills, post_send starts refusing, and the guest goes quiet with
+     * nothing dropped and nothing logged.
+     *
+     * UCX's ud_verbs is the consumer that finds this -- it posts a 256-deep
+     * send queue mostly unsignalled, so it ran to about 243 round trips at
+     * full speed and then both peers parked waiting for each other. The
+     * REG_MR and LOCAL_INV path above already completes unconditionally for
+     * this reason.
      */
     if (remote) {
         q->msn++;
         cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
-    } else if (flags & IONIC_V1_FLAG_SIG) {
+    } else {
         cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
     }
 }
