@@ -829,8 +829,35 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t srq_id = ++ctx->next_srq_id;
+    /* Above the QP id space: there is no SRQ doorbell qtype, so the guest's
+     * RQ doorbell carries either a QP id or this, and only the range tells
+     * them apart. See IONIC_SRQ_QID_BASE. */
+    uint32_t srq_id = IONIC_SRQ_QID_BASE + (++ctx->next_srq_id);
     adminq_map_srq(ctx, srq_id, srq_handle);
+
+    /*
+     * Give the datapath the ring, not just the resource. The guest posts
+     * receives into this ring and rings a doorbell on the SRQ qtype; without
+     * the registration that doorbell lands on an unknown queue and every
+     * posted receive is lost, which shows up as a SEND to an SRQ-bound QP
+     * hanging with nothing logged here. The id is ours, not the guest's
+     * qid field: the driver adopts what CREATE_SRQ returns as srq->rq.qid
+     * and uses it for both the doorbell and CREATE_QP's srq reference.
+     */
+    {
+        uint32_t srq_map_count;
+        uint64_t srq_dma;
+        memcpy(&srq_map_count, body + 8, 4);
+        memcpy(&srq_dma, body + 0, 8);
+        struct ionic_dp_ring_desc srq_ring = {
+            .buf = {.dma_addr = le64toh(srq_dma),
+                    .map_count = le32toh(srq_map_count),
+                    .page_size_log2 = body[28]},
+            .depth_log2 = body[26],
+            .stride_log2 = body[27],
+        };
+        ionic_datapath_register_srq(ctx->dp, srq_id, &srq_ring);
+    }
 
     /* Hand the id back by DMA. Without this the driver keeps whatever was in
      * its zeroed response buffer, i.e. SRQ id 0, and every later MODIFY or
@@ -961,6 +988,10 @@ static uint8_t handle_destroy_srq_op(struct ionic_adminq_ctx *ctx,
         return 0;
     }
 
+    /* Drop the ring before the resource: a receive in flight on another
+     * thread takes the SRQ lock, and unregister clears valid under it. */
+    ionic_datapath_unregister_srq(ctx->dp, qid);
+
     ionic_rm_dealloc_srq(ctx->pvrdma_handle, handle);
     adminq_unmap_srq(ctx, qid);
 
@@ -1048,6 +1079,19 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     };
     ionic_datapath_register_qp(ctx->dp, qp_id, ib_qp_type, sq_cq_id, &sq,
                                rq_cq_id, &rq);
+
+    /*
+     * rq_tbl_index_srq_id is overloaded: ~0 means "no SRQ", anything else
+     * is the SRQ's qid, and in that case the driver left every rq_* field
+     * above zero because the QP has no receive ring of its own. Binding is
+     * what sends its receives to the shared ring; without it the QP would
+     * draw from an empty RQ and never complete one.
+     */
+    uint32_t rq_tbl_index_srq_id;
+    memcpy(&rq_tbl_index_srq_id, body + 40, 4);
+    rq_tbl_index_srq_id = le32toh(rq_tbl_index_srq_id);
+    if (rq_tbl_index_srq_id != 0xffffffffu)
+        ionic_datapath_bind_qp_srq(ctx->dp, qp_id, rq_tbl_index_srq_id);
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_QP qp_id=%u qpn=%u type=%u sq_cq=%u/%u "

@@ -29,4 +29,13 @@
   hosts: "{{ srq_dkms_hosts | default('localhost') }}"
   gather_facts: true
   roles:
+    # Both halves, in order: the kernel driver advertises the capability and
+    # the provider implements the verbs. Installing one without the other is
+    # the confusing state -- max_srq=32768 with ibv_create_srq() returning
+    # EOPNOTSUPP -- so they run together by default. Skip one with
+    # --skip-tags if you really mean to.
     - role: ernic_srq_dkms
+      tags: [srq-kernel]
+    - role: ernic_srq_provider
+      tags: [srq-provider]
+      when: ernic_srq_build_provider | default(true) | bool

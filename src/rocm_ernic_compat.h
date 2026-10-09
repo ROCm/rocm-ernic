@@ -392,6 +392,25 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  */
 #define IONIC_EMU_SRQ_COUNT (1u << 15)
 
+/*
+ * SRQ ids start above the QP id space, and they have to.
+ *
+ * There is no separate SRQ doorbell qtype: ionic_post_recv_common() rings
+ * lif_cfg.rq_qtype for an SRQ exactly as it does for a QP's own RQ, so a
+ * qtype-7 doorbell carries either a QP id or an SRQ id and the device has to
+ * tell them apart by the number alone. The two come from different
+ * allocators -- the driver allocates QP ids itself, while SRQ ids are
+ * firmware-assigned (IONIC_LIF_RDMA_ALLOC_QID_SRQ; there is no equivalent
+ * bit for QPs) -- so without a disjoint range they would collide, and an SRQ
+ * doorbell would be credited to whichever QP shared its number.
+ *
+ * The guest's QP ids are bounded by the qp_count in the LIF identity, so
+ * starting SRQ ids at that bound keeps the two apart with no table to
+ * consult.
+ */
+#define IONIC_EMU_QP_COUNT_SHARED (1u << 15)
+#define IONIC_SRQ_QID_BASE IONIC_EMU_QP_COUNT_SHARED
+
 /* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
 #define IONIC_MAX_SRQ_SGES 2
 

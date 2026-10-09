@@ -3581,9 +3581,16 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
      * surfacing in the guest as ibv_create_srq() returning EINVAL on a
      * device that just reported max_srq=32768. Keep the two in step.
      *
-     * Safe to advertise only because tcp_qp_pop_recv_wr() now drains the
-     * SRQ: a table sized before that existed would have handed out SRQs
-     * whose receives nothing consumed, which is a hang, not a feature.
+     * Note what this does NOT do. tcp_qp_pop_recv_wr() drains an SRQ for a
+     * guest that posts receives through this backend, which a pvrdma guest
+     * does -- but the ionic device does not use that path at all. Every
+     * ionic receive, local and off the TCP mesh alike, is satisfied by
+     * deliver_recv() in ionic_datapath.c reading the destination QP's RQ
+     * ring straight out of guest memory; nothing posts guest receives into
+     * this backend. So for ionic this value only sizes the rdma_rm table
+     * the adminq handler allocates out of, and an SRQ-bound ionic QP still
+     * needs ionic_datapath.c to read the SRQ's ring, which it cannot yet
+     * do: it has no SRQ qtype at all.
      */
     attr->max_srq = IONIC_EMU_SRQ_COUNT;
     attr->max_srq_wr = 65535;
