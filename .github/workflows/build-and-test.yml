@@ -297,3 +297,21 @@ jobs:
             build/tests/test_pci_client
             build/tests/test_data_transfer
           retention-days: 7
+
+  # The guest image pin, checked rather than asked for politely.
+  #
+  # tools/check-guest-image-tag.sh existed but nothing ran it, so the comment
+  # in ci/guest-image.env promising it "fails the build if a literal tag
+  # reappears" was not true -- a reintroduced copy would be caught only by a
+  # lane quietly testing an older guest, which presents as a flaky backend
+  # rather than as a stale pin. Its own job, not a matrix leg: the check is
+  # seconds long and has nothing to do with the compiler or sanitizer.
+  guest-image-pin:
+    name: Guest image pin is single-sourced
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: No literal guest image tag outside ci/guest-image.env
+        run: tools/check-guest-image-tag.sh

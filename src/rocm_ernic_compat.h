@@ -260,6 +260,34 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe,
 void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle);
 
 /**
+ * ionic_rm_alloc_srq - Allocate a shared receive queue
+ * @pd_handle: protection domain the SRQ belongs to
+ * @srq_limit: low-watermark at which the device raises an SRQ_LIMIT event
+ * @srq_handle: output: allocated SRQ handle
+ */
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle);
+
+/**
+ * ionic_rm_dealloc_srq - Free a shared receive queue
+ */
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle);
+
+/**
+ * ionic_rm_modify_srq - Change an SRQ's low-watermark
+ */
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit);
+
+/**
+ * ionic_rm_query_srq - Read back an SRQ's attributes
+ */
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge,
+                       uint32_t *srq_limit);
+
+/**
  * ionic_rm_alloc_pd - Allocate a protection domain
  */
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);
@@ -352,6 +380,51 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  * agree.
  */
 #define IONIC_MESH_MAX_MSG (16u << 20)
+
+/*
+ * SRQ sizing, shared because three places have to agree and nothing else
+ * makes them: ionic_eth_emu.c puts the count in the LIF identity (it
+ * becomes the guest's max_srq verbatim), rdma_backend_tcp.c sizes
+ * rdma_rm's SRQ table from it, and ionic_adminq.c reports the SGE limit
+ * in CREATE_SRQ. A count advertised to the guest but not reflected in the
+ * table is not a smaller ceiling -- it is a table of size zero, so the
+ * first ibv_create_srq() fails EINVAL on a device claiming max_srq=32768.
+ *
+ * 256 because that is what every table behind it can actually hold. This was
+ * 1<<15, which no table matched: ionic_adminq.c tracks the id->handle mapping
+ * in a fixed 256-entry array, so the 257th CREATE_SRQ stored nothing and still
+ * handed the guest an id -- a live SRQ id that no later lookup could resolve.
+ * An advertised ceiling is a promise the admin path has to keep, and the
+ * cheapest way to keep it is to promise what the smallest table holds.
+ *
+ * Raising this is fine, but raise the adminq map with it: that map is scanned
+ * linearly, so a large value wants an indexed lookup rather than a bigger
+ * scan. The ids are dense (IONIC_SRQ_QID_BASE + n), so indexing is easy when
+ * it is needed.
+ */
+#define IONIC_EMU_SRQ_COUNT 256u
+
+/*
+ * SRQ ids start above the QP id space, and they have to.
+ *
+ * There is no separate SRQ doorbell qtype: ionic_post_recv_common() rings
+ * lif_cfg.rq_qtype for an SRQ exactly as it does for a QP's own RQ, so a
+ * qtype-7 doorbell carries either a QP id or an SRQ id and the device has to
+ * tell them apart by the number alone. The two come from different
+ * allocators -- the driver allocates QP ids itself, while SRQ ids are
+ * firmware-assigned (IONIC_LIF_RDMA_ALLOC_QID_SRQ; there is no equivalent
+ * bit for QPs) -- so without a disjoint range they would collide, and an SRQ
+ * doorbell would be credited to whichever QP shared its number.
+ *
+ * The guest's QP ids are bounded by the qp_count in the LIF identity, so
+ * starting SRQ ids at that bound keeps the two apart with no table to
+ * consult.
+ */
+#define IONIC_EMU_QP_COUNT_SHARED (1u << 15)
+#define IONIC_SRQ_QID_BASE        IONIC_EMU_QP_COUNT_SHARED
+
+/* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
+#define IONIC_MAX_SRQ_SGES 2
 
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,

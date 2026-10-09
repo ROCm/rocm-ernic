@@ -69,17 +69,22 @@ CI_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR:-/opt/qemu-images}"
 #
 # The same artifact the GitHub jobs pull and the same one
 # ansible/group_vars/all.yml points at, so all three lanes
-# test one guest.  Keep the tag equal to GUEST_ARTIFACT_TAG
-# in .github/workflows/system-tests.yml and to
-# ernic_vm_artifact_tag in ansible/group_vars/all.yml.
+# test one guest.  The tag is no longer written here: it comes
+# from ci/guest-image.env, which is the only place it lives.
+# The GitHub jobs read that same file into their environment
+# and the ansible vars look it up, so a bump is one edit and
+# cannot leave a lane behind.
 #
 # Unlike the VM name and ssh port above, the image is NOT
 # deliberately distinct: the backing file is never written
 # at runtime (each VM gets a COW overlay and ernicctl sets
 # BACKING_SHARED=true), so sharing one base is safe and is
 # the whole point of following the published image.
-CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic}"
-CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2}"
+#
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/../guest-image.env"
+CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-${GUEST_ARTIFACT_REPO}}"
+CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-${GUEST_ARTIFACT_TAG}}"
 CI_VM_ARTIFACT_DIR="${CI_VM_ARTIFACT_DIR:-${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}}"
 # What the artifact itself ships, as distinct from the CI_VM_* knobs
 # below, which are overridable and say what this lane should use.

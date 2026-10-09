@@ -317,12 +317,19 @@ typedef struct {
     void *data;
 } TcpPendingData;
 
-/* Software SRQ for the TCP backend */
+/*
+ * SRQ bookkeeping for the TCP backend.
+ *
+ * Geometry only, with no receive ring: nothing in this backend serves an SRQ
+ * receive. rdma_rm_alloc_srq() still reaches create/destroy here, so the
+ * object has to exist and carry its attributes, but the ionic device draws
+ * shared receives from ionic_datapath.c's rings and never comes through this
+ * path. The queue that used to live here had no producer and no consumer.
+ */
 typedef struct {
     uint32_t max_wr;
     uint32_t max_sge;
     uint32_t srq_limit;
-    GQueue *recv_queue;
     QemuMutex lock;
 } TcpSRQ;
 
@@ -457,11 +464,29 @@ typedef struct {
     GQueue *send_queue;
     GQueue *recv_queue;
 
+
     /* Pending data buffer for when no recv WR is available */
     GQueue *pending_data; /* Queue of buffered data payloads */
 
     QemuMutex lock;
 } TcpQP;
+
+/*
+ * Take the next receive WR for this QP.
+ *
+ * Returns NULL when no buffer is available, which both callers already treat
+ * as "stash the payload in pending_data".
+ *
+ * There is no SRQ case here. The ionic device serves shared receive queues
+ * from ionic_datapath.c's own rings and never routes a receive through this
+ * backend, and nothing else in the tree creates a QP against an SRQ --
+ * rdma_rm_alloc_qp() has exactly one caller, ionic_rm_alloc_qp(), which
+ * passes NULL. A binding here was therefore unreachable by construction.
+ */
+static TcpWR *tcp_qp_pop_recv_wr(TcpQP *tqp)
+{
+    return g_queue_pop_head(tqp->recv_queue);
+}
 
 /* Multi-node configuration modes */
 typedef enum {
@@ -1632,7 +1657,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                              * data. Process the same way as
                              * a DATA message.
                              */
-                            TcpWR *recv_wr = g_queue_pop_head(tqp->recv_queue);
+                            TcpWR *recv_wr = tcp_qp_pop_recv_wr(tqp);
                             if (recv_wr) {
                                 uint32_t bytes_copied = 0;
                                 const char *src =
@@ -1717,7 +1742,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                                  GUINT_TO_POINTER(hdr.dst_qpn));
                 if (tqp && tqp->rcq) {
                     /* Pop the receive WR */
-                    TcpWR *recv_wr = g_queue_pop_head(tqp->recv_queue);
+                    TcpWR *recv_wr = tcp_qp_pop_recv_wr(tqp);
                     if (recv_wr && payload && hdr.msg_len > 0) {
                         /* Copy data to receive buffer */
                         uint32_t bytes_copied = 0;
@@ -3533,6 +3558,33 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
     attr->max_pd = 1024;
     attr->max_mr_size = 0xFFFFFFFF;
     attr->atomic_cap = IBV_ATOMIC_HCA;
+    /*
+     * This sizes rdma_rm's SRQ table (res_tbl_init in rdma_rm.c), and
+     * nothing else reads it: what the guest sees as max_srq comes from the
+     * LIF identity, which ionic_eth_emu.c fills from IONIC_EMU_SRQ_COUNT.
+     * Leaving this zero while advertising a non-zero count there is not a
+     * capability mismatch the guest can detect -- it is a table of size
+     * zero, so the very first CREATE_SRQ fails with
+     *
+     *   Table SRQ, failed to allocate, bitmap is full
+     *
+     * surfacing in the guest as ibv_create_srq() returning EINVAL on a
+     * device that just reported max_srq=32768. Keep the two in step.
+     *
+     * Note what this does NOT do. tcp_qp_pop_recv_wr() drains an SRQ for a
+     * guest that posts receives through this backend, which a pvrdma guest
+     * does -- but the ionic device does not use that path at all. Every
+     * ionic receive, local and off the TCP mesh alike, is satisfied by
+     * deliver_recv() in ionic_datapath.c reading the destination QP's RQ
+     * ring straight out of guest memory; nothing posts guest receives into
+     * this backend. So for ionic this value only sizes the rdma_rm table
+     * the adminq handler allocates out of, and an SRQ-bound ionic QP still
+     * needs ionic_datapath.c to read the SRQ's ring, which it cannot yet
+     * do: it has no SRQ qtype at all.
+     */
+    attr->max_srq = IONIC_EMU_SRQ_COUNT;
+    attr->max_srq_wr = 65535;
+    attr->max_srq_sge = IONIC_MAX_SRQ_SGES;
     return 0;
 }
 
@@ -4558,7 +4610,6 @@ static int tcp_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
     tsrq->max_wr = max_wr;
     tsrq->max_sge = max_sge;
     tsrq->srq_limit = srq_limit;
-    tsrq->recv_queue = g_queue_new();
     qemu_mutex_init(&tsrq->lock);
 
     srq->ibsrq = (struct ibv_srq *)(uintptr_t)tsrq;
@@ -4573,13 +4624,6 @@ static void tcp_destroy_srq(RdmaBackendSRQ *srq)
         return;
     }
 
-    qemu_mutex_lock(&tsrq->lock);
-    while (!g_queue_is_empty(tsrq->recv_queue)) {
-        TcpWR *wr = g_queue_pop_head(tsrq->recv_queue);
-        g_free(wr);
-    }
-    g_queue_free(tsrq->recv_queue);
-    qemu_mutex_unlock(&tsrq->lock);
     qemu_mutex_destroy(&tsrq->lock);
 
     g_free(tsrq);
@@ -4617,29 +4661,6 @@ static int tcp_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
     return 0;
 }
 
-static void tcp_post_srq_recv(RdmaBackendSRQ *srq, struct ibv_sge *sge,
-                              uint32_t num_sge, void *ctx)
-{
-    TcpSRQ *tsrq = (TcpSRQ *)(uintptr_t)srq->ibsrq;
-    if (!tsrq) {
-        return;
-    }
-
-    TcpWR *wr = g_new0(TcpWR, 1);
-    wr->wr_id = (uint64_t)(uintptr_t)ctx;
-    wr->num_sge = num_sge > 32 ? 32 : num_sge;
-
-    for (uint32_t i = 0; i < wr->num_sge; i++) {
-        wr->sge[i].addr = (void *)(uintptr_t)sge[i].addr;
-        wr->sge[i].length = sge[i].length;
-        wr->sge[i].lkey = sge[i].lkey;
-        wr->sge[i].host_addr = (void *)(uintptr_t)sge[i].addr;
-    }
-
-    qemu_mutex_lock(&tsrq->lock);
-    g_queue_push_tail(tsrq->recv_queue, wr);
-    qemu_mutex_unlock(&tsrq->lock);
-}
 
 /*
  * Backend Operations Structure
@@ -4687,7 +4708,6 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .destroy_srq = tcp_destroy_srq,
     .query_srq = tcp_query_srq,
     .modify_srq = tcp_modify_srq,
-    .post_srq_recv = tcp_post_srq_recv,
 };
 
 uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev)

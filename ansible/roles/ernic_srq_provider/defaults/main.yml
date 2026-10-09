@@ -1,0 +1,44 @@
+---
+# Build rdma-core's ionic provider with SRQ support and install it.
+#
+# WHY THIS EXISTS AT ALL. ernic_guest_setup builds stock rdma-core from a
+# version number, and its only patch hook is the GPU-only rocm-xio GDA
+# series. That is fine until you want SRQ, because SRQ is in no rdma-core
+# release and not in master either -- it is linux-rdma/rdma-core#1799, still
+# open. A guest built from a version number therefore ends up in a state that
+# reads as a contradiction: the kernel reports max_srq=32768 and
+# ibv_create_srq() returns EOPNOTSUPP, because libibverbs dispatches into a
+# provider with no create_srq op.
+#
+# This is the userspace sibling of ernic_srq_dkms: that role builds the kernel
+# half from patches/srq, this one builds the userspace half from
+# patches/rdma-core. Neither is any use without the other.
+
+# A SHA on master, not a tag: the series applies to no release. Kept equal to
+# the base recorded in patches/rdma-core/README.md, which is where the
+# reasoning lives. The role checks the two agree rather than trusting it.
+ernic_srq_provider_base: bd3282a1cf1025c7869a8664c2d54266a4dded44
+ernic_srq_provider_repo: https://github.com/linux-rdma/rdma-core.git
+
+ernic_srq_provider_patches_dir: "{{ playbook_dir }}/../../patches/rdma-core"
+ernic_srq_provider_readme: "{{ ernic_srq_provider_patches_dir }}/README.md"
+
+ernic_srq_provider_source_dir: /var/tmp/rdma-core-srq
+
+# /usr/local, not /usr. The distro's rdma-core stays installed and intact, so
+# a bad build is backed out by removing a prefix rather than by repairing the
+# package database. ld.so searches /usr/local/lib first, so the new libibverbs
+# and its provider win at run time without anything being overwritten.
+#
+# The provider ABI suffix must match the libibverbs that loads it
+# (libionic-rdmav65.so needs the v65 libibverbs), which is exactly why the
+# whole tree is installed rather than dropping one .so next to the distro's.
+ernic_srq_provider_prefix: /usr/local
+
+ernic_srq_provider_build_packages:
+  - cmake
+  - ninja-build
+  - libnl-3-dev
+  - libnl-route-3-dev
+  - pkg-config
+  - python3-docutils

@@ -1,0 +1,95 @@
+From 52c2f87f6bd10fc28b54ee89302480641565d2f9 Mon Sep 17 00:00:00 2001
+From: Abhijit Gangurde <abhijit.gangurde@amd.com>
+Date: Fri, 18 Sep 2026 15:57:13 +0530
+Subject: [PATCH] net: ionic: Fetch qid allocation and SRQ capability from
+ firmware
+
+Read the qid allocation and SRQ capability from the RDMA LIF identity
+reported by firmware.
+
+Signed-off-by: Abhijit Gangurde <abhijit.gangurde@amd.com>
+---
+ .../net/ethernet/pensando/ionic/ionic_if.h    | 35 +++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_if.h b/drivers/net/ethernet/pensando/ionic/ionic_if.h
+index 0a201422d..bf843f3b4 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_if.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_if.h
+@@ -7,6 +7,7 @@
+ #define IONIC_DEV_INFO_SIGNATURE		0x44455649      /* 'DEVI' */
+ #define IONIC_DEV_INFO_VERSION			1
+ #define IONIC_IFNAMSIZ				16
++#define IONIC_CREATE_CQ_CMD_V2_MAGIC		-1
+ 
+ /*
+  * enum ionic_cmd_opcode - Device commands
+@@ -513,6 +514,23 @@ enum ionic_lif_rdma_cap_stats {
+ 	IONIC_LIF_RDMA_STAT_QP = BIT(1),
+ };
+ 
++/**
++ * enum ionic_lif_rdma_alloc_qid - RDMA QID allocation capability
++ *
++ * Bitmask of RDMA queue types for which firmware can automatically
++ * allocate queue IDs. When a bit is set, the driver can request the
++ * firmware to allocate QIDs for that queue type during creation.
++ *
++ * @IONIC_LIF_RDMA_ALLOC_QID_CQ:  Firmware can allocate QIDs for
++ *                                Completion Queues
++ * @IONIC_LIF_RDMA_ALLOC_QID_SRQ: Firmware can allocate QIDs for
++ *                                Shared Receive Queues
++ */
++enum ionic_lif_rdma_alloc_qid {
++	IONIC_LIF_RDMA_ALLOC_QID_CQ = BIT(0),
++	IONIC_LIF_RDMA_ALLOC_QID_SRQ = BIT(1),
++};
++
+ /**
+  * struct ionic_lif_identity - LIF identity information (type-specific)
+  *
+@@ -555,6 +573,12 @@ enum ionic_lif_rdma_cap_stats {
+  *	@rdma.eq_qtype:        RDMA Event Qtype
+  *	@rdma.stats_type:      Supported statistics type
+  *	                       (enum ionic_lif_rdma_cap_stats)
++ *	@rdma.rsvd:            Reserved byte
++ *	@rdma.rcq_sign_bit:    RCQ sign bit
++ *	@rdma.srq_qtype:       RDMA Shared Receive Qtype
++ *	@rdma.rsvd2:           Reserved byte(s)
++ *	@rdma.alloc_qid_cap:   RDMA queue type QID allocation capability
++ *	                       (bitmask of enum ionic_lif_rdma_alloc_qid)
+  *	@rdma.rsvd1:           Reserved byte(s)
+  * @words:               word access to struct contents
+  */
+@@ -600,7 +624,12 @@ union ionic_lif_identity {
+ 			struct ionic_lif_logical_qtype cq_qtype;
+ 			struct ionic_lif_logical_qtype eq_qtype;
+ 			__le16 stats_type;
+-			u8 rsvd1[162];
++			u8 rsvd;
++			u8 rcq_sign_bit;
++			struct ionic_lif_logical_qtype srq_qtype;
++			u8 rsvd2[5];
++			u8 alloc_qid_cap;
++			u8 rsvd1[142];
+ 		} __packed rdma;
+ 	} __packed;
+ 	__le32 words[478];
+@@ -2603,6 +2632,7 @@ struct ionic_rdma_reset_cmd {
+  * @depth_log2:    log base two of queue depth
+  * @stride_log2:   log base two of queue stride
+  * @dma_addr:      address of the queue memory
++ * @udma_idx:      udma index
+  * @rsvd2:         reserved byte(s)
+  *
+  * The same command struct is used to create an RDMA event queue, completion
+@@ -2632,7 +2662,8 @@ struct ionic_rdma_queue_cmd {
+ 	u8     depth_log2;
+ 	u8     stride_log2;
+ 	__le64 dma_addr;
+-	u8     rsvd2[40];
++	u8     udma_idx;
++	u8     rsvd2[39];
+ };
+ 
+ /******************************************************************

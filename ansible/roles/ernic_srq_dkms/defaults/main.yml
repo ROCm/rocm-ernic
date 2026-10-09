@@ -1,0 +1,83 @@
+---
+# Build the SRQ-capable ionic drivers as a DKMS package, against each kernel
+# ref known to carry the support.
+#
+# WHY THIS IS SEPARATE FROM ernic_guest_setup. That role builds the driver the
+# guest is going to RUN, pinned to the one ref its kernel matches
+# (driver_ionic.yml asserts the two agree on major.minor). This role answers a
+# different question -- "does the SRQ driver still build?" -- across several
+# refs, on a machine that may have no ernic at all. It is a build gate, not a
+# provisioning step, and defaults to --build-only for that reason.
+#
+# WHICH BASE, AND WHY IT IS PATCHED. The series is rebased onto v7.2.4 --
+# the same ref IONIC_KERNEL_REF pins and the kernel the CI guest and the
+# qemu-minimal fleet VMs actually run (7.2.4-070204-generic). That is the
+# whole point: a guest can build this without a kernel upgrade.
+#
+# It did not start there. The upstream commits target rdma/for-next and
+# apply to no mainline tag; three earlier for-next commits carried as
+# 0001-0003 get the series onto v7.3-rc6, and rebasing from there to v7.2.4
+# needed four context fixes, none of them semantic:
+#
+#   0001  ionic_ctx_resp has no phc_offset on 7.2.4; rcq_sign_bit +
+#         comp_mask still total the 4 bytes rsvd2[3] occupied, so the
+#         UAPI struct size is unchanged.
+#   0004  the LIF identity block: 7.2.4 has rsvd1[162] where 7.3 had
+#         rsvd + rcq_sign_bit + rsvd1[160]. 1+1+12+5+1+142 == 162, so
+#         srq_qtype lands at offset 96 and alloc_qid_cap at 113 either
+#         way -- verified by compiling offsetof against the emulator's
+#         LIF_ID_SRQ_QTYPE_OFF / LIF_ID_ALLOC_QID_CAP_OFF.
+#   0006  the rq -> rq.q refactor, mechanical; the resulting token census
+#         matches the 7.3 tree exactly.
+#   0007  7.2.4 returns ib_respond_empty_udata(udata) where 7.3 returns 0.
+#
+# Every IB-core helper the series calls (ib_umem_get_va,
+# ib_copy_validate_udata_in, ib_respond_udata, rdma_udata_to_drv_context)
+# is already used by 7.2.4's own ionic, so nothing here depends on a 7.3
+# API. The one 7.3-only rename, ib_no_udata_io(), is not touched by any of
+# the nine.
+#
+# Verified end to end: builds as a DKMS package on 7.2.4-070204-generic and
+# installs ionic.ko + ionic_rdma.ko into updates/dkms.
+ernic_srq_dkms_sources:
+  - ref: v7.2.4
+    repo: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+    note: >-
+      Matches IONIC_KERNEL_REF and the guest kernel, plus patches/srq.
+      Drop 0001-0008 and move to the release tag once the series lands
+      upstream (queued for 7.4).
+
+# The patch series applied on top of the ref above. Note this REPLACES the
+# default patches/ directory rather than adding to it, which is why
+# patches/srq carries a copy of this repo's own UC address-handle patch as
+# 0009 -- without it an SRQ build would silently lose a fix the normal build
+# has.
+ernic_srq_dkms_patches_dir: "{{ playbook_dir }}/../../patches/srq"
+
+ernic_srq_dkms_source_root: /var/tmp/ionic-srq-src
+
+# Build, do not install. This role runs on build hosts and in CI where the
+# running kernel is not the guest's and installing would register modules
+# nothing is going to load. Set false only on a guest you intend to run the
+# result on.
+ernic_srq_dkms_install: false
+
+# Fail rather than skip when a ref turns out not to carry SRQ after all.
+# A silent skip here is the bad outcome: the build would succeed, produce a
+# driver with no SRQ, and the first sign of trouble would be a guest
+# reporting max_srq=0 with no indication why.
+ernic_srq_dkms_require_srq: true
+
+# Where the repo's own scripts live, relative to the playbook. Two levels, not
+# one: playbook_dir is ansible/playbooks, so ../scripts is ansible/scripts,
+# which does not exist -- the scripts are at the repository root, the same
+# depth as patches/ above.
+ernic_srq_dkms_scripts_dir: "{{ playbook_dir }}/../../scripts"
+
+# Re-fetch the ionic sources even when a checkout for this ref already exists.
+# On by default: the role's purpose is to prove patches/srq applies and builds,
+# and every cache available here keys on the kernel ref alone, so a changed
+# patch series against a warm build host would never be re-applied and the gate
+# would pass on stale sources. Set false only for a throwaway iteration where
+# you know the patches have not moved.
+ernic_srq_dkms_force_fetch: true

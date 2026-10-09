@@ -177,6 +177,44 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     (void)handle;
     (void)cq_handle;
 }
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle)
+{
+    (void)handle;
+    (void)pd_handle;
+    (void)max_wr;
+    (void)max_sge;
+    (void)srq_limit;
+    *srq_handle = 1;
+    return 0;
+}
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+{
+    (void)handle;
+    (void)srq_handle;
+}
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit)
+{
+    (void)handle;
+    (void)srq_handle;
+    (void)srq_limit;
+    return 0;
+}
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
+{
+    (void)handle;
+    (void)srq_handle;
+    if (max_wr)
+        *max_wr = 16;
+    if (max_sge)
+        *max_sge = 2;
+    if (srq_limit)
+        *srq_limit = 0;
+    return 0;
+}
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
@@ -244,6 +282,40 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
     (void)dp;
     (void)qp_id;
+}
+void ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
+                                 const struct ionic_dp_ring_desc *rq)
+{
+    (void)dp;
+    (void)srq_id;
+    (void)rq;
+}
+void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
+{
+    (void)dp;
+    (void)srq_id;
+}
+void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
+                                uint32_t srq_id)
+{
+    (void)dp;
+    (void)qp_id;
+    (void)srq_id;
+}
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const uint8_t dgid[16], const uint8_t dmac[6],
+                                uint32_t dest_node_id)
+{
+    (void)dp;
+    (void)ah_id;
+    (void)dgid;
+    (void)dmac;
+    (void)dest_node_id;
+}
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
+{
+    (void)dp;
+    (void)ah_id;
 }
 void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                 uint64_t va, uint64_t length,

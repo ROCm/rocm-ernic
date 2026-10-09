@@ -1,0 +1,33 @@
+From 71852ad728ef18e5476865aa41a07188bd8fee55 Mon Sep 17 00:00:00 2001
+From: rocm-ernic <ci@rocm-ernic.invalid>
+Date: Thu, 8 Oct 2026 21:14:21 -0600
+Subject: [PATCH] ionic: ring the RQ qtype for SRQ receives, not the CQ qtype
+
+ionic_post_recv_srq() rang ctx->cq_qtype when posting receives to a shared
+receive queue. The normal receive path a few lines up rings ctx->rq_qtype,
+and that is what an SRQ needs too: a receive doorbell sent to the CQ qtype
+reaches the device as a completion-queue consumer-index update for whatever
+CQ shares that id, so the SRQ never learns a receive was posted.
+
+The effect is a hang rather than an error. A QP bound to an SRQ completes
+its sends normally and never completes a receive, because as far as the
+device is concerned no receive buffer exists. UCX's rc_verbs transport,
+whose entire receive path is ibv_post_srq_recv(), hangs on the first
+message.
+---
+ providers/ionic/ionic_verbs.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/providers/ionic/ionic_verbs.c b/providers/ionic/ionic_verbs.c
+index 134be1c..c64c0ad 100644
+--- a/providers/ionic/ionic_verbs.c
++++ b/providers/ionic/ionic_verbs.c
+@@ -3592,7 +3592,7 @@ out:
+ 			udma_to_device_barrier();
+ 			verbs_debug(&ctx->vctx, "dbell srq %u rq val %#lx",
+ 				    srq->srqid, ionic_queue_dbell_val(&srq->rq.queue));
+-			ionic_dbell_ring(&ctx->dbpage[ctx->cq_qtype],
++			ionic_dbell_ring(&ctx->dbpage[ctx->rq_qtype],
+ 					 ionic_queue_dbell_val(&srq->rq.queue));
+ 		}
+ 	}

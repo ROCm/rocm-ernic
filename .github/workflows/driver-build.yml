@@ -8,8 +8,10 @@ on:
     branches: [ develop ]
     paths:
       - 'patches/**'
+      - 'scripts/fetch-ionic-sources.sh'
       - 'scripts/setup-ionic-dkms.sh'
       - 'cmake/ErnicKernelModule.cmake'
+      - 'ansible/roles/ernic_srq_dkms/**'
       - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
@@ -25,10 +27,28 @@ jobs:
   # Linux ionic.ko and ionic_rdma.ko with the patches in patches/ applied.
   # What CI can check on a hosted runner is that the pinned upstream ref still
   # exists and that every patch still applies to it -- the modules themselves
-  # need kernel >= 6.18 headers, which hosted runners do not have.
+  # need kernel >= 6.18 headers, which hosted runners do not have.  Compiling
+  # and loading them is the VM lane's job (.github/workflows/srq-vm.yml).
+  #
+  # Two series are checked, because there are two.  patches/ is what the
+  # shipping driver is built from, pinned to the cmake ref; patches/srq is the
+  # SRQ-enabling series, pinned to its own (newer) ref because the SRQ commits
+  # apply to no older tag.  They rot independently and for different reasons --
+  # ours when upstream ionic moves, the SRQ series when its prerequisites land
+  # upstream and the carried copies start applying twice -- so a single job
+  # covering only patches/ left the SRQ series untested until a guest failed.
   ionic-patches:
-    name: Apply ionic Driver Patches
+    name: Apply ionic Driver Patches (${{ matrix.series }})
     runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - series: base
+            patches: patches
+          - series: srq
+            patches: patches/srq
 
     steps:
     - name: Checkout code
@@ -36,53 +56,47 @@ jobs:
       with:
         persist-credentials: false
 
-    - name: Fetch upstream ionic sources and apply patches
+    - name: Resolve the pinned kernel ref
+      id: ref
       run: |
-        # Mirror cmake/ErnicKernelModule.cmake, but without configuring the
-        # whole project: this job only needs git.  The pinned ref is read
-        # from the cmake file so the two cannot drift apart.
-        REF=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
-              cmake/ErnicKernelModule.cmake)
+        # Each series names its own base, and neither is spelled here: the
+        # build reads the same two files, so a bump in one place cannot leave
+        # CI testing the other.
+        case "${{ matrix.series }}" in
+        base)
+          REF=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+                cmake/ErnicKernelModule.cmake)
+          WHERE=cmake/ErnicKernelModule.cmake
+          ;;
+        srq)
+          # First "ref:" under ernic_srq_dkms_sources in the role defaults.
+          REF=$(sed -n '/^ernic_srq_dkms_sources:/,/^[a-z]/ s/^  *- *ref: *//p' \
+                ansible/roles/ernic_srq_dkms/defaults/main.yml | head -1)
+          WHERE=ansible/roles/ernic_srq_dkms/defaults/main.yml
+          ;;
+        esac
         if [ -z "$REF" ]; then
-          echo "::error::could not read IONIC_KERNEL_REF from cmake/ErnicKernelModule.cmake"
+          echo "::error::could not read the kernel ref from $WHERE"
           exit 1
         fi
-        echo "ionic kernel ref: $REF"
+        echo "${{ matrix.series }} kernel ref: $REF (from $WHERE)"
+        echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
+    - name: Fetch upstream ionic sources and apply patches
+      run: |
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
 
-        # Fetch into an empty repo rather than "clone --branch", which only
-        # accepts a tag or branch: this resolves a bare SHA too, with a full
-        # blobless fetch as the fallback if the server will not serve it.
-        URL=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-        mkdir -p ionic-kernel-src
-        (
-          cd ionic-kernel-src
-          git init -q .
-          git remote add origin "$URL"
-          git sparse-checkout init --cone
-          git sparse-checkout set \
-            drivers/net/ethernet/pensando/ionic \
-            drivers/infiniband/hw/ionic
-          if git fetch -q --depth 1 --filter=blob:none origin "$REF"; then
-            rev=FETCH_HEAD
-          else
-            echo "$REF is not directly fetchable; fetching full history"
-            git fetch -q --filter=blob:none --tags origin
-            rev=$REF
-          fi
-          git checkout -q --detach "$rev"
-        )
-        git -C ionic-kernel-src rev-parse HEAD > /tmp/ionic-base-sha
-
-        for p in $(ls patches/*.patch 2>/dev/null | sort); do
-          echo "  applying: $p"
-          git -C ionic-kernel-src am --whitespace=fix "$(pwd)/$p" || {
-            echo "::error file=$p::patch does not apply to $REF"
-            exit 1
-          }
-        done
+        # Call the script the humans and the ernic_srq_dkms role call, rather
+        # than reimplementing the fetch here.  The inline copy this replaces
+        # carried its own sparse-checkout path list, which silently drifted:
+        # it lacked include/uapi/rdma, so the SRQ series -- which touches
+        # ionic-abi.h -- would have failed here on a file that was simply not
+        # checked out, reported as "patch does not apply".
+        ./scripts/fetch-ionic-sources.sh \
+          --source-dir "$PWD/ionic-kernel-src" \
+          --kernel-ref "${{ steps.ref.outputs.ref }}" \
+          --patches-dir "$PWD/${{ matrix.patches }}"
 
     - name: Verify the patched tree
       run: |
@@ -94,32 +108,169 @@ jobs:
           fi
         done
 
-        # Every patch in patches/ must appear as a commit on top of the ref.
-        # Count from the pre-patch SHA: the fetch may have pulled full history.
-        base=$(cat /tmp/ionic-base-sha)
-        want=$(ls patches/*.patch 2>/dev/null | wc -l)
-        got=$(git -C "$SRC" rev-list --count "${base}..HEAD")
-        echo "patches in tree: $want, commits applied: $got"
-        if [ "$want" -ne "$got" ]; then
-          echo "::error::expected $want patch commits, found $got"
-          git -C "$SRC" log --oneline "${base}..HEAD"
+        # Every patch must appear as a commit on top of the ref, with its own
+        # subject.  Comparing subjects rather than counting commits is what
+        # catches a patch that applied as an empty commit, or a series whose
+        # order was changed by a renumbering.
+        PATCHES="${{ matrix.patches }}"
+        want=$(ls "$PATCHES"/*.patch 2>/dev/null | wc -l)
+        if [ "$want" -eq 0 ]; then
+          echo "::error::no patches found in $PATCHES"
           exit 1
         fi
-        git -C "$SRC" log --oneline "${base}..HEAD"
+        echo "patches in $PATCHES: $want"
+
+        if ! git -C "$SRC" rev-parse -q --verify "HEAD~${want}^{commit}" >/dev/null; then
+          echo "::error::fewer than $want commits on top of the ref"
+          git -C "$SRC" log --oneline -n "$((want + 1))"
+          exit 1
+        fi
+        git -C "$SRC" log --oneline "HEAD~${want}..HEAD"
+
+        git -C "$SRC" log --format=%s "HEAD~${want}..HEAD" > /tmp/applied-subjects
+        rc=0
+        for p in $(ls "$PATCHES"/*.patch | sort); do
+          # Unwrap a folded Subject: header, then strip the [PATCH nn/nn] tag
+          # that git-format-patch puts there and git-am strips on the way in.
+          # The trailing-space strip is not cosmetic: unfolding consumes the
+          # blank line that ends the header block as one more continuation, so
+          # every folded subject picks up a trailing space that git's %s does
+          # not have, and an exact match would never fire.
+          subj=$(sed -n '/^Subject: /{s/^Subject: //; :a; N; /\n[^ \t]/!{s/\n[ \t]*/ /; ba}; s/\n.*//; p; q}' "$p" \
+                 | sed -e 's/^\[[^]]*\] *//' -e 's/[[:space:]]*$//')
+          if ! grep -qxF "$subj" /tmp/applied-subjects; then
+            echo "::error file=$p::applied, but no commit has its subject: $subj"
+            rc=1
+          fi
+        done
+        [ "$rc" -eq 0 ] || exit 1
+        echo "all $want patch subjects present as commits"
+
+    # The three facts patches/srq exists to produce.  Without these the series
+    # can apply cleanly and still yield a driver reporting max_srq=0, which is
+    # exactly the state the SRQ work exists to leave behind -- and it would
+    # surface three lanes later as UCX declining rc_verbs.
+    - name: Verify the SRQ series actually enabled SRQ
+      if: matrix.series == 'srq'
+      run: |
+        SRC=ionic-kernel-src/drivers/infiniband/hw/ionic
+        ABI=ionic-kernel-src/include/uapi/rdma/ionic-abi.h
+        rc=0
+        check() {
+          if grep -qE "$2" "$1"; then
+            echo "  ✓ $3"
+          else
+            echo "::error::$3 -- not found in $1"
+            rc=1
+          fi
+        }
+        check "$SRC/ionic_controlpath.c" 'ionic_create_srq_cmd|\.create_srq[[:space:]]*=' \
+              'create_srq verb present'
+        check "$SRC/ionic_ibdev.c" 'max_srq[[:space:]]*=' \
+              'max_srq advertised in device attributes'
+        if [ ! -f "$ABI" ]; then
+          echo "::error::$ABI is missing -- is include/uapi/rdma in the sparse checkout?"
+          rc=1
+        else
+          check "$ABI" '__u32[[:space:]]+srqid' 'srqid in the user ABI'
+        fi
+        [ "$rc" -eq 0 ] || exit 1
+
+  # The userspace half, which rots for a different reason than the kernel
+  # half does. patches/rdma-core carries linux-rdma/rdma-core#1799, still
+  # open; the hazard it guards against is that PR being rebased or merged
+  # upstream, at which point these either stop applying or start applying
+  # twice. Same check, different repository -- so a separate job rather than
+  # another matrix entry, because nothing here fetches a kernel.
+  rdma-core-patches:
+    name: Apply rdma-core ionic Patches
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Apply the series to its pinned base
+      run: |
+        set -euo pipefail
+        PATCHES=patches/rdma-core
+
+        # The base is recorded in the README rather than a separate pin file:
+        # one SHA, in the document that explains why it is that SHA.
+        BASE=$(sed -n 's/^## The base: `\([0-9a-f]\{40\}\)`.*/\1/p' \
+               "$PATCHES/README.md" | head -1)
+        if [ -z "$BASE" ]; then
+          echo "::error::could not read the pinned base SHA from $PATCHES/README.md"
+          exit 1
+        fi
+        echo "rdma-core base: $BASE"
+
+        git config --global user.email "ci@rocm-ernic.invalid"
+        git config --global user.name "rocm-ernic CI"
+
+        git clone -q --filter=blob:none \
+          https://github.com/linux-rdma/rdma-core.git /tmp/rdma-core
+        git -C /tmp/rdma-core checkout -q "$BASE"
+
+        for p in $(ls "$PATCHES"/*.patch | sort); do
+          echo "  applying: $p"
+          git -C /tmp/rdma-core am --whitespace=fix "$(pwd)/$p" || {
+            echo "::error file=$p::does not apply to $BASE -- has #1799 been"
+            echo "  rebased or merged upstream? See $PATCHES/README.md."
+            exit 1
+          }
+        done
+
+    - name: Verify the provider gained SRQ
+      run: |
+        set -euo pipefail
+        SRC=/tmp/rdma-core
+        rc=0
+        # The point of the series. Applying cleanly is not the same as
+        # producing a provider with the verbs, and a provider without them
+        # fails far downstream as ibv_create_srq() returning EOPNOTSUPP on a
+        # device reporting max_srq=32768.
+        for sym in ionic_create_srq ionic_destroy_srq ionic_modify_srq \
+                   ionic_query_srq ionic_post_recv_srq; do
+          if grep -q "$sym" "$SRC/providers/ionic/ionic_verbs.c"; then
+            echo "  ✓ $sym"
+          else
+            echo "::error::$sym missing from providers/ionic/ionic_verbs.c"
+            rc=1
+          fi
+        done
+        if ! grep -qE '__u32[[:space:]]+srqid' \
+             "$SRC/kernel-headers/rdma/ionic-abi.h"; then
+          echo "::error::srqid missing from the kernel-headers ABI copy"
+          rc=1
+        fi
+        [ "$rc" -eq 0 ] || exit 1
 
   driver-build-status:
     name: Driver Build Status
-    needs: [ionic-patches]
+    needs: [ionic-patches, rdma-core-patches]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
     - name: Check build result
       run: |
+        # Both halves, and both reported. Needing a job without checking its
+        # result is a gate that goes green on its failure -- which is how a
+        # lane ends up proving nothing while looking like it passed.
+        rc=0
         if [ "${{ needs.ionic-patches.result }}" = "success" ]; then
-          echo "✅ ionic patches apply cleanly"
+          echo "✅ ionic kernel patches apply cleanly"
         else
-          echo "❌ ionic patches do not apply"
-          exit 1
+          echo "❌ ionic kernel patches do not apply"
+          rc=1
         fi
-
+        if [ "${{ needs.rdma-core-patches.result }}" = "success" ]; then
+          echo "✅ rdma-core ionic patches apply cleanly"
+        else
+          echo "❌ rdma-core ionic patches do not apply"
+          rc=1
+        fi
+        exit "$rc"
