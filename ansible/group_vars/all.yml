@@ -43,13 +43,13 @@ ernic_instances: 2
 # and cannot leave this role pointing at an older guest than CI tests.
 ernic_vm_artifact_repo: >-
   {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_REPO type=properties
-     file=' ~ playbook_dir ~ '/../ci/guest-image.env') }}
+     file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}
 ernic_vm_artifact_tag: >-
   {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_TAG type=properties
-     file=' ~ playbook_dir ~ '/../ci/guest-image.env') }}
+     file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}
 ernic_vm_artifact_info_type: >-
   {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_INFO_TYPE type=properties
-     file=' ~ playbook_dir ~ '/../ci/guest-image.env') }}
+     file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}
 # Tag-scoped, so bumping the tag cannot silently reuse the old disk.
 ernic_vm_artifact_dir: >-
   {{ ernic_vm_image_dir }}/artifacts/{{ ernic_vm_artifact_tag }}

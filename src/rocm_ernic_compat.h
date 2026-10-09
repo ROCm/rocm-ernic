@@ -389,8 +389,20 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  * in CREATE_SRQ. A count advertised to the guest but not reflected in the
  * table is not a smaller ceiling -- it is a table of size zero, so the
  * first ibv_create_srq() fails EINVAL on a device claiming max_srq=32768.
+ *
+ * 256 because that is what every table behind it can actually hold. This was
+ * 1<<15, which no table matched: ionic_adminq.c tracks the id->handle mapping
+ * in a fixed 256-entry array, so the 257th CREATE_SRQ stored nothing and still
+ * handed the guest an id -- a live SRQ id that no later lookup could resolve.
+ * An advertised ceiling is a promise the admin path has to keep, and the
+ * cheapest way to keep it is to promise what the smallest table holds.
+ *
+ * Raising this is fine, but raise the adminq map with it: that map is scanned
+ * linearly, so a large value wants an indexed lookup rather than a bigger
+ * scan. The ids are dense (IONIC_SRQ_QID_BASE + n), so indexing is easy when
+ * it is needed.
  */
-#define IONIC_EMU_SRQ_COUNT (1u << 15)
+#define IONIC_EMU_SRQ_COUNT 256u
 
 /*
  * SRQ ids start above the QP id space, and they have to.

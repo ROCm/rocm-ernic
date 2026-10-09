@@ -108,7 +108,10 @@ enum ionic_v1_admin_op {
 #define MAX_AQ      4
 #define MAX_CQ_MAP  256
 #define MAX_QP_MAP  256
-#define MAX_SRQ_MAP 256
+/* Tied to the advertised ceiling, not merely equal to it today: max_srq comes
+ * from IONIC_EMU_SRQ_COUNT, and a map smaller than that silently loses the
+ * mappings for every SRQ past the end. */
+#define MAX_SRQ_MAP IONIC_EMU_SRQ_COUNT
 /*
  * One entry per region the rdma_rm table can hold.  At 256 against a
  * 1024-entry table, every MR past the 256th was created successfully and then
@@ -240,24 +243,30 @@ static void adminq_map_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
             cq_id);
 }
 
-static void adminq_map_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
+/* False when the map is full, and the caller must fail the command on it. A
+ * warning is not enough: CREATE_SRQ would still return the id it allocated,
+ * so the guest would hold an SRQ that every later lookup misses -- posts go
+ * nowhere and the failure surfaces as a hang in the datapath rather than as
+ * an error from the verb that caused it. */
+static bool adminq_map_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
                            uint32_t handle)
 {
-    for (int i = 0; i < MAX_SRQ_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
         if (!ctx->srq_map[i].valid || ctx->srq_map[i].srq_id == srq_id) {
             ctx->srq_map[i] = (struct ionic_srq_map_entry){
                 .valid = true, .srq_id = srq_id, .handle = handle};
-            return;
+            return true;
         }
     }
     vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: SRQ map full, srq_id=%u",
             srq_id);
+    return false;
 }
 
 static bool adminq_lookup_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
                               uint32_t *handle)
 {
-    for (int i = 0; i < MAX_SRQ_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
         if (ctx->srq_map[i].valid && ctx->srq_map[i].srq_id == srq_id) {
             *handle = ctx->srq_map[i].handle;
             return true;
@@ -268,7 +277,7 @@ static bool adminq_lookup_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
 
 static void adminq_unmap_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id)
 {
-    for (int i = 0; i < MAX_SRQ_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
         if (ctx->srq_map[i].valid && ctx->srq_map[i].srq_id == srq_id) {
             ctx->srq_map[i].valid = false;
             return;
@@ -835,7 +844,14 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * RQ doorbell carries either a QP id or this, and only the range tells
      * them apart. See IONIC_SRQ_QID_BASE. */
     uint32_t srq_id = IONIC_SRQ_QID_BASE + (++ctx->next_srq_id);
-    adminq_map_srq(ctx, srq_id, srq_handle);
+    if (!adminq_map_srq(ctx, srq_id, srq_handle)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ: id map full at %u SRQs, refusing",
+                (unsigned)MAX_SRQ_MAP);
+        ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
+        ctx->next_srq_id--;
+        return 1;
+    }
 
     /*
      * Give the datapath the ring, not just the resource. The guest posts
