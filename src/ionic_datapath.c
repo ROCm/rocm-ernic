@@ -2748,8 +2748,21 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
      * reads key 0 as IONIC_DMA_LKEY and hands back the va as a bus address with
      * no MR lookup and no bound, which is fine for a key our own guest put in a
      * WQE but would let another instance reach any guest physical page.
+     *
+     * Zero-length operations are exempt, and have to be. A zero-length RDMA
+     * read or write performs no memory access at all, and the spec says the
+     * R_Key is not validated for one -- so a sender is entitled to leave it
+     * zero, and UCX does: its rc_verbs flush is a zero-length RDMA_WRITE with
+     * rkey 0, va 0 and no payload. Rejecting that is not a tightening, it is
+     * a wrong answer to a legal request, and it cost a two-VM rc_verbs hang
+     * that looked like a transport failure. There is nothing to protect here
+     * -- dp_host_to_sge() with len 0 touches no memory and returns 0 before
+     * it ever calls sge_gpa().
+     *
+     * Atomics are not exempt: remote_post() always gives them length 8, so
+     * they still require a key.
      */
-    if (!rkey &&
+    if (!rkey && length &&
         (h->op == IONIC_WIRE_WRITE || h->op == IONIC_WIRE_WRITE_IMM ||
          h->op == IONIC_WIRE_READ_REQ || h->op == IONIC_WIRE_ATOMIC_REQ)) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
