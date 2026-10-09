@@ -1,0 +1,146 @@
+---
+# Build rdma-core + patches/rdma-core and install it to its own prefix.
+
+- name: Find the SRQ provider patch series
+  ansible.builtin.find:
+    paths: "{{ ernic_srq_provider_patches_dir }}"
+    patterns: "*.patch"
+  delegate_to: localhost
+  become: false
+  register: ernic_srq_provider_patch_files
+
+- name: Fail when the series is missing
+  ansible.builtin.assert:
+    that: ernic_srq_provider_patch_files.files | length > 0
+    fail_msg: >-
+      No *.patch in {{ ernic_srq_provider_patches_dir }}. Without the series
+      this role would build stock rdma-core, whose ionic provider has no SRQ
+      -- which is the state it exists to leave behind, and which fails far
+      downstream as ibv_create_srq() returning EOPNOTSUPP.
+
+# The base lives in two files because one of them is prose. Rather than pick
+# a winner, check they agree: a bump that edits the README and forgets the
+# default would otherwise build a different tree than the one documented.
+- name: Read the base SHA recorded in the series README
+  ansible.builtin.shell: |
+    set -o pipefail
+    sed -n 's/^## The base: `\([0-9a-f]\{40\}\)`.*/\1/p' \
+      "{{ ernic_srq_provider_readme }}" | head -1
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: ernic_srq_provider_readme_base
+
+- name: Fail when the pinned base and the README disagree
+  ansible.builtin.assert:
+    that:
+      - ernic_srq_provider_readme_base.stdout | length == 40
+      - ernic_srq_provider_readme_base.stdout == ernic_srq_provider_base
+    fail_msg: >-
+      ernic_srq_provider_base is {{ ernic_srq_provider_base }} but
+      {{ ernic_srq_provider_readme }} documents
+      '{{ ernic_srq_provider_readme_base.stdout | default("nothing") }}'.
+      Bump both, or the build and its rationale describe different trees.
+
+- name: Install the rdma-core build dependencies
+  become: true
+  ansible.builtin.apt:
+    name: "{{ ernic_srq_provider_build_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the source directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ ernic_srq_provider_source_dir }}"
+    state: directory
+    mode: "0755"
+
+# blob:none rather than --depth 1: the pin is a SHA, and a shallow clone of a
+# branch cannot check one out.
+- name: Clone rdma-core
+  become: true
+  ansible.builtin.git:
+    repo: "{{ ernic_srq_provider_repo }}"
+    dest: "{{ ernic_srq_provider_source_dir }}"
+    version: "{{ ernic_srq_provider_base }}"
+    depth: 0
+    force: true
+  register: ernic_srq_provider_clone
+
+- name: Copy the patch series to the target
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ ernic_srq_provider_source_dir }}/../rdma-core-patches/"
+    mode: "0644"
+  loop: "{{ ernic_srq_provider_patch_files.files | sort(attribute='path') }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Apply the series
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd "{{ ernic_srq_provider_source_dir }}"
+    git -c user.email=ansible@invalid -c user.name=ansible \
+        am --abort 2>/dev/null || true
+    git checkout -q "{{ ernic_srq_provider_base }}"
+    for p in ../rdma-core-patches/*.patch; do
+        git -c user.email=ansible@invalid -c user.name=ansible \
+            am --whitespace=fix "$p"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+# The point of the series, checked before seven minutes of build rather than
+# after. Applying cleanly is not the same as producing a provider with the
+# verbs.
+- name: Confirm the provider now implements SRQ
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      grep -q ionic_create_srq
+      {{ ernic_srq_provider_source_dir }}/providers/ionic/ionic_verbs.c
+  changed_when: false
+
+- name: Build and install rdma-core
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd "{{ ernic_srq_provider_source_dir }}"
+    cmake -B build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="{{ ernic_srq_provider_prefix }}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DNO_MAN_PAGES=1
+    ninja -C build
+    ninja -C build install
+    ldconfig
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Confirm the installed provider carries the SRQ verbs
+  become: true
+  ansible.builtin.shell: |
+    set -o pipefail
+    f=$(ls {{ ernic_srq_provider_prefix }}/lib/libibverbs/libionic-rdmav*.so)
+    # Follow the symlink: the provider name is a link to libionic.so.*, and
+    # strings on a dangling-looking link reports nothing useful.
+    strings "$(readlink -f "$f")" | grep -c ionic_create_srq
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: ernic_srq_provider_check
+  failed_when: ernic_srq_provider_check.stdout | int < 1
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      rdma-core {{ ernic_srq_provider_base[:12] }} +
+      {{ ernic_srq_provider_patch_files.files | length }} patch(es) installed
+      to {{ ernic_srq_provider_prefix }}; ionic provider has SRQ.

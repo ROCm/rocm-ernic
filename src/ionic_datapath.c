@@ -173,6 +173,10 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 
 #define MAX_QP (1u << 15)
 #define MAX_CQ (1u << 16)
+/* The same count ionic_eth_emu.c puts in the LIF identity as the guest's
+ * max_srq, so an srq_id the guest is entitled to use always indexes this
+ * table. */
+#define MAX_SRQ IONIC_EMU_SRQ_COUNT
 /* Sized with the rdma_rm table and the admin queue's map; see
  * IONIC_MAX_MR in ionic_datapath.h for why they have to agree. */
 #define MAX_MR  IONIC_MAX_MR
@@ -213,6 +217,26 @@ struct ionic_qp_ring {
     bool dest_valid;
     uint32_t dest_qp_id;
     uint32_t dest_node_id; /* UINT32_MAX = local / no mesh */
+
+    /* Bound to a shared receive queue, in which case rq_buf/rq_prod/rq_cons
+     * above are unused and every receive is taken from dp->srq[srq_id]. */
+    bool has_srq;
+    uint32_t srq_id;
+};
+
+/*
+ * A shared receive queue's ring. Same shape as a QP's RQ, plus a lock,
+ * because unlike an RQ this is drawn from by several QPs and the local
+ * send path and the mesh receive path run on different threads.
+ */
+struct ionic_srq_ring {
+    bool valid;
+    struct dp_buf buf;
+    uint32_t depth;
+    uint8_t stride_log2;
+    uint32_t prod;
+    uint32_t cons;
+    pthread_mutex_t lock;
 };
 
 struct ionic_cq_ring {
@@ -354,12 +378,14 @@ struct ionic_datapath {
     struct s3_target *s3;
     struct s3_tcp *s3_tcp;
 
-    struct ionic_qp_ring *qp; /* indexed by driver qp_id */
-    struct ionic_cq_ring *cq; /* indexed by driver cq_id */
+    struct ionic_qp_ring *qp;   /* indexed by driver qp_id */
+    struct ionic_cq_ring *cq;   /* indexed by driver cq_id */
+    struct ionic_srq_ring *srq; /* indexed by driver srq_id */
     struct dp_mr mr[MAX_MR];
 
     uint32_t qp_count;
     uint32_t cq_count;
+    uint32_t srq_count;
 
     /* Mesh state.  local_node is UINT32_MAX until a mesh backend is
      * attached, which keeps every peer local for loopback runs. */
@@ -575,14 +601,17 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
 
     dp->qp = calloc(MAX_QP, sizeof(*dp->qp));
     dp->cq = calloc(MAX_CQ, sizeof(*dp->cq));
-    if (!dp->qp || !dp->cq) {
+    dp->srq = calloc(MAX_SRQ, sizeof(*dp->srq));
+    if (!dp->qp || !dp->cq || !dp->srq) {
         free(dp->qp);
         free(dp->cq);
+        free(dp->srq);
         free(dp);
         return NULL;
     }
     dp->qp_count = MAX_QP;
     dp->cq_count = MAX_CQ;
+    dp->srq_count = MAX_SRQ;
     dp->local_node = UINT32_MAX;
     pthread_mutex_init(&dp->rx_lock, NULL);
     return dp;
@@ -694,6 +723,11 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
         buf_release(&dp->mr[i].buf);
     free(dp->qp);
     free(dp->cq);
+    for (uint32_t i = 0; i < dp->srq_count; i++) {
+        if (dp->srq[i].valid)
+            pthread_mutex_destroy(&dp->srq[i].lock);
+    }
+    free(dp->srq);
     free(dp);
 }
 
@@ -782,6 +816,11 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     q->msn = 0;
     q->dest_valid = false;
     q->dest_node_id = UINT32_MAX;
+    /* Cleared, not left alone: qp_ids are reused, and inheriting a previous
+     * QP's SRQ binding would send this one's receives to a ring it was
+     * never bound to. CREATE_QP's srq field is read after this call. */
+    q->has_srq = false;
+    q->srq_id = 0;
     q->valid = true;
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
@@ -800,6 +839,80 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
     buf_release(&dp->qp[qp_id].sq_buf);
     buf_release(&dp->qp[qp_id].rq_buf);
     dp->qp[qp_id].valid = false;
+}
+
+/* Callers name an SRQ by the qid the guest sees, which is
+ * IONIC_SRQ_QID_BASE + index; the table is indexed from zero. Converting at
+ * the boundary keeps the offset in one place. */
+static struct ionic_srq_ring *srq_by_qid(struct ionic_datapath *dp,
+                                         uint32_t srq_qid)
+{
+    if (!dp || srq_qid < IONIC_SRQ_QID_BASE)
+        return NULL;
+    uint32_t idx = srq_qid - IONIC_SRQ_QID_BASE;
+    if (idx >= dp->srq_count)
+        return NULL;
+    return &dp->srq[idx];
+}
+
+void ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
+                                 const struct ionic_dp_ring_desc *rq)
+{
+    struct ionic_srq_ring *sr = srq_by_qid(dp, srq_id);
+    if (!sr || !rq)
+        return;
+    if (sr->valid) {
+        /* Re-registering an id the guest reused: drop the old page table
+         * rather than leaking it. */
+        pthread_mutex_destroy(&sr->lock);
+        buf_release(&sr->buf);
+    }
+
+    if (buf_init(dp, &sr->buf, &rq->buf, 0) < 0) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: SRQ %u page table read failed", srq_id);
+        sr->valid = false;
+        return;
+    }
+    sr->depth = 1u << rq->depth_log2;
+    sr->stride_log2 = rq->stride_log2;
+    sr->prod = sr->cons = 0;
+    pthread_mutex_init(&sr->lock, NULL);
+    sr->valid = true;
+
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: SRQ %u registered depth=%u stride=%u", srq_id,
+            sr->depth, 1u << sr->stride_log2);
+}
+
+void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
+{
+    struct ionic_srq_ring *sr = srq_by_qid(dp, srq_id);
+    if (!sr || !sr->valid)
+        return;
+    /* Under the lock: a receive on another thread may be mid-take. Clearing
+     * valid first makes every later take fail rather than read a freed
+     * page table. */
+    pthread_mutex_lock(&sr->lock);
+    sr->valid = false;
+    pthread_mutex_unlock(&sr->lock);
+    pthread_mutex_destroy(&sr->lock);
+    buf_release(&sr->buf);
+    memset(sr, 0, sizeof(*sr));
+}
+
+void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
+                                uint32_t srq_id)
+{
+    if (!dp || qp_id >= dp->qp_count || !srq_by_qid(dp, srq_id))
+        return;
+
+    /* Stored as a table index, not the guest-visible qid: deliver_recv is
+     * on the hot path and should not repeat the arithmetic. */
+    dp->qp[qp_id].has_srq = true;
+    dp->qp[qp_id].srq_id = srq_id - IONIC_SRQ_QID_BASE;
+    vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: QP %u bound to SRQ %u",
+            qp_id, srq_id);
 }
 
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
@@ -1348,19 +1461,53 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
                             const uint8_t *src_host, uint8_t recv_op,
                             uint32_t imm_be)
 {
-    if (dq->rq_cons == dq->rq_prod)
-        return -1;
+    /*
+     * Which ring the receive comes out of. A QP bound to an SRQ has no RQ
+     * of its own -- CREATE_QP left its rq_* fields zero -- so reading
+     * dq->rq_* for one would consume from an empty ring forever. The SRQ
+     * is shared, so the take runs under its lock: two QPs being delivered
+     * to on two threads would otherwise read the same slot and both
+     * complete it.
+     */
+    struct ionic_srq_ring *sr = NULL;
+    if (dq->has_srq) {
+        if (dq->srq_id >= dp->srq_count || !dp->srq[dq->srq_id].valid)
+            return -1;
+        sr = &dp->srq[dq->srq_id];
+        pthread_mutex_lock(&sr->lock);
+        /* Re-check under the lock: unregister_srq clears valid while
+         * holding it. */
+        if (!sr->valid) {
+            pthread_mutex_unlock(&sr->lock);
+            return -1;
+        }
+    }
 
-    uint32_t stride = 1u << dq->rq_stride_log2;
-    uint32_t slot = dq->rq_cons % dq->rq_depth;
+    uint32_t *ring_cons = sr ? &sr->cons : &dq->rq_cons;
+    uint32_t ring_prod = sr ? sr->prod : dq->rq_prod;
+    uint32_t ring_depth = sr ? sr->depth : dq->rq_depth;
+    uint8_t ring_stride_log2 = sr ? sr->stride_log2 : dq->rq_stride_log2;
+    struct dp_buf *ring_buf = sr ? &sr->buf : &dq->rq_buf;
+
+    if (*ring_cons == ring_prod) {
+        if (sr)
+            pthread_mutex_unlock(&sr->lock);
+        return -1;
+    }
+
+    uint32_t stride = 1u << ring_stride_log2;
+    uint32_t slot = *ring_cons % ring_depth;
     uint64_t run;
-    uint64_t gpa = buf_gpa(&dq->rq_buf, (uint64_t)slot * stride, &run);
+    uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
 
     uint8_t rwqe[256];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
     if (!run || run < read_sz ||
-        dp_dma_read(dp->vfu_ctx, gpa, rwqe, read_sz) < 0)
+        dp_dma_read(dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
+        if (sr)
+            pthread_mutex_unlock(&sr->lock);
         return -1;
+    }
 
     uint64_t rq_wqe_id;
     memcpy(&rq_wqe_id, rwqe + 0, 8);
@@ -1368,7 +1515,12 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     struct dp_sge_list dst;
     parse_sges(rwqe, stride, rwqe[9], &dst);
 
-    dq->rq_cons++;
+    (*ring_cons)++;
+
+    /* Everything below works on the copy in rwqe, so the SRQ is free for
+     * the next taker before the scatter -- which can be long. */
+    if (sr)
+        pthread_mutex_unlock(&sr->lock);
 
     uint32_t copied = 0;
 
@@ -2677,6 +2829,30 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
     }
 
     case DP_QTYPE_RQ:
+        /*
+         * Shared receive queues arrive here too. ionic_post_recv_common()
+         * rings rq_qtype for an SRQ exactly as for a QP's own RQ, so this
+         * one qtype carries both and the id range is what separates them --
+         * see IONIC_SRQ_QID_BASE. Looking only at dp->qp below is what
+         * silently dropped every SRQ receive: the doorbell landed on a
+         * qp_id out of range and returned, so a SEND to an SRQ-bound QP
+         * found no buffer and simply never completed.
+         */
+        if (qid >= IONIC_SRQ_QID_BASE) {
+            struct ionic_srq_ring *sr = srq_by_qid(dp, qid);
+            if (sr && sr->valid) {
+                pthread_mutex_lock(&sr->lock);
+                sr->prod +=
+                    (uint32_t)(uint16_t)(p_index -
+                                         (uint16_t)(sr->prod & 0xffffu));
+                pthread_mutex_unlock(&sr->lock);
+            } else {
+                vfu_log(dp->vfu_ctx, LOG_WARNING,
+                        "ionic_datapath: doorbell for unregistered SRQ %u",
+                        qid);
+            }
+            return;
+        }
         if (qid < dp->qp_count && dp->qp[qid].valid) {
             dp->qp[qid].rq_prod +=
                 (uint32_t)(uint16_t)(p_index -

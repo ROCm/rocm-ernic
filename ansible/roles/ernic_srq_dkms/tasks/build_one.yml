@@ -58,8 +58,8 @@
       --kernel-ref {{ ernic_srq_src.ref }}
       {{ '--build-only' if not (ernic_srq_dkms_install | bool) else '' }}
   changed_when: true
-  register: ernic_srq_build
+  register: ernic_srq_dkms_build
 
 - name: "Show the build result for {{ ernic_srq_src.ref[:12] }}"
   ansible.builtin.debug:
-    msg: "{{ ernic_srq_build.stdout_lines[-8:] | default([]) }}"
+    msg: "{{ ernic_srq_dkms_build.stdout_lines[-8:] | default([]) }}"
