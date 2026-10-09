@@ -68,5 +68,16 @@ ernic_srq_dkms_install: false
 # reporting max_srq=0 with no indication why.
 ernic_srq_dkms_require_srq: true
 
-# Where the repo's own scripts live, relative to the playbook.
-ernic_srq_dkms_scripts_dir: "{{ playbook_dir }}/../scripts"
+# Where the repo's own scripts live, relative to the playbook. Two levels, not
+# one: playbook_dir is ansible/playbooks, so ../scripts is ansible/scripts,
+# which does not exist -- the scripts are at the repository root, the same
+# depth as patches/ above.
+ernic_srq_dkms_scripts_dir: "{{ playbook_dir }}/../../scripts"
+
+# Re-fetch the ionic sources even when a checkout for this ref already exists.
+# On by default: the role's purpose is to prove patches/srq applies and builds,
+# and every cache available here keys on the kernel ref alone, so a changed
+# patch series against a warm build host would never be re-applied and the gate
+# would pass on stale sources. Set false only for a throwaway iteration where
+# you know the patches have not moved.
+ernic_srq_dkms_force_fetch: true

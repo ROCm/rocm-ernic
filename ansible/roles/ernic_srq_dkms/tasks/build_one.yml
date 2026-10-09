@@ -7,6 +7,21 @@
   ansible.builtin.set_fact:
     ernic_srq_dir: "{{ ernic_srq_dkms_source_root }}/{{ ernic_srq_src.ref }}"
 
+# Discarded rather than reused, because this role exists to VERIFY the patches
+# apply and build. Both available caches key on the kernel ref alone -- a
+# `creates:` on the checkout directory here, and the fetch script's own
+# sentinel -- so neither notices that patches/srq changed. On a persistent
+# build host that means an edited patch series is never re-applied: the role
+# rebuilds last week's sources and reports success, which is the one answer a
+# verification gate must never give. Re-fetching costs a clone; being wrong
+# costs a merged patch that does not apply.
+- name: "Discard any cached checkout for {{ ernic_srq_src.ref[:12] }}"
+  become: true
+  when: ernic_srq_dkms_force_fetch | bool
+  ansible.builtin.file:
+    path: "{{ ernic_srq_dir }}"
+    state: absent
+
 - name: "Fetch ionic sources at {{ ernic_srq_src.ref[:12] }}"
   become: true
   ansible.builtin.command:
