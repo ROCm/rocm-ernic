@@ -33,9 +33,9 @@
 
 #include "ernic_device.h"
 
-#define GRH_LEN 40
-#define MSG_LEN 256
-#define QKEY 0x11111111u
+#define GRH_LEN      40
+#define MSG_LEN      256
+#define QKEY         0x11111111u
 #define POLL_SECONDS 10
 
 struct ud_ep {
@@ -45,8 +45,7 @@ struct ud_ep {
     unsigned char *buf; /* GRH_LEN + MSG_LEN */
 };
 
-static int ep_init(struct ibv_context *ctx, struct ibv_pd *pd,
-                   struct ud_ep *ep)
+static int ep_init(struct ibv_context *ctx, struct ibv_pd *pd, struct ud_ep *ep)
 {
     ep->cq = ibv_create_cq(ctx, 16, NULL, NULL, 0);
     if (!ep->cq) {
@@ -103,8 +102,7 @@ static int ep_init(struct ibv_context *ctx, struct ibv_pd *pd,
         perror("calloc");
         return -1;
     }
-    ep->mr = ibv_reg_mr(pd, ep->buf, GRH_LEN + MSG_LEN,
-                        IBV_ACCESS_LOCAL_WRITE);
+    ep->mr = ibv_reg_mr(pd, ep->buf, GRH_LEN + MSG_LEN, IBV_ACCESS_LOCAL_WRITE);
     if (!ep->mr) {
         perror("ibv_reg_mr");
         return -1;
@@ -177,8 +175,8 @@ static int do_send(struct ud_ep *src, struct ud_ep *dst, struct ibv_ah *ah,
     };
     struct ibv_send_wr *bad = NULL;
     if (ibv_post_send(src->qp, &wr, &bad)) {
-        fprintf(stderr, "ibv_post_send(%s): %s\n",
-                inlined ? "inline" : "sge", strerror(errno));
+        fprintf(stderr, "ibv_post_send(%s): %s\n", inlined ? "inline" : "sge",
+                strerror(errno));
         return -1;
     }
 
@@ -381,7 +379,8 @@ int main(void)
 
         struct ibv_sge sg[2] = {
             {.addr = (uintptr_t)src_two, .length = 16, .lkey = mr_two->lkey},
-            {.addr = (uintptr_t)(src_two + 16), .length = 64,
+            {.addr = (uintptr_t)(src_two + 16),
+             .length = 64,
              .lkey = mr_two->lkey},
         };
         struct ibv_send_wr wr = {

@@ -958,10 +958,11 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
     ah->node_id = dest_node_id;
     ah->valid = true;
 
-    vfu_log(dp->vfu_ctx, LOG_INFO,
-            "ionic_datapath: AH %u -> node %u mac %02x:%02x:%02x:%02x:%02x:%02x",
-            ah_id, dest_node_id, ah->dmac[0], ah->dmac[1], ah->dmac[2],
-            ah->dmac[3], ah->dmac[4], ah->dmac[5]);
+    vfu_log(
+        dp->vfu_ctx, LOG_INFO,
+        "ionic_datapath: AH %u -> node %u mac %02x:%02x:%02x:%02x:%02x:%02x",
+        ah_id, dest_node_id, ah->dmac[0], ah->dmac[1], ah->dmac[2], ah->dmac[3],
+        ah->dmac[4], ah->dmac[5]);
 }
 
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
@@ -2424,8 +2425,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                 /* Not fatal -- a local peer needs no address -- but it
                  * means CREATE_AH never reached us for this handle. */
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
-                        "ionic_datapath: QP %u SEND names unknown AH %u",
-                        qp_id, ah_id);
+                        "ionic_datapath: QP %u SEND names unknown AH %u", qp_id,
+                        ah_id);
             }
             if (ah && dp->local_node != UINT32_MAX &&
                 ah->node_id != UINT32_MAX && ah->node_id != dp->local_node) {
@@ -2459,8 +2460,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                  * to report from the peer's ack, so the ack is bookkeeping
                  * here and nothing more.
                  */
-                if (!remote_post(dp, q, qp_id, op, wqe_id, false, false,
-                                 &gsrc, wqe, dst_id, ah->node_id, gbuf)) {
+                if (!remote_post(dp, q, qp_id, op, wqe_id, false, false, &gsrc,
+                                 wqe, dst_id, ah->node_id, gbuf)) {
                     vfu_log(dp->vfu_ctx, LOG_WARNING,
                             "ionic_datapath: QP %u UD send to node %u failed",
                             qp_id, ah->node_id);
@@ -2514,9 +2515,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             udsrc.total = IB_GRH_SIZE + plen;
         }
 
-        if (deliver_recv(dp, dq, dst_id, qp_id,
-                         src_host ? &udsrc : &src, src_host, recv_op,
-                         imm_be) < 0)
+        if (deliver_recv(dp, dq, dst_id, qp_id, src_host ? &udsrc : &src,
+                         src_host, recv_op, imm_be) < 0)
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u has no posted receive, dropping "
                     "%u bytes from QP %u",
@@ -3094,9 +3094,8 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
             struct ionic_srq_ring *sr = srq_by_qid(dp, qid);
             if (sr && sr->valid) {
                 pthread_mutex_lock(&sr->lock);
-                sr->prod +=
-                    (uint32_t)(uint16_t)(p_index -
-                                         (uint16_t)(sr->prod & 0xffffu));
+                sr->prod += (uint32_t)(uint16_t)(p_index - (uint16_t)(sr->prod &
+                                                                      0xffffu));
                 pthread_mutex_unlock(&sr->lock);
             } else {
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
