@@ -1,7 +1,7 @@
-From 1900af7931ab0cf1ccfb01d3f1a8633482500cde Mon Sep 17 00:00:00 2001
+From 325df58d1132e9eb5ef9f8d6c92bb513b2746d85 Mon Sep 17 00:00:00 2001
 From: Abhijit Gangurde <abhijit.gangurde@amd.com>
 Date: Wed, 30 Sep 2026 14:51:08 +0530
-Subject: RDMA/ionic: support firmware-assigned CQ IDs
+Subject: [PATCH] RDMA/ionic: support firmware-assigned CQ IDs
 
 When the LIF advertises qid allocation for CQ, let firmware return
 the completion queue ID instead of allocating it in the driver bitmap.
@@ -16,16 +16,16 @@ Signed-off-by: Abhijit Gangurde <abhijit.gangurde@amd.com>
 Link: https://patch.msgid.link/20260930092111.3176738-3-abhijit.gangurde@amd.com
 Signed-off-by: Leon Romanovsky <leon@kernel.org>
 ---
- drivers/infiniband/hw/ionic/ionic_admin.c       |  70 +++++++++++--
- drivers/infiniband/hw/ionic/ionic_controlpath.c | 125 ++++++++++++++++++------
- drivers/infiniband/hw/ionic/ionic_fw.h          |  15 ++-
- drivers/infiniband/hw/ionic/ionic_ibdev.h       |  11 ++-
- drivers/infiniband/hw/ionic/ionic_lif_cfg.c     |   1 +
- drivers/infiniband/hw/ionic/ionic_lif_cfg.h     |   1 +
+ drivers/infiniband/hw/ionic/ionic_admin.c     |  70 ++++++++--
+ .../infiniband/hw/ionic/ionic_controlpath.c   | 125 ++++++++++++++----
+ drivers/infiniband/hw/ionic/ionic_fw.h        |  15 ++-
+ drivers/infiniband/hw/ionic/ionic_ibdev.h     |  11 +-
+ drivers/infiniband/hw/ionic/ionic_lif_cfg.c   |   1 +
+ drivers/infiniband/hw/ionic/ionic_lif_cfg.h   |   1 +
  6 files changed, 183 insertions(+), 40 deletions(-)
 
 diff --git a/drivers/infiniband/hw/ionic/ionic_admin.c b/drivers/infiniband/hw/ionic/ionic_admin.c
-index 37e24450d1298..93c01bd40d78d 100644
+index 37e24450d..93c01bd40 100644
 --- a/drivers/infiniband/hw/ionic/ionic_admin.c
 +++ b/drivers/infiniband/hw/ionic/ionic_admin.c
 @@ -489,6 +489,49 @@ static int ionic_rdma_queue_devcmd(struct ionic_ibdev *dev,
@@ -98,7 +98,7 @@ index 37e24450d1298..93c01bd40d78d 100644
  	if (rc)
  		goto err_cmd;
  
-@@ -552,6 +599,14 @@ err_init:
+@@ -552,6 +599,14 @@ static struct ionic_vcq *ionic_create_rdma_admincq(struct ionic_ibdev *dev,
  	return ERR_PTR(rc);
  }
  
@@ -137,7 +137,7 @@ index 37e24450d1298..93c01bd40d78d 100644
  
  		kfree(dev->aq_vec);
 diff --git a/drivers/infiniband/hw/ionic/ionic_controlpath.c b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-index 2b68f377e1fa3..4b83657fd3845 100644
+index c6202717c..ce4e99978 100644
 --- a/drivers/infiniband/hw/ionic/ionic_controlpath.c
 +++ b/drivers/infiniband/hw/ionic/ionic_controlpath.c
 @@ -79,12 +79,10 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
@@ -168,7 +168,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  
  	cq->eqid = ionic_get_eqid(dev, attr->comp_vector, udma_idx);
  
-@@ -123,8 +123,6 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
+@@ -122,8 +122,6 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
  		cq->q.mask = req_cq->mask;
  		cq->q.depth_log2 = req_cq->depth_log2;
  		cq->q.stride_log2 = req_cq->stride_log2;
@@ -177,7 +177,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  	} else {
  		rc = ionic_queue_init(&cq->q, dev->lif_cfg.hwdev,
  				      attr->cqe + IONIC_CQ_GRACE,
-@@ -132,7 +130,6 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
+@@ -131,7 +129,6 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
  		if (rc)
  			goto err_q_init;
  
@@ -185,7 +185,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  		cq->color = true;
  		cq->credit = cq->q.mask;
  	}
-@@ -144,20 +141,8 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
+@@ -143,20 +140,8 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
  	init_completion(&cq->cq_rel_comp);
  	kref_init(&cq->cq_kref);
  
@@ -206,7 +206,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  err_pgtbl_init:
  	if (!udata)
  		ionic_queue_destroy(&cq->q, dev->lif_cfg.hwdev);
-@@ -165,29 +150,52 @@ err_q_init:
+@@ -164,29 +149,52 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
  	if (cq->umem)
  		ib_umem_release(cq->umem);
  err_qdesc:
@@ -263,7 +263,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  
  	cq->vcq = NULL;
  }
-@@ -1223,8 +1231,11 @@ int ionic_dealloc_mw(struct ib_mw *ibmw)
+@@ -1162,8 +1170,11 @@ int ionic_dealloc_mw(struct ib_mw *ibmw)
  static int ionic_create_cq_cmd(struct ionic_ibdev *dev,
  			       struct ionic_ctx *ctx,
  			       struct ionic_cq *cq,
@@ -276,7 +276,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  	const u16 dbid = ionic_ctx_dbid(dev, ctx);
  	struct ionic_admin_wr wr = {
  		.work = COMPLETION_INITIALIZER_ONSTACK(wr.work),
-@@ -1244,13 +1255,57 @@ static int ionic_create_cq_cmd(struct ionic_ibdev *dev,
+@@ -1183,13 +1194,57 @@ static int ionic_create_cq_cmd(struct ionic_ibdev *dev,
  			}
  		}
  	};
@@ -335,7 +335,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  }
  
  static int ionic_destroy_cq_cmd(struct ionic_ibdev *dev, u32 cqid)
-@@ -1309,16 +1364,21 @@ int ionic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
+@@ -1248,16 +1303,21 @@ int ionic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
  
  		rc = ionic_create_cq_common(vcq, &buf, attr, ctx, udata,
  					    &req.cq[udma_idx],
@@ -359,7 +359,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  	}
  
  	vcq->ibcq.cqe = attr->cqe;
-@@ -1338,6 +1398,8 @@ err_resp:
+@@ -1277,6 +1337,8 @@ int ionic_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
  		--udma_idx;
  		if (!(vcq->udma_mask & BIT(udma_idx)))
  			continue;
@@ -368,7 +368,7 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  		ionic_destroy_cq_cmd(dev, vcq->cq[udma_idx].cqid);
  err_cmd:
  		ionic_pgtbl_unbuf(dev, &buf);
-@@ -1365,6 +1427,13 @@ int ionic_destroy_cq(struct ib_cq *ibcq, struct ib_udata *udata)
+@@ -1300,6 +1362,13 @@ int ionic_destroy_cq(struct ib_cq *ibcq, struct ib_udata *udata)
  		if (!(vcq->udma_mask & BIT(udma_idx)))
  			continue;
  
@@ -383,10 +383,10 @@ index 2b68f377e1fa3..4b83657fd3845 100644
  		if (rc_tmp) {
  			if (!rc)
 diff --git a/drivers/infiniband/hw/ionic/ionic_fw.h b/drivers/infiniband/hw/ionic/ionic_fw.h
-index d0a5bce85ed81..b299a1fe5acb1 100644
+index 4c6752bfb..478e31e2c 100644
 --- a/drivers/infiniband/hw/ionic/ionic_fw.h
 +++ b/drivers/infiniband/hw/ionic/ionic_fw.h
-@@ -746,11 +746,22 @@ struct ionic_admin_create_cq {
+@@ -740,11 +740,22 @@ struct ionic_admin_create_cq {
  	__le32		map_count;
  	__le64		dma_addr;
  	__le16		dbid_flags;
@@ -412,10 +412,10 @@ index d0a5bce85ed81..b299a1fe5acb1 100644
  struct ionic_admin_destroy_cq {
  	__le32		cq_id;
 diff --git a/drivers/infiniband/hw/ionic/ionic_ibdev.h b/drivers/infiniband/hw/ionic/ionic_ibdev.h
-index 32b6a8a45fa2f..11374dd5a309d 100644
+index 1c43344ec..2a4c2f63f 100644
 --- a/drivers/infiniband/hw/ionic/ionic_ibdev.h
 +++ b/drivers/infiniband/hw/ionic/ionic_ibdev.h
-@@ -438,6 +438,12 @@ static inline void ionic_cq_complete(struct kref *kref)
+@@ -437,6 +437,12 @@ static inline void ionic_cq_complete(struct kref *kref)
  	complete(&cq->cq_rel_comp);
  }
  
@@ -428,7 +428,7 @@ index 32b6a8a45fa2f..11374dd5a309d 100644
  /* ionic_admin.c */
  extern struct workqueue_struct *ionic_evt_workq;
  void ionic_admin_post(struct ionic_ibdev *dev, struct ionic_admin_wr *wr);
-@@ -457,8 +463,11 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
+@@ -456,8 +462,11 @@ int ionic_create_cq_common(struct ionic_vcq *vcq,
  			   struct ionic_ctx *ctx,
  			   struct ib_udata *udata,
  			   struct ionic_qdesc *req_cq,
@@ -442,10 +442,10 @@ index 32b6a8a45fa2f..11374dd5a309d 100644
  void ionic_flush_qp(struct ionic_ibdev *dev, struct ionic_qp *qp);
  void ionic_notify_flush_cq(struct ionic_cq *cq);
 diff --git a/drivers/infiniband/hw/ionic/ionic_lif_cfg.c b/drivers/infiniband/hw/ionic/ionic_lif_cfg.c
-index 1e37bd09490f5..c381bda4360de 100644
+index 310f51bc3..df0c9c920 100644
 --- a/drivers/infiniband/hw/ionic/ionic_lif_cfg.c
 +++ b/drivers/infiniband/hw/ionic/ionic_lif_cfg.c
-@@ -93,6 +93,7 @@ void ionic_fill_lif_cfg(struct ionic_lif *lif, struct ionic_lif_cfg *cfg)
+@@ -91,6 +91,7 @@ void ionic_fill_lif_cfg(struct ionic_lif *lif, struct ionic_lif_cfg *cfg)
  	    !!(lif->qtype_info[IONIC_QTYPE_TXQ].features & IONIC_QIDENT_F_EXPDB);
  	cfg->rq_expdb =
  	    !!(lif->qtype_info[IONIC_QTYPE_RXQ].features & IONIC_QIDENT_F_EXPDB);
@@ -454,10 +454,10 @@ index 1e37bd09490f5..c381bda4360de 100644
  
  struct net_device *ionic_lif_netdev(struct ionic_lif *lif)
 diff --git a/drivers/infiniband/hw/ionic/ionic_lif_cfg.h b/drivers/infiniband/hw/ionic/ionic_lif_cfg.h
-index d7835ac27896b..68aec06908ca1 100644
+index e6b170551..14b61150d 100644
 --- a/drivers/infiniband/hw/ionic/ionic_lif_cfg.h
 +++ b/drivers/infiniband/hw/ionic/ionic_lif_cfg.h
-@@ -58,6 +58,7 @@ struct ionic_lif_cfg {
+@@ -57,6 +57,7 @@ struct ionic_lif_cfg {
  	bool rq_expdb;
  	u8 expdb_mask;
  	u8 rcq_sign_bit;
@@ -465,6 +465,3 @@ index d7835ac27896b..68aec06908ca1 100644
  };
  
  void ionic_fill_lif_cfg(struct ionic_lif *lif, struct ionic_lif_cfg *cfg);
--- 
-cgit 1.3.1-korg
-

@@ -1,7 +1,7 @@
-From 4dd2160af277acf8f2897a2ec7df4352a7ca50bd Mon Sep 17 00:00:00 2001
+From d02018964b5771b88103ea31e786a0b187f37c15 Mon Sep 17 00:00:00 2001
 From: Amit Kumar <a.k@amd.com>
 Date: Wed, 30 Sep 2026 14:51:11 +0530
-Subject: RDMA/ionic: implement SRQ event handling support
+Subject: [PATCH] RDMA/ionic: implement SRQ event handling support
 
 Introduce SRQ event types and associated events. Report these events
 through the SRQ event handler during event processing.
@@ -11,18 +11,18 @@ Signed-off-by: Abhijit Gangurde <abhijit.gangurde@amd.com>
 Link: https://patch.msgid.link/20260930092111.3176738-6-abhijit.gangurde@amd.com
 Signed-off-by: Leon Romanovsky <leon@kernel.org>
 ---
- drivers/infiniband/hw/ionic/ionic_admin.c       | 47 +++++++++++++++++++++++++
- drivers/infiniband/hw/ionic/ionic_controlpath.c | 12 +++++++
- drivers/infiniband/hw/ionic/ionic_fw.h          |  6 +++-
- drivers/infiniband/hw/ionic/ionic_ibdev.c       |  4 +++
- drivers/infiniband/hw/ionic/ionic_ibdev.h       | 10 ++++++
+ drivers/infiniband/hw/ionic/ionic_admin.c     | 47 +++++++++++++++++++
+ .../infiniband/hw/ionic/ionic_controlpath.c   | 12 +++++
+ drivers/infiniband/hw/ionic/ionic_fw.h        |  6 ++-
+ drivers/infiniband/hw/ionic/ionic_ibdev.c     |  4 ++
+ drivers/infiniband/hw/ionic/ionic_ibdev.h     | 10 ++++
  5 files changed, 78 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/infiniband/hw/ionic/ionic_admin.c b/drivers/infiniband/hw/ionic/ionic_admin.c
-index 93c01bd40d78d..0ccd869ad8e6a 100644
+index 93c01bd40..0ccd869ad 100644
 --- a/drivers/infiniband/hw/ionic/ionic_admin.c
 +++ b/drivers/infiniband/hw/ionic/ionic_admin.c
-@@ -945,6 +945,49 @@ out:
+@@ -945,6 +945,49 @@ static void ionic_qp_event(struct ionic_ibdev *dev, u32 qpid, u8 code)
  	kref_put(&qp->qp_kref, ionic_qp_complete);
  }
  
@@ -84,10 +84,10 @@ index 93c01bd40d78d..0ccd869ad8e6a 100644
  			ibdev_dbg(&dev->ibdev,
  				  "unknown event %#x type %u\n", evt, type);
 diff --git a/drivers/infiniband/hw/ionic/ionic_controlpath.c b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-index 3e7354361e40c..18ad967812f50 100644
+index 26ad4a992..84f5d04b9 100644
 --- a/drivers/infiniband/hw/ionic/ionic_controlpath.c
 +++ b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-@@ -3058,6 +3058,13 @@ int ionic_create_srq(struct ib_srq *ibsrq, struct ib_srq_init_attr *attr,
+@@ -2985,6 +2985,13 @@ int ionic_create_srq(struct ib_srq *ibsrq, struct ib_srq_init_attr *attr,
  			goto err_srq_cmd;
  	}
  
@@ -101,7 +101,7 @@ index 3e7354361e40c..18ad967812f50 100644
  	ionic_pgtbl_unbuf(dev, &buf);
  
  	attr->attr.max_wr = srq->rq.q.mask;
-@@ -3081,6 +3088,11 @@ int ionic_destroy_srq(struct ib_srq *ibsrq, struct ib_udata *udata)
+@@ -3008,6 +3015,11 @@ int ionic_destroy_srq(struct ib_srq *ibsrq, struct ib_udata *udata)
  	struct ionic_srq *srq = to_ionic_srq(ibsrq);
  	int rc;
  
@@ -114,10 +114,10 @@ index 3e7354361e40c..18ad967812f50 100644
  	if (rc)
  		return rc;
 diff --git a/drivers/infiniband/hw/ionic/ionic_fw.h b/drivers/infiniband/hw/ionic/ionic_fw.h
-index a3991c34aece2..1db67fcb9a539 100644
+index c0cb631de..b9a796bf4 100644
 --- a/drivers/infiniband/hw/ionic/ionic_fw.h
 +++ b/drivers/infiniband/hw/ionic/ionic_fw.h
-@@ -1013,7 +1013,7 @@ enum ionic_v1_eqe_evt_bits {
+@@ -1007,7 +1007,7 @@ enum ionic_v1_eqe_evt_bits {
  	/* cq error events */
  	IONIC_V1_EQE_CQ_ERR		= 8,
  
@@ -126,7 +126,7 @@ index a3991c34aece2..1db67fcb9a539 100644
  	IONIC_V1_EQE_TYPE_QP		= 1,
  	/* qp normal events */
  	IONIC_V1_EQE_SRQ_LEVEL		= 0,
-@@ -1024,6 +1024,10 @@ enum ionic_v1_eqe_evt_bits {
+@@ -1018,6 +1018,10 @@ enum ionic_v1_eqe_evt_bits {
  	IONIC_V1_EQE_QP_ERR		= 8,
  	IONIC_V1_EQE_QP_ERR_REQUEST	= 9,
  	IONIC_V1_EQE_QP_ERR_ACCESS	= 10,
@@ -138,10 +138,10 @@ index a3991c34aece2..1db67fcb9a539 100644
  
  enum ionic_tfp_csum_profiles {
 diff --git a/drivers/infiniband/hw/ionic/ionic_ibdev.c b/drivers/infiniband/hw/ionic/ionic_ibdev.c
-index 8a43ae9451ec7..b4d4544bb7acb 100644
+index cb7349a4c..cf8b250cf 100644
 --- a/drivers/infiniband/hw/ionic/ionic_ibdev.c
 +++ b/drivers/infiniband/hw/ionic/ionic_ibdev.c
-@@ -318,6 +318,8 @@ static void ionic_destroy_ibdev(struct ionic_ibdev *dev)
+@@ -317,6 +317,8 @@ static void ionic_destroy_ibdev(struct ionic_ibdev *dev)
  	xa_destroy(&dev->qp_tbl);
  	WARN_ON(!xa_empty(&dev->cq_tbl));
  	xa_destroy(&dev->cq_tbl);
@@ -150,7 +150,7 @@ index 8a43ae9451ec7..b4d4544bb7acb 100644
  	ib_dealloc_device(&dev->ibdev);
  }
  
-@@ -336,6 +338,7 @@ static struct ionic_ibdev *ionic_create_ibdev(struct ionic_aux_dev *ionic_adev)
+@@ -335,6 +337,7 @@ static struct ionic_ibdev *ionic_create_ibdev(struct ionic_aux_dev *ionic_adev)
  
  	xa_init_flags(&dev->qp_tbl, XA_FLAGS_LOCK_IRQ);
  	xa_init_flags(&dev->cq_tbl, XA_FLAGS_LOCK_IRQ);
@@ -158,7 +158,7 @@ index 8a43ae9451ec7..b4d4544bb7acb 100644
  
  	ionic_init_resids(dev);
  
-@@ -388,6 +391,7 @@ err_reset:
+@@ -387,6 +390,7 @@ static struct ionic_ibdev *ionic_create_ibdev(struct ionic_aux_dev *ionic_adev)
  	ionic_destroy_resids(dev);
  	xa_destroy(&dev->qp_tbl);
  	xa_destroy(&dev->cq_tbl);
@@ -167,7 +167,7 @@ index 8a43ae9451ec7..b4d4544bb7acb 100644
  
  	return ERR_PTR(rc);
 diff --git a/drivers/infiniband/hw/ionic/ionic_ibdev.h b/drivers/infiniband/hw/ionic/ionic_ibdev.h
-index 3ee7416427fd0..f8d580dd4d950 100644
+index 7d541c797..d2920e0a7 100644
 --- a/drivers/infiniband/hw/ionic/ionic_ibdev.h
 +++ b/drivers/infiniband/hw/ionic/ionic_ibdev.h
 @@ -92,6 +92,7 @@ struct ionic_ibdev {
@@ -178,7 +178,7 @@ index 3ee7416427fd0..f8d580dd4d950 100644
  
  	struct ionic_resid_bits	inuse_dbid;
  	struct ionic_resid_bits	inuse_pdid;
-@@ -270,6 +271,8 @@ struct ionic_rq {
+@@ -269,6 +270,8 @@ struct ionic_rq {
  struct ionic_srq {
  	struct ib_srq		ibsrq;
  	struct ionic_rq		rq;
@@ -187,7 +187,7 @@ index 3ee7416427fd0..f8d580dd4d950 100644
  	u16			srq_limit;
  	u8			udma_idx;
  };
-@@ -466,6 +469,13 @@ static inline bool ionic_fw_has_qid_alloc(struct ionic_ibdev *dev,
+@@ -465,6 +468,13 @@ static inline bool ionic_fw_has_qid_alloc(struct ionic_ibdev *dev,
  	return dev->lif_cfg.alloc_qid_cap & qtype;
  }
  
@@ -201,6 +201,3 @@ index 3ee7416427fd0..f8d580dd4d950 100644
  /* ionic_admin.c */
  extern struct workqueue_struct *ionic_evt_workq;
  void ionic_admin_post(struct ionic_ibdev *dev, struct ionic_admin_wr *wr);
--- 
-cgit 1.3.1-korg
-

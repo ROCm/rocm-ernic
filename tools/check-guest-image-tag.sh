@@ -20,7 +20,7 @@ if [ ! -f "${PIN_FILE}" ]; then
     exit 2
 fi
 
-# shellcheck source=../ci/guest-image.env
+# shellcheck source=/dev/null
 . "${PIN_FILE}"
 
 if [ -z "${GUEST_ARTIFACT_TAG:-}" ]; then
@@ -43,7 +43,7 @@ stray=$(grep -rEn "${PATTERN}" . \
 
 if [ -n "${stray}" ]; then
     echo "error: the guest image tag is pinned outside ${PIN_FILE}:" >&2
-    echo "${stray}" | sed 's/^/  /' >&2
+    while IFS= read -r line; do echo "  ${line}" >&2; done <<<"${stray}"
     cat >&2 <<EOF
 
 ${PIN_FILE} is the only place the pin may live. Consumers read it:

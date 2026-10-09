@@ -1,7 +1,7 @@
-From 2eca9c14e66a1f71c089fe5c3afb2d339da3023a Mon Sep 17 00:00:00 2001
+From fe84536de3b20d8829ea6298df0d45f7876df0e4 Mon Sep 17 00:00:00 2001
 From: Abhijit Gangurde <abhijit.gangurde@amd.com>
 Date: Fri, 25 Sep 2026 15:06:37 +0530
-Subject: RDMA/ionic: Fix XArray initialization to use XArray flags
+Subject: [PATCH] RDMA/ionic: Fix XArray initialization to use XArray flags
 
 xa_init_flags() takes XArray flags (XA_FLAGS_*), not gfp flags, even
 though the parameter is typed gfp_t. Passing GFP_ATOMIC leaves both
@@ -39,10 +39,10 @@ Signed-off-by: Leon Romanovsky <leon@kernel.org>
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/infiniband/hw/ionic/ionic_ibdev.c b/drivers/infiniband/hw/ionic/ionic_ibdev.c
-index cba7809ec3d92..fa79732c2f7d3 100644
+index b0449c75f..60d79f6ad 100644
 --- a/drivers/infiniband/hw/ionic/ionic_ibdev.c
 +++ b/drivers/infiniband/hw/ionic/ionic_ibdev.c
-@@ -320,8 +320,8 @@ static struct ionic_ibdev *ionic_create_ibdev(struct ionic_aux_dev *ionic_adev)
+@@ -319,8 +319,8 @@ static struct ionic_ibdev *ionic_create_ibdev(struct ionic_aux_dev *ionic_adev)
  
  	ionic_fill_lif_cfg(ionic_adev->lif, &dev->lif_cfg);
  
@@ -53,6 +53,3 @@ index cba7809ec3d92..fa79732c2f7d3 100644
  
  	ionic_init_resids(dev);
  
--- 
-cgit 1.3.1-korg
-

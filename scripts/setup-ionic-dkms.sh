@@ -64,6 +64,12 @@ PKG_VERSION="${PKG_VERSION//[^a-zA-Z0-9.]/-}"
 DKMS_TREE_DIR="/usr/src/${PKG_NAME}-${PKG_VERSION}"
 ETH_SRC="${SOURCE_DIR}/drivers/net/ethernet/pensando/ionic"
 RDMA_SRC="${SOURCE_DIR}/drivers/infiniband/hw/ionic"
+# The driver does #include <rdma/ionic-abi.h>, which kbuild resolves out of the
+# RUNNING kernel's headers. A series that changes that UAPI header therefore
+# builds against the old one and fails on the fields it just added -- or, worse,
+# succeeds while silently disagreeing with userspace about the struct. Stage the
+# tree's own copy when there is one and put it ahead of the kernel's.
+UAPI_SRC="${SOURCE_DIR}/include/uapi/rdma"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -99,10 +105,23 @@ sudo mkdir -p "${DKMS_TREE_DIR}/eth" "${DKMS_TREE_DIR}/rdma"
 sudo cp -r "${ETH_SRC}/."  "${DKMS_TREE_DIR}/eth/"
 sudo cp -r "${RDMA_SRC}/." "${DKMS_TREE_DIR}/rdma/"
 
+if [[ -f "${UAPI_SRC}/ionic-abi.h" ]]; then
+    echo "Staging patched UAPI header from ${UAPI_SRC}"
+    sudo mkdir -p "${DKMS_TREE_DIR}/uapi/rdma"
+    sudo cp "${UAPI_SRC}/ionic-abi.h" "${DKMS_TREE_DIR}/uapi/rdma/"
+fi
+
 # Write Kbuild file that builds both modules from one DKMS package.
 sudo tee "${DKMS_TREE_DIR}/Kbuild" > /dev/null <<'EOF'
 # Kbuild for ionic-ernic DKMS package
 # Builds ionic.ko (Ethernet) and ionic_rdma.ko (RDMA).
+
+# Prepended to LINUXINCLUDE, not added via ccflags-y: kbuild puts
+# LINUXINCLUDE ahead of ccflags-y on the command line, so a -I there would
+# lose to the kernel's own <rdma/ionic-abi.h> every time.
+ifneq ($(wildcard $(src)/uapi/rdma/ionic-abi.h),)
+LINUXINCLUDE := -I$(src)/uapi $(LINUXINCLUDE)
+endif
 
 ccflags-y += -I$(src)/eth
 

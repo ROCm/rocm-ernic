@@ -1142,15 +1142,13 @@ jobs:
     # depends on, and a network failure in there would read as a patch
     # failure.
     #
-    # continue-on-error until ci/guest-image.env is repinned: the series
-    # needs a 7.3 kernel and the image runs 7.2, and ionic tracks
-    # IB-core helpers that move between minor releases, so the build may
-    # well not survive the mismatch.  The first run is what settles
-    # that; until it does, a known gap must not wedge the lane.  Drop
-    # both continue-on-error lines once this is green.
+    # These block.  patches/srq is rebased onto v7.2.4 -- the ref
+    # IONIC_KERNEL_REF pins and the kernel the guest image runs -- so
+    # there is no version mismatch to tolerate: the series applies with
+    # git am and builds as a DKMS package on 7.2.4-070204-generic,
+    # verified on a live guest.  A failure here is a real regression.
     - name: Build the SRQ-capable ionic driver in the VM
       id: srq_build
-      continue-on-error: true
       shell: bash
       run: |
         set -euo pipefail
@@ -1244,7 +1242,6 @@ jobs:
 
     - name: SRQ functional test against the rebuilt driver
       if: steps.srq_build.outputs.srq_driver == 'installed'
-      continue-on-error: true
       shell: bash
       run: |
         echo "=== SRQ functional test on $RDMA_DEVICE ==="
