@@ -176,18 +176,101 @@ jobs:
         fi
         [ "$rc" -eq 0 ] || exit 1
 
+  # The userspace half, which rots for a different reason than the kernel
+  # half does. patches/rdma-core carries linux-rdma/rdma-core#1799, still
+  # open; the hazard it guards against is that PR being rebased or merged
+  # upstream, at which point these either stop applying or start applying
+  # twice. Same check, different repository -- so a separate job rather than
+  # another matrix entry, because nothing here fetches a kernel.
+  rdma-core-patches:
+    name: Apply rdma-core ionic Patches
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Apply the series to its pinned base
+      run: |
+        set -euo pipefail
+        PATCHES=patches/rdma-core
+
+        # The base is recorded in the README rather than a separate pin file:
+        # one SHA, in the document that explains why it is that SHA.
+        BASE=$(sed -n 's/^## The base: `\([0-9a-f]\{40\}\)`.*/\1/p' \
+               "$PATCHES/README.md" | head -1)
+        if [ -z "$BASE" ]; then
+          echo "::error::could not read the pinned base SHA from $PATCHES/README.md"
+          exit 1
+        fi
+        echo "rdma-core base: $BASE"
+
+        git config --global user.email "ci@rocm-ernic.invalid"
+        git config --global user.name "rocm-ernic CI"
+
+        git clone -q --filter=blob:none \
+          https://github.com/linux-rdma/rdma-core.git /tmp/rdma-core
+        git -C /tmp/rdma-core checkout -q "$BASE"
+
+        for p in $(ls "$PATCHES"/*.patch | sort); do
+          echo "  applying: $p"
+          git -C /tmp/rdma-core am --whitespace=fix "$(pwd)/$p" || {
+            echo "::error file=$p::does not apply to $BASE -- has #1799 been"
+            echo "  rebased or merged upstream? See $PATCHES/README.md."
+            exit 1
+          }
+        done
+
+    - name: Verify the provider gained SRQ
+      run: |
+        set -euo pipefail
+        SRC=/tmp/rdma-core
+        rc=0
+        # The point of the series. Applying cleanly is not the same as
+        # producing a provider with the verbs, and a provider without them
+        # fails far downstream as ibv_create_srq() returning EOPNOTSUPP on a
+        # device reporting max_srq=32768.
+        for sym in ionic_create_srq ionic_destroy_srq ionic_modify_srq \
+                   ionic_query_srq ionic_post_recv_srq; do
+          if grep -q "$sym" "$SRC/providers/ionic/ionic_verbs.c"; then
+            echo "  ✓ $sym"
+          else
+            echo "::error::$sym missing from providers/ionic/ionic_verbs.c"
+            rc=1
+          fi
+        done
+        if ! grep -qE '__u32[[:space:]]+srqid' \
+             "$SRC/kernel-headers/rdma/ionic-abi.h"; then
+          echo "::error::srqid missing from the kernel-headers ABI copy"
+          rc=1
+        fi
+        [ "$rc" -eq 0 ] || exit 1
+
   driver-build-status:
     name: Driver Build Status
-    needs: [ionic-patches]
+    needs: [ionic-patches, rdma-core-patches]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
     - name: Check build result
       run: |
+        # Both halves, and both reported. Needing a job without checking its
+        # result is a gate that goes green on its failure -- which is how a
+        # lane ends up proving nothing while looking like it passed.
+        rc=0
         if [ "${{ needs.ionic-patches.result }}" = "success" ]; then
-          echo "✅ ionic patches apply cleanly"
+          echo "✅ ionic kernel patches apply cleanly"
         else
-          echo "❌ ionic patches do not apply"
-          exit 1
+          echo "❌ ionic kernel patches do not apply"
+          rc=1
         fi
+        if [ "${{ needs.rdma-core-patches.result }}" = "success" ]; then
+          echo "✅ rdma-core ionic patches apply cleanly"
+        else
+          echo "❌ rdma-core ionic patches do not apply"
+          rc=1
+        fi
+        exit "$rc"
