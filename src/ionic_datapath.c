@@ -2449,11 +2449,18 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
                 struct dp_sge_list gsrc = {.count = 0,
                                            .total = IB_GRH_SIZE + plen};
-                /* use_msn false: a datagram has no sequence to keep, and
-                 * the completion comes from the peer's ack. */
-                if (!remote_post(dp, q, qp_id, op, wqe_id, false,
-                                 (flags & IONIC_V1_FLAG_SIG) != 0, &gsrc, wqe,
-                                 dst_id, ah->node_id, gbuf)) {
+                /*
+                 * use_msn AND signalled both false, which is not the same
+                 * as "unsignalled". The completion for this WQE is posted
+                 * by the common path below, as it is for every local op;
+                 * letting the pending entry post one too would complete the
+                 * same WQE twice and advance the driver's sq.cons twice for
+                 * one send. A datagram has no sequence to keep and nothing
+                 * to report from the peer's ack, so the ack is bookkeeping
+                 * here and nothing more.
+                 */
+                if (!remote_post(dp, q, qp_id, op, wqe_id, false, false,
+                                 &gsrc, wqe, dst_id, ah->node_id, gbuf)) {
                     vfu_log(dp->vfu_ctx, LOG_WARNING,
                             "ionic_datapath: QP %u UD send to node %u failed",
                             qp_id, ah->node_id);
