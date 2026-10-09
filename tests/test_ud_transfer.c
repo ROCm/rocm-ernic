@@ -226,6 +226,37 @@ static int do_send(struct ud_ep *src, struct ud_ep *dst, struct ibv_ah *ah,
     return 0;
 }
 
+/* do_send without the per-iteration printf. */
+static int do_send_quiet(struct ud_ep *src, struct ud_ep *dst,
+                         struct ibv_ah *ah, int inlined)
+{
+    struct ibv_sge sge = {
+        .addr = (uintptr_t)(src->buf + GRH_LEN),
+        .length = MSG_LEN,
+        .lkey = src->mr->lkey,
+    };
+    struct ibv_send_wr wr = {
+        .wr_id = 0xD2,
+        .sg_list = &sge,
+        .num_sge = 1,
+        .opcode = IBV_WR_SEND,
+        .send_flags = IBV_SEND_SIGNALED | (inlined ? IBV_SEND_INLINE : 0),
+        .wr = {.ud = {.ah = ah,
+                      .remote_qpn = dst->qp->qp_num,
+                      .remote_qkey = QKEY}},
+    };
+    struct ibv_send_wr *bad = NULL;
+    struct ibv_wc wc;
+
+    if (ibv_post_send(src->qp, &wr, &bad))
+        return -1;
+    if (poll_for(src->cq, IBV_WC_SEND, &wc) != 1)
+        return -1;
+    if (poll_for(dst->cq, IBV_WC_RECV, &wc) != 1)
+        return -1;
+    return 0;
+}
+
 int main(void)
 {
     struct ibv_device **dev_list = NULL;
@@ -235,6 +266,8 @@ int main(void)
     struct ibv_ah *ah = NULL;
     struct ud_ep a = {0}, b = {0};
     union ibv_gid gid;
+    unsigned char *src_two = NULL;
+    struct ibv_mr *mr_two = NULL;
     enum ernic_device_result lookup;
     int ndev = 0;
     int rc = 1;
@@ -295,15 +328,109 @@ int main(void)
     }
     printf("created AH\n");
 
+    src_two = calloc(1, 128);
+    if (!src_two) {
+        perror("calloc");
+        goto out;
+    }
+    mr_two = ibv_reg_mr(pd, src_two, 128, IBV_ACCESS_LOCAL_WRITE);
+    if (!mr_two) {
+        perror("ibv_reg_mr(two)");
+        goto out;
+    }
+
     if (post_recv(&b, 0xB1) || do_send(&a, &b, ah, 0))
         goto out;
     if (post_recv(&b, 0xB2) || do_send(&a, &b, ah, 1))
         goto out;
 
+    /*
+     * Sustained run. One send and one receive at a time is enough to prove
+     * the plumbing; it is not enough to prove the queues keep being
+     * replenished, which is where a device that stops consuming reposted
+     * receives shows up -- as a stall after roughly one queue depth, long
+     * after a two-message test has passed.
+     */
+    const char *iter_env = getenv("ERNIC_UD_ITERS");
+    int iters = iter_env ? atoi(iter_env) : 0;
+    for (int n = 0; n < iters; n++) {
+        if (post_recv(&b, 0xC000 + n) || do_send_quiet(&a, &b, ah, n & 1)) {
+            fprintf(stderr, "FAIL: stalled at iteration %d of %d\n", n, iters);
+            goto out;
+        }
+    }
+    if (iters)
+        printf("sustained %d iterations ok\n", iters);
+
+    /*
+     * Two inline segments in one send, which is the shape UCX's ud_verbs
+     * actually posts: a 16-byte header segment followed by the payload
+     * ("[inl len 16] [inl len 64]" in its trace). A device that only honours
+     * the first segment, or sizes the copy from one of them, delivers a
+     * short or shifted message -- and a single-segment test never notices.
+     */
+    if (post_recv(&b, 0xD00D))
+        goto out;
+    {
+        unsigned char hdr[16];
+        for (int i = 0; i < 16; i++)
+            hdr[i] = (unsigned char)(0xE0 + i);
+        memcpy(src_two, hdr, 16);
+        for (int i = 0; i < 64; i++)
+            src_two[16 + i] = (unsigned char)(0x30 ^ i);
+
+        struct ibv_sge sg[2] = {
+            {.addr = (uintptr_t)src_two, .length = 16, .lkey = mr_two->lkey},
+            {.addr = (uintptr_t)(src_two + 16), .length = 64,
+             .lkey = mr_two->lkey},
+        };
+        struct ibv_send_wr wr = {
+            .wr_id = 0xD00D,
+            .sg_list = sg,
+            .num_sge = 2,
+            .opcode = IBV_WR_SEND,
+            .send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE,
+            .wr = {.ud = {.ah = ah,
+                          .remote_qpn = b.qp->qp_num,
+                          .remote_qkey = QKEY}},
+        };
+        struct ibv_send_wr *bad = NULL;
+        memset(b.buf, 0, GRH_LEN + MSG_LEN);
+        if (ibv_post_send(a.qp, &wr, &bad)) {
+            perror("ibv_post_send(2-seg inline)");
+            goto out;
+        }
+        struct ibv_wc wc;
+        if (poll_for(a.cq, IBV_WC_SEND, &wc) != 1) {
+            fprintf(stderr, "FAIL: no send completion for 2-segment inline\n");
+            goto out;
+        }
+        if (poll_for(b.cq, IBV_WC_RECV, &wc) != 1) {
+            fprintf(stderr, "FAIL: 2-segment inline never arrived\n");
+            goto out;
+        }
+        if (wc.byte_len != GRH_LEN + 80) {
+            fprintf(stderr,
+                    "FAIL: 2-segment inline delivered %u bytes, expected %d.\n"
+                    "  Both segments must be concatenated: 16 + 64.\n",
+                    wc.byte_len, GRH_LEN + 80);
+            goto out;
+        }
+        if (memcmp(b.buf + GRH_LEN, src_two, 80) != 0) {
+            fprintf(stderr, "FAIL: 2-segment inline payload mismatch\n");
+            goto out;
+        }
+        printf("  2-seg inline ok: %u bytes (16+64 concatenated)\n",
+               wc.byte_len);
+    }
+
     printf("PASS: datagrams reached the peer QP with a GRH\n");
     rc = 0;
 
 out:
+    if (mr_two)
+        ibv_dereg_mr(mr_two);
+    free(src_two);
     if (ah)
         ibv_destroy_ah(ah);
     for (struct ud_ep *e = &a; e; e = (e == &a) ? &b : NULL) {
