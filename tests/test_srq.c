@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2026, Advanced Micro Devices, Inc. */
+/*
+ * Copyright (C) Advanced Micro Devices, Inc.
+ */
 
 /*
  * Shared receive queue smoke test, run inside a guest against the emulated
@@ -167,11 +169,27 @@ int main(void)
         perror("ibv_create_qp(srq)");
         goto out;
     }
-    if (qp_init.srq != srq) {
-        rc = fail("created QP is not bound to the SRQ it was given");
-        goto out;
-    }
-    printf("created QP qpn=%u bound to SRQ\n", qp->qp_num);
+    /*
+     * No assertion on the binding here, and deliberately not one.
+     *
+     * The obvious check -- re-reading qp_init.srq -- proves nothing:
+     * ibv_create_qp() does not rewrite the caller's init_attr, so it compares
+     * this test's own input against itself and passes just as happily when
+     * the emulator dropped the SRQ id entirely.
+     *
+     * The obvious replacement does not work either. ibv_query_qp() would be
+     * device-observable, but the ionic admin path's QUERY_QP carries no SRQ
+     * field at all, so init_attr.srq comes back NULL on a device where the
+     * binding is perfectly good -- an assertion that fails on correct
+     * hardware is worse than none.
+     *
+     * What actually proves the association is a receive drawn FROM the SRQ
+     * rather than from the QP's own queue, and that needs a completion:
+     * test_srq_transfer.c does exactly that, with max_recv_wr = 0 so a
+     * delivery can only have come from the shared ring. This test covers the
+     * control path up to the point a peer becomes necessary.
+     */
+    printf("created QP qpn=%u against the SRQ\n", qp->qp_num);
 
     /* 4. Post a receive to the SRQ. The post itself is the last thing that
      * can be checked without a peer: delivery needs a connected QP pair, and

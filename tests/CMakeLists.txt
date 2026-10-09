@@ -361,6 +361,25 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 target_compile_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
+# dispatch_wqe() against the same fake guest memory, so the response buffer
+# AND the reported length can both be inspected -- the pair that was wrong
+# while CREATE_SRQ wrote an id the driver was never told to read. Also pins
+# the id-map capacity against the advertised max_srq.
+add_executable(test_ionic_srq_adminq test_ionic_srq_adminq.c)
+target_include_directories(test_ionic_srq_adminq PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_srq_adminq PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_srq_adminq PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_srq_adminq PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ionic CQ arm-semantics test. It #includes the datapath translation unit to
 # reach the private CQ state and counts the event callback in-process, so no
 # vfio-user link or guest memory is needed.
@@ -563,6 +582,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_query_qp
+    test_ionic_srq_adminq
     test_ionic_cq_arm
     test_tcp_mesh_topology
     test_tcp_gid_resolve
@@ -733,6 +753,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_query_qp>
 )
 set_tests_properties(ionic-query-qp-unit PROPERTIES TIMEOUT 30)
+
+# ionic SRQ adminq unit test: the four SRQ handlers had no in-process
+# coverage, which is how CREATE_SRQ shipped writing its id into a response
+# the driver was told was zero bytes long.
+add_test(
+    NAME ionic-srq-adminq-unit
+    COMMAND $<TARGET_FILE:test_ionic_srq_adminq>
+)
+set_tests_properties(ionic-srq-adminq-unit PROPERTIES TIMEOUT 30)
 
 # ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
 # raises the event immediately, rather than waiting for a CQE that never comes.
