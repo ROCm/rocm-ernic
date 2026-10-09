@@ -410,9 +410,9 @@ static void check(const char *name, bool ok)
 
 static struct ionic_adminq_ctx g_ctx;
 
-#define RESP_GPA   256u
+#define RESP_GPA       256u
 #define SRQ_DEPTH_LOG2 6
-#define SRQ_LIMIT  12u
+#define SRQ_LIMIT      12u
 
 static void ctx_reset(void)
 {
@@ -534,15 +534,15 @@ static void test_modify_and_query_resolve_the_id(void)
 
     build_id_body(body, sizeof(body), srq_id);
     memcpy(body + 4, &limit_le, 2);
-    check("modify-accepted", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ,
-                                          body, 6) == 0);
+    check("modify-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
     check("modify-reached-the-allocated-handle",
           g_modify_handle == SRQ_HANDLE_BASE);
     check("modify-carried-the-limit", g_modify_limit == 99);
 
     build_id_body(body, sizeof(body), srq_id);
-    check("query-accepted", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ,
-                                         body, 4) == 0);
+    check("query-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body, 4) == 0);
 }
 
 /* An id the emulator never issued must not resolve to someone else's SRQ. */
@@ -570,12 +570,13 @@ static void test_destroy_releases_everything(void)
     srq_id = create_one();
 
     build_id_body(body, sizeof(body), srq_id);
-    check("destroy-accepted", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ,
-                                           body, 4) == 0);
+    check("destroy-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ, body, 4) == 0);
     check("destroy-freed-the-resource", g_dealloc_calls == 1);
     check("destroy-freed-the-right-handle",
           g_last_dealloc_handle == SRQ_HANDLE_BASE);
-    check("destroy-unregistered-from-datapath", g_unregistered_srq_id == srq_id);
+    check("destroy-unregistered-from-datapath",
+          g_unregistered_srq_id == srq_id);
 
     build_id_body(body, sizeof(body), srq_id);
     check("destroyed-id-no-longer-resolves",

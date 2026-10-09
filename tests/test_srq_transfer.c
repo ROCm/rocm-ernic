@@ -36,8 +36,8 @@
 
 #include "ernic_device.h"
 
-#define SRQ_DEPTH 16
-#define MSG_LEN 256
+#define SRQ_DEPTH    16
+#define MSG_LEN      256
 #define POLL_SECONDS 10
 
 /* The payload, chosen so a short or zeroed delivery is obvious. */

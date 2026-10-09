@@ -34,13 +34,13 @@
 
 #include "ernic_device.h"
 
-#define GRH_LEN     40
-#define MSG_LEN     64
-#define SQ_DEPTH    256 /* UCX_UD_VERBS_TX_QUEUE_LEN */
-#define RQ_DEPTH    128
+#define GRH_LEN      40
+#define MSG_LEN      64
+#define SQ_DEPTH     256 /* UCX_UD_VERBS_TX_QUEUE_LEN */
+#define RQ_DEPTH     128
 #define SIGNAL_EVERY 64
-#define QKEY        0x11111111u
-#define ITERS       1000
+#define QKEY         0x11111111u
+#define ITERS        1000
 #define POLL_SECONDS 10
 
 static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc, int required)
@@ -176,11 +176,10 @@ int main(void)
         perror("ibv_query_gid");
         goto out;
     }
-    struct ibv_ah_attr aa = {.is_global = 1,
-                             .port_num = 1,
-                             .grh = {.dgid = gid,
-                                     .sgid_index = 0,
-                                     .hop_limit = 1}};
+    struct ibv_ah_attr aa = {
+        .is_global = 1,
+        .port_num = 1,
+        .grh = {.dgid = gid, .sgid_index = 0, .hop_limit = 1}};
     ah = ibv_create_ah(pd, &aa);
     if (!ah) {
         perror("ibv_create_ah");
@@ -262,9 +261,8 @@ int main(void)
             struct ibv_sge rs = {.addr = (uintptr_t)buf,
                                  .length = GRH_LEN + MSG_LEN,
                                  .lkey = mr->lkey};
-            struct ibv_recv_wr rw = {.wr_id = rwc.wr_id,
-                                     .sg_list = &rs,
-                                     .num_sge = 1};
+            struct ibv_recv_wr rw = {
+                .wr_id = rwc.wr_id, .sg_list = &rs, .num_sge = 1};
             struct ibv_recv_wr *rbad = NULL;
             if (ibv_post_recv(rqp, &rw, &rbad)) {
                 perror("repost recv");

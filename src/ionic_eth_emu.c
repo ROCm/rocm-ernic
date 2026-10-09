@@ -261,10 +261,10 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
 /* Number of emulated EQs / AQs we report in LIF identity */
-#define IONIC_EMU_EQ_COUNT 32
-#define IONIC_EMU_AQ_COUNT 4
-#define IONIC_EMU_QP_COUNT (1u << 15)
-#define IONIC_EMU_CQ_COUNT (1u << 16)
+#define IONIC_EMU_EQ_COUNT   32
+#define IONIC_EMU_AQ_COUNT   4
+#define IONIC_EMU_QP_COUNT   (1u << 15)
+#define IONIC_EMU_CQ_COUNT   (1u << 16)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
 /* Ethernet Tx/Rx queue pairs offered to the LIF. */

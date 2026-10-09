@@ -105,9 +105,9 @@ enum ionic_v1_admin_op {
  * Per-AQ ring state
  * -------------------------------------------------------------------------
  */
-#define MAX_AQ      4
-#define MAX_CQ_MAP  256
-#define MAX_QP_MAP  256
+#define MAX_AQ     4
+#define MAX_CQ_MAP 256
+#define MAX_QP_MAP 256
 /* Tied to the advertised ceiling, not merely equal to it today: max_srq comes
  * from IONIC_EMU_SRQ_COUNT, and a map smaller than that silently loses the
  * mappings for every SRQ past the end. */
@@ -1181,8 +1181,7 @@ static uint8_t handle_create_ah_op(struct ionic_adminq_ctx *ctx,
                                dgid_valid ? dmac : NULL, node);
 
     vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq CREATE_AH %u: node %u%s",
-            ah_id, node,
-            dgid_valid ? "" : " (no address in the RoCE header)");
+            ah_id, node, dgid_valid ? "" : " (no address in the RoCE header)");
     return 0;
 }
 

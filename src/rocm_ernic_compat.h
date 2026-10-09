@@ -421,7 +421,7 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  * consult.
  */
 #define IONIC_EMU_QP_COUNT_SHARED (1u << 15)
-#define IONIC_SRQ_QID_BASE IONIC_EMU_QP_COUNT_SHARED
+#define IONIC_SRQ_QID_BASE        IONIC_EMU_QP_COUNT_SHARED
 
 /* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
 #define IONIC_MAX_SRQ_SGES 2
