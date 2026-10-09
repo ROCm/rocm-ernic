@@ -2127,16 +2127,32 @@ static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
  * served either way.
  */
 static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
-                      uint32_t paylen, uint32_t src_qp_id, uint32_t dst_qp_id)
+                      uint32_t paylen, const struct ionic_ah *ah)
 {
-    (void)src_qp_id;
-    (void)dst_qp_id;
     memset(grh, 0, IB_GRH_SIZE);
     grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
     uint16_t pl = htobe16((uint16_t)paylen);
     memcpy(grh + 4, &pl, 2);
     grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
     grh[7] = 64;
+
+    /*
+     * The addresses are not decoration. A receiver is entitled to check
+     * them, and UCX's ud_verbs does: it compares the GRH's destination GID
+     * against its own and silently drops anything that does not match, so a
+     * zeroed GRH makes every datagram vanish on arrival with no error on
+     * either side.
+     *
+     * Both come from the handle the sender used. For a peer inside this
+     * instance that is right: sender and receiver are the same device, so
+     * the GID the sender addressed is also the GID it sends from. A UD
+     * datagram crossing the mesh would need the real source, and does not
+     * get here -- the send path refuses it.
+     */
+    if (ah) {
+        memcpy(grh + 8, ah->dgid, 16);  /* sgid */
+        memcpy(grh + 24, ah->dgid, 16); /* dgid */
+    }
     (void)dp;
 }
 
@@ -2379,6 +2395,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * which instance the peer lives in.
          */
         uint32_t dst_id;
+        const struct ionic_ah *ah = NULL;
         if (q->ib_qp_type == 1 /* GSI */ || q->ib_qp_type == 4 /* UD */) {
             uint32_t ah_id_be, dest_qpn_be;
             memcpy(&ah_id_be, wqe + WQE_SEND_AH_OFF, 4);
@@ -2386,9 +2403,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             dst_id = be32toh(dest_qpn_be);
 
             uint32_t ah_id = be32toh(ah_id_be);
-            const struct ionic_ah *ah =
-                ah_id < dp->ah_count && dp->ah[ah_id].valid ? &dp->ah[ah_id]
-                                                            : NULL;
+            ah = ah_id < dp->ah_count && dp->ah[ah_id].valid ? &dp->ah[ah_id]
+                                                             : NULL;
             if (!ah && ah_id) {
                 /* Not fatal -- a local peer needs no address -- but it
                  * means CREATE_AH never reached us for this handle. */
@@ -2450,7 +2466,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                         "ionic_datapath: QP %u UD payload fetch failed", qp_id);
                 break;
             }
-            dp_ud_grh(dp, udbuf, plen, qp_id, dst_id);
+            dp_ud_grh(dp, udbuf, plen, ah);
             src_host = udbuf;
             udsrc.count = 0;
             udsrc.total = IB_GRH_SIZE + plen;
