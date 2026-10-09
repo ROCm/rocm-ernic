@@ -105,6 +105,24 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint32_t srq_id);
 
 /*
+ * Address handles.
+ *
+ * A connected QP learns its peer once, at MODIFY_QP's RTR transition. An
+ * unreliable datagram QP does not have one peer: every send names its
+ * destination itself, by an AH id and a destination QPN in the WQE, and the
+ * AH is where the RoCE header template -- and so the destination GID that
+ * says which node the peer is on -- actually lives.
+ *
+ * Without this table a UD send had nowhere to resolve its ah_id, so the
+ * datapath fell back to q->dest_qp_id, which a UD QP never sets, and
+ * delivered every datagram back to the sender's own QP.
+ */
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const uint8_t dgid[16], const uint8_t dmac[6],
+                                uint32_t dest_node_id);
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
+
+/*
  * RC/UC peer, learned from MODIFY_QP's IB_QP_DEST_QPN and the destination
  * address in the RoCE header template.  @dest_node_id is a mesh node id;
  * when it names this instance the peer QP is local and never leaves the

@@ -302,6 +302,21 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
     (void)qp_id;
     (void)srq_id;
 }
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const uint8_t dgid[16], const uint8_t dmac[6],
+                                uint32_t dest_node_id)
+{
+    (void)dp;
+    (void)ah_id;
+    (void)dgid;
+    (void)dmac;
+    (void)dest_node_id;
+}
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
+{
+    (void)dp;
+    (void)ah_id;
+}
 void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                 uint64_t va, uint64_t length,
                                 const struct ionic_dp_buf_desc *buf)
