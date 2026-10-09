@@ -3568,6 +3568,26 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
     attr->max_pd = 1024;
     attr->max_mr_size = 0xFFFFFFFF;
     attr->atomic_cap = IBV_ATOMIC_HCA;
+    /*
+     * This sizes rdma_rm's SRQ table (res_tbl_init in rdma_rm.c), and
+     * nothing else reads it: what the guest sees as max_srq comes from the
+     * LIF identity, which ionic_eth_emu.c fills from IONIC_EMU_SRQ_COUNT.
+     * Leaving this zero while advertising a non-zero count there is not a
+     * capability mismatch the guest can detect -- it is a table of size
+     * zero, so the very first CREATE_SRQ fails with
+     *
+     *   Table SRQ, failed to allocate, bitmap is full
+     *
+     * surfacing in the guest as ibv_create_srq() returning EINVAL on a
+     * device that just reported max_srq=32768. Keep the two in step.
+     *
+     * Safe to advertise only because tcp_qp_pop_recv_wr() now drains the
+     * SRQ: a table sized before that existed would have handed out SRQs
+     * whose receives nothing consumed, which is a hang, not a feature.
+     */
+    attr->max_srq = IONIC_EMU_SRQ_COUNT;
+    attr->max_srq_wr = 65535;
+    attr->max_srq_sge = IONIC_MAX_SRQ_SGES;
     return 0;
 }
 

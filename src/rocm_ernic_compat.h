@@ -381,6 +381,20 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  */
 #define IONIC_MESH_MAX_MSG (16u << 20)
 
+/*
+ * SRQ sizing, shared because three places have to agree and nothing else
+ * makes them: ionic_eth_emu.c puts the count in the LIF identity (it
+ * becomes the guest's max_srq verbatim), rdma_backend_tcp.c sizes
+ * rdma_rm's SRQ table from it, and ionic_adminq.c reports the SGE limit
+ * in CREATE_SRQ. A count advertised to the guest but not reflected in the
+ * table is not a smaller ceiling -- it is a table of size zero, so the
+ * first ibv_create_srq() fails EINVAL on a device claiming max_srq=32768.
+ */
+#define IONIC_EMU_SRQ_COUNT (1u << 15)
+
+/* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
+#define IONIC_MAX_SRQ_SGES 2
+
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes);

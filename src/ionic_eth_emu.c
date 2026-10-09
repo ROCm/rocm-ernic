@@ -43,6 +43,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ionic_eth_emu.h"
+#include "rocm_ernic_compat.h" /* IONIC_EMU_SRQ_COUNT, shared with the backend */
 #include "ionic_eth_net.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
@@ -264,10 +265,6 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_EMU_AQ_COUNT 4
 #define IONIC_EMU_QP_COUNT (1u << 15)
 #define IONIC_EMU_CQ_COUNT (1u << 16)
-/* Becomes the guest's max_srq verbatim. Sized like the QP pool: an SRQ costs
- * a GQueue and a lock in the backend, so the number is a ceiling rather than
- * an allocation. */
-#define IONIC_EMU_SRQ_COUNT  (1u << 15)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
 /* Ethernet Tx/Rx queue pairs offered to the LIF. */

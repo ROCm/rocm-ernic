@@ -149,6 +149,11 @@ struct ionic_adminq_ctx {
     /* pvrdma handle for calling ionic_rm_* compat wrappers. */
     pvrdma_handle_t pvrdma_handle;
 
+    /* Bytes a handler DMA'd into the command's response buffer, for the
+     * completion's status_length. Reset before every dispatch; only the
+     * handlers that write a response set it. */
+    uint32_t resp_len;
+
     /* Raises an EQ event once a CQE has been written. */
     ionic_adminq_cq_event_fn_t cq_event_fn;
     void *cq_event_opaque;
@@ -569,7 +574,7 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
 
 static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
                            struct ionic_aq_ring *r, uint16_t cmd_idx,
-                           uint8_t cmd_op, uint8_t status)
+                           uint8_t cmd_op, uint8_t status, uint32_t resp_len)
 {
     /* ionic_v1_cqe layout for admin completions (32 bytes, see ionic_fw.h):
      *   [0:1]   be16 cmd_idx  — AQ consumer index this completes
@@ -587,7 +592,16 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
     memcpy(cqe + 0, &ci, 2);
     cqe[2] = cmd_op;
 
-    uint32_t sl = htobe32(status ? ((uint32_t)status << 24) : 0);
+    /* status_length is one field doing two jobs: the status in bits[31:24]
+     * when the error bit is set, and otherwise the number of response bytes
+     * written. Returning 0 on success is not "no length given" to a driver
+     * that reads it -- ionic_create_srq_cmd() compares it against
+     * IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN and reports EOPNOTSUPP when it is
+     * short, so a successful CREATE_SRQ surfaced in the guest as
+     * ibv_create_srq() returning "Operation not supported" on a device that
+     * had just handled the command. The ops that DMA no response still send
+     * 0, which is their correct length. */
+    uint32_t sl = htobe32(status ? ((uint32_t)status << 24) : resp_len);
     memcpy(cqe + 24, &sl, 4);
 
     /* qid_type_flags: bit 0 = color, bit 1 = error, bits[7:5] = type
@@ -771,7 +785,7 @@ static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
 
 /* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. The driver
  * rejects a create whose max_sge exceeds it, so the two have to agree. */
-#define IONIC_MAX_SRQ_SGES 2
+/* IONIC_MAX_SRQ_SGES now lives in rocm_ernic_compat.h. */
 
 static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
                                     const uint8_t *body, uint16_t len)
@@ -835,6 +849,9 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
             adminq_unmap_srq(ctx, srq_id);
             return 1;
         }
+        /* What the driver compares against
+         * IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN before trusting resp_buf. */
+        ctx->resp_len = IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN;
     }
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
@@ -1049,6 +1066,8 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                             const uint8_t *body, uint16_t len)
 {
     vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq: WQE op=%u len=%u", op, len);
+
+    ctx->resp_len = 0;
 
     switch (op) {
     case IONIC_V1_ADMIN_NOOP:
@@ -1512,7 +1531,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             uint16_t cmd_idx = (uint16_t)slot;
             uint8_t status =
                 dispatch_wqe(ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
-            post_admin_cqe(ctx, r, cmd_idx, op, status);
+            post_admin_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
             pvrdma_adminq_count(ctx->pvrdma_handle);
 
             /* Never write back to guest WQE memory — the driver owns the ring.
