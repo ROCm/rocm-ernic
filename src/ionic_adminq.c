@@ -780,6 +780,8 @@ static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
  * The response is DMA'd rather than returned in the completion:
  *   struct ionic_admin_create_srq_resp, 5 bytes: le32 id, u8 udma_idx
  */
+#define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24
+#define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4
 #define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42
 #define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5
 
@@ -1105,6 +1107,85 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
  * WQE dispatch
  * -------------------------------------------------------------------------
  */
+
+/* -------------------------------------------------------------------------
+ * Address handles
+ * -------------------------------------------------------------------------
+ */
+
+/*
+ *   le64 dma_addr      [0:7]    RoCE header template from ib_ud_header_pack
+ *   le32 length        [8:11]   its length
+ *   le32 pd_id         [12:15]
+ *   le32 id_ver        [16:19]  ah_id in the low 24 bits
+ *   le16 dbid_flags    [20:21]
+ *   u8   csum_profile  [22]
+ *   u8   crypto        [23]
+ *
+ * The template is the only statement of where the handle points; a UD send
+ * WQE carries just the id. Parsing it once here is what lets the datapath
+ * resolve a datagram's destination node without re-reading guest memory on
+ * every send.
+ */
+static uint8_t handle_create_ah_op(struct ionic_adminq_ctx *ctx,
+                                   const uint8_t *body, uint16_t len)
+{
+    if (len < IONIC_ADMIN_CREATE_AH_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_AH: short body (%u)", len);
+        return 1;
+    }
+
+    uint64_t hdr_dma;
+    uint32_t hdr_len, id_ver;
+    memcpy(&hdr_dma, body + 0, 8);
+    memcpy(&hdr_len, body + 8, 4);
+    memcpy(&id_ver, body + 16, 4);
+    hdr_dma = le64toh(hdr_dma);
+    hdr_len = le32toh(hdr_len);
+    uint32_t ah_id = le32toh(id_ver) & 0x00ffffffu;
+
+    uint8_t dgid[16] = {0};
+    uint8_t dmac[6] = {0};
+    bool dgid_valid = false;
+    if (hdr_len && hdr_dma)
+        dgid_valid = adminq_parse_roce_hdr(ctx, hdr_dma, hdr_len, dgid, dmac);
+
+    /*
+     * An unparseable template is not fatal. A handle naming a peer inside
+     * this instance needs no address -- the datagram is routed by its QPN --
+     * so refusing the create would break the local case to protect the
+     * remote one. Register it without a node and let the send path complain
+     * if it ever needs an address it has not got.
+     */
+    uint32_t node =
+        dgid_valid ? ionic_dp_node_from_gid(ctx->dp, dgid) : UINT32_MAX;
+
+    ionic_datapath_register_ah(ctx->dp, ah_id, dgid_valid ? dgid : NULL,
+                               dgid_valid ? dmac : NULL, node);
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq CREATE_AH %u: node %u%s",
+            ah_id, node,
+            dgid_valid ? "" : " (no address in the RoCE header)");
+    return 0;
+}
+
+static uint8_t handle_destroy_ah_op(struct ionic_adminq_ctx *ctx,
+                                    const uint8_t *body, uint16_t len)
+{
+    if (len < IONIC_ADMIN_DESTROY_AH_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq DESTROY_AH: short body (%u)", len);
+        return 1;
+    }
+
+    uint32_t ah_id;
+    memcpy(&ah_id, body + 0, 4);
+    ah_id = le32toh(ah_id) & 0x00ffffffu;
+
+    ionic_datapath_unregister_ah(ctx->dp, ah_id);
+    return 0;
+}
 
 static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                             const uint8_t *body, uint16_t len)
@@ -1488,13 +1569,19 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
     }
 
     case IONIC_V1_ADMIN_CREATE_AH:
-    case IONIC_V1_ADMIN_QUERY_AH:
+        return handle_create_ah_op(ctx, body, len);
+
     case IONIC_V1_ADMIN_DESTROY_AH:
-        /* Remaining opcodes: stub */
+        return handle_destroy_ah_op(ctx, body, len);
+
+    case IONIC_V1_ADMIN_QUERY_AH:
+        /* Still a stub, and harmlessly so: the driver only issues it to read
+         * back a header template it already has, and nothing here consumes
+         * the result. CREATE_AH is the one that had to be real. */
         (void)body;
         (void)len;
-        vfu_log(ctx->vfu_ctx, LOG_WARNING,
-                "ionic_adminq: op=%u stub (succeeds)", op);
+        vfu_log(ctx->vfu_ctx, LOG_DEBUG,
+                "ionic_adminq: QUERY_AH stub (succeeds)");
         return 0;
 
     case IONIC_V1_ADMIN_STATS_HDRS:

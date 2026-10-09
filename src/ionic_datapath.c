@@ -113,6 +113,11 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 #define WQE_PLD_OFF      32
 #define WQE_SEND_LEN_OFF 28
 
+/* The datagram half of the send body: which address handle, and which
+ * remote QPN. Connected sends ignore both. */
+#define WQE_SEND_AH_OFF       16
+#define WQE_SEND_DEST_QPN_OFF 20
+
 /* struct ionic_v1_common_bdy.rdma overlays the send body: two be32 halves of
  * the remote va at 16/20, then the remote rkey, then the shared length. */
 #define WQE_RDMA_VA_HI_OFF 16
@@ -177,6 +182,9 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
  * max_srq, so an srq_id the guest is entitled to use always indexes this
  * table. */
 #define MAX_SRQ IONIC_EMU_SRQ_COUNT
+/* Matches the nahs_per_lif the LIF identity advertises, so an ah_id the
+ * guest is entitled to allocate always indexes this table. */
+#define MAX_AH (1u << 15)
 /* Sized with the rdma_rm table and the admin queue's map; see
  * IONIC_MAX_MR in ionic_datapath.h for why they have to agree. */
 #define MAX_MR  IONIC_MAX_MR
@@ -222,6 +230,16 @@ struct ionic_qp_ring {
      * above are unused and every receive is taken from dp->srq[srq_id]. */
     bool has_srq;
     uint32_t srq_id;
+};
+
+/*
+ * A resolved address handle: where a UD send's ah_id points.
+ */
+struct ionic_ah {
+    bool valid;
+    uint8_t dgid[16];
+    uint8_t dmac[6];
+    uint32_t node_id; /* UINT32_MAX = local / no mesh */
 };
 
 /*
@@ -381,11 +399,13 @@ struct ionic_datapath {
     struct ionic_qp_ring *qp;   /* indexed by driver qp_id */
     struct ionic_cq_ring *cq;   /* indexed by driver cq_id */
     struct ionic_srq_ring *srq; /* indexed by driver srq_id */
+    struct ionic_ah *ah;        /* indexed by driver ah_id */
     struct dp_mr mr[MAX_MR];
 
     uint32_t qp_count;
     uint32_t cq_count;
     uint32_t srq_count;
+    uint32_t ah_count;
 
     /* Mesh state.  local_node is UINT32_MAX until a mesh backend is
      * attached, which keeps every peer local for loopback runs. */
@@ -602,16 +622,19 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     dp->qp = calloc(MAX_QP, sizeof(*dp->qp));
     dp->cq = calloc(MAX_CQ, sizeof(*dp->cq));
     dp->srq = calloc(MAX_SRQ, sizeof(*dp->srq));
-    if (!dp->qp || !dp->cq || !dp->srq) {
+    dp->ah = calloc(MAX_AH, sizeof(*dp->ah));
+    if (!dp->qp || !dp->cq || !dp->srq || !dp->ah) {
         free(dp->qp);
         free(dp->cq);
         free(dp->srq);
+        free(dp->ah);
         free(dp);
         return NULL;
     }
     dp->qp_count = MAX_QP;
     dp->cq_count = MAX_CQ;
     dp->srq_count = MAX_SRQ;
+    dp->ah_count = MAX_AH;
     dp->local_node = UINT32_MAX;
     pthread_mutex_init(&dp->rx_lock, NULL);
     return dp;
@@ -728,6 +751,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
             pthread_mutex_destroy(&dp->srq[i].lock);
     }
     free(dp->srq);
+    free(dp->ah);
     free(dp);
 }
 
@@ -913,6 +937,38 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
     dp->qp[qp_id].srq_id = srq_id - IONIC_SRQ_QID_BASE;
     vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: QP %u bound to SRQ %u",
             qp_id, srq_id);
+}
+
+void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
+                                const uint8_t dgid[16], const uint8_t dmac[6],
+                                uint32_t dest_node_id)
+{
+    if (!dp || ah_id >= dp->ah_count)
+        return;
+
+    struct ionic_ah *ah = &dp->ah[ah_id];
+    if (dgid)
+        memcpy(ah->dgid, dgid, 16);
+    else
+        memset(ah->dgid, 0, 16);
+    if (dmac)
+        memcpy(ah->dmac, dmac, 6);
+    else
+        memset(ah->dmac, 0, 6);
+    ah->node_id = dest_node_id;
+    ah->valid = true;
+
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: AH %u -> node %u mac %02x:%02x:%02x:%02x:%02x:%02x",
+            ah_id, dest_node_id, ah->dmac[0], ah->dmac[1], ah->dmac[2],
+            ah->dmac[3], ah->dmac[4], ah->dmac[5]);
+}
+
+void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
+{
+    if (!dp || ah_id >= dp->ah_count)
+        return;
+    memset(&dp->ah[ah_id], 0, sizeof(dp->ah[ah_id]));
 }
 
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
@@ -2061,6 +2117,30 @@ static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
 }
 
 /*
+ * The GRH on an ordinary UD receive.
+ *
+ * The addresses are approximate and deliberately so: this emulator routes
+ * datagrams by QPN, and the only GID it reliably has for a local peer is
+ * the one in the address handle the sender used. Consumers that read the
+ * GRH to identify a peer will see that; consumers that only need the
+ * payload at the right offset -- which is the reason this exists -- are
+ * served either way.
+ */
+static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
+                      uint32_t paylen, uint32_t src_qp_id, uint32_t dst_qp_id)
+{
+    (void)src_qp_id;
+    (void)dst_qp_id;
+    memset(grh, 0, IB_GRH_SIZE);
+    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
+    uint16_t pl = htobe16((uint16_t)paylen);
+    memcpy(grh + 4, &pl, 2);
+    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
+    grh[7] = 64;
+    (void)dp;
+}
+
+/*
  * Remember which GIDs the guest is using.  A CM REQ names both ends of the
  * path it wants, and it is the only MAD that does, so the GRH on every reply
  * after it is built from what the REQ said.
@@ -2286,7 +2366,53 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         if (remote && dp_nvmeof_rc_send(dp, q, qp_id, &src))
             break;
 
-        uint32_t dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
+        /*
+         * A datagram names its own destination. Connected QPs learned a
+         * peer at RTR and q->dest_qp_id is right for them, but a UD or GSI
+         * QP never sets dest_valid, so the old fallback to qp_id delivered
+         * every datagram straight back to the sender -- which is why UCX's
+         * ud_verbs transport, and so the rc_verbs wireup that depends on
+         * it, never completed a handshake.
+         *
+         * ah_id is resolved for its node rather than its address: the
+         * emulator routes by QP number, and the GID in the AH only decides
+         * which instance the peer lives in.
+         */
+        uint32_t dst_id;
+        if (q->ib_qp_type == 1 /* GSI */ || q->ib_qp_type == 4 /* UD */) {
+            uint32_t ah_id_be, dest_qpn_be;
+            memcpy(&ah_id_be, wqe + WQE_SEND_AH_OFF, 4);
+            memcpy(&dest_qpn_be, wqe + WQE_SEND_DEST_QPN_OFF, 4);
+            dst_id = be32toh(dest_qpn_be);
+
+            uint32_t ah_id = be32toh(ah_id_be);
+            const struct ionic_ah *ah =
+                ah_id < dp->ah_count && dp->ah[ah_id].valid ? &dp->ah[ah_id]
+                                                            : NULL;
+            if (!ah && ah_id) {
+                /* Not fatal -- a local peer needs no address -- but it
+                 * means CREATE_AH never reached us for this handle. */
+                vfu_log(dp->vfu_ctx, LOG_WARNING,
+                        "ionic_datapath: QP %u SEND names unknown AH %u",
+                        qp_id, ah_id);
+            }
+            if (ah && dp->local_node != UINT32_MAX &&
+                ah->node_id != UINT32_MAX && ah->node_id != dp->local_node) {
+                /* The datagram is for another instance. Carrying it over
+                 * the mesh needs a per-send destination node, which
+                 * remote_post() does not take -- it reads q->dest_node_id,
+                 * which a UD QP has not got. Say so rather than deliver it
+                 * to the wrong node. */
+                vfu_log(dp->vfu_ctx, LOG_WARNING,
+                        "ionic_datapath: QP %u UD send to node %u dropped "
+                        "(datagrams do not cross the mesh yet)",
+                        qp_id, ah->node_id);
+                break;
+            }
+        } else {
+            dst_id = q->dest_valid ? q->dest_qp_id : qp_id;
+        }
+
         struct ionic_qp_ring *dq = dst_id < dp->qp_count && dp->qp[dst_id].valid
                                        ? &dp->qp[dst_id]
                                        : NULL;
@@ -2296,8 +2422,43 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     dst_id);
             break;
         }
-        if (deliver_recv(dp, dq, dst_id, qp_id, &src, NULL, recv_op, imm_be) <
-            0)
+        /*
+         * A UD receive begins with a 40-byte GRH: the payload starts at
+         * offset 40 and the completion's byte_len counts it. Consumers rely
+         * on that offset absolutely -- UCX parses its own header at a fixed
+         * position past the GRH -- so delivering the payload at offset 0
+         * does not truncate anything, it silently shifts every field a
+         * consumer reads.
+         *
+         * ibv_ud_pingpong cannot catch this on loopback: it sends from
+         * buf + 40 into the same buffer it receives at buf, so the bytes it
+         * verifies are already in place whether or not a GRH was added.
+         *
+         * Built here rather than in deliver_recv() because the GSI path
+         * above already supplies its own GRH as payload, and a second one
+         * would offset it twice.
+         */
+        uint8_t udbuf[IB_GRH_SIZE + 8192];
+        struct dp_sge_list udsrc;
+        const uint8_t *src_host = NULL;
+        if (dq->ib_qp_type == 1 || dq->ib_qp_type == 4) {
+            uint32_t plen = src.total;
+            if (plen > sizeof(udbuf) - IB_GRH_SIZE)
+                plen = (uint32_t)(sizeof(udbuf) - IB_GRH_SIZE);
+            if (dp_gather(dp, &src, udbuf + IB_GRH_SIZE, plen) != plen) {
+                vfu_log(dp->vfu_ctx, LOG_WARNING,
+                        "ionic_datapath: QP %u UD payload fetch failed", qp_id);
+                break;
+            }
+            dp_ud_grh(dp, udbuf, plen, qp_id, dst_id);
+            src_host = udbuf;
+            udsrc.count = 0;
+            udsrc.total = IB_GRH_SIZE + plen;
+        }
+
+        if (deliver_recv(dp, dq, dst_id, qp_id,
+                         src_host ? &udsrc : &src, src_host, recv_op,
+                         imm_be) < 0)
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u has no posted receive, dropping "
                     "%u bytes from QP %u",
