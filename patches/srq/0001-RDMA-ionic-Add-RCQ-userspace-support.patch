@@ -1,7 +1,7 @@
-From 9951bf4c44c6427f749b4d10dc775c51329296b2 Mon Sep 17 00:00:00 2001
+From 59652d095ea58a447fb48469b48592153134abc9 Mon Sep 17 00:00:00 2001
 From: Abhijit Gangurde <abhijit.gangurde@amd.com>
 Date: Thu, 13 Aug 2026 16:19:54 +0530
-Subject: RDMA/ionic: Add RCQ userspace support
+Subject: [PATCH] RDMA/ionic: Add RCQ userspace support
 
 Expose the Reorder Completion Queue (RCQ) capability to userspace via
 ucontext response using a comp_mask, and allow userspace to specify
@@ -14,18 +14,18 @@ Link: https://patch.msgid.link/20260813104954.319065-3-abhijit.gangurde@amd.com
 Reviewed-by: Jason Gunthorpe <jgg@nvidia.com>
 Signed-off-by: Leon Romanovsky <leon@kernel.org>
 ---
- drivers/infiniband/hw/ionic/ionic_controlpath.c | 20 +++++++++++++++++---
- drivers/infiniband/hw/ionic/ionic_fw.h          |  2 ++
- drivers/infiniband/hw/ionic/ionic_lif_cfg.c     |  1 +
- drivers/infiniband/hw/ionic/ionic_lif_cfg.h     |  1 +
- include/uapi/rdma/ionic-abi.h                   |  9 ++++++++-
+ .../infiniband/hw/ionic/ionic_controlpath.c   | 20 ++++++++++++++++---
+ drivers/infiniband/hw/ionic/ionic_fw.h        |  2 ++
+ drivers/infiniband/hw/ionic/ionic_lif_cfg.c   |  1 +
+ drivers/infiniband/hw/ionic/ionic_lif_cfg.h   |  1 +
+ include/uapi/rdma/ionic-abi.h                 |  9 ++++++++-
  5 files changed, 29 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/infiniband/hw/ionic/ionic_controlpath.c b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-index a70ef59a8064e..37f71fb43811e 100644
+index 9d91f7667..402d1cd76 100644
 --- a/drivers/infiniband/hw/ionic/ionic_controlpath.c
 +++ b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-@@ -418,6 +418,8 @@ int ionic_alloc_ucontext(struct ib_ucontext *ibctx, struct ib_udata *udata)
+@@ -408,6 +408,8 @@ int ionic_alloc_ucontext(struct ib_ucontext *ibctx, struct ib_udata *udata)
  
  	resp.udma_count = dev->lif_cfg.udma_count;
  	resp.expdb_mask = dev->lif_cfg.expdb_mask;
@@ -34,7 +34,7 @@ index a70ef59a8064e..37f71fb43811e 100644
  
  	if (dev->lif_cfg.sq_expdb)
  		resp.expdb_qtypes |= IONIC_EXPDB_SQ;
-@@ -1388,7 +1390,8 @@ static int ionic_create_qp_cmd(struct ionic_ibdev *dev,
+@@ -1324,7 +1326,8 @@ static int ionic_create_qp_cmd(struct ionic_ibdev *dev,
  			       struct ionic_qp *qp,
  			       struct ionic_tbl_buf *sq_buf,
  			       struct ionic_tbl_buf *rq_buf,
@@ -44,7 +44,7 @@ index a70ef59a8064e..37f71fb43811e 100644
  {
  	const u16 dbid = ionic_obj_dbid(dev, pd->ibpd.uobject);
  	const u32 flags = to_ionic_qp_flags(0, 0,
-@@ -1404,7 +1407,12 @@ static int ionic_create_qp_cmd(struct ionic_ibdev *dev,
+@@ -1340,7 +1343,12 @@ static int ionic_create_qp_cmd(struct ionic_ibdev *dev,
  			.len = cpu_to_le16(IONIC_ADMIN_CREATE_QP_IN_V1_LEN),
  			.cmd.create_qp = {
  				.pd_id = cpu_to_le32(pd->pdid),
@@ -58,7 +58,7 @@ index a70ef59a8064e..37f71fb43811e 100644
  				.type_state = to_ionic_qp_type(attr->qp_type),
  				.dbid_flags = cpu_to_le16(dbid),
  				.id_ver = cpu_to_le32(qp->qpid),
-@@ -2221,6 +2229,12 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
+@@ -2157,6 +2165,12 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
  		rc = ib_copy_validate_udata_in(udata, req, rsvd);
  		if (rc)
  			return rc;
@@ -71,7 +71,7 @@ index a70ef59a8064e..37f71fb43811e 100644
  	} else {
  		req.sq_spec = IONIC_SPEC_HIGH;
  		req.rq_spec = IONIC_SPEC_HIGH;
-@@ -2301,7 +2315,7 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
+@@ -2237,7 +2251,7 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
  	rc = ionic_create_qp_cmd(dev, pd,
  				 to_ionic_vcq_cq(attr->send_cq, qp->udma_idx),
  				 to_ionic_vcq_cq(attr->recv_cq, qp->udma_idx),
@@ -81,7 +81,7 @@ index a70ef59a8064e..37f71fb43811e 100644
  		goto err_cmd;
  
 diff --git a/drivers/infiniband/hw/ionic/ionic_fw.h b/drivers/infiniband/hw/ionic/ionic_fw.h
-index ee23062a1762e..d0a5bce85ed81 100644
+index adfbb89d8..4c6752bfb 100644
 --- a/drivers/infiniband/hw/ionic/ionic_fw.h
 +++ b/drivers/infiniband/hw/ionic/ionic_fw.h
 @@ -105,6 +105,8 @@ enum ionic_qp_flags {
@@ -94,10 +94,10 @@ index ee23062a1762e..d0a5bce85ed81 100644
  
  static inline int from_ionic_qp_flags(int flags)
 diff --git a/drivers/infiniband/hw/ionic/ionic_lif_cfg.c b/drivers/infiniband/hw/ionic/ionic_lif_cfg.c
-index 8e48c00d4959a..1e37bd09490f5 100644
+index 45846dc2e..310f51bc3 100644
 --- a/drivers/infiniband/hw/ionic/ionic_lif_cfg.c
 +++ b/drivers/infiniband/hw/ionic/ionic_lif_cfg.c
-@@ -86,6 +86,7 @@ void ionic_fill_lif_cfg(struct ionic_lif *lif, struct ionic_lif_cfg *cfg)
+@@ -84,6 +84,7 @@ void ionic_fill_lif_cfg(struct ionic_lif *lif, struct ionic_lif_cfg *cfg)
  	cfg->udma_count = 2;
  
  	cfg->max_stride = ident->rdma.max_stride;
@@ -106,10 +106,10 @@ index 8e48c00d4959a..1e37bd09490f5 100644
  
  	cfg->sq_expdb =
 diff --git a/drivers/infiniband/hw/ionic/ionic_lif_cfg.h b/drivers/infiniband/hw/ionic/ionic_lif_cfg.h
-index 2b29e646c193b..d7835ac27896b 100644
+index 20853429f..e6b170551 100644
 --- a/drivers/infiniband/hw/ionic/ionic_lif_cfg.h
 +++ b/drivers/infiniband/hw/ionic/ionic_lif_cfg.h
-@@ -57,6 +57,7 @@ struct ionic_lif_cfg {
+@@ -56,6 +56,7 @@ struct ionic_lif_cfg {
  	bool sq_expdb;
  	bool rq_expdb;
  	u8 expdb_mask;
@@ -118,7 +118,7 @@ index 2b29e646c193b..d7835ac27896b 100644
  
  void ionic_fill_lif_cfg(struct ionic_lif *lif, struct ionic_lif_cfg *cfg);
 diff --git a/include/uapi/rdma/ionic-abi.h b/include/uapi/rdma/ionic-abi.h
-index 2c70ac149c4ff..3d8d56922a93b 100644
+index 7b589d3e9..4587421be 100644
 --- a/include/uapi/rdma/ionic-abi.h
 +++ b/include/uapi/rdma/ionic-abi.h
 @@ -22,6 +22,10 @@
@@ -140,10 +140,10 @@ index 2c70ac149c4ff..3d8d56922a93b 100644
  
 -	__u8 rsvd2[3];
 +	__u16 comp_mask;
- 	__aligned_u64 phc_offset;
  };
  
-@@ -85,6 +90,8 @@ struct ionic_qp_req {
+ struct ionic_qdesc {
+@@ -84,6 +89,8 @@ struct ionic_qp_req {
  	__u8 rq_cmb;
  	__u8 udma_mask;
  	__u8 rsvd[3];
@@ -152,6 +152,3 @@ index 2c70ac149c4ff..3d8d56922a93b 100644
  };
  
  struct ionic_qp_resp {
--- 
-cgit 1.3.1-korg
-

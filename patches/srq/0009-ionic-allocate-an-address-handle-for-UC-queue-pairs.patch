@@ -1,4 +1,4 @@
-From a50e4d5722133cda688f713987a547cceeeeae35 Mon Sep 17 00:00:00 2001
+From 649b9eccd81e6d505e80ea83ecb639ceb3bf66af Mon Sep 17 00:00:00 2001
 From: Stephen Bates <stephen.bates@amd.com>
 Date: Tue, 8 Sep 2026 19:39:40 -0400
 Subject: [PATCH] ionic: allocate an address handle for UC queue pairs
@@ -27,10 +27,10 @@ Signed-off-by: Stephen Bates <stephen.bates@amd.com>
  1 file changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/infiniband/hw/ionic/ionic_controlpath.c b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-index 9d91f7667..efe3186a1 100644
+index 84f5d04b9..7b0f271a5 100644
 --- a/drivers/infiniband/hw/ionic/ionic_controlpath.c
 +++ b/drivers/infiniband/hw/ionic/ionic_controlpath.c
-@@ -2200,7 +2200,8 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
+@@ -2314,7 +2314,8 @@ int ionic_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attr,
  		return rc;
  
  	qp->sig_all = attr->sq_sig_type == IB_SIGNAL_ALL_WR;
@@ -40,6 +40,3 @@ index 9d91f7667..efe3186a1 100644
  
  	if (qp->has_ah) {
  		qp->hdr = kzalloc_obj(*qp->hdr);
--- 
-2.43.0
-

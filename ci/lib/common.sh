@@ -81,7 +81,7 @@ CI_VM_IMAGE_DIR="${CI_VM_IMAGE_DIR:-/opt/qemu-images}"
 # BACKING_SHARED=true), so sharing one base is safe and is
 # the whole point of following the published image.
 #
-# shellcheck source=../guest-image.env
+# shellcheck source=/dev/null
 . "$(dirname "${BASH_SOURCE[0]}")/../guest-image.env"
 CI_GUEST_ARTIFACT_REPO="${CI_GUEST_ARTIFACT_REPO:-${GUEST_ARTIFACT_REPO}}"
 CI_GUEST_ARTIFACT_TAG="${CI_GUEST_ARTIFACT_TAG:-${GUEST_ARTIFACT_TAG}}"

@@ -1,18 +1,19 @@
-From c73a5f20bc786df0be484af29aa5956e909dc862 Mon Sep 17 00:00:00 2001
+From 52c2f87f6bd10fc28b54ee89302480641565d2f9 Mon Sep 17 00:00:00 2001
 From: Abhijit Gangurde <abhijit.gangurde@amd.com>
 Date: Fri, 18 Sep 2026 15:57:13 +0530
-Subject: net: ionic: Fetch qid allocation and SRQ capability from firmware
+Subject: [PATCH] net: ionic: Fetch qid allocation and SRQ capability from
+ firmware
 
 Read the qid allocation and SRQ capability from the RDMA LIF identity
 reported by firmware.
 
 Signed-off-by: Abhijit Gangurde <abhijit.gangurde@amd.com>
 ---
- drivers/net/ethernet/pensando/ionic/ionic_if.h | 31 ++++++++++++++++++++++++--
- 1 file changed, 29 insertions(+), 2 deletions(-)
+ .../net/ethernet/pensando/ionic/ionic_if.h    | 35 +++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_if.h b/drivers/net/ethernet/pensando/ionic/ionic_if.h
-index 15f2bc3f40434..e911fad545d67 100644
+index 0a201422d..bf843f3b4 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_if.h
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_if.h
 @@ -7,6 +7,7 @@
@@ -47,10 +48,12 @@ index 15f2bc3f40434..e911fad545d67 100644
  /**
   * struct ionic_lif_identity - LIF identity information (type-specific)
   *
-@@ -557,6 +575,10 @@ enum ionic_lif_rdma_cap_stats {
+@@ -555,6 +573,12 @@ enum ionic_lif_rdma_cap_stats {
+  *	@rdma.eq_qtype:        RDMA Event Qtype
+  *	@rdma.stats_type:      Supported statistics type
   *	                       (enum ionic_lif_rdma_cap_stats)
-  *	@rdma.rsvd:            Reserved byte
-  *	@rdma.rcq_sign_bit:    RCQ sign bit
++ *	@rdma.rsvd:            Reserved byte
++ *	@rdma.rcq_sign_bit:    RCQ sign bit
 + *	@rdma.srq_qtype:       RDMA Shared Receive Qtype
 + *	@rdma.rsvd2:           Reserved byte(s)
 + *	@rdma.alloc_qid_cap:   RDMA queue type QID allocation capability
@@ -58,11 +61,13 @@ index 15f2bc3f40434..e911fad545d67 100644
   *	@rdma.rsvd1:           Reserved byte(s)
   * @words:               word access to struct contents
   */
-@@ -604,7 +626,10 @@ union ionic_lif_identity {
+@@ -600,7 +624,12 @@ union ionic_lif_identity {
+ 			struct ionic_lif_logical_qtype cq_qtype;
+ 			struct ionic_lif_logical_qtype eq_qtype;
  			__le16 stats_type;
- 			u8 rsvd;
- 			u8 rcq_sign_bit;
--			u8 rsvd1[160];
+-			u8 rsvd1[162];
++			u8 rsvd;
++			u8 rcq_sign_bit;
 +			struct ionic_lif_logical_qtype srq_qtype;
 +			u8 rsvd2[5];
 +			u8 alloc_qid_cap;
@@ -70,7 +75,7 @@ index 15f2bc3f40434..e911fad545d67 100644
  		} __packed rdma;
  	} __packed;
  	__le32 words[478];
-@@ -2608,6 +2633,7 @@ struct ionic_rdma_reset_cmd {
+@@ -2603,6 +2632,7 @@ struct ionic_rdma_reset_cmd {
   * @depth_log2:    log base two of queue depth
   * @stride_log2:   log base two of queue stride
   * @dma_addr:      address of the queue memory
@@ -78,7 +83,7 @@ index 15f2bc3f40434..e911fad545d67 100644
   * @rsvd2:         reserved byte(s)
   *
   * The same command struct is used to create an RDMA event queue, completion
-@@ -2637,7 +2663,8 @@ struct ionic_rdma_queue_cmd {
+@@ -2632,7 +2662,8 @@ struct ionic_rdma_queue_cmd {
  	u8     depth_log2;
  	u8     stride_log2;
  	__le64 dma_addr;
@@ -88,6 +93,3 @@ index 15f2bc3f40434..e911fad545d67 100644
  };
  
  /******************************************************************
--- 
-cgit 1.3.1-korg
-

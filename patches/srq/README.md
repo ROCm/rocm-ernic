@@ -13,71 +13,50 @@ only verbs transport. UD has no one-sided RDMA READ/WRITE, so NIXL (and with
 it LMCache P2P) silently falls back to TCP. A zero there is the difference
 between RDMA and not.
 
-## The base: v7.3-rc6
+## The base: v7.2.4
 
-Measured, not assumed. The five upstream SRQ commits alone apply to **no**
-mainline tag:
+The same ref `IONIC_KERNEL_REF` pins, and the kernel the CI guest and the
+qemu-minimal fleet VMs actually run (`7.2.4-070204-generic`). That is the
+point: a guest builds this with no kernel upgrade.
 
-| Base | Result |
-| --- | --- |
-| `v7.2` | all five fail |
-| `v7.2.9` (latest stable) | all five fail — its ionic is byte-identical to `v7.2` |
-| `v7.3-rc6` | the net-side patch applies; all four RDMA patches fail |
+It did not start there. The upstream commits target `rdma/for-next` and
+apply to **no** mainline tag on their own — three earlier for-next commits,
+carried here as 0001-0003, get the series onto `v7.3-rc6`. Rebasing from
+there down to `v7.2.4` took four context fixes, none of them semantic:
 
-The RDMA half depends on three earlier `rdma/for-next` commits that are not
-in mainline. Including those as 0001-0003 makes the whole series apply
-cleanly to `v7.3-rc6`, which is what this directory does.
+| # | What differed on 7.2.4 | Resolution |
+| --- | --- | --- |
+| 0001 | `ionic_ctx_resp` has no `phc_offset` | `rcq_sign_bit` + `comp_mask` still total the 4 bytes `rsvd2[3]` held, so the UAPI struct size is unchanged |
+| 0004 | LIF identity has `rsvd1[162]` where 7.3 had `rsvd` + `rcq_sign_bit` + `rsvd1[160]` | `1+1+12+5+1+142 == 162`, so the offsets are identical — see below |
+| 0006 | the `rq` → `rq.q` refactor, mechanical | resulting token census matches the 7.3 tree exactly |
+| 0007 | returns `ib_respond_empty_udata(udata)`, not `0` | context only |
 
-### Why not back-port the nine to `v7.2.4` as well
+**The offsets were verified, not reasoned about.** 0004 moves
+`srq_qtype` and `alloc_qid_cap` inside a reserved block, and those byte
+positions are the wire contract `src/ionic_eth_emu.c` encodes as
+`LIF_ID_SRQ_QTYPE_OFF` and `LIF_ID_ALLOC_QID_CAP_OFF`. Getting that wrong
+fails silently — the driver reads the capability from the wrong offset and
+the symptom is an absent SRQ, indistinguishable from the bug this series
+fixes. So the layout is compiled and measured:
 
-The obvious question, since `v7.2.4` is what `IONIC_KERNEL_REF` pins and what
-the CI guest image runs — a series applying to both would need no image
-rebuild. Measured, with all nine:
-
-| How | Result on `v7.2.4` |
-| --- | --- |
-| `git am` | fails at **0001**, on `include/uapi/rdma/ionic-abi.h:46` |
-| `git am -3` | cannot run — the sparse checkout has no blobs to merge from |
-| `patch -p1 -F3` (fuzz) | **7 of 9**; 0004 and 0006 reject one hunk each |
-
-The first blocker looks trivial: the only `ionic-abi.h` difference between
-the two bases is one added line (`__aligned_u64 phc_offset`), so 0001 fails
-on context, not on anything semantic. That is what makes this worth writing
-down rather than just asserting — it *looks* like a small job.
-
-It is not, and the reason is specifically the hunk 0004 rejects:
-
-```diff
- 			u8 rcq_sign_bit;
--			u8 rsvd1[160];
-+			struct ionic_lif_logical_qtype srq_qtype;
-+			u8 rsvd2[5];
-+			u8 alloc_qid_cap;
-+			u8 rsvd1[142];
+```
+sizeof(logical_qtype) = 12
+srq_qtype      offset = 96   (emulator expects 96)
+alloc_qid_cap  offset = 113  (emulator expects 113)
+sizeof(rdma ident)    = 256  (unchanged)
 ```
 
-That is the **LIF identity wire layout** — `srq_qtype` and `alloc_qid_cap`
-at fixed byte offsets inside a reserved block, which is exactly the contract
-`src/ionic_eth_emu.c` encodes as `LIF_ID_SRQ_QTYPE_OFF` and
-`LIF_ID_ALLOC_QID_CAP_OFF`. Resolving that reject by hand means
-re-deriving a wire format from reserved-field arithmetic. Get it wrong and
-nothing fails to build: the driver reads the capability from the wrong
-offset and the symptom is a malformed or absent SRQ capability, which is
-indistinguishable from the bug this whole series exists to fix.
+No 7.3-only API is involved. Every IB-core helper the series calls
+(`ib_umem_get_va`, `ib_copy_validate_udata_in`, `ib_respond_udata`,
+`rdma_udata_to_drv_context`) is already used by 7.2.4's own ionic. The one
+7.3 rename, `ib_no_udata_io()`, is touched by none of the nine.
 
-Fuzz makes that worse rather than better. "Hunk #3 succeeded with fuzz 3"
-means `patch` guessed the location, and for offset-bearing structures a
-good guess and a correct one are not the same thing — which is why the
-clean-`git am` requirement is not fussiness here.
+Verified end to end: `git am` applies all nine to a fresh `v7.2.4`, and the
+result builds and installs as a DKMS package on `7.2.4-070204-generic`.
 
-So the base moves forward, not back: repin the guest image to a kernel
-matching this ref. The series is queued for 7.4 and this directory retires
-when it lands (below).
-
-The alternative — building straight from an `rdma/for-next` SHA, which
-already contains everything — was rejected because that branch is rebased and
-force-pushed: a pin there tests something different every run, and a
-regression cannot be bisected to a change of ours.
+Building straight from an `rdma/for-next` SHA was rejected because that
+branch is rebased and force-pushed: a pin there tests something different
+every run, and a regression cannot be bisected to a change of ours.
 
 ## Order matters
 
