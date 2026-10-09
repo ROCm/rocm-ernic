@@ -1841,10 +1841,22 @@ static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
  * the answer comes back.  Returns false when the request could not be sent,
  * leaving the caller to post an immediate error completion.
  */
+/*
+ * @dest_qp_id and @dest_node_id are passed rather than read from @q because
+ * a datagram QP has neither: it names its peer per send, from the WQE and
+ * the address handle. Connected callers pass their own q->dest_*.
+ *
+ * @src_host, when set, is the payload already assembled in host memory --
+ * the UD path uses it to send the GRH it built along with the data, so the
+ * header is constructed in exactly one place for local and mesh delivery
+ * alike. NULL means gather from @src, which names guest memory.
+ */
 static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                         uint32_t qp_id, uint8_t op, uint64_t wqe_id,
                         bool use_msn, bool signalled,
-                        const struct dp_sge_list *src, const uint8_t *wqe)
+                        const struct dp_sge_list *src, const uint8_t *wqe,
+                        uint32_t dest_qp_id, uint32_t dest_node_id,
+                        const uint8_t *src_host)
 {
     struct ionic_wire_hdr hdr;
     uint8_t *payload = NULL;
@@ -1892,7 +1904,7 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         return false;
     }
 
-    wire_hdr_init(&hdr, wire_op, qp_id, q->dest_qp_id, p->req_id);
+    wire_hdr_init(&hdr, wire_op, qp_id, dest_qp_id, p->req_id);
 
     if (wire_op == IONIC_WIRE_SEND || wire_op == IONIC_WIRE_SEND_IMM ||
         wire_op == IONIC_WIRE_SEND_INV) {
@@ -1959,7 +1971,9 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         payload = malloc(payload_len);
         if (!payload)
             goto out;
-        if (dp_gather(dp, src, payload, payload_len) != payload_len) {
+        if (src_host) {
+            memcpy(payload, src_host, payload_len);
+        } else if (dp_gather(dp, src, payload, payload_len) != payload_len) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u could not gather %u bytes", qp_id,
                     payload_len);
@@ -1967,7 +1981,7 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         }
     }
 
-    ok = dp_mesh_tx(dp, q->dest_node_id, &hdr, payload, payload_len) == 0;
+    ok = dp_mesh_tx(dp, dest_node_id, &hdr, payload, payload_len) == 0;
     if (ok) {
         /* Claim the MSN only once the request is really on the wire, so a
          * failed send does not leave a hole the driver would wait on. */
@@ -1986,7 +2000,7 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     } else {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u send to node %u failed", qp_id,
-                q->dest_node_id);
+                dest_node_id);
     }
 
 out:
@@ -2348,7 +2362,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      */
     if (dp_is_remote(dp, q)) {
         if (remote_post(dp, q, qp_id, op, wqe_id, remote,
-                        (flags & IONIC_V1_FLAG_SIG) != 0, &src, wqe))
+                        (flags & IONIC_V1_FLAG_SIG) != 0, &src, wqe,
+                        q->dest_qp_id, q->dest_node_id, NULL))
             return;
 
         if (remote) {
@@ -2414,15 +2429,35 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             }
             if (ah && dp->local_node != UINT32_MAX &&
                 ah->node_id != UINT32_MAX && ah->node_id != dp->local_node) {
-                /* The datagram is for another instance. Carrying it over
-                 * the mesh needs a per-send destination node, which
-                 * remote_post() does not take -- it reads q->dest_node_id,
-                 * which a UD QP has not got. Say so rather than deliver it
-                 * to the wrong node. */
-                vfu_log(dp->vfu_ctx, LOG_WARNING,
-                        "ionic_datapath: QP %u UD send to node %u dropped "
-                        "(datagrams do not cross the mesh yet)",
-                        qp_id, ah->node_id);
+                /*
+                 * The datagram is for another instance. The GRH goes on
+                 * here, before it leaves, so the receiving side can deliver
+                 * what arrives unchanged -- the sender is the only one that
+                 * knows which handle was used.
+                 */
+                uint8_t gbuf[IB_GRH_SIZE + 8192];
+                uint32_t plen = src.total;
+                if (plen > sizeof(gbuf) - IB_GRH_SIZE)
+                    plen = (uint32_t)(sizeof(gbuf) - IB_GRH_SIZE);
+                if (dp_gather(dp, &src, gbuf + IB_GRH_SIZE, plen) != plen) {
+                    vfu_log(dp->vfu_ctx, LOG_WARNING,
+                            "ionic_datapath: QP %u UD payload fetch failed",
+                            qp_id);
+                    break;
+                }
+                dp_ud_grh(dp, gbuf, plen, ah);
+
+                struct dp_sge_list gsrc = {.count = 0,
+                                           .total = IB_GRH_SIZE + plen};
+                /* use_msn false: a datagram has no sequence to keep, and
+                 * the completion comes from the peer's ack. */
+                if (!remote_post(dp, q, qp_id, op, wqe_id, false,
+                                 (flags & IONIC_V1_FLAG_SIG) != 0, &gsrc, wqe,
+                                 dst_id, ah->node_id, gbuf)) {
+                    vfu_log(dp->vfu_ctx, LOG_WARNING,
+                            "ionic_datapath: QP %u UD send to node %u failed",
+                            qp_id, ah->node_id);
+                }
                 break;
             }
         } else {
