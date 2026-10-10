@@ -59,6 +59,7 @@ __pycache__/
 *.diff
 !patches/*.patch
 !patches/*.diff
+!ansible/roles/ernic_rdma_tutorial/files/*.patch
 
 # Log files
 *.log

@@ -2218,6 +2218,24 @@ jobs:
           -e ernic_vm_ssh_base_port=2222 \
           -e ernic_vm_ssh_user="$VM_USER"
 
+    - name: RDMA tutorial examples across the TCP mesh (Ansible)
+      shell: bash
+      run: |
+        echo "=== Running the RDMA tutorial examples across both guests ==="
+        VM_USER="${{ steps.vm_info.outputs.vm_user }}"
+
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+
+        cd ansible
+        ansible-playbook ci-site.yml --tags tutorial \
+          -e ernic_project_root="$GITHUB_WORKSPACE" \
+          -e ernic_run_dir=/tmp/ernic-ci \
+          -e ernic_instances=2 \
+          -e ernic_vm_ssh_base_port=2222 \
+          -e ernic_vm_ssh_user="$VM_USER"
+
     - name: RDMA and TCP/IP performance sweeps (Ansible)
       # Not on pull requests: the sweep is minutes of perftest and
       # iperf3 on top of a job that already runs for the best part of
