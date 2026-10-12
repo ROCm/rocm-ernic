@@ -7,8 +7,9 @@
 #   thread-sanitizer  TSan                 (-DERNIC_USE_THREAD_SANITIZER=ON)
 #
 # The build never fails on a violation — it captures whatever the
-# sanitizer runtime reports and records a count, so the target always
-# produces a report.
+# sanitizer runtime reports and records a count. It does fail when the
+# exercise itself was incomplete (see run-loopback.nix): then the
+# sanitizers never saw a clean exit, and an empty report proves nothing.
 #
 # Note on LSan: the leak check runs via ptrace at process exit. Some
 # sandboxes restrict ptrace; if so, LSan prints a fatal error instead of a
@@ -45,6 +46,7 @@ let
 
         export OUT_LOG="$NIX_BUILD_TOP/server.log"
         export CLIENT_LOG="$NIX_BUILD_TOP/client.log"
+        export EXERCISE_FILE="$NIX_BUILD_TOP/exercise.txt"
 
         ${driver}/bin/run-loopback-exercise \
           "$srcTop/build/rocm-ernic" \
@@ -69,8 +71,13 @@ let
         echo "$violations" > $out/count.txt
 
         cp "$NIX_BUILD_TOP/client.log" $out/client.log 2>/dev/null || true
+        exercise=$(cat "$NIX_BUILD_TOP/exercise.txt" 2>/dev/null ||
+          echo "exercise: incomplete (no outcome recorded)")
+        echo "$exercise" > $out/exercise.txt
 
         {
+          echo "$exercise"
+          echo ""
           echo "=== ${description} ==="
           echo ""
           echo "Server exercised on the loopback backend with the PCI-config"
@@ -83,6 +90,13 @@ let
           fi
         } > $out/summary.txt
         cat $out/summary.txt
+
+        # A run that never reached the clean shutdown never ran the leak
+        # check, so "no violations" would be a false all-clear.
+        if [ "$exercise" != "exercise: clean" ]; then
+          echo "${name}: $exercise; the report above is not a real check" >&2
+          exit 1
+        fi
       '';
     };
 in
