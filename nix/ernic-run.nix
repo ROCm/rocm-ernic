@@ -4,7 +4,7 @@
 # socket, run a command (typically a qemu-vm.nix launcher using
 # nixosModules.ernic-guest) with ERNIC_SOCKET exported, then stop the server.
 #
-#   ernic-run [--socket PATH] [--backend SPEC] [--stats-file F] [--log-file F] -- CMD [ARGS...]
+#   ernic-run [--socket PATH] [--backend SPEC] [--mac ADDR] [--stats-file F] [--log-file F] -- CMD [ARGS...]
 #
 # Exit status is CMD's. It is non-zero if the server never creates its
 # socket, or exits before CMD finishes.
@@ -16,7 +16,7 @@ pkgs.writeShellApplication {
   runtimeInputs = [ rocm-ernic pkgs.coreutils ];
   text = ''
     usage() {
-      echo 'usage: ernic-run [--socket PATH] [--backend SPEC] [--stats-file F] [--log-file F] -- CMD [ARGS...]' >&2
+      echo 'usage: ernic-run [--socket PATH] [--backend SPEC] [--mac ADDR] [--stats-file F] [--log-file F] -- CMD [ARGS...]' >&2
       exit 2
     }
     socket=""
@@ -24,7 +24,7 @@ pkgs.writeShellApplication {
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --socket) [ "$#" -ge 2 ] || usage; socket=$2; shift 2 ;;
-        --backend|--stats-file|--log-file) [ "$#" -ge 2 ] || usage; server_args+=("$1" "$2"); shift 2 ;;
+        --backend|--mac|--stats-file|--log-file) [ "$#" -ge 2 ] || usage; server_args+=("$1" "$2"); shift 2 ;;
         --) shift; break ;;
         *) usage ;;
       esac
@@ -41,8 +41,22 @@ pkgs.writeShellApplication {
 
     rocm-ernic --socket "$socket" "''${server_args[@]}" &
     server=$!
-    # Stop the server however we exit; single quotes defer the expansion.
-    trap 'kill -TERM "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true; rm -f "$socket"' EXIT
+    # Stop the server however we exit. A server that ignores SIGTERM for
+    # 10s is killed, so a teardown hang cannot wedge the caller.
+    stop_server() {
+      kill -TERM "$server" 2>/dev/null || true
+      for _ in $(seq 1 100); do
+        kill -0 "$server" 2>/dev/null || break
+        sleep 0.1
+      done
+      if kill -0 "$server" 2>/dev/null; then
+        echo 'ernic-run: rocm-ernic still running 10s after SIGTERM; sending SIGKILL' >&2
+        kill -KILL "$server" 2>/dev/null || true
+      fi
+      wait "$server" 2>/dev/null || true
+      rm -f "$socket"
+    }
+    trap stop_server EXIT
 
     # The server creates the socket in vfu_realize_ctx and then attaches
     # without blocking, so the socket appearing means QEMU may connect.
@@ -66,6 +80,8 @@ pkgs.writeShellApplication {
       echo 'ernic-run: rocm-ernic exited while the command ran' >&2
       rc=1
     fi
+    trap - EXIT
+    stop_server
     exit "$rc"
   '';
 }

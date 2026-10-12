@@ -25,6 +25,9 @@
 # bound and the RDMA port ACTIVE, at a root shell (x86_64-linux host):
 #   nix run github:ROCm/rocm-ernic#ionic-vm
 #   nix run .#ionic-vm -- --ssh-port 2222
+# Two guests with RDMA between them over the TCP backend:
+#   nix run .#ionic-vm-pair -- --ssh-port 2222   # nodes on 2222 and 2223
+#   nix run .#run-ionic-pair-test
 #
 # Build an OCI container image (minimal or debug; amd64 or cross arm64/riscv64):
 #   nix build .#oci-image && ./result | docker load   # also: -debug, -aarch64, -riscv64
@@ -173,7 +176,14 @@
             ernicRun = ernic-run;
             guestModule = self.nixosModules.ernic-guest;
           };
-        };
+        }
+        # Two guests joined by the TCP backend (nix/ionic-pair.nix):
+        # run-ionic-pair-test and the interactive ionic-vm-pair.
+        // lib.optionalAttrs (system == "x86_64-linux") (import ./nix/ionic-pair.nix {
+          inherit pkgs lib nixpkgs;
+          ernicRun = ernic-run;
+          guestModule = self.nixosModules.ernic-guest;
+        });
       in
       {
         packages = {
