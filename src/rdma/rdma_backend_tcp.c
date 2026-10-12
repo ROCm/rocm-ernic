@@ -532,7 +532,7 @@ struct TcpBackendPrivate {
     uint16_t listen_port;
     bool is_listening;
     QemuThread accept_thread;
-    bool accept_thread_running;
+    atomic_bool accept_thread_running;
 
     /* Manager-specific fields */
     bool is_manager;
@@ -2578,7 +2578,7 @@ static void *tcp_accept_thread(void *opaque)
 
     rdma_info_report("TCP: Accept thread started");
 
-    while (priv->accept_thread_running) {
+    while (atomic_load(&priv->accept_thread_running)) {
         client_len = sizeof(client_addr);
         sockfd = accept(priv->listen_fd, (struct sockaddr *)&client_addr,
                         &client_len);
@@ -2588,7 +2588,7 @@ static void *tcp_accept_thread(void *opaque)
                 usleep(100000); /* 100ms */
                 continue;
             }
-            if (!priv->accept_thread_running) {
+            if (!atomic_load(&priv->accept_thread_running)) {
                 break;
             }
             rdma_error_report("TCP: Failed to accept connection: %s",
@@ -3169,6 +3169,26 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
  * Backend Lifecycle
  */
 
+/*
+ * Stop the accept thread and wait for it.  The listen socket is blocking,
+ * so clearing the flag alone leaves the thread parked in accept() until a
+ * peer happens to connect, and the join (on SIGTERM, say) never returns.
+ * shutdown() wakes a blocked accept() with EINVAL, and the loop then sees
+ * the flag clear and exits; the socket itself stays open for the caller to
+ * close.  A no-op when the thread was never started.
+ */
+static void tcp_stop_accept_thread(TcpBackendPrivate *priv)
+{
+    if (!atomic_load(&priv->accept_thread_running)) {
+        return;
+    }
+    atomic_store(&priv->accept_thread_running, false);
+    if (priv->listen_fd >= 0) {
+        shutdown(priv->listen_fd, SHUT_RDWR);
+    }
+    qemu_thread_join(&priv->accept_thread);
+}
+
 static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 {
     TcpBackendPrivate *priv;
@@ -3207,7 +3227,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 
     priv->listen_fd = -1;
     priv->is_listening = false;
-    priv->accept_thread_running = false;
+    atomic_init(&priv->accept_thread_running, false);
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
@@ -3313,7 +3333,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->is_listening = true;
 
         /* Start accept thread */
-        priv->accept_thread_running = true;
+        atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
 
@@ -3371,7 +3391,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->is_listening = true;
 
         /* Start accept thread */
-        priv->accept_thread_running = true;
+        atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
 
@@ -3396,6 +3416,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     return 0;
 
 error:
+    /* A worker that fails to register has already started its accept
+     * thread; it must be gone before priv is freed under it. */
+    tcp_stop_accept_thread(priv);
     if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
     }
@@ -3448,11 +3471,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
         qemu_thread_join(&priv->health_check_thread);
     }
 
-    /* Stop accept thread */
-    if (priv->accept_thread_running) {
-        priv->accept_thread_running = false;
-        qemu_thread_join(&priv->accept_thread);
-    }
+    tcp_stop_accept_thread(priv);
 
     /* Close listen socket */
     if (priv->listen_fd >= 0) {

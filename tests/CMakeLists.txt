@@ -476,6 +476,35 @@ target_link_directories(test_tcp_mr_bounds PRIVATE
 target_link_libraries(test_tcp_mr_bounds PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# TCP accept-thread stop test. It #includes the TCP backend translation unit
+# and runs the real accept thread on a loopback socket, with the thread entry
+# points backed by pthreads, so a stop that never returns fails the test.
+add_executable(test_tcp_accept_stop test_tcp_accept_stop.c)
+target_include_directories(test_tcp_accept_stop PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${CMAKE_SOURCE_DIR}/shared
+)
+# Vendored and third-party header trees are SYSTEM includes, matching the
+# main target. The #included translation unit is reached through src, so
+# it is warning-checked.
+target_include_directories(test_tcp_accept_stop SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
+    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_tcp_accept_stop PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_tcp_accept_stop PRIVATE
+    ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_tcp_accept_stop PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_tcp_accept_stop PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(test_tcp_accept_stop PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # RDMA resource-table allocator test. It #includes the resource-manager
 # translation unit to reach its static inline allocator and stubs the backend
 # entry points it calls, so no RDMA subsystem link is needed. rdma_rm.c is
@@ -567,6 +596,7 @@ set(ERNIC_TEST_TARGETS
     test_tcp_mesh_topology
     test_tcp_gid_resolve
     test_tcp_mr_bounds
+    test_tcp_accept_stop
     test_rdma_res_tbl
     test_qemu_stubs
 )
@@ -766,6 +796,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
 )
 set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# TCP accept-thread stop unit test: asserts stopping the accept thread returns
+# while it is blocked in accept(), which is what lets tcp_fini() finish on
+# SIGTERM instead of hanging until the process is killed.
+add_test(
+    NAME tcp-accept-stop-unit
+    COMMAND $<TARGET_FILE:test_tcp_accept_stop>
+)
+set_tests_properties(tcp-accept-stop-unit PROPERTIES TIMEOUT 30)
 
 # RDMA resource-table allocator unit test: asserts a full table refuses the
 # next allocation rather than handing back a handle one past the end.
