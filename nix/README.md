@@ -274,6 +274,27 @@ This boots a guest on the loopback backend and checks `lspci 1dd8:1002`,
 mktemp evidence directory. It uses the stock nixpkgs QEMU and kernel and needs
 no root, `/dev/vfio` or RDMA hardware.
 
+## Trying the emulated NIC interactively
+
+```
+nix run github:ROCm/rocm-ernic#ionic-vm
+nix run .#ionic-vm -- --ssh-port 2222       # then: ssh -p 2222 root@127.0.0.1
+nix run .#ionic-vm -- --accel=tcg --backend loopback
+```
+
+`ionic-vm` starts the server and boots a NixOS guest (nixpkgs
+`linuxPackages_latest`, 4 vCPUs, 4 GiB) to an autologin root shell on the
+serial console, with `ionic`/`ionic_rdma` bound and the RDMA port ACTIVE. The
+login message lists things to try (`rdma link`, `ibv_devinfo -v`,
+`ethtool -i`, `lspci -nn -d 1dd8:`). Quit with `Ctrl-a x` or `poweroff`.
+
+The guest root is a tmpfs, so each run starts clean. The server log and socket
+live in a mktemp run directory printed at start. `--ssh-port` forwards the
+guest's sshd to `127.0.0.1:PORT` only and hands the host user's
+`~/.ssh/*.pub` keys to the guest through the qemu-vm.nix shared directory;
+root login is key-only. Like `run-ionic-guest-test`, it needs no root,
+`/dev/vfio` or RDMA hardware, and uses KVM when it is usable.
+
 ## Module map
 
 | Path | Purpose |
@@ -287,6 +308,7 @@ no root, `/dev/vfio` or RDMA hardware.
 | `nix/guest-module.nix` | `nixosModules.ernic-guest`: emulated NIC for a qemu-vm.nix guest |
 | `nix/ernic-run.nix` | `ernic-run`: start the server around a command, export `ERNIC_SOCKET` |
 | `nix/ionic-guest-test.nix` | `run-ionic-guest-test`: guest reaches PORT_ACTIVE on the in-tree drivers |
+| `nix/ionic-vm.nix` | `ionic-vm`: interactive guest with the emulated NIC, root shell, optional ssh forward |
 | `nix/oci.nix` | OCI image (minimal/debug variants) via dockerTools.streamLayeredImage |
 | `nix/microvms/` | per-arch run layer: TCG microvm + loopback self-test + lifecycle driver (VM arches), qemu-user smoke (armv7l/ppc64le) |
 | `nix/devshell.nix`, `nix/shell-functions/` | dev shell + helpers |

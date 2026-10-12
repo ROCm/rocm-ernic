@@ -21,6 +21,11 @@
 #   nix run   .#run-aarch64-tests      # aarch64/riscv64: boot a microvm + self-test
 #   nix run   .#run-armv7l-tests       # armv7l/ppc64le: qemu-user smoke (see nix/microvms)
 #
+# Try the emulated NIC: boot a NixOS guest with the in-tree ionic drivers
+# bound and the RDMA port ACTIVE, at a root shell (x86_64-linux host):
+#   nix run github:ROCm/rocm-ernic#ionic-vm
+#   nix run .#ionic-vm -- --ssh-port 2222
+#
 # Build an OCI container image (minimal or debug; amd64 or cross arm64/riscv64):
 #   nix build .#oci-image && ./result | docker load   # also: -debug, -aarch64, -riscv64
 #
@@ -162,6 +167,12 @@
             ernicRun = ernic-run;
             guestModule = self.nixosModules.ernic-guest;
           };
+          # Interactive: nix run .#ionic-vm boots a guest to a root shell.
+          ionic-vm = import ./nix/ionic-vm.nix {
+            inherit pkgs nixpkgs;
+            ernicRun = ernic-run;
+            guestModule = self.nixosModules.ernic-guest;
+          };
         };
       in
       {
@@ -204,7 +215,8 @@
         # OCI images: oci-image[-debug] (amd64) always, plus
         # oci-image-{aarch64,riscv64}[-debug] on an x86_64 host. See nix/oci.nix.
         // ociPackages
-        # run-ionic-guest-test (x86_64 hosts): see nix/ionic-guest-test.nix.
+        # run-ionic-guest-test and ionic-vm (x86_64 hosts): see
+        # nix/ionic-guest-test.nix and nix/ionic-vm.nix.
         // guestPackages;
 
         devShells.default = devshell;
