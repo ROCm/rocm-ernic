@@ -293,12 +293,15 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
     (void)handle;
     (void)qp_id;
 }
+/* Not exercised here; a variable so the handler's error paths stay live. */
+static int g_counters_rc;
+
 int pvrdma_get_dev_counters(pvrdma_handle_t handle,
                             struct pvrdma_dev_counters *out)
 {
     (void)handle;
     memset(out, 0, sizeof(*out));
-    return 0;
+    return g_counters_rc;
 }
 int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
                            struct pvrdma_qp_counters *out)
@@ -306,7 +309,7 @@ int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
     (void)handle;
     (void)qp_id;
     memset(out, 0, sizeof(*out));
-    return 0;
+    return g_counters_rc;
 }
 
 /* ---- Test helpers ------------------------------------------------------ */

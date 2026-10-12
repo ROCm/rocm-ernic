@@ -386,8 +386,13 @@ static void test_lif_identity_advertises_rdma_stats(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
     static uint8_t data[DEVCMD_DATA_SIZE];
-    uint8_t cmd[64] = {0}, comp[16] = {0};
+    const uint8_t cmd[64] = {0};
+    uint8_t comp[16] = {0};
     uint16_t le;
+
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
 
     CHECK(LIF_ID_RDMA_STATS_TYPE_OFF == 92u,
           "stats_type offset drifted from the ionic_if.h layout");

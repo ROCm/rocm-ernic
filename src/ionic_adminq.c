@@ -868,7 +868,7 @@ static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
 
         if (name_len > STAT_NAME_LEN - 1)
             name_len = STAT_NAME_LEN - 1;
-        memcpy(buf + i * STAT_HDR_SIZE, &type_off, sizeof(type_off));
+        memcpy(buf + i * STAT_HDR_SIZE, &type_off, 4);
         memcpy(buf + i * STAT_HDR_SIZE + 4, stats[i].name, name_len);
     }
 
@@ -894,9 +894,9 @@ static uint8_t stats_write_vals(struct ionic_adminq_ctx *ctx, uint64_t dma,
     for (size_t i = 0; i < n; i++) {
         uint64_t v;
 
-        memcpy(&v, (const uint8_t *)counters + stats[i].off, sizeof(v));
+        memcpy(&v, (const uint8_t *)counters + stats[i].off, STAT_VAL_SIZE);
         v = htole64(v);
-        memcpy(buf + i * STAT_VAL_SIZE, &v, sizeof(v));
+        memcpy(buf + i * STAT_VAL_SIZE, &v, STAT_VAL_SIZE);
     }
 
     return dma_write(ctx->vfu_ctx, dma, buf, n * STAT_VAL_SIZE) < 0 ? 1 : 0;
@@ -906,7 +906,8 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
                                const uint8_t *body, uint16_t len)
 {
     uint64_t dma;
-    uint32_t length, id_ver;
+    uint32_t length;
+    uint32_t id_ver;
 
     if (len < STATS_BODY_LEN) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq stats op=%u: short body",
@@ -943,7 +944,8 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
 
     case IONIC_V1_ADMIN_QP_STATS_VALS: {
         struct pvrdma_qp_counters c;
-        uint32_t qp_id = id_ver & 0x00ffffffu, qpn;
+        uint32_t qp_id = id_ver & 0x00ffffffu;
+        uint32_t qpn;
 
         /* Counters are keyed on the driver's qp_id; the map only proves the
          * QP exists, so a stale id fails rather than reading zeros. */
