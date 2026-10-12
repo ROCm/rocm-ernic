@@ -150,10 +150,23 @@
             }
           else null;
         vmPackages = if microvms != null then microvms.packages else { };
+
+        # Consumer path for other flakes: ernic-run starts the server for a
+        # VM launcher, and run-ionic-guest-test boots a guest with
+        # nixosModules.ernic-guest to prove the in-tree ionic drivers bind.
+        # See nix/guest-module.nix and nix/ernic-run.nix.
+        ernic-run = import ./nix/ernic-run.nix { inherit pkgs rocm-ernic; };
+        guestPackages = lib.optionalAttrs (system == "x86_64-linux") {
+          run-ionic-guest-test = import ./nix/ionic-guest-test.nix {
+            inherit pkgs lib nixpkgs;
+            ernicRun = ernic-run;
+            guestModule = self.nixosModules.ernic-guest;
+          };
+        };
       in
       {
         packages = {
-          inherit rocm-ernic;
+          inherit rocm-ernic ernic-run;
           libvfio-user = libvfioUser;
           default = rocm-ernic;
 
@@ -190,8 +203,16 @@
         // vmPackages
         # OCI images: oci-image[-debug] (amd64) always, plus
         # oci-image-{aarch64,riscv64}[-debug] on an x86_64 host. See nix/oci.nix.
-        // ociPackages;
+        // ociPackages
+        # run-ionic-guest-test (x86_64 hosts): see nix/ionic-guest-test.nix.
+        // guestPackages;
 
         devShells.default = devshell;
-      });
+      })
+    // {
+      # Guest side of the emulated NIC for qemu-vm.nix guests: shared guest
+      # memory, a q35 root port, vfio-user-pci and the ionic modules. Pair it
+      # with packages.<system>.ernic-run on the host.
+      nixosModules.ernic-guest = import ./nix/guest-module.nix;
+    };
 }

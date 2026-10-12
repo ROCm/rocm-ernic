@@ -239,6 +239,41 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 `rocm-ernic:<version>`, so a local `docker load` of one overwrites the others
 — push per-arch tags or a manifest list to keep them side by side.
 
+## Using the emulated NIC from another flake
+
+`nixosModules.ernic-guest` adds the emulated ionic NIC to any `qemu-vm.nix`
+guest, and `packages.ernic-run` starts the server around the VM launcher:
+
+```
+# guest configuration
+modules = [
+  "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+  rocm-ernic.nixosModules.ernic-guest
+  { virtualisation.ernic.enable = true; virtualisation.cores = 4; }
+];
+
+# host: start the server, export ERNIC_SOCKET, run the VM, stop the server
+ernic-run --backend loopback -- ./result/bin/run-<host>-vm
+```
+
+The module sets shared memfd guest RAM, q35 with a `pcie-root-port` (`rp0`)
+so QMP `device_del`/`device_add ernic0` can hot-unplug and replug the NIC, and
+the JSON-form `vfio-user-pci` device. It asserts at least 4 vCPUs and a guest
+kernel of 6.18 or newer. Its `ernic-rdma-up` service opens the ionic netdev
+*before* loading `ionic_rdma`. Loaded first, `ionic_rdma` takes every spare
+interrupt for EQs, and `ip link set up` then fails with
+`qcq alloc of rx0 failed -28`.
+
+```
+nix run .#run-ionic-guest-test              # KVM if usable, else TCG
+nix run .#run-ionic-guest-test -- --accel=tcg
+```
+
+This boots a guest on the loopback backend and checks `lspci 1dd8:1002`,
+`rdma link` ACTIVE and `ibv_devinfo` PORT_ACTIVE, with the serial log kept in a
+mktemp evidence directory. It uses the stock nixpkgs QEMU and kernel and needs
+no root, `/dev/vfio` or RDMA hardware.
+
 ## Module map
 
 | Path | Purpose |
@@ -249,6 +284,9 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 | `nix/packages.nix` | dependency / tool sets |
 | `nix/derivation.nix` | CMake build of rocm-ernic |
 | `nix/cross.nix` | cross-compile the server for a target arch (crossSystem pkgs) |
+| `nix/guest-module.nix` | `nixosModules.ernic-guest`: emulated NIC for a qemu-vm.nix guest |
+| `nix/ernic-run.nix` | `ernic-run`: start the server around a command, export `ERNIC_SOCKET` |
+| `nix/ionic-guest-test.nix` | `run-ionic-guest-test`: guest reaches PORT_ACTIVE on the in-tree drivers |
 | `nix/oci.nix` | OCI image (minimal/debug variants) via dockerTools.streamLayeredImage |
 | `nix/microvms/` | per-arch run layer: TCG microvm + loopback self-test + lifecycle driver (VM arches), qemu-user smoke (armv7l/ppc64le) |
 | `nix/devshell.nix`, `nix/shell-functions/` | dev shell + helpers |
