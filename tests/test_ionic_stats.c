@@ -73,7 +73,7 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
 int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
                 size_t cnt, int flags)
 {
-    struct fake_sg *sg = (struct fake_sg *)sgl;
+    const struct fake_sg *sg = (const struct fake_sg *)sgl;
 
     (void)vfu_ctx;
     (void)flags;
@@ -118,6 +118,9 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 #define PAGE_LEN 4096u
 #define POISON   0xa5u
 
+/* Not exercised here; a variable so QUERY_QP's error path stays live. */
+static int g_query_rc;
+
 int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
                       uint32_t *access_flags, uint32_t *rq_psn,
@@ -131,7 +134,7 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     (void)access_flags;
     (void)rq_psn;
     (void)sq_psn;
-    return 0;
+    return g_query_rc;
 }
 
 int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
