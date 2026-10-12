@@ -30,343 +30,11 @@
 /* Pull in the code under test (including its static functions). */
 #include "ionic_adminq.c"
 
-/* ---- Fake guest memory ------------------------------------------------- */
-
-/*
- * Addresses are offsets into this buffer, so a "GPA" is an index. Only the
- * DMA entry points are stubbed; the handler's own address arithmetic runs
- * unmodified.
- */
-#define GUEST_MEM_SIZE 4096
-static uint8_t g_mem[GUEST_MEM_SIZE];
-
-struct fake_sg {
-    uint64_t addr;
-    size_t len;
-};
-
-size_t dma_sg_size(void)
-{
-    return sizeof(struct fake_sg);
-}
-
-int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
-                    dma_sg_t *sgl, size_t max_nr_sgs, int prot)
-{
-    struct fake_sg *sg = (struct fake_sg *)sgl;
-    uint64_t addr = (uint64_t)(uintptr_t)dma_addr;
-
-    (void)vfu_ctx;
-    (void)prot;
-    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE)
-        return -1;
-    sg->addr = addr;
-    sg->len = len;
-    return 1;
-}
-
-int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
-                size_t cnt, int flags)
-{
-    const struct fake_sg *sg = (const struct fake_sg *)sgl;
-
-    (void)vfu_ctx;
-    (void)flags;
-    if (cnt < 1)
-        return -1;
-    iov->iov_base = g_mem + sg->addr;
-    iov->iov_len = sg->len;
-    return 0;
-}
-
-void vfu_sgl_put(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
-                 size_t cnt)
-{
-    (void)vfu_ctx;
-    (void)sgl;
-    (void)iov;
-    (void)cnt;
-}
-
-void vfu_sgl_mark_dirty(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, size_t cnt)
-{
-    (void)vfu_ctx;
-    (void)sgl;
-    (void)cnt;
-}
-
-void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
-{
-    (void)vfu_ctx;
-    (void)level;
-    (void)fmt;
-}
-
-
-/* ---- Stubs for the TU's other external symbols ------------------------- */
-
-#define QP_ID    7u
-#define QP_QPN   42u
-#define QP2_ID   9u
-#define QP2_QPN  43u
-#define BUF_GPA  1024u
-#define PAGE_LEN 4096u
-#define POISON   0xa5u
-
-/* Not exercised here; a variable so QUERY_QP's error path stays live. */
-static int g_query_rc;
-
-int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
-                      uint8_t *path_mtu, uint32_t *dest_qpn,
-                      uint32_t *access_flags, uint32_t *rq_psn,
-                      uint32_t *sq_psn)
-{
-    (void)handle;
-    (void)qpn;
-    (void)state;
-    (void)path_mtu;
-    (void)dest_qpn;
-    (void)access_flags;
-    (void)rq_psn;
-    (void)sq_psn;
-    return g_query_rc;
-}
-
-int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
-                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
-                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
-{
-    (void)handle;
-    (void)qpn;
-    (void)attr_mask;
-    (void)type_state;
-    (void)sq_psn;
-    (void)rq_psn;
-    (void)qkey_dest_qpn;
-    (void)dest_gid_16bytes;
-    return 0;
-}
-
-int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
-{
-    (void)handle;
-    *pd_handle = 1;
-    return 0;
-}
-int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
-{
-    (void)handle;
-    (void)cqe;
-    *cq_handle = 1;
-    return 0;
-}
-void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
-{
-    (void)handle;
-    (void)cq_handle;
-}
-int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
-                      uint8_t qp_type, uint32_t max_send_wr,
-                      uint32_t max_recv_wr, uint32_t send_cq_handle,
-                      uint32_t recv_cq_handle, uint32_t *qpn)
-{
-    (void)handle;
-    (void)pd_handle;
-    (void)qp_type;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)send_cq_handle;
-    (void)recv_cq_handle;
-    *qpn = QP_QPN;
-    return 0;
-}
-void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
-{
-    (void)handle;
-    (void)qpn;
-}
-int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
-                      uint32_t access_flags, uint32_t *mr_handle)
-{
-    (void)handle;
-    (void)pd_handle;
-    (void)access_flags;
-    *mr_handle = 1;
-    return 0;
-}
-void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
-{
-    (void)handle;
-    (void)mr_handle;
-}
-
-void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
-                                uint32_t eq_id,
-                                const struct ionic_dp_ring_desc *ring)
-{
-    (void)dp;
-    (void)cq_id;
-    (void)eq_id;
-    (void)ring;
-}
-void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
-{
-    (void)dp;
-    (void)cq_id;
-}
-void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
-                                uint8_t ib_qp_type, uint32_t sq_cq_id,
-                                const struct ionic_dp_ring_desc *sq,
-                                uint32_t rq_cq_id,
-                                const struct ionic_dp_ring_desc *rq)
-{
-    (void)dp;
-    (void)qp_id;
-    (void)ib_qp_type;
-    (void)sq_cq_id;
-    (void)sq;
-    (void)rq_cq_id;
-    (void)rq;
-}
-void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
-{
-    (void)dp;
-    (void)qp_id;
-}
-void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
-                                uint64_t va, uint64_t length,
-                                const struct ionic_dp_buf_desc *buf)
-{
-    (void)dp;
-    (void)lkey;
-    (void)va;
-    (void)length;
-    (void)buf;
-}
-void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
-{
-    (void)dp;
-    (void)lkey;
-}
-void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
-                             uint32_t dest_qp_id, uint32_t dest_node_id)
-{
-    (void)dp;
-    (void)qp_id;
-    (void)dest_qp_id;
-    (void)dest_node_id;
-}
-/* UINT32_MAX = no mesh backend attached, which is the loopback case. */
-static uint32_t g_local_node = UINT32_MAX;
-static uint32_t g_node_from_gid;
-
-uint32_t ionic_dp_local_node(struct ionic_datapath *dp)
-{
-    (void)dp;
-    return g_local_node;
-}
-uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
-{
-    (void)dp;
-    (void)dgid;
-    return g_node_from_gid;
-}
-
-void pvrdma_adminq_count(pvrdma_handle_t handle)
-{
-    (void)handle;
-}
-void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
-{
-    (void)handle;
-    (void)qp_id;
-}
-
-/*
- * The counter snapshots the handler reads.  Every value is distinct and
- * free of POISON bytes, so a value landing in the wrong slot, or a slot
- * left unwritten, shows up as a mismatch.  QP counters also encode the
- * qp_id they were asked for, which is how a row proves the handler picked
- * the right QP.
- */
-static int g_dev_rc;
-static int g_qp_rc;
-static bool g_max;
-static uint32_t g_counters_qp_id;
-
-static uint64_t dev_value(size_t i)
-{
-    return g_max ? UINT64_MAX : 0x1000u + i + 1;
-}
-
-static uint64_t qp_value(uint32_t qp_id, size_t i)
-{
-    return g_max ? UINT64_MAX : ((uint64_t)qp_id << 8) + i + 1;
-}
-
-static void fill_counters(void *out, size_t size, uint64_t (*value)(size_t))
-{
-    uint8_t *p = out;
-
-    for (size_t i = 0; i < size / sizeof(uint64_t); i++) {
-        uint64_t v = value(i);
-
-        memcpy(p + i * sizeof(v), &v, sizeof(v));
-    }
-}
-
-static uint64_t qp_value_for_counters(size_t i)
-{
-    return qp_value(g_counters_qp_id, i);
-}
-
-int pvrdma_get_dev_counters(pvrdma_handle_t handle,
-                            struct pvrdma_dev_counters *out)
-{
-    (void)handle;
-    memset(out, 0, sizeof(*out));
-    if (g_dev_rc)
-        return g_dev_rc;
-    fill_counters(out, sizeof(*out), dev_value);
-    return 0;
-}
-
-int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
-                           struct pvrdma_qp_counters *out)
-{
-    (void)handle;
-    memset(out, 0, sizeof(*out));
-    if (g_qp_rc)
-        return g_qp_rc;
-    g_counters_qp_id = qp_id;
-    fill_counters(out, sizeof(*out), qp_value_for_counters);
-    return 0;
-}
+#include "ionic_adminq_fakes.h"
 
 /* ---- Test helpers ------------------------------------------------------ */
 
 static int failures;
-
-static struct ionic_adminq_ctx g_ctx;
-
-/* Two mapped QPs, a poisoned guest memory, and counters that succeed. */
-static void ctx_reset(void)
-{
-    memset(&g_ctx, 0, sizeof(g_ctx));
-    g_ctx.pvrdma_handle = (pvrdma_handle_t)&g_ctx; /* only tested for NULL */
-    g_ctx.qp_map[0].valid = true;
-    g_ctx.qp_map[0].qp_id = QP_ID;
-    g_ctx.qp_map[0].qpn = QP_QPN;
-    g_ctx.qp_map[1].valid = true;
-    g_ctx.qp_map[1].qp_id = QP2_ID;
-    g_ctx.qp_map[1].qpn = QP2_QPN;
-
-    memset(g_mem, POISON, sizeof(g_mem));
-    g_dev_rc = 0;
-    g_qp_rc = 0;
-    g_max = false;
-    g_counters_qp_id = UINT32_MAX;
-}
 
 /* The 17-byte ionic_admin_stats_hdr body, in a buffer of @len bytes. */
 static void build_body(uint8_t *body, size_t len, uint64_t dma, uint32_t length,
@@ -596,6 +264,20 @@ static bool content_matches(const struct stats_case *c)
     }
 }
 
+/*
+ * The fake DMA layer saw exactly the write the row expects: none when
+ * nothing should be written, otherwise one, at the buffer the command
+ * named and of exactly the expected size.  The poison scan alone can't
+ * tell a short write from a trailing byte that happens to equal POISON.
+ */
+static bool one_write_or_none(const struct stats_case *c)
+{
+    if (c->want_written == 0)
+        return g_nwrites == 0;
+    return g_nwrites == 1 && g_writes[0].addr == c->dma &&
+           g_writes[0].len == c->want_written;
+}
+
 static void run_case(const struct stats_case *c)
 {
     uint8_t body[64];
@@ -611,13 +293,15 @@ static void run_case(const struct stats_case *c)
 
     rc = dispatch_wqe(&g_ctx, c->op, body, c->body_len);
     written = bytes_written(c->dma);
-    ok = rc == c->want_rc && written == c->want_written && content_matches(c);
+    ok = rc == c->want_rc && written == c->want_written &&
+         one_write_or_none(c) && content_matches(c);
 
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
     if (!ok) {
-        printf("     got rc %u (want %u), %zu bytes written (want %zu)\n", rc,
-               c->want_rc, written, c->want_written);
+        printf("     got rc %u (want %u), %zu bytes written (want %zu), "
+               "%zu DMA write(s)\n",
+               rc, c->want_rc, written, c->want_written, g_nwrites);
         failures++;
     }
 }
