@@ -54,7 +54,11 @@ static bool same_values(const struct ionic_profile *a,
            a->identity.asic_rev == b->identity.asic_rev &&
            strcmp(a->identity.fw_version, b->identity.fw_version) == 0 &&
            a->link.speed_mbps == b->link.speed_mbps &&
-           a->link.xcvr == b->link.xcvr && a->link.mtu_max == b->link.mtu_max;
+           a->link.xcvr == b->link.xcvr && a->link.mtu_max == b->link.mtu_max &&
+           a->queues.eth == b->queues.eth &&
+           a->queues.rdma_eqs == b->queues.rdma_eqs &&
+           a->queues.intr_vectors == b->queues.intr_vectors &&
+           a->stats.interval_ms == b->stats.interval_ms;
 }
 
 static const char *check_fields(const struct ionic_profile *p)
@@ -74,6 +78,18 @@ static const char *check_fields(const struct ionic_profile *p)
     if (p->link.mtu_max < IONIC_PROFILE_MTU_MIN ||
         p->link.mtu_max > IONIC_PROFILE_MTU_MAX)
         return "mtu_max out of range";
+    if (p->queues.eth < IONIC_PROFILE_ETH_QUEUES_MIN ||
+        p->queues.eth > IONIC_PROFILE_ETH_QUEUES_MAX)
+        return "queues.eth out of range";
+    if (p->queues.rdma_eqs < IONIC_PROFILE_RDMA_EQS_MIN ||
+        p->queues.rdma_eqs > IONIC_PROFILE_RDMA_EQS_MAX)
+        return "queues.rdma_eqs out of range";
+    if (ionic_profile_intr_vectors(p) < IONIC_PROFILE_INTR_VECTORS_MIN ||
+        ionic_profile_intr_vectors(p) > IONIC_PROFILE_INTR_VECTORS_MAX)
+        return "queues.intr_vectors out of range";
+    if (p->stats.interval_ms < IONIC_PROFILE_STATS_INTERVAL_MIN ||
+        p->stats.interval_ms > IONIC_PROFILE_STATS_INTERVAL_MAX)
+        return "stats.interval_ms out of range";
     if (n == 0 || n > IONIC_PROFILE_FW_VERSION_MAX)
         return "fw_version empty or not NUL-terminated";
     for (size_t i = 0; i < n; i++)
@@ -192,6 +208,10 @@ struct seed {
 static const struct seed seeds[] = {
     {"positive", "compat", "accepted", NULL, true},
     {"positive", "small-vm", "accepted", NULL, true},
+    {"positive", "generic-100g", "accepted", NULL, true},
+    {"positive", "generic-400g", "accepted", NULL, true},
+    {"positive", "every [queues] key", "accepted",
+     "[queues]\neth = 16\nrdma_eqs = 8\nintr_vectors = auto\n", true},
     {"positive", "every key at once", "accepted",
      "[identity]\nasic_type = elba\nasic_rev = 3\nfw_version = 1.8.0-E-32\n"
      "[link]\nspeed_mbps = 400000\nxcvr = fiber\nmtu_max = 9000\n",
@@ -229,6 +249,15 @@ static const struct seed seeds[] = {
      "[stats]\ninterval_ms = 9\n", false},
     {"boundary", "stats.interval_ms one past its maximum", "rejected",
      "[stats]\ninterval_ms = 60001\n", false},
+    {"boundary", "queues.eth 1 and rdma_eqs 4", "accepted",
+     "[queues]\neth = 1\nrdma_eqs = 4\n", true},
+    {"boundary", "queues.eth 65", "rejected", "[queues]\neth = 65\n", false},
+    {"boundary", "queues.rdma_eqs 3", "rejected", "[queues]\nrdma_eqs = 3\n",
+     false},
+    {"boundary", "queues.intr_vectors 128", "accepted",
+     "[queues]\nintr_vectors = 128\n", true},
+    {"boundary", "queues.intr_vectors 129", "rejected",
+     "[queues]\nintr_vectors = 129\n", false},
     {"boundary", "asic_rev 255", "accepted", "[identity]\nasic_rev = 255\n",
      true},
     {"boundary", "asic_rev 256", "rejected", "[identity]\nasic_rev = 256\n",

@@ -36,9 +36,12 @@ struct want {
     uint8_t xcvr;
     uint32_t mtu_max;
     uint32_t stats_interval_ms;
+    uint32_t eth;
+    uint32_t rdma_eqs;
+    uint32_t intr_vectors; /* 0 is auto */
 };
 
-#define COMPAT {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000}
+#define COMPAT {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 32}
 
 static bool profile_is(const struct ionic_profile *p, const struct want *w)
 {
@@ -47,16 +50,21 @@ static bool profile_is(const struct ionic_profile *p, const struct want *w)
            strcmp(p->identity.fw_version, w->fw_version) == 0 &&
            p->link.speed_mbps == w->speed_mbps && p->link.xcvr == w->xcvr &&
            p->link.mtu_max == w->mtu_max &&
-           p->stats.interval_ms == w->stats_interval_ms;
+           p->stats.interval_ms == w->stats_interval_ms &&
+           p->queues.eth == w->eth && p->queues.rdma_eqs == w->rdma_eqs &&
+           p->queues.intr_vectors == w->intr_vectors;
 }
 
 static void print_profile(const char *label, const struct ionic_profile *p)
 {
     printf("     %s: asic_type %u, asic_rev %u, fw_version '%s', speed %" PRIu32
-           ", xcvr %u, mtu_max %" PRIu32 ", stats interval %" PRIu32 "\n",
+           ", xcvr %u, mtu_max %" PRIu32 ", stats interval %" PRIu32
+           ", queues eth %" PRIu32 " rdma_eqs %" PRIu32 " intr_vectors %" PRIu32
+           "\n",
            label, p->identity.asic_type, p->identity.asic_rev,
            p->identity.fw_version, p->link.speed_mbps, p->link.xcvr,
-           p->link.mtu_max, p->stats.interval_ms);
+           p->link.mtu_max, p->stats.interval_ms, p->queues.eth,
+           p->queues.rdma_eqs, p->queues.intr_vectors);
 }
 
 /* ---- Layered text -------------------------------------------------------- */
@@ -85,46 +93,46 @@ static const struct text_case text_cases[] = {
      "speed 400000; every other key as compat",
      {"[link]\nspeed_mbps = 400000\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 400000, 0, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 400000, 0, 9198, 1000, 4, 32, 32}},
     {"positive",
      "every key set at once",
      "each value as written",
      {"[identity]\nasic_type = salina\nasic_rev = 7\nfw_version = 2.0.1\n"
       "[link]\nspeed_mbps = 200000\nxcvr = fiber\nmtu_max = 4000\n"},
      NULL,
-     {4, 7, "2.0.1", 200000, 1, 4000, 1000}},
+     {4, 7, "2.0.1", 200000, 1, 4000, 1000, 4, 32, 32}},
     {"positive",
      "three layers, each setting some keys",
      "each key from the last layer that set it",
      {"[identity]\nfw_version = one\n[link]\nspeed_mbps = 25000\n",
       "[link]\nspeed_mbps = 40000\n", "[link]\nxcvr = none\n"},
      NULL,
-     {0, 0, "one", 40000, 2, 9198, 1000}},
+     {0, 0, "one", 40000, 2, 9198, 1000, 4, 32, 32}},
     {"positive",
      "asic_type capri",
      "asic_type 1",
      {"[identity]\nasic_type = capri\n"},
      NULL,
-     {1, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000}},
+     {1, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 32}},
     {"positive",
      "asic_type giglio",
      "asic_type 3",
      {"[identity]\nasic_type = giglio\n"},
      NULL,
-     {3, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000}},
+     {3, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 32}},
     {"positive",
      "comments, blank lines, indentation and spaces around '='",
      "accepted; the values as written",
      {"# a comment\n\n  [link]  \n\t# another\n  speed_mbps=10000\n"
       "xcvr   =   fiber\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 10000, 1, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 10000, 1, 9198, 1000, 4, 32, 32}},
     {"positive",
      "a fw_version with inner spaces and punctuation",
      "the string as written",
      {"[identity]\nfw_version = 1.8.0 (E-32) #7\n"},
      NULL,
-     {0, 0, "1.8.0 (E-32) #7", 100000, 0, 9198, 1000}},
+     {0, 0, "1.8.0 (E-32) #7", 100000, 0, 9198, 1000, 4, 32, 32}},
 
     /* negative */
     {"negative",
@@ -132,13 +140,13 @@ static const struct text_case text_cases[] = {
      "error naming the line and the section",
      {"# c\n[quues]\neth = 64\n"},
      "layer1:2: unknown section [quues] (known sections: identity, link, "
-     "stats)",
+     "queues, stats)",
      COMPAT},
     {"negative",
-     "a section a later PR adds, [queues]",
+     "a section a later PR adds, [rdma]",
      "rejected as unknown in this build",
-     {"[queues]\neth = 64\n"},
-     "layer1:1: unknown section [queues]",
+     {"[rdma]\nstats = none\n"},
+     "layer1:1: unknown section [rdma]",
      COMPAT},
     {"negative",
      "a mistyped key, link.sped_mbps",
@@ -245,13 +253,13 @@ static const struct text_case text_cases[] = {
      "accepted",
      {"[identity]\nasic_rev = 0\nfw_version = x\n"},
      NULL,
-     {0, 0, "x", 100000, 0, 9198, 1000}},
+     {0, 0, "x", 100000, 0, 9198, 1000, 4, 32, 32}},
     {"boundary",
      "asic_rev 255",
      "accepted",
      {"[identity]\nasic_rev = 255\n"},
      NULL,
-     {0, 255, "rocm-ernic-1.0", 100000, 0, 9198, 1000}},
+     {0, 255, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 32}},
     {"boundary",
      "asic_rev 256",
      "out of range 0..255",
@@ -263,7 +271,7 @@ static const struct text_case text_cases[] = {
      "accepted",
      {"[link]\nspeed_mbps = 1000\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 1000, 0, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 1000, 0, 9198, 1000, 4, 32, 32}},
     {"boundary",
      "speed 999, one below",
      "not a supported speed",
@@ -281,7 +289,7 @@ static const struct text_case text_cases[] = {
      "the last, 9582",
      {"[link]\nmtu_max = 1500\n", "[link]\nmtu_max = 9582\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 100000, 0, 9582, 1000}},
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9582, 1000, 4, 32, 32}},
     {"boundary",
      "mtu_max 1499",
      "out of range 1500..9582",
@@ -312,13 +320,13 @@ static const struct text_case text_cases[] = {
      "interval 100; every other key as compat",
      {"[stats]\ninterval_ms = 100\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 100}},
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 100, 4, 32, 32}},
     {"boundary",
      "stats.interval_ms 10 and 60000 in two layers",
      "the last, 60000",
      {"[stats]\ninterval_ms = 10\n", "[stats]\ninterval_ms = 60000\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 60000}},
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 60000, 4, 32, 32}},
     {"boundary",
      "stats.interval_ms 9",
      "out of range 10..60000 ms",
@@ -350,6 +358,122 @@ static const struct text_case text_cases[] = {
      "layer1:2: unknown key 'stats.interval'",
      COMPAT},
 
+    /* queues */
+    {"positive",
+     "queues.eth = 16",
+     "eth 16; every other key as compat",
+     {"[queues]\neth = 16\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 16, 32, 32}},
+    {"positive",
+     "queues.intr_vectors = auto",
+     "stored as auto (0)",
+     {"[queues]\nintr_vectors = auto\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 0}},
+    {"positive",
+     "every [queues] key at once",
+     "each value as written",
+     {"[queues]\neth = 8\nrdma_eqs = 16\nintr_vectors = 40\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 8, 16, 40}},
+    {"negative",
+     "queues.eth = many",
+     "integer expected",
+     {"[queues]\neth = many\n"},
+     "queues.eth: integer expected, got 'many'",
+     COMPAT},
+    {"negative",
+     "queues.intr_vectors = lots",
+     "auto or an integer expected",
+     {"[queues]\nintr_vectors = lots\n"},
+     "queues.intr_vectors: 'auto' or an integer expected, got 'lots'",
+     COMPAT},
+    {"negative",
+     "an unknown key in [queues]",
+     "rejected, naming the key",
+     {"[queues]\nrx = 4\n"},
+     "layer1:2: unknown key 'queues.rx'",
+     COMPAT},
+    {"boundary",
+     "queues.eth 1 and 64 in two layers",
+     "the last, 64",
+     {"[queues]\neth = 1\n", "[queues]\neth = 64\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 64, 32, 32}},
+    {"boundary",
+     "queues.eth 0",
+     "out of range 1..64",
+     {"[queues]\neth = 0\n"},
+     "layer1:2: queues.eth: '0' out of range 1..64",
+     COMPAT},
+    {"boundary",
+     "queues.eth 65",
+     "out of range 1..64",
+     {"[queues]\neth = 65\n"},
+     "'65' out of range 1..64",
+     COMPAT},
+    {"boundary",
+     "queues.rdma_eqs 4",
+     "accepted: the fewest the RDMA driver takes",
+     {"[queues]\nrdma_eqs = 4\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 4, 32}},
+    {"boundary",
+     "queues.rdma_eqs 3",
+     "out of range 4..32: the RDMA driver needs 4",
+     {"[queues]\nrdma_eqs = 3\n"},
+     "queues.rdma_eqs: '3' out of range 4..32",
+     COMPAT},
+    {"boundary",
+     "queues.rdma_eqs 33",
+     "out of range 4..32",
+     {"[queues]\nrdma_eqs = 33\n"},
+     "'33' out of range 4..32",
+     COMPAT},
+    {"boundary",
+     "queues.intr_vectors 2",
+     "accepted",
+     {"[queues]\nintr_vectors = 2\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 2}},
+    {"boundary",
+     "queues.intr_vectors 128",
+     "accepted",
+     {"[queues]\nintr_vectors = 128\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 128}},
+    {"boundary",
+     "queues.intr_vectors 1",
+     "out of range 2..128",
+     {"[queues]\nintr_vectors = 1\n"},
+     "queues.intr_vectors: '1' out of range 2..128",
+     COMPAT},
+    {"boundary",
+     "queues.intr_vectors 129",
+     "out of range 2..128",
+     {"[queues]\nintr_vectors = 129\n"},
+     "'129' out of range 2..128",
+     COMPAT},
+    {"corner",
+     "queues.intr_vectors = AUTO",
+     "rejected: values are case sensitive",
+     {"[queues]\nintr_vectors = AUTO\n"},
+     "'auto' or an integer expected, got 'AUTO'",
+     COMPAT},
+    {"corner",
+     "queues.intr_vectors auto, then a number in a later layer",
+     "the number",
+     {"[queues]\nintr_vectors = auto\n", "[queues]\nintr_vectors = 64\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000, 4, 32, 64}},
+    {"corner",
+     "queues.eth = 18446744073709551616",
+     "out of range, not wrapped",
+     {"[queues]\neth = 18446744073709551616\n"},
+     "'18446744073709551616' out of range 1..64",
+     COMPAT},
+
     /* corner */
     {"corner",
      "a layer that fails after a good one",
@@ -358,31 +482,31 @@ static const struct text_case text_cases[] = {
      {"[link]\nspeed_mbps = 25000\n",
       "[link]\nspeed_mbps = 40000\nxcvr = fiber\nmtu_max = 1\n"},
      "layer2:4: link.mtu_max: '1' out of range 1500..9582",
-     {0, 0, "rocm-ernic-1.0", 25000, 0, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 25000, 0, 9198, 1000, 4, 32, 32}},
     {"corner",
      "a \\s escape in fw_version",
      "decoded to a space, as GKeyFile does",
      {"[identity]\nfw_version = a\\sb\n"},
      NULL,
-     {0, 0, "a b", 100000, 0, 9198, 1000}},
+     {0, 0, "a b", 100000, 0, 9198, 1000, 4, 32, 32}},
     {"corner",
      "trailing blanks after a value",
      "ignored, as invisible",
      {"[link]\nspeed_mbps = 10000  \t\nxcvr = none \n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 10000, 2, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 10000, 2, 9198, 1000, 4, 32, 32}},
     {"corner",
      "CRLF line endings",
      "accepted",
      {"[link]\r\nspeed_mbps = 50000\r\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000, 4, 32, 32}},
     {"corner",
      "no newline at the end",
      "the last line still counts",
      {"[link]\nspeed_mbps = 50000"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000}},
+     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000, 4, 32, 32}},
     {"corner",
      "a section with no keys",
      "accepted; nothing changes",
@@ -465,15 +589,19 @@ static const struct spec_case spec_cases[] = {
     {"positive", "built-in compat by name",
      "accepted; the chain names it twice, base and layer", "compat", NULL, NULL,
      "compat + compat", 100000},
-    {"positive", "built-in small-vm by name",
-     "accepted; the same device as compat until queues are configurable",
+    {"positive", "built-in small-vm by name", "accepted; the link as compat",
      "small-vm", NULL, NULL, "compat + small-vm", 100000},
+    {"positive", "built-in generic-100g by name", "accepted; 100G",
+     "generic-100g", NULL, NULL, "compat + generic-100g", 100000},
+    {"positive", "built-in generic-400g by name", "accepted; 400G",
+     "generic-400g", NULL, NULL, "compat + generic-400g", 400000},
     {"positive", "a file by path", "its keys applied; the path in the chain",
      "@fast.ini", "[link]\nspeed_mbps = 400000\n", NULL, "compat + @fast.ini",
      400000},
     {"negative", "an unknown built-in name",
      "error listing the built-in profiles and how to name a file", "nope", NULL,
-     "unknown NIC profile 'nope' (built-in profiles: compat, small-vm; a "
+     "unknown NIC profile 'nope' (built-in profiles: compat, small-vm, "
+     "generic-100g, generic-400g; a "
      "file path needs a '/' or an .ini suffix)",
      "compat", 100000},
     {"negative", "a missing file", "error naming the path and the errno text",
@@ -573,7 +701,8 @@ static void check_compat_sets_every_key(void)
     const char *text = ionic_profile_builtin("compat");
     const char *far = "[identity]\nasic_type = salina\nasic_rev = 9\n"
                       "fw_version = far\n[link]\nspeed_mbps = 1000\n"
-                      "xcvr = none\nmtu_max = 1500\n[stats]\n"
+                      "xcvr = none\nmtu_max = 1500\n[queues]\neth = 64\n"
+                      "rdma_eqs = 4\nintr_vectors = auto\n[stats]\n"
                       "interval_ms = 10\n";
     const struct want compat = COMPAT;
     bool ok;
@@ -596,7 +725,8 @@ static void check_round_trip(void)
     const char *layer = "[identity]\nasic_type = elba\nasic_rev = 3\n"
                         "fw_version = 1.8.0 (E-32)\n[link]\n"
                         "speed_mbps = 400000\nxcvr = fiber\nmtu_max = 9000\n"
-                        "[stats]\ninterval_ms = 250\n";
+                        "[queues]\neth = 9\nrdma_eqs = 5\n"
+                        "intr_vectors = auto\n[stats]\ninterval_ms = 250\n";
     struct ionic_profile p, q;
     char err[256], text[2048];
     int n;
@@ -614,6 +744,7 @@ static void check_round_trip(void)
          p.link.speed_mbps == q.link.speed_mbps && p.link.xcvr == q.link.xcvr &&
          p.link.mtu_max == q.link.mtu_max &&
          p.stats.interval_ms == q.stats.interval_ms &&
+         memcmp(&p.queues, &q.queues, sizeof(p.queues)) == 0 &&
          ionic_profile_hash(&p) == ionic_profile_hash(&q);
     report(ok, "corner", "the printed profile parsed back onto compat",
            "the same values and the same hash (round trip)");
@@ -639,6 +770,127 @@ static void check_hash(void)
            "the same values reached in two layers or in one", "the same hash");
     report(ionic_profile_hash(&a) != ionic_profile_hash(&c), "corner",
            "compat and a profile that differs from it", "different hashes");
+}
+
+/* What each built-in profile sets in [queues], layered on compat. */
+static void check_builtin_queues(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        const char *name;
+        uint32_t eth, rdma_eqs, intr_vectors, resolved;
+    } rows[] = {
+        {"positive", "compat [queues]", "4 queues, 32 EQs, 32 vectors",
+         "compat", 4, 32, 32, 32},
+        {"positive", "small-vm [queues]", "2 queues, 4 EQs, auto = 7 vectors",
+         "small-vm", 2, 4, 0, 7},
+        {"positive", "generic-100g [queues]",
+         "16 queues, 32 EQs, auto = 49 vectors", "generic-100g", 16, 32, 0, 49},
+        {"positive", "generic-400g [queues]",
+         "64 queues, 32 EQs, auto = 97 vectors", "generic-400g", 64, 32, 0, 97},
+    };
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        struct ionic_profile p;
+        char err[256] = "";
+        bool ok;
+
+        ionic_profile_defaults(&p);
+        ok = ionic_profile_apply(&p, rows[i].name, err, sizeof(err)) == 0 &&
+             p.queues.eth == rows[i].eth &&
+             p.queues.rdma_eqs == rows[i].rdma_eqs &&
+             p.queues.intr_vectors == rows[i].intr_vectors &&
+             ionic_profile_intr_vectors(&p) == rows[i].resolved;
+        report(ok, rows[i].category, rows[i].description, rows[i].expected);
+        if (!ok)
+            printf("     error '%s'; got eth %" PRIu32 " rdma_eqs %" PRIu32
+                   " intr_vectors %" PRIu32 " (%" PRIu32 ")\n",
+                   err, p.queues.eth, p.queues.rdma_eqs, p.queues.intr_vectors,
+                   ionic_profile_intr_vectors(&p));
+    }
+}
+
+/* ionic_profile_intr_vectors(): auto is 1 + eth + rdma_eqs; a number is kept.
+ */
+static void check_intr_vectors(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint32_t eth, rdma_eqs, intr_vectors, want;
+    } rows[] = {
+        {"positive", "auto with 16 queues and 32 EQs", "49", 16, 32, 0, 49},
+        {"positive", "an explicit 50", "50, whatever the queues", 16, 32, 50,
+         50},
+        {"boundary", "auto with the fewest queues and EQs", "1 + 1 + 4 = 6", 1,
+         4, 0, 6},
+        {"boundary", "auto with the most queues and EQs",
+         "1 + 64 + 32 = 97, inside the 128-vector table", 64, 32, 0, 97},
+    };
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        struct ionic_profile p;
+        uint32_t got;
+
+        ionic_profile_defaults(&p);
+        p.queues.eth = rows[i].eth;
+        p.queues.rdma_eqs = rows[i].rdma_eqs;
+        p.queues.intr_vectors = rows[i].intr_vectors;
+        got = ionic_profile_intr_vectors(&p);
+        report(got == rows[i].want, rows[i].category, rows[i].description,
+               rows[i].expected);
+        if (got != rows[i].want)
+            printf("     got %" PRIu32 "\n", got);
+    }
+}
+
+/* Too few vectors for every queue and EQ is allowed, but never silent. */
+static void check_warnings(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        const char *layer;
+        const char *want; /* substring of the warning, or NULL for none */
+    } rows[] = {
+        {"positive", "compat: 32 vectors for 1 + 4 + 32",
+         "warns: today's device already halves EQs on a big guest", "",
+         "queues.intr_vectors = 32 is less than 1 + queues.eth + "
+         "queues.rdma_eqs = 37"},
+        {"positive", "intr_vectors = auto", "no warning",
+         "[queues]\nintr_vectors = auto\n", NULL},
+        {"boundary", "intr_vectors exactly 1 + eth + rdma_eqs", "no warning",
+         "[queues]\neth = 2\nrdma_eqs = 4\nintr_vectors = 7\n", NULL},
+        {"boundary", "intr_vectors one short of 1 + eth + rdma_eqs",
+         "warns, naming both numbers",
+         "[queues]\neth = 2\nrdma_eqs = 4\nintr_vectors = 6\n",
+         "= 6 is less than 1 + queues.eth + queues.rdma_eqs = 7"},
+        {"boundary", "intr_vectors = 2, the minimum",
+         "accepted, with the warning", "[queues]\nintr_vectors = 2\n",
+         "halves its RDMA EQs or Ethernet queues to fit"},
+    };
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        struct ionic_profile p;
+        char err[256] = "", msg[512] = "";
+        int warned;
+        bool ok;
+
+        ionic_profile_defaults(&p);
+        ok = ionic_profile_apply_text(&p, "layer1", rows[i].layer,
+                                      strlen(rows[i].layer), err,
+                                      sizeof(err)) == 0;
+        warned = ionic_profile_warning(&p, msg, sizeof(msg));
+        ok = ok && (rows[i].want ? warned == 1 && strstr(msg, rows[i].want)
+                                 : warned == 0);
+        report(ok, rows[i].category, rows[i].description, rows[i].expected);
+        if (!ok)
+            printf("     error '%s'; warning %d '%s'\n", err, warned, msg);
+    }
 }
 
 /* A chain that would overflow is refused, and the profile is unchanged. */
@@ -719,6 +971,11 @@ int main(void)
         run_spec_case(&spec_cases[i]);
     check_builtin_matches_file("compat");
     check_builtin_matches_file("small-vm");
+    check_builtin_matches_file("generic-100g");
+    check_builtin_matches_file("generic-400g");
+    check_builtin_queues();
+    check_intr_vectors();
+    check_warnings();
     check_compat_sets_every_key();
     check_round_trip();
     check_hash();

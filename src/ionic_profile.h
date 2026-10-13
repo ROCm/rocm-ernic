@@ -12,6 +12,10 @@
  *   speed_mbps = 400000
  *   xcvr = fiber
  *
+ *   [queues]
+ *   eth = 16
+ *   intr_vectors = auto
+ *
  *   [stats]
  *   interval_ms = 100
  *
@@ -72,6 +76,29 @@ enum ionic_profile_xcvr {
 #define IONIC_PROFILE_STATS_INTERVAL_MIN 10u
 #define IONIC_PROFILE_STATS_INTERVAL_MAX 60000u
 
+/*
+ * queues.eth is the RX and TX queue count the LIF identity advertises; the
+ * guest uses min(eth, online vCPUs) of them.  --eth-queues overrides it.
+ */
+#define IONIC_PROFILE_ETH_QUEUES_MIN 1u
+#define IONIC_PROFILE_ETH_QUEUES_MAX 64u
+
+/*
+ * queues.rdma_eqs is the RDMA EQ count.  The RDMA driver fails below 4
+ * (IONIC_EQ_COUNT_MIN), and the emulator keeps state for at most 32.
+ */
+#define IONIC_PROFILE_RDMA_EQS_MIN 4u
+#define IONIC_PROFILE_RDMA_EQS_MAX 32u
+
+/*
+ * queues.intr_vectors is the MSI-X table size and the identity nintrs.  The
+ * driver needs 1 (adminq and notifyq) + one per queue pair + one per EQ;
+ * "auto" (stored as 0) is exactly that for every queue and EQ.
+ */
+#define IONIC_PROFILE_INTR_VECTORS_AUTO 0u
+#define IONIC_PROFILE_INTR_VECTORS_MIN  2u
+#define IONIC_PROFILE_INTR_VECTORS_MAX  128u
+
 /* The built-in profile names and files that formed a profile, in order. */
 #define IONIC_PROFILE_CHAIN_MAX 512u
 
@@ -89,6 +116,11 @@ struct ionic_profile {
         uint8_t xcvr;        /* enum ionic_profile_xcvr */
         uint32_t mtu_max;
     } link;
+    struct {
+        uint32_t eth;
+        uint32_t rdma_eqs;
+        uint32_t intr_vectors; /* or IONIC_PROFILE_INTR_VECTORS_AUTO */
+    } queues;
     struct {
         uint32_t interval_ms;
     } stats;
@@ -130,6 +162,27 @@ int ionic_profile_format(const struct ionic_profile *p, char *buf, size_t len);
 int ionic_profile_set_stats_interval(struct ionic_profile *p, const char *raw,
                                      const char *where, char *err,
                                      size_t err_len);
+
+/*
+ * Set queues.eth from a decimal string, with the key's range check, for
+ * the --eth-queues option.  Returns 0, or -1 with a message naming @where
+ * in @err.
+ */
+int ionic_profile_set_eth_queues(struct ionic_profile *p, const char *raw,
+                                 const char *where, char *err, size_t err_len);
+
+/* queues.intr_vectors with "auto" worked out: 1 + eth + rdma_eqs. */
+uint32_t ionic_profile_intr_vectors(const struct ionic_profile *p);
+
+/*
+ * Rules that hold for any valid profile but deserve a warning.  Today the
+ * only one: fewer vectors than 1 + queues.eth + queues.rdma_eqs, so a guest
+ * with enough vCPUs halves its EQs or queues to fit.  That is allowed --
+ * real NICs do it -- but never silent.  Returns 1 with the warning in @msg,
+ * or 0.
+ */
+int ionic_profile_warning(const struct ionic_profile *p, char *msg,
+                          size_t msg_len);
 
 /*
  * A 64-bit FNV-1a hash of @p's values (not its chain), so two runs with the
