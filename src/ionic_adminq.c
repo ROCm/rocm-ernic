@@ -68,19 +68,15 @@
  *     le16 old_sq_cindex
  *     le16 old_rq_cq_cindex
  *   Followed by (at byte 28):
- *     be32 status_length   (status in high byte when error bit set)
+ *     be32 status_length   (the ionic status code when error bit set)
  *     be32 qid_type_flags
  *       bit 0:  color
  *       bit 1:  error
  *       bits[7:5]: type  (0 = admin)
  *       bits[31:8]: qid
  */
-#define CQE_SIZE 32
-
-/* Color bit in qid_type_flags (big-endian byte [3] bit 0). */
-#define CQE_COLOR_BIT 0x01u
-#define CQE_ERROR_BIT 0x02u
-/* Type field bits[7:5] = 0 means admin CQE; we always write 0 there. */
+/* CQE_SIZE, CQE_COLOR_BIT and CQE_ERROR_BIT are in ionic_adminq_priv.h.
+ * Type field bits[7:5] = 0 means admin CQE; we always write 0 there. */
 
 /* enum ionic_mrf_bits: the low 12 bits are IB access flags. */
 #define IONIC_MRF_ACCESS_MASK 0x0fffu
@@ -531,7 +527,7 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
  * -------------------------------------------------------------------------
  */
 
-static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
+void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
                            struct ionic_aq_ring *r, uint16_t cmd_idx,
                            uint8_t cmd_op, uint8_t status, uint32_t resp_len)
 {
@@ -541,7 +537,8 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
      *   [3:19]  u8   rsvd[17]
      *   [20:21] le16 old_sq_cindex
      *   [22:23] le16 old_rq_cq_cindex
-     *   [24:27] be32 status_length  (status in bits[31:24] when error set)
+     *   [24:27] be32 status_length  (the status code when error is set; the
+     *           driver logs be32_to_cpu() of it as "opcode %u error %u")
      *   [28:31] be32 qid_type_flags (color[0], error[1], type[7:5], qid[31:8])
      */
     uint8_t cqe[CQE_SIZE];
@@ -551,8 +548,8 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
     memcpy(cqe + 0, &ci, 2);
     cqe[2] = cmd_op;
 
-    /* status_length is one field doing two jobs: the status in bits[31:24]
-     * when the error bit is set, and otherwise the number of response bytes
+    /* status_length is one field doing two jobs: the status code itself when
+     * the error bit is set, and otherwise the number of response bytes
      * written. Returning 0 on success is not "no length given" to a driver
      * that reads it -- ionic_create_srq_cmd() compares it against
      * IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN and reports EOPNOTSUPP when it is
@@ -560,7 +557,7 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
      * ibv_create_srq() returning "Operation not supported" on a device that
      * had just handled the command. The ops that DMA no response still send
      * 0, which is their correct length. */
-    uint32_t sl = htobe32(status ? ((uint32_t)status << 24) : resp_len);
+    uint32_t sl = htobe32(status ? (uint32_t)status : resp_len);
     memcpy(cqe + 24, &sl, 4);
 
     /* qid_type_flags: bit 0 = color, bit 1 = error, bits[7:5] = type
@@ -2004,7 +2001,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             }
 
             uint16_t cmd_idx = (uint16_t)slot;
-            post_admin_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
+            ionic_adminq_post_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
             pvrdma_adminq_count(ctx->pvrdma_handle);
 
             /* Never write back to guest WQE memory — the driver owns the ring.
