@@ -8,7 +8,9 @@
  * tests/ionic_adminq_fakes.h, and checks every result against what the
  * handler promises:
  *
- *   - the status is 0 or 1, and a failed command writes nothing;
+ *   - the status is 0 or one of the stats error codes, the one its cause
+ *     names (EINVAL for a short body, BAD_ADDR for a zero dma_addr,
+ *     ENOENT for an unmapped QP), and a failed command writes nothing;
  *   - a successful one does exactly one DMA write, at the buffer the body
  *     named, no longer than its length, and in whole entries;
  *   - a header table that fits ends in the all-zero NONE terminator, and
@@ -52,6 +54,7 @@
 #include <unistd.h>
 
 #include "ionic_adminq_priv.h"
+#include "ionic_status.h"
 
 #include "ionic_adminq_fakes.h"
 
@@ -73,6 +76,14 @@ static const uint8_t ops[4] = {
 };
 
 static uint8_t g_before[GUEST_MEM_SIZE];
+
+/* The status codes handle_stats_op() may complete with. */
+static bool is_stats_status(uint8_t rc)
+{
+    return rc == IONIC_RC_SUCCESS || rc == IONIC_RC_EINVAL ||
+           rc == IONIC_RC_BAD_ADDR || rc == IONIC_RC_ENOENT ||
+           rc == IONIC_RC_EIO || rc == IONIC_RC_ENOSPC;
+}
 
 static bool is_hdrs(uint8_t op)
 {
@@ -202,8 +213,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     rc = ionic_adminq_dispatch_wqe(&g_ctx, op, body, (uint16_t)body_len);
     *rc_out = rc;
 
-    if (rc != 0 && rc != 1)
-        return "status is neither 0 nor 1";
+    if (!is_stats_status(rc))
+        return "status is not a stats completion code";
     if (g_nwrites > 1)
         return "more than one DMA write";
     for (size_t i = 0; i < GUEST_MEM_SIZE; i++) {
@@ -212,13 +223,17 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
         if (!inside && g_mem[i] != g_before[i])
             return "a byte outside the write changed";
     }
+    if (body_len < STATS_BODY_LEN)
+        return rc == IONIC_RC_EINVAL ? NULL : "a short body was not EINVAL";
+    if (dma == 0)
+        return rc == IONIC_RC_BAD_ADDR ? NULL
+                                       : "a zero dma_addr was not BAD_ADDR";
+    if (op == IONIC_V1_ADMIN_QP_STATS_VALS &&
+        !qp_is_mapped(id_ver & QP_ID_MASK))
+        return rc == IONIC_RC_ENOENT ? NULL : "an unmapped QP was not ENOENT";
     if (rc != 0)
         return g_nwrites == 0 ? NULL : "a failed command wrote";
 
-    if (body_len < STATS_BODY_LEN)
-        return "a short body succeeded";
-    if (dma == 0)
-        return "a zero dma_addr succeeded";
     if (g_nwrites != 1)
         return "success without a DMA write";
     if (w->addr != dma)
@@ -284,21 +299,21 @@ static const struct seed seeds[] = {
      BUF_GPA, PAGE_LEN, 0, 0},
     {"positive", "QP values for a mapped QP", "that QP's counters", OP_QP_VALS,
      STATS_BODY_LEN, BUF_GPA, PAGE_LEN, QP2_ID, 0},
-    {"negative", "QP values for an unmapped QP", "status 1, nothing written",
-     OP_QP_VALS, STATS_BODY_LEN, BUF_GPA, PAGE_LEN, 1234, 1},
-    {"negative", "a zero dma_addr", "status 1, nothing written", OP_HDRS,
-     STATS_BODY_LEN, 0, PAGE_LEN, 0, 1},
-    {"negative", "a 16-byte body", "status 1, nothing written", OP_HDRS,
-     STATS_BODY_LEN - 1, BUF_GPA, PAGE_LEN, 0, 1},
+    {"negative", "QP values for an unmapped QP", "ENOENT (7), nothing written",
+     OP_QP_VALS, STATS_BODY_LEN, BUF_GPA, PAGE_LEN, 1234, IONIC_RC_ENOENT},
+    {"negative", "a zero dma_addr", "BAD_ADDR (17), nothing written", OP_HDRS,
+     STATS_BODY_LEN, 0, PAGE_LEN, 0, IONIC_RC_BAD_ADDR},
+    {"negative", "a 16-byte body", "EINVAL (14), nothing written", OP_HDRS,
+     STATS_BODY_LEN - 1, BUF_GPA, PAGE_LEN, 0, IONIC_RC_EINVAL},
     {"negative", "device values when the snapshot fails",
-     "status 1, nothing written", OP_VALS | F_DEV_FAIL, STATS_BODY_LEN, BUF_GPA,
-     PAGE_LEN, 0, 1},
+     "EIO (3), nothing written", OP_VALS | F_DEV_FAIL, STATS_BODY_LEN, BUF_GPA,
+     PAGE_LEN, 0, IONIC_RC_EIO},
     {"negative", "a buffer that runs off guest memory",
-     "status 1, nothing written", OP_HDRS, STATS_BODY_LEN, GUEST_MEM_SIZE - 8,
-     PAGE_LEN, 0, 1},
+     "EIO (3), nothing written", OP_HDRS, STATS_BODY_LEN, GUEST_MEM_SIZE - 8,
+     PAGE_LEN, 0, IONIC_RC_EIO},
     {"boundary", "headers with a length one short of an entry",
-     "status 1, nothing written", OP_HDRS, STATS_BODY_LEN, BUF_GPA,
-     STAT_HDR_SIZE - 1, 0, 1},
+     "ENOSPC (15), nothing written", OP_HDRS, STATS_BODY_LEN, BUF_GPA,
+     STAT_HDR_SIZE - 1, 0, IONIC_RC_ENOSPC},
     {"boundary", "headers with room for the table but not the terminator",
      "every header, no terminator", OP_QP_HDRS, STATS_BODY_LEN, BUF_GPA,
      (uint32_t)(QP_STATS_COUNT *STAT_HDR_SIZE), 0, 0},
@@ -306,8 +321,8 @@ static const struct seed seeds[] = {
      "the first counter only", OP_VALS, STATS_BODY_LEN, BUF_GPA, STAT_VAL_SIZE,
      0, 0},
     {"corner", "a dma_addr whose end wraps past UINT64_MAX",
-     "status 1, nothing written", OP_HDRS, STATS_BODY_LEN, UINT64_MAX - 15,
-     PAGE_LEN, 0, 1},
+     "EIO (3), nothing written", OP_HDRS, STATS_BODY_LEN, UINT64_MAX - 15,
+     PAGE_LEN, 0, IONIC_RC_EIO},
     {"corner", "QP values with every id_ver version bit set",
      "the version byte is ignored: QP_ID's counters", OP_QP_VALS,
      STATS_BODY_LEN, BUF_GPA, PAGE_LEN, 0xff000000u | QP_ID, 0},

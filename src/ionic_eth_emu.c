@@ -52,6 +52,7 @@
 #include "ionic_profile.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
+#include "ionic_status.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 

@@ -144,10 +144,6 @@
 #define IONIC_Q_DISABLE 0
 #define IONIC_Q_ENABLE  1
 
-/* Completion status codes (enum ionic_status_code in ionic_if.h) */
-#define IONIC_RC_SUCCESS 0
-#define IONIC_RC_EOPCODE 2
-
 /* LIF capabilities */
 #define IONIC_LIF_CAP_ETH  (1u << 0)
 #define IONIC_LIF_CAP_RDMA (1u << 1)
