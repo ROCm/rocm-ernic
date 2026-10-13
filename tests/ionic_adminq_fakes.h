@@ -362,6 +362,28 @@ int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
     return 0;
 }
 
+/*
+ * The data path's RDMA counters follow the pvrdma ones in each table, so
+ * they continue the same value sequence: entry i of a table always holds
+ * value(i), whichever snapshot it came from.  The qp_id the handler asked
+ * for is recorded, as for the pvrdma snapshot.
+ */
+static uint32_t g_rdma_qp_id;
+
+void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
+                                  uint32_t qp_id,
+                                  uint64_t out[IONIC_DP_RDMA_COUNT])
+{
+    const size_t dev_first = sizeof(struct pvrdma_dev_counters) / 8;
+    const size_t qp_first = sizeof(struct pvrdma_qp_counters) / 8;
+
+    (void)dp;
+    g_rdma_qp_id = qp_id;
+    for (size_t i = 0; i < IONIC_DP_RDMA_COUNT; i++)
+        out[i] = qp_id == IONIC_DP_DEVICE ? dev_value(dev_first + i)
+                                          : qp_value(qp_id, qp_first + i);
+}
+
 /* ---- Fixture ----------------------------------------------------------- */
 
 static struct ionic_adminq_ctx g_ctx;
@@ -383,6 +405,7 @@ static void ctx_reset(void)
     g_qp_rc = 0;
     g_max = false;
     g_counters_qp_id = UINT32_MAX;
+    g_rdma_qp_id = 0;
     g_nwrites = 0;
 }
 

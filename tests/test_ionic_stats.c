@@ -154,19 +154,19 @@ struct stats_case {
 static const struct stats_case cases[] = {
     /* positive */
     {"positive", "device headers into a page",
-     "5 LE64 headers then a zeroed NONE terminator (192 bytes)", HDRS, BUF_GPA,
-     PAGE_LEN, 0, STATS_BODY_LEN, 0, 0, false, 0, (DEV_STATS_COUNT + 1) * 32,
-     CONTENT_DEV_HDRS},
+     "35 LE64 headers then a zeroed NONE terminator (1152 bytes)", HDRS,
+     BUF_GPA, PAGE_LEN, 0, STATS_BODY_LEN, 0, 0, false, 0,
+     (DEV_STATS_COUNT + 1) * 32, CONTENT_DEV_HDRS},
     {"positive", "QP headers into a page",
-     "8 LE64 headers then a zeroed NONE terminator (288 bytes)", QP_HDRS,
+     "38 LE64 headers then a zeroed NONE terminator (1248 bytes)", QP_HDRS,
      BUF_GPA, PAGE_LEN, 0, STATS_BODY_LEN, 0, 0, false, 0,
      (QP_STATS_COUNT + 1) * 32, CONTENT_QP_HDRS},
     {"positive", "device values into a page",
-     "the 5 device counters as LE64 at the header offsets (40 bytes)", VALS,
+     "the 35 device counters as LE64 at the header offsets (280 bytes)", VALS,
      BUF_GPA, PAGE_LEN, 0, STATS_BODY_LEN, 0, 0, false, 0, DEV_STATS_COUNT * 8,
      CONTENT_DEV_VALS},
     {"positive", "QP values for the QP named by id_ver",
-     "that QP's 8 counters as LE64 (64 bytes)", QP_VALS, BUF_GPA, PAGE_LEN,
+     "that QP's 38 counters as LE64 (304 bytes)", QP_VALS, BUF_GPA, PAGE_LEN,
      QP_ID | VER1, STATS_BODY_LEN, 0, 0, false, 0, QP_STATS_COUNT * 8,
      CONTENT_QP_VALS},
     {"positive", "QP values for a second mapped QP",
@@ -202,11 +202,11 @@ static const struct stats_case cases[] = {
      "only the first header (32 bytes)", HDRS, BUF_GPA, 32, 0, STATS_BODY_LEN,
      0, 0, false, 0, 32, CONTENT_DEV_HDRS},
     {"boundary", "headers with room for the table but not the terminator",
-     "5 headers and no terminator (160 bytes)", HDRS, BUF_GPA,
+     "35 headers and no terminator (1120 bytes)", HDRS, BUF_GPA,
      DEV_STATS_COUNT * 32, 0, STATS_BODY_LEN, 0, 0, false, 0,
      DEV_STATS_COUNT * 32, CONTENT_DEV_HDRS},
     {"boundary", "headers with length one byte short of the terminator",
-     "whole entries only: 5 headers (160 bytes)", HDRS, BUF_GPA,
+     "whole entries only: 35 headers (1120 bytes)", HDRS, BUF_GPA,
      (DEV_STATS_COUNT + 1) * 32 - 1, 0, STATS_BODY_LEN, 0, 0, false, 0,
      DEV_STATS_COUNT * 32, CONTENT_DEV_HDRS},
     {"boundary", "values with length 7, one byte short of a value",
@@ -218,8 +218,26 @@ static const struct stats_case cases[] = {
     {"boundary", "values with length 20, not a multiple of 8",
      "whole values only: 2 values (16 bytes)", VALS, BUF_GPA, 20, 0,
      STATS_BODY_LEN, 0, 0, false, 0, 16, CONTENT_DEV_VALS},
+    {"boundary", "device values with length exactly the five pvrdma totals",
+     "the totals and no RDMA counter (40 bytes)", VALS, BUF_GPA, 40, 0,
+     STATS_BODY_LEN, 0, 0, false, 0, 40, CONTENT_DEV_VALS},
+    {"boundary", "device values with length one value past the totals",
+     "the totals and req_rx_pkt_seq_err (48 bytes)", VALS, BUF_GPA, 48, 0,
+     STATS_BODY_LEN, 0, 0, false, 0, 48, CONTENT_DEV_VALS},
+    {"boundary", "device values with length one byte short of the table",
+     "whole values only: all but rx_ecn_pkts (272 bytes)", VALS, BUF_GPA,
+     DEV_STATS_COUNT * 8 - 1, 0, STATS_BODY_LEN, 0, 0, false, 0,
+     (DEV_STATS_COUNT - 1) * 8, CONTENT_DEV_VALS},
+    {"boundary", "QP values with length exactly the table",
+     "all 38 counters (304 bytes)", QP_VALS, BUF_GPA, QP_STATS_COUNT * 8,
+     QP_ID | VER1, STATS_BODY_LEN, 0, 0, false, 0, QP_STATS_COUNT * 8,
+     CONTENT_QP_VALS},
+    {"boundary", "QP headers with room for the table but not the terminator",
+     "38 headers and no terminator (1216 bytes)", QP_HDRS, BUF_GPA,
+     QP_STATS_COUNT * 32, 0, STATS_BODY_LEN, 0, 0, false, 0,
+     QP_STATS_COUNT * 32, CONTENT_QP_HDRS},
     {"boundary", "headers with a body of exactly 17 bytes",
-     "accepted: the full table (192 bytes)", HDRS, BUF_GPA, PAGE_LEN, 0,
+     "accepted: the full table (1152 bytes)", HDRS, BUF_GPA, PAGE_LEN, 0,
      STATS_BODY_LEN, 0, 0, false, 0, (DEV_STATS_COUNT + 1) * 32,
      CONTENT_DEV_HDRS},
 
@@ -228,8 +246,12 @@ static const struct stats_case cases[] = {
      "the version byte is ignored and QP_ID is still found", QP_VALS, BUF_GPA,
      PAGE_LEN, QP_ID | 0xff000000u, STATS_BODY_LEN, 0, 0, false, 0,
      QP_STATS_COUNT * 8, CONTENT_QP_VALS},
+    {"corner", "QP values with every counter at UINT64_MAX",
+     "the RDMA counters round-trip as all ones too (304 bytes)", QP_VALS,
+     BUF_GPA, PAGE_LEN, QP_ID | VER1, STATS_BODY_LEN, 0, 0, true, 0,
+     QP_STATS_COUNT * 8, CONTENT_QP_VALS},
     {"corner", "device values with every counter at UINT64_MAX",
-     "every value round-trips as all ones (40 bytes)", VALS, BUF_GPA, PAGE_LEN,
+     "every value round-trips as all ones (280 bytes)", VALS, BUF_GPA, PAGE_LEN,
      0, STATS_BODY_LEN, 0, 0, true, 0, DEV_STATS_COUNT * 8, CONTENT_DEV_VALS},
     {"corner", "headers with a body longer than 17 bytes",
      "the trailing bytes are ignored: the full table", HDRS, BUF_GPA, PAGE_LEN,
@@ -252,12 +274,13 @@ static bool content_matches(const struct stats_case *c)
         return hdrs_match(c->dma, qp_stats, QP_STATS_COUNT,
                           c->want_written / STAT_HDR_SIZE);
     case CONTENT_DEV_VALS:
-        return vals_match(c->dma, c->want_written / 8, dev_value);
+        return g_rdma_qp_id == IONIC_DP_DEVICE &&
+               vals_match(c->dma, c->want_written / 8, dev_value);
     case CONTENT_QP_VALS:
-        return g_counters_qp_id == QP_ID &&
+        return g_counters_qp_id == QP_ID && g_rdma_qp_id == QP_ID &&
                vals_match(c->dma, c->want_written / 8, qp_value_for_qp);
     case CONTENT_QP2_VALS:
-        return g_counters_qp_id == QP2_ID &&
+        return g_counters_qp_id == QP2_ID && g_rdma_qp_id == QP2_ID &&
                vals_match(c->dma, c->want_written / 8, qp_value_for_qp2);
     default:
         return false;
@@ -329,12 +352,94 @@ static void check_names(const char *table, const struct adminq_stat *stats,
         failures++;
 }
 
+/*
+ * The exact header order, which is the guest's hw_counters ABI: the #222
+ * names first, unchanged, then the RDMA counters in ionic_lif_stats order.
+ * Spelled out rather than taken from IONIC_DP_RDMA_COUNTERS, so a reordered
+ * or renamed entry in the macro fails here.
+ */
+static const char *const rdma_names[] = {
+    "req_rx_pkt_seq_err",
+    "req_rx_rnr_retry_err",
+    "req_rx_remote_access_err",
+    "req_rx_remote_inv_req_err",
+    "req_rx_remote_oper_err",
+    "req_rx_implied_nak_seq_err",
+    "req_rx_cqe_err",
+    "req_rx_cqe_flush_err",
+    "req_rx_dup_responses",
+    "req_rx_invalid_packets",
+    "req_tx_local_access_err",
+    "req_tx_local_oper_err",
+    "req_tx_memory_mgmt_err",
+    "resp_rx_dup_requests",
+    "resp_rx_out_of_buffer",
+    "resp_rx_out_of_seq_pkts",
+    "resp_rx_cqe_err",
+    "resp_rx_cqe_flush_err",
+    "resp_rx_local_len_err",
+    "resp_rx_inv_request_err",
+    "resp_rx_local_qp_oper_err",
+    "resp_rx_out_of_atomic_res",
+    "resp_tx_pkt_seq_err",
+    "resp_tx_remote_inv_req_err",
+    "resp_tx_remote_access_err",
+    "resp_tx_remote_oper_err",
+    "resp_tx_rnr_retry_err",
+    "tx_cnp_pkts",
+    "rx_cnp_pkts",
+    "rx_ecn_pkts",
+};
+#define RDMA_NAMES (sizeof(rdma_names) / sizeof(rdma_names[0]))
+
+static const char *const dev_head[] = {
+    "commands",
+    "total_bytes_sent",
+    "total_bytes_received",
+    "total_bytes_rdma_read",
+    "total_bytes_rdma_write",
+};
+
+static const char *const qp_head[] = {
+    "doorbell_send", "doorbell_recv",  "wqes_processed",  "cqes_posted",
+    "bytes_sent",    "bytes_received", "bytes_rdma_read", "bytes_rdma_write",
+};
+
+/*
+ * Positive: @stats is @head followed by rdma_names, and every entry's
+ * offset is its own index, so header i and value i always agree.
+ */
+static void check_order(const char *table, const struct adminq_stat *stats,
+                        size_t count, const char *const *head, size_t nhead,
+                        const char *expected)
+{
+    bool ok = count == nhead + RDMA_NAMES;
+
+    for (size_t i = 0; ok && i < count; i++) {
+        const char *want = i < nhead ? head[i] : rdma_names[i - nhead];
+
+        if (strcmp(stats[i].name, want) != 0 ||
+            stats[i].off != i * STAT_VAL_SIZE)
+            ok = false;
+    }
+    printf("%s positive: %s name order; expected: %s\n", ok ? "ok  " : "FAIL",
+           table, expected);
+    if (!ok) {
+        printf("     got %zu entries (want %zu)\n", count, nhead + RDMA_NAMES);
+        failures++;
+    }
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     check_names("device stat", dev_stats, DEV_STATS_COUNT);
     check_names("QP stat", qp_stats, QP_STATS_COUNT);
+    check_order("device stat", dev_stats, DEV_STATS_COUNT, dev_head, 5,
+                "the 5 pvrdma totals, then the 30 RDMA counters");
+    check_order("QP stat", qp_stats, QP_STATS_COUNT, qp_head, 8,
+                "the 8 pvrdma counters, then the 30 RDMA counters");
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
