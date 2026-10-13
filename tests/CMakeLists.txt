@@ -374,6 +374,19 @@ target_link_options(test_ionic_profile PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
 
+# LIF counter block test: MAC classification, drop accounting, the
+# little-endian rendering and each index against the kernel's struct
+# ionic_lif_stats. Pure: no ionic TU.
+add_executable(test_ionic_emu_stats test_ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+)
+target_include_directories(test_ionic_emu_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(test_ionic_emu_stats PRIVATE _GNU_SOURCE)
+target_compile_options(test_ionic_emu_stats PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_emu_stats PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ionic NIC identity test. It #includes the eth emulator translation unit,
 # checks the compat profile against golden bytes captured before profiles
 # existed, and checks where each identity and link key lands.
@@ -616,6 +629,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_profile
+    test_ionic_emu_stats
     test_ionic_identity
     test_ionic_query_qp
     test_ionic_cq_arm
@@ -788,6 +802,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_profile>
 )
 set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
+
+# LIF counter block unit test: a counter in the wrong qword shows up as the
+# wrong `ip -s link` field in the guest, so every index is pinned.
+add_test(
+    NAME ionic-emu-stats-unit
+    COMMAND $<TARGET_FILE:test_ionic_emu_stats>
+)
+set_tests_properties(ionic-emu-stats-unit PROPERTIES TIMEOUT 30)
 
 # ionic NIC identity unit test: asserts compat is byte-identical to the
 # device before profiles, and each identity/link key reaches the field the
