@@ -437,6 +437,30 @@ target_link_options(test_ionic_stats_publish PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK}
 target_link_directories(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARIES})
 
+# ionic queues test. It #includes the eth emulator translation unit and
+# checks the queue, EQ and vector counts each NIC profile advertises, and
+# that queue indices past the count are refused.
+add_executable(test_ionic_queues test_ionic_queues.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+)
+target_include_directories(test_ionic_queues PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_include_directories(test_ionic_queues SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_queues PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_queues PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_queues PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_ionic_queues PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_queues PRIVATE ${GLIB2_LIBRARIES})
+
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
 # side buffers the driver reads its answer out of can be inspected directly.
@@ -659,6 +683,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_emu_stats
     test_ionic_identity
     test_ionic_stats_publish
+    test_ionic_queues
     test_ionic_query_qp
     test_ionic_cq_arm
     test_tcp_mesh_topology
@@ -856,6 +881,14 @@ add_test(
 )
 set_tests_properties(ionic-stats-publish-unit PROPERTIES TIMEOUT 30)
 
+# ionic queues unit test: the queue, EQ and MSI-X vector counts each NIC
+# profile advertises, and whether the driver's vector budget fits them.
+add_test(
+    NAME ionic-queues-unit
+    COMMAND $<TARGET_FILE:test_ionic_queues>
+)
+set_tests_properties(ionic-queues-unit PROPERTIES TIMEOUT 30)
+
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and
 # reporting every queue pair as RESET.
@@ -934,6 +967,18 @@ add_test(
         $<TARGET_FILE:rocm-ernic>
 )
 set_tests_properties(ionic-stats-interval-cli PROPERTIES
+    TIMEOUT 30
+    SKIP_RETURN_CODE 77
+)
+
+# --eth-queues range checks and precedence over --nic-profile, read back
+# through --print-profile.  The server exits before opening a socket.
+add_test(
+    NAME ionic-eth-queues-cli
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_eth_queues_cli.sh
+        $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ionic-eth-queues-cli PROPERTIES
     TIMEOUT 30
     SKIP_RETURN_CODE 77
 )

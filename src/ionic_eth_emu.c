@@ -247,15 +247,16 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
-/* Number of emulated EQs / AQs we report in LIF identity */
-#define IONIC_EMU_EQ_COUNT   32
+/* Number of emulated AQs we report in LIF identity; the EQ count is the
+ * profile's queues.rdma_eqs. */
 #define IONIC_EMU_AQ_COUNT   4
 #define IONIC_EMU_QP_COUNT   (1u << 15)
 #define IONIC_EMU_CQ_COUNT   (1u << 16)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
-/* Ethernet Tx/Rx queue pairs offered to the LIF. */
-#define IONIC_EMU_ETH_QCOUNT 4
+/* Room for the most Ethernet Tx/Rx queue pairs a profile can offer; the
+ * LIF advertises the profile's queues.eth of them. */
+#define IONIC_EMU_ETH_QMAX IONIC_PROFILE_ETH_QUEUES_MAX
 
 /* -------------------------------------------------------------------------
  * dev_cmd_regs layout, relative to IONIC_BAR0_DEV_CMD_REGS_OFFSET.
@@ -341,6 +342,18 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
 #define INTR_MASK_ASSERT_OFF 12
 #define INTR_CRED_UNMASK     0x10000u
 
+/* Every vector's intr_ctrl block, and its intr_status bit, must sit inside
+ * the register window the driver maps. */
+_Static_assert(
+    IONIC_BAR0_INTR_CTRL_OFFSET + IONIC_MSIX_MAX_VECTORS * INTR_REG_STRIDE <=
+        IONIC_BAR0_SIZE,
+    "intr_ctrl for every vector must fit in the BAR0 register window");
+_Static_assert(IONIC_BAR0_INTR_STATUS_OFFSET + IONIC_MSIX_MAX_VECTORS / 8u <=
+                   IONIC_BAR0_INTR_CTRL_OFFSET,
+               "intr_status for every vector must end before intr_ctrl");
+_Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
+               "a profile may not ask for more vectors than the device has");
+
 /* State captured from Q_INIT for an Ethernet logical queue. */
 struct eth_queue {
     bool valid;
@@ -405,7 +418,7 @@ struct ionic_eth_emu {
     uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
-    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
+    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QMAX];
 
     /* Station MAC reported by LIF_IDENTIFY. */
     uint8_t mac[6];
@@ -442,6 +455,15 @@ struct eth_inbox_frame {
     size_t len;
     uint8_t data[];
 };
+
+/* The Ethernet queue pairs the LIF offers: queues.eth, which the profile
+ * loader keeps inside eth_q[]. */
+static uint32_t eth_qcount(const struct ionic_eth_emu *emu)
+{
+    uint32_t n = emu->profile.queues.eth;
+
+    return n <= IONIC_EMU_ETH_QMAX ? n : IONIC_EMU_ETH_QMAX;
+}
 
 /* -------------------------------------------------------------------------
  * Forward declarations
@@ -789,7 +811,7 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                 eth_adminq_service(emu, p_index);
             } else if (qtype == IONIC_QTYPE_TXQ) {
                 eth_txq_service(emu, qid, p_index);
-            } else if (qtype == IONIC_QTYPE_RXQ && qid < IONIC_EMU_ETH_QCOUNT) {
+            } else if (qtype == IONIC_QTYPE_RXQ && qid < eth_qcount(emu)) {
                 /* Rx descriptors are buffers the driver hands us to fill;
                  * record how many are posted and wait for traffic. */
                 struct eth_queue *rq = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
@@ -1051,14 +1073,15 @@ static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
 
     PUT32(DEVID_NLIFS_OFF, 1); /* single LIF for eth + RDMA */
 
-    /* nintrs bounds ionic_lif_size(): it needs 1 (adminq) + nxqs + neqs. */
-    PUT32(DEVID_NINTRS_OFF, IONIC_MSIX_MAX_VECTORS);
+    /* nintrs bounds ionic_lif_size(): it needs 1 (adminq) + nxqs + neqs.
+     * It is also the MSI-X table size the server sets up. */
+    PUT32(DEVID_NINTRS_OFF, ionic_profile_intr_vectors(&emu->profile));
     PUT32(DEVID_NDBPGS_OFF, IONIC_EMU_QP_COUNT + 4);
 
     /* ethtool divides by intr_coal_div, so it must not be zero. */
     PUT32(DEVID_INTR_COAL_MULT_OFF, 1);
     PUT32(DEVID_INTR_COAL_DIV_OFF, 1);
-    PUT32(DEVID_EQ_COUNT_OFF, IONIC_EMU_EQ_COUNT);
+    PUT32(DEVID_EQ_COUNT_OFF, emu->profile.queues.rdma_eqs);
 #undef PUT32
 
     comp[0] = IONIC_RC_SUCCESS;
@@ -1128,8 +1151,8 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
      * which returns NULL (-ENOMEM) if it is zero. */
     PUT_QCOUNT(IONIC_QTYPE_ADMINQ, 1);
     PUT_QCOUNT(IONIC_QTYPE_NOTIFYQ, 1);
-    PUT_QCOUNT(IONIC_QTYPE_RXQ, IONIC_EMU_ETH_QCOUNT);
-    PUT_QCOUNT(IONIC_QTYPE_TXQ, IONIC_EMU_ETH_QCOUNT);
+    PUT_QCOUNT(IONIC_QTYPE_RXQ, eth_qcount(emu));
+    PUT_QCOUNT(IONIC_QTYPE_TXQ, eth_qcount(emu));
 
     memcpy(data + LIFID_CONFIG_NAME_OFF, "ernic0", 7);
 
@@ -1232,7 +1255,8 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     /* eq_qtype at rdma+80 */
     uint8_t *eq = rdma + 32 + 4 * QTYPE_SZ;
     eq[0] = IONIC_RDMA_QTYPE_EQ;
-    u = le32(IONIC_EMU_EQ_COUNT);
+    /* ionic_lif_size() takes min(this, online vCPUs) EQs. */
+    u = le32(emu->profile.queues.rdma_eqs);
     memcpy(eq + 4, &u, 4);
     u = le32(0);
     memcpy(eq + 8, &u, 4);
@@ -1561,7 +1585,7 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
             (unsigned long)le64toh(ring_base),
             (unsigned long)le64toh(cq_ring_base));
 
-    if (qtype < IONIC_QTYPE_ETH_MAX && index < IONIC_EMU_ETH_QCOUNT &&
+    if (qtype < IONIC_QTYPE_ETH_MAX && index < eth_qcount(emu) &&
         ring_size < 16) {
         struct eth_queue *q = &emu->eth_q[qtype][index];
         *q = (struct eth_queue){
@@ -1827,7 +1851,7 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index)
 {
-    if (qid >= IONIC_EMU_ETH_QCOUNT)
+    if (qid >= eth_qcount(emu))
         return;
 
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][qid];
