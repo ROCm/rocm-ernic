@@ -67,6 +67,19 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
     return 0;
 }
 
+/* What ionic_dp_rdma_bytes() handed the eth emulator, for the LIF block. */
+static uint64_t g_lif_rdma_tx, g_lif_rdma_rx;
+
+void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
+                              bool is_tx)
+{
+    (void)emu;
+    if (is_tx)
+        g_lif_rdma_tx += bytes;
+    else
+        g_lif_rdma_rx += bytes;
+}
+
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
 {
     (void)handle;
@@ -250,13 +263,15 @@ void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
     (void)qp_id;
     (void)pvrdma_opcode;
 }
+static uint64_t g_file_rdma_bytes; /* what reached the stats file */
+
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
                              uint64_t bytes, enum pvrdma_stat_op stat_op)
 {
     (void)handle;
     (void)qp_id;
-    (void)bytes;
     (void)stat_op;
+    g_file_rdma_bytes += bytes;
 }
 
 /* ---- Harness ----------------------------------------------------------- */
@@ -416,6 +431,55 @@ static void test_no_event_without_arm(void)
     check(g_events == 0, "an out-of-range cq_id raises nothing");
 }
 
+/*
+ * ionic_dp_rdma_bytes() feeds both counters: the stats file once per message,
+ * the guest's LIF block once per direction.
+ */
+static void test_rdma_bytes_directions(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint64_t bytes;
+        unsigned int dirs;
+        uint64_t want_file, want_tx, want_rx;
+    } rows[] = {
+        {"positive", "a SEND or WRITE leaving the NIC",
+         "file 4096, lif tx 4096, lif rx 0", 4096, DP_RDMA_TX, 4096, 4096, 0},
+        {"positive", "a RECV or WRITE landing in guest memory",
+         "file 4096, lif tx 0, lif rx 4096", 4096, DP_RDMA_RX, 4096, 0, 4096},
+        {"corner", "a local copy between two QPs on this NIC",
+         "file 4096 (once), lif tx 4096, lif rx 4096", 4096,
+         DP_RDMA_TX | DP_RDMA_RX, 4096, 4096, 4096},
+        {"boundary", "a zero-length message", "file 0, lif tx 0, lif rx 0", 0,
+         DP_RDMA_TX | DP_RDMA_RX, 0, 0, 0},
+        {"boundary", "the largest RDMA message (2^31 bytes)",
+         "file 2147483648, lif tx 2147483648, lif rx 0", 1ull << 31, DP_RDMA_TX,
+         1ull << 31, 1ull << 31, 0},
+    };
+    struct ionic_datapath dp;
+
+    memset(&dp, 0, sizeof(dp));
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        char what[256];
+        bool ok;
+
+        g_file_rdma_bytes = g_lif_rdma_tx = g_lif_rdma_rx = 0;
+        ionic_dp_rdma_bytes(&dp, 1, rows[i].bytes, PVRDMA_STAT_SEND,
+                            rows[i].dirs);
+        ok = g_file_rdma_bytes == rows[i].want_file &&
+             g_lif_rdma_tx == rows[i].want_tx &&
+             g_lif_rdma_rx == rows[i].want_rx;
+        snprintf(what, sizeof(what),
+                 "%s: %s; expected: %s; got: file %" PRIu64 ", lif tx %" PRIu64
+                 ", lif rx %" PRIu64,
+                 rows[i].category, rows[i].description, rows[i].expected,
+                 g_file_rdma_bytes, g_lif_rdma_tx, g_lif_rdma_rx);
+        check(ok, what);
+    }
+}
+
 int main(void)
 {
     test_arm_fires_when_unreaped();
@@ -424,6 +488,7 @@ int main(void)
     test_arm_does_not_move_cons();
     test_cons_wraps();
     test_no_event_without_arm();
+    test_rdma_bytes_directions();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);

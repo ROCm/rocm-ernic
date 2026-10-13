@@ -268,4 +268,18 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
                                          const struct ionic_qp_ring *dq,
                                          uint32_t sent_qkey);
 
+/* Directions for ionic_dp_rdma_bytes(); a local copy both sends and
+ * receives. */
+#define DP_RDMA_TX 1u
+#define DP_RDMA_RX 2u
+
+/*
+ * Count @bytes of RDMA payload once for the stats file (by @op, against
+ * @qp_id) and once per direction in @dirs for the guest's struct
+ * ionic_lif_stats (tx/rx_rdma_ucast_*).
+ */
+void ionic_dp_rdma_bytes(struct ionic_datapath *dp, uint32_t qp_id,
+                         uint64_t bytes, enum pvrdma_stat_op op,
+                         unsigned int dirs);
+
 #endif /* IONIC_DATAPATH_PRIV_H */
