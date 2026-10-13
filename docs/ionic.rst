@@ -83,6 +83,98 @@ upstream driver expects:
 
 32 MSI-X vectors are advertised.
 
+NIC Profiles
+------------
+
+A NIC profile is the shape of the emulated NIC: what it
+reports about itself (ASIC type and revision, firmware
+version) and its link (speed, transceiver, largest MTU).
+Without ``--nic-profile`` the server runs the built-in
+``compat`` profile, which is the device described above,
+byte for byte.
+
+.. code-block:: bash
+
+   # layer a file over compat; later layers win, key by key
+   ./build/rocm-ernic --tap ernic0 --nic-profile ./fast.ini
+
+   # show the merged profile and exit
+   ./build/rocm-ernic --nic-profile ./fast.ini --print-profile
+
+``--nic-profile`` can be given more than once. Each one
+names either a built-in profile (a bare name: ``compat``,
+``small-vm``) or a file (a name containing a ``/`` or ending
+in ``.ini``). The layers apply in order on top of
+``compat``. A profile is an ini file:
+
+.. code-block:: ini
+
+   # fast.ini
+   [identity]
+   fw_version = 1.8.0-E-32
+
+   [link]
+   speed_mbps = 400000
+   xcvr = fiber
+
+Validation is strict. An unknown section or key, a duplicate
+key, a value of the wrong type or a value out of range stops
+the server with the file, line and key named, so a typo
+can't quietly leave a default in place. A layer that fails
+changes nothing.
+
+``--print-profile`` writes the merged profile as an ini file
+that loads back to the same values. Its header names the
+layers and a 64-bit hash of the values; the startup log and
+the ``nic_profile`` line in the stats file carry the same
+chain and hash, so two runs can be checked for the same
+device shape.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 15 25
+
+   * - Key
+     - Values
+     - ``compat``
+     - Guest effect
+   * - ``identity.asic_type``
+     - ``none``, ``capri``, ``elba``, ``giglio``, ``salina``
+     - ``none``
+     - ``dev_info`` ASIC type. The driver runs its periodic
+       doorbell re-check (``ionic_doorbell_wa()``) only for
+       ``none`` and ``elba``
+   * - ``identity.asic_rev``
+     - 0 to 255
+     - 0
+     - ``dev_info`` ASIC revision
+   * - ``identity.fw_version``
+     - 1 to 31 printable ASCII characters; no ``\``, no
+       leading or trailing space
+     - ``rocm-ernic-1.0``
+     - ``ethtool -i`` ``firmware-version``
+   * - ``link.speed_mbps``
+     - 1000, 10000, 25000, 40000, 50000, 100000, 200000,
+       400000
+     - 100000
+     - port and LIF link speed: ``ethtool`` ``Speed``, the
+       RDMA port ``rate``
+   * - ``link.xcvr``
+     - ``copper``, ``fiber``, ``none``
+     - ``copper``
+     - transceiver: ``ethtool`` ``Port`` is ``Direct Attach
+       Copper``, ``FIBRE`` or ``None``
+   * - ``link.mtu_max``
+     - 1500 to 9582
+     - 9198
+     - the largest MTU the guest may set. The LIF reports a
+       maximum frame of ``mtu_max`` + 18, and the port's
+       configured MTU is the smaller of ``mtu_max`` and 9000
+
+The built-in ``small-vm`` profile is ``compat`` for now; the
+queue and interrupt keys it is meant to shrink are not in
+the schema yet.
+
 Ethernet and TCP/IP
 -------------------
 
