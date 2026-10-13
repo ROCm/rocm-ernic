@@ -344,6 +344,26 @@ target_compile_definitions(test_ionic_port_info PRIVATE
 target_compile_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# NIC profile loader test: ini layering, strict validation and atomic
+# layers, built-in profiles by name and files by path. Pure: no ionic TU.
+add_executable(test_ionic_profile test_ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_include_directories(test_ionic_profile PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_profile SYSTEM PRIVATE
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_profile PRIVATE
+    _GNU_SOURCE
+    ERNIC_PROFILES_DIR="${CMAKE_SOURCE_DIR}/profiles")
+target_compile_options(test_ionic_profile PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_profile PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
+
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
 # side buffers the driver reads its answer out of can be inspected directly.
@@ -562,6 +582,7 @@ set(ERNIC_TEST_TARGETS
     test_loopback_sge_copy
     test_ionic_intr_pending
     test_ionic_port_info
+    test_ionic_profile
     test_ionic_query_qp
     test_ionic_cq_arm
     test_tcp_mesh_topology
@@ -724,6 +745,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_port_info>
 )
 set_tests_properties(ionic-port-info-unit PROPERTIES TIMEOUT 30)
+
+# NIC profile loader unit test: asserts strict validation (every error names
+# the source, line and key), atomic layers, and that the built-in profiles
+# match the files shipped in profiles/.
+add_test(
+    NAME ionic-profile-unit
+    COMMAND $<TARGET_FILE:test_ionic_profile>
+)
+set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and

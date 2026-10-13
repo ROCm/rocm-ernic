@@ -180,6 +180,8 @@ set(BRIDGE_SOURCES
 set(IONIC_EMU_SOURCES
     src/ionic_eth_emu.c
     src/ionic_eth_net.c
+    src/ionic_profile.c
+    src/ionic_profiles.c
     src/ionic_rdma_devcmd.c
     src/ionic_adminq.c
     src/ionic_datapath.c
