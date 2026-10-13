@@ -38,7 +38,13 @@ static const char compat_ini[] =
     "None.\n"
     "xcvr = copper\n"
     "# The largest MTU the guest may set, 1500 to 9582.\n"
-    "mtu_max = 9198\n";
+    "mtu_max = 9198\n"
+    "\n"
+    "[stats]\n"
+    "# How often the statistics blocks in guest memory are rewritten, 10 to "
+    "60000\n"
+    "# ms.  The driver never asks, so this is how stale `ip -s link` can be.\n"
+    "interval_ms = 1000\n";
 
 /* profiles/small-vm.ini */
 static const char small_vm_ini[] =

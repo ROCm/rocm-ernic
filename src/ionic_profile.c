@@ -51,6 +51,7 @@ enum key_kind {
     KEY_SPEED,
     KEY_XCVR,
     KEY_MTU,
+    KEY_STATS_INTERVAL,
 };
 
 static const struct schema_key {
@@ -64,11 +65,12 @@ static const struct schema_key {
     {"link", "speed_mbps", KEY_SPEED},
     {"link", "xcvr", KEY_XCVR},
     {"link", "mtu_max", KEY_MTU},
+    {"stats", "interval_ms", KEY_STATS_INTERVAL},
 };
 
 #define SCHEMA_COUNT (sizeof(schema) / sizeof(schema[0]))
 
-static const char *const known_groups = "identity, link";
+static const char *const known_groups = "identity, link, stats";
 
 static const char *const asic_names[] = {"none", "capri", "elba", "giglio",
                                          "salina"};
@@ -106,6 +108,7 @@ void ionic_profile_defaults(struct ionic_profile *p)
     p->link.speed_mbps = 100000;
     p->link.xcvr = IONIC_PROFILE_XCVR_COPPER;
     p->link.mtu_max = 9198;
+    p->stats.interval_ms = 1000;
     memcpy(p->chain, "compat", sizeof("compat"));
 }
 
@@ -338,6 +341,26 @@ static int number(const char *raw, const char *where, uint64_t *v, char *err,
     return rc == -2 ? 1 : rc;
 }
 
+int ionic_profile_set_stats_interval(struct ionic_profile *p, const char *raw,
+                                     const char *where, char *err,
+                                     size_t err_len)
+{
+    uint64_t v = 0;
+    int rc = number(raw, where, &v, err, err_len);
+
+    if (rc < 0)
+        return -1;
+    if (rc != 0 || v < IONIC_PROFILE_STATS_INTERVAL_MIN ||
+        v > IONIC_PROFILE_STATS_INTERVAL_MAX) {
+        set_err(err, err_len, "%s: '%.40s' out of range %u..%u ms", where, raw,
+                IONIC_PROFILE_STATS_INTERVAL_MIN,
+                IONIC_PROFILE_STATS_INTERVAL_MAX);
+        return -1;
+    }
+    p->stats.interval_ms = (uint32_t)v;
+    return 0;
+}
+
 /* Store one key's value in @q.  @where is "source:line: group.key". */
 static int set_value(struct ionic_profile *q, const struct schema_key *k,
                      const char *raw, const char *str, const char *where,
@@ -424,6 +447,9 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         }
         q->link.mtu_max = (uint32_t)v;
         return 0;
+
+    case KEY_STATS_INTERVAL:
+        return ionic_profile_set_stats_interval(q, raw, where, err, err_len);
 
     default:
         set_err(err, err_len, "%s: no handler for this key", where);
@@ -612,7 +638,7 @@ static const char *name_or(const char *const *names, size_t count, size_t i)
     return i < count ? names[i] : "?";
 }
 
-/* The [identity] and [link] sections, which the hash covers. */
+/* Every section's values, which the hash covers. */
 static int format_values(const struct ionic_profile *p, char *buf, size_t len)
 {
     return snprintf(
@@ -625,12 +651,15 @@ static int format_values(const struct ionic_profile *p, char *buf, size_t len)
         "[link]\n"
         "speed_mbps = %" PRIu32 "\n"
         "xcvr = %s\n"
-        "mtu_max = %" PRIu32 "\n",
+        "mtu_max = %" PRIu32 "\n"
+        "\n"
+        "[stats]\n"
+        "interval_ms = %" PRIu32 "\n",
         name_or(asic_names, N_ELEMS(asic_names), p->identity.asic_type),
         (unsigned int)p->identity.asic_rev, p->identity.fw_version,
         p->link.speed_mbps,
-        name_or(xcvr_names, N_ELEMS(xcvr_names), p->link.xcvr),
-        p->link.mtu_max);
+        name_or(xcvr_names, N_ELEMS(xcvr_names), p->link.xcvr), p->link.mtu_max,
+        p->stats.interval_ms);
 }
 
 uint64_t ionic_profile_hash(const struct ionic_profile *p)
