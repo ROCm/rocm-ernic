@@ -457,7 +457,7 @@ struct wqe {
     uint32_t rkey;
 };
 
-/* Write @w into @qp_id's next SQ slot and run it, as a doorbell would. */
+/* Write @w into @qp_id's next SQ slot and ring the SQ doorbell for it. */
 static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
                       const struct wqe *w)
 {
@@ -484,7 +484,10 @@ static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
         put_be32(e + WQE_PLD_OFF + 8, w->len);
         put_be32(e + WQE_PLD_OFF + 12, w->lkey);
     }
-    process_sq_wqe(dp, q, qp_id, slot);
+    ionic_datapath_doorbell(dp, DP_QTYPE_SQ,
+                            (uint64_t)(g_sq_slot[qp_id] & 0xffffu) |
+                                (uint64_t)(qp_id & 0xffu) << 24 |
+                                (uint64_t)(qp_id >> 8) << 32);
 }
 
 /* Post one key-0 receive of @len bytes on @qp_id. */
@@ -683,6 +686,59 @@ static void run_rnr_blocked(struct ionic_datapath *dp)
     poll_at(dp, T0);
 }
 
+/* The same RNR conversations with the peer on this instance. */
+static void run_local_rnr_three_passes(struct ionic_datapath *dp)
+{
+    post_send(dp, QP_A, &SEND64);
+    poll_at(dp, T0 + 1);
+    poll_at(dp, T0 + 2);
+    post_recv(dp, QP_B, 256);
+    poll_at(dp, T0 + 3);
+}
+
+static void run_local_rnr_just_inside(struct ionic_datapath *dp)
+{
+    post_send(dp, QP_A, &SEND64);
+    poll_at(dp, T0 + RNR_RETRY_MS - 1);
+}
+
+static void run_local_rnr_just_inside_recv(struct ionic_datapath *dp)
+{
+    run_local_rnr_just_inside(dp);
+    post_recv(dp, QP_B, 256);
+    poll_at(dp, T0 + RNR_RETRY_MS - 1);
+}
+
+static void run_local_rnr_exceeded(struct ionic_datapath *dp)
+{
+    post_send(dp, QP_A, &SEND64);
+    poll_at(dp, T0 + RNR_RETRY_MS);
+}
+
+/* Both SENDs wait; every pass retries only the first. */
+static void run_local_rnr_blocked(struct ionic_datapath *dp)
+{
+    post_send(dp, QP_A, &SEND64);
+    post_send(dp, QP_A, &SEND64);
+    poll_at(dp, T0 + 1);
+}
+
+static void run_local_rnr_blocked_recv(struct ionic_datapath *dp)
+{
+    run_local_rnr_blocked(dp);
+    post_recv(dp, QP_B, 256);
+    post_recv(dp, QP_B, 256);
+    poll_at(dp, T0 + 2);
+}
+
+static void run_local_rnr_reregister(struct ionic_datapath *dp)
+{
+    post_send(dp, QP_A, &SEND64);
+    register_qp(dp, QP_A, CQ_ID);
+    ionic_datapath_set_dest(dp, QP_A, QP_B, UINT32_MAX);
+    poll_at(dp, T0 + RNR_RETRY_MS);
+}
+
 /* The peer never answers: the request is lost on the wire. */
 static void run_pending_at(struct ionic_datapath *dp, uint64_t now)
 {
@@ -782,10 +838,17 @@ static const struct dp_case cases[] = {
      {{0}}},
     {"positive",
      "local SEND with no receive posted",
-     "the responder counts one out-of-buffer event",
+     "one RNR pass and one out-of-buffer event on the responder",
      run_send_no_recv,
      {{0}},
-     {W(RESP_RX_OUT_OF_BUFFER, 1)},
+     {W(RESP_TX_RNR_RETRY_ERR, 1), W(RESP_RX_OUT_OF_BUFFER, 1)},
+     {{0}}},
+    {"positive",
+     "local SEND finds no receive for three passes, then one",
+     "three RNR passes, one out-of-buffer event, and no error completion",
+     run_local_rnr_three_passes,
+     {{0}},
+     {W(RESP_TX_RNR_RETRY_ERR, 3), W(RESP_RX_OUT_OF_BUFFER, 1)},
      {{0}}},
     {"positive",
      "remote RDMA WRITE with an unregistered rkey",
@@ -845,6 +908,22 @@ static const struct dp_case cases[] = {
      {W(RESP_TX_RNR_RETRY_ERR, 1), W(RESP_RX_OUT_OF_BUFFER, 1)},
      {{0}}},
     {"boundary",
+     "local SEND still waiting at RNR_RETRY_MS - 1",
+     "two RNR passes and one out-of-buffer event; still delivered, so "
+     "neither end counts an error",
+     run_local_rnr_just_inside_recv,
+     {{0}},
+     {W(RESP_TX_RNR_RETRY_ERR, 2), W(RESP_RX_OUT_OF_BUFFER, 1)},
+     {{0}}},
+    {"boundary",
+     "local SEND still waiting at exactly RNR_RETRY_MS",
+     "one RNR pass, then the drop: the requester counts an RNR retry error "
+     "and a CQE error",
+     run_local_rnr_exceeded,
+     {W(REQ_RX_RNR_RETRY_ERR, 1), W(REQ_RX_CQE_ERR, 1)},
+     {W(RESP_TX_RNR_RETRY_ERR, 1), W(RESP_RX_OUT_OF_BUFFER, 1)},
+     {{0}}},
+    {"boundary",
      "peer silent until exactly PENDING_MS",
      "not yet timed out: no counter moves",
      run_pending_at_deadline,
@@ -882,6 +961,14 @@ static const struct dp_case cases[] = {
      run_rnr_blocked,
      {{0}},
      {W(RESP_TX_RNR_RETRY_ERR, 1), W(RESP_RX_OUT_OF_BUFFER, 1)},
+     {{0}}},
+    {"corner",
+     "a second local SEND held behind one that found no receive",
+     "three RNR passes, all for the first SEND (its doorbell, the second "
+     "SEND's, and one poll), and one out-of-buffer event",
+     run_local_rnr_blocked,
+     {{0}},
+     {W(RESP_TX_RNR_RETRY_ERR, 3), W(RESP_RX_OUT_OF_BUFFER, 1)},
      {{0}}},
     {"corner",
      "local SEND whose source SGE does not resolve",
@@ -1018,12 +1105,91 @@ static void run_getter_case(const struct getter_case *c)
         failures++;
 }
 
+/*
+ * What an RNR does to the queues rather than the counters: an RC send queue
+ * waits for the receive instead of dropping the message.
+ */
+struct sq_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    void (*run)(struct ionic_datapath *dp);
+    uint32_t cqes;       /* completions on CQ_ID, sends and receives */
+    bool delivered;      /* the SEND's bytes reached QP_B's receive buffer */
+    uint32_t sq_stalled; /* send queues still waiting afterwards */
+    uint32_t sq_cons;    /* QP_A's send queue position afterwards */
+};
+
+static const struct sq_case sq_cases[] = {
+    {"positive", "local SEND finds no receive for three passes, then one",
+     "delivered: the receive and the send complete, and the queue moves on",
+     run_local_rnr_three_passes, 2, true, 0, 1},
+    {"negative", "local SEND, RDMA WRITE, RDMA READ and fetch-and-add",
+     "no queue ever waits", run_all_succeed, 5, true, 0, 4},
+    {"boundary", "local SEND with no receive at RNR_RETRY_MS - 1",
+     "nothing completes and the send queue still waits at the SEND",
+     run_local_rnr_just_inside, 0, false, 1, 0},
+    {"boundary", "a receive posted at RNR_RETRY_MS - 1",
+     "delivered on that pass", run_local_rnr_just_inside_recv, 2, true, 0, 1},
+    {"boundary", "local SEND with no receive at exactly RNR_RETRY_MS",
+     "the send completes in error and the queue moves on, nothing delivered",
+     run_local_rnr_exceeded, 1, false, 0, 1},
+    {"corner", "a second local SEND behind one that waits",
+     "neither completes: the second may not overtake the first",
+     run_local_rnr_blocked, 0, false, 1, 0},
+    {"corner", "two receives posted for two waiting SENDs",
+     "both delivered, all four completions, the queue empty",
+     run_local_rnr_blocked_recv, 4, true, 0, 2},
+    {"corner", "QP re-registered while its send queue waits",
+     "the wait is forgotten: nothing completes at RNR_RETRY_MS",
+     run_local_rnr_reregister, 0, false, 0, 0},
+};
+
+static bool recv_delivered(void)
+{
+    for (uint32_t i = 0; i < SEND64.len; i++)
+        if (g_mem[RECV_GPA + i] != g_mem[SRC_GPA + i])
+            return false;
+    return true;
+}
+
+static void run_sq_case(const struct sq_case *c)
+{
+    struct ionic_datapath *dp = setup();
+    char got[160] = "could not create a data path";
+    bool ok = false;
+
+    if (dp) {
+        c->run(dp);
+        uint32_t cqes = dp->cq[CQ_ID].prod;
+        bool delivered = recv_delivered();
+
+        ok = cqes == c->cqes && delivered == c->delivered &&
+             dp->sq_stalled == c->sq_stalled &&
+             dp->qp[QP_A].sq_cons == c->sq_cons;
+        snprintf(got, sizeof(got),
+                 "%" PRIu32 " completions, %sdelivered, %" PRIu32
+                 " waiting, sq_cons %" PRIu32,
+                 cqes, delivered ? "" : "not ", dp->sq_stalled,
+                 dp->qp[QP_A].sq_cons);
+        ionic_datapath_destroy(dp);
+    }
+    printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
+           c->description, c->expected);
+    if (!ok) {
+        printf("     got %s\n", got);
+        failures++;
+    }
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)
         run_getter_case(&getter_cases[i]);
+    for (size_t i = 0; i < sizeof(sq_cases) / sizeof(sq_cases[0]); i++)
+        run_sq_case(&sq_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

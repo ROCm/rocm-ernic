@@ -208,7 +208,16 @@ struct ionic_qp_ring {
     uint32_t sq_cons;
     uint32_t rq_prod;
     uint32_t rq_cons;
-    uint32_t msn; /* running send sequence for SEND_MSN completions */
+    uint32_t msn;     /* running send sequence for SEND_MSN completions */
+    uint32_t sq_prod; /* the last SQ doorbell's index, wrapped */
+
+    /*
+     * The SEND at sq_cons found no receive on its local peer.  The send queue
+     * stops there, as a real one does behind an RNR NAK, and
+     * ionic_datapath_poll() retries it until RNR_RETRY_MS runs out.
+     */
+    bool sq_rnr;
+    uint64_t sq_rnr_since_ms;
 
     bool dest_valid;
     uint32_t dest_qp_id;
@@ -384,6 +393,9 @@ struct ionic_datapath {
      * as work would spin the loop until the peer posts a receive.
      */
     uint32_t rx_fresh;
+
+    /* QPs whose send queue is stopped behind an RNR (sq_rnr). */
+    uint32_t sq_stalled;
 
     /*
      * Why the last transfer stopped short.  A byte count on its own cannot
@@ -764,6 +776,15 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
     dp->cq[cq_id].valid = false;
 }
 
+/* Lets @q's send queue move past the WQE that was waiting for a receive. */
+static void sq_rnr_clear(struct ionic_datapath *dp, struct ionic_qp_ring *q)
+{
+    if (!q->sq_rnr)
+        return;
+    q->sq_rnr = false;
+    dp->sq_stalled--;
+}
+
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint8_t ib_qp_type, uint32_t sq_cq_id,
                                 const struct ionic_dp_ring_desc *sq,
@@ -787,7 +808,8 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     q->rq_stride_log2 = rq->stride_log2;
     q->sq_cq_id = sq_cq_id;
     q->rq_cq_id = rq_cq_id;
-    q->sq_cons = 0;
+    sq_rnr_clear(dp, q);
+    q->sq_cons = q->sq_prod = 0;
     q->rq_prod = q->rq_cons = 0;
     q->msn = 0;
     q->dest_valid = false;
@@ -808,6 +830,7 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
         return;
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
+    sq_rnr_clear(dp, &dp->qp[qp_id]);
     buf_release(&dp->qp[qp_id].sq_buf);
     buf_release(&dp->qp[qp_id].rq_buf);
     dp->qp[qp_id].valid = false;
@@ -2096,7 +2119,7 @@ static bool dp_nvmeof_rc_send(struct ionic_datapath *dp,
     return true;
 }
 
-static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
     uint32_t stride = 1u << q->sq_stride_log2;
@@ -2107,13 +2130,15 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
     if (!run || run < read_sz ||
         dp_dma_read(dp->vfu_ctx, gpa, wqe, read_sz) < 0)
-        return;
+        return true;
 
     uint64_t wqe_id;
     memcpy(&wqe_id, wqe + 0, 8);
 
     uint8_t op = wqe[8];
-    pvrdma_qp_wqe_count(dp->pvrdma_handle, qp_id, ionic_op_to_pvrdma_wr(op));
+    if (!q->sq_rnr) /* a retry is the same WQE again */
+        pvrdma_qp_wqe_count(dp->pvrdma_handle, qp_id,
+                            ionic_op_to_pvrdma_wr(op));
 
     uint16_t flags;
     memcpy(&flags, wqe + 10, 2);
@@ -2140,7 +2165,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
                     qp_id, read_sz);
         cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
-        return;
+        return true;
     }
 
     struct dp_sge_list src;
@@ -2169,7 +2194,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     if (dp_is_remote(dp, q)) {
         if (remote_post(dp, q, qp_id, op, wqe_id, remote,
                         (flags & IONIC_V1_FLAG_SIG) != 0, &src, wqe))
-            return;
+            return true;
 
         if (remote) {
             q->msn++;
@@ -2178,7 +2203,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         } else if (flags & IONIC_V1_FLAG_SIG) {
             cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
         }
-        return;
+        return true;
     }
 
     dp_fault_clear(dp);
@@ -2214,11 +2239,37 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         }
         if (deliver_recv(dp, dq, dst_id, qp_id, &src, NULL, recv_op, imm_be) <
             0) {
+            /*
+             * RNR.  A connected requester retries rather than lose the
+             * message, so its send queue waits here for the peer to post a
+             * receive, for as long as the wire path waits.  UD and GSI have
+             * no retry: the message is dropped and the send completes.
+             */
+            uint64_t now = dp_now_ms();
+
+            if (!remote) {
+                vfu_log(dp->vfu_ctx, LOG_WARNING,
+                        "ionic_datapath: QP %u has no posted receive, "
+                        "dropping %u bytes from QP %u",
+                        dst_id, src.total, qp_id);
+                dp_count(dp, dst_id, IONIC_DP_RESP_RX_OUT_OF_BUFFER);
+                break;
+            }
+            if (!q->sq_rnr) {
+                q->sq_rnr = true;
+                q->sq_rnr_since_ms = now;
+                dp->sq_stalled++;
+                dp_count(dp, dst_id, IONIC_DP_RESP_RX_OUT_OF_BUFFER);
+            }
+            if (now - q->sq_rnr_since_ms < RNR_RETRY_MS) {
+                dp_count(dp, dst_id, IONIC_DP_RESP_TX_RNR_RETRY_ERR);
+                return false;
+            }
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: QP %u has no posted receive, dropping "
-                    "%u bytes from QP %u",
-                    dst_id, src.total, qp_id);
-            dp_count(dp, dst_id, IONIC_DP_RESP_RX_OUT_OF_BUFFER);
+                    "ionic_datapath: QP %u posted no receive within %u ms, "
+                    "dropping %u bytes from QP %u",
+                    dst_id, RNR_RETRY_MS, src.total, qp_id);
+            status = IONIC_STS_RNR_RETRY_EXCEEDED;
         } else
             pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, src.total,
                                     PVRDMA_STAT_SEND);
@@ -2316,6 +2367,23 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
     } else if (flags & IONIC_V1_FLAG_SIG) {
         cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+    }
+    return true;
+}
+
+/*
+ * Runs @q's send queue from sq_cons up to the last doorbell, stopping at a
+ * SEND that is waiting for a receive.
+ */
+static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                       uint32_t qp_id)
+{
+    for (uint32_t n = 0;
+         q->sq_cons % q->sq_depth != q->sq_prod && n < q->sq_depth; n++) {
+        if (!process_sq_wqe(dp, q, qp_id, q->sq_cons % q->sq_depth))
+            return;
+        sq_rnr_clear(dp, q);
+        q->sq_cons++;
     }
 }
 
@@ -2709,6 +2777,11 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
         pthread_mutex_unlock(&dp->rx_lock);
     }
 
+    /* Retry the send queues that are waiting for a local peer's receive. */
+    for (uint32_t i = 0; dp->sq_stalled && i < dp->qp_count; i++)
+        if (dp->qp[i].valid && dp->qp[i].sq_rnr)
+            sq_service(dp, &dp->qp[i], i);
+
     /* A peer that never answers must not wedge the guest's send queue. */
     for (int i = 0; i < MAX_PENDING; i++) {
         struct dp_pending *p = &dp->pending[i];
@@ -2793,12 +2866,8 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
     struct ionic_qp_ring *q = &dp->qp[qid];
 
     /* Producer indices are 16-bit and free-running modulo the ring depth. */
-    uint32_t target = (uint32_t)p_index % q->sq_depth;
-    for (uint32_t n = 0; q->sq_cons % q->sq_depth != target && n < q->sq_depth;
-         n++) {
-        process_sq_wqe(dp, q, qid, q->sq_cons % q->sq_depth);
-        q->sq_cons++;
-    }
+    q->sq_prod = (uint32_t)p_index % q->sq_depth;
+    sq_service(dp, q, qid);
 }
 
 void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
