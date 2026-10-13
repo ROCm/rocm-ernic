@@ -975,6 +975,41 @@ static void test_create_qp_body_must_reach_type_state(void)
                        IONIC_ADMIN_CREATE_QP_IN_V1_LEN) == 0);
 }
 
+/*
+ * An SRQ whose id never reaches the guest is one the guest can neither use
+ * nor free: it holds a table slot until the device is reset, and the map has
+ * only IONIC_EMU_SRQ_COUNT of them. The handler used to skip the response
+ * write when the buffer was too short or its address zero, and then report
+ * success -- leaving the driver holding the zero its buffer came with, which
+ * names IONIC_SRQ_QID_BASE + 0, a real and probably someone else's queue.
+ */
+static void test_create_fails_when_the_id_cannot_be_returned(void)
+{
+    uint8_t body[IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN];
+
+    /* Response buffer too short for the five bytes the driver expects. */
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN - 1);
+    check("short-response-buffer-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+    check("short-response-buffer-freed-the-resource", g_dealloc_calls == 1);
+    check("short-response-buffer-unregistered",
+          g_unregistered_srq_id != 0 || g_registered_srq_id == 0);
+
+    /* The slot is handed back, so this does not leak one per attempt. */
+    check("short-response-buffer-released-the-slot", create_one() != 0);
+
+    /* No response address at all. */
+    ctx_reset();
+    build_create(body, 0, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    check("zero-response-address-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+    check("zero-response-address-freed-the-resource", g_dealloc_calls == 1);
+    check("zero-response-address-released-the-slot", create_one() != 0);
+}
+
 int main(void)
 {
     test_create_reports_id_and_length();
@@ -990,6 +1025,7 @@ int main(void)
     test_zero_limit_is_accepted();
     test_qp_binding_checks_the_srq_id();
     test_create_qp_body_must_reach_type_state();
+    test_create_fails_when_the_id_cannot_be_returned();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

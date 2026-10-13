@@ -544,13 +544,56 @@ static void buf_release(struct dp_buf *b)
     memset(b, 0, sizeof(*b));
 }
 
+/*
+ * 2^(depth_log2 + stride_log2), or 0 when that is not a size any ring could
+ * have.
+ *
+ * The exponents are guest bytes. The SRQ pair is bounded at the adminq
+ * before it gets here, but the QP pair is not yet, so this must not shift by
+ * the width of the type or more. Returning 0 makes buf_init() refuse, which
+ * is the right answer for a geometry describing more memory than exists.
+ */
+static uint64_t ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
+{
+    unsigned total = (unsigned)depth_log2 + (unsigned)stride_log2;
+
+    if (total >= 64)
+        return 0;
+    return 1ull << total;
+}
+
+/*
+ * @span is how many bytes the region actually covers -- a ring's depth times
+ * its stride, or a memory region's length. map_count is a guest u32, and the
+ * page table it describes is allocated here, so without a span to check it
+ * against one CREATE command asks the host for up to 2^32 * 8 == 32 GiB.
+ * Several hundred of them are reachable before any table fills, which makes
+ * the device's memory use a function of what the guest asks for rather than
+ * of what it was given.
+ *
+ * A page table never needs more entries than the region needs pages, plus
+ * one for a region that does not start on a page boundary. Anything beyond
+ * that is not a geometry the device could honour.
+ */
 static int buf_init(struct ionic_datapath *dp, struct dp_buf *b,
-                    const struct ionic_dp_buf_desc *desc, uint64_t va)
+                    const struct ionic_dp_buf_desc *desc, uint64_t va,
+                    uint64_t span)
 {
     buf_release(b);
     if (desc->page_size_log2 > 30)
         return -EINVAL;
     b->page_size_log2 = desc->page_size_log2 ? desc->page_size_log2 : 12;
+
+    uint64_t page_size = 1ull << b->page_size_log2;
+    uint64_t max_pages = ((span + page_size - 1) >> b->page_size_log2) + 1;
+
+    if (span == 0 || (uint64_t)desc->map_count > max_pages) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: page table of %u entries for a %" PRIu64
+                "-byte region at 2^%u pages (at most %" PRIu64 ")",
+                desc->map_count, span, b->page_size_log2, max_pages);
+        return -EINVAL;
+    }
     b->npages = desc->map_count;
 
     if (desc->map_count <= 1) {
@@ -805,7 +848,9 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
         c->valid = false;
         return;
     }
-    if (buf_init(dp, &c->buf, &ring->buf, 0) < 0) {
+    /* depth * stride is exactly what the ring occupies. */
+    if (buf_init(dp, &c->buf, &ring->buf, 0,
+                 (uint64_t)c->depth << stride_log2) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u page table read failed", cq_id);
         c->valid = false;
@@ -843,8 +888,10 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
         return;
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
-    if (buf_init(dp, &q->sq_buf, &sq->buf, 0) < 0 ||
-        buf_init(dp, &q->rq_buf, &rq->buf, 0) < 0) {
+    if (buf_init(dp, &q->sq_buf, &sq->buf, 0,
+                 ring_span_bytes(sq->depth_log2, sq->stride_log2)) < 0 ||
+        buf_init(dp, &q->rq_buf, &rq->buf, 0,
+                 ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: QP %u page table read failed", qp_id);
         return;
@@ -942,7 +989,8 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
         sr->valid = false;
     }
 
-    if (buf_init(dp, &sr->buf, &rq->buf, 0) < 0) {
+    if (buf_init(dp, &sr->buf, &rq->buf, 0,
+                 ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
         pthread_mutex_unlock(&sr->lock);
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: SRQ %u page table read failed", srq_id);
@@ -1100,7 +1148,9 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
         return;
     }
 
-    if (buf_init(dp, &m->buf, buf, va) < 0) {
+    /* A memory region's span is its length; the guest said so in
+     * CREATE_MR and the rkey checks already hold it to that. */
+    if (buf_init(dp, &m->buf, buf, va, length) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: MR %#x page table read failed", lkey);
         return;

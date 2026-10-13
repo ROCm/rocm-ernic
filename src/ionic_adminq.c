@@ -843,10 +843,10 @@ static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
  * The response is DMA'd rather than returned in the completion:
  *   struct ionic_admin_create_srq_resp, 5 bytes: le32 id, u8 udma_idx
  */
-#define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24
-#define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4
-#define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42
-#define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5
+#define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24u
+#define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4u
+#define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42u
+#define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5u
 /* type_state is the last field, at [62], so the body runs to 63 -- see the
  * layout above handle_create_qp_op(). The guard there read 60, which covers
  * id_ver at [56:59] and nothing after it, so a 60-byte body still had its
@@ -856,6 +856,20 @@ static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
 /* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. The driver
  * rejects a create whose max_sge exceeds it, so the two have to agree. */
 /* IONIC_MAX_SRQ_SGES now lives in rocm_ernic_compat.h. */
+
+/*
+ * Undo a partly built SRQ. Safe at any point after the id is allocated:
+ * ionic_datapath_unregister_srq() does nothing for a slot that was never
+ * registered, so the one helper serves every failure path and none of them
+ * can forget a piece.
+ */
+static void adminq_srq_unwind(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
+                              uint32_t srq_handle)
+{
+    ionic_datapath_unregister_srq(ctx->dp, srq_id);
+    ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
+    adminq_unmap_srq(ctx, srq_id);
+}
 
 static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
                                     const uint8_t *body, uint16_t len)
@@ -960,17 +974,36 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
                     "ionic_adminq CREATE_SRQ %u: datapath registration failed "
                     "(%d)",
                     srq_id, reg);
-            ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
-            adminq_unmap_srq(ctx, srq_id);
+            adminq_srq_unwind(ctx, srq_id, srq_handle);
             return 1;
         }
     }
 
-    /* Hand the id back by DMA. Without this the driver keeps whatever was in
-     * its zeroed response buffer, i.e. SRQ id 0, and every later MODIFY or
-     * DESTROY names the wrong queue. */
-    if (le32toh(resp_buf_len) >= IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN &&
-        resp_dma_addr) {
+    /*
+     * Hand the id back by DMA. The driver adopts what this returns as
+     * srq->rq.qid and names it in every later MODIFY, QUERY and DESTROY, so
+     * an SRQ whose id never reaches the guest is one the guest can neither
+     * use nor free: it occupies a table slot until the device is reset, and
+     * 256 of them exhaust the table.
+     *
+     * That makes an unusable response buffer the command's failure, not
+     * something to skip past. Reporting success without writing the id left
+     * the driver holding the zero its buffer came with, which names SRQ id
+     * IONIC_SRQ_QID_BASE + 0 -- a real and probably someone else's queue.
+     */
+    if (le32toh(resp_buf_len) < IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN ||
+        !resp_dma_addr) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ %u: response buffer is %u bytes at "
+                "%#" PRIx64 ", need %u at a non-zero address; the driver "
+                "could not learn the id",
+                srq_id, le32toh(resp_buf_len), le64toh(resp_dma_addr),
+                IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+        adminq_srq_unwind(ctx, srq_id, srq_handle);
+        return 1;
+    }
+
+    {
         uint8_t resp[IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN] = {0};
         uint32_t id_le = htole32(srq_id);
         memcpy(resp, &id_le, 4);
@@ -979,12 +1012,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
                       sizeof(resp)) < 0) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq CREATE_SRQ %u: response DMA failed", srq_id);
-            ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
-            adminq_unmap_srq(ctx, srq_id);
-            /* The ring was registered above; unwinding the resource and the
-             * map entry without it would leave a live datapath entry holding
-             * the guest page-table mapping for an SRQ nothing can name. */
-            ionic_datapath_unregister_srq(ctx->dp, srq_id);
+            adminq_srq_unwind(ctx, srq_id, srq_handle);
             return 1;
         }
         /* What the driver compares against

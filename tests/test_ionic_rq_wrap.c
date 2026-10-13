@@ -415,8 +415,68 @@ static void test_rq_rejects_an_index_past_the_depth(void)
     check(srq_outstanding(dp) == 0, "SRQ ignores 0xffff");
 }
 
+/*
+ * map_count is a guest u32 and the page table it describes is allocated
+ * here, so without a bound one CREATE command asks the host for up to
+ * 2^32 * 8 == 32 GiB, and several hundred are reachable before any table
+ * fills. A page table never needs more entries than the region needs pages,
+ * plus one for a region that does not start on a page boundary.
+ *
+ * The rejection happens before any allocation or DMA, so these need no
+ * guest memory standing up.
+ */
+static void test_page_table_is_bounded_by_the_region(void)
+{
+    struct dp_buf b;
+    struct ionic_dp_buf_desc desc = {
+        .dma_addr = 0x1000,
+        .page_size_log2 = 12,
+    };
+
+    memset(&b, 0, sizeof(b));
+
+    /* One 4 KiB page, described by one entry: the single-page path. */
+    desc.map_count = 1;
+    check(buf_init(&g_dp, &b, &desc, 0, 4096) == 0,
+          "a one-page region with one table entry is accepted");
+
+    /* The same region, claiming a million pages. */
+    desc.map_count = 1000000;
+    check(buf_init(&g_dp, &b, &desc, 0, 4096) == -EINVAL,
+          "a one-page region cannot have a million table entries");
+    check(b.pages == NULL, "the oversized table was never allocated");
+
+    /* Only the rejecting direction is checked here. A map_count the bound
+     * accepts goes on to read the table out of guest memory, which needs a
+     * vfu context; real rings of every size are registered by the system
+     * tests, which is where "not too tight" is actually demonstrated. */
+
+    /* A geometry describing no bytes at all describes no page table. */
+    desc.map_count = 1;
+    check(buf_init(&g_dp, &b, &desc, 0, 0) == -EINVAL,
+          "a zero-length region is refused");
+
+    buf_release(&b);
+}
+
+/*
+ * ring_span_bytes() exists so a guest geometry cannot shift by the width of
+ * the type. The QP exponents are not bounded at the adminq yet, so this is
+ * the thing standing between a malformed CREATE_QP and undefined behaviour.
+ */
+static void test_ring_span_saturates(void)
+{
+    check(ring_span_bytes(6, 6) == 4096, "2^6 entries of 2^6 bytes is 4 KiB");
+    check(ring_span_bytes(63, 0) != 0, "an exponent sum of 63 still computes");
+    check(ring_span_bytes(64, 0) == 0, "an exponent sum of 64 is refused");
+    check(ring_span_bytes(255, 255) == 0,
+          "the largest guest bytes are refused");
+}
+
 int main(void)
 {
+    test_page_table_is_bounded_by_the_region();
+    test_ring_span_saturates();
     test_rq_counts_up_to_the_wrap();
     test_rq_survives_the_wrap();
     test_rq_survives_many_wraps();
