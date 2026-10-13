@@ -19,9 +19,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <syslog.h>
 
 #include <vfio-user/libvfio-user.h>
 
@@ -41,6 +43,19 @@ static uint8_t g_mem[GUEST_MEM_SIZE];
 
 /* DMA writes seen since the test last cleared it. */
 static unsigned int g_nwrites;
+
+/* Refuse this many of the next DMA write mappings, as an unmapped GPA would. */
+static unsigned int g_fail_writes;
+
+/* LOG_WARNING (or worse) messages logged since the test last cleared it. */
+static unsigned int g_nwarnings;
+
+/* What ionic_eth_net_send() returns. */
+static int g_net_send_rc;
+
+/* One frame for the next ionic_eth_net_recv(), then nothing. */
+static const uint8_t *g_net_rx_frame;
+static size_t g_net_rx_len;
 
 struct fake_sg {
     uint64_t addr;
@@ -63,6 +78,10 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
     /* Written so a dma_addr near UINT64_MAX can't wrap past the check. */
     if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE || len > GUEST_MEM_SIZE - addr)
         return -1;
+    if ((prot & PROT_WRITE) && g_fail_writes) {
+        g_fail_writes--;
+        return -1;
+    }
     if (prot & PROT_WRITE)
         g_nwrites++;
     sg->addr = addr;
@@ -103,8 +122,9 @@ void vfu_sgl_mark_dirty(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, size_t cnt)
 void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 {
     (void)vfu_ctx;
-    (void)level;
     (void)fmt;
+    if (level <= LOG_WARNING)
+        g_nwarnings++;
 }
 
 int vfu_irq_trigger(vfu_ctx_t *vfu_ctx, uint32_t subindex)
@@ -162,15 +182,19 @@ int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame, size_t len)
     (void)net;
     (void)frame;
     (void)len;
-    return 0;
+    return g_net_send_rc;
 }
 
 ssize_t ionic_eth_net_recv(struct ionic_eth_net *net, void *buf, size_t cap)
 {
+    size_t len = g_net_rx_len;
+
     (void)net;
-    (void)buf;
-    (void)cap;
-    return 0;
+    if (!g_net_rx_frame || len > cap)
+        return 0;
+    memcpy(buf, g_net_rx_frame, len);
+    g_net_rx_frame = NULL;
+    return (ssize_t)len;
 }
 
 #endif /* IONIC_ETH_EMU_FAKES_H */

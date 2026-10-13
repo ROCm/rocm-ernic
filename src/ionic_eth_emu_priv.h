@@ -21,6 +21,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_net.h"
 #include "ionic_profile.h"
@@ -352,6 +353,11 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
 #define INTR_MASK_ASSERT_OFF 12
 #define INTR_CRED_UNMASK     0x10000u
 
+/* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
+ * blocking producer stalls above this, which back-pressures the mesh TCP
+ * connection the same way the old PVRDMA Rx ring did. */
+#define ETH_INBOX_MAX_FRAMES 256
+
 /* Frames queued by ionic_eth_emu_queue_rx_frame(); private to the .c. */
 struct eth_inbox_frame;
 
@@ -384,6 +390,21 @@ struct ionic_eth_emu {
     /* True once LIF_INIT has completed. */
     bool lif_initialized;
     uint16_t lif_hw_index;
+
+    /* The struct ionic_lif_info LIF_INIT pointed at, or 0.  Cleared by
+     * LIF_RESET and device reset: after either the guest may free it, and
+     * it must never be written again. */
+    uint64_t lif_info_pa;
+
+    /* What struct ionic_lif_stats reports (ionic_emu_stats.h). */
+    struct ionic_emu_stats stats;
+    /* Publish on the next tick rather than waiting out the interval: set
+     * by LIF_INIT so a new info block is filled in straight away. */
+    bool stats_publish_now;
+    /* When the stats block was last written, by the caller's clock. */
+    uint64_t stats_last_ms;
+    /* The last write failed and was logged; log again only after one works. */
+    bool stats_write_failed;
 
     /* RDMA devcmd handler (registered after construction). */
     ionic_rdma_devcmd_fn_t rdma_devcmd_fn;

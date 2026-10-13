@@ -45,6 +45,7 @@
 #include "dma_range.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_priv.h"
+#include "ionic_emu_stats.h"
 #include "ionic_eth_net.h"
 #include "ionic_profile.h"
 #include "ionic_datapath.h"
@@ -74,11 +75,6 @@ static inline uint64_t le64(uint64_t v)
 {
     return htole64(v);
 }
-
-/* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
- * blocking producer stalls above this, which back-pressures the mesh TCP
- * connection the same way the old PVRDMA Rx ring did. */
-#define ETH_INBOX_MAX_FRAMES 256
 
 struct eth_inbox_frame {
     struct eth_inbox_frame *next;
@@ -208,6 +204,7 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     if (emu->inbox_count >= ETH_INBOX_MAX_FRAMES) {
         pthread_mutex_unlock(&emu->inbox_lock);
         free(f);
+        ionic_emu_stats_rx_inbox_full(&emu->stats, frame, len);
         return -ENOSPC;
     }
     if (emu->inbox_tail)
@@ -448,6 +445,58 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
 }
 
 /* -------------------------------------------------------------------------
+ * Statistics
+ *
+ * The driver reads struct ionic_lif_stats out of the LIF info block and
+ * never asks for it to be refreshed, so the device rewrites it on a timer.
+ * -------------------------------------------------------------------------
+ */
+
+void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
+{
+    uint8_t block[IONIC_LIF_STATS_BYTES];
+    uint64_t pa;
+
+    if (!emu || !emu->lif_info_pa)
+        return;
+    if (!emu->stats_publish_now &&
+        now_ms - emu->stats_last_ms < emu->profile.stats.interval_ms)
+        return;
+    emu->stats_publish_now = false;
+    emu->stats_last_ms = now_ms;
+
+    /* fill() writes all of @block, so no stack bytes reach the guest. */
+    ionic_emu_stats_fill(&emu->stats, block);
+    pa = emu->lif_info_pa + IONIC_LIF_INFO_STATS_OFF;
+    if (eth_dma_rw(emu->vfu_ctx, pa, block, sizeof(block), true) < 0) {
+        if (!emu->stats_write_failed)
+            vfu_log(emu->vfu_ctx, LOG_WARNING,
+                    "ionic_eth_emu: LIF stats write to %#lx failed; retrying "
+                    "every %u ms",
+                    (unsigned long)pa,
+                    (unsigned)emu->profile.stats.interval_ms);
+        emu->stats_write_failed = true;
+        return;
+    }
+    emu->stats_write_failed = false;
+}
+
+const struct ionic_emu_stats *ionic_eth_emu_get_stats(struct ionic_eth_emu *emu)
+{
+    if (!emu)
+        return NULL;
+    ionic_emu_stats_fold(&emu->stats);
+    return &emu->stats;
+}
+
+void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
+                              bool is_tx)
+{
+    if (emu)
+        ionic_emu_stats_rdma(&emu->stats, bytes, is_tx);
+}
+
+/* -------------------------------------------------------------------------
  * Command dispatch
  * -------------------------------------------------------------------------
  */
@@ -475,8 +524,15 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         ionic_eth_emu_handle_identify(emu, cmd, comp, data);
         break;
 
-    case IONIC_CMD_INIT:
     case IONIC_CMD_RESET:
+        /* Firmware zeroes its counters on reset, and the guest may free the
+         * LIF info block once the device is reset. */
+        emu->lif_info_pa = 0;
+        ionic_emu_stats_reset(&emu->stats);
+        comp[0] = IONIC_RC_SUCCESS;
+        break;
+
+    case IONIC_CMD_INIT:
     case IONIC_CMD_GETATTR:
     case IONIC_CMD_SETATTR:
         /* Device-level init/reset/attrs: nothing to configure in the
@@ -494,6 +550,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
 
     case IONIC_CMD_LIF_RESET:
         emu->lif_initialized = false;
+        emu->lif_info_pa = 0;
         comp[0] = 0;
         break;
 
@@ -980,6 +1037,8 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
 
     emu->lif_initialized = true;
     emu->lif_hw_index = lif_index;
+    emu->lif_info_pa = info_pa;
+    emu->stats_publish_now = true;
 
     comp[0] = 0; /* status OK */
     comp[1] = 0; /* rsvd      */
@@ -1327,10 +1386,11 @@ static void eth_cq_advance(struct eth_queue *q)
 /* Pull one transmitted frame out of guest memory into emu->frame.  Returns
  * the assembled length, or 0 if the descriptor cannot be gathered. */
 static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
-                            uint16_t index)
+                            uint16_t index, enum ionic_emu_drop *why)
 {
     uint8_t desc[ETH_DESC_SIZE];
 
+    *why = IONIC_EMU_DROP_DESC_FETCH;
     if (eth_dma_rw(emu->vfu_ctx, q->ring_base + (uint64_t)index * ETH_DESC_SIZE,
                    desc, sizeof(desc), false) < 0)
         return 0;
@@ -1349,10 +1409,12 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     /* len is the whole frame; the head descriptor carries the first fragment
      * and the SG ring carries the rest.  We advertise no offloads, so the
      * driver never posts a TSO descriptor whose len exceeds one frame. */
+    *why = IONIC_EMU_DROP_DESC_DATA;
     if (!len || len > sizeof(emu->frame))
         return 0;
 
     if (!nsge) {
+        *why = IONIC_EMU_DROP_DMA;
         if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, len, false) < 0)
             return 0;
         return len;
@@ -1360,6 +1422,8 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
 
     if (nsge > TXQ_SG_MAX_ELEMS)
         return 0;
+
+    *why = IONIC_EMU_DROP_DESC_FETCH;
 
     uint8_t sg[TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
     if (eth_dma_rw(emu->vfu_ctx,
@@ -1376,9 +1440,11 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
         memcpy(&elen, sg + (size_t)i * TXQ_SG_ELEM_SIZE + 8, 2);
         sg_total += le16toh(elen);
     }
+    *why = IONIC_EMU_DROP_DESC_DATA;
     if (sg_total >= len)
         return 0;
 
+    *why = IONIC_EMU_DROP_DMA;
     size_t head_len = len - sg_total;
     if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, head_len, false) < 0)
         return 0;
@@ -1414,24 +1480,33 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         return;
 
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][qid];
-    if (!q->valid)
+    if (!q->valid) {
+        ionic_emu_stats_drop(&emu->stats, NULL, 0, true,
+                             IONIC_EMU_DROP_DISABLED);
         return;
+    }
 
     uint16_t prod = (uint16_t)(p_index % q->depth);
     q->prod = prod;
 
     for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
-        if (emu->net || emu->tx_filter) {
-            size_t len = eth_tx_gather(emu, q, q->head);
-            if (len) {
-                bool taken =
-                    emu->tx_filter != NULL &&
-                    emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
-                if (!taken && emu->net) {
-                    ionic_eth_net_send(emu->net, emu->frame, len);
-                }
+        /* Gathered even when Tx is a sink, so the frame is still counted as
+         * sent: a NIC with nothing on the far end of its link counts too. */
+        enum ionic_emu_drop why;
+        size_t len = eth_tx_gather(emu, q, q->head, &why);
+        if (!len) {
+            ionic_emu_stats_drop(&emu->stats, NULL, 0, true, why);
+        } else {
+            bool taken = emu->tx_filter != NULL &&
+                         emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
+            if (!taken && emu->net &&
+                ionic_eth_net_send(emu->net, emu->frame, len) < 0)
+                ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
+                                     IONIC_EMU_DROP_SEND);
+            else
+                ionic_emu_stats_frame(&emu->stats, emu->frame, len, true);
+            if (emu->net || emu->tx_filter)
                 pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
-            }
         }
 
         /* struct ionic_txq_comp: status @0, comp_index le16 @2, colour @15. */
@@ -1441,9 +1516,11 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         comp[ETH_COMP_SIZE - 1] =
             q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
-        eth_dma_rw(emu->vfu_ctx,
-                   q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
-                   comp, sizeof(comp), true);
+        if (eth_dma_rw(emu->vfu_ctx,
+                       q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
+                       comp, sizeof(comp), true) < 0)
+            ionic_emu_stats_drop(&emu->stats, NULL, 0, true,
+                                 IONIC_EMU_DROP_DMA);
 
         q->head = (uint16_t)((q->head + 1) % q->depth);
         eth_cq_advance(q);
@@ -1473,7 +1550,7 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     if (eth_dma_rw(emu->vfu_ctx,
                    q->ring_base + (uint64_t)q->head * ETH_DESC_SIZE, desc,
                    sizeof(desc), false) < 0)
-        return -EIO;
+        return -EFAULT;
 
     /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8. */
     uint16_t cap;
@@ -1511,6 +1588,21 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     return 0;
 }
 
+/* The lif_stats reason for an eth_rx_deliver() error. */
+static enum ionic_emu_drop rx_drop_reason(int rc)
+{
+    switch (rc) {
+    case -ENOBUFS:
+        return IONIC_EMU_DROP_NO_BUFFER;
+    case -EMSGSIZE:
+        return IONIC_EMU_DROP_TOO_BIG;
+    case -EFAULT:
+        return IONIC_EMU_DROP_DESC_FETCH;
+    default:
+        return IONIC_EMU_DROP_DMA;
+    }
+}
+
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 {
     if (!emu)
@@ -1528,15 +1620,23 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (len <= 0)
             break;
 
-        if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0) {
+        /* A TAP frame the guest cannot take is gone, as on a real NIC. */
+        int rc = eth_rx_deliver(emu, q, emu->frame, (size_t)len);
+        if (rc == 0) {
             delivered = true;
+            ionic_emu_stats_frame(&emu->stats, emu->frame, (size_t)len, false);
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
+        } else {
+            ionic_emu_stats_drop(&emu->stats, emu->frame, (size_t)len, false,
+                                 rx_drop_reason(rc));
         }
     }
 
     /* Frames queued by off-thread producers (TCP mesh).  A frame that the
      * guest has no buffer for is put back at the head so ordering holds and
-     * the producer keeps seeing back-pressure. */
+     * the producer keeps seeing back-pressure; that is not a drop.  A frame
+     * that can never be delivered (too big, or a DMA failure) is dropped
+     * and counted, so it cannot block the queue behind it. */
     for (unsigned n = 0; n < 64; n++) {
         pthread_mutex_lock(&emu->inbox_lock);
         struct eth_inbox_frame *f = emu->inbox_head;
@@ -1550,9 +1650,15 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (!f)
             break;
 
-        if (eth_rx_deliver(emu, q, f->data, f->len) == 0) {
+        int rc = eth_rx_deliver(emu, q, f->data, f->len);
+        if (rc == 0) {
             delivered = true;
+            ionic_emu_stats_frame(&emu->stats, f->data, f->len, false);
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)f->len, false);
+            free(f);
+        } else if (rc != -ENOBUFS) {
+            ionic_emu_stats_drop(&emu->stats, f->data, f->len, false,
+                                 rx_drop_reason(rc));
             free(f);
         } else {
             pthread_mutex_lock(&emu->inbox_lock);

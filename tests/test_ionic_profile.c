@@ -36,12 +36,13 @@ struct want {
     uint32_t speed_mbps;
     uint8_t xcvr;
     uint32_t mtu_max;
+    uint32_t stats_interval_ms;
 };
 
 /* The fields of a struct want for compat.  Braced at each use: a macro whose
  * body is a braced list formats differently in clang-format 18.1.3 and
  * 18.1.8. */
-#define COMPAT_VALUES 0, 0, "rocm-ernic-1.0", 100000, 0, 9198
+#define COMPAT_VALUES 0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000
 
 static bool profile_is(const struct ionic_profile *p, const struct want *w)
 {
@@ -49,16 +50,17 @@ static bool profile_is(const struct ionic_profile *p, const struct want *w)
            p->identity.asic_rev == w->asic_rev &&
            strcmp(p->identity.fw_version, w->fw_version) == 0 &&
            p->link.speed_mbps == w->speed_mbps && p->link.xcvr == w->xcvr &&
-           p->link.mtu_max == w->mtu_max;
+           p->link.mtu_max == w->mtu_max &&
+           p->stats.interval_ms == w->stats_interval_ms;
 }
 
 static void print_profile(const char *label, const struct ionic_profile *p)
 {
     printf("     %s: asic_type %u, asic_rev %u, fw_version '%s', speed %" PRIu32
-           ", xcvr %u, mtu_max %" PRIu32 "\n",
+           ", xcvr %u, mtu_max %" PRIu32 ", stats interval %" PRIu32 "\n",
            label, p->identity.asic_type, p->identity.asic_rev,
            p->identity.fw_version, p->link.speed_mbps, p->link.xcvr,
-           p->link.mtu_max);
+           p->link.mtu_max, p->stats.interval_ms);
 }
 
 /* ---- Layered text -------------------------------------------------------- */
@@ -87,53 +89,54 @@ static const struct text_case text_cases[] = {
      "speed 400000; every other key as compat",
      {"[link]\nspeed_mbps = 400000\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 400000, 0, 9198}},
+     {0, 0, "rocm-ernic-1.0", 400000, 0, 9198, 1000}},
     {"positive",
      "every key set at once",
      "each value as written",
      {"[identity]\nasic_type = salina\nasic_rev = 7\nfw_version = 2.0.1\n"
       "[link]\nspeed_mbps = 200000\nxcvr = fiber\nmtu_max = 4000\n"},
      NULL,
-     {4, 7, "2.0.1", 200000, 1, 4000}},
+     {4, 7, "2.0.1", 200000, 1, 4000, 1000}},
     {"positive",
      "three layers, each setting some keys",
      "each key from the last layer that set it",
      {"[identity]\nfw_version = one\n[link]\nspeed_mbps = 25000\n",
       "[link]\nspeed_mbps = 40000\n", "[link]\nxcvr = none\n"},
      NULL,
-     {0, 0, "one", 40000, 2, 9198}},
+     {0, 0, "one", 40000, 2, 9198, 1000}},
     {"positive",
      "asic_type capri",
      "asic_type 1",
      {"[identity]\nasic_type = capri\n"},
      NULL,
-     {1, 0, "rocm-ernic-1.0", 100000, 0, 9198}},
+     {1, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000}},
     {"positive",
      "asic_type giglio",
      "asic_type 3",
      {"[identity]\nasic_type = giglio\n"},
      NULL,
-     {3, 0, "rocm-ernic-1.0", 100000, 0, 9198}},
+     {3, 0, "rocm-ernic-1.0", 100000, 0, 9198, 1000}},
     {"positive",
      "comments, blank lines, indentation and spaces around '='",
      "accepted; the values as written",
      {"# a comment\n\n  [link]  \n\t# another\n  speed_mbps=10000\n"
       "xcvr   =   fiber\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 10000, 1, 9198}},
+     {0, 0, "rocm-ernic-1.0", 10000, 1, 9198, 1000}},
     {"positive",
      "a fw_version with inner spaces and punctuation",
      "the string as written",
      {"[identity]\nfw_version = 1.8.0 (E-32) #7\n"},
      NULL,
-     {0, 0, "1.8.0 (E-32) #7", 100000, 0, 9198}},
+     {0, 0, "1.8.0 (E-32) #7", 100000, 0, 9198, 1000}},
 
     /* negative */
     {"negative",
      "an unknown section [quues]",
      "error naming the line and the section",
      {"# c\n[quues]\neth = 64\n"},
-     "layer1:2: unknown section [quues] (known sections: identity, link)",
+     "layer1:2: unknown section [quues] (known sections: identity, link, "
+     "stats)",
      {COMPAT_VALUES}},
     {"negative",
      "a section a later PR adds, [queues]",
@@ -246,13 +249,13 @@ static const struct text_case text_cases[] = {
      "accepted",
      {"[identity]\nasic_rev = 0\nfw_version = x\n"},
      NULL,
-     {0, 0, "x", 100000, 0, 9198}},
+     {0, 0, "x", 100000, 0, 9198, 1000}},
     {"boundary",
      "asic_rev 255",
      "accepted",
      {"[identity]\nasic_rev = 255\n"},
      NULL,
-     {0, 255, "rocm-ernic-1.0", 100000, 0, 9198}},
+     {0, 255, "rocm-ernic-1.0", 100000, 0, 9198, 1000}},
     {"boundary",
      "asic_rev 256",
      "out of range 0..255",
@@ -264,7 +267,7 @@ static const struct text_case text_cases[] = {
      "accepted",
      {"[link]\nspeed_mbps = 1000\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 1000, 0, 9198}},
+     {0, 0, "rocm-ernic-1.0", 1000, 0, 9198, 1000}},
     {"boundary",
      "speed 999, one below",
      "not a supported speed",
@@ -282,7 +285,7 @@ static const struct text_case text_cases[] = {
      "the last, 9582",
      {"[link]\nmtu_max = 1500\n", "[link]\nmtu_max = 9582\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 100000, 0, 9582}},
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9582, 1000}},
     {"boundary",
      "mtu_max 1499",
      "out of range 1500..9582",
@@ -313,6 +316,48 @@ static const struct text_case text_cases[] = {
      {""},
      NULL,
      {COMPAT_VALUES}},
+    {"positive",
+     "stats.interval_ms = 100",
+     "interval 100; every other key as compat",
+     {"[stats]\ninterval_ms = 100\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 100}},
+    {"boundary",
+     "stats.interval_ms 10 and 60000 in two layers",
+     "the last, 60000",
+     {"[stats]\ninterval_ms = 10\n", "[stats]\ninterval_ms = 60000\n"},
+     NULL,
+     {0, 0, "rocm-ernic-1.0", 100000, 0, 9198, 60000}},
+    {"boundary",
+     "stats.interval_ms 9",
+     "out of range 10..60000 ms",
+     {"[stats]\ninterval_ms = 9\n"},
+     "layer1:2: stats.interval_ms: '9' out of range 10..60000 ms",
+     {COMPAT_VALUES}},
+    {"boundary",
+     "stats.interval_ms 60001",
+     "out of range 10..60000 ms",
+     {"[stats]\ninterval_ms = 60001\n"},
+     "'60001' out of range 10..60000 ms",
+     {COMPAT_VALUES}},
+    {"negative",
+     "stats.interval_ms = 0",
+     "out of range: a zero interval would publish on every loop",
+     {"[stats]\ninterval_ms = 0\n"},
+     "'0' out of range 10..60000 ms",
+     {COMPAT_VALUES}},
+    {"negative",
+     "stats.interval_ms = fast",
+     "integer expected",
+     {"[stats]\ninterval_ms = fast\n"},
+     "stats.interval_ms: integer expected, got 'fast'",
+     {COMPAT_VALUES}},
+    {"negative",
+     "an unknown key in [stats]",
+     "rejected, naming the key",
+     {"[stats]\ninterval = 100\n"},
+     "layer1:2: unknown key 'stats.interval'",
+     {COMPAT_VALUES}},
 
     /* corner */
     {"corner",
@@ -322,31 +367,31 @@ static const struct text_case text_cases[] = {
      {"[link]\nspeed_mbps = 25000\n",
       "[link]\nspeed_mbps = 40000\nxcvr = fiber\nmtu_max = 1\n"},
      "layer2:4: link.mtu_max: '1' out of range 1500..9582",
-     {0, 0, "rocm-ernic-1.0", 25000, 0, 9198}},
+     {0, 0, "rocm-ernic-1.0", 25000, 0, 9198, 1000}},
     {"corner",
      "a \\s escape in fw_version",
      "decoded to a space, as GKeyFile does",
      {"[identity]\nfw_version = a\\sb\n"},
      NULL,
-     {0, 0, "a b", 100000, 0, 9198}},
+     {0, 0, "a b", 100000, 0, 9198, 1000}},
     {"corner",
      "trailing blanks after a value",
      "ignored, as invisible",
      {"[link]\nspeed_mbps = 10000  \t\nxcvr = none \n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 10000, 2, 9198}},
+     {0, 0, "rocm-ernic-1.0", 10000, 2, 9198, 1000}},
     {"corner",
      "CRLF line endings",
      "accepted",
      {"[link]\r\nspeed_mbps = 50000\r\n"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198}},
+     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000}},
     {"corner",
      "no newline at the end",
      "the last line still counts",
      {"[link]\nspeed_mbps = 50000"},
      NULL,
-     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198}},
+     {0, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000}},
     {"corner",
      "a section with no keys",
      "accepted; nothing changes",
@@ -577,7 +622,8 @@ static void check_compat_sets_every_key(void)
     const char *text = ionic_profile_builtin("compat");
     const char *far = "[identity]\nasic_type = salina\nasic_rev = 9\n"
                       "fw_version = far\n[link]\nspeed_mbps = 1000\n"
-                      "xcvr = none\nmtu_max = 1500\n";
+                      "xcvr = none\nmtu_max = 1500\n[stats]\n"
+                      "interval_ms = 10\n";
     const struct want compat = {COMPAT_VALUES};
     bool ok;
 
@@ -598,7 +644,8 @@ static void check_round_trip(void)
 {
     const char *layer = "[identity]\nasic_type = elba\nasic_rev = 3\n"
                         "fw_version = 1.8.0 (E-32)\n[link]\n"
-                        "speed_mbps = 400000\nxcvr = fiber\nmtu_max = 9000\n";
+                        "speed_mbps = 400000\nxcvr = fiber\nmtu_max = 9000\n"
+                        "[stats]\ninterval_ms = 250\n";
     struct ionic_profile p, q;
     char err[256], text[2048];
     int n;
@@ -615,6 +662,7 @@ static void check_round_trip(void)
          memcmp(&p.identity, &q.identity, sizeof(p.identity)) == 0 &&
          p.link.speed_mbps == q.link.speed_mbps && p.link.xcvr == q.link.xcvr &&
          p.link.mtu_max == q.link.mtu_max &&
+         p.stats.interval_ms == q.stats.interval_ms &&
          ionic_profile_hash(&p) == ionic_profile_hash(&q);
     report(ok, "corner", "the printed profile parsed back onto compat",
            "the same values and the same hash (round trip)");

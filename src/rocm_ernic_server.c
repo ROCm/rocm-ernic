@@ -656,6 +656,15 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     return 0;
 }
 
+/* Milliseconds on a clock that never jumps, for the stats publish tick. */
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
 /**
  * Print usage information
  */
@@ -701,6 +710,14 @@ static void usage(const char *progname)
             ionic_profile_builtin_names());
     fprintf(stderr, "      --print-profile  Print the merged NIC profile as "
                     "ini and exit\n");
+    fprintf(stderr, "      --stats-interval-ms MS  How often the guest's "
+                    "statistics are\n");
+    fprintf(stderr,
+            "                       rewritten, %u-%u (default: the "
+            "profile's\n",
+            IONIC_PROFILE_STATS_INTERVAL_MIN, IONIC_PROFILE_STATS_INTERVAL_MAX);
+    fprintf(stderr, "                       stats.interval_ms, 1000). Beats "
+                    "every profile.\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1274,10 +1291,11 @@ int main(int argc, char *argv[])
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
     bool print_profile = false;
+    const char *stats_interval_arg = NULL;
     int ret, opt;
 
     /* Long-only options take values past the single-character ones. */
-    enum { OPT_NIC_PROFILE = 0x100, OPT_PRINT_PROFILE };
+    enum { OPT_NIC_PROFILE = 0x100, OPT_PRINT_PROFILE, OPT_STATS_INTERVAL };
 
     /* Command-line option definitions */
     static struct option long_options[] = {
@@ -1294,6 +1312,7 @@ int main(int argc, char *argv[])
         {"tap", required_argument, NULL, 'T'},
         {"nic-profile", required_argument, NULL, OPT_NIC_PROFILE},
         {"print-profile", no_argument, NULL, OPT_PRINT_PROFILE},
+        {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1391,6 +1410,10 @@ int main(int argc, char *argv[])
         case OPT_PRINT_PROFILE:
             print_profile = true;
             break;
+        case OPT_STATS_INTERVAL:
+            /* Applied after every --nic-profile, which it beats. */
+            stats_interval_arg = optarg;
+            break;
         case 'h':
             usage(argv[0]);
             dev_free(dev);
@@ -1399,6 +1422,20 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             dev_free(dev);
             return EXIT_FAILURE;
+        }
+    }
+
+    if (stats_interval_arg) {
+        char interval_err[256];
+
+        if (ionic_profile_set_stats_interval(
+                &dev->profile, stats_interval_arg, "--stats-interval-ms",
+                interval_err, sizeof(interval_err)) != 0) {
+            fprintf(stderr, "Error: %s\n", interval_err);
+            usage(argv[0]);
+            free(dev->backend_type_str);
+            free(dev);
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -1708,8 +1745,10 @@ int main(int argc, char *argv[])
 
             /* ionic: move frames from the host TAP into the guest Rx ring.
              * This has to happen on this thread: only it may DMA. */
-            if (dev->ionic_emu)
+            if (dev->ionic_emu) {
                 ionic_eth_emu_poll_rx(dev->ionic_emu);
+                ionic_eth_emu_publish_stats(dev->ionic_emu, monotonic_ms());
+            }
 
             /* ionic: poll admin queue rings for new WQEs */
             if (dev->ionic_rdma) {
