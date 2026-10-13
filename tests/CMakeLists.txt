@@ -378,6 +378,19 @@ target_compile_definitions(test_ionic_stats PRIVATE
 target_compile_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# ionic fault-injection core test: the --inject parser, the deterministic
+# patterns and the per-site fault set. Links the translation unit directly;
+# it has no external dependencies to stub.
+add_executable(test_ionic_fault
+    test_ionic_fault.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(test_ionic_fault PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_options(test_ionic_fault PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_fault PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ionic CQ arm-semantics test. It #includes the datapath translation unit to
 # reach the private CQ state and counts the event callback in-process, so no
 # vfio-user link or guest memory is needed.
@@ -581,6 +594,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_port_info
     test_ionic_query_qp
     test_ionic_stats
+    test_ionic_fault
     test_ionic_cq_arm
     test_tcp_mesh_topology
     test_tcp_gid_resolve
@@ -760,6 +774,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_stats>
 )
 set_tests_properties(ionic-stats-unit PROPERTIES TIMEOUT 30)
+
+# ionic fault-injection unit test: asserts each --inject pattern fires on
+# exactly the events it names, malformed specs are rejected naming the bad
+# token, and the canonical form parses back to the same fault.
+add_test(
+    NAME ionic-fault-unit
+    COMMAND $<TARGET_FILE:test_ionic_fault>
+)
+set_tests_properties(ionic-fault-unit PROPERTIES TIMEOUT 30)
 
 # ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
 # raises the event immediately, rather than waiting for a CQE that never comes.
