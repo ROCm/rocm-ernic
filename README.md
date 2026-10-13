@@ -2,6 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-MIT%20%7C%20GPL--2.0--or--later-blue.svg)][license]
 [![Build](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/build-and-test.yml?label=Build)][ci-build]
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FROCm%2Frocm-ernic%2Fbadges%2Fcoverage.json)][ci-build]
 [![Docs](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/docs-check.yml?label=Docs)][ci-docs]
 [![clang-format](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/clang-format.yml?label=clang-format)][ci-clang-format]
 [![ShellCheck](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/shellcheck.yml?label=ShellCheck)][ci-shellcheck]

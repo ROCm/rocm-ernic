@@ -59,6 +59,11 @@
   launcher picks per instance, which is what selects `nvmeof` for that lane.
 * CI job `ionic-patches` verifies that every patch in `patches/` still applies
   to the pinned `IONIC_KERNEL_REF`.
+* `-DERNIC_USE_CODE_COVERAGE=ON` (Clang only) builds with LLVM source-based
+  coverage, and the `ernic-coverage` target reports the line coverage of
+  `src/` after `ctest`. The Build and Test workflow has a coverage leg that
+  fails below a floor, and on `develop` publishes the figure for the README's
+  Coverage badge.
 
 ### Changed
 
