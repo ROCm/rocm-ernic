@@ -452,6 +452,10 @@ struct ionic_eth_emu {
     pthread_mutex_t inbox_lock;
 };
 
+/* The width of the names in the stats file's "LIF Statistics" section: the
+ * longest ionic_if.h name, rdma_resp_rx_out_of_atomic_resource, is 35. */
+#define LIF_STAT_NAME_WIDTH 35
+
 /*
  * Device command handlers, each given the 64-byte command, the 16-byte
  * completion to fill in, and, for the commands that return data, the

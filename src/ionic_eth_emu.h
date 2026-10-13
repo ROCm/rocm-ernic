@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -137,6 +138,14 @@ struct ionic_emu_stats;
  */
 const struct ionic_emu_stats *ionic_eth_emu_get_stats(
     struct ionic_eth_emu *emu);
+
+/*
+ * Write the "LIF Statistics" section of the --stats-file: every named
+ * counter of struct ionic_lif_stats, by its ionic_if.h name, zero or not, so
+ * the set of lines never changes.  @opaque is the struct ionic_eth_emu; the
+ * signature matches pvrdma_set_stats_section().  Main loop thread only.
+ */
+void ionic_eth_emu_write_stats(FILE *fp, void *opaque);
 
 /* Count one RDMA message of @bytes in the LIF's tx/rx_rdma_ucast_* stats. */
 void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,

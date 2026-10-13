@@ -1608,6 +1608,9 @@ int main(int argc, char *argv[])
                  "%s (hash 0x%016" PRIx64 ")", dev->profile.chain,
                  ionic_profile_hash(&dev->profile));
         pvrdma_set_stats_nic_profile(dev->pvrdma_handle, profile_line);
+        if (dev->ionic_emu)
+            pvrdma_set_stats_section(dev->pvrdma_handle,
+                                     ionic_eth_emu_write_stats, dev->ionic_emu);
         ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
                              "(every ~1 second)",
                              dev->stats_file_path);

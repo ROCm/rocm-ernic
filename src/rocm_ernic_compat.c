@@ -175,6 +175,7 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str = NULL;
     (void)pvrdma_stats_set_nic_profile(NULL);
+    pvrdma_stats_set_section(NULL, NULL);
 
     /* Free device names */
     free(pvrdma->backend_device_name);
@@ -545,6 +546,13 @@ void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile)
 {
     if (handle && pvrdma_stats_set_nic_profile(profile) != 0)
         rdma_error_report("stats file: out of memory for the NIC profile");
+}
+
+void pvrdma_set_stats_section(pvrdma_handle_t handle,
+                              void (*fn)(FILE *fp, void *opaque), void *opaque)
+{
+    if (handle)
+        pvrdma_stats_set_section(fn, opaque);
 }
 
 void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle)
