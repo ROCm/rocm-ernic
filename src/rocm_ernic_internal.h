@@ -91,8 +91,22 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 /* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
  * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with
  * -EINVAL below IONIC_EQ_COUNT_MIN = 4 EQs, so a 4-vector table cannot carry
- * both halves of the driver.  Advertise the full table instead. */
-#define IONIC_MSIX_MAX_VECTORS 32
+ * both halves of the driver.  This is the most any NIC profile may ask for:
+ * 1 + 64 queue pairs + 32 EQs = 97 fits.  The table actually set up is the
+ * profile's queues.intr_vectors. */
+#define IONIC_MSIX_MAX_VECTORS 128
+
+/* An MSI-X table entry is 16 bytes and the PBA one bit per vector, in
+ * qwords; both must fit where the capability says they are. */
+_Static_assert(IONIC_BAR0_MSIX_TABLE >= IONIC_BAR0_REGS_SIZE,
+               "the MSI-X table must sit above the ionic register window");
+_Static_assert(IONIC_BAR0_MSIX_TABLE + IONIC_MSIX_MAX_VECTORS * 16u <=
+                   IONIC_BAR0_MSIX_PBA,
+               "the MSI-X table for every vector must end before the PBA");
+_Static_assert(IONIC_BAR0_MSIX_PBA +
+                       (IONIC_MSIX_MAX_VECTORS + 63u) / 64u * 8u <=
+                   IONIC_BAR0_TOTAL_SIZE,
+               "the MSI-X PBA for every vector must fit in BAR0");
 
 /**
  * rocm_ernic_dev - Main device structure

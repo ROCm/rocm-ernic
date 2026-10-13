@@ -259,15 +259,16 @@
 #define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
-/* Number of emulated EQs / AQs we report in LIF identity */
-#define IONIC_EMU_EQ_COUNT   32
+/* Number of emulated AQs we report in LIF identity; the EQ count is the
+ * profile's queues.rdma_eqs. */
 #define IONIC_EMU_AQ_COUNT   4
 #define IONIC_EMU_QP_COUNT   (1u << 15)
 #define IONIC_EMU_CQ_COUNT   (1u << 16)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
-/* Ethernet Tx/Rx queue pairs offered to the LIF. */
-#define IONIC_EMU_ETH_QCOUNT 4
+/* Room for the most Ethernet Tx/Rx queue pairs a profile can offer; the
+ * LIF advertises the profile's queues.eth of them. */
+#define IONIC_EMU_ETH_QMAX IONIC_PROFILE_ETH_QUEUES_MAX
 
 /* -------------------------------------------------------------------------
  * dev_cmd_regs layout, relative to IONIC_BAR0_DEV_CMD_REGS_OFFSET.
@@ -353,6 +354,18 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
 #define INTR_MASK_ASSERT_OFF 12
 #define INTR_CRED_UNMASK     0x10000u
 
+/* Every vector's intr_ctrl block, and its intr_status bit, must sit inside
+ * the register window the driver maps. */
+_Static_assert(
+    IONIC_BAR0_INTR_CTRL_OFFSET + IONIC_MSIX_MAX_VECTORS * INTR_REG_STRIDE <=
+        IONIC_BAR0_SIZE,
+    "intr_ctrl for every vector must fit in the BAR0 register window");
+_Static_assert(IONIC_BAR0_INTR_STATUS_OFFSET + IONIC_MSIX_MAX_VECTORS / 8u <=
+                   IONIC_BAR0_INTR_CTRL_OFFSET,
+               "intr_status for every vector must end before intr_ctrl");
+_Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
+               "a profile may not ask for more vectors than the device has");
+
 /* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
  * blocking producer stalls above this, which back-pressures the mesh TCP
  * connection the same way the old PVRDMA Rx ring did. */
@@ -425,7 +438,7 @@ struct ionic_eth_emu {
     uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
-    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
+    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QMAX];
 
     /* Station MAC reported by LIF_IDENTIFY. */
     uint8_t mac[6];
