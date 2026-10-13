@@ -46,6 +46,7 @@
 #include "ionic_eth_net.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
+#include "ionic_status.h"
 #include "rocm_ernic_internal.h"
 
 /* -------------------------------------------------------------------------
@@ -158,10 +159,6 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_CMD_Q_IDENTIFY         39
 #define IONIC_CMD_Q_INIT             40
 #define IONIC_CMD_Q_CONTROL          41
-
-/* Completion status codes (enum ionic_status_code in ionic_if.h) */
-#define IONIC_RC_SUCCESS 0
-#define IONIC_RC_EOPCODE 2
 
 /* LIF capabilities */
 #define IONIC_LIF_CAP_ETH  (1u << 0)

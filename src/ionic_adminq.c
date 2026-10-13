@@ -30,6 +30,7 @@
 
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "ionic_status.h"
 #include "rocm_ernic_compat.h"
 
 /* -------------------------------------------------------------------------
@@ -856,7 +857,7 @@ static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
     size_t fit = length / STAT_HDR_SIZE;
 
     if (fit == 0)
-        return 1;
+        return IONIC_RC_ENOSPC;
     if (entries > fit)
         entries = fit;
 
@@ -872,8 +873,9 @@ static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
         memcpy(buf + i * STAT_HDR_SIZE + 4, stats[i].name, name_len);
     }
 
-    return dma_write(ctx->vfu_ctx, dma, buf, entries * STAT_HDR_SIZE) < 0 ? 1
-                                                                          : 0;
+    return dma_write(ctx->vfu_ctx, dma, buf, entries * STAT_HDR_SIZE) < 0
+               ? IONIC_RC_EIO
+               : IONIC_RC_SUCCESS;
 }
 
 /* Write the values the matching headers describe, clamped to @length. */
@@ -886,7 +888,7 @@ static uint8_t stats_write_vals(struct ionic_adminq_ctx *ctx, uint64_t dma,
     size_t n = length / STAT_VAL_SIZE;
 
     if (n == 0)
-        return 1;
+        return IONIC_RC_ENOSPC;
     if (n > count)
         n = count;
 
@@ -899,7 +901,9 @@ static uint8_t stats_write_vals(struct ionic_adminq_ctx *ctx, uint64_t dma,
         memcpy(buf + i * STAT_VAL_SIZE, &v, STAT_VAL_SIZE);
     }
 
-    return dma_write(ctx->vfu_ctx, dma, buf, n * STAT_VAL_SIZE) < 0 ? 1 : 0;
+    return dma_write(ctx->vfu_ctx, dma, buf, n * STAT_VAL_SIZE) < 0
+               ? IONIC_RC_EIO
+               : IONIC_RC_SUCCESS;
 }
 
 static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
@@ -912,7 +916,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
     if (len < STATS_BODY_LEN) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq stats op=%u: short body",
                 op);
-        return 1;
+        return IONIC_RC_EINVAL;
     }
     memcpy(&dma, body, 8);
     dma = le64toh(dma);
@@ -923,7 +927,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
     if (!dma) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq stats op=%u: no buffer",
                 op);
-        return 1;
+        return IONIC_RC_BAD_ADDR;
     }
 
     switch (op) {
@@ -937,7 +941,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
         struct pvrdma_dev_counters c;
 
         if (pvrdma_get_dev_counters(ctx->pvrdma_handle, &c) != 0)
-            return 1;
+            return IONIC_RC_EIO;
         return stats_write_vals(ctx, dma, length, dev_stats, DEV_STATS_COUNT,
                                 &c);
     }
@@ -952,15 +956,15 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
         if (!adminq_lookup_qp(ctx, qp_id, &qpn)) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq QP_STATS_VALS: unknown qp_id=%u", qp_id);
-            return 1;
+            return IONIC_RC_ENOENT;
         }
         if (pvrdma_get_qp_counters(ctx->pvrdma_handle, qp_id, &c) != 0)
-            return 1;
+            return IONIC_RC_EIO;
         return stats_write_vals(ctx, dma, length, qp_stats, QP_STATS_COUNT, &c);
     }
 
     default:
-        return 1;
+        return IONIC_RC_EOPCODE;
     }
 }
 
