@@ -77,6 +77,9 @@ struct env {
 struct want {
     const char *name;
     uint64_t delta;
+    /* delta is a floor: the counter moves once per retry, and how many
+     * retries fit in a wait depends on the host. */
+    bool at_least;
 };
 
 struct rdma_case {
@@ -173,12 +176,15 @@ static int read_counters(const char *device, struct counters *c)
     return 0;
 }
 
-static uint64_t want_delta(const struct rdma_case *rc, const char *name)
+/* The row's expectation for counter name: exactly 0 when it names none. */
+static struct want want_for(const struct rdma_case *rc, const char *name)
 {
+    struct want none = {name, 0, false};
+
     for (size_t i = 0; i < MAX_WANT && rc->want[i].name; i++)
         if (strcmp(rc->want[i].name, name) == 0)
-            return rc->want[i].delta;
-    return 0;
+            return rc->want[i];
+    return none;
 }
 
 /* Appends "name +delta" for every counter whose delta differs from the row,
@@ -194,16 +200,16 @@ static int compare_counters(const struct rdma_case *rc,
     for (size_t i = 0; i < after->n; i++) {
         uint64_t old = 0;
         uint64_t delta;
-        uint64_t want = want_delta(rc, after->name[i]);
+        struct want want = want_for(rc, after->name[i]);
         int written;
 
         for (size_t j = 0; j < before->n; j++)
             if (strcmp(before->name[j], after->name[i]) == 0)
                 old = before->value[j];
         delta = after->value[i] - old;
-        if (delta == want && want == 0)
+        if (delta == 0 && want.delta == 0)
             continue;
-        if (delta != want)
+        if (want.at_least ? delta < want.delta : delta != want.delta)
             mismatches++;
         written = snprintf(got + used, got_len - used, "%s%s +%" PRIu64,
                            used ? ", " : "", after->name[i], delta);
@@ -550,37 +556,38 @@ static const struct rdma_case cases[] = {
      "REM_ACCESS_ERR; req_rx_remote_access_err, req_rx_cqe_err and "
      "resp_tx_remote_access_err +1",
      run_write_bad_rkey,
-     {{"req_rx_remote_access_err", 1},
-      {"req_rx_cqe_err", 1},
-      {"resp_tx_remote_access_err", 1}}},
+     {{"req_rx_remote_access_err", 1, false},
+      {"req_rx_cqe_err", 1, false},
+      {"resp_tx_remote_access_err", 1, false}}},
     {"positive",
      "RDMA WRITE whose local SGE names an unregistered lkey",
      "LOC_PROT_ERR; req_tx_memory_mgmt_err and req_rx_cqe_err +1",
      run_write_bad_lkey,
-     {{"req_tx_memory_mgmt_err", 1}, {"req_rx_cqe_err", 1}}},
+     {{"req_tx_memory_mgmt_err", 1, false}, {"req_rx_cqe_err", 1, false}}},
     {"positive",
      "SEND of 64 bytes into a 16-byte receive",
      "receive LOC_LEN_ERR; resp_rx_local_len_err and resp_rx_cqe_err +1",
      run_recv_too_small,
-     {{"resp_rx_local_len_err", 1}, {"resp_rx_cqe_err", 1}}},
+     {{"resp_rx_local_len_err", 1, false}, {"resp_rx_cqe_err", 1, false}}},
     {"positive",
      "fetch-and-add with an unregistered rkey",
      "REM_ACCESS_ERR; a remote access error on both ends, as for RDMA WRITE",
      run_atomic_bad_rkey,
-     {{"req_rx_remote_access_err", 1},
-      {"req_rx_cqe_err", 1},
-      {"resp_tx_remote_access_err", 1}}},
+     {{"req_rx_remote_access_err", 1, false},
+      {"req_rx_cqe_err", 1, false},
+      {"resp_tx_remote_access_err", 1, false}}},
     {"boundary",
      "SEND with no receive posted for 500 ms, then one",
-     "delivered; resp_rx_out_of_buffer +1 and no error completion",
+     "delivered; resp_rx_out_of_buffer +1, resp_tx_rnr_retry_err +1 or more "
+     "(one per retry), and no error completion",
      run_send_no_recv,
-     {{"resp_rx_out_of_buffer", 1}}},
+     {{"resp_rx_out_of_buffer", 1, false}, {"resp_tx_rnr_retry_err", 1, true}}},
     {"corner",
      "SEND whose source SGE names an unregistered lkey",
      "the receive completes LOC_PROT_ERR and resp_rx_cqe_err +1; the "
      "requester completes successfully",
      run_send_bad_source,
-     {{"resp_rx_cqe_err", 1}}},
+     {{"resp_rx_cqe_err", 1, false}}},
 };
 
 static int run_case(const struct env *env, const struct rdma_case *rc)
