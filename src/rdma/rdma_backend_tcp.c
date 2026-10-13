@@ -4717,7 +4717,7 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv)
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
         return;
 
     qemu_mutex_lock(&priv->lock);
@@ -4741,7 +4741,8 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
     size_t len = hdr_len + body_len;
     int rc;
 
-    if (!priv || !hdr || hdr_len == 0 || len > TCP_MAX_PAYLOAD_LEN)
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP || !hdr ||
+        hdr_len == 0 || len > TCP_MAX_PAYLOAD_LEN)
         return -EINVAL;
 
     if (dst_node == priv->local_node_id)
