@@ -536,6 +536,61 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
     g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
 }
 
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!out) {
+        return -EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+
+    out->commands = pvrdma->stats.commands;
+    out->total_bytes_sent = pvrdma->stats.total_bytes_sent;
+    out->total_bytes_received = pvrdma->stats.total_bytes_received;
+    out->total_bytes_rdma_read = pvrdma->stats.total_bytes_rdma_read;
+    out->total_bytes_rdma_write = pvrdma->stats.total_bytes_rdma_write;
+    return 0;
+}
+
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    const PVRDMAQPStats *qp = NULL;
+
+    if (!out) {
+        return -EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+
+    /* A plain lookup: pvrdma_get_qp_stats() would insert an entry. */
+    if (pvrdma->stats.qp_stats && qp_id != PVRDMA_STAT_NO_QP) {
+        qp = g_hash_table_lookup(pvrdma->stats.qp_stats,
+                                 GUINT_TO_POINTER(qp_id));
+    }
+    if (!qp) {
+        return 0;
+    }
+
+    out->doorbell_send = qp->doorbell_send;
+    out->doorbell_recv = qp->doorbell_recv;
+    out->wqes_processed = qp->wqes_processed;
+    out->cqes_posted = qp->cqes_posted;
+    out->bytes_sent = qp->bytes_sent;
+    out->bytes_received = qp->bytes_received;
+    out->bytes_rdma_read = qp->bytes_rdma_read;
+    out->bytes_rdma_write = qp->bytes_rdma_write;
+    return 0;
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */

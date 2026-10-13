@@ -54,6 +54,8 @@ from a real fuzz run under ASan without rebuilding via Nix:
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
 | `fuzz_profile_parse` | `ionic_profile_apply_text()`, the `--nic-profile` ini loader | Pure text parser; checks a rejected layer changes nothing and an accepted one is in range and round-trips through `--print-profile` output |
 | `fuzz_eth_classify` | `ionic_emu_mac_class()` and `ionic_eth_flow_hash()`, the per-frame MAC class and Rx steering hash | Pure functions of the frame bytes; checks the class against a reference, the hash is stable, below 12 bytes is empty, and does not change when an 802.1Q tag is added to a frame with fewer than two |
+| `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises, with and without an injected `stats_vals` fault |
+| `fuzz_fault_parse` | `ionic_fault_parse()`, the `--inject` spec parser | Pure string parser; checks an accepted spec is self-consistent and round-trips through its canonical form |
 
 Inputs are copied into an exact-size heap buffer before each call, so
 AddressSanitizer flags any read the parser performs past the supplied
@@ -74,16 +76,42 @@ seeds out as a corpus; the Nix build does that for every harness marked
 tagged, fragmented and truncated frames, each with the kind of hash it
 should produce (L3, or the L2 hash of the two MACs).
 
+## The ionic stats harness
+
+`fuzz_ionic_stats` is the first harness that reaches a device handler. It
+`#include`s `src/ionic_adminq.c` and posts one of the four stats opcodes
+through `dispatch_wqe()`, with guest memory and the counter snapshots
+supplied by `tests/ionic_adminq_fakes.h` -- the same fake device the unit
+test uses, so the table and the fuzzer can't drift apart. Beyond ASan, it
+aborts when a result breaks one of the handler's promises: one DMA write at
+the buffer the body named, never past its length, in whole entries, with
+the NONE terminator when it fits, the right counters in header order, no
+QP values for an unmapped QP, and nothing written on failure or outside
+the write. The status must also be the code its cause names (`EINVAL` for
+a short body, `BAD_ADDR` for a zero `dma_addr`, `ENOENT` for an unmapped
+QP), and an input can switch on an injected `stats_vals` fault, under which
+device values must fail with `EIO` and every other command is unaffected.
+
+`fuzz_fault_parse` drives `ionic_fault_parse()` with arbitrary strings. A
+rejected spec must leave a message and own nothing; an accepted one must
+be self-consistent, parse back from its canonical form to the same fault,
+and count its events exactly. It defines the same seed table and
+`FUZZ_EMIT_SEEDS` hook as the stats harness.
+
+`LLVMFuzzerInitialize()` first runs a table of seed inputs (positive,
+negative, boundary and corner rows, each with a description and expected
+outcome) through the same checks, and aborts if any fails, so a broken
+oracle can't fuzz quietly. With `FUZZ_EMIT_SEEDS=<dir>` it also writes the
+rows out; `fuzz.nix` does that to build the harness's seed corpus.
+
 ## Not yet fuzzed (device-fixture required)
 
-The ionic devcmd and datapath handlers in
-`src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c` are **not** fuzzed
-here. They are not byte-buffer parsers: they move guest data through
-`rdma_pci_dma_map()` and operate on the RDMA resource manager, so a
-faithful harness needs a fully-wired device (PCI config + DMA + backend)
-rather than a raw buffer. A device-emulation harness that maps a fake DMA
-region and drives the admin and doorbell rings is the way to reach them;
-that is future work.
+The rest of the ionic devcmd and datapath handlers in
+`src/ionic_adminq.c`, `src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c`
+are **not** fuzzed yet. They create and modify resources in the RDMA
+resource manager and walk the guest's rings, so they need more of the
+device faked than the stats commands do. Extending
+`tests/ionic_adminq_fakes.h` towards them is the natural next step.
 
 ## Extending a corpus
 

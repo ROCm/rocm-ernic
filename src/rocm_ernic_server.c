@@ -43,6 +43,7 @@
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "ionic_profile.h"
+#include "ionic_fault.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #include "rocm-ernic-warnings.h"
@@ -676,6 +677,15 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Beats every profile; the guest "
                     "uses at most\n");
     fprintf(stderr, "                       one per vCPU.\n");
+    fprintf(stderr, "      --inject FAULT   Inject a fault (repeatable), as "
+                    "'SITE: PATTERN effect EFFECT'\n");
+    fprintf(stderr, "                       e.g. 'stats_vals: every 100 effect "
+                    "fail status eio'\n");
+    fprintf(stderr,
+            "                       Sites: stats_vals. Patterns: every N, "
+            "after N [count M],\n");
+    fprintf(stderr, "                       burst N every M, sequence "
+                    "\"1x3,0x10\". Effects: fail [status S]\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1066,6 +1076,7 @@ int main(int argc, char *argv[])
         {"print-profile", no_argument, NULL, OPT_PRINT_PROFILE},
         {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
         {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
+        {"inject", required_argument, NULL, 'I'},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1168,6 +1179,23 @@ int main(int argc, char *argv[])
             if (ionic_profile_apply(&dev->profile, optarg, profile_err,
                                     sizeof(profile_err)) != 0) {
                 fprintf(stderr, "Error: --nic-profile: %s\n", profile_err);
+                free(dev->backend_type_str);
+                free(dev);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
+        case 'I': {
+            char fault_err[256];
+
+            if (!dev->faults)
+                dev->faults = ionic_fault_set_new();
+            if (!dev->faults ||
+                ionic_fault_set_add(dev->faults, optarg, fault_err,
+                                    sizeof(fault_err)) != 0) {
+                fprintf(stderr, "Error: --inject '%s': %s\n", optarg,
+                        dev->faults ? fault_err : "out of memory");
+                ionic_fault_set_free(dev->faults);
                 free(dev->backend_type_str);
                 free(dev);
                 exit(EXIT_FAILURE);
@@ -1292,6 +1320,14 @@ int main(int argc, char *argv[])
 
         if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
             ernic_startup_report("  NIC profile warning: %s", warning);
+    }
+    for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
+        const struct ionic_fault *f =
+            ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
+        char spec[256];
+
+        if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0)
+            ernic_startup_report("  Fault: %s", spec);
     }
 
     /* Show backend-specific options only for verbs backend */
@@ -1513,6 +1549,7 @@ int main(int argc, char *argv[])
                     ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
                 if (aqctx) {
                     ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
+                    ionic_adminq_set_faults(aqctx, dev->faults);
                     /* Wire adminq into eth_emu so AQ doorbells update
                      * the producer index for correct poll-loop termination. */
                     if (dev->ionic_emu)
@@ -1601,6 +1638,7 @@ int main(int argc, char *argv[])
 
 
     free(dev->stats_file_path);
+    ionic_fault_set_free(dev->faults);
 
     free(dev->bar0_mem);
     free(dev->backend_device_name);

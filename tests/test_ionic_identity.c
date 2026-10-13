@@ -186,11 +186,11 @@ struct golden_case {
 
 static const struct golden_case golden_cases[] = {
     {"corner", "a new emulator with no profile set",
-     "every block byte-identical to develop e912e84", NULL, false},
+     "every block byte-identical to the golden", NULL, false},
     {"corner", "the compat defaults passed to ionic_eth_emu_set_profile()",
-     "every block byte-identical to develop e912e84", NULL, true},
+     "every block byte-identical to the golden", NULL, true},
     {"corner", "the built-in compat text layered on compat",
-     "every block byte-identical to develop e912e84",
+     "every block byte-identical to the golden",
      "[identity]\nasic_type = none\nasic_rev = 0\nfw_version = "
      "rocm-ernic-1.0\n[link]\nspeed_mbps = 100000\nxcvr = copper\n"
      "mtu_max = 9198\n",

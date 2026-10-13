@@ -55,6 +55,14 @@ void ionic_adminq_set_datapath(struct ionic_adminq_ctx *ctx,
                                struct ionic_datapath *dp);
 
 /*
+ * Give the admin queue the faults to inject (ionic_fault.h), or NULL for
+ * none.  The set stays owned by the caller and must outlive the queue.
+ */
+struct ionic_fault_set;
+void ionic_adminq_set_faults(struct ionic_adminq_ctx *ctx,
+                             struct ionic_fault_set *faults);
+
+/*
  * Update the AQ producer index from a BAR2 doorbell write.
  * Called by the datapath/eth_emu when an AQ doorbell is received.
  * @aq_idx: index of the admin queue (0..IONIC_AQ_COUNT-1)
