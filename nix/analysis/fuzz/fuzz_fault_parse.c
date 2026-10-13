@@ -9,7 +9,8 @@
  *   - a rejected spec leaves a non-empty message and owns nothing;
  *   - an accepted one is self-consistent: every count it uses is >= 1, a
  *     burst fits its period, a sequence is 1..IONIC_FAULT_SEQ_MAX bytes of
- *     0 or 1, the status is a non-zero code, and nothing is counted yet;
+ *     0 or 1, the effect is one the site takes, a fail carries a non-zero
+ *     status and any other effect none, and nothing is counted yet;
  *   - its canonical form parses back to the same fault and formats to the
  *     same text again (a fixed point);
  *   - driving it over a run of events, fired counts exactly the events it
@@ -55,12 +56,30 @@ static bool same_fault(const struct ionic_fault *a, const struct ionic_fault *b)
     return a->seq_len == 0 || memcmp(a->seq, b->seq, a->seq_len) == 0;
 }
 
+/* The effects each site takes, written out apart from the parser's table. */
+static bool effect_valid(enum ionic_fault_site site,
+                         enum ionic_fault_effect effect)
+{
+    if (site == IONIC_FAULT_SITE_STATS_VALS)
+        return effect == IONIC_FAULT_EFFECT_FAIL;
+    if (site == IONIC_FAULT_SITE_ETH_RX)
+        return effect == IONIC_FAULT_EFFECT_DROP ||
+               effect == IONIC_FAULT_EFFECT_NOBUF;
+    if (site == IONIC_FAULT_SITE_ETH_TX)
+        return effect == IONIC_FAULT_EFFECT_DROP;
+    return false;
+}
+
 static const char *check_fields(const struct ionic_fault *f)
 {
     if ((unsigned int)f->site >= IONIC_FAULT_SITE_COUNT)
         return "site out of range";
-    if (f->status == 0)
+    if (!effect_valid(f->site, f->effect))
+        return "effect not valid for the site";
+    if (f->effect == IONIC_FAULT_EFFECT_FAIL && f->status == 0)
         return "status 0 is success, not a fault";
+    if (f->effect != IONIC_FAULT_EFFECT_FAIL && f->status != 0)
+        return "a frame effect carries a status";
     if (f->eligible != 0 || f->fired != 0)
         return "a fresh fault has counted events";
     switch (f->kind) {
@@ -206,7 +225,23 @@ static const struct seed seeds[] = {
      "stats_vals: sequence \"1x3,0x10,1\" effect fail status eversion", true},
     {"positive", "canonical form", "accepted",
      "stats_vals: after 3 count 1 effect fail status eio", true},
+    {"positive", "eth_rx drop", "accepted", "eth_rx: every 10 effect drop",
+     true},
+    {"positive", "eth_rx nobuf burst", "accepted",
+     "eth_rx: burst 3 every 50 effect nobuf", true},
+    {"positive", "eth_tx drop sequence", "accepted",
+     "eth_tx: sequence \"1,0x3\" effect drop", true},
     {"negative", "unknown site", "rejected", "foo: every 1 effect fail", false},
+    {"negative", "site not yet built", "rejected",
+     "rdma_rx: every 1 effect rnr", false},
+    {"negative", "fail on an eth site", "rejected",
+     "eth_rx: every 1 effect fail", false},
+    {"negative", "nobuf on eth_tx", "rejected", "eth_tx: every 1 effect nobuf",
+     false},
+    {"negative", "status after drop", "rejected",
+     "eth_rx: every 1 effect drop status eio", false},
+    {"negative", "eth_rx effect not yet built", "rejected",
+     "eth_rx: every 1 effect corrupt", false},
     {"negative", "effect not valid for the site", "rejected",
      "stats_vals: every 1 effect drop", false},
     {"negative", "every 0", "rejected", "stats_vals: every 0 effect fail",

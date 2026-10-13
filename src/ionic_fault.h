@@ -10,6 +10,24 @@
  *   stats_vals: after 3 count 2 effect fail
  *   stats_vals: burst 5 every 100 effect fail
  *   stats_vals: sequence "1x3,0x10" effect fail
+ *   eth_rx: every 10 effect drop
+ *   eth_rx: burst 3 every 50 effect nobuf
+ *   eth_tx: after 100 count 5 effect drop
+ *
+ * The sites, and the effects each takes:
+ *
+ *   stats_vals  fail [status <name>]  the command completes with that ionic
+ *                                     status, eio by default
+ *   eth_rx      drop   the frame is lost before the NIC sees it: nothing is
+ *                      delivered and no LIF counter moves
+ *               nobuf  the NIC drops it as if no Rx buffer were posted:
+ *                      rx_queue_empty and rx_*_drop_* count it
+ *   eth_tx      drop   the frame is completed to the guest but never sent:
+ *                      tx_*_drop_* count it
+ *
+ * An eth_rx event is a frame off the TAP or the mesh, counted once even if
+ * the mesh holds it back for want of a buffer; an eth_tx event is a frame
+ * gathered from a Tx descriptor.
  *
  * This build has the deterministic patterns only, so a test can assert
  * exact counts.  Patterns advance only on eligible events, never on a
@@ -34,6 +52,8 @@
 /* Where a fault can fire.  Each site has one kind of eligible event. */
 enum ionic_fault_site {
     IONIC_FAULT_SITE_STATS_VALS, /* a STATS_VALS admin command */
+    IONIC_FAULT_SITE_ETH_RX,     /* a frame arriving for the guest */
+    IONIC_FAULT_SITE_ETH_TX,     /* a frame the guest sent */
     IONIC_FAULT_SITE_COUNT,
 };
 
@@ -45,7 +65,9 @@ enum ionic_fault_pattern_kind {
 };
 
 enum ionic_fault_effect {
-    IONIC_FAULT_EFFECT_FAIL, /* complete the command with an error status */
+    IONIC_FAULT_EFFECT_FAIL,  /* complete the command with an error status */
+    IONIC_FAULT_EFFECT_DROP,  /* lose the frame on the wire */
+    IONIC_FAULT_EFFECT_NOBUF, /* drop it as if no Rx buffer were posted */
 };
 
 /* The longest sequence a pattern may expand to, in events. */
@@ -59,7 +81,7 @@ struct ionic_fault {
     uint8_t *seq; /* SEQUENCE: one byte per event, 1 = fire */
     uint32_t seq_len;
     enum ionic_fault_effect effect;
-    uint8_t status; /* FAIL: the ionic status code to complete with */
+    uint8_t status; /* FAIL: the ionic status code to complete with; else 0 */
 
     uint64_t eligible; /* eligible events seen (saturates) */
     uint64_t fired;    /* events the fault fired on (saturates) */
