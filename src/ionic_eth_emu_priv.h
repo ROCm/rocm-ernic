@@ -23,6 +23,7 @@
 
 #include "ionic_eth_emu.h"
 #include "ionic_eth_net.h"
+#include "ionic_profile.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
@@ -106,18 +107,37 @@
 /* Everything above the highest field written, so one DMA write covers it. */
 #define IONIC_PORT_INFO_PUBLISHED_LEN 320u
 
-#define IONIC_PORT_ADMIN_STATE_UP    2
-#define IONIC_XCVR_STATE_INSERTED    1
-#define IONIC_PHY_TYPE_COPPER        1
-#define IONIC_XCVR_PID_QSFP_100G_CR4 1
-#define IONIC_ETH_LINK_SPEED_MBPS    100000
-#define IONIC_ETH_MTU                9000
-#define IONIC_CMD_LIF_RESET          22
-#define IONIC_CMD_LIF_GETATTR        23
-#define IONIC_CMD_LIF_SETATTR        24
-#define IONIC_CMD_Q_IDENTIFY         39
-#define IONIC_CMD_Q_INIT             40
-#define IONIC_CMD_Q_CONTROL          41
+#define IONIC_PORT_ADMIN_STATE_UP 2
+#define IONIC_XCVR_STATE_REMOVED  0
+#define IONIC_XCVR_STATE_INSERTED 1
+#define IONIC_PHY_TYPE_NONE       0
+#define IONIC_PHY_TYPE_COPPER     1
+#define IONIC_PHY_TYPE_FIBER      2
+/* enum ionic_xcvr_pid: the part ids xcvr_pid() picks from. */
+#define IONIC_XCVR_PID_UNKNOWN          0
+#define IONIC_XCVR_PID_QSFP_100G_CR4    1
+#define IONIC_XCVR_PID_QSFP_40GBASE_CR4 2
+#define IONIC_XCVR_PID_SFP_25GBASE_CR_S 3
+#define IONIC_XCVR_PID_QSFP_50G_CR2     7
+#define IONIC_XCVR_PID_QSFP_200G_CR4    8
+#define IONIC_XCVR_PID_QSFP_400G_CR4    9
+#define IONIC_XCVR_PID_QSFP_100G_SR4    52
+#define IONIC_XCVR_PID_QSFP_40GBASE_SR4 56
+#define IONIC_XCVR_PID_SFP_25GBASE_SR   59
+#define IONIC_XCVR_PID_SFP_10GBASE_SR   63
+#define IONIC_XCVR_PID_SFP_10GBASE_CU   68
+#define IONIC_XCVR_PID_SFP_1000BASE_T   73
+#define IONIC_XCVR_PID_QSFP_200G_SR4    77
+#define IONIC_XCVR_PID_QSFP_400G_SR4    81
+/* port_info config.mtu; the driver only logs it.  The MTU the guest can set
+ * comes from the LIF identity max_frame_size (link.mtu_max). */
+#define IONIC_ETH_MTU         9000
+#define IONIC_CMD_LIF_RESET   22
+#define IONIC_CMD_LIF_GETATTR 23
+#define IONIC_CMD_LIF_SETATTR 24
+#define IONIC_CMD_Q_IDENTIFY  39
+#define IONIC_CMD_Q_INIT      40
+#define IONIC_CMD_Q_CONTROL   41
 
 /* Completion status codes (enum ionic_status_code in ionic_if.h) */
 #define IONIC_RC_SUCCESS 0
@@ -126,9 +146,6 @@
 /* LIF capabilities */
 #define IONIC_LIF_CAP_ETH  (1u << 0)
 #define IONIC_LIF_CAP_RDMA (1u << 1)
-
-/* ASIC type for emulated device */
-#define IONIC_ASIC_TYPE_NONE 0
 
 /* (Ethernet logical queue type IDs — kept only for documentation purposes) */
 
@@ -392,6 +409,9 @@ struct ionic_eth_emu {
     /* Station MAC reported by LIF_IDENTIFY. */
     uint8_t mac[6];
 
+    /* Identity and link shape (ionic_profile.h); compat unless set. */
+    struct ionic_profile profile;
+
     /* Host network backend, or NULL when Tx is a sink. */
     struct ionic_eth_net *net;
     /* In-process endpoint offered every Tx frame before the backend. */
@@ -417,10 +437,18 @@ struct ionic_eth_emu {
  * dev_cmd data window. process_devcmd() in ionic_eth_emu.c calls them when
  * the driver rings the dev_cmd doorbell.
  */
+void ionic_eth_emu_handle_identify(struct ionic_eth_emu *emu,
+                                   const uint8_t *cmd, uint8_t *comp,
+                                   uint8_t *data);
 void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
                                     const uint8_t *cmd, uint8_t *comp);
 void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
                                        const uint8_t *cmd, uint8_t *comp,
                                        uint8_t *data);
+void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
+                                   const uint8_t *cmd, uint8_t *comp);
+void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
+                                     const uint8_t *cmd, uint8_t *comp,
+                                     uint8_t *data);
 
 #endif /* IONIC_ETH_EMU_PRIV_H */

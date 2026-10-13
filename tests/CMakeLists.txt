@@ -225,6 +225,8 @@ target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 add_executable(test_ionic_intr_pending
     test_ionic_intr_pending.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
 )
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -239,6 +241,8 @@ target_include_directories(test_ionic_intr_pending SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
+target_link_directories(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARIES})
 
 # ionic PORT_INIT port-info test. It links the eth emulator, calls its
 # handlers through ionic_eth_emu_priv.h, and backs the DMA entry points with
@@ -247,6 +251,8 @@ target_compile_definitions(test_ionic_intr_pending PRIVATE
 add_executable(test_ionic_port_info
     test_ionic_port_info.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
 )
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -261,6 +267,8 @@ target_include_directories(test_ionic_port_info SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_port_info PRIVATE
     _GNU_SOURCE)
+target_link_directories(test_ionic_port_info PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_port_info PRIVATE ${GLIB2_LIBRARIES})
 
 # NIC profile loader test: ini layering, strict validation and atomic
 # layers, built-in profiles by name and files by path. Pure: no ionic TU.
@@ -279,6 +287,30 @@ target_compile_definitions(test_ionic_profile PRIVATE
     ERNIC_PROFILES_DIR="${PROJECT_SOURCE_DIR}/profiles")
 target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
+
+# ionic NIC identity test. It links the eth emulator, calls its devcmd
+# handlers through ionic_eth_emu_priv.h, checks the compat profile against
+# golden bytes captured before profiles existed, and checks where each
+# identity and link key lands.
+add_executable(test_ionic_identity
+    test_ionic_identity.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_include_directories(test_ionic_identity PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_include_directories(test_ionic_identity SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_identity PRIVATE
+    _GNU_SOURCE)
+target_link_directories(test_ionic_identity PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_identity PRIVATE ${GLIB2_LIBRARIES})
 
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
@@ -619,6 +651,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_profile
+    test_ionic_identity
     test_ionic_query_qp
     ernic-test-ionic-stats
     test_server_lifecycle
@@ -798,6 +831,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_profile>
 )
 set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
+
+# ionic NIC identity unit test: asserts compat is byte-identical to the
+# device before profiles, and each identity/link key reaches the field the
+# driver reads.
+add_test(
+    NAME ionic-identity-unit
+    COMMAND $<TARGET_FILE:test_ionic_identity>
+)
+set_tests_properties(ionic-identity-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and

@@ -46,6 +46,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_priv.h"
 #include "ionic_eth_net.h"
+#include "ionic_profile.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
 #include "rocm_ernic_compat.h"
@@ -90,16 +91,10 @@ struct eth_inbox_frame {
  * -------------------------------------------------------------------------
  */
 static void process_devcmd(struct ionic_eth_emu *emu);
-static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp, uint8_t *data);
-static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp);
 static void handle_lif_setattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp);
 static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp);
-static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                              uint8_t *comp, uint8_t *data);
 static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
                           uint8_t *comp);
 static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
@@ -114,6 +109,36 @@ static int eth_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
  * Construction / destruction
  * -------------------------------------------------------------------------
  */
+
+/* Fill dev_info_regs in the BAR0 shadow from the profile's identity.
+ * ionic.ko reads signature at offset 0 to confirm the device is alive,
+ * and fw_status bit 0 to confirm firmware is running. */
+static void write_dev_info(struct ionic_eth_emu *emu)
+{
+    uint8_t *info = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET;
+
+    uint32_t sig = le32(IONIC_DEV_INFO_SIGNATURE);
+    memcpy(info + DEVINFO_SIGNATURE_OFF, &sig, 4);
+    info[DEVINFO_VERSION_OFF] = IONIC_DEV_INFO_VERSION;
+    info[DEVINFO_ASIC_TYPE_OFF] = emu->profile.identity.asic_type;
+    info[DEVINFO_ASIC_REV_OFF] = emu->profile.identity.asic_rev;
+    info[DEVINFO_FW_STATUS_OFF] = IONIC_FW_STS_F_RUNNING;
+
+    /* Leave fw_heartbeat at 0: ionic_heartbeat_check() special-cases a
+     * zero heartbeat as "early FW with no heartbeat" and treats it as
+     * healthy, so we do not need a ticking counter to keep the LIF up. */
+    uint32_t hb = 0;
+    memcpy(info + DEVINFO_FW_HEARTBEAT_OFF, &hb, 4);
+
+    /* fw_version is at most 31 characters, so the zeroed tail always
+     * leaves it NUL-terminated. */
+    memset(info + DEVINFO_FW_VERSION_OFF, 0, DEVINFO_FWVERS_BUFLEN);
+    memcpy(
+        info + DEVINFO_FW_VERSION_OFF, emu->profile.identity.fw_version,
+        strnlen(emu->profile.identity.fw_version, DEVINFO_FWVERS_BUFLEN - 1));
+    strncpy((char *)(info + DEVINFO_SERIAL_NUM_OFF), "rocm-ernic-emulated",
+            DEVINFO_SERIAL_BUFLEN);
+}
 
 struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
 {
@@ -131,34 +156,23 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     }
     pthread_mutex_init(&emu->inbox_lock, NULL);
 
-    /* Initialise dev_info_regs in BAR0 shadow.
-     * ionic.ko reads signature at offset 0 to confirm the device is alive,
-     * and fw_status bit 0 to confirm firmware is running. */
-    uint8_t *info = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET;
-
-    uint32_t sig = le32(IONIC_DEV_INFO_SIGNATURE);
-    memcpy(info + DEVINFO_SIGNATURE_OFF, &sig, 4);
-    info[DEVINFO_VERSION_OFF] = IONIC_DEV_INFO_VERSION;
-    info[DEVINFO_ASIC_TYPE_OFF] = IONIC_ASIC_TYPE_NONE;
-    info[DEVINFO_ASIC_REV_OFF] = 0;
-    info[DEVINFO_FW_STATUS_OFF] = IONIC_FW_STS_F_RUNNING;
-
-    /* Leave fw_heartbeat at 0: ionic_heartbeat_check() special-cases a
-     * zero heartbeat as "early FW with no heartbeat" and treats it as
-     * healthy, so we do not need a ticking counter to keep the LIF up. */
-    uint32_t hb = 0;
-    memcpy(info + DEVINFO_FW_HEARTBEAT_OFF, &hb, 4);
-
-    strncpy((char *)(info + DEVINFO_FW_VERSION_OFF), "rocm-ernic-1.0",
-            DEVINFO_FWVERS_BUFLEN);
-    strncpy((char *)(info + DEVINFO_SERIAL_NUM_OFF), "rocm-ernic-emulated",
-            DEVINFO_SERIAL_BUFLEN);
+    ionic_profile_defaults(&emu->profile);
+    write_dev_info(emu);
 
     /* Mask all interrupts initially. */
     for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++)
         emu->intr_mask[i] = 1;
 
     return emu;
+}
+
+void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
+                               const struct ionic_profile *profile)
+{
+    if (!emu || !profile)
+        return;
+    emu->profile = *profile;
+    write_dev_info(emu);
 }
 
 void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
@@ -458,7 +472,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_IDENTIFY:
-        handle_identify(emu, cmd, comp, data);
+        ionic_eth_emu_handle_identify(emu, cmd, comp, data);
         break;
 
     case IONIC_CMD_INIT:
@@ -475,7 +489,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_LIF_INIT:
-        handle_lif_init(emu, cmd, comp);
+        ionic_eth_emu_handle_lif_init(emu, cmd, comp);
         break;
 
     case IONIC_CMD_LIF_RESET:
@@ -492,7 +506,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_Q_IDENTIFY:
-        handle_q_identify(emu, cmd, comp, data);
+        ionic_eth_emu_handle_q_identify(emu, cmd, comp, data);
         break;
 
     case IONIC_CMD_Q_INIT:
@@ -559,8 +573,9 @@ static void process_devcmd(struct ionic_eth_emu *emu)
 #define DEVID_EQ_COUNT_OFF       0x1cu
 /* capabilities is at 0x30; left zero. */
 
-static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp, uint8_t *data)
+void ionic_eth_emu_handle_identify(struct ionic_eth_emu *emu,
+                                   const uint8_t *cmd, uint8_t *comp,
+                                   uint8_t *data)
 {
     (void)cmd;
 
@@ -656,7 +671,10 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     memcpy(data + LIFID_RSS_IND_TBL_SZ_OFF, &rss, 2);
 
     PUT32(LIFID_MIN_FRAME_SIZE_OFF, 64);
-    PUT32(LIFID_MAX_FRAME_SIZE_OFF, 9216);
+    /* The driver lets the guest set an MTU up to max_frame_size -
+     * VLAN_ETH_HLEN (ionic_lif.c), so this is link.mtu_max plus 18. */
+    PUT32(LIFID_MAX_FRAME_SIZE_OFF,
+          emu->profile.link.mtu_max + IONIC_PROFILE_FRAME_OVERHEAD);
 
     /* ionic_lif_config.  queue_count[] is not advisory: ionic_lif_size() reads
      * TXQ/RXQ straight out of it and hands the result to alloc_etherdev_mqs(),
@@ -844,6 +862,39 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
  * reported".
  * -------------------------------------------------------------------------
  */
+/*
+ * The transceiver part id for a link.xcvr and speed (enum ionic_xcvr_pid in
+ * ionic_if.h).  ethtool lists the link modes a pid supports, so the pid
+ * matches the speed: a CR4/CR copper cable, or an SR module for fiber.
+ * Speeds with no such pid report IONIC_XCVR_PID_UNKNOWN (0).
+ */
+static uint16_t xcvr_pid(uint8_t xcvr, uint32_t speed_mbps)
+{
+    static const struct {
+        uint32_t speed;
+        uint16_t copper;
+        uint16_t fiber;
+    } pids[] = {
+        {1000, IONIC_XCVR_PID_SFP_1000BASE_T, IONIC_XCVR_PID_UNKNOWN},
+        {10000, IONIC_XCVR_PID_SFP_10GBASE_CU, IONIC_XCVR_PID_SFP_10GBASE_SR},
+        {25000, IONIC_XCVR_PID_SFP_25GBASE_CR_S, IONIC_XCVR_PID_SFP_25GBASE_SR},
+        {40000, IONIC_XCVR_PID_QSFP_40GBASE_CR4,
+         IONIC_XCVR_PID_QSFP_40GBASE_SR4},
+        {50000, IONIC_XCVR_PID_QSFP_50G_CR2, IONIC_XCVR_PID_UNKNOWN},
+        {100000, IONIC_XCVR_PID_QSFP_100G_CR4, IONIC_XCVR_PID_QSFP_100G_SR4},
+        {200000, IONIC_XCVR_PID_QSFP_200G_CR4, IONIC_XCVR_PID_QSFP_200G_SR4},
+        {400000, IONIC_XCVR_PID_QSFP_400G_CR4, IONIC_XCVR_PID_QSFP_400G_SR4},
+    };
+
+    if (xcvr == IONIC_PROFILE_XCVR_NONE)
+        return IONIC_XCVR_PID_UNKNOWN;
+    for (size_t i = 0; i < sizeof(pids) / sizeof(pids[0]); i++)
+        if (pids[i].speed == speed_mbps)
+            return xcvr == IONIC_PROFILE_XCVR_FIBER ? pids[i].fiber
+                                                    : pids[i].copper;
+    return IONIC_XCVR_PID_UNKNOWN;
+}
+
 void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
                                     const uint8_t *cmd, uint8_t *comp)
 {
@@ -854,9 +905,12 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
 
     if (info_pa) {
         uint8_t info[IONIC_PORT_INFO_PUBLISHED_LEN];
-        uint32_t speed = le32(IONIC_ETH_LINK_SPEED_MBPS);
-        uint32_t mtu = le32(IONIC_ETH_MTU);
-        uint16_t pid = le16(IONIC_XCVR_PID_QSFP_100G_CR4);
+        const struct ionic_profile *prof = &emu->profile;
+        uint32_t speed = le32(prof->link.speed_mbps);
+        uint32_t mtu =
+            le32(prof->link.mtu_max < IONIC_ETH_MTU ? prof->link.mtu_max
+                                                    : IONIC_ETH_MTU);
+        uint16_t pid = le16(xcvr_pid(prof->link.xcvr, prof->link.speed_mbps));
 
         memset(info, 0, sizeof(info));
         memcpy(info + IONIC_PORT_INFO_CONFIG_SPEED_OFF, &speed, 4);
@@ -864,8 +918,16 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
         info[IONIC_PORT_INFO_CONFIG_STATE_OFF] = IONIC_PORT_ADMIN_STATE_UP;
         memcpy(info + IONIC_PORT_INFO_STATUS_SPEED_OFF, &speed, 4);
         info[IONIC_PORT_INFO_STATUS_STATUS_OFF] = IONIC_PORT_OPER_STATUS_UP;
-        info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
-        info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_COPPER;
+        if (prof->link.xcvr != IONIC_PROFILE_XCVR_NONE) {
+            info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
+            info[IONIC_PORT_INFO_XCVR_PHY_OFF] =
+                prof->link.xcvr == IONIC_PROFILE_XCVR_FIBER
+                    ? IONIC_PHY_TYPE_FIBER
+                    : IONIC_PHY_TYPE_COPPER;
+        } else {
+            info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_REMOVED;
+            info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_NONE;
+        }
         memcpy(info + IONIC_PORT_INFO_XCVR_PID_OFF, &pid, 2);
 
         if (eth_dma_rw(emu->vfu_ctx, info_pa, info, sizeof(info), true) < 0)
@@ -878,15 +940,15 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
 
     vfu_log(emu->vfu_ctx, LOG_INFO,
             "ionic_eth_emu: PORT_INIT speed=%uMbps info_pa=%#lx",
-            (unsigned)IONIC_ETH_LINK_SPEED_MBPS, (unsigned long)info_pa);
+            (unsigned)emu->profile.link.speed_mbps, (unsigned long)info_pa);
 }
 
 /* -------------------------------------------------------------------------
  * LIF_INIT (opcode 21)
  * -------------------------------------------------------------------------
  */
-static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp)
+void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
+                                   const uint8_t *cmd, uint8_t *comp)
 {
     /* cmd layout: opcode(1) type(1) index(2) rsvd(4) info_pa(8) rsvd2(48) */
     uint16_t lif_index;
@@ -906,7 +968,7 @@ static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     if (info_pa) {
         uint8_t status[64] = {0};
         uint16_t up = le16(IONIC_PORT_OPER_STATUS_UP);
-        uint32_t speed = le32(100000); /* Mbps */
+        uint32_t speed = le32(emu->profile.link.speed_mbps); /* Mbps */
         memcpy(status + 10, &up, 2);
         memcpy(status + 12, &speed, 4);
         if (eth_dma_rw(emu->vfu_ctx, info_pa + IONIC_LIF_INFO_STATUS_OFF,
@@ -971,8 +1033,9 @@ static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * The driver uses this to learn WQE stride ranges and speculative SGE counts.
  * -------------------------------------------------------------------------
  */
-static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                              uint8_t *comp, uint8_t *data)
+void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
+                                     const uint8_t *cmd, uint8_t *comp,
+                                     uint8_t *data)
 {
     uint8_t qtype = cmd[3]; /* ionic_logical_qtype */
     vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: Q_IDENTIFY qtype=%u",
