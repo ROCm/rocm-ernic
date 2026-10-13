@@ -53,6 +53,7 @@
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
 #include "ionic_status.h"
+#include "ionic_fault.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
@@ -82,6 +83,9 @@ static inline uint64_t le64(uint64_t v)
 struct eth_inbox_frame {
     struct eth_inbox_frame *next;
     size_t len;
+    /* The eth_rx fault has seen it: a frame held back for want of a buffer
+     * is one event, however many polls it waits. */
+    bool fault_seen;
     uint8_t data[];
 };
 
@@ -183,6 +187,15 @@ void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
     write_dev_info(emu);
 }
 
+void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
+                              struct ionic_fault_set *faults)
+{
+    if (!emu)
+        return;
+    emu->rx_fault = ionic_fault_set_get(faults, IONIC_FAULT_SITE_ETH_RX);
+    emu->tx_fault = ionic_fault_set_get(faults, IONIC_FAULT_SITE_ETH_TX);
+}
+
 void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
 {
     if (!emu)
@@ -210,6 +223,7 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
         return -ENOMEM;
     f->next = NULL;
     f->len = len;
+    f->fault_seen = false;
     memcpy(f->data, frame, len);
 
     pthread_mutex_lock(&emu->inbox_lock);
@@ -1580,6 +1594,11 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         size_t len = eth_tx_gather(emu, q, q->head, &why);
         if (!len) {
             ionic_emu_stats_drop(&emu->stats, NULL, 0, true, why);
+        } else if (ionic_fault_event(emu->tx_fault)) {
+            /* eth_tx drop: lost on the wire, so the guest still gets its
+             * completion and only the drop counters see it. */
+            ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
+                                 IONIC_EMU_DROP_INJECTED);
         } else {
             bool taken = emu->tx_filter != NULL &&
                          emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
@@ -1672,6 +1691,22 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     return 0;
 }
 
+/*
+ * Apply the eth_rx fault to a frame about to be delivered.  Returns true
+ * when the fault fired and the frame is gone.
+ */
+static bool eth_rx_fault(struct ionic_eth_emu *emu, const uint8_t *frame,
+                         size_t len)
+{
+    if (!ionic_fault_event(emu->rx_fault))
+        return false;
+    /* drop: lost before the NIC saw it, so no LIF counter moves. */
+    if (emu->rx_fault->effect == IONIC_FAULT_EFFECT_NOBUF)
+        ionic_emu_stats_drop(&emu->stats, frame, len, false,
+                             IONIC_EMU_DROP_NO_BUFFER);
+    return true;
+}
+
 /* The lif_stats reason for an eth_rx_deliver() error. */
 static enum ionic_emu_drop rx_drop_reason(int rc)
 {
@@ -1734,6 +1769,8 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
             ionic_eth_net_recv(emu->net, emu->frame, sizeof(emu->frame));
         if (len <= 0)
             break;
+        if (eth_rx_fault(emu, emu->frame, (size_t)len))
+            continue;
 
         uint8_t qid =
             ionic_eth_emu_rx_steer(active, nactive, emu->frame, (size_t)len);
@@ -1768,6 +1805,11 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         pthread_mutex_unlock(&emu->inbox_lock);
         if (!f)
             break;
+        if (!f->fault_seen && eth_rx_fault(emu, f->data, f->len)) {
+            free(f);
+            continue;
+        }
+        f->fault_seen = true;
 
         uint8_t qid = ionic_eth_emu_rx_steer(active, nactive, f->data, f->len);
         struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
