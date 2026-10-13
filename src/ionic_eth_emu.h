@@ -52,7 +52,7 @@ void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
  */
 struct ionic_fault_set;
 void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
-                              struct ionic_fault_set *faults);
+                              const struct ionic_fault_set *faults);
 
 /* Register the RDMA devcmd handler (called before any client connects). */
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
