@@ -54,6 +54,7 @@ from a real fuzz run under ASan without rebuilding via Nix:
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
 | `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `ionic_adminq_dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises |
 | `fuzz_profile_parse` | `ionic_profile_apply_text()`, the `--nic-profile` ini loader | Pure text parser; checks a rejected layer changes nothing and an accepted one is in range and round-trips through `--print-profile` output |
+| `fuzz_eth_classify` | `ionic_emu_mac_class()` and `ionic_eth_flow_hash()`, the per-frame MAC class and Rx steering hash | Pure functions of the frame bytes; checks the class against a reference, the hash is stable, below 12 bytes is empty, and does not change when an 802.1Q tag is added to a frame with fewer than two |
 
 Inputs are copied into an exact-size heap buffer before each call, so
 AddressSanitizer flags any read the parser performs past the supplied
@@ -91,6 +92,10 @@ outcome) through the same checks, and aborts if any row fails, so the
 oracle is tested on every run. With `FUZZ_EMIT_SEEDS=1` it writes into the current directory the
 seeds out as a corpus; the Nix build does that for every harness marked
 `seeds = true`.
+
+`fuzz_eth_classify` checks its own seed table the same way: well-formed,
+tagged, fragmented and truncated frames, each with the kind of hash it
+should produce (L3, or the L2 hash of the two MACs).
 
 ## Not yet fuzzed (device-fixture required)
 

@@ -186,6 +186,7 @@ set(IONIC_EMU_SOURCES
     src/ionic_profile.c
     src/ionic_profiles.c
     src/ionic_emu_stats.c
+    src/ionic_eth_steer.c
     src/ionic_rdma_devcmd.c
     src/ionic_adminq.c
     src/ionic_datapath.c

@@ -228,6 +228,7 @@ add_executable(test_ionic_intr_pending
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
     ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -255,6 +256,7 @@ add_executable(test_ionic_port_info
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
     ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -312,6 +314,7 @@ add_executable(test_ionic_identity
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
     ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_identity PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -337,6 +340,7 @@ add_executable(test_ionic_stats_publish
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
     ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_stats_publish PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -361,6 +365,7 @@ add_executable(test_ionic_queues
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
     ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_queues PRIVATE
     ${PROJECT_SOURCE_DIR}/src

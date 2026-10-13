@@ -140,6 +140,10 @@
 #define IONIC_CMD_Q_INIT      40
 #define IONIC_CMD_Q_CONTROL   41
 
+/* ionic_q_control_cmd.oper; IONIC_Q_HANG_RESET (2) is acknowledged as is */
+#define IONIC_Q_DISABLE 0
+#define IONIC_Q_ENABLE  1
+
 /* Completion status codes (enum ionic_status_code in ionic_if.h) */
 #define IONIC_RC_SUCCESS 0
 #define IONIC_RC_EOPCODE 2
@@ -377,6 +381,7 @@ struct eth_inbox_frame;
 /* State captured from Q_INIT for an Ethernet logical queue. */
 struct eth_queue {
     bool valid;
+    bool enabled; /* Q_CONTROL ENABLE seen since Q_INIT; Rx serves only these */
     uint16_t intr_index;
     uint64_t ring_base;
     uint64_t cq_ring_base;
