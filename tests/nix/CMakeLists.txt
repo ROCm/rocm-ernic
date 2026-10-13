@@ -98,3 +98,12 @@ target_include_directories(fuzz_replay_ionic_stats SYSTEM PRIVATE
 target_compile_definitions(fuzz_replay_ionic_stats PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE
 )
+
+# The fault spec parser is pure string handling; like the stats harness it
+# checks a seed table in LLVMFuzzerInitialize() before replaying.
+ernic_add_fuzz_replay(fault_parse
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c
+)
+target_compile_definitions(fuzz_replay_fault_parse PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)

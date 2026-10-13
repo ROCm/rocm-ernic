@@ -53,6 +53,7 @@ from a real fuzz run under ASan without rebuilding via Nix:
 | `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
 | `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises |
+| `fuzz_fault_parse` | `ionic_fault_parse()`, the `--inject` spec parser | Pure string parser; checks an accepted spec is self-consistent and round-trips through its canonical form |
 
 Inputs are copied into an exact-size heap buffer before each call, so
 AddressSanitizer flags any read the parser performs past the supplied
@@ -70,6 +71,12 @@ the buffer the body named, never past its length, in whole entries, with
 the NONE terminator when it fits, the right counters in header order, no
 QP values for an unmapped QP, and nothing written on failure or outside
 the write.
+
+`fuzz_fault_parse` drives `ionic_fault_parse()` with arbitrary strings. A
+rejected spec must leave a message and own nothing; an accepted one must
+be self-consistent, parse back from its canonical form to the same fault,
+and count its events exactly. It defines the same seed table and
+`FUZZ_EMIT_SEEDS` hook as the stats harness.
 
 `LLVMFuzzerInitialize()` first runs a table of seed inputs (positive,
 negative, boundary and corner rows, each with a description and expected

@@ -13,6 +13,7 @@
 #   fuzz_ionic_stats     the ionic STATS_HDRS/VALS admin commands, through
 #                        dispatch_wqe() over the fake device shared with
 #                        tests/test_ionic_stats.c (tests/ionic_adminq_fakes.h)
+#   fuzz_fault_parse     ionic_fault_parse() — the --inject fault spec parser
 #
 # Not fuzzed yet: the rest of the ionic devcmd and datapath handlers. They
 # manipulate the RDMA resource manager and the rings, so they need more of
@@ -52,6 +53,9 @@ let
     { name = "ionic_stats";
       extra = [ ];
       cflags = "-Itests -I${libvfioUser}/include";
+      seeds = true; }
+    { name = "fault_parse";
+      extra = [ "src/ionic_fault.c" ];
       seeds = true; }
   ];
 
