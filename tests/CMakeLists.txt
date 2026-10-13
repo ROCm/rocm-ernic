@@ -32,6 +32,25 @@ target_link_libraries(test_data_transfer PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
+# -- ernic-rdma-errors (guest tool; requires libibverbs) ---------
+# Run in a guest on an ionic_rdma device, not by ctest: it makes the RDMA
+# errors the emulator counts happen and checks hw_counters moved.
+add_executable(ernic-rdma-errors
+    guest/ernic_rdma_errors.c
+)
+target_compile_definitions(ernic-rdma-errors PRIVATE
+    _GNU_SOURCE
+)
+target_include_directories(ernic-rdma-errors PRIVATE
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_link_directories(ernic-rdma-errors PRIVATE
+    ${IBVERBS_LIBRARY_DIRS}
+)
+target_link_libraries(ernic-rdma-errors PRIVATE
+    ${IBVERBS_LIBRARIES}
+)
+
 # -- test_rdma_cm (requires libibverbs) --------------------------
 add_executable(test_rdma_cm
     test_rdma_cm.c
