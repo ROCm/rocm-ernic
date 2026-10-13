@@ -63,7 +63,8 @@ CTest as ``ionic-ci``. It needs no VM and no RDMA device:
   and with no extra flags at all
 - PCI identity is ``0x1dd8:0x1002``
 - BAR geometry is 64 KB BAR0 (32 KB register window) and
-  4 MB BAR2, with 32 MSI-X vectors
+  4 MB BAR2, with 32 MSI-X vectors under ``compat`` and 97
+  under ``generic-400g``
 - Clean shutdown on ``SIGTERM``
 - The stats file carries the full counter set
 - ``--tap`` attaches to an existing host TAP

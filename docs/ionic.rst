@@ -82,14 +82,17 @@ upstream driver expects:
      - Doorbell pages; the offset within a page encodes the
        queue type, the page index the process ID
 
-32 MSI-X vectors are advertised.
+The MSI-X table has room for 128 vectors; the device
+advertises the profile's ``queues.intr_vectors`` of them (32
+under ``compat``).
 
 NIC Profiles
 ------------
 
 A NIC profile is the shape of the emulated NIC: what it
 reports about itself (ASIC type and revision, firmware
-version) and its link (speed, transceiver, largest MTU).
+version), its link (speed, transceiver, largest MTU) and the
+queues and interrupt vectors it offers.
 Without ``--nic-profile`` the server runs the built-in
 ``compat`` profile, which is the device described above,
 byte for byte.
@@ -104,8 +107,8 @@ byte for byte.
 
 ``--nic-profile`` can be given more than once. Each one
 names either a built-in profile (a bare name: ``compat``,
-``small-vm``) or a file (a name containing a ``/`` or ending
-in ``.ini``). The layers apply in order on top of
+``small-vm``, ``generic-100g``, ``generic-400g``) or a file (a
+name containing a ``/`` or ending in ``.ini``). The layers apply in order on top of
 ``compat``. A profile is an ini file:
 
 .. code-block:: ini
@@ -177,10 +180,56 @@ device shape.
      - how often the LIF counters are rewritten in guest
        memory, which bounds how stale ``ip -s link`` can be.
        ``--stats-interval-ms`` overrides every layer
+   * - ``queues.eth``
+     - 1 to 64
+     - 4
+     - Ethernet queue pairs the LIF offers: the most
+       ``ethtool -l`` can set ``combined`` to, and the
+       ``rx_N_*``/``tx_N_*`` rows in ``ethtool -S``.
+       ``--eth-queues`` overrides every layer
+   * - ``queues.rdma_eqs``
+     - 4 to 32
+     - 32
+     - RDMA event queues; the RDMA driver needs at least 4
+   * - ``queues.intr_vectors``
+     - ``auto``, or 2 to 128
+     - 32
+     - MSI-X vectors the device advertises. ``auto`` is
+       1 + ``queues.eth`` + ``queues.rdma_eqs``, enough for
+       every queue and EQ to have its own
 
-The built-in ``small-vm`` profile is ``compat`` for now; the
-queue and interrupt keys it is meant to shrink are not in
-the schema yet.
+The built-in profiles:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Name
+     - Shape
+   * - ``compat``
+     - the device described above: 4 queues, 32 EQs, 32
+       vectors, 100 Gb/s copper
+   * - ``small-vm``
+     - ``compat`` cut down for a guest with a few vCPUs: 2
+       queues, 4 EQs, ``auto`` (7) vectors
+   * - ``generic-100g``
+     - 16 queues, 32 EQs, ``auto`` (49) vectors, 100 Gb/s
+       fiber
+   * - ``generic-400g``
+     - 64 queues, 32 EQs, ``auto`` (97) vectors, 400 Gb/s
+       fiber
+
+The guest driver (``ionic_lif_size()``) wants one vector for
+the admin and notify queues, one per queue pair and one per
+EQ, each count capped at the online vCPUs. If that is more
+than the device advertises it halves its notify queues, then
+its EQs, then its queue pairs until it fits. A profile whose
+``queues.intr_vectors`` is below 1 + ``queues.eth`` +
+``queues.rdma_eqs`` therefore works, but a guest with enough
+vCPUs gets fewer EQs or queues than the profile names; the
+server says so at startup. ``compat`` is such a profile (1 +
+4 + 32 = 37 > 32), kept that way so its guest sees exactly
+what it saw before profiles existed.
 
 Ethernet and TCP/IP
 -------------------
@@ -251,10 +300,25 @@ The transmit path gathers the head fragment plus any
 scatter-gather elements out of guest memory and writes the
 frame to the TAP file descriptor. The receive path drains the
 TAP from the server's main loop and DMAs each frame into a
-descriptor the guest has posted on the receive queue. Both
-directions run on the thread that owns the vfio-user context,
-because that is the only thread permitted to DMA into guest
-memory; no extra thread is created.
+descriptor the guest has posted on one of its receive queues.
+Both directions run on the thread that owns the vfio-user
+context, because that is the only thread permitted to DMA
+into guest memory; no extra thread is created.
+
+Received frames are spread over the receive queues the guest
+has enabled (``Q_CONTROL``; ``ethtool -L`` changes the set)
+by a fixed hash of the flow, so one flow always lands on one
+queue and each queue's interrupt fires on its own vector. The
+hash is 32-bit FNV-1a over the IPv4 or IPv6 source and
+destination address, the protocol, and for TCP, UDP and SCTP
+the two ports, after up to two VLAN tags; fragments leave the
+ports out so every fragment of a datagram stays together.
+Other frames hash on the two MAC addresses. The queue is the
+hash modulo the number of enabled queues, in index order. The
+guest's RSS key and indirection table are accepted and
+ignored. A frame whose queue has no buffer posted is dropped
+and counted in ``rx_queue_empty``; it does not fall back to
+another queue.
 
 .. note::
 
