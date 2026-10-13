@@ -29,6 +29,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -857,6 +858,27 @@ const struct ionic_emu_stats *ionic_eth_emu_get_stats(struct ionic_eth_emu *emu)
         return NULL;
     ionic_emu_stats_fold(&emu->stats);
     return &emu->stats;
+}
+
+/* Longest ionic_if.h name, rdma_resp_rx_out_of_atomic_resource, is 35. */
+#define LIF_STAT_NAME_WIDTH 35
+
+void ionic_eth_emu_write_stats(FILE *fp, void *opaque)
+{
+    const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(opaque);
+
+    if (!fp || !st)
+        return;
+    fprintf(fp, "LIF Statistics:\n");
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        const char *name = ionic_emu_lif_stat_name(q);
+
+        /* " : " is what ernic-exporter splits on; keep the space. */
+        if (name)
+            fprintf(fp, "  %-*s : %" PRIu64 "\n", LIF_STAT_NAME_WIDTH, name,
+                    st->lif[q]);
+    }
+    fprintf(fp, "\n");
 }
 
 void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,

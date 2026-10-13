@@ -52,6 +52,15 @@ int pvrdma_stats_set_nic_profile(const char *profile)
     return profile && !stats_nic_profile ? -1 : 0;
 }
 
+static pvrdma_stats_section_fn stats_section_fn;
+static void *stats_section_opaque;
+
+void pvrdma_stats_set_section(pvrdma_stats_section_fn fn, void *opaque)
+{
+    stats_section_fn = fn;
+    stats_section_opaque = fn ? opaque : NULL;
+}
+
 /* Write stats to file */
 void pvrdma_write_stats_impl(PVRDMADev *dev)
 {
@@ -152,6 +161,9 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
             "total_ip_bytes_rx", dev->stats.total_ip_bytes_rx);
 #undef STATS_LABEL_WIDTH
     fprintf(fp, "\n");
+
+    if (stats_section_fn)
+        stats_section_fn(fp, stats_section_opaque);
 
     fprintf(fp, "Per-QP Statistics:\n");
     if (dev->stats.qp_stats) {

@@ -631,11 +631,158 @@ static void run_cases(const struct publish_case *cases, size_t n)
     }
 }
 
+/* ---- The --stats-file section ------------------------------------------ */
+
+/* What ionic_eth_emu_write_stats() writes for @opaque, NUL-terminated. */
+static char *stats_text(void *opaque, size_t *len)
+{
+    char *buf = NULL;
+    FILE *fp = open_memstream(&buf, len);
+
+    if (!fp)
+        return NULL;
+    ionic_eth_emu_write_stats(fp, opaque);
+    fclose(fp);
+    return buf;
+}
+
+/* The value on the "  @name ... : N" line, or -1 as UINT64_MAX if absent. */
+static uint64_t stats_value(const char *text, const char *name)
+{
+    size_t n = strlen(name);
+
+    for (const char *l = text; l && *l; l = strchr(l, '\n'), l = l ? l + 1 : l)
+        if (!strncmp(l, "  ", 2) && !strncmp(l + 2, name, n) && l[2 + n] == ' ')
+            return strtoull(strstr(l, " : ") + 3, NULL, 10);
+    return UINT64_MAX;
+}
+
+static void file_traffic(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    char *text;
+    size_t n;
+
+    setup_txq(emu);
+    tx_frame(emu, mac_ucast, 100);
+    tx_frame(emu, mac_ucast, 200);
+    text = stats_text(emu, &n);
+    snprintf(got, len, "tx_ucast_packets %" PRIu64 ", tx_ucast_bytes %" PRIu64,
+             stats_value(text, "tx_ucast_packets"),
+             stats_value(text, "tx_ucast_bytes"));
+    free(text);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void file_shape(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    unsigned int named = 0, lines = 0, misaligned = 0, nonzero = 0;
+    char *text;
+    size_t n;
+
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
+        named += ionic_emu_lif_stat_name(q) != NULL;
+    text = stats_text(emu, &n);
+    for (const char *l = strchr(text, '\n') + 1; *l && *l != '\n';
+         l = strchr(l, '\n') + 1) {
+        lines++;
+        /* Two spaces, a 35-wide name, then " : ". */
+        if (strncmp(l + 2 + LIF_STAT_NAME_WIDTH, " : ", 3) != 0)
+            misaligned++;
+        else if (strtoull(l + 2 + LIF_STAT_NAME_WIDTH + 3, NULL, 10) != 0)
+            nonzero++;
+    }
+    snprintf(got, len,
+             "header %d, lines == named %d, misaligned %u, nonzero %u, "
+             "ends blank %d",
+             !strncmp(text, "LIF Statistics:\n", 16), lines == named,
+             misaligned, nonzero, n >= 2 && !strcmp(text + n - 2, "\n\n"));
+    free(text);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void file_inbox_folded(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    char *text, *again;
+    size_t n;
+
+    /* The mesh thread's counter, folded by the writer. */
+    ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast, 64), 64);
+    text = stats_text(emu, &n);
+    again = stats_text(emu, &n);
+    snprintf(got, len,
+             "rx_ucast_drop_packets %" PRIu64 ", rx_ucast_drop_bytes %" PRIu64
+             ", second write %" PRIu64,
+             stats_value(text, "rx_ucast_drop_packets"),
+             stats_value(text, "rx_ucast_drop_bytes"),
+             stats_value(again, "rx_ucast_drop_packets"));
+    free(text);
+    free(again);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void file_max_value(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    char *text;
+    size_t n;
+
+    emu->stats.lif[IONIC_LIF_RX_BCAST_BYTES] = UINT64_MAX;
+    text = stats_text(emu, &n);
+    snprintf(got, len, "rx_bcast_bytes %" PRIu64,
+             stats_value(text, "rx_bcast_bytes"));
+    free(text);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void file_no_emu(char *got, size_t len)
+{
+    size_t n = 1;
+    char *text = stats_text(NULL, &n);
+
+    snprintf(got, len, "bytes %zu", n);
+    free(text);
+}
+
+static void file_longest_name(char *got, size_t len)
+{
+    size_t longest = 0;
+
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        const char *name = ionic_emu_lif_stat_name(q);
+
+        if (name && strlen(name) > longest)
+            longest = strlen(name);
+    }
+    snprintf(got, len, "longest %zu, width %d", longest, LIF_STAT_NAME_WIDTH);
+}
+
+static const struct publish_case stats_file_cases[] = {
+    {"positive", "Tx 100 + 200 bytes unicast, then the stats file",
+     "tx_ucast_packets 2, tx_ucast_bytes 300", file_traffic},
+    {"positive", "the section's shape on an idle device",
+     "header 1, lines == named 1, misaligned 0, nonzero 0, ends blank 1",
+     file_shape},
+    {"negative", "no eth emulator registered", "bytes 0", file_no_emu},
+    {"boundary", "a counter at UINT64_MAX",
+     "rx_bcast_bytes 18446744073709551615", file_max_value},
+    {"boundary", "the name column fits the longest ionic_if.h name",
+     "longest 35, width 35", file_longest_name},
+    {"corner", "mesh inbox full off-thread, then the stats file twice",
+     "rx_ucast_drop_packets 1, rx_ucast_drop_bytes 64, second write 1 (fold "
+     "is not double-counted)",
+     file_inbox_folded},
+};
+
 int main(void)
 {
     run_cases(publish_cases, sizeof(publish_cases) / sizeof(publish_cases[0]));
     run_cases(datapath_cases,
               sizeof(datapath_cases) / sizeof(datapath_cases[0]));
+    run_cases(stats_file_cases,
+              sizeof(stats_file_cases) / sizeof(stats_file_cases[0]));
 
     if (failures)
         printf("%d failure(s)\n", failures);
