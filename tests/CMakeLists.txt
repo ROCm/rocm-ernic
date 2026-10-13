@@ -262,6 +262,24 @@ target_include_directories(test_ionic_port_info SYSTEM PRIVATE
 target_compile_definitions(test_ionic_port_info PRIVATE
     _GNU_SOURCE)
 
+# NIC profile loader test: ini layering, strict validation and atomic
+# layers, built-in profiles by name and files by path. Pure: no ionic TU.
+add_executable(test_ionic_profile test_ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_include_directories(test_ionic_profile PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_profile SYSTEM PRIVATE
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_profile PRIVATE
+    _GNU_SOURCE
+    ERNIC_PROFILES_DIR="${PROJECT_SOURCE_DIR}/profiles")
+target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
+
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
 # shutdown. Needs no symbols from the server, so it is a plain program. The
@@ -600,6 +618,7 @@ set(ERNIC_TEST_TARGETS
     test_s3_tcp
     test_ionic_intr_pending
     test_ionic_port_info
+    test_ionic_profile
     test_ionic_query_qp
     ernic-test-ionic-stats
     test_server_lifecycle
@@ -770,6 +789,15 @@ set_tests_properties(server-lifecycle PROPERTIES
     TIMEOUT 300
     SKIP_RETURN_CODE 77
 )
+
+# NIC profile loader unit test: asserts strict validation (every error names
+# the source, line and key), atomic layers, and that the built-in profiles
+# match the files shipped in profiles/.
+add_test(
+    NAME ionic-profile-unit
+    COMMAND $<TARGET_FILE:test_ionic_profile>
+)
+set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and
