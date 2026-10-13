@@ -3127,6 +3127,39 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
 #define DP_QTYPE_RQ 7
 #define DP_QTYPE_CQ 8
 
+/*
+ * Advance a receive ring's producer from a doorbell's index.
+ *
+ * The index names a slot, not a running total. rdma-core's
+ * ionic_queue_produce() is "q->prod = (q->prod + 1) & q->mask", so it counts
+ * 0, 1, ..., depth-1, 0, 1 and never grows past the ring; the kernel driver
+ * does the same.
+ *
+ * Reading it as a free-running 16-bit counter and adding the difference --
+ * which is what this did -- agrees exactly until the ring first wraps, and
+ * never again. Posting one more entry after a full lap subtracts rather than
+ * adds: with an 8-deep ring at prod 7, an index of 1 yields (uint16_t)(1-7)
+ * = 65530, so the device concludes 65530 receives are outstanding. From
+ * there "no receive posted" is undetectable, so RNR retry never fires, and
+ * the device reads ring entries the guest has already reclaimed -- scattering
+ * into buffers the application got back and completing work requests that
+ * are no longer outstanding. Traffic that always reposts before data arrives
+ * never shows it.
+ *
+ * Depth is a power of two for both ring kinds (1u << depth_log2), so the
+ * mask below is the modular difference.
+ *
+ * Returns false for an index the ring has no slot for, which is a malformed
+ * doorbell rather than a wrap.
+ */
+static bool rq_prod_advance(uint32_t *prod, uint32_t depth, uint16_t p_index)
+{
+    if (depth == 0 || (uint32_t)p_index >= depth)
+        return false;
+    *prod += ((uint32_t)p_index - (*prod % depth)) & (depth - 1u);
+    return true;
+}
+
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val)
 {
@@ -3178,12 +3211,8 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
              * bounds arithmetic, which is stable for the datapath's life. */
             if (sr) {
                 pthread_mutex_lock(&sr->lock);
-                if (sr->valid) {
-                    sr->prod +=
-                        (uint32_t)(uint16_t)(p_index -
-                                             (uint16_t)(sr->prod & 0xffffu));
-                    posted = true;
-                }
+                if (sr->valid)
+                    posted = rq_prod_advance(&sr->prod, sr->depth, p_index);
                 pthread_mutex_unlock(&sr->lock);
             }
             if (!posted)
@@ -3193,10 +3222,9 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
             return;
         }
         if (qid < dp->qp_count && dp->qp[qid].valid) {
-            dp->qp[qid].rq_prod +=
-                (uint32_t)(uint16_t)(p_index -
-                                     (uint16_t)(dp->qp[qid].rq_prod & 0xffffu));
-            pvrdma_qp_doorbell_count(dp->pvrdma_handle, qid, false);
+            if (rq_prod_advance(&dp->qp[qid].rq_prod, dp->qp[qid].rq_depth,
+                                p_index))
+                pvrdma_qp_doorbell_count(dp->pvrdma_handle, qid, false);
         }
         return;
 

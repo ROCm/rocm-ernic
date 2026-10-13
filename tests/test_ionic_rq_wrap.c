@@ -1,0 +1,431 @@
+/*
+ * Receive-ring producer-index tests for the ionic datapath.
+ *
+ * The doorbell carries a producer index, and the only question these ask is
+ * what that index means. ionic_queue_produce() in rdma-core masks it to the
+ * ring -- "q->prod = (q->prod + 1) & q->mask" -- so it counts 0, 1, ...,
+ * depth-1, 0, 1 and never grows past the ring. The datapath used to treat it
+ * as a free-running 16-bit counter and add the difference, which agrees with
+ * the masked index exactly until the first wrap and never again: posting one
+ * more entry after a full lap subtracts instead of adding, and the device
+ * concludes that tens of thousands of receives are outstanding.
+ *
+ * That has two consequences, and neither announces itself. "No receive
+ * posted" stops being detectable, so RNR retry never triggers; and the
+ * device reads ring entries the guest has already reclaimed, scattering into
+ * buffers the application got back and completing work requests that are no
+ * longer outstanding. A benchmark that reposts before data arrives never
+ * sees it.
+ *
+ * The send queue already read the index the right way. These cover the
+ * receive side, for a QP's own RQ and for a shared one.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
+ */
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Pull in the code under test (including its static functions). */
+#include "ionic_datapath.c"
+
+/* ---- Stubs for the TU's external symbols -------------------------------
+ *
+ * None of these are reachable from the CQ doorbell path; they exist only to
+ * satisfy the linker. libvfio-user itself is linked for vfu_log/vfu_sgl_*.
+ */
+
+/*
+ * The real vfu_log() asserts on a NULL context, and the doorbell path logs on
+ * every call, so this one has to be overridden rather than linked.
+ */
+void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
+{
+    (void)vfu_ctx;
+    (void)level;
+    (void)fmt;
+}
+
+int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
+{
+    (void)emu;
+    (void)vec;
+    return 0;
+}
+
+uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
+{
+    (void)handle;
+    return UINT32_MAX;
+}
+uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
+{
+    (void)handle;
+    (void)gid;
+    return UINT32_MAX;
+}
+int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+                     size_t hdr_len, const void *body, size_t body_len)
+{
+    (void)handle;
+    (void)dst_node;
+    (void)hdr;
+    (void)hdr_len;
+    (void)body;
+    (void)body_len;
+    return -1;
+}
+void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+                            void *opaque)
+{
+    (void)handle;
+    (void)fn;
+    (void)opaque;
+}
+
+struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
+                                           char *err, size_t errlen)
+{
+    (void)cfg;
+    (void)err;
+    (void)errlen;
+    return NULL;
+}
+void nvmeof_target_destroy(struct nvmeof_target *t)
+{
+    (void)t;
+}
+struct nvmeof_queue *nvmeof_target_find_queue(struct nvmeof_target *t,
+                                              uint32_t handle)
+{
+    (void)t;
+    (void)handle;
+    return NULL;
+}
+int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
+                      const struct nvmeof_dma_ops *dma, void *dma_ctx,
+                      void *rsp)
+{
+    (void)q;
+    (void)capsule;
+    (void)len;
+    (void)dma;
+    (void)dma_ctx;
+    (void)rsp;
+    return -1;
+}
+struct nvmeof_cm *nvmeof_cm_create(struct nvmeof_target *target,
+                                   uint32_t traddr, uint16_t trsvcid)
+{
+    (void)target;
+    (void)traddr;
+    (void)trsvcid;
+    return NULL;
+}
+void nvmeof_cm_destroy(struct nvmeof_cm *cm)
+{
+    (void)cm;
+}
+void nvmeof_cm_drop_qp(struct nvmeof_cm *cm, uint32_t guest_qpn)
+{
+    (void)cm;
+    (void)guest_qpn;
+}
+bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
+                          void *rsp, struct nvmeof_cm_result *res)
+{
+    (void)cm;
+    (void)mad;
+    (void)len;
+    (void)rsp;
+    (void)res;
+    return false;
+}
+
+struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
+                                   size_t errlen)
+{
+    (void)cfg;
+    (void)err;
+    (void)errlen;
+    return NULL;
+}
+void s3_target_destroy(struct s3_target *t)
+{
+    (void)t;
+}
+void s3_tcp_cfg_from_target(struct s3_tcp_cfg *cfg,
+                            const struct s3_target *target)
+{
+    (void)cfg;
+    (void)target;
+}
+struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
+                             struct s3_target *target,
+                             const struct s3_dma_ops *dma, void *dma_ctx,
+                             s3_tcp_tx_fn tx, void *tx_ctx, char *err,
+                             size_t errlen)
+{
+    (void)cfg;
+    (void)target;
+    (void)dma;
+    (void)dma_ctx;
+    (void)tx;
+    (void)tx_ctx;
+    (void)err;
+    (void)errlen;
+    return NULL;
+}
+void s3_tcp_destroy(struct s3_tcp *s)
+{
+    (void)s;
+}
+bool s3_tcp_rx_frame(struct s3_tcp *s, const void *frame, size_t len,
+                     uint64_t now_ms)
+{
+    (void)s;
+    (void)frame;
+    (void)len;
+    (void)now_ms;
+    return false;
+}
+bool s3_tcp_poll(struct s3_tcp *s, uint64_t now_ms)
+{
+    (void)s;
+    (void)now_ms;
+    return false;
+}
+bool s3_tcp_has_work(const struct s3_tcp *s)
+{
+    (void)s;
+    return false;
+}
+
+void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_tx_filter_fn fn, void *ctx)
+{
+    (void)emu;
+    (void)fn;
+    (void)ctx;
+}
+int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
+                                 size_t len)
+{
+    (void)emu;
+    (void)frame;
+    (void)len;
+    return -1;
+}
+
+void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
+{
+    (void)handle;
+    (void)qp_id;
+}
+void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
+                              bool is_send)
+{
+    (void)handle;
+    (void)qp_id;
+    (void)is_send;
+}
+void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
+                         unsigned int pvrdma_opcode)
+{
+    (void)handle;
+    (void)qp_id;
+    (void)pvrdma_opcode;
+}
+void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
+                             uint64_t bytes, enum pvrdma_stat_op op)
+{
+    (void)handle;
+    (void)qp_id;
+    (void)bytes;
+    (void)op;
+}
+
+/* ---- Harness ----------------------------------------------------------- */
+
+static struct ionic_datapath g_dp;
+static int g_failures;
+
+static void check(bool ok, const char *what)
+{
+    printf("%s: %s\n", ok ? "PASS" : "FAIL", what);
+    if (!ok)
+        g_failures++;
+}
+
+/* Ring 0 carries the index; the arm rings are a CQ concept. */
+#define RING_CONS 0
+
+/* The doorbell is one packed 64-bit write; see ionic_datapath_doorbell(). */
+static uint64_t db(uint32_t qid, uint8_t ring, uint16_t p_index)
+{
+    return (uint64_t)p_index | ((uint64_t)ring << 16) |
+           ((uint64_t)(qid & 0xffu) << 24) |
+           ((uint64_t)((qid >> 8) & 0xffffu) << 32);
+}
+
+
+/* ---- Receive-ring fixtures --------------------------------------------- */
+
+#define RQ_QP_ID 6
+#define RQ_DEPTH 8
+#define SRQ_SLOT 0
+#define SRQ_QID  (IONIC_SRQ_QID_BASE + SRQ_SLOT)
+
+static struct ionic_qp_ring g_qp_storage[RQ_QP_ID + 1];
+static struct ionic_srq_ring g_srq_storage[SRQ_SLOT + 1];
+
+/* A datapath holding one QP with its own RQ and one SRQ, both RQ_DEPTH
+ * deep and both empty. Built by hand, as dp_with_cq() does: none of the
+ * allocation paths are under test here. */
+static struct ionic_datapath *dp_with_recv_rings(void)
+{
+    memset(&g_dp, 0, sizeof(g_dp));
+    memset(g_qp_storage, 0, sizeof(g_qp_storage));
+    memset(g_srq_storage, 0, sizeof(g_srq_storage));
+
+    g_dp.qp = g_qp_storage;
+    g_dp.qp_count = RQ_QP_ID + 1;
+    g_dp.srq = g_srq_storage;
+    g_dp.srq_count = SRQ_SLOT + 1;
+
+    g_dp.qp[RQ_QP_ID].valid = true;
+    g_dp.qp[RQ_QP_ID].rq_depth = RQ_DEPTH;
+    g_dp.qp[RQ_QP_ID].rq_stride_log2 = 5;
+
+    g_dp.srq[SRQ_SLOT].valid = true;
+    g_dp.srq[SRQ_SLOT].depth = RQ_DEPTH;
+    g_dp.srq[SRQ_SLOT].stride_log2 = 5;
+    pthread_mutex_init(&g_dp.srq[SRQ_SLOT].lock, NULL);
+
+    return &g_dp;
+}
+
+static void rq_doorbell(struct ionic_datapath *dp, uint32_t qid,
+                        uint16_t p_index)
+{
+    ionic_datapath_doorbell(dp, DP_QTYPE_RQ, db(qid, RING_CONS, p_index));
+}
+
+/* What the device believes is posted and not yet consumed. */
+static uint32_t qp_outstanding(const struct ionic_datapath *dp)
+{
+    return dp->qp[RQ_QP_ID].rq_prod - dp->qp[RQ_QP_ID].rq_cons;
+}
+
+static uint32_t srq_outstanding(const struct ionic_datapath *dp)
+{
+    return dp->srq[SRQ_SLOT].prod - dp->srq[SRQ_SLOT].cons;
+}
+
+/* ---- Tests ------------------------------------------------------------- */
+
+/*
+ * Before the wrap the two readings agree, which is why this went unnoticed:
+ * while prod stays below the depth, "difference from the last index" and
+ * "masked index" are the same number.
+ */
+static void test_rq_counts_up_to_the_wrap(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+
+    for (uint16_t i = 1; i < RQ_DEPTH; i++) {
+        rq_doorbell(dp, RQ_QP_ID, i);
+        rq_doorbell(dp, SRQ_QID, i);
+    }
+    check(qp_outstanding(dp) == RQ_DEPTH - 1,
+          "QP RQ counts each post before the ring wraps");
+    check(srq_outstanding(dp) == RQ_DEPTH - 1,
+          "SRQ counts each post before the ring wraps");
+}
+
+/*
+ * The regression. Seven posts into an eight-deep ring, all seven consumed,
+ * then two more: the driver's index has wrapped to 1, and the device must
+ * read that as two newly posted receives rather than as a backwards jump.
+ */
+static void test_rq_survives_the_wrap(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+
+    for (uint16_t i = 1; i < RQ_DEPTH; i++) {
+        rq_doorbell(dp, RQ_QP_ID, i);
+        rq_doorbell(dp, SRQ_QID, i);
+    }
+    dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
+    dp->srq[SRQ_SLOT].cons = dp->srq[SRQ_SLOT].prod;
+
+    /* (7 + 1) & 7 == 0, then (0 + 1) & 7 == 1. */
+    rq_doorbell(dp, RQ_QP_ID, 0);
+    rq_doorbell(dp, SRQ_QID, 0);
+    rq_doorbell(dp, RQ_QP_ID, 1);
+    rq_doorbell(dp, SRQ_QID, 1);
+
+    check(qp_outstanding(dp) == 2, "QP RQ reads two posts across the wrap");
+    check(srq_outstanding(dp) == 2, "SRQ reads two posts across the wrap");
+}
+
+/* Several laps, to catch a fix that only works for the first one. */
+static void test_rq_survives_many_wraps(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+    uint32_t posted = 0;
+
+    for (uint32_t lap = 0; lap < 5; lap++) {
+        for (uint16_t i = 0; i < RQ_DEPTH; i++) {
+            uint16_t idx = (uint16_t)((posted + 1) % RQ_DEPTH);
+
+            rq_doorbell(dp, RQ_QP_ID, idx);
+            rq_doorbell(dp, SRQ_QID, idx);
+            posted++;
+            if (qp_outstanding(dp) != 1 || srq_outstanding(dp) != 1)
+                break;
+            dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
+            dp->srq[SRQ_SLOT].cons = dp->srq[SRQ_SLOT].prod;
+        }
+    }
+    check(posted == 5 * RQ_DEPTH,
+          "post-and-drain stays at one outstanding across five laps");
+}
+
+/* A doorbell cannot name a slot the ring does not have. Accepting one
+ * would reintroduce the same impossible count by a different route. */
+static void test_rq_rejects_an_index_past_the_depth(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+
+    rq_doorbell(dp, RQ_QP_ID, RQ_DEPTH);
+    rq_doorbell(dp, SRQ_QID, RQ_DEPTH);
+    check(qp_outstanding(dp) == 0, "QP RQ ignores an out-of-range index");
+    check(srq_outstanding(dp) == 0, "SRQ ignores an out-of-range index");
+
+    rq_doorbell(dp, RQ_QP_ID, 0xffffu);
+    rq_doorbell(dp, SRQ_QID, 0xffffu);
+    check(qp_outstanding(dp) == 0, "QP RQ ignores 0xffff");
+    check(srq_outstanding(dp) == 0, "SRQ ignores 0xffff");
+}
+
+int main(void)
+{
+    test_rq_counts_up_to_the_wrap();
+    test_rq_survives_the_wrap();
+    test_rq_survives_many_wraps();
+    test_rq_rejects_an_index_past_the_depth();
+
+    if (g_failures) {
+        printf("\n%d check(s) failed\n", g_failures);
+        return 1;
+    }
+    printf("\nall checks passed\n");
+    return 0;
+}
