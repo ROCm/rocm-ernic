@@ -37,6 +37,7 @@ enum check {
     CHECK_DUPLICATE, /* a second fault on the same site */
     CHECK_TRUNCATE,  /* format into a buffer of buf_len bytes */
     CHECK_STATUSES,  /* every status name parses to its code */
+    CHECK_SITES,     /* one fault on each site in one set */
 };
 
 struct fault_case {
@@ -53,7 +54,9 @@ struct fault_case {
     bool (*want)(uint64_t k); /* fires on event index k (from 1) */
     uint64_t want_fired;
 
-    /* CHECK_FIELDS */
+    /* CHECK_FIELDS; site and effect also for CHECK_DUPLICATE */
+    enum ionic_fault_site site;
+    enum ionic_fault_effect effect;
     enum ionic_fault_pattern_kind kind;
     uint64_t n, m;
     uint32_t seq_len;
@@ -100,7 +103,9 @@ static bool only_last(uint64_t k)
 
 /* ---- The table --------------------------------------------------------- */
 
-#define SITE "stats_vals: "
+#define SITE        "stats_vals: "
+#define ETH_RX_SITE IONIC_FAULT_SITE_ETH_RX
+#define ETH_TX_SITE IONIC_FAULT_SITE_ETH_TX
 
 static const struct fault_case cases[] = {
     /* positive: patterns */
@@ -158,15 +163,43 @@ static const struct fault_case cases[] = {
      "runs merged and quoted: \"1x3,0x12,1\"", CHECK_ROUNDTRIP,
      SITE "sequence 1x2,1,0x10,0x2,1 effect fail",
      .want_text = "stats_vals: sequence \"1x3,0x12,1\" effect fail status eio"},
+    {"positive", "'eth_rx: every 10 effect drop'",
+     "site eth_rx, every 10, effect drop, status 0", CHECK_FIELDS,
+     "eth_rx: every 10 effect drop", .site = ETH_RX_SITE,
+     .effect = IONIC_FAULT_EFFECT_DROP, .kind = IONIC_FAULT_PAT_EVERY, .n = 10},
+    {"positive", "'eth_rx: burst 3 every 50 effect nobuf'",
+     "site eth_rx, burst 3 every 50, effect nobuf", CHECK_FIELDS,
+     "eth_rx: burst 3 every 50 effect nobuf", .site = ETH_RX_SITE,
+     .effect = IONIC_FAULT_EFFECT_NOBUF, .kind = IONIC_FAULT_PAT_BURST, .n = 3,
+     .m = 50},
+    {"positive", "'eth_tx: after 100 count 5 effect drop'",
+     "site eth_tx, after 100 count 5, effect drop", CHECK_FIELDS,
+     "eth_tx: after 100 count 5 effect drop", .site = ETH_TX_SITE,
+     .effect = IONIC_FAULT_EFFECT_DROP, .kind = IONIC_FAULT_PAT_AFTER, .n = 100,
+     .m = 5},
+    {"positive", "'eth_rx: every 3 effect drop' over 9 events",
+     "001001001: patterns are the same on every site", CHECK_FIRES,
+     "eth_rx: every 3 effect drop", .fires = "001001001", .want_fired = 3},
+    {"positive", "canonical form of an eth_rx drop",
+     "re-parses to the same fault", CHECK_ROUNDTRIP,
+     "eth_rx: every 10 effect drop",
+     .want_text = "eth_rx: every 10 effect drop"},
+    {"positive", "canonical form of an eth_rx nobuf",
+     "spells out count 1; no status", CHECK_ROUNDTRIP,
+     "eth_rx: after 2 effect nobuf",
+     .want_text = "eth_rx: after 2 count 1 effect nobuf"},
+    {"positive", "canonical form of an eth_tx sequence drop",
+     "quoted: \"1,0x3\"", CHECK_ROUNDTRIP, "eth_tx: sequence 1,0x3 effect drop",
+     .want_text = "eth_tx: sequence \"1,0x3\" effect drop"},
 
     /* negative */
     {"negative", "unknown site 'foo: every 1 effect fail'",
      "rejected, naming foo", CHECK_ERROR, "foo: every 1 effect fail",
      .want_err = "unknown site 'foo'"},
-    {"negative", "site not yet built 'eth_rx: every 1 effect drop'",
+    {"negative", "site not yet built 'rdma_rx: every 1 effect rnr'",
      "rejected as not supported in this build", CHECK_ERROR,
-     "eth_rx: every 1 effect drop",
-     .want_err = "site eth_rx not supported in this build"},
+     "rdma_rx: every 1 effect rnr",
+     .want_err = "site rdma_rx not supported in this build"},
     {"negative", "site without its colon", "rejected: '<site>:' expected",
      CHECK_ERROR, "stats_vals every 1 effect fail",
      .want_err = "expected '<site>:' at 'stats_vals'"},
@@ -181,6 +214,33 @@ static const struct fault_case cases[] = {
      "rejected as not supported in this build", CHECK_ERROR,
      SITE "every 1 effect stale",
      .want_err = "effect stale not supported in this build"},
+    {"negative", "'stats_vals: every 1 effect nobuf'",
+     "rejected: not valid for site stats_vals", CHECK_ERROR,
+     SITE "every 1 effect nobuf",
+     .want_err = "effect nobuf not valid for site stats_vals"},
+    {"negative", "'eth_rx: every 1 effect fail'",
+     "rejected: not valid for site eth_rx", CHECK_ERROR,
+     "eth_rx: every 1 effect fail",
+     .want_err = "effect fail not valid for site eth_rx"},
+    {"negative", "'eth_tx: every 1 effect nobuf'",
+     "rejected: nobuf is an Rx effect", CHECK_ERROR,
+     "eth_tx: every 1 effect nobuf",
+     .want_err = "effect nobuf not valid for site eth_tx"},
+    {"negative", "'eth_rx: every 1 effect rnr'",
+     "rejected: rnr belongs to rdma_rx", CHECK_ERROR,
+     "eth_rx: every 1 effect rnr",
+     .want_err = "effect rnr not valid for site eth_rx"},
+    {"negative", "eth_rx effect not yet built ('effect corrupt')",
+     "rejected as not supported in this build", CHECK_ERROR,
+     "eth_rx: every 1 effect corrupt",
+     .want_err = "effect corrupt not supported in this build"},
+    {"negative", "'eth_rx: every 1 effect drop status eio'",
+     "rejected: drop takes no status", CHECK_ERROR,
+     "eth_rx: every 1 effect drop status eio",
+     .want_err = "unexpected token 'status'"},
+    {"negative", "trailing token after 'eth_tx ... effect drop'",
+     "rejected, naming junk", CHECK_ERROR, "eth_tx: every 1 effect drop junk",
+     .want_err = "unexpected token 'junk'"},
     {"negative", "'every 0'", "rejected: every must be >= 1", CHECK_ERROR,
      SITE "every 0 effect fail", .want_err = "every must be >= 1"},
     {"negative", "'after 0'", "rejected: after must be >= 1", CHECK_ERROR,
@@ -317,6 +377,12 @@ static const struct fault_case cases[] = {
      "rejected until E03 adds labels", CHECK_DUPLICATE,
      SITE "every 1 effect fail",
      .want_err = "duplicate fault for site stats_vals"},
+    {"corner", "the same eth_rx fault twice", "rejected: one fault per site",
+     CHECK_DUPLICATE, "eth_rx: every 1 effect nobuf", .site = ETH_RX_SITE,
+     .want_err = "duplicate fault for site eth_rx"},
+    {"corner", "one fault on each of stats_vals, eth_rx and eth_tx",
+     "all three accepted into one set, each at its own site", CHECK_SITES,
+     .spec = NULL},
     {"corner", "event counter near UINT64_MAX with 'after 1'",
      "saturates at UINT64_MAX; never wraps to re-fire", CHECK_FIRES,
      SITE "after 1 effect fail", .start = UINT64_MAX - 2, .nevents = 5,
@@ -403,16 +469,16 @@ static bool check_fields(const struct fault_case *c, char *why, size_t len)
         snprintf(why, len, "spec rejected: %s", err);
         return false;
     }
-    ok = f.site == IONIC_FAULT_SITE_STATS_VALS && f.kind == c->kind &&
-         f.n == c->n && f.m == c->m && f.seq_len == c->seq_len &&
-         f.effect == IONIC_FAULT_EFFECT_FAIL && f.status == c->status &&
-         f.eligible == 0 && f.fired == 0 &&
+    ok = f.site == c->site && f.kind == c->kind && f.n == c->n && f.m == c->m &&
+         f.seq_len == c->seq_len && f.effect == c->effect &&
+         f.status == c->status && f.eligible == 0 && f.fired == 0 &&
          (c->seq_len == 0) == (f.seq == NULL);
     if (!ok)
         snprintf(why, len,
-                 "kind %d n %" PRIu64 " m %" PRIu64 " seq_len %" PRIu32
-                 " status %u",
-                 (int)f.kind, f.n, f.m, f.seq_len, (unsigned int)f.status);
+                 "site %d effect %d kind %d n %" PRIu64 " m %" PRIu64
+                 " seq_len %" PRIu32 " status %u",
+                 (int)f.site, (int)f.effect, (int)f.kind, f.n, f.m, f.seq_len,
+                 (unsigned int)f.status);
     ionic_fault_clear(&f);
     return ok;
 }
@@ -512,7 +578,7 @@ static bool check_duplicate(const struct fault_case *c, char *why, size_t len)
         snprintf(why, len, "message '%s'", err);
     else
         /* The first fault is still the one installed. */
-        ok = ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS) != NULL;
+        ok = ionic_fault_set_get(set, c->site) != NULL;
     ionic_fault_set_free(set);
     return ok;
 }
@@ -583,6 +649,53 @@ static bool check_statuses(char *why, size_t len)
     return true;
 }
 
+static bool check_sites(char *why, size_t len)
+{
+    static const char *const specs[] = {
+        "eth_tx: every 2 effect drop",
+        SITE "every 1 effect fail",
+        "eth_rx: every 3 effect nobuf",
+    };
+    static const enum ionic_fault_site want[] = {
+        IONIC_FAULT_SITE_ETH_TX,
+        IONIC_FAULT_SITE_STATS_VALS,
+        IONIC_FAULT_SITE_ETH_RX,
+    };
+    struct ionic_fault_set *set = ionic_fault_set_new();
+    char err[128] = "";
+    bool ok = set != NULL;
+
+    for (size_t i = 0; ok && i < sizeof(specs) / sizeof(specs[0]); i++) {
+        const struct ionic_fault *f;
+
+        if (ionic_fault_set_add(set, specs[i], err, sizeof(err)) != 0) {
+            snprintf(why, len, "'%s' rejected: %s", specs[i], err);
+            ok = false;
+            break;
+        }
+        f = ionic_fault_set_get(set, want[i]);
+        if (!f || f->site != want[i]) {
+            snprintf(why, len, "'%s' not at its site", specs[i]);
+            ok = false;
+        }
+    }
+    /* Events at one site leave the others uncounted. */
+    if (ok) {
+        ionic_fault_event(ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX));
+        if (ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_TX)->eligible != 0 ||
+            ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS)->eligible !=
+                0 ||
+            ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX)->eligible != 1) {
+            snprintf(why, len, "an eth_rx event was counted at another site");
+            ok = false;
+        }
+    }
+    if (set == NULL)
+        snprintf(why, len, "no set");
+    ionic_fault_set_free(set);
+    return ok;
+}
+
 static void run_case(const struct fault_case *c)
 {
     char why[256] = "";
@@ -612,6 +725,9 @@ static void run_case(const struct fault_case *c)
         break;
     case CHECK_STATUSES:
         ok = check_statuses(why, sizeof(why));
+        break;
+    case CHECK_SITES:
+        ok = check_sites(why, sizeof(why));
         break;
     default:
         snprintf(why, sizeof(why), "unknown check");
