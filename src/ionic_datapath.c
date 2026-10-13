@@ -123,6 +123,7 @@ _Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
  * remote QPN. Connected sends ignore both. */
 #define WQE_SEND_AH_OFF       16
 #define WQE_SEND_DEST_QPN_OFF 20
+#define WQE_SEND_QKEY_OFF     24
 
 /* struct ionic_v1_common_bdy.rdma overlays the send body: two be32 halves of
  * the remote va at 16/20, then the remote rkey, then the shared length. */
@@ -227,6 +228,15 @@ struct ionic_qp_ring {
     uint32_t rq_prod;
     uint32_t rq_cons;
     uint32_t msn; /* running send sequence for SEND_MSN completions */
+
+    /*
+     * The Q_Key a datagram must present to be delivered into this QP, set
+     * by MODIFY_QP with IB_QP_QKEY. Only meaningful for UD and GSI; a
+     * connected QP never consults it, because it never accepts a datagram
+     * at all.
+     */
+    uint32_t qkey;
+    bool qkey_valid;
 
     bool dest_valid;
     uint32_t dest_qp_id;
@@ -1081,6 +1091,20 @@ void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
     if (!dp || ah_id >= dp->ah_count)
         return;
     memset(&dp->ah[ah_id], 0, sizeof(dp->ah[ah_id]));
+}
+
+/*
+ * The Q_Key arrives on MODIFY_QP in the field a connected QP uses for its
+ * destination QPN, which is why it is set separately rather than alongside
+ * the peer: for UD the two never both apply.
+ */
+void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
+                             uint32_t qkey)
+{
+    if (!dp || qp_id >= dp->qp_count || !dp->qp[qp_id].valid)
+        return;
+    dp->qp[qp_id].qkey = qkey;
+    dp->qp[qp_id].qkey_valid = true;
 }
 
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
@@ -2420,6 +2444,31 @@ static bool dp_nvmeof_rc_send(struct ionic_datapath *dp,
     return true;
 }
 
+/*
+ * Why a datagram may not be delivered into @dq, or NULL if it may.
+ *
+ * Two rules, and the device had neither. The destination QPN in a work
+ * request selected any valid QP in the device, so a guest could address
+ * another process's RC QP -- which real hardware refuses on transport type
+ * alone, a connected QP having no datagram receive path -- or QP1, the GSI
+ * queue, and hand the kernel forged connection-management MADs. QP1's
+ * Q_Key is privileged precisely so unprivileged consumers cannot.
+ *
+ * The Q_Key is only checked once the destination has one. A QP that has not
+ * been through MODIFY_QP with IB_QP_QKEY has no key to match, which is the
+ * state QP1 is in before the kernel configures it; refusing there would
+ * break GSI rather than protect it.
+ */
+static const char *ud_delivery_refused(const struct ionic_qp_ring *dq,
+                                       uint32_t sent_qkey)
+{
+    if (dq->ib_qp_type != 1 /* GSI */ && dq->ib_qp_type != 4 /* UD */)
+        return "transport type accepts no datagrams";
+    if (dq->qkey_valid && sent_qkey != dq->qkey)
+        return "Q_Key is not that queue's";
+    return NULL;
+}
+
 static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
@@ -2609,6 +2658,37 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     "ionic_datapath: QP %u SEND to unknown peer %u", qp_id,
                     dst_id);
             break;
+        }
+        /*
+         * A datagram may only be delivered into a QP that accepts datagrams,
+         * and only if it presents that QP's Q_Key.
+         *
+         * Without this, the destination QPN in the work request selected any
+         * valid QP in the device. A guest could address another process's RC
+         * QP -- which a real device refuses on transport type alone, since a
+         * connected QP has no datagram receive path -- or QP1, the GSI
+         * queue, and hand the kernel forged connection-management MADs.
+         * QP1's Q_Key is privileged precisely so unprivileged consumers
+         * cannot do that.
+         *
+         * The Q_Key check applies once the destination has one. A QP that
+         * has not been through MODIFY_QP with IB_QP_QKEY has no key to
+         * match, and that is the state QP1 is in before the kernel
+         * configures it, so refusing there would break GSI rather than
+         * protect it.
+         */
+        {
+            uint32_t sent_qkey_be;
+            memcpy(&sent_qkey_be, wqe + WQE_SEND_QKEY_OFF, 4);
+
+            const char *refused =
+                ud_delivery_refused(dq, be32toh(sent_qkey_be));
+            if (refused) {
+                vfu_log(dp->vfu_ctx, LOG_WARNING,
+                        "ionic_datapath: QP %u datagram to QP %u refused: %s",
+                        qp_id, dst_id, refused);
+                break;
+            }
         }
         /*
          * A UD receive begins with a 40-byte GRH: the payload starts at

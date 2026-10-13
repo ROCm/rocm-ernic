@@ -473,8 +473,50 @@ static void test_ring_span_saturates(void)
           "the largest guest bytes are refused");
 }
 
+/*
+ * Who may receive a datagram. The destination QPN in a work request used to
+ * select any valid QP in the device, with no check on transport type and no
+ * Q_Key at all -- so a guest could address another process's RC QP, or QP1
+ * and forge connection-management MADs at the kernel.
+ */
+static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
+{
+    struct ionic_qp_ring rc = {.valid = true, .ib_qp_type = 2 /* RC */};
+    struct ionic_qp_ring uc = {.valid = true, .ib_qp_type = 3 /* UC */};
+    struct ionic_qp_ring ud = {.valid = true, .ib_qp_type = 4 /* UD */};
+    struct ionic_qp_ring gsi = {.valid = true, .ib_qp_type = 1 /* GSI */};
+
+    check(ud_delivery_refused(&rc, 0) != NULL,
+          "a connected RC queue accepts no datagram");
+    check(ud_delivery_refused(&uc, 0) != NULL,
+          "a connected UC queue accepts no datagram");
+    check(ud_delivery_refused(&ud, 0) == NULL,
+          "an unconfigured UD queue still accepts one");
+    check(ud_delivery_refused(&gsi, 0) == NULL,
+          "GSI before the kernel sets its Q_Key still accepts one");
+
+    /* Once a queue has a Q_Key, a datagram must present it. */
+    ud.qkey_valid = true;
+    ud.qkey = 0x11111111u;
+    check(ud_delivery_refused(&ud, 0x11111111u) == NULL,
+          "the right Q_Key is delivered");
+    check(ud_delivery_refused(&ud, 0x22222222u) != NULL,
+          "a wrong Q_Key is refused");
+    check(ud_delivery_refused(&ud, 0) != NULL, "a zero Q_Key is refused");
+
+    /* QP1's key is privileged; the point of checking it is that an
+     * unprivileged guest guessing a QPN cannot reach the GSI queue. */
+    gsi.qkey_valid = true;
+    gsi.qkey = 0x80010000u;
+    check(ud_delivery_refused(&gsi, 0x80010000u) == NULL,
+          "the privileged GSI Q_Key is delivered");
+    check(ud_delivery_refused(&gsi, 0x11111111u) != NULL,
+          "GSI refuses a datagram that does not present its Q_Key");
+}
+
 int main(void)
 {
+    test_ud_delivery_is_refused_to_the_wrong_queue();
     test_page_table_is_bounded_by_the_region();
     test_ring_span_saturates();
     test_rq_counts_up_to_the_wrap();

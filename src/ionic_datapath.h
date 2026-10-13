@@ -137,6 +137,14 @@ void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
  * when it names this instance the peer QP is local and never leaves the
  * emulator.  Pass UINT32_MAX when there is no mesh.
  */
+/*
+ * The Q_Key a datagram must present to be delivered into this QP.
+ * MODIFY_QP carries it in the field a connected QP uses for its
+ * destination QPN, so it is set separately: for UD the two never both
+ * apply. Only UD and GSI consult it.
+ */
+void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
+                             uint32_t qkey);
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id);
 

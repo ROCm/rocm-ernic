@@ -1611,6 +1611,15 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
                     dgid[14], dgid[15]);
 
+        /*
+         * IB_QP_QKEY: the same field, read the other way. The datapath needs
+         * it because a datagram is only delivered into a QP that presents
+         * that QP's Q_Key -- without it the destination QPN alone selected
+         * any queue in the device, including other processes' and GSI.
+         */
+        if (attr_mask & (1u << 6))
+            ionic_datapath_set_qkey(ctx->dp, qp_id, qkey_dest_qpn);
+
         /* IB_QP_DEST_QPN: the driver names the peer by its own qpid, but the
          * backend routes on its QPNs.  For UD this field is the qkey instead,
          * so only translate when the mask says it is a destination QPN. */

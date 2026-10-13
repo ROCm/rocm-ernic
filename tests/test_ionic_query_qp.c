@@ -334,6 +334,14 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
     (void)dp;
     (void)lkey;
 }
+void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
+                             uint32_t qkey)
+{
+    (void)dp;
+    (void)qp_id;
+    (void)qkey;
+}
+
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)
 {
