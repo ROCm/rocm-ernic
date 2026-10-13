@@ -434,6 +434,66 @@ static void run_fault_case(const struct fault_case *c)
     }
 }
 
+/* ---- Completion encoding ---------------------------------------------- */
+
+#define CQE_GPA 512u
+
+/*
+ * One admin completion posted with @status.  The driver reads
+ * be32_to_cpu(status_length) as the error and logs it as "opcode %u error
+ * %u", so the status code must be the whole be32 value, not one byte of it.
+ */
+struct cqe_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    uint8_t status;
+    uint32_t want_status_length; /* host order, after be32_to_cpu() */
+    bool want_error_bit;
+};
+
+static const struct cqe_case cqe_cases[] = {
+    {"positive", "a successful completion",
+     "status_length 0 and the error bit clear", IONIC_RC_SUCCESS, 0, false},
+    {"positive", "a completion with EIO",
+     "status_length 3, so dmesg reads 'error 3', and the error bit set",
+     IONIC_RC_EIO, 3, true},
+    {"positive", "a completion with ENOENT",
+     "status_length 7 and the error bit set", IONIC_RC_ENOENT, 7, true},
+    {"boundary", "the smallest error status (EVERSION)",
+     "status_length 1 and the error bit set", IONIC_RC_EVERSION, 1, true},
+    {"boundary", "the largest status a byte can carry",
+     "status_length 255, not 0xff000000", 255, 255, true},
+};
+
+static void run_cqe_case(const struct cqe_case *c)
+{
+    struct ionic_aq_ring r;
+    uint32_t sl, qtf;
+    bool ok;
+
+    ctx_reset();
+    memset(&r, 0, sizeof(r));
+    r.cq_dma = CQE_GPA;
+    r.cq_depth = 1;
+    post_admin_cqe(&g_ctx, &r, 0, VALS, c->status);
+    memcpy(&sl, g_mem + CQE_GPA + 24, 4);
+    memcpy(&qtf, g_mem + CQE_GPA + 28, 4);
+    sl = be32toh(sl);
+    qtf = be32toh(qtf);
+    ok = sl == c->want_status_length &&
+         ((qtf & CQE_ERROR_BIT) != 0) == c->want_error_bit;
+
+    printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
+           c->description, c->expected);
+    if (!ok) {
+        printf("     got status_length %u (want %u), error bit %u\n", sl,
+               c->want_status_length,
+               (unsigned int)((qtf & CQE_ERROR_BIT) != 0));
+        failures++;
+    }
+}
+
 /*
  * Corner: the driver forces name[27] to NUL, so a name of 28 or more bytes
  * would lose its tail and could collide with another.  Every name must fit
@@ -463,6 +523,8 @@ int main(void)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(fault_cases) / sizeof(fault_cases[0]); i++)
         run_fault_case(&fault_cases[i]);
+    for (size_t i = 0; i < sizeof(cqe_cases) / sizeof(cqe_cases[0]); i++)
+        run_cqe_case(&cqe_cases[i]);
     check_names("device stat", dev_stats, DEV_STATS_COUNT);
     check_names("QP stat", qp_stats, QP_STATS_COUNT);
 

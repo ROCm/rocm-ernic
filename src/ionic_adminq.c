@@ -84,7 +84,7 @@ enum ionic_v1_admin_op {
  *     le16 old_sq_cindex
  *     le16 old_rq_cq_cindex
  *   Followed by (at byte 28):
- *     be32 status_length   (status in high byte when error bit set)
+ *     be32 status_length   (the ionic status code when error bit set)
  *     be32 qid_type_flags
  *       bit 0:  color
  *       bit 1:  error
@@ -532,7 +532,8 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
      *   [3:19]  u8   rsvd[17]
      *   [20:21] le16 old_sq_cindex
      *   [22:23] le16 old_rq_cq_cindex
-     *   [24:27] be32 status_length  (status in bits[31:24] when error set)
+     *   [24:27] be32 status_length  (the status code when error is set; the
+     *           driver logs be32_to_cpu() of it as "opcode %u error %u")
      *   [28:31] be32 qid_type_flags (color[0], error[1], type[7:5], qid[31:8])
      */
     uint8_t cqe[CQE_SIZE];
@@ -542,7 +543,7 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
     memcpy(cqe + 0, &ci, 2);
     cqe[2] = cmd_op;
 
-    uint32_t sl = htobe32(status ? ((uint32_t)status << 24) : 0);
+    uint32_t sl = htobe32((uint32_t)status);
     memcpy(cqe + 24, &sl, 4);
 
     /* qid_type_flags: bit 0 = color, bit 1 = error, bits[7:5] = type
