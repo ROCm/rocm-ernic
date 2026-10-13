@@ -583,7 +583,7 @@ void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
 }
 
 void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
-                              struct ionic_fault_set *faults)
+                              const struct ionic_fault_set *faults)
 {
     if (!emu)
         return;
