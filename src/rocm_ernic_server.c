@@ -365,6 +365,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
     if (dev->mac_addr_set)
         ionic_eth_emu_set_mac(dev->ionic_emu, dev->mac_addr);
     ionic_eth_emu_set_profile(dev->ionic_emu, &dev->profile);
+    ionic_eth_emu_set_faults(dev->ionic_emu, dev->faults);
 
     dev->ionic_rdma = ionic_rdma_devcmd_create(dev->vfu_ctx);
     if (!dev->ionic_rdma) {
@@ -681,11 +682,12 @@ static void usage(const char *progname)
                     "'SITE: PATTERN effect EFFECT'\n");
     fprintf(stderr, "                       e.g. 'stats_vals: every 100 effect "
                     "fail status eio'\n");
-    fprintf(stderr,
-            "                       Sites: stats_vals. Patterns: every N, "
-            "after N [count M],\n");
-    fprintf(stderr, "                       burst N every M, sequence "
-                    "\"1x3,0x10\". Effects: fail [status S]\n");
+    fprintf(stderr, "                       Patterns: every N, after N "
+                    "[count M], burst N every M,\n");
+    fprintf(stderr, "                       sequence \"1x3,0x10\". Sites "
+                    "and effects: stats_vals fail\n");
+    fprintf(stderr, "                       [status S]; eth_rx drop, nobuf; "
+                    "eth_tx drop\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1613,6 +1615,16 @@ int main(int argc, char *argv[])
     }
 
     ernic_startup_report("rocm-ernic: Shutting down");
+    /* What each fault saw, so a test can match the guest's counters. */
+    for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
+        const struct ionic_fault *f =
+            ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
+
+        if (f)
+            ernic_startup_report(
+                "  Fault %s: eligible %" PRIu64 ", fired %" PRIu64,
+                ionic_fault_site_name(f->site), f->eligible, f->fired);
+    }
 
     /* Mark cleanup in progress to prevent signal handler re-entry */
     g_cleanup_in_progress = 1;

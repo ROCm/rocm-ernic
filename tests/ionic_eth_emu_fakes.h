@@ -41,8 +41,9 @@ static unsigned int g_fail_writes;
 /* LOG_WARNING (or worse) messages logged since the test last cleared it. */
 static unsigned int g_nwarnings;
 
-/* What ionic_eth_net_send() returns. */
+/* What ionic_eth_net_send() returns, and how often it was called. */
 static int g_net_send_rc;
+static unsigned int g_net_sends;
 
 /* One frame for the next ionic_eth_net_recv(), then nothing. */
 static const uint8_t *g_net_rx_frame;
@@ -173,6 +174,7 @@ int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame, size_t len)
     (void)net;
     (void)frame;
     (void)len;
+    g_net_sends++;
     return g_net_send_rc;
 }
 

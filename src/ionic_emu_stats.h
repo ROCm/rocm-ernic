@@ -151,6 +151,7 @@ enum ionic_emu_drop {
     IONIC_EMU_DROP_DMA,        /* frame or completion DMA failed */
     IONIC_EMU_DROP_SEND,       /* tx: the host backend refused it */
     IONIC_EMU_DROP_DISABLED,   /* doorbell on a queue not initialized */
+    IONIC_EMU_DROP_INJECTED,   /* an injected fault (ionic_fault.h) took it */
 };
 
 struct ionic_emu_stats {
