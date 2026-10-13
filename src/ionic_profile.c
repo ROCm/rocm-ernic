@@ -51,6 +51,9 @@ enum key_kind {
     KEY_SPEED,
     KEY_XCVR,
     KEY_MTU,
+    KEY_ETH_QUEUES,
+    KEY_RDMA_EQS,
+    KEY_INTR_VECTORS,
     KEY_STATS_INTERVAL,
 };
 
@@ -65,12 +68,15 @@ static const struct schema_key {
     {"link", "speed_mbps", KEY_SPEED},
     {"link", "xcvr", KEY_XCVR},
     {"link", "mtu_max", KEY_MTU},
+    {"queues", "eth", KEY_ETH_QUEUES},
+    {"queues", "rdma_eqs", KEY_RDMA_EQS},
+    {"queues", "intr_vectors", KEY_INTR_VECTORS},
     {"stats", "interval_ms", KEY_STATS_INTERVAL},
 };
 
 #define SCHEMA_COUNT (sizeof(schema) / sizeof(schema[0]))
 
-static const char *const known_groups = "identity, link, stats";
+static const char *const known_groups = "identity, link, queues, stats";
 
 static const char *const asic_names[] = {"none", "capri", "elba", "giglio",
                                          "salina"};
@@ -108,6 +114,9 @@ void ionic_profile_defaults(struct ionic_profile *p)
     p->link.speed_mbps = 100000;
     p->link.xcvr = IONIC_PROFILE_XCVR_COPPER;
     p->link.mtu_max = 9198;
+    p->queues.eth = 4;
+    p->queues.rdma_eqs = 32;
+    p->queues.intr_vectors = 32;
     p->stats.interval_ms = 1000;
     memcpy(p->chain, "compat", sizeof("compat"));
 }
@@ -361,6 +370,58 @@ int ionic_profile_set_stats_interval(struct ionic_profile *p, const char *raw,
     return 0;
 }
 
+/*
+ * @raw as a number in [@min, @max] for @where: 0 with *@out set, or -1
+ * with the error in @err.
+ */
+static int ranged(const char *raw, const char *where, uint32_t min,
+                  uint32_t max, uint32_t *out, char *err, size_t err_len)
+{
+    uint64_t v = 0;
+    int rc = number(raw, where, &v, err, err_len);
+
+    if (rc < 0)
+        return -1;
+    if (rc != 0 || v < min || v > max) {
+        set_err(err, err_len, "%s: '%.40s' out of range %u..%u", where, raw,
+                min, max);
+        return -1;
+    }
+    *out = (uint32_t)v;
+    return 0;
+}
+
+int ionic_profile_set_eth_queues(struct ionic_profile *p, const char *raw,
+                                 const char *where, char *err, size_t err_len)
+{
+    return ranged(raw, where, IONIC_PROFILE_ETH_QUEUES_MIN,
+                  IONIC_PROFILE_ETH_QUEUES_MAX, &p->queues.eth, err, err_len);
+}
+
+uint32_t ionic_profile_intr_vectors(const struct ionic_profile *p)
+{
+    if (p->queues.intr_vectors != IONIC_PROFILE_INTR_VECTORS_AUTO)
+        return p->queues.intr_vectors;
+    /* At most 1 + 64 + 32 = 97, inside IONIC_PROFILE_INTR_VECTORS_MAX. */
+    return 1u + p->queues.eth + p->queues.rdma_eqs;
+}
+
+int ionic_profile_warning(const struct ionic_profile *p, char *msg,
+                          size_t msg_len)
+{
+    uint32_t want = 1u + p->queues.eth + p->queues.rdma_eqs;
+    uint32_t have = ionic_profile_intr_vectors(p);
+
+    if (have >= want)
+        return 0;
+    set_err(msg, msg_len,
+            "queues.intr_vectors = %" PRIu32 " is less than 1 + queues.eth + "
+            "queues.rdma_eqs = %" PRIu32 "; a guest with enough vCPUs halves "
+            "its RDMA EQs or Ethernet queues to fit",
+            have, want);
+    return 1;
+}
+
 /* Store one key's value in @q.  @where is "source:line: group.key". */
 static int set_value(struct ionic_profile *q, const struct schema_key *k,
                      const char *raw, const char *str, const char *where,
@@ -447,6 +508,29 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         }
         q->link.mtu_max = (uint32_t)v;
         return 0;
+
+    case KEY_ETH_QUEUES:
+        return ionic_profile_set_eth_queues(q, raw, where, err, err_len);
+
+    case KEY_RDMA_EQS:
+        return ranged(raw, where, IONIC_PROFILE_RDMA_EQS_MIN,
+                      IONIC_PROFILE_RDMA_EQS_MAX, &q->queues.rdma_eqs, err,
+                      err_len);
+
+    case KEY_INTR_VECTORS:
+        if (strcmp(raw, "auto") == 0) {
+            q->queues.intr_vectors = IONIC_PROFILE_INTR_VECTORS_AUTO;
+            return 0;
+        }
+        if (parse_u64(raw, &v) == -1) {
+            set_err(err, err_len,
+                    "%s: 'auto' or an integer expected, got '%.40s'", where,
+                    raw);
+            return -1;
+        }
+        return ranged(raw, where, IONIC_PROFILE_INTR_VECTORS_MIN,
+                      IONIC_PROFILE_INTR_VECTORS_MAX, &q->queues.intr_vectors,
+                      err, err_len);
 
     case KEY_STATS_INTERVAL:
         return ionic_profile_set_stats_interval(q, raw, where, err, err_len);
@@ -642,6 +726,12 @@ static const char *name_or(const char *const *names, size_t count, size_t i)
 /* Every section's values, which the hash covers. */
 static int format_values(const struct ionic_profile *p, char *buf, size_t len)
 {
+    char vectors[16];
+
+    if (p->queues.intr_vectors == IONIC_PROFILE_INTR_VECTORS_AUTO)
+        snprintf(vectors, sizeof(vectors), "auto");
+    else
+        snprintf(vectors, sizeof(vectors), "%" PRIu32, p->queues.intr_vectors);
     return snprintf(
         buf, len,
         "[identity]\n"
@@ -654,13 +744,18 @@ static int format_values(const struct ionic_profile *p, char *buf, size_t len)
         "xcvr = %s\n"
         "mtu_max = %" PRIu32 "\n"
         "\n"
+        "[queues]\n"
+        "eth = %" PRIu32 "\n"
+        "rdma_eqs = %" PRIu32 "\n"
+        "intr_vectors = %s\n"
+        "\n"
         "[stats]\n"
         "interval_ms = %" PRIu32 "\n",
         name_or(asic_names, N_ELEMS(asic_names), p->identity.asic_type),
         (unsigned int)p->identity.asic_rev, p->identity.fw_version,
         p->link.speed_mbps,
         name_or(xcvr_names, N_ELEMS(xcvr_names), p->link.xcvr), p->link.mtu_max,
-        p->stats.interval_ms);
+        p->queues.eth, p->queues.rdma_eqs, vectors, p->stats.interval_ms);
 }
 
 uint64_t ionic_profile_hash(const struct ionic_profile *p)

@@ -40,6 +40,16 @@ static const char compat_ini[] =
     "# The largest MTU the guest may set, 1500 to 9582.\n"
     "mtu_max = 9198\n"
     "\n"
+    "[queues]\n"
+    "# Ethernet RX and TX queues, 1 to 64.  The guest uses min(eth, vCPUs).\n"
+    "eth = 4\n"
+    "# RDMA event queues, 4 to 32.\n"
+    "rdma_eqs = 32\n"
+    "# MSI-X vectors, 2 to 128, or auto for 1 + eth + rdma_eqs.  With fewer, "
+    "the\n"
+    "# driver halves its EQs or queues to fit on a guest with many vCPUs.\n"
+    "intr_vectors = 32\n"
+    "\n"
     "[stats]\n"
     "# How often the statistics blocks in guest memory are rewritten, 10 to "
     "60000\n"
@@ -48,11 +58,41 @@ static const char compat_ini[] =
 
 /* profiles/small-vm.ini */
 static const char small_vm_ini[] =
-    "# small-vm: a NIC sized for CI runners and 1-2 vCPU guests.\n"
-    "#\n"
-    "# Its queue and interrupt keys arrive with configurable queues; until "
-    "then\n"
-    "# it is the same device as compat.\n";
+    "# small-vm: a NIC sized for CI runners and 1-2 vCPU guests: two queue\n"
+    "# pairs, the fewest RDMA EQs the driver accepts, and just enough "
+    "vectors.\n"
+    "\n"
+    "[queues]\n"
+    "eth = 2\n"
+    "rdma_eqs = 4\n"
+    "intr_vectors = auto\n";
+
+/* profiles/generic-100g.ini */
+static const char generic_100g_ini[] =
+    "# generic-100g: a typical modern 100G RoCE NIC.  Not calibrated against "
+    "any\n"
+    "# real product.  16 queue pairs fit common test VM sizes.\n"
+    "\n"
+    "[link]\n"
+    "speed_mbps = 100000\n"
+    "xcvr = fiber\n"
+    "\n"
+    "[queues]\n"
+    "eth = 16\n"
+    "intr_vectors = auto\n";
+
+/* profiles/generic-400g.ini */
+static const char generic_400g_ini[] =
+    "# generic-400g: a large 400G NIC.  Not calibrated against any real\n"
+    "# product.  64 queue pairs only take effect on a guest with 64 vCPUs.\n"
+    "\n"
+    "[link]\n"
+    "speed_mbps = 400000\n"
+    "xcvr = fiber\n"
+    "\n"
+    "[queues]\n"
+    "eth = 64\n"
+    "intr_vectors = auto\n";
 
 static const struct {
     const char *name;
@@ -60,6 +100,8 @@ static const struct {
 } builtins[] = {
     {"compat", compat_ini},
     {"small-vm", small_vm_ini},
+    {"generic-100g", generic_100g_ini},
+    {"generic-400g", generic_400g_ini},
 };
 
 const char *ionic_profile_builtin(const char *name)
@@ -74,5 +116,5 @@ const char *ionic_profile_builtin(const char *name)
 
 const char *ionic_profile_builtin_names(void)
 {
-    return "compat, small-vm";
+    return "compat, small-vm, generic-100g, generic-400g";
 }
