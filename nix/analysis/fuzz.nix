@@ -51,7 +51,7 @@ let
     { name = "net_headers";
       extra = [ ]; }
     { name = "ionic_stats";
-      extra = [ ];
+      extra = [ "src/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
       seeds = true; }
     { name = "fault_parse";

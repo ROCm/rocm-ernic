@@ -308,6 +308,132 @@ static void run_case(const struct stats_case *c)
     }
 }
 
+/* ---- Injected faults (ionic_fault.h) ---------------------------------- */
+
+#define FAULT_MAX_CMDS 4
+
+/*
+ * One fault and a run of identical commands against it.  Each command must
+ * complete with its own status; one that succeeds writes the full reply
+ * (@want_written bytes) and one that fails writes nothing.
+ */
+struct fault_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    const char *spec; /* --inject string */
+    uint8_t op;
+    uint32_t id_ver;
+    size_t ncmds;
+    uint8_t want_rc[FAULT_MAX_CMDS];
+    size_t want_written; /* bytes from a command that succeeds */
+};
+
+static const struct fault_case fault_cases[] = {
+    {"positive",
+     "device values with 'stats_vals: every 1 effect fail'",
+     "EIO (3) and no bytes written",
+     "stats_vals: every 1 effect fail",
+     VALS,
+     0,
+     1,
+     {IONIC_RC_EIO},
+     DEV_STATS_COUNT * 8},
+    {"positive",
+     "device values with 'fail status eversion'",
+     "status 1 (EVERSION) and no bytes written",
+     "stats_vals: every 1 effect fail status eversion",
+     VALS,
+     0,
+     1,
+     {IONIC_RC_EVERSION},
+     DEV_STATS_COUNT * 8},
+    {"positive",
+     "device values with 'fail status enoent'",
+     "status 7 (ENOENT) and no bytes written",
+     "stats_vals: every 1 effect fail status enoent",
+     VALS,
+     0,
+     1,
+     {IONIC_RC_ENOENT},
+     DEV_STATS_COUNT * 8},
+    {"boundary",
+     "'after 2' over 3 device-values commands",
+     "commands 1 and 3 succeed with the values; command 2 fails with EIO",
+     "stats_vals: after 2 effect fail",
+     VALS,
+     0,
+     3,
+     {IONIC_RC_SUCCESS, IONIC_RC_EIO, IONIC_RC_SUCCESS},
+     DEV_STATS_COUNT * 8},
+    {"boundary",
+     "'every 2' over 4 device-values commands",
+     "commands 2 and 4 fail; 1 and 3 succeed",
+     "stats_vals: every 2 effect fail",
+     VALS,
+     0,
+     4,
+     {IONIC_RC_SUCCESS, IONIC_RC_EIO, IONIC_RC_SUCCESS, IONIC_RC_EIO},
+     DEV_STATS_COUNT * 8},
+    {"corner",
+     "device headers with a stats_vals fault",
+     "headers still served: the site is STATS_VALS only",
+     "stats_vals: every 1 effect fail",
+     HDRS,
+     0,
+     2,
+     {IONIC_RC_SUCCESS, IONIC_RC_SUCCESS},
+     (DEV_STATS_COUNT + 1) * 32},
+    {"corner",
+     "QP values with a stats_vals fault",
+     "not affected: QP values are the qp_stats_vals site",
+     "stats_vals: every 1 effect fail",
+     QP_VALS,
+     QP_ID | VER1,
+     2,
+     {IONIC_RC_SUCCESS, IONIC_RC_SUCCESS},
+     QP_STATS_COUNT * 8},
+};
+
+static void run_fault_case(const struct fault_case *c)
+{
+    struct ionic_fault_set *set = ionic_fault_set_new();
+    char err[128] = "";
+    uint8_t body[64];
+    uint8_t got[FAULT_MAX_CMDS] = {0};
+    size_t got_written[FAULT_MAX_CMDS] = {0};
+    bool added =
+        set && ionic_fault_set_add(set, c->spec, err, sizeof(err)) == 0;
+    bool ok = added;
+
+    ctx_reset();
+    g_ctx.faults = set;
+    build_body(body, sizeof(body), BUF_GPA, PAGE_LEN, c->id_ver);
+    for (size_t k = 0; added && k < c->ncmds; k++) {
+        size_t want = c->want_rc[k] == IONIC_RC_SUCCESS ? c->want_written : 0;
+
+        memset(g_mem, POISON, sizeof(g_mem));
+        g_nwrites = 0;
+        got[k] = dispatch_wqe(&g_ctx, c->op, body, STATS_BODY_LEN);
+        got_written[k] = bytes_written(BUF_GPA);
+        if (got[k] != c->want_rc[k] || got_written[k] != want)
+            ok = false;
+    }
+    g_ctx.faults = NULL;
+    ionic_fault_set_free(set);
+
+    printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
+           c->description, c->expected);
+    if (!ok) {
+        if (err[0])
+            printf("     spec rejected: %s\n", err);
+        for (size_t k = 0; k < c->ncmds; k++)
+            printf("     command %zu: got rc %u (want %u), %zu bytes written\n",
+                   k + 1, got[k], c->want_rc[k], got_written[k]);
+        failures++;
+    }
+}
+
 /*
  * Corner: the driver forces name[27] to NUL, so a name of 28 or more bytes
  * would lose its tail and could collide with another.  Every name must fit
@@ -335,6 +461,8 @@ int main(void)
 {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
+    for (size_t i = 0; i < sizeof(fault_cases) / sizeof(fault_cases[0]); i++)
+        run_fault_case(&fault_cases[i]);
     check_names("device stat", dev_stats, DEV_STATS_COUNT);
     check_names("QP stat", qp_stats, QP_STATS_COUNT);
 

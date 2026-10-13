@@ -347,7 +347,8 @@ target_link_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
 # side buffers the driver reads its answer out of can be inspected directly.
-add_executable(test_ionic_query_qp test_ionic_query_qp.c)
+add_executable(test_ionic_query_qp test_ionic_query_qp.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c)
 target_include_directories(test_ionic_query_qp PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -364,7 +365,8 @@ target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # ionic hardware statistics test. Like the QUERY_QP test it #includes the
 # admin queue translation unit and backs DMA with a plain buffer, so the
 # header table and values the driver builds hw_counters from can be checked.
-add_executable(test_ionic_stats test_ionic_stats.c)
+add_executable(test_ionic_stats test_ionic_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c)
 target_include_directories(test_ionic_stats PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )

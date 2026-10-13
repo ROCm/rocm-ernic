@@ -52,7 +52,7 @@ from a real fuzz run under ASan without rebuilding via Nix:
 |---|---|---|
 | `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
-| `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises |
+| `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises, with and without an injected `stats_vals` fault |
 | `fuzz_fault_parse` | `ionic_fault_parse()`, the `--inject` spec parser | Pure string parser; checks an accepted spec is self-consistent and round-trips through its canonical form |
 
 Inputs are copied into an exact-size heap buffer before each call, so
@@ -70,7 +70,10 @@ aborts when a result breaks one of the handler's promises: one DMA write at
 the buffer the body named, never past its length, in whole entries, with
 the NONE terminator when it fits, the right counters in header order, no
 QP values for an unmapped QP, and nothing written on failure or outside
-the write.
+the write. The status must also be the code its cause names (`EINVAL` for
+a short body, `BAD_ADDR` for a zero `dma_addr`, `ENOENT` for an unmapped
+QP), and an input can switch on an injected `stats_vals` fault, under which
+device values must fail with `EIO` and every other command is unaffected.
 
 `fuzz_fault_parse` drives `ionic_fault_parse()` with arbitrary strings. A
 rejected spec must leave a message and own nothing; an accepted one must

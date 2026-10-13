@@ -101,6 +101,8 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
  * the RDMA device implementation. The actual device structures are
  * hidden behind the opaque pvrdma_handle_t.
  */
+struct ionic_fault_set;
+
 struct rocm_ernic_dev {
     /* libvfio-user context */
     vfu_ctx_t *vfu_ctx;
@@ -130,6 +132,9 @@ struct rocm_ernic_dev {
 
     /* Statistics */
     char *stats_file_path; /* Path to stats output file */
+
+    /* Faults from --inject, or NULL (ionic_fault.h) */
+    struct ionic_fault_set *faults;
 
     /* MAC address */
     uint8_t mac_addr[6]; /* Device MAC address */
