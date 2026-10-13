@@ -122,8 +122,9 @@ static inline uint64_t le64(uint64_t v)
 
 /* struct ionic_port_info, as the driver lays it out in the DMA area whose
  * address arrives in PORT_INIT.  Offsets rather than a struct because only
- * these fields are published; the sprom and statistics blocks that follow
- * are left as the driver allocated them.
+ * these fields are written at PORT_INIT; struct ionic_port_stats, at
+ * IONIC_PORT_INFO_STATS_OFF (576), is rewritten by the stats tick, and the
+ * sprom pages after it are left as the driver allocated them.
  *
  *   union ionic_port_config   config;   0   (__le32 words[64])
  *   struct ionic_port_status  status;   256 (__packed)
@@ -386,6 +387,11 @@ struct ionic_eth_emu {
     /* The last write failed and was logged; log again only after one works. */
     bool stats_write_failed;
 
+    /* The struct ionic_port_info PORT_INIT pointed at, or 0.  Cleared by
+     * PORT_RESET and device reset, for the same reason as lif_info_pa. */
+    uint64_t port_info_pa;
+    bool port_stats_write_failed;
+
     /* RDMA devcmd handler (registered after construction). */
     ionic_rdma_devcmd_fn_t rdma_devcmd_fn;
     void *rdma_devcmd_opaque;
@@ -440,6 +446,7 @@ struct ionic_eth_emu {
 struct eth_inbox_frame {
     struct eth_inbox_frame *next;
     size_t len;
+    bool port_counted; /* the MAC has seen it; it waits for a buffer */
     uint8_t data[];
 };
 
@@ -569,6 +576,7 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
         return -ENOMEM;
     f->next = NULL;
     f->len = len;
+    f->port_counted = false;
     memcpy(f->data, frame, len);
 
     pthread_mutex_lock(&emu->inbox_lock);
@@ -823,12 +831,26 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
  * -------------------------------------------------------------------------
  */
 
+/* Write one statistics block, logging a failure once until a write works. */
+static void publish_block(struct ionic_eth_emu *emu, const char *what,
+                          uint64_t pa, uint8_t *block, size_t len, bool *failed)
+{
+    if (eth_dma_rw(emu->vfu_ctx, pa, block, len, true) < 0) {
+        if (!*failed)
+            vfu_log(emu->vfu_ctx, LOG_WARNING,
+                    "ionic_eth_emu: %s stats write to %#lx failed; retrying "
+                    "every %u ms",
+                    what, (unsigned long)pa,
+                    (unsigned)emu->profile.stats.interval_ms);
+        *failed = true;
+        return;
+    }
+    *failed = false;
+}
+
 void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
 {
-    uint8_t block[IONIC_LIF_STATS_BYTES];
-    uint64_t pa;
-
-    if (!emu || !emu->lif_info_pa)
+    if (!emu || (!emu->lif_info_pa && !emu->port_info_pa))
         return;
     if (!emu->stats_publish_now &&
         now_ms - emu->stats_last_ms < emu->profile.stats.interval_ms)
@@ -836,20 +858,22 @@ void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
     emu->stats_publish_now = false;
     emu->stats_last_ms = now_ms;
 
-    /* fill() writes all of @block, so no stack bytes reach the guest. */
-    ionic_emu_stats_fill(&emu->stats, block);
-    pa = emu->lif_info_pa + IONIC_LIF_INFO_STATS_OFF;
-    if (eth_dma_rw(emu->vfu_ctx, pa, block, sizeof(block), true) < 0) {
-        if (!emu->stats_write_failed)
-            vfu_log(emu->vfu_ctx, LOG_WARNING,
-                    "ionic_eth_emu: LIF stats write to %#lx failed; retrying "
-                    "every %u ms",
-                    (unsigned long)pa,
-                    (unsigned)emu->profile.stats.interval_ms);
-        emu->stats_write_failed = true;
-        return;
+    /* fill() writes all of each block, so no stack bytes reach the guest. */
+    if (emu->lif_info_pa) {
+        uint8_t block[IONIC_LIF_STATS_BYTES];
+
+        ionic_emu_stats_fill(&emu->stats, block);
+        publish_block(emu, "LIF", emu->lif_info_pa + IONIC_LIF_INFO_STATS_OFF,
+                      block, sizeof(block), &emu->stats_write_failed);
     }
-    emu->stats_write_failed = false;
+    if (emu->port_info_pa) {
+        uint8_t block[IONIC_PORT_STATS_BYTES];
+
+        ionic_emu_port_fill(&emu->stats, block);
+        publish_block(emu, "port",
+                      emu->port_info_pa + IONIC_PORT_INFO_STATS_OFF, block,
+                      sizeof(block), &emu->port_stats_write_failed);
+    }
 }
 
 const struct ionic_emu_stats *ionic_eth_emu_get_stats(struct ionic_eth_emu *emu)
@@ -862,6 +886,8 @@ const struct ionic_emu_stats *ionic_eth_emu_get_stats(struct ionic_eth_emu *emu)
 
 /* Longest ionic_if.h name, rdma_resp_rx_out_of_atomic_resource, is 35. */
 #define LIF_STAT_NAME_WIDTH 35
+/* Longest port name, frames_rx_less_than_64b, is 23. */
+#define PORT_STAT_NAME_WIDTH 23
 
 void ionic_eth_emu_write_stats(FILE *fp, void *opaque)
 {
@@ -878,6 +904,11 @@ void ionic_eth_emu_write_stats(FILE *fp, void *opaque)
             fprintf(fp, "  %-*s : %" PRIu64 "\n", LIF_STAT_NAME_WIDTH, name,
                     st->lif[q]);
     }
+    fprintf(fp, "\n");
+    fprintf(fp, "Port Statistics:\n");
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
+        fprintf(fp, "  %-*s : %" PRIu64 "\n", PORT_STAT_NAME_WIDTH,
+                ionic_emu_port_stat_name(q), st->port[q]);
     fprintf(fp, "\n");
 }
 
@@ -920,6 +951,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         /* Firmware zeroes its counters on reset, and the guest may free the
          * LIF info block once the device is reset. */
         emu->lif_info_pa = 0;
+        emu->port_info_pa = 0;
         ionic_emu_stats_reset(&emu->stats);
         comp[0] = IONIC_RC_SUCCESS;
         break;
@@ -970,8 +1002,13 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         handle_port_init(emu, cmd, comp);
         break;
 
-    case IONIC_CMD_PORT_IDENTIFY:
     case IONIC_CMD_PORT_RESET:
+        /* The guest may free the port info block after this. */
+        emu->port_info_pa = 0;
+        comp[0] = 0;
+        break;
+
+    case IONIC_CMD_PORT_IDENTIFY:
     case IONIC_CMD_PORT_GETATTR:
     case IONIC_CMD_PORT_SETATTR:
         /* Stub: return success, data zeroed = sane defaults.  PORT_INIT is
@@ -1350,6 +1387,9 @@ static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
             vfu_log(emu->vfu_ctx, LOG_ERR,
                     "ionic_eth_emu: PORT_INIT: port info write to %#lx failed",
                     (unsigned long)info_pa);
+        /* The stats tick fills in the MAC counters from here on. */
+        emu->port_info_pa = info_pa;
+        emu->stats_publish_now = true;
     }
 
     comp[0] = 0; /* status OK */
@@ -1854,8 +1894,10 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                 ionic_eth_net_send(emu->net, emu->frame, len) < 0)
                 ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
                                      IONIC_EMU_DROP_SEND);
-            else
+            else {
                 ionic_emu_stats_frame(&emu->stats, emu->frame, len, true);
+                ionic_emu_port_frame(&emu->stats, emu->frame, len, true, 0);
+            }
             if (emu->net || emu->tx_filter)
                 pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
         }
@@ -1939,6 +1981,13 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     return 0;
 }
 
+/* The largest frame the port takes in, FCS excluded: what LIF_IDENTIFY
+ * advertises as max_frame_size. */
+static size_t port_max_frame(const struct ionic_eth_emu *emu)
+{
+    return (size_t)emu->profile.link.mtu_max + IONIC_PROFILE_FRAME_OVERHEAD;
+}
+
 /* The lif_stats reason for an eth_rx_deliver() error. */
 static enum ionic_emu_drop rx_drop_reason(int rc)
 {
@@ -1971,6 +2020,12 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (len <= 0)
             break;
 
+        /* The MAC drops a frame over the port's maximum before the LIF
+         * sees it. */
+        if (!ionic_emu_port_frame(&emu->stats, emu->frame, (size_t)len, false,
+                                  port_max_frame(emu)))
+            continue;
+
         /* A TAP frame the guest cannot take is gone, as on a real NIC. */
         int rc = eth_rx_deliver(emu, q, emu->frame, (size_t)len);
         if (rc == 0) {
@@ -1980,6 +2035,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         } else {
             ionic_emu_stats_drop(&emu->stats, emu->frame, (size_t)len, false,
                                  rx_drop_reason(rc));
+            ionic_emu_port_rx_dropped(&emu->stats);
         }
     }
 
@@ -2001,6 +2057,16 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (!f)
             break;
 
+        /* Counted at the MAC once, however often it waits for a buffer. */
+        if (!f->port_counted) {
+            f->port_counted = true;
+            if (!ionic_emu_port_frame(&emu->stats, f->data, f->len, false,
+                                      port_max_frame(emu))) {
+                free(f);
+                continue;
+            }
+        }
+
         int rc = eth_rx_deliver(emu, q, f->data, f->len);
         if (rc == 0) {
             delivered = true;
@@ -2010,6 +2076,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         } else if (rc != -ENOBUFS) {
             ionic_emu_stats_drop(&emu->stats, f->data, f->len, false,
                                  rx_drop_reason(rc));
+            ionic_emu_port_rx_dropped(&emu->stats);
             free(f);
         } else {
             pthread_mutex_lock(&emu->inbox_lock);
