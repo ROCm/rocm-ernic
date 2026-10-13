@@ -530,8 +530,52 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
           "GSI refuses a datagram that does not present its Q_Key");
 }
 
+
+/* Storage for the registration tests, which need a CQ table too. */
+static struct ionic_cq_ring g_reg_cq[4];
+
+/*
+ * The registration entry points, not just the leaf they call.
+ *
+ * The page-table bound is computed from the ring's geometry, and computing
+ * it from the wrong place rejects every legitimate ring. That is exactly
+ * what happened: the CQ path read c->depth, which is not assigned until
+ * after buf_init() returns and is zero for a CQ being registered, so the
+ * span was zero and no CQ in the device ever registered. The guest saw
+ * "no completion" for every operation while the data still moved, because
+ * memory regions take their span from a parameter rather than a field.
+ *
+ * Testing buf_init() directly could not see this, and did not. These go
+ * through the functions the adminq actually calls.
+ */
+static void test_registration_accepts_an_ordinary_ring(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+    struct ionic_dp_ring_desc ring = {
+        .buf = {.dma_addr = 0x100000, .map_count = 1, .page_size_log2 = 12},
+        .depth_log2 = 6,
+        .stride_log2 = 5,
+    };
+
+    memset(g_reg_cq, 0, sizeof(g_reg_cq));
+    dp->cq = g_reg_cq;
+    dp->cq_count = 4;
+
+    ionic_datapath_register_cq(dp, 1, 2, &ring);
+    check(dp->cq[1].valid, "a CQ with an ordinary geometry registers");
+    check(dp->cq[1].depth == 64, "the CQ kept its depth");
+
+    ionic_datapath_register_qp(dp, RQ_QP_ID, 2 /* RC */, 1, &ring, 1, &ring);
+    check(dp->qp[RQ_QP_ID].valid, "a QP with ordinary rings registers");
+
+    check(ionic_datapath_register_srq(dp, SRQ_QID, &ring) == 0,
+          "an SRQ with an ordinary ring registers");
+    check(dp->srq[SRQ_SLOT].valid, "and is left valid");
+}
+
 int main(void)
 {
+    test_registration_accepts_an_ordinary_ring();
     test_ud_delivery_is_refused_to_the_wrong_queue();
     test_page_table_is_bounded_by_the_region();
     test_ring_span_saturates();

@@ -858,9 +858,15 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
         c->valid = false;
         return;
     }
-    /* depth * stride is exactly what the ring occupies. */
+    /*
+     * depth * stride is exactly what the ring occupies -- taken from the
+     * descriptor, not from c->depth, which is not assigned until this call
+     * has succeeded and is zero for a CQ being registered for the first
+     * time. Reading it here made the span zero and rejected every CQ in
+     * the device, so nothing ever completed while data still moved.
+     */
     if (buf_init(dp, &c->buf, &ring->buf, 0,
-                 (uint64_t)c->depth << stride_log2) < 0) {
+                 ring_span_bytes(ring->depth_log2, stride_log2)) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u page table read failed", cq_id);
         c->valid = false;
