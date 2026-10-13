@@ -176,6 +176,8 @@ static void setup_rxq(struct ionic_eth_emu *emu, uint16_t posted, uint16_t cap)
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][0];
 
     q->valid = true;
+    q->enabled =
+        true; /* the only enabled Rx queue, so every frame lands here */
     q->ring_base = RX_RING;
     q->cq_ring_base = RX_CQ;
     q->depth = Q_DEPTH;

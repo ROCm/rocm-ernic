@@ -310,6 +310,7 @@ add_executable(test_ionic_intr_pending test_ionic_intr_pending.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
     ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -337,6 +338,7 @@ add_executable(test_ionic_port_info test_ionic_port_info.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
     ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_port_info PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -396,6 +398,7 @@ add_executable(test_ionic_identity test_ionic_identity.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
     ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_identity PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -420,6 +423,7 @@ add_executable(test_ionic_stats_publish test_ionic_stats_publish.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
     ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_stats_publish PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -444,6 +448,7 @@ add_executable(test_ionic_queues test_ionic_queues.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
     ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
     ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
 )
 target_include_directories(test_ionic_queues PRIVATE
     ${CMAKE_SOURCE_DIR}/src

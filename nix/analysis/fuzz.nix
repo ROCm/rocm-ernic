@@ -12,6 +12,8 @@
 #   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
 #   fuzz_profile_parse   ionic_profile_apply_text() — the --nic-profile ini
 #                        loader
+#   fuzz_eth_classify    ionic_emu_mac_class() + ionic_eth_flow_hash() — the
+#                        per-frame MAC class and Rx steering hash
 #
 # Deliberately NOT fuzzed here: the ionic devcmd and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
 # through rdma_pci_dma_map() and manipulate the RDMA resource manager, so a
@@ -51,6 +53,9 @@ let
       extra = [ ]; }
     { name = "profile_parse";
       extra = [ "src/ionic_profile.c" "src/ionic_profiles.c" ];
+      seeds = true; }
+    { name = "eth_classify";
+      extra = [ "src/ionic_emu_stats.c" "src/ionic_eth_steer.c" ];
       seeds = true; }
   ];
 

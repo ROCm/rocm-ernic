@@ -46,6 +46,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_net.h"
+#include "ionic_eth_steer.h"
 #include "ionic_profile.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
@@ -180,6 +181,10 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_CMD_Q_IDENTIFY  39
 #define IONIC_CMD_Q_INIT      40
 #define IONIC_CMD_Q_CONTROL   41
+
+/* ionic_q_control_cmd.oper; IONIC_Q_HANG_RESET (2) is acknowledged as is */
+#define IONIC_Q_DISABLE 0
+#define IONIC_Q_ENABLE  1
 
 /* Completion status codes (enum ionic_status_code in ionic_if.h) */
 #define IONIC_RC_SUCCESS 0
@@ -357,6 +362,7 @@ _Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
 /* State captured from Q_INIT for an Ethernet logical queue. */
 struct eth_queue {
     bool valid;
+    bool enabled; /* Q_CONTROL ENABLE seen since Q_INIT; Rx serves only these */
     uint16_t intr_index;
     uint64_t ring_base;
     uint64_t cq_ring_base;
@@ -486,6 +492,8 @@ static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
                               uint8_t *comp, uint8_t *data);
 static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
                           uint8_t *comp);
+static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                             uint8_t *comp);
 static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
                             uint8_t *comp);
 static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index);
@@ -985,7 +993,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_Q_CONTROL:
-        comp[0] = 0;
+        handle_q_control(emu, cmd, comp);
         break;
 
     case IONIC_CMD_PORT_INIT:
@@ -1624,6 +1632,45 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 }
 
 /* -------------------------------------------------------------------------
+ * Q_CONTROL (opcode 41)
+ *
+ * ionic_qcq_enable() sends ENABLE once a queue is initialized and
+ * ionic_qcq_disable() sends DISABLE before tearing it down.  Only the Rx
+ * side acts on it: frames are steered across the enabled Rx queues, so a
+ * guest that runs fewer channels than the LIF offers never has a frame
+ * land on a queue it is not servicing.  HANG_RESET and unknown queues
+ * succeed with no effect, as every other stateless command does here.
+ *
+ * struct ionic_q_control_cmd: opcode@0, type@1, lif_index le16 @2,
+ * index le32 @4, oper@8.
+ * -------------------------------------------------------------------------
+ */
+static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                             uint8_t *comp)
+{
+    uint8_t qtype = cmd[1];
+    uint32_t index;
+    uint8_t oper = cmd[8];
+
+    memcpy(&index, cmd + 4, 4);
+    index = le32toh(index);
+
+    vfu_log(emu->vfu_ctx, LOG_DEBUG,
+            "ionic_eth_emu: Q_CONTROL type=%u index=%u oper=%u", qtype, index,
+            oper);
+
+    if (qtype < IONIC_QTYPE_ETH_MAX && index < eth_qcount(emu)) {
+        struct eth_queue *q = &emu->eth_q[qtype][index];
+
+        if (oper == IONIC_Q_ENABLE)
+            q->enabled = true;
+        else if (oper == IONIC_Q_DISABLE)
+            q->enabled = false;
+    }
+    comp[0] = IONIC_RC_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------
  * Ethernet admin queue
  *
  * Unlike the devcmd path, adminq commands are DMA'd: the driver writes
@@ -1673,6 +1720,11 @@ static void process_adminq_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
     switch (cmd[0]) {
     case IONIC_CMD_Q_INIT:
         handle_q_init(emu, cmd, comp);
+        break;
+
+    /* ionic_qcq_enable() and ionic_qcq_disable() post these here. */
+    case IONIC_CMD_Q_CONTROL:
+        handle_q_control(emu, cmd, comp);
         break;
 
     /* ionic_rdma_devcmd() is a misnomer: RDMA opcodes 50-53 go out over the
@@ -1978,27 +2030,61 @@ static enum ionic_emu_drop rx_drop_reason(int rc)
     }
 }
 
+/*
+ * The Rx queues frames may land on: initialized and enabled, in index order.
+ * Returns how many were written to @out.
+ */
+static uint32_t eth_rx_active(const struct ionic_eth_emu *emu,
+                              uint8_t out[IONIC_EMU_ETH_QMAX])
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < eth_qcount(emu); i++) {
+        const struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][i];
+
+        if (q->valid && q->enabled)
+            out[n++] = (uint8_t)i;
+    }
+    return n;
+}
+
+/* The Rx queue index @frame steers to, one of the @n entries of @active. */
+static uint8_t eth_rx_steer(const uint8_t *active, uint32_t n,
+                            const uint8_t *frame, size_t len)
+{
+    return active[ionic_eth_flow_hash(frame, len) % n];
+}
+
+_Static_assert(IONIC_EMU_ETH_QMAX <= UINT8_MAX + 1,
+               "eth_rx_active() stores queue indices in a uint8_t");
+
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 {
     if (!emu)
         return;
 
-    struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][0];
-    if (!q->valid)
+    uint8_t active[IONIC_EMU_ETH_QMAX];
+    uint32_t nactive = eth_rx_active(emu, active);
+    if (nactive == 0)
         return;
 
+    /* The queues that took a frame this poll, each interrupted once. */
+    bool hit[IONIC_EMU_ETH_QMAX] = {false};
+
     /* Bounded per poll so a busy tap cannot starve the RDMA admin queue. */
-    bool delivered = false;
     for (unsigned n = 0; emu->net && n < 64; n++) {
         ssize_t len =
             ionic_eth_net_recv(emu->net, emu->frame, sizeof(emu->frame));
         if (len <= 0)
             break;
 
+        uint8_t qid = eth_rx_steer(active, nactive, emu->frame, (size_t)len);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
+
         /* A TAP frame the guest cannot take is gone, as on a real NIC. */
         int rc = eth_rx_deliver(emu, q, emu->frame, (size_t)len);
         if (rc == 0) {
-            delivered = true;
+            hit[qid] = true;
             ionic_emu_stats_frame(&emu->stats, emu->frame, (size_t)len, false);
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
         } else {
@@ -2025,9 +2111,12 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (!f)
             break;
 
+        uint8_t qid = eth_rx_steer(active, nactive, f->data, f->len);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
+
         int rc = eth_rx_deliver(emu, q, f->data, f->len);
         if (rc == 0) {
-            delivered = true;
+            hit[qid] = true;
             ionic_emu_stats_frame(&emu->stats, f->data, f->len, false);
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)f->len, false);
             free(f);
@@ -2047,8 +2136,11 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         }
     }
 
-    if (delivered)
-        ionic_eth_emu_trigger_irq(emu, q->intr_index);
+    for (uint32_t i = 0; i < nactive; i++) {
+        if (hit[active[i]])
+            ionic_eth_emu_trigger_irq(
+                emu, emu->eth_q[IONIC_QTYPE_RXQ][active[i]].intr_index);
+    }
 }
 
 int ionic_eth_emu_attach_tap(struct ionic_eth_emu *emu, const char *ifname,

@@ -95,3 +95,13 @@ ernic_add_fuzz_replay(profile_parse
 target_compile_definitions(fuzz_replay_profile_parse PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE
 )
+
+# The per-frame MAC class and Rx steering hash: pure functions of the frame
+# bytes, with their own seed table.
+ernic_add_fuzz_replay(eth_classify
+    ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
+)
+target_compile_definitions(fuzz_replay_eth_classify PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
