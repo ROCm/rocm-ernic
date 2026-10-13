@@ -98,8 +98,17 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id);
  * fields zero and puts the SRQ's qid in rq_tbl_index_srq_id (~0 means "no
  * SRQ"). Its receive completions still go to its own rq_cq_id.
  */
-void ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
-                                 const struct ionic_dp_ring_desc *rq);
+/*
+ * Returns 0, or negative on failure: -EINVAL for an unknown id or a ring
+ * geometry outside IONIC_SRQ_MAX_{DEPTH,STRIDE}_LOG2, -EIO when the guest
+ * page table cannot be read. The caller must fail CREATE_SRQ on a negative
+ * return. Reporting success for an SRQ with no receive ring is the one
+ * outcome worth avoiding: the guest then owns a queue that accepts posts and
+ * never completes them, which surfaces as a hang in the datapath rather than
+ * an error from the verb that caused it.
+ */
+int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
+                                const struct ionic_dp_ring_desc *rq);
 void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id);
 void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint32_t srq_id);
@@ -118,8 +127,8 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
  * delivered every datagram back to the sender's own QP.
  */
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
-                                const uint8_t dgid[16], const uint8_t dmac[6],
-                                uint32_t dest_node_id);
+                                const uint8_t dgid[16], const uint8_t sgid[16],
+                                const uint8_t dmac[6], uint32_t dest_node_id);
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 
 /*

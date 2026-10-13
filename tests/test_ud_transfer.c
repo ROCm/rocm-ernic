@@ -1,27 +1,31 @@
-// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
-//
-// SPDX-License-Identifier: MIT
-//
-// test_ud_transfer -- what ibv_ud_pingpong cannot tell you.
-//
-// ud_pingpong is the obvious UD test and it is a weak one on loopback: it
-// sends from buf + 40 and receives into buf, the same buffer, so the bytes it
-// verifies are already where it expects whether or not the device prepended a
-// GRH, and whether or not the datagram reached a different QP at all. It
-// passed against an emulator that delivered every datagram straight back into
-// the sending QP and prepended nothing.
-//
-// This uses two QPs and two separate buffers, and checks the three things
-// that distinguishes:
-//
-//   1. the datagram reaches the OTHER QP, not the sender's
-//   2. byte_len is 40 + payload, i.e. the GRH is counted
-//   3. the payload starts at offset 40, i.e. the GRH is really there
-//
-// and then repeats the send inline, which is the path UCX's ud_verbs
-// actually uses for small messages.
-//
-// Exits 0 on success, 77 when there is no usable device, 1 on a failure.
+/*
+ * test_ud_transfer -- what ibv_ud_pingpong cannot tell you.
+ *
+ * ud_pingpong is the obvious UD test and it is a weak one on loopback: it
+ * sends from buf + 40 and receives into buf, the same buffer, so the bytes it
+ * verifies are already where it expects whether or not the device prepended a
+ * GRH, and whether or not the datagram reached a different QP at all. It
+ * passed against an emulator that delivered every datagram straight back into
+ * the sending QP and prepended nothing.
+ *
+ * This uses two QPs and two separate buffers, and checks the three things
+ * that distinguish:
+ *
+ *   1. the datagram reaches the OTHER QP, not the sender's
+ *   2. byte_len is 40 + payload, i.e. the GRH is counted
+ *   3. the payload starts at offset 40, i.e. the GRH is really there
+ *
+ * and then repeats the send inline, which is the path UCX's ud_verbs
+ * actually uses for small messages.
+ *
+ * Exits 0 on success, 77 when there is no usable device, 1 on a failure.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
+ */
 
 #include <errno.h>
 #include <stdio.h>
@@ -426,7 +430,16 @@ int main(void)
     printf("PASS: datagrams reached the peer QP with a GRH\n");
     rc = 0;
 
+    /* Both QPs first, then the memory and the address handle they point
+     * at. A failure between a post and its completion leaves a receive on
+     * b's RQ or a send on a's SQ still referencing buf, mr, src_two and ah;
+     * destroying the queues is what flushes those. The CQs outlive the QPs
+     * for the same reason -- a QP cannot be destroyed into a dead CQ. */
 out:
+    for (struct ud_ep *e = &a; e; e = (e == &a) ? &b : NULL) {
+        if (e->qp)
+            ibv_destroy_qp(e->qp);
+    }
     if (mr_two)
         ibv_dereg_mr(mr_two);
     free(src_two);
@@ -436,8 +449,6 @@ out:
         if (e->mr)
             ibv_dereg_mr(e->mr);
         free(e->buf);
-        if (e->qp)
-            ibv_destroy_qp(e->qp);
         if (e->cq)
             ibv_destroy_cq(e->cq);
     }

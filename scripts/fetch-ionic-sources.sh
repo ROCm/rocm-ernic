@@ -45,10 +45,29 @@ if [[ -z "${SOURCE_DIR}" || -z "${KERNEL_REF}" ]]; then
     exit 1
 fi
 
-SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}"
+# The sentinel names the ref AND the series, because the ref alone does not
+# identify the tree this produces. SOURCE_DIR outlives a run on a
+# self-hosted runner, so with only the ref in the name, editing a patch and
+# rerunning against the same kernel reported "nothing to do" and tested the
+# previous series -- a change that silently did not take, which is the worst
+# shape a CI result can have. Names as well as contents, so deleting or
+# renaming a patch counts as a change too.
+patch_digest() {
+    local f
+    {
+        for f in "${PATCHES_DIR}"/*.patch; do
+            [ -e "${f}" ] || continue
+            printf '%s\n' "${f##*/}"
+            cat "${f}"
+        done
+    } | sha256sum | cut -c1-16
+}
+
+SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(patch_digest)"
 
 if [ -f "${SENTINEL}" ] && ! ${FORCE}; then
-    echo "-- ionic sources already at ${KERNEL_REF}; nothing to do"
+    echo "-- ionic sources already at ${KERNEL_REF} with this series;" \
+         "nothing to do"
     exit 0
 fi
 

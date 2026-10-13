@@ -129,6 +129,14 @@ ansible/changelogs/.plugin-cache.yaml
 # Working notes, not part of the tree
 overnight.md
 
+# Local developer convenience, deliberately untracked.  Nothing in CI
+# builds these -- the workflows build on the runner directly -- so
+# carrying them would only put a Dockerfile in front of the security
+# scanners (trivy DS-0002 wants a non-root USER in an image whose whole
+# purpose is to run the build as root).
+.dockerignore
+docker/
+
 # Rendered by ci/report/publish-perf.py from the history on gh-pages.
 # The history itself is committed empty; see docs/perf-trends.rst.
 docs/perf-history/chart-*.html

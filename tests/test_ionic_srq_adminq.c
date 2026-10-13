@@ -184,11 +184,17 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     (void)handle;
     (void)cq_handle;
 }
+/* Counted so a refused CREATE_QP can be shown to allocate nothing: the
+ * check that rejects an unknown SRQ has to run before this, or every
+ * rejected command leaks a backend QP. */
+static uint32_t g_qp_alloc_calls;
+
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
                       uint32_t recv_cq_handle, uint32_t *qpn)
 {
+    g_qp_alloc_calls++;
     (void)handle;
     (void)pd_handle;
     (void)qp_type;
@@ -252,20 +258,28 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
     (void)dp;
     (void)qp_id;
 }
+/* Which SRQ a QP was bound to, and whether the bind happened at all:
+ * CREATE_QP must refuse an id that names no SRQ rather than binding
+ * to an empty slot. */
+static uint32_t g_bind_calls;
+static uint32_t g_bound_srq_id;
+
 void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint32_t srq_id)
 {
     (void)dp;
     (void)qp_id;
-    (void)srq_id;
+    g_bind_calls++;
+    g_bound_srq_id = srq_id;
 }
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
-                                const uint8_t dgid[16], const uint8_t dmac[6],
-                                uint32_t dest_node_id)
+                                const uint8_t dgid[16], const uint8_t sgid[16],
+                                const uint8_t dmac[6], uint32_t dest_node_id)
 {
     (void)dp;
     (void)ah_id;
     (void)dgid;
+    (void)sgid;
     (void)dmac;
     (void)dest_node_id;
 }
@@ -333,6 +347,7 @@ static uint32_t g_last_dealloc_handle;
 static int g_alloc_rc;
 static uint32_t g_modify_handle;
 static uint32_t g_modify_limit;
+static uint32_t g_modify_calls;
 static uint32_t g_registered_srq_id;
 static uint32_t g_unregistered_srq_id;
 static uint8_t g_registered_depth_log2;
@@ -364,8 +379,14 @@ int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                         uint32_t srq_limit)
 {
     (void)handle;
+    /* Mirrors rdma_rm_modify_srq(), which rejects a limit of 0 outright.
+     * Reproducing that here is what makes the limit-0 case below a test:
+     * a handler that forwards 0 to the resource manager fails, as it did. */
+    if (srq_limit == 0)
+        return -EINVAL;
     g_modify_handle = srq_handle;
     g_modify_limit = srq_limit;
+    g_modify_calls++;
     return 0;
 }
 
@@ -383,12 +404,19 @@ int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     return 0;
 }
 
-void ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
-                                 const struct ionic_dp_ring_desc *ring)
+/* Set by a test that wants registration to fail, so the handler's unwind
+ * path can be driven without a datapath. */
+static int g_register_srq_rc;
+
+int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
+                                const struct ionic_dp_ring_desc *ring)
 {
     (void)dp;
+    if (g_register_srq_rc)
+        return g_register_srq_rc;
     g_registered_srq_id = srq_id;
     g_registered_depth_log2 = ring ? ring->depth_log2 : 0;
+    return 0;
 }
 
 void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
@@ -426,6 +454,10 @@ static void ctx_reset(void)
     g_alloc_rc = 0;
     g_modify_handle = 0;
     g_modify_limit = 0;
+    g_modify_calls = 0;
+    g_bind_calls = 0;
+    g_qp_alloc_calls = 0;
+    g_bound_srq_id = 0;
     g_registered_srq_id = 0;
     g_unregistered_srq_id = 0;
     g_registered_depth_log2 = 0;
@@ -441,8 +473,11 @@ static void build_create(uint8_t *body, uint64_t resp_gpa, uint32_t resp_len)
     memset(body, 0, IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN);
     memcpy(body + 22, &limit_le, 2);
     body[26] = SRQ_DEPTH_LOG2; /* depth_log2 */
-    body[27] = 4;              /* stride_log2 */
-    body[28] = 12;             /* page_size_log2 */
+    /* 6 is what the ionic driver actually asks for: a 64-byte SRQ WQE.
+     * It also has to clear IONIC_SRQ_MIN_STRIDE_LOG2, which this used
+     * to sit below. */
+    body[27] = 6;  /* stride_log2 */
+    body[28] = 12; /* page_size_log2 */
     memcpy(body + 30, &resp_len_le, 4);
     memcpy(body + 34, &resp_le, 8);
 }
@@ -494,8 +529,12 @@ static void test_create_reports_id_and_length(void)
     check("create-accepted", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ,
                                           body, sizeof(body)) == 0);
     check("create-allocated-once", g_alloc_calls == 1);
-    /* Above the QP id space, or an RQ doorbell cannot be told apart. */
-    check("create-id-above-qp-space", resp_srq_id() > IONIC_SRQ_QID_BASE);
+    /* At or above the QP id space, or an RQ doorbell cannot be told apart.
+     * Not strictly above: the first id is the base itself now that ids come
+     * from the map slot. The allocator this replaced started at base + 1 and
+     * never used slot 0, which is what the old ">" here encoded. */
+    check("create-id-at-or-above-qp-space",
+          resp_srq_id() >= IONIC_SRQ_QID_BASE);
     check("create-resp-len-set",
           g_ctx.resp_len == IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     check("create-udma-idx-zero", g_mem[RESP_GPA + 4] == 0);
@@ -608,6 +647,334 @@ static void test_map_capacity_is_enforced(void)
     check("capacity-refusal-frees-the-resource", g_dealloc_calls == 1);
 }
 
+/*
+ * Every id the allocator hands out has to index the datapath's SRQ table,
+ * which srq_by_qid() addresses as srq_id - IONIC_SRQ_QID_BASE over
+ * IONIC_EMU_SRQ_COUNT entries. An id past the end is not caught anywhere
+ * downstream: srq_by_qid() returns NULL, registration does nothing, and the
+ * guest is handed a queue that accepts posts and completes none of them.
+ */
+static void test_ids_stay_inside_the_datapath_table(void)
+{
+    uint32_t i, id, worst = 0;
+
+    ctx_reset();
+    for (i = 0; i < MAX_SRQ_MAP; i++) {
+        id = create_one();
+        if (id == 0)
+            break;
+        if (id - IONIC_SRQ_QID_BASE > worst)
+            worst = id - IONIC_SRQ_QID_BASE;
+    }
+    check("range-filled-the-map", i == MAX_SRQ_MAP);
+    check("range-every-id-indexes-the-table", worst < IONIC_EMU_SRQ_COUNT);
+    /* Slot 0 is usable; the counter that preceded this skipped it. */
+    check("range-uses-the-first-slot", g_registered_srq_id != 0);
+}
+
+/*
+ * The id space must track live SRQs, not cumulative creates. This is the
+ * regression test for the allocator that only ever counted up: with one SRQ
+ * alive at a time, it drifted one id further out on every cycle and left the
+ * table after 255 of them, while the map -- which recycles slots -- stayed
+ * almost empty and reported nothing wrong.
+ */
+static void test_ids_are_recycled_across_churn(void)
+{
+    uint8_t body[8];
+    uint32_t id = 0;
+    bool in_range = true;
+
+    ctx_reset();
+    for (uint32_t i = 0; i < MAX_SRQ_MAP * 2; i++) {
+        id = create_one();
+        if (id == 0 || id - IONIC_SRQ_QID_BASE >= IONIC_EMU_SRQ_COUNT) {
+            in_range = false;
+            break;
+        }
+        build_id_body(body, sizeof(body), id);
+        if (dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ, body, 4) != 0) {
+            in_range = false;
+            break;
+        }
+    }
+    check("churn-ids-stay-in-the-table", in_range);
+}
+
+/*
+ * depth_log2 and stride_log2 are guest bytes that get shifted by. A value of
+ * 32 or more makes "1u << n" undefined in C, and an oversized stride decides
+ * how much of a WQE the receive path walks out of a fixed buffer. Both are
+ * refused at the boundary, before anything shifts.
+ */
+static void test_oversized_exponents_are_refused(void)
+{
+    uint8_t body[IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN];
+
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[26] = 32; /* depth_log2: the shift-by-32 that is UB */
+    check("depth-exponent-32-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+    check("depth-exponent-32-allocated-nothing", g_alloc_calls == 0);
+
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[26] = IONIC_SRQ_MAX_DEPTH_LOG2 + 1;
+    check("depth-exponent-past-advertised-max-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[27] = IONIC_SRQ_MAX_STRIDE_LOG2 + 1;
+    check("stride-exponent-past-wqe-buffer-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+    check("stride-exponent-refusal-allocated-nothing", g_alloc_calls == 0);
+
+    /*
+     * A stride too SMALL is the other half, and it is not a shift problem.
+     * deliver_recv() reads min(stride, sizeof rwqe) bytes and then takes the
+     * work request id from offset 0 and the SGE count from offset 9, so a
+     * stride below the payload offset leaves both reads coming off whatever
+     * happened to be on the stack.
+     */
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[27] = IONIC_SRQ_MIN_STRIDE_LOG2 - 1;
+    check("stride-exponent-below-the-wqe-header-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+    check("small-stride-refusal-allocated-nothing", g_alloc_calls == 0);
+
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[27] = 0;
+    check("stride-exponent-zero-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+
+    /* Both ends of the advertised range still work, so these are bounds and
+     * not off-by-ones. */
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[26] = IONIC_SRQ_MAX_DEPTH_LOG2;
+    body[27] = IONIC_SRQ_MAX_STRIDE_LOG2;
+    check("max-advertised-geometry-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) ==
+              0);
+
+    ctx_reset();
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+    body[27] = IONIC_SRQ_MIN_STRIDE_LOG2;
+    check("min-advertised-stride-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) ==
+              0);
+}
+
+/*
+ * Registration failing is the command failing. The handler used to ignore a
+ * void return, DMA an id back and report success, leaving the guest owning
+ * an SRQ with no receive ring -- a queue that accepts posts and completes
+ * none of them, which is the silent hang this feature exists to remove.
+ */
+static void test_registration_failure_fails_the_command(void)
+{
+    uint8_t body[IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN];
+
+    ctx_reset();
+    g_register_srq_rc = -EIO;
+    build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+
+    check("register-failure-refuses-create",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
+              0);
+    check("register-failure-frees-the-resource", g_dealloc_calls == 1);
+    check("register-failure-wrote-no-id", g_mem[RESP_GPA] == 0);
+    g_register_srq_rc = 0;
+
+    /* And the slot it took is handed back, not stranded. */
+    check("register-failure-released-the-slot", create_one() != 0);
+}
+
+/*
+ * srq_limit == 0 is the legal "no low-watermark" value, and the guest driver
+ * accepts it. The resource manager does not -- rdma_rm_modify_srq() returns
+ * -EINVAL for it -- so routing every limit through the resource manager
+ * turned a valid ibv_modify_srq(srq_limit=0) into an error. The map holds
+ * the authoritative value; only non-zero limits go any further.
+ */
+static void test_zero_limit_is_accepted(void)
+{
+    uint8_t body[8];
+    uint32_t srq_id;
+    uint16_t limit_le;
+
+    ctx_reset();
+    srq_id = create_one();
+    check("zero-limit-precondition-created", srq_id != 0);
+
+    limit_le = htole16(0);
+    build_id_body(body, sizeof(body), srq_id);
+    memcpy(body + 4, &limit_le, 2);
+    check("zero-limit-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+    check("zero-limit-never-reached-the-resource-manager", g_modify_calls == 0);
+
+    /* A real limit still goes through, so this is not a blanket bypass. */
+    limit_le = htole16(4);
+    build_id_body(body, sizeof(body), srq_id);
+    memcpy(body + 4, &limit_le, 2);
+    check("nonzero-limit-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+    check("nonzero-limit-forwarded",
+          g_modify_calls == 1 && g_modify_limit == 4);
+
+    /* And QUERY reports what was set, including back down to zero, which
+     * the resource manager's copy could never show. */
+    limit_le = htole16(0);
+    build_id_body(body, sizeof(body), srq_id);
+    memcpy(body + 4, &limit_le, 2);
+    check("zero-limit-accepted-again",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+    build_id_body(body, sizeof(body), srq_id);
+    check("query-after-zero-limit-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body, 4) == 0);
+}
+
+/*
+ * CREATE_QP carries the SRQ to bind to in rq_tbl_index_srq_id, straight
+ * from the guest. ionic_datapath_bind_qp_srq() range-checks it, but
+ * srq_by_qid() hands back the slot whether or not an SRQ lives there, so an
+ * in-range id that was never created used to bind in silence. A QP bound
+ * that way has no receive ring of its own and no shared one either: every
+ * receive goes to a ring that is not there and nothing ever completes.
+ *
+ * Minimal valid bodies -- only the fields the handler reads.
+ */
+#define TEST_CQ_ID 3u
+#define TEST_QP_ID 4u
+
+static void build_cq_body(uint8_t body[34], uint32_t cq_id)
+{
+    uint32_t id_ver_le = htole32(cq_id);
+
+    memset(body, 0, 34);
+    body[4] = 6;  /* depth_log2  */
+    body[5] = 5;  /* stride_log2 */
+    body[7] = 12; /* page_size_log2 */
+    memcpy(body + 12, &id_ver_le, 4);
+}
+
+/* 64 rather than 60: the handler reads type_state at body[62]. */
+static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id,
+                          uint32_t srq_id)
+{
+    uint32_t cq_le = htole32(cq_id);
+    uint32_t id_ver_le = htole32(qp_id);
+    uint32_t srq_le = htole32(srq_id);
+
+    memset(body, 0, 64);
+    memcpy(body + 8, &cq_le, 4);  /* sq_cq_id */
+    memcpy(body + 32, &cq_le, 4); /* rq_cq_id */
+    memcpy(body + 40, &srq_le, 4);
+    memcpy(body + 56, &id_ver_le, 4);
+    body[62] = 0; /* ionic qp type 0 -> IB_QPT_RC */
+}
+
+static void test_qp_binding_checks_the_srq_id(void)
+{
+    uint8_t cqb[34];
+    uint8_t qpb[64];
+    uint32_t srq_id;
+
+    ctx_reset();
+    build_cq_body(cqb, TEST_CQ_ID);
+    check("bind-precondition-cq", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ,
+                                               cqb, sizeof(cqb)) == 0);
+    srq_id = create_one();
+    check("bind-precondition-srq", srq_id != 0);
+
+    /* The id CREATE_SRQ handed out binds, which is the path the driver
+     * actually takes -- the guard must not break it. */
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, srq_id);
+    check("bind-known-srq-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) ==
+              0);
+    check("bind-known-srq-bound-once", g_bind_calls == 1);
+    check("bind-known-srq-bound-to-it", g_bound_srq_id == srq_id);
+
+    /* In range for the datapath table, but no SRQ was ever created there. */
+    ctx_reset();
+    build_cq_body(cqb, TEST_CQ_ID);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, IONIC_SRQ_QID_BASE + 7);
+    check("bind-unknown-srq-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) !=
+              0);
+    check("bind-unknown-srq-never-bound", g_bind_calls == 0);
+    /* And refused before anything was allocated. Checking after
+     * ionic_rm_alloc_qp() would turn each rejected command into a
+     * leaked backend QP, so a guest could drain the table with
+     * commands the device is busy refusing. */
+    check("bind-unknown-srq-allocated-no-qp", g_qp_alloc_calls == 0);
+
+    /* Out of the SRQ range entirely, which srq_by_qid() would reject but
+     * the handler should refuse first. */
+    ctx_reset();
+    build_cq_body(cqb, TEST_CQ_ID);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 1u);
+    check("bind-out-of-range-srq-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) !=
+              0);
+    check("bind-out-of-range-never-bound", g_bind_calls == 0);
+    check("bind-out-of-range-allocated-no-qp", g_qp_alloc_calls == 0);
+
+    /* ~0 is "no SRQ" and has to stay acceptable: every ordinary QP sends
+     * it, so refusing it would break the device rather than harden it. */
+    ctx_reset();
+    build_cq_body(cqb, TEST_CQ_ID);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffu);
+    check("no-srq-sentinel-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) ==
+              0);
+    check("no-srq-sentinel-never-bound", g_bind_calls == 0);
+}
+
+/*
+ * The short-body guard has to cover every field the handler reads, and the
+ * last one is type_state at [62]. It used to stop at 60, which covers
+ * id_ver at [56:59] and nothing after, so a 60-byte body still had its QP
+ * type -- and therefore whether the QP was RC, UC or UD -- taken from three
+ * bytes the guest never sent.
+ */
+static void test_create_qp_body_must_reach_type_state(void)
+{
+    uint8_t cqb[34];
+    uint8_t qpb[64];
+
+    ctx_reset();
+    build_cq_body(cqb, TEST_CQ_ID);
+    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffu);
+
+    /* One short of the last field. */
+    check("create-qp-body-62-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                       IONIC_ADMIN_CREATE_QP_IN_V1_LEN - 1) != 0);
+    /* The old guard's value, which reads three bytes past what was sent. */
+    check("create-qp-body-60-refused",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, 60) != 0);
+    /* Exactly enough is enough. */
+    check("create-qp-body-63-accepted",
+          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                       IONIC_ADMIN_CREATE_QP_IN_V1_LEN) == 0);
+}
+
 int main(void)
 {
     test_create_reports_id_and_length();
@@ -616,6 +983,13 @@ int main(void)
     test_unknown_id_is_refused();
     test_destroy_releases_everything();
     test_map_capacity_is_enforced();
+    test_ids_stay_inside_the_datapath_table();
+    test_ids_are_recycled_across_churn();
+    test_oversized_exponents_are_refused();
+    test_registration_failure_fails_the_command();
+    test_zero_limit_is_accepted();
+    test_qp_binding_checks_the_srq_id();
+    test_create_qp_body_must_reach_type_state();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

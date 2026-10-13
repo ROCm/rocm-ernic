@@ -916,6 +916,16 @@ int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
 
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
+    /*
+     * A limit of 0 disables the low-watermark and is a legal value that the
+     * guest driver accepts, but rdma_rm_modify_srq() rejects it outright
+     * (rdma_rm.c: IBV_SRQ_LIMIT with srq_limit == 0 is -EINVAL). There is
+     * nothing for the backend to hold for "no limit", and the authoritative
+     * copy lives in the adminq's SRQ map, so succeed here rather than
+     * turning a valid ibv_modify_srq() into an error.
+     */
+    if (srq_limit == 0)
+        return 0;
     /* IBV_SRQ_LIMIT only: the depth is fixed at create time, and the guest
      * driver's modify path carries nothing else (ionic_admin_modify_srq is
      * qid + low_wqes_limit). */

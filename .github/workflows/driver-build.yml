@@ -246,6 +246,36 @@ jobs:
           echo "::error::srqid missing from the kernel-headers ABI copy"
           rc=1
         fi
+
+        # The local corrections, 0005 and 0006, are the ones a rebase loses.
+        # 0001-0004 come from upstream and will reappear in whatever replaces
+        # #1799; these two will not, and the symbol checks above pass happily
+        # without them. Both SRQ receive paths must ring the RQ qtype: a
+        # receive doorbell on the CQ qtype reaches the device as a completion
+        # -queue index update, so the SRQ never learns a receive was posted
+        # and a bound QP hangs instead of failing. The CQ doorbells elsewhere
+        # in this file are not checked -- they are supposed to be cq_qtype.
+        for fn in ionic_post_recv_srq ionic_post_pending_srq_wrs; do
+          body=$(awk -v fn="$fn" \
+                 '$0 ~ "^(static )?(void|int) " fn "\\(" {f=1}
+                  f {print}
+                  f && /^}/ {exit}' \
+                 "$SRC/providers/ionic/ionic_verbs.c")
+          if [ -z "$body" ]; then
+            echo "::error::$fn not found; has the series been restructured?"
+            rc=1
+          elif printf '%s\n' "$body" | grep -q 'cq_qtype'; then
+            echo "::error::$fn rings cq_qtype -- patches/rdma-core/0005 is"
+            echo "  missing or was dropped in a rebase. See that directory's"
+            echo "  README: 0005 and 0006 are local fixes, not upstream's."
+            rc=1
+          elif ! printf '%s\n' "$body" | grep -q 'rq_qtype'; then
+            echo "::error::$fn rings no rq_qtype doorbell at all"
+            rc=1
+          else
+            echo "  ✓ $fn rings rq_qtype"
+          fi
+        done
         [ "$rc" -eq 0 ] || exit 1
 
   driver-build-status:

@@ -34,12 +34,19 @@ fi
 # exists today.
 PATTERN='[0-9]{8}\.g[0-9a-f]{7,}-vm\.[a-z0-9.-]+-qcow2'
 
+# Excluded by path, not by name. grep --exclude matches the base name only,
+# so excluding "guest-image.env" would also excuse a copy at
+# some-lane/guest-image.env -- exactly the stray this exists to catch, and
+# the one most likely to be created, since a new lane copies the file it
+# already knows the name of. Same for this script: only this path is the
+# checker, anything else matching the pattern is a stray.
+SELF="${BASH_SOURCE[0]#./}"
 stray=$(grep -rEn "${PATTERN}" . \
     --exclude-dir=.git \
     --exclude-dir=build \
-    --exclude="$(basename "${PIN_FILE}")" \
-    --exclude="$(basename "$0")" \
-    2>/dev/null || true)
+    2>/dev/null \
+    | grep -vE "^\./(${PIN_FILE}|${SELF}):" \
+    || true)
 
 if [ -n "${stray}" ]; then
     echo "error: the guest image tag is pinned outside ${PIN_FILE}:" >&2
@@ -49,7 +56,8 @@ if [ -n "${stray}" ]; then
 ${PIN_FILE} is the only place the pin may live. Consumers read it:
 
   shell            . ci/guest-image.env
-  GitHub Actions   cat ci/guest-image.env >> "\$GITHUB_ENV"
+  GitHub Actions   grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ci/guest-image.env
+                     >> "\$GITHUB_ENV"
   Ansible          lookup('ansible.builtin.ini', '<key> type=properties ...')
 
 If you are adding a lane, use one of those rather than copying the tag.

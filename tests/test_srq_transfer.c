@@ -1,30 +1,35 @@
-// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
-//
-// SPDX-License-Identifier: MIT
-//
-// test_srq_transfer -- move bytes through a shared receive queue.
-//
-// test_srq.c proves an SRQ can be created, queried, bound to a QP, posted to
-// and modified. None of that touches the datapath: ibv_post_srq_recv() only
-// writes a WQE into the SRQ's ring and rings a doorbell, and it returns
-// success whether or not the device does anything with either. So the
-// emulator passed that test for as long as ionic_datapath.c had no SRQ qtype
-// at all and dropped every one of those doorbells on the floor.
-//
-// This is the test that notices. One RC QP in self-loopback, bound to an SRQ,
-// with the receive posted to the SRQ rather than to the QP:
-//
-//   post_srq_recv -> SRQ ring + doorbell (qtype 10)
-//   post_send     -> SQ ring + doorbell
-//   emulator        deliver_recv() must take the WQE from the SRQ's ring,
-//                   not from the QP's own (empty) RQ
-//   poll_cq       -> one send and one recv completion, payload intact
-//
-// A device that ignores the SRQ doorbell hangs here rather than failing,
-// which is why the poll is bounded and a timeout is a failure.
-//
-// Exits 0 on success, 77 when the device cannot do SRQ at all (the same skip
-// test_srq.c uses), and 1 on a validation failure.
+/*
+ * test_srq_transfer -- move bytes through a shared receive queue.
+ *
+ * test_srq.c proves an SRQ can be created, queried, bound to a QP, posted to
+ * and modified. None of that touches the datapath: ibv_post_srq_recv() only
+ * writes a WQE into the SRQ's ring and rings a doorbell, and it returns
+ * success whether or not the device does anything with either. So the
+ * emulator passed that test for as long as ionic_datapath.c had no SRQ qtype
+ * at all and dropped every one of those doorbells on the floor.
+ *
+ * This is the test that notices. One RC QP in self-loopback, bound to an SRQ,
+ * with the receive posted to the SRQ rather than to the QP:
+ *
+ *   post_srq_recv -> SRQ ring + doorbell on the RQ qtype, which is what
+ *                    patches/rdma-core/0005 corrects the provider to ring
+ *   post_send     -> SQ ring + doorbell
+ *   emulator        deliver_recv() must take the WQE from the SRQ's ring,
+ *                   not from the QP's own (empty) RQ
+ *   poll_cq       -> one send and one recv completion, payload intact
+ *
+ * A device that ignores the SRQ doorbell hangs here rather than failing,
+ * which is why the poll is bounded and a timeout is a failure.
+ *
+ * Exits 0 on success, 77 when the device cannot do SRQ at all (the same skip
+ * test_srq.c uses), and 1 on a validation failure.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
+ */
 
 #include <errno.h>
 #include <stdio.h>
@@ -303,14 +308,18 @@ int main(void)
     printf("PASS: data moved through a shared receive queue\n");
     rc = 0;
 
+    /* Queues before memory. On the success path everything has completed,
+     * but a failure between post_srq_recv() and the poll leaves a receive
+     * live on the SRQ and possibly a send on the QP, both pointing into buf
+     * through mr. Destroying the QP and the SRQ first is what flushes them. */
 out:
-    if (mr)
-        ibv_dereg_mr(mr);
-    free(buf);
     if (qp)
         ibv_destroy_qp(qp);
     if (srq)
         ibv_destroy_srq(srq);
+    if (mr)
+        ibv_dereg_mr(mr);
+    free(buf);
     if (cq)
         ibv_destroy_cq(cq);
     if (pd)

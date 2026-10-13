@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
- * Copyright (C) Advanced Micro Devices, Inc.
- */
-
 /*
  * Shared receive queue smoke test, run inside a guest against the emulated
  * ernic.
@@ -15,21 +10,29 @@
  * and not, and nothing else in the suite notices it.
  *
  * WHAT IT CHECKS, in the order the failures actually bite:
- *   1. the device advertises max_srq                 (the capability)
- *   2. an SRQ can be created and queried             (the admin path)
- *   3. a QP can be bound to it                       (create_qp's srq arg)
- *   4. a receive posted to the SRQ completes a SEND  (the datapath)
+ *   1. the device advertises max_srq      (the capability)
+ *   2. an SRQ can be created and queried  (the admin path)
+ *   3. a QP can be bound to it            (create_qp's srq arg)
+ *   4. a receive can be posted to it and the limit modified
  *
- * Step 4 is the one that was silently broken: the emulator queued SRQ
- * receives on the SRQ and then consumed only the per-QP receive queue, so a
- * posted buffer was never filled and the send never completed. Creating an
- * SRQ "successfully" and hanging is exactly what advertising the capability
- * without the datapath gets you.
+ * WHAT IT DOES NOT CHECK is the datapath. Every verb above returns success
+ * without a byte moving: ibv_post_srq_recv() writes a WQE into the ring and
+ * rings a doorbell, and reports success whether or not the device consumes
+ * either. This test passed for as long as ionic_datapath.c had no SRQ qtype
+ * at all. test_srq_transfer.c is the one that sends and polls, and it is the
+ * one to extend when the datapath changes -- keep the two in step rather
+ * than growing a transfer case here.
  *
- * Exits 0 on success, 77 when the device cannot do SRQ (CTest reports the
- * skip as a pass), and 1 on a validation failure. The 77 path is expected
- * until the guest carries the ionic SRQ driver -- the series is in
- * rdma/for-next; before it, ionic_rdma never sets max_srq at all.
+ * Exits 0 on success, 77 when the device cannot do SRQ, and 1 on a
+ * validation failure. The 77 path is expected until the guest carries the
+ * ionic SRQ driver -- the series is in rdma/for-next; before it, ionic_rdma
+ * never sets max_srq at all.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 #include <stdint.h>
@@ -196,8 +199,12 @@ int main(void)
      * the two-VM lane is where that is exercised. A post that fails here is
      * ibv_post_srq_recv() reaching an SRQ the backend never finished
      * wiring. */
-    if (posix_memalign(&buf, 4096, BUF_LEN)) {
-        perror("posix_memalign");
+    /* posix_memalign() returns the error number and is not required to set
+     * errno, so perror() here could print "Success" or something stale and
+     * unrelated. */
+    int align_rc = posix_memalign(&buf, 4096, BUF_LEN);
+    if (align_rc) {
+        fprintf(stderr, "posix_memalign: %s\n", strerror(align_rc));
         goto out;
     }
     memset(buf, 0, BUF_LEN);
@@ -235,14 +242,18 @@ int main(void)
     printf("PASS: SRQ create/query/bind/post/modify all succeeded\n");
     rc = 0;
 
+    /* Order matters: the receive posted above is still outstanding, and it
+     * sits on the SRQ rather than on the QP. Both have to go before the
+     * memory they point at, or the WQE is still live when its MR is
+     * deregistered and its buffer freed. */
 out:
     if (qp)
         ibv_destroy_qp(qp);
+    if (srq)
+        ibv_destroy_srq(srq);
     if (mr)
         ibv_dereg_mr(mr);
     free(buf);
-    if (srq)
-        ibv_destroy_srq(srq);
     if (cq)
         ibv_destroy_cq(cq);
     if (pd)

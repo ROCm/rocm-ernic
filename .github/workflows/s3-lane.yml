@@ -32,12 +32,6 @@ on:
         type: boolean
         default: false
 
-env:
-  # Pinned here rather than taken as an input: `env` is not available
-  # in a caller's `with:`, so passing it would mean a literal copy in
-  # every caller.  system-tests.yml and nvmeof-lane.yml keep their own
-  # copies; keep the three in step.
-
 jobs:
   system-test-s3:
     # Only the configuration, not the lane name: every caller's name is
@@ -79,7 +73,8 @@ jobs:
     # carrying its own copy of the tag.
     - name: Load the guest image pin
       shell: bash
-      run: cat ci/guest-image.env >> "$GITHUB_ENV"
+      run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ci/guest-image.env
+        >> "$GITHUB_ENV"
 
     - name: Select QEMU accelerator and guest size
       shell: bash

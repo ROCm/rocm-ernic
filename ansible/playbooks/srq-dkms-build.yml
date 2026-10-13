@@ -19,9 +19,10 @@
 # Both paths must be overridden for a remote host: the role invokes
 # the two scripts ON the target, but their defaults are playbook_dir-
 # relative, i.e. controller paths, so they only resolve where the
-# checkout already is. ci/jobs/vm-srq.sh stages the scripts and the
-# patch series into the guest and drives them over ssh instead, which
-# is the worked example of doing this remotely.
+# checkout already is. The 'Build the SRQ-capable ionic driver in the
+# VM' step in .github/workflows/system-tests.yml stages the scripts and
+# the patch series into the guest and drives them over ssh instead,
+# which is the worked example of doing this remotely.
 #
 # The refs it builds are in roles/ernic_srq_dkms/defaults/main.yml, pinned as
 # SHAs because rdma/for-next is rebased.

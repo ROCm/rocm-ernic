@@ -1,28 +1,32 @@
-// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
-//
-// SPDX-License-Identifier: MIT
-//
-// test_ud_sq_reclaim -- does send queue space come back?
-//
-// Every other UD test here signals every send and uses a shallow queue, so
-// each WQE is completed and reclaimed immediately and the queue never fills.
-// That is not how a real consumer drives the device. UCX's ud_verbs posts
-// with a 256-entry send queue and leaves most sends UNSIGNALLED -- its trace
-// shows "wrid 0xffffffffffffffff" -- signalling only periodically, and
-// reclaims every WQE up to the one that completed.
-//
-// If a device never completes those periodic signalled sends, or completes
-// them in a way the driver cannot use to free the earlier ones, the queue
-// fills after exactly one depth and the consumer stops sending. Nothing is
-// dropped and nothing errors: the sender simply has nowhere to put the next
-// WQE. Seen from above it looks like a peer that went quiet, and seen from
-// the device it looks like a perfectly healthy run that just stopped.
-//
-// That is the shape of the UCX stall this exists to reproduce: full speed to
-// about 243 round trips against a 256-deep send queue, then both peers park
-// waiting for each other.
-//
-// Exits 0 on success, 77 when there is no usable device, 1 on a failure.
+/*
+ * test_ud_sq_reclaim -- does send queue space come back?
+ *
+ * Every other UD test here signals every send and uses a shallow queue, so
+ * each WQE is completed and reclaimed immediately and the queue never fills.
+ * That is not how a real consumer drives the device. UCX's ud_verbs posts
+ * with a 256-entry send queue and leaves most sends UNSIGNALLED -- its trace
+ * shows "wrid 0xffffffffffffffff" -- signalling only periodically, and
+ * reclaims every WQE up to the one that completed.
+ *
+ * If a device never completes those periodic signalled sends, or completes
+ * them in a way the driver cannot use to free the earlier ones, the queue
+ * fills after exactly one depth and the consumer stops sending. Nothing is
+ * dropped and nothing errors: the sender simply has nowhere to put the next
+ * WQE. Seen from above it looks like a peer that went quiet, and seen from
+ * the device it looks like a perfectly healthy run that just stopped.
+ *
+ * That is the shape of the UCX stall this exists to reproduce: full speed to
+ * about 243 round trips against a 256-deep send queue, then both peers park
+ * waiting for each other.
+ *
+ * Exits 0 on success, 77 when there is no usable device, 1 on a failure.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
+ */
 
 #include <errno.h>
 #include <stdio.h>
@@ -165,10 +169,17 @@ int main(void)
         }
     }
 
+    /* Check the allocation before registering it: ibv_reg_mr() was being
+     * handed a null address on an allocation failure, which fails or
+     * crashes inside libibverbs before the intended error path runs. */
     buf = calloc(1, GRH_LEN + MSG_LEN);
+    if (!buf) {
+        perror("calloc");
+        goto out;
+    }
     mr = ibv_reg_mr(pd, buf, GRH_LEN + MSG_LEN, IBV_ACCESS_LOCAL_WRITE);
-    if (!buf || !mr) {
-        perror("buffer");
+    if (!mr) {
+        perror("ibv_reg_mr");
         goto out;
     }
 
@@ -277,16 +288,21 @@ int main(void)
            ITERS);
     rc = 0;
 
+    /* QPs first. This test deliberately leaves receives reposted and can
+     * leave unsignalled sends outstanding, so destroying the QPs is what
+     * flushes the work that still references the buffer, the MR and the
+     * address handle. Releasing those first left live WQEs pointing at
+     * them. */
 out:
+    if (sqp)
+        ibv_destroy_qp(sqp);
+    if (rqp)
+        ibv_destroy_qp(rqp);
     if (ah)
         ibv_destroy_ah(ah);
     if (mr)
         ibv_dereg_mr(mr);
     free(buf);
-    if (sqp)
-        ibv_destroy_qp(sqp);
-    if (rqp)
-        ibv_destroy_qp(rqp);
     if (scq)
         ibv_destroy_cq(scq);
     if (rcq)

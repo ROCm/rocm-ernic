@@ -426,6 +426,34 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
 /* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
 #define IONIC_MAX_SRQ_SGES 2
 
+/*
+ * Ceilings for the ring geometry exponents a guest may ask for.
+ *
+ * These are shift counts taken straight off the admin queue, so they are
+ * attacker-controlled in the only sense that matters here: a malformed WQE
+ * reaches them before anything has looked at the values. Shifting a 32-bit
+ * type by 32 or more is undefined in C, so they must be bounded before use,
+ * not merely clamped afterwards.
+ *
+ * DEPTH: 2^16 entries matches the max_srq_wr the device advertises (0xffff),
+ * so no legitimate driver asks for more.
+ *
+ * STRIDE: 2^8 is the WQE buffer the receive path reads into -- see the
+ * rwqe[256] in deliver_recv(). The driver's SRQ WQE is 64 bytes, so this is
+ * two doublings of headroom above anything real.
+ *
+ * The stride needs a floor as well as a ceiling, and for a different
+ * reason. deliver_recv() reads min(stride, sizeof rwqe) bytes and then
+ * takes the work request id from offset 0 and the SGE count from offset 9.
+ * A stride below the payload offset leaves those bytes unwritten, so the
+ * receive is driven by whatever was on the stack. 2^5 is that offset --
+ * ionic_datapath.c static-asserts the two agree -- and the driver asks for
+ * 2^6, so this rejects only geometries no real driver requests.
+ */
+#define IONIC_SRQ_MAX_DEPTH_LOG2  16u
+#define IONIC_SRQ_MAX_STRIDE_LOG2 8u
+#define IONIC_SRQ_MIN_STRIDE_LOG2 5u
+
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes);

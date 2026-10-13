@@ -113,6 +113,12 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
 #define WQE_PLD_OFF      32
 #define WQE_SEND_LEN_OFF 28
 
+/* The SRQ stride floor exists to guarantee a WQE header is actually present
+ * before deliver_recv() reads one. Tie the two together rather than leaving
+ * a 5 and a 32 to drift apart in separate headers. */
+_Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
+               "SRQ stride floor must cover the WQE header");
+
 /* The datagram half of the send body: which address handle, and which
  * remote QPN. Connected sends ignore both. */
 #define WQE_SEND_AH_OFF       16
@@ -238,6 +244,11 @@ struct ionic_qp_ring {
 struct ionic_ah {
     bool valid;
     uint8_t dgid[16];
+    /* The guest's own GID, taken from the same RoCE header template the
+     * destination came out of. Needed to put a truthful source in the GRH of
+     * a datagram leaving for another instance; see dp_ud_grh(). */
+    uint8_t sgid[16];
+    bool sgid_valid;
     uint8_t dmac[6];
     uint32_t node_id; /* UINT32_MAX = local / no mesh */
 };
@@ -637,6 +648,11 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     dp->ah_count = MAX_AH;
     dp->local_node = UINT32_MAX;
     pthread_mutex_init(&dp->rx_lock, NULL);
+    /* One init per slot, here rather than per registration: a reader that
+     * samples srq->valid outside the lock must still find a lock it can
+     * take, whatever the control path has done to that slot since. */
+    for (uint32_t i = 0; i < dp->srq_count; i++)
+        pthread_mutex_init(&dp->srq[i].lock, NULL);
     return dp;
 }
 
@@ -747,8 +763,13 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     free(dp->qp);
     free(dp->cq);
     for (uint32_t i = 0; i < dp->srq_count; i++) {
+        /* Each live SRQ owns the page table buf_init() built for it.
+         * Destroying only the mutex leaked one allocation per SRQ on every
+         * normal device shutdown. The mutex is destroyed for every slot,
+         * live or not, because every slot's was initialised at create. */
         if (dp->srq[i].valid)
-            pthread_mutex_destroy(&dp->srq[i].lock);
+            buf_release(&dp->srq[i].buf);
+        pthread_mutex_destroy(&dp->srq[i].lock);
     }
     free(dp->srq);
     free(dp->ah);
@@ -879,50 +900,85 @@ static struct ionic_srq_ring *srq_by_qid(struct ionic_datapath *dp,
     return &dp->srq[idx];
 }
 
-void ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
-                                 const struct ionic_dp_ring_desc *rq)
+int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
+                                const struct ionic_dp_ring_desc *rq)
 {
     struct ionic_srq_ring *sr = srq_by_qid(dp, srq_id);
     if (!sr || !rq)
-        return;
+        return -EINVAL;
+
+    /*
+     * Bound the exponents before anything shifts by them. The caller checks
+     * these too, because it can fail the command cleanly; this is the second
+     * line, so that a future caller cannot reintroduce the shift by 32 that
+     * is undefined behaviour in C.
+     */
+    if (rq->depth_log2 > IONIC_SRQ_MAX_DEPTH_LOG2 ||
+        rq->stride_log2 > IONIC_SRQ_MAX_STRIDE_LOG2 ||
+        rq->stride_log2 < IONIC_SRQ_MIN_STRIDE_LOG2) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: SRQ %u rejected: depth_log2=%u stride_log2=%u "
+                "(depth max %u, stride %u..%u)",
+                srq_id, rq->depth_log2, rq->stride_log2,
+                IONIC_SRQ_MAX_DEPTH_LOG2, IONIC_SRQ_MIN_STRIDE_LOG2,
+                IONIC_SRQ_MAX_STRIDE_LOG2);
+        return -EINVAL;
+    }
+
+    /*
+     * Everything below runs under the lock, and the lock outlives the
+     * registration -- it is initialised once with the table and destroyed
+     * once with it. Tying its lifetime to the SRQ instead meant a reader
+     * could sample valid, be descheduled, and then lock a mutex that this
+     * path had destroyed in the meantime. Clearing valid under the lock
+     * does not close that: the reader has already passed the check.
+     */
+    pthread_mutex_lock(&sr->lock);
+
     if (sr->valid) {
         /* Re-registering an id the guest reused: drop the old page table
          * rather than leaking it. */
-        pthread_mutex_destroy(&sr->lock);
         buf_release(&sr->buf);
+        sr->valid = false;
     }
 
     if (buf_init(dp, &sr->buf, &rq->buf, 0) < 0) {
+        pthread_mutex_unlock(&sr->lock);
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: SRQ %u page table read failed", srq_id);
-        sr->valid = false;
-        return;
+        return -EIO;
     }
     sr->depth = 1u << rq->depth_log2;
     sr->stride_log2 = rq->stride_log2;
     sr->prod = sr->cons = 0;
-    pthread_mutex_init(&sr->lock, NULL);
     sr->valid = true;
+    pthread_mutex_unlock(&sr->lock);
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: SRQ %u registered depth=%u stride=%u", srq_id,
-            sr->depth, 1u << sr->stride_log2);
+            1u << rq->depth_log2, 1u << rq->stride_log2);
+    return 0;
 }
 
 void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
 {
     struct ionic_srq_ring *sr = srq_by_qid(dp, srq_id);
-    if (!sr || !sr->valid)
+    if (!sr)
         return;
     /* Under the lock: a receive on another thread may be mid-take. Clearing
-     * valid first makes every later take fail rather than read a freed
-     * page table. */
+     * valid here makes every later take fail rather than read a freed page
+     * table, and the lock itself survives -- see register_srq above. The
+     * fields are reset by hand rather than memset, which would scribble over
+     * the mutex this and every future registration share. */
     pthread_mutex_lock(&sr->lock);
-    sr->valid = false;
+    if (sr->valid) {
+        sr->valid = false;
+        buf_release(&sr->buf);
+        sr->depth = 0;
+        sr->stride_log2 = 0;
+        sr->prod = sr->cons = 0;
+    }
     pthread_mutex_unlock(&sr->lock);
-    pthread_mutex_destroy(&sr->lock);
-    buf_release(&sr->buf);
-    memset(sr, 0, sizeof(*sr));
 }
 
 void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
@@ -940,8 +996,8 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
 }
 
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
-                                const uint8_t dgid[16], const uint8_t dmac[6],
-                                uint32_t dest_node_id)
+                                const uint8_t dgid[16], const uint8_t sgid[16],
+                                const uint8_t dmac[6], uint32_t dest_node_id)
 {
     if (!dp || ah_id >= dp->ah_count)
         return;
@@ -951,6 +1007,13 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
         memcpy(ah->dgid, dgid, 16);
     else
         memset(ah->dgid, 0, 16);
+    if (sgid) {
+        memcpy(ah->sgid, sgid, 16);
+        ah->sgid_valid = true;
+    } else {
+        memset(ah->sgid, 0, 16);
+        ah->sgid_valid = false;
+    }
     if (dmac)
         memcpy(ah->dmac, dmac, 6);
     else
@@ -1528,12 +1591,13 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
      */
     struct ionic_srq_ring *sr = NULL;
     if (dq->has_srq) {
-        if (dq->srq_id >= dp->srq_count || !dp->srq[dq->srq_id].valid)
+        if (dq->srq_id >= dp->srq_count)
             return -1;
         sr = &dp->srq[dq->srq_id];
         pthread_mutex_lock(&sr->lock);
-        /* Re-check under the lock: unregister_srq clears valid while
-         * holding it. */
+        /* valid is read only under the lock. The bounds check above is the
+         * one thing safe to do outside it, because srq_count never changes
+         * after create. */
         if (!sr->valid) {
             pthread_mutex_unlock(&sr->lock);
             return -1;
@@ -1570,7 +1634,16 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     memcpy(&rq_wqe_id, rwqe + 0, 8);
 
     struct dp_sge_list dst;
-    parse_sges(rwqe, stride, rwqe[9], &dst);
+    /*
+     * read_sz, not stride: parse_sges() derives how many SGEs it may walk
+     * from the size it is given, and only read_sz bytes were read. Passing
+     * the full stride let a guest-chosen stride_log2 >= 9 authorise walking
+     * up to MAX_SGE entries -- byte 543 of this 256-byte buffer -- because
+     * parse_sges() caps on MAX_SGE and avail/16 but has no idea how much of
+     * the WQE actually arrived. The two agree for every real stride; they
+     * differ only in the case that reads off the end.
+     */
+    parse_sges(rwqe, read_sz, rwqe[9], &dst);
 
     (*ring_cons)++;
 
@@ -2158,15 +2231,21 @@ static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
      * zeroed GRH makes every datagram vanish on arrival with no error on
      * either side.
      *
-     * Both come from the handle the sender used. For a peer inside this
-     * instance that is right: sender and receiver are the same device, so
-     * the GID the sender addressed is also the GID it sends from. A UD
-     * datagram crossing the mesh would need the real source, and does not
-     * get here -- the send path refuses it.
+     * The destination comes from the handle the sender used. So does the
+     * source, but from the other address in the same RoCE header template:
+     * that is the guest's own GID for the sgid_index the driver resolved.
+     *
+     * Using the destination for both -- which this did, on the belief that
+     * cross-node datagrams never reached here -- is only harmless when
+     * sender and receiver are the same device. They are not: the remote
+     * branch of the UD send path calls this before handing the datagram to
+     * the mesh, and there it told the receiver that its own GID was the
+     * sender's. A consumer that replies to the GRH source then answers
+     * itself.
      */
     if (ah) {
-        memcpy(grh + 8, ah->dgid, 16);  /* sgid */
-        memcpy(grh + 24, ah->dgid, 16); /* dgid */
+        memcpy(grh + 8, ah->sgid_valid ? ah->sgid : ah->dgid, 16); /* sgid */
+        memcpy(grh + 24, ah->dgid, 16);                            /* dgid */
     }
     (void)dp;
 }
@@ -3092,16 +3171,25 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
          */
         if (qid >= IONIC_SRQ_QID_BASE) {
             struct ionic_srq_ring *sr = srq_by_qid(dp, qid);
-            if (sr && sr->valid) {
+            bool posted = false;
+
+            /* Lock first, then read valid: sampling it outside the lock is
+             * what let this race unregister_srq. srq_by_qid() only does the
+             * bounds arithmetic, which is stable for the datapath's life. */
+            if (sr) {
                 pthread_mutex_lock(&sr->lock);
-                sr->prod += (uint32_t)(uint16_t)(p_index - (uint16_t)(sr->prod &
-                                                                      0xffffu));
+                if (sr->valid) {
+                    sr->prod +=
+                        (uint32_t)(uint16_t)(p_index -
+                                             (uint16_t)(sr->prod & 0xffffu));
+                    posted = true;
+                }
                 pthread_mutex_unlock(&sr->lock);
-            } else {
+            }
+            if (!posted)
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
                         "ionic_datapath: doorbell for unregistered SRQ %u",
                         qid);
-            }
             return;
         }
         if (qid < dp->qp_count && dp->qp[qid].valid) {

@@ -2073,11 +2073,19 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                atomic_store(&priv->local_node_id, assigned_id);
                 conn->node_id = assigned_id;
 
-                /* Signal registration completion */
+                /*
+                 * Publish the id with the flag, not before it. The waiter
+                 * in tcp_worker_register_with_manager() reads
+                 * local_node_id under this mutex to decide whether
+                 * registration succeeded, so assigning it outside meant the
+                 * value it tested was written by another thread with no
+                 * synchronisation between the two.
+                 */
                 qemu_mutex_lock(&priv->registration_mutex);
+                atomic_store_explicit(&priv->local_node_id, assigned_id,
+                                      memory_order_relaxed);
                 priv->registration_complete = true;
                 qemu_cond_signal(&priv->registration_cond);
                 qemu_mutex_unlock(&priv->registration_mutex);
@@ -3582,16 +3590,18 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
      * surfacing in the guest as ibv_create_srq() returning EINVAL on a
      * device that just reported max_srq=32768. Keep the two in step.
      *
-     * Note what this does NOT do. tcp_qp_pop_recv_wr() drains an SRQ for a
-     * guest that posts receives through this backend, which a pvrdma guest
-     * does -- but the ionic device does not use that path at all. Every
+     * Note what this does NOT do. No receive is served from here. Every
      * ionic receive, local and off the TCP mesh alike, is satisfied by
-     * deliver_recv() in ionic_datapath.c reading the destination QP's RQ
-     * ring straight out of guest memory; nothing posts guest receives into
-     * this backend. So for ionic this value only sizes the rdma_rm table
-     * the adminq handler allocates out of, and an SRQ-bound ionic QP still
-     * needs ionic_datapath.c to read the SRQ's ring, which it cannot yet
-     * do: it has no SRQ qtype at all.
+     * deliver_recv() in ionic_datapath.c, reading either the destination
+     * QP's own RQ ring or -- for a QP bound to one -- the SRQ's ring,
+     * straight out of guest memory. Nothing posts guest receives into this
+     * backend, and tcp_qp_pop_recv_wr() unconditionally pops the QP's own
+     * queue; see the comment on it for why there is no SRQ case there.
+     *
+     * So for ionic this value only sizes the rdma_rm table the adminq
+     * handler allocates out of. The datapath half it used to disclaim is
+     * done: ionic_datapath.c has an SRQ qtype, consumes the ring, and
+     * tests/test_srq_transfer.c moves a payload across one.
      */
     attr->max_srq = IONIC_EMU_SRQ_COUNT;
     attr->max_srq_wr = 65535;

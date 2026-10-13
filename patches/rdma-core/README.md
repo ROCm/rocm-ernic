@@ -40,7 +40,7 @@ with nothing to notice it. That is the identical objection `../srq/README.md`
 raises against pinning `rdma/for-next` — "a pin there tests something
 different every run, and a regression cannot be bisected to a change of ours"
 — and it applies with more force here, because a PR is *expected* to be
-rewritten during review. Vendoring the four commits makes the input reviewable
+rewritten during review. Vendoring the upstream commits makes the input reviewable
 in a diff and stable across rebuilds.
 
 ## Order matters
@@ -53,6 +53,31 @@ Applied in glob order on top of the base:
 | 0002 | ionic: Restructure receive queue initialization for SRQ | refactor the verbs need |
 | 0003 | ionic: simplify `rq_meta` allocation | |
 | 0004 | **ionic: Add SRQ support** | `create`/`destroy`/`modify`/`query_srq`, `post_recv_srq` |
+| 0005 | ionic: ring the RQ qtype for SRQ receives | **local fix**, see below |
+| 0006 | ionic: stop on a failed SRQ receive prepare | **local fix**, see below |
+
+### 0005 and 0006 are ours, not upstream's
+
+0001–0004 are [#1799][pr] as exported. The last two are corrections written
+here, and they are **required** — do not drop them when the upstream series
+is rebased or retired. Re-check both against whatever replaces #1799 and
+carry them forward if the defects are still present.
+
+**0005 — the doorbell qtype.** Both SRQ receive paths rang `ctx->cq_qtype`
+where the device expects `ctx->rq_qtype`, which is what the ordinary receive
+path a few lines away already rings. A receive doorbell sent to the CQ qtype
+arrives as a completion-queue consumer-index update for whatever CQ shares
+that id, so the SRQ never learns a receive was posted. The effect is a hang,
+not an error: a bound QP completes its sends and never completes a receive.
+`ionic_post_recv_srq()` is the obvious one; `ionic_post_pending_srq_wrs()`
+is the same mistake on the deferred path, and only runs once the hardware
+queue has filled, so light-load testing never reaches it.
+
+**0006 — error handling in the post loop.** `ionic_post_recv_srq()` ignored
+what its two preparation helpers returned, then counted the work request as
+posted and walked past it. A failure left `in_use` drifting upward until the
+queue reported itself permanently full, pointed `*bad` at the wrong work
+request, and reported success to the caller.
 
 ## Deliberately NOT paired with PR #1733 (RCQ)
 
