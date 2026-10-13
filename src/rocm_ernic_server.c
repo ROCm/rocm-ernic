@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <syslog.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <assert.h>
 #include <time.h>
 
@@ -41,6 +42,7 @@
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "ionic_profile.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #include "rocm-ernic-warnings.h"
@@ -361,6 +363,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     if (dev->mac_addr_set)
         ionic_eth_emu_set_mac(dev->ionic_emu, dev->mac_addr);
+    ionic_eth_emu_set_profile(dev->ionic_emu, &dev->profile);
 
     dev->ionic_rdma = ionic_rdma_devcmd_create(dev->vfu_ctx);
     if (!dev->ionic_rdma) {
@@ -638,6 +641,14 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Pre-create it with: ip tuntap add "
                     "dev IFNAME\n");
     fprintf(stderr, "                       mode tap user $USER\n");
+    fprintf(stderr, "      --nic-profile NAME|PATH  Shape the NIC from a "
+                    "profile (repeatable;\n");
+    fprintf(stderr, "                       later layers win). NAME is a "
+                    "built-in profile\n");
+    fprintf(stderr, "                       (%s); PATH an ini file.\n",
+            ionic_profile_builtin_names());
+    fprintf(stderr, "      --print-profile  Print the merged NIC profile as "
+                    "ini and exit\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -999,7 +1010,11 @@ int main(int argc, char *argv[])
     const char *tap_ifname = NULL;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
+    bool print_profile = false;
     int ret, opt;
+
+    /* Long-only options take values past the single-character ones. */
+    enum { OPT_NIC_PROFILE = 0x100, OPT_PRINT_PROFILE };
 
     /* Command-line option definitions */
     static struct option long_options[] = {
@@ -1013,6 +1028,8 @@ int main(int argc, char *argv[])
         {"mac", required_argument, NULL, 'm'},
         {"help", no_argument, NULL, 'h'},
         {"tap", required_argument, NULL, 'T'},
+        {"nic-profile", required_argument, NULL, OPT_NIC_PROFILE},
+        {"print-profile", no_argument, NULL, OPT_PRINT_PROFILE},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1028,6 +1045,7 @@ int main(int argc, char *argv[])
     /* Set defaults */
     dev->backend_type_str =
         strdup("loopback"); /* Default to "loopback" backend */
+    ionic_profile_defaults(&dev->profile);
     dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
@@ -1108,6 +1126,21 @@ int main(int argc, char *argv[])
         case 'T':
             tap_ifname = optarg;
             break;
+        case OPT_NIC_PROFILE: {
+            char profile_err[512];
+
+            if (ionic_profile_apply(&dev->profile, optarg, profile_err,
+                                    sizeof(profile_err)) != 0) {
+                fprintf(stderr, "Error: --nic-profile: %s\n", profile_err);
+                free(dev->backend_type_str);
+                free(dev);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
+        case OPT_PRINT_PROFILE:
+            print_profile = true;
+            break;
         case 'h':
             usage(argv[0]);
             exit(EXIT_SUCCESS);
@@ -1115,6 +1148,22 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             exit(EXIT_FAILURE);
         }
+    }
+
+    if (print_profile) {
+        int need = ionic_profile_format(&dev->profile, NULL, 0);
+        char *text = need >= 0 ? malloc((size_t)need + 1) : NULL;
+
+        if (!text ||
+            ionic_profile_format(&dev->profile, text, (size_t)need + 1) < 0) {
+            fprintf(stderr, "Error: --print-profile: out of memory\n");
+            exit(EXIT_FAILURE);
+        }
+        fputs(text, stdout);
+        free(text);
+        free(dev->backend_type_str);
+        free(dev);
+        exit(EXIT_SUCCESS);
     }
 
     /* Log level precedence: --log-level, then --verbose, then the
@@ -1160,6 +1209,8 @@ int main(int argc, char *argv[])
     if (log_file_path) {
         ernic_startup_report("  Log file: %s", log_file_path);
     }
+    ernic_startup_report("  NIC profile: %s (hash 0x%016" PRIx64 ")",
+                         dev->profile.chain, ionic_profile_hash(&dev->profile));
 
     /* Show backend-specific options only for verbs backend */
     if (!strcmp(get_backend_type_base(dev->backend_type_str), "verbs")) {
@@ -1213,6 +1264,11 @@ int main(int argc, char *argv[])
                                        dev->backend_type_str);
         pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_PENSANDO,
                                  PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+        char profile_line[IONIC_PROFILE_CHAIN_MAX + 32];
+        snprintf(profile_line, sizeof(profile_line),
+                 "%s (hash 0x%016" PRIx64 ")", dev->profile.chain,
+                 ionic_profile_hash(&dev->profile));
+        pvrdma_set_stats_nic_profile(dev->pvrdma_handle, profile_line);
         ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
                              "(every ~1 second)",
                              dev->stats_file_path);

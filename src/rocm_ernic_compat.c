@@ -33,6 +33,7 @@
 #include "rdma_backend.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
+#include "rdma/pvrdma_stats.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
@@ -258,6 +259,7 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     pvrdma->stats_backend_str = NULL;
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str = NULL;
+    (void)pvrdma_stats_set_nic_profile(NULL);
     if (pvrdma->stats.stats_fp) {
         fclose(pvrdma->stats.stats_fp);
         pvrdma->stats.stats_fp = NULL;
@@ -598,6 +600,12 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str =
         connection_str ? strdup(connection_str) : NULL;
+}
+
+void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile)
+{
+    if (handle && pvrdma_stats_set_nic_profile(profile) != 0)
+        rdma_error_report("stats file: out of memory for the NIC profile");
 }
 
 void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle)
