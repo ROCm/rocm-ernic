@@ -76,7 +76,10 @@ ernic_add_fuzz_replay(net_headers)
 # The stats harness links the admin queue and includes the shared fake device
 # from tests/, like tests/test_ionic_stats.c does, and defines
 # LLVMFuzzerInitialize() to check its seed table before replaying.
-ernic_add_fuzz_replay(ionic_stats ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c)
+ernic_add_fuzz_replay(ionic_stats
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
 target_include_directories(fuzz_replay_ionic_stats PRIVATE
     ${PROJECT_SOURCE_DIR}/tests
 )

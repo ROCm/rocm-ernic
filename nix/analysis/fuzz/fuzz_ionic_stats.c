@@ -11,6 +11,8 @@
  *   - the status is 0 or one of the stats error codes, the one its cause
  *     names (EINVAL for a short body, BAD_ADDR for a zero dma_addr,
  *     ENOENT for an unmapped QP), and a failed command writes nothing;
+ *   - with the injected fault on, device values fail with EIO and every
+ *     other command behaves as without it;
  *   - a successful one does exactly one DMA write, at the buffer the body
  *     named, no longer than its length, and in whole entries;
  *   - a header table that fits ends in the all-zero NONE terminator, and
@@ -25,7 +27,8 @@
  * Input layout:
  *   byte 0      bits 0-1 the opcode (one of the four above), bit 2 the
  *               device snapshot fails, bit 3 the QP snapshot fails, bit 4
- *               every counter is UINT64_MAX
+ *               every counter is UINT64_MAX, bit 5 the fault
+ *               "stats_vals: every 1 effect fail" is injected
  *   byte 1      the body length (mod 65)
  *   then        the body; missing bytes are zero
  *   then        the start of guest memory (the rest is a poison byte)
@@ -54,6 +57,7 @@
 #include <unistd.h>
 
 #include "ionic_adminq_priv.h"
+#include "ionic_fault.h"
 #include "ionic_status.h"
 
 #include "ionic_adminq_fakes.h"
@@ -66,6 +70,7 @@
 #define F_DEV_FAIL 0x04u
 #define F_QP_FAIL  0x08u
 #define F_MAX      0x10u
+#define F_FAULT    0x20u
 #define QP_ID_MASK 0x00ffffffu
 
 static const uint8_t ops[4] = {
@@ -76,6 +81,26 @@ static const uint8_t ops[4] = {
 };
 
 static uint8_t g_before[GUEST_MEM_SIZE];
+
+/* The fault F_FAULT injects; it fires on every event, so its counters
+ * carrying over between inputs changes nothing. */
+static struct ionic_fault g_fault;
+static struct ionic_fault_set g_fault_set;
+
+static struct ionic_fault_set *fault_set(void)
+{
+    if (!g_fault_set.site[IONIC_FAULT_SITE_STATS_VALS]) {
+        char err[128];
+
+        if (ionic_fault_parse("stats_vals: every 1 effect fail", &g_fault, err,
+                              sizeof(err)) != 0) {
+            fprintf(stderr, "fuzz_ionic_stats: fault rejected: %s\n", err);
+            abort();
+        }
+        g_fault_set.site[IONIC_FAULT_SITE_STATS_VALS] = &g_fault;
+    }
+    return &g_fault_set;
+}
 
 /* The status codes handle_stats_op() may complete with. */
 static bool is_stats_status(uint8_t rc)
@@ -186,6 +211,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     g_dev_rc = (flags & F_DEV_FAIL) ? -1 : 0;
     g_qp_rc = (flags & F_QP_FAIL) ? -1 : 0;
     g_max = (flags & F_MAX) != 0;
+    if (flags & F_FAULT)
+        g_ctx.faults = fault_set();
 
     memset(body, 0, sizeof(body));
     if (size - IN_HDR < body_len)
@@ -231,6 +258,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     if (op == IONIC_V1_ADMIN_QP_STATS_VALS &&
         !qp_is_mapped(id_ver & QP_ID_MASK))
         return rc == IONIC_RC_ENOENT ? NULL : "an unmapped QP was not ENOENT";
+    if (op == IONIC_V1_ADMIN_STATS_VALS && (flags & F_FAULT))
+        return rc == IONIC_RC_EIO ? NULL : "the injected fault did not fail";
     if (rc != 0)
         return g_nwrites == 0 ? NULL : "a failed command wrote";
 
@@ -311,6 +340,9 @@ static const struct seed seeds[] = {
     {"negative", "a buffer that runs off guest memory",
      "EIO (3), nothing written", OP_HDRS, STATS_BODY_LEN, GUEST_MEM_SIZE - 8,
      PAGE_LEN, 0, IONIC_RC_EIO},
+    {"negative", "device values with the injected fault",
+     "EIO (3), nothing written", OP_VALS | F_FAULT, STATS_BODY_LEN, BUF_GPA,
+     PAGE_LEN, 0, IONIC_RC_EIO},
     {"boundary", "headers with a length one short of an entry",
      "ENOSPC (15), nothing written", OP_HDRS, STATS_BODY_LEN, BUF_GPA,
      STAT_HDR_SIZE - 1, 0, IONIC_RC_ENOSPC},
@@ -323,6 +355,12 @@ static const struct seed seeds[] = {
     {"corner", "a dma_addr whose end wraps past UINT64_MAX",
      "EIO (3), nothing written", OP_HDRS, STATS_BODY_LEN, UINT64_MAX - 15,
      PAGE_LEN, 0, IONIC_RC_EIO},
+    {"corner", "device headers with the injected fault",
+     "unaffected: the whole table", OP_HDRS | F_FAULT, STATS_BODY_LEN, BUF_GPA,
+     PAGE_LEN, 0, 0},
+    {"corner", "QP values with the injected fault",
+     "unaffected: QP_ID's counters", OP_QP_VALS | F_FAULT, STATS_BODY_LEN,
+     BUF_GPA, PAGE_LEN, QP_ID, 0},
     {"corner", "QP values with every id_ver version bit set",
      "the version byte is ignored: QP_ID's counters", OP_QP_VALS,
      STATS_BODY_LEN, BUF_GPA, PAGE_LEN, 0xff000000u | QP_ID, 0},

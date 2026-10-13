@@ -32,6 +32,7 @@
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
+#include "ionic_fault.h"
 #include "ionic_status.h"
 #include "rocm_ernic_compat.h"
 
@@ -89,6 +90,13 @@ void ionic_adminq_set_datapath(struct ionic_adminq_ctx *ctx,
 {
     if (ctx)
         ctx->dp = dp;
+}
+
+void ionic_adminq_set_faults(struct ionic_adminq_ctx *ctx,
+                             struct ionic_fault_set *faults)
+{
+    if (ctx)
+        ctx->faults = faults;
 }
 
 static int adminq_get_pd(struct ionic_adminq_ctx *ctx, uint32_t *pd_handle)
@@ -1324,8 +1332,17 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
         return stats_write_hdrs(ctx, dma, length, qp_stats, QP_STATS_COUNT);
 
     case IONIC_V1_ADMIN_STATS_VALS: {
+        struct ionic_fault *f =
+            ionic_fault_set_get(ctx->faults, IONIC_FAULT_SITE_STATS_VALS);
         struct pvrdma_dev_counters c;
 
+        if (ionic_fault_event(f)) {
+            vfu_log(ctx->vfu_ctx, LOG_INFO,
+                    "ionic_adminq STATS_VALS: injected fail status %u "
+                    "(event %" PRIu64 ")",
+                    (unsigned int)f->status, f->eligible);
+            return f->status;
+        }
         if (pvrdma_get_dev_counters(ctx->pvrdma_handle, &c) != 0)
             return IONIC_RC_EIO;
         return stats_write_vals(ctx, dma, length, dev_stats, DEV_STATS_COUNT,

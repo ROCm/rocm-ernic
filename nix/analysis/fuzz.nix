@@ -56,7 +56,7 @@ let
     { name = "net_headers";
       extra = [ ]; }
     { name = "ionic_stats";
-      extra = [ "src/ionic_adminq.c" ];
+      extra = [ "src/ionic_adminq.c" "src/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
       seeds = true; }
     { name = "profile_parse";

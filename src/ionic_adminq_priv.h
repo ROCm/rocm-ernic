@@ -194,6 +194,9 @@ struct ionic_adminq_ctx {
 
     /* Data path that owns the SQ/RQ/CQ rings these commands describe. */
     struct ionic_datapath *dp;
+
+    /* Injected faults, or NULL; owned by the server. */
+    struct ionic_fault_set *faults;
 };
 
 /* -------------------------------------------------------------------------

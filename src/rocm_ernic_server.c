@@ -44,6 +44,7 @@
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
+#include "ionic_fault.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_profile.h"
 #include "nvmeof_target.h"
@@ -728,6 +729,15 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Beats every profile; the guest "
                     "uses at most\n");
     fprintf(stderr, "                       one per vCPU.\n");
+    fprintf(stderr, "      --inject FAULT   Inject a fault (repeatable), as "
+                    "'SITE: PATTERN effect EFFECT'\n");
+    fprintf(stderr, "                       e.g. 'stats_vals: every 100 effect "
+                    "fail status eio'\n");
+    fprintf(stderr,
+            "                       Sites: stats_vals. Patterns: every N, "
+            "after N [count M],\n");
+    fprintf(stderr, "                       burst N every M, sequence "
+                    "\"1x3,0x10\". Effects: fail [status S]\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1250,6 +1260,7 @@ static bool remove_stale_socket(const char *path)
 static void dev_free(rocm_ernic_dev_t *dev)
 {
     free(dev->stats_file_path);
+    ionic_fault_set_free(dev->faults);
     free(dev->bar0_mem);
     free(dev->backend_device_name);
     free(dev->backend_eth_device);
@@ -1311,6 +1322,7 @@ int main(int argc, char *argv[])
         OPT_PRINT_PROFILE,
         OPT_STATS_INTERVAL,
         OPT_ETH_QUEUES,
+        OPT_INJECT,
     };
 
     /* Command-line option definitions */
@@ -1330,6 +1342,7 @@ int main(int argc, char *argv[])
         {"print-profile", no_argument, NULL, OPT_PRINT_PROFILE},
         {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
         {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
+        {"inject", required_argument, NULL, OPT_INJECT},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1435,6 +1448,21 @@ int main(int argc, char *argv[])
             /* Applied after every --nic-profile, which it beats. */
             eth_queues_arg = optarg;
             break;
+        case OPT_INJECT: {
+            char fault_err[256];
+
+            if (!dev->faults)
+                dev->faults = ionic_fault_set_new();
+            if (!dev->faults ||
+                ionic_fault_set_add(dev->faults, optarg, fault_err,
+                                    sizeof(fault_err)) != 0) {
+                fprintf(stderr, "Error: --inject '%s': %s\n", optarg,
+                        dev->faults ? fault_err : "out of memory");
+                dev_free(dev);
+                return EXIT_FAILURE;
+            }
+            break;
+        }
         case 'h':
             usage(argv[0]);
             dev_free(dev);
@@ -1557,6 +1585,14 @@ int main(int argc, char *argv[])
 
         if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
             ernic_startup_report("  NIC profile warning: %s", warning);
+    }
+    for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
+        const struct ionic_fault *f =
+            ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
+        char spec[256];
+
+        if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0)
+            ernic_startup_report("  Fault: %s", spec);
     }
 
     /* Show backend-specific options only for verbs backend */
@@ -1802,6 +1838,7 @@ int main(int argc, char *argv[])
                     ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
                 if (aqctx) {
                     ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
+                    ionic_adminq_set_faults(aqctx, dev->faults);
                     /* Wire adminq into eth_emu so AQ doorbells update
                      * the producer index for correct poll-loop termination. */
                     if (dev->ionic_emu)

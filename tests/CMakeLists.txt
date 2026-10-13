@@ -398,6 +398,7 @@ add_dependencies(test_server_lifecycle rocm-ernic)
 add_executable(test_ionic_query_qp
     test_ionic_query_qp.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(test_ionic_query_qp PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -417,6 +418,7 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 add_executable(ernic-test-ionic-stats
     test_ionic_stats.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -435,6 +437,7 @@ target_compile_definitions(ernic-test-ionic-stats PRIVATE
 add_executable(ernic-test-ionic-adminq-poll
     test_ionic_adminq_poll.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-adminq-poll PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -455,6 +458,7 @@ target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
 add_executable(test_ionic_srq_adminq
     test_ionic_srq_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(test_ionic_srq_adminq PRIVATE
     ${PROJECT_SOURCE_DIR}/src
