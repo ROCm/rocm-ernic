@@ -147,7 +147,11 @@ static void port_init(struct ionic_eth_emu *emu, uint64_t pa)
 
 static uint64_t port_counter(struct ionic_eth_emu *emu, unsigned int idx)
 {
-    return ionic_eth_emu_get_stats(emu)->port[idx];
+    const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(emu);
+
+    if (!st)
+        abort(); /* only a NULL emu has no stats */
+    return st->port[idx];
 }
 
 static uint64_t counter(struct ionic_eth_emu *emu, unsigned int idx)
