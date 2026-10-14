@@ -83,6 +83,104 @@ upstream driver expects:
 
 32 MSI-X vectors are advertised.
 
+NIC Profiles
+------------
+
+A NIC profile is the shape of the emulated NIC: what it
+reports about itself (ASIC type and revision, firmware
+version) and its link (speed, transceiver, largest MTU).
+Without ``--nic-profile`` the server runs the built-in
+``compat`` profile, which is the device described above,
+byte for byte.
+
+.. code-block:: bash
+
+   # layer a file over compat; later layers win, key by key
+   ./build/rocm-ernic --tap ernic0 --nic-profile ./fast.ini
+
+   # show the merged profile and exit
+   ./build/rocm-ernic --nic-profile ./fast.ini --print-profile
+
+``--nic-profile`` can be given more than once. Each one
+names either a built-in profile (a bare name: ``compat``,
+``small-vm``) or a file (a name containing a ``/`` or ending
+in ``.ini``). The layers apply in order on top of
+``compat``. A profile is an ini file:
+
+.. code-block:: ini
+
+   # fast.ini
+   [identity]
+   fw_version = 1.8.0-E-32
+
+   [link]
+   speed_mbps = 400000
+   xcvr = fiber
+
+Validation is strict. An unknown section or key, a duplicate
+key, a value of the wrong type or a value out of range stops
+the server with the file, line and key named, so a typo
+can't quietly leave a default in place. A layer that fails
+changes nothing.
+
+``--print-profile`` writes the merged profile as an ini file
+that loads back to the same values. Its header names the
+layers and a 64-bit hash of the values; the startup log and
+the ``nic_profile`` line in the stats file carry the same
+chain and hash, so two runs can be checked for the same
+device shape.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 15 25
+
+   * - Key
+     - Values
+     - ``compat``
+     - Guest effect
+   * - ``identity.asic_type``
+     - ``none``, ``capri``, ``elba``, ``giglio``, ``salina``
+     - ``none``
+     - ``dev_info`` ASIC type. The driver runs its periodic
+       doorbell re-check (``ionic_doorbell_wa()``) only for
+       ``none`` and ``elba``
+   * - ``identity.asic_rev``
+     - 0 to 255
+     - 0
+     - ``dev_info`` ASIC revision
+   * - ``identity.fw_version``
+     - 1 to 31 printable ASCII characters; no ``\``, no
+       leading or trailing space
+     - ``rocm-ernic-1.0``
+     - ``ethtool -i`` ``firmware-version``
+   * - ``link.speed_mbps``
+     - 1000, 10000, 25000, 40000, 50000, 100000, 200000,
+       400000
+     - 100000
+     - port and LIF link speed: ``ethtool`` ``Speed``, the
+       RDMA port ``rate``
+   * - ``link.xcvr``
+     - ``copper``, ``fiber``, ``none``
+     - ``copper``
+     - transceiver: ``ethtool`` ``Port`` is ``Direct Attach
+       Copper``, ``FIBRE`` or ``None``
+   * - ``link.mtu_max``
+     - 1500 to 9582
+     - 9198
+     - the largest MTU the guest may set. The LIF reports a
+       maximum frame of ``mtu_max`` + 18, and the port's
+       configured MTU is the smaller of ``mtu_max`` and 9000
+   * - ``stats.interval_ms``
+     - 10 to 60000
+     - 1000
+     - how often the LIF counters are rewritten in guest
+       memory, which bounds how stale ``ip -s link`` can be.
+       ``--stats-interval-ms`` overrides every layer
+
+The built-in ``small-vm`` profile is ``compat`` for now; the
+queue and interrupt keys it is meant to shrink are not in
+the schema yet.
+
 Ethernet and TCP/IP
 -------------------
 
@@ -163,6 +261,120 @@ memory; no extra thread is created.
    scatter-gather offloads, so the guest stack always hands
    down linear skbs. This keeps the descriptor handling
    simple at the cost of transmit throughput.
+
+Statistics
+^^^^^^^^^^
+
+The ionic driver never asks the device for Ethernet
+counters. At ``LIF_INIT`` it hands the device a ``struct
+ionic_lif_info`` in its own memory, and from then on reads
+``struct ionic_lif_stats`` (byte 320 of that block) whenever
+``ip -s link``, ``/proc/net/dev`` or ``ethtool -S`` asks. The
+emulator counts every frame the LIF moves and rewrites that
+block from the main loop: once straight after ``LIF_INIT``,
+then every ``stats.interval_ms`` (1000 by default). A real
+NIC's firmware does the same.
+
+.. code-block:: bash
+
+   # rewrite the counters every 100 ms
+   ./build/rocm-ernic --tap ernic0 --stats-interval-ms 100
+
+Frames are classed by destination MAC: the group bit makes a
+frame multicast, all-ones makes it broadcast, anything else
+is unicast. What moves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Event
+     - Counters
+   * - frame sent or received
+     - ``{tx,rx}_{ucast,mcast,bcast}_{bytes,packets}``; the
+       driver sums them into ``ip -s link`` packets and bytes
+   * - receive with no buffer posted, or the mesh inbox full
+     - ``rx_*_drop_*`` and ``rx_queue_empty``
+       (``rx_dropped`` and ``rx_over_errors``)
+   * - frame larger than the posted buffer
+     - ``rx_*_drop_*`` and ``rx_desc_data_error``
+   * - DMA to or from guest memory failed
+     - ``{tx,rx}_dma_error``
+   * - the host backend refused a transmit
+     - ``tx_*_drop_*``
+   * - descriptor unreadable, or nonsensical
+     - ``tx_desc_fetch_error``, ``tx_desc_data_error``
+   * - doorbell on a queue that was never initialized
+     - ``tx_queue_disabled``
+   * - RDMA payload sent or landed
+     - ``{tx,rx}_rdma_ucast_{bytes,packets}``, one packet per
+       message
+
+Frames are counted whether or not the server has a TAP:
+without one, transmitted frames are counted and discarded.
+The counters restart at zero on a device reset. After
+``LIF_RESET`` or a device reset nothing more is written into
+guest memory until the next ``LIF_INIT``, because the driver
+may have freed the block.
+
+The stats file (``--stats-file``) carries the same counters
+in a ``LIF Statistics`` section, one line per named field of
+``struct ionic_lif_stats`` whether or not it is zero, so a
+test can check what the guest reports against what the
+emulator counted. They agree to within one interval.
+
+Not counted yet: ``rx_queue_disabled`` (the receive path
+skips queues that are not initialized) and the RDMA error
+counters at qwords 96 to 125, which stay zero.
+
+Port (MAC) statistics
+~~~~~~~~~~~~~~~~~~~~~
+
+At ``PORT_INIT`` the driver hands the device a ``struct
+ionic_port_info``. Its ``struct ionic_port_stats`` (byte 576,
+89 counters) is what ``ethtool -S`` lists under the port
+names such as ``frames_rx_ok`` and ``frames_rx_64b``. The
+emulator counts these at the wire, the way a MAC sees it, and
+publishes them on the same tick as the LIF block.
+
+A frame's wire length is its length padded to 60 bytes, as a
+sending MAC pads it, plus the 4-byte FCS. A 42-byte ARP from
+the TAP is therefore a 64-byte frame. What moves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Event
+     - Counters
+   * - frame sent
+     - ``frames_tx_all``, ``_ok``, ``octets_tx_total``,
+       ``_ok``, the size bucket, the cast class
+   * - frame received
+     - ``frames_rx_all``, ``_ok``, ``octets_rx_all``, ``_ok``,
+       the size bucket, the cast class
+   * - VLAN tag (0x8100, or a 0x88a8 outer tag)
+     - ``frames_rx_vlan_good`` or ``frames_tx_vlan``, and
+       ``frames_{rx,tx}_pri_N`` from the tag's PCP; untagged
+       frames count as ``_pri_0``
+   * - received frame over the port's maximum
+       (``link.mtu_max`` + 18)
+     - ``frames_rx_too_long``, ``_oversized``, ``_bad_all``;
+       the MAC drops it and the LIF never sees it
+   * - received with no buffer posted, or the mesh inbox full
+     - ``frames_rx_dropped``
+
+The size buckets run 64, 65–127, 128–255, 256–511,
+512–1023, 1024–1518, 1519–2047, 2048–4095, 4096–8191,
+8192–9215 and 9216 and up (``_other``), so ``ping -s 1472`` lands in
+``frames_rx_1024b_1518b``. Because every frame is padded,
+``frames_rx_undersized`` and ``_less_than_64b`` stay zero, as
+do the counters only a real wire can move: bad FCS, jabber,
+fragments and pause frames.
+
+``PORT_RESET`` stops the port writes but not the LIF ones,
+and ``LIF_RESET`` does the reverse. The stats file has a
+``Port Statistics`` section, one line per counter.
 
 Guest Driver: Patched Upstream ionic
 ------------------------------------
