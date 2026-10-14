@@ -11,6 +11,7 @@
 #   3. Server reports correct BAR layout (64K BAR0 / 32K regs + 4M BAR2)
 #   4. Server reports correct MSI-X vector count (32)
 #   5. Server exits cleanly on SIGTERM
+#      ... and a NIC profile's queue count sets the MSI-X vectors
 #   6. --tap attaches when a tap exists
 #   7. A stats file carries the full counter set
 
@@ -52,13 +53,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# start_server BACKEND [EXTRA-ARGS...]
 start_server() {
     local backend="${1:-loopback}"
+    shift || true
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
     rm -f "$SOCKET" "$LOG"
 
-    "$SERVER_BIN" --backend "$backend" --socket "$SOCKET" \
+    "$SERVER_BIN" --backend "$backend" --socket "$SOCKET" "$@" \
         > "$LOG" 2>&1 &
     SERVER_PID=$!
 
@@ -105,6 +108,8 @@ pass "BAR layout correct"
 echo ""
 echo "Test 5: MSI-X 32 vectors"
 grep -q "MSI-X=32 vectors" "$LOG" || fail "MSI-X vector count wrong (expected 32)"
+grep -q "NIC profile warning: queues.intr_vectors = 32 is less than" "$LOG" ||
+    fail "compat's short vector budget is not reported"
 pass "MSI-X vectors correct"
 
 # --- Test 6: SIGTERM shuts down cleanly ---
@@ -114,6 +119,22 @@ kill -TERM "$SERVER_PID"
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 pass "server exited on SIGTERM"
+
+# --- Test 6b: the profile's queues size the MSI-X table ---
+echo ""
+echo "Test 6b: generic-400g: 64 queues, 97 MSI-X vectors"
+start_server loopback --nic-profile generic-400g ||
+    fail "server did not start with --nic-profile generic-400g"
+grep -q "NIC queues: 64 Ethernet, 32 RDMA EQs, 97 MSI-X vectors" "$LOG" ||
+    fail "queue counts not reported"
+grep -q "MSI-X=97 vectors" "$LOG" || fail "MSI-X vector count wrong (expected 97)"
+if grep -q "NIC profile warning" "$LOG"; then
+    fail "auto vectors should not warn"
+fi
+kill -TERM "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+pass "MSI-X vectors follow the profile"
 
 # --- Test 7: none backend ---
 echo ""

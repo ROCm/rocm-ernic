@@ -33,6 +33,7 @@
 #include "rdma_backend.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
+#include "rdma/pvrdma_stats.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
@@ -258,6 +259,8 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     pvrdma->stats_backend_str = NULL;
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str = NULL;
+    (void)pvrdma_stats_set_nic_profile(NULL);
+    pvrdma_stats_set_section(NULL, NULL);
     if (pvrdma->stats.stats_fp) {
         fclose(pvrdma->stats.stats_fp);
         pvrdma->stats.stats_fp = NULL;
@@ -533,6 +536,61 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
     g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
 }
 
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!out) {
+        return -EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+
+    out->commands = pvrdma->stats.commands;
+    out->total_bytes_sent = pvrdma->stats.total_bytes_sent;
+    out->total_bytes_received = pvrdma->stats.total_bytes_received;
+    out->total_bytes_rdma_read = pvrdma->stats.total_bytes_rdma_read;
+    out->total_bytes_rdma_write = pvrdma->stats.total_bytes_rdma_write;
+    return 0;
+}
+
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    const PVRDMAQPStats *qp = NULL;
+
+    if (!out) {
+        return -EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+
+    /* A plain lookup: pvrdma_get_qp_stats() would insert an entry. */
+    if (pvrdma->stats.qp_stats && qp_id != PVRDMA_STAT_NO_QP) {
+        qp = g_hash_table_lookup(pvrdma->stats.qp_stats,
+                                 GUINT_TO_POINTER(qp_id));
+    }
+    if (!qp) {
+        return 0;
+    }
+
+    out->doorbell_send = qp->doorbell_send;
+    out->doorbell_recv = qp->doorbell_recv;
+    out->wqes_processed = qp->wqes_processed;
+    out->cqes_posted = qp->cqes_posted;
+    out->bytes_sent = qp->bytes_sent;
+    out->bytes_received = qp->bytes_received;
+    out->bytes_rdma_read = qp->bytes_rdma_read;
+    out->bytes_rdma_write = qp->bytes_rdma_write;
+    return 0;
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -598,6 +656,19 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str =
         connection_str ? strdup(connection_str) : NULL;
+}
+
+void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile)
+{
+    if (handle && pvrdma_stats_set_nic_profile(profile) != 0)
+        rdma_error_report("stats file: out of memory for the NIC profile");
+}
+
+void pvrdma_set_stats_section(pvrdma_handle_t handle,
+                              void (*fn)(FILE *fp, void *opaque), void *opaque)
+{
+    if (handle)
+        pvrdma_stats_set_section(fn, opaque);
 }
 
 void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle)

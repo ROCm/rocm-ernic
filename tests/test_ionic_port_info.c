@@ -263,14 +263,16 @@ static void test_speed_is_non_zero(void)
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
 
-    CHECK(rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF) == IONIC_ETH_LINK_SPEED_MBPS,
+    CHECK(rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF) ==
+              emu->profile.link.speed_mbps,
           "status.speed is %u Mbps, expected %u",
           rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF),
-          (unsigned)IONIC_ETH_LINK_SPEED_MBPS);
-    CHECK(rd32(IONIC_PORT_INFO_CONFIG_SPEED_OFF) == IONIC_ETH_LINK_SPEED_MBPS,
+          (unsigned)emu->profile.link.speed_mbps);
+    CHECK(rd32(IONIC_PORT_INFO_CONFIG_SPEED_OFF) ==
+              emu->profile.link.speed_mbps,
           "config.speed is %u Mbps, expected %u",
           rd32(IONIC_PORT_INFO_CONFIG_SPEED_OFF),
-          (unsigned)IONIC_ETH_LINK_SPEED_MBPS);
+          (unsigned)emu->profile.link.speed_mbps);
     CHECK(rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF) != 0,
           "status.speed is zero -- UCX computes bandwidth 0.00 from this and "
           "refuses to create an endpoint");
@@ -376,9 +378,41 @@ static void test_write_stays_within_the_published_window(void)
     ionic_eth_emu_destroy(emu);
 }
 
+/*
+ * rdma.stats_type gates the driver's whole hw stats setup: with it zero,
+ * ionic_stats_init() never sends STATS_HDRS and the guest has no
+ * hw_counters directory.  It is the le16 straight after eq_qtype, 92 bytes
+ * into the rdma block.
+ */
+static void test_lif_identity_advertises_rdma_stats(void)
+{
+    struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
+    static uint8_t data[DEVCMD_DATA_SIZE];
+    const uint8_t cmd[64] = {0};
+    uint8_t comp[16] = {0};
+    uint16_t le;
+
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
+
+    CHECK(LIF_ID_RDMA_STATS_TYPE_OFF == 92u,
+          "stats_type offset drifted from the ionic_if.h layout");
+
+    handle_lif_identify(emu, cmd, comp, data);
+    memcpy(&le, data + LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF, 2);
+    CHECK(le16toh(le) == (IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP),
+          "stats_type is %#x, want GLOBAL|QP", (unsigned)le16toh(le));
+    CHECK(data[LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF + 2] == 0,
+          "the byte after stats_type (rsvd) was written");
+
+    ionic_eth_emu_destroy(emu);
+}
+
 int main(void)
 {
     test_published_offsets_match_the_driver_layout();
+    test_lif_identity_advertises_rdma_stats();
     test_transceiver_is_published();
     test_speed_is_non_zero();
     test_port_is_up();

@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <syslog.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <assert.h>
 #include <time.h>
 
@@ -41,6 +42,8 @@
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "ionic_profile.h"
+#include "ionic_fault.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #include "rocm-ernic-warnings.h"
@@ -361,6 +364,8 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     if (dev->mac_addr_set)
         ionic_eth_emu_set_mac(dev->ionic_emu, dev->mac_addr);
+    ionic_eth_emu_set_profile(dev->ionic_emu, &dev->profile);
+    ionic_eth_emu_set_faults(dev->ionic_emu, dev->faults);
 
     dev->ionic_rdma = ionic_rdma_devcmd_create(dev->vfu_ctx);
     if (!dev->ionic_rdma) {
@@ -548,8 +553,9 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     msix_cap.next =
         0; /* Will be filled by libvfio-user if there are more caps */
 
-    /* One interrupt per Ethernet queue pair plus at least four RDMA EQs. */
-    uint32_t nr_intrs = IONIC_MSIX_MAX_VECTORS;
+    /* The profile's vector count: the driver budgets 1 (adminq) + one per
+     * Ethernet queue pair + one per RDMA EQ, and halves to fit if short. */
+    uint32_t nr_intrs = ionic_profile_intr_vectors(&dev->profile);
 
     /* Message Control: bits [10:0] = Table Size-1 */
     msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
@@ -606,6 +612,15 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     return 0;
 }
 
+/* Milliseconds on a clock that never jumps, for the stats publish tick. */
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
 /**
  * Print usage information
  */
@@ -638,6 +653,41 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Pre-create it with: ip tuntap add "
                     "dev IFNAME\n");
     fprintf(stderr, "                       mode tap user $USER\n");
+    fprintf(stderr, "      --nic-profile NAME|PATH  Shape the NIC from a "
+                    "profile (repeatable;\n");
+    fprintf(stderr, "                       later layers win). NAME is a "
+                    "built-in profile\n");
+    fprintf(stderr, "                       (%s); PATH an ini file.\n",
+            ionic_profile_builtin_names());
+    fprintf(stderr, "      --print-profile  Print the merged NIC profile as "
+                    "ini and exit\n");
+    fprintf(stderr, "      --stats-interval-ms MS  How often the guest's "
+                    "statistics are\n");
+    fprintf(stderr,
+            "                       rewritten, %u-%u (default: the "
+            "profile's\n",
+            IONIC_PROFILE_STATS_INTERVAL_MIN, IONIC_PROFILE_STATS_INTERVAL_MAX);
+    fprintf(stderr, "                       stats.interval_ms, 1000). Beats "
+                    "every profile.\n");
+    fprintf(stderr, "      --eth-queues N   Ethernet Rx/Tx queues offered to "
+                    "the guest,\n");
+    fprintf(stderr,
+            "                       %u-%u (default: the profile's "
+            "queues.eth, 4).\n",
+            IONIC_PROFILE_ETH_QUEUES_MIN, IONIC_PROFILE_ETH_QUEUES_MAX);
+    fprintf(stderr, "                       Beats every profile; the guest "
+                    "uses at most\n");
+    fprintf(stderr, "                       one per vCPU.\n");
+    fprintf(stderr, "      --inject FAULT   Inject a fault (repeatable), as "
+                    "'SITE: PATTERN effect EFFECT'\n");
+    fprintf(stderr, "                       e.g. 'stats_vals: every 100 effect "
+                    "fail status eio'\n");
+    fprintf(stderr, "                       Patterns: every N, after N "
+                    "[count M], burst N every M,\n");
+    fprintf(stderr, "                       sequence \"1x3,0x10\". Sites "
+                    "and effects: stats_vals fail\n");
+    fprintf(stderr, "                       [status S]; eth_rx drop, nobuf; "
+                    "eth_tx drop\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -999,7 +1049,18 @@ int main(int argc, char *argv[])
     const char *tap_ifname = NULL;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
+    bool print_profile = false;
+    const char *stats_interval_arg = NULL;
+    const char *eth_queues_arg = NULL;
     int ret, opt;
+
+    /* Long-only options take values past the single-character ones. */
+    enum {
+        OPT_NIC_PROFILE = 0x100,
+        OPT_PRINT_PROFILE,
+        OPT_STATS_INTERVAL,
+        OPT_ETH_QUEUES,
+    };
 
     /* Command-line option definitions */
     static struct option long_options[] = {
@@ -1013,6 +1074,11 @@ int main(int argc, char *argv[])
         {"mac", required_argument, NULL, 'm'},
         {"help", no_argument, NULL, 'h'},
         {"tap", required_argument, NULL, 'T'},
+        {"nic-profile", required_argument, NULL, OPT_NIC_PROFILE},
+        {"print-profile", no_argument, NULL, OPT_PRINT_PROFILE},
+        {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
+        {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
+        {"inject", required_argument, NULL, 'I'},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1028,6 +1094,7 @@ int main(int argc, char *argv[])
     /* Set defaults */
     dev->backend_type_str =
         strdup("loopback"); /* Default to "loopback" backend */
+    ionic_profile_defaults(&dev->profile);
     dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
@@ -1108,6 +1175,46 @@ int main(int argc, char *argv[])
         case 'T':
             tap_ifname = optarg;
             break;
+        case OPT_NIC_PROFILE: {
+            char profile_err[512];
+
+            if (ionic_profile_apply(&dev->profile, optarg, profile_err,
+                                    sizeof(profile_err)) != 0) {
+                fprintf(stderr, "Error: --nic-profile: %s\n", profile_err);
+                free(dev->backend_type_str);
+                free(dev);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
+        case 'I': {
+            char fault_err[256];
+
+            if (!dev->faults)
+                dev->faults = ionic_fault_set_new();
+            if (!dev->faults ||
+                ionic_fault_set_add(dev->faults, optarg, fault_err,
+                                    sizeof(fault_err)) != 0) {
+                fprintf(stderr, "Error: --inject '%s': %s\n", optarg,
+                        dev->faults ? fault_err : "out of memory");
+                ionic_fault_set_free(dev->faults);
+                free(dev->backend_type_str);
+                free(dev);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
+        case OPT_PRINT_PROFILE:
+            print_profile = true;
+            break;
+        case OPT_STATS_INTERVAL:
+            /* Applied after every --nic-profile, which it beats. */
+            stats_interval_arg = optarg;
+            break;
+        case OPT_ETH_QUEUES:
+            /* Applied after every --nic-profile, which it beats. */
+            eth_queues_arg = optarg;
+            break;
         case 'h':
             usage(argv[0]);
             exit(EXIT_SUCCESS);
@@ -1115,6 +1222,50 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             exit(EXIT_FAILURE);
         }
+    }
+
+    if (stats_interval_arg) {
+        char interval_err[256];
+
+        if (ionic_profile_set_stats_interval(
+                &dev->profile, stats_interval_arg, "--stats-interval-ms",
+                interval_err, sizeof(interval_err)) != 0) {
+            fprintf(stderr, "Error: %s\n", interval_err);
+            usage(argv[0]);
+            free(dev->backend_type_str);
+            free(dev);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (eth_queues_arg) {
+        char queues_err[256];
+
+        if (ionic_profile_set_eth_queues(&dev->profile, eth_queues_arg,
+                                         "--eth-queues", queues_err,
+                                         sizeof(queues_err)) != 0) {
+            fprintf(stderr, "Error: %s\n", queues_err);
+            usage(argv[0]);
+            free(dev->backend_type_str);
+            free(dev);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (print_profile) {
+        int need = ionic_profile_format(&dev->profile, NULL, 0);
+        char *text = need >= 0 ? malloc((size_t)need + 1) : NULL;
+
+        if (!text ||
+            ionic_profile_format(&dev->profile, text, (size_t)need + 1) < 0) {
+            fprintf(stderr, "Error: --print-profile: out of memory\n");
+            exit(EXIT_FAILURE);
+        }
+        fputs(text, stdout);
+        free(text);
+        free(dev->backend_type_str);
+        free(dev);
+        exit(EXIT_SUCCESS);
     }
 
     /* Log level precedence: --log-level, then --verbose, then the
@@ -1159,6 +1310,26 @@ int main(int argc, char *argv[])
                          ernic_log_level_name(ernic_log_get_level()));
     if (log_file_path) {
         ernic_startup_report("  Log file: %s", log_file_path);
+    }
+    ernic_startup_report("  NIC profile: %s (hash 0x%016" PRIx64 ")",
+                         dev->profile.chain, ionic_profile_hash(&dev->profile));
+    ernic_startup_report("  NIC queues: %" PRIu32 " Ethernet, %" PRIu32
+                         " RDMA EQs, %" PRIu32 " MSI-X vectors",
+                         dev->profile.queues.eth, dev->profile.queues.rdma_eqs,
+                         ionic_profile_intr_vectors(&dev->profile));
+    {
+        char warning[512];
+
+        if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
+            ernic_startup_report("  NIC profile warning: %s", warning);
+    }
+    for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
+        const struct ionic_fault *f =
+            ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
+        char spec[256];
+
+        if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0)
+            ernic_startup_report("  Fault: %s", spec);
     }
 
     /* Show backend-specific options only for verbs backend */
@@ -1213,6 +1384,14 @@ int main(int argc, char *argv[])
                                        dev->backend_type_str);
         pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_PENSANDO,
                                  PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+        char profile_line[IONIC_PROFILE_CHAIN_MAX + 32];
+        snprintf(profile_line, sizeof(profile_line),
+                 "%s (hash 0x%016" PRIx64 ")", dev->profile.chain,
+                 ionic_profile_hash(&dev->profile));
+        pvrdma_set_stats_nic_profile(dev->pvrdma_handle, profile_line);
+        if (dev->ionic_emu)
+            pvrdma_set_stats_section(dev->pvrdma_handle,
+                                     ionic_eth_emu_write_stats, dev->ionic_emu);
         ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
                              "(every ~1 second)",
                              dev->stats_file_path);
@@ -1361,8 +1540,10 @@ int main(int argc, char *argv[])
 
             /* ionic: move frames from the host TAP into the guest Rx ring.
              * This has to happen on this thread: only it may DMA. */
-            if (dev->ionic_emu)
+            if (dev->ionic_emu) {
                 ionic_eth_emu_poll_rx(dev->ionic_emu);
+                ionic_eth_emu_publish_stats(dev->ionic_emu, monotonic_ms());
+            }
 
             /* ionic: poll admin queue rings for new WQEs */
             if (dev->ionic_rdma) {
@@ -1370,6 +1551,7 @@ int main(int argc, char *argv[])
                     ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
                 if (aqctx) {
                     ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
+                    ionic_adminq_set_faults(aqctx, dev->faults);
                     /* Wire adminq into eth_emu so AQ doorbells update
                      * the producer index for correct poll-loop termination. */
                     if (dev->ionic_emu)
@@ -1433,6 +1615,16 @@ int main(int argc, char *argv[])
     }
 
     ernic_startup_report("rocm-ernic: Shutting down");
+    /* What each fault saw, so a test can match the guest's counters. */
+    for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
+        const struct ionic_fault *f =
+            ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
+
+        if (f)
+            ernic_startup_report(
+                "  Fault %s: eligible %" PRIu64 ", fired %" PRIu64,
+                ionic_fault_site_name(f->site), f->eligible, f->fired);
+    }
 
     /* Mark cleanup in progress to prevent signal handler re-entry */
     g_cleanup_in_progress = 1;
@@ -1458,6 +1650,7 @@ int main(int argc, char *argv[])
 
 
     free(dev->stats_file_path);
+    ionic_fault_set_free(dev->faults);
 
     free(dev->bar0_mem);
     free(dev->backend_device_name);

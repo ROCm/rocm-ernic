@@ -84,3 +84,49 @@ ernic_add_fuzz_replay(rdma_cm_proto
 
 # net_headers.h is header-only, so this harness links no extra sources.
 ernic_add_fuzz_replay(net_headers)
+
+# The NIC profile loader is pure text handling. Like the parsers above it
+# needs no device, and it checks a seed table in LLVMFuzzerInitialize()
+# before replaying.
+ernic_add_fuzz_replay(profile_parse
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_compile_definitions(fuzz_replay_profile_parse PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# The per-frame MAC class and Rx steering hash: pure functions of the frame
+# bytes, with their own seed table.
+ernic_add_fuzz_replay(eth_classify
+    ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
+)
+target_compile_definitions(fuzz_replay_eth_classify PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# The stats harness #includes the admin queue translation unit and the
+# shared fake device from tests/, like tests/test_ionic_stats.c does, and
+# defines LLVMFuzzerInitialize() to check its seed table before replaying.
+ernic_add_fuzz_replay(ionic_stats
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(fuzz_replay_ionic_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_include_directories(fuzz_replay_ionic_stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+)
+target_compile_definitions(fuzz_replay_ionic_stats PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# The fault spec parser is pure string handling; like the stats harness it
+# checks a seed table in LLVMFuzzerInitialize() before replaying.
+ernic_add_fuzz_replay(fault_parse
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c
+)
+target_compile_definitions(fuzz_replay_fault_parse PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
