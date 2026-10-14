@@ -12,6 +12,19 @@
       without building anything. Pin at least one ref that carries the SRQ
       series.
 
+# Caught here rather than discovered as a module cycle that reloads the old
+# driver: --build-only registers nothing for modprobe to find, so the reload
+# would succeed, load the image's original ionic_rdma, and fail the
+# updates/extra/dkms assert several tasks later with a misleading message.
+- name: Assert a reload was asked for with an install
+  when: ernic_srq_dkms_reload | bool
+  ansible.builtin.assert:
+    that: ernic_srq_dkms_install | bool
+    fail_msg: >-
+      ernic_srq_dkms_reload is set but ernic_srq_dkms_install is not. The
+      build would be --build-only, so there would be nothing installed for
+      the module cycle to pick up.
+
 # dkms and the kernel headers are the build's own dependencies. They are
 # asserted rather than installed: this role runs on hosts whose package set
 # is somebody else's decision, and installing a kernel-headers package on a
@@ -40,12 +53,39 @@
   loop_control:
     label: "{{ item.item }}"
 
+# ionic tracks IB-core helpers that move between minor releases, so a build
+# against a kernel two minors from the ref can fail for that reason alone and
+# read as a bad patch series. Warn rather than assert: building a ref against
+# a different kernel is a legitimate thing to ask this role for, and the
+# remedy -- repin the guest image -- is not something the role can take.
+- name: Warn when the running kernel and the pinned ref disagree
+  when:
+    - ernic_srq_dkms_warn_kernel_mismatch | bool
+    - (ernic_srq_dkms_sources[0].ref
+       | regex_replace('^v', '')
+       | regex_replace('-rc[0-9]+$', '')
+       | regex_replace('^([0-9]+\.[0-9]+).*$', '\1'))
+      != (ansible_kernel | regex_replace('^([0-9]+\.[0-9]+).*$', '\1'))
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ inventory_hostname }} runs kernel {{ ansible_kernel }} but
+      the SRQ sources are pinned to {{ ernic_srq_dkms_sources[0].ref }}. ionic
+      tracks IB-core helpers that move between minor releases, so this build
+      may fail for that reason alone. The fix is to repin the guest image to
+      one on a matching kernel, not to patch around it.
+
 - name: Build the SRQ driver for each known-good ref
   ansible.builtin.include_tasks: build_one.yml
   loop: "{{ ernic_srq_dkms_sources }}"
   loop_control:
     loop_var: ernic_srq_src
     label: "{{ ernic_srq_src.ref[:12] }}"
+
+# After every ref, not inside the loop: the point is to leave the host running
+# what was built, and cycling the modules once per ref would just undo itself.
+- name: Reload the ionic modules and restore the link
+  when: ernic_srq_dkms_reload | bool
+  ansible.builtin.include_tasks: reload.yml
 
 - name: Report what was built
   ansible.builtin.debug:

@@ -81,3 +81,47 @@ ernic_srq_dkms_scripts_dir: "{{ playbook_dir }}/../../scripts"
 # would pass on stale sources. Set false only for a throwaway iteration where
 # you know the patches have not moved.
 ernic_srq_dkms_force_fetch: true
+
+# Fetch and patch on the CONTROLLER, then ship the tree to the target and build
+# it there.
+#
+# Off by default, because the plain case -- this role run against localhost as a
+# build gate -- wants neither the copy nor the staging directory. Turn it on for
+# a remote target, which is the only way the role works there at all: the two
+# scripts and patches/srq live at paths relative to the controller's checkout,
+# so invoking them on a guest asks it to run files it does not have.
+#
+# It also keeps the git clone where the network is. A guest's outbound path is
+# user-mode NAT that nothing else depends on, and a failure in it would present
+# as the patch series not applying, which is the one answer this role must never
+# give for the wrong reason.
+ernic_srq_dkms_fetch_on_controller: false
+
+# Where the controller fetches and patches when the above is set. Distinct from
+# ernic_srq_dkms_source_root, which is a path on the target: when one host is
+# both, the two must not be the same directory.
+ernic_srq_dkms_controller_root: /tmp/ionic-srq-src-controller
+
+# Where the staged tree and scripts land on the target.
+ernic_srq_dkms_stage_dir: /var/tmp/srq
+
+# Cycle the ionic modules after installing, so the running kernel picks up what
+# was just built, and prove the new modules are the ones that got loaded.
+#
+# Off by default: it unloads the driver out from under whatever is using it, so
+# it belongs only where the caller knows nothing else is mid-flight. Implies
+# ernic_srq_dkms_install -- there is nothing to reload otherwise.
+ernic_srq_dkms_reload: false
+
+# The RDMA device to bring back up after a reload, e.g. ionic_0. The module
+# cycle returns the netdev to DOWN and nothing in a guest brings it back, so
+# the port reports PORT_DOWN and every modify_qp to RTR fails for want of a
+# GID. Leave empty to skip the link restore and the PORT_ACTIVE wait.
+ernic_srq_dkms_rdma_dev: ""
+
+# Warn when the target's running kernel and the pinned ref disagree on the
+# major.minor. ionic tracks IB-core helpers that move between minor releases,
+# so a mismatch is a likely cause of a build failure that otherwise reads as a
+# bad patch. A warning, not an assert: building anyway is a legitimate thing to
+# ask for.
+ernic_srq_dkms_warn_kernel_mismatch: true

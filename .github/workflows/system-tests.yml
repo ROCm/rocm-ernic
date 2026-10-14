@@ -1152,11 +1152,23 @@ jobs:
     # testing a different driver than the one the lane booted.
     #
     # The sources are fetched and patched on the RUNNER, not in the
-    # guest.  The runner is known to reach git.kernel.org -- the ionic
-    # Driver Patches workflow does exactly this -- whereas the guest's
-    # outbound path is user-mode NAT that nothing else in this lane
-    # depends on, and a network failure in there would read as a patch
-    # failure.
+    # guest, and then shipped in.  The runner is known to reach
+    # git.kernel.org -- the ionic Driver Patches workflow does exactly
+    # this -- whereas the guest's outbound path is user-mode NAT that
+    # nothing else in this lane depends on, and a network failure in
+    # there would read as a patch failure.  That split is what
+    # ernic_srq_dkms_fetch_on_controller expresses.
+    #
+    # This used to be ~120 lines of inline ssh that did the same work as
+    # the ernic_srq_dkms role while the role itself was skipped with
+    # --skip-tags srq-kernel -- two definitions of the SRQ kernel build,
+    # only one of them ever run.  The role is remote-capable now, so
+    # this drives it instead.
+    #
+    # --skip-tags srq-provider, not --tags srq-kernel: playbooks/
+    # vm-register.yml carries no tags at all, and --tags would skip it,
+    # leaving ernic_vms empty and the play reporting success having
+    # built nothing.
     #
     # These block.  patches/srq is rebased onto v7.2.4 -- the ref
     # IONIC_KERNEL_REF pins and the kernel the guest image runs -- so
@@ -1169,127 +1181,34 @@ jobs:
       run: |
         set -euo pipefail
 
-        # The ref comes from the role defaults, which is the single
-        # source for "which kernel carries SRQ".  A copy here would let
-        # this lane keep testing the old one after a bump.
-        SRQ_DEFAULTS=ansible/roles/ernic_srq_dkms/defaults/main.yml
-        SRQ_REF=$(sed -n \
-          '/^ernic_srq_dkms_sources:/,/^[a-z]/ s/^  *- *ref: *//p' \
-          "$SRQ_DEFAULTS" | head -1)
-        if [ -z "$SRQ_REF" ]; then
-          echo "::error::could not read the SRQ kernel ref from $SRQ_DEFAULTS"
-          exit 1
-        fi
-        echo "SRQ kernel ref: $SRQ_REF"
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
 
-        KVER=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-                 'uname -r' | tr -d '\r')
-        want=$(sed -E 's/^v//; s/-rc[0-9]+$//; s/^([0-9]+\.[0-9]+).*/\1/' \
-               <<<"$SRQ_REF")
-        got=$(sed -E 's/^([0-9]+\.[0-9]+).*/\1/' <<<"$KVER")
-        echo "guest kernel: $KVER (${got}), SRQ sources: ${SRQ_REF} (${want})"
-        if [ "$want" != "$got" ]; then
-          echo "::warning::guest kernel ${got} but SRQ sources are ${want}."
-          echo "  ionic tracks IB-core helpers that move between minor"
-          echo "  releases, so this build may fail for that reason alone."
-          echo "  The fix is to repin ci/guest-image.env ($GUEST_ARTIFACT_TAG)"
-          echo "  to an image on a ${want} kernel -- not to patch around it."
-        fi
+        cd ansible
+        # The ref is not named here.  It comes from the role defaults,
+        # which is the single source for "which kernel carries SRQ"; a
+        # copy here would let this lane keep testing the old one after a
+        # bump.  Same for the patches directory, passed only because the
+        # default is playbook_dir-relative and so depends on which
+        # playbook was named on the command line.
+        ansible-playbook playbooks/vm-register.yml \
+                         playbooks/srq-dkms-build.yml \
+          --skip-tags srq-provider \
+          -e srq_dkms_hosts=ernic_vms \
+          -e ernic_run_dir=/tmp/ernic-ci \
+          -e ernic_srq_dkms_patches_dir="$PROJECT_ROOT/patches/srq" \
+          -e ernic_srq_dkms_scripts_dir="$PROJECT_ROOT/scripts" \
+          -e ernic_srq_dkms_fetch_on_controller=true \
+          -e ernic_srq_dkms_install=true \
+          -e ernic_srq_dkms_reload=true \
+          -e ernic_srq_dkms_rdma_dev="$RDMA_DEVICE"
 
-        git config --global user.email "ci@rocm-ernic.invalid"
-        git config --global user.name "rocm-ernic CI"
-
-        echo "=== Fetching and patching ionic sources on the runner ==="
-        ./scripts/fetch-ionic-sources.sh \
-          --source-dir /tmp/ionic-srq-src \
-          --kernel-ref "$SRQ_REF" \
-          --patches-dir "$PWD/patches/srq"
-
-        # The guard the ernic_srq_dkms role applies, for the same reason:
-        # a ref predating the series fetches and builds fine and yields a
-        # driver with no SRQ, which surfaces far downstream as max_srq=0
-        # with nothing pointing back here.
-        if ! grep -qE 'ionic_create_srq_cmd|\.create_srq[[:space:]]*=' \
-             /tmp/ionic-srq-src/drivers/infiniband/hw/ionic/ionic_controlpath.c; then
-          echo "::error::$SRQ_REF has no create_srq verb; wrong ref?"
-          exit 1
-        fi
-        echo "✓ patched sources carry SRQ"
-
-        echo "=== Shipping sources into the guest ==="
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-          'rm -rf /var/tmp/srq && mkdir -p /var/tmp/srq'
-        # Exclude .git: setup-ionic-dkms.sh stages files, not history,
-        # and the pack is most of the transfer.
-        tar -C /tmp --exclude=.git -cf - ionic-srq-src \
-          | ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-              'tar -C /var/tmp/srq -xf -'
-        tar -cf - scripts/setup-ionic-dkms.sh \
-          | ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-              'tar -C /var/tmp/srq -xf - && chmod +x /var/tmp/srq/scripts/*.sh'
-
-        echo "=== Building and installing the DKMS package ==="
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-          "sudo /var/tmp/srq/scripts/setup-ionic-dkms.sh \
-             --source-dir /var/tmp/srq/ionic-srq-src \
-             --kernel-ref $SRQ_REF"
-
-        echo "=== Reloading the ionic modules ==="
-        # ionic_rdma first: it holds a reference on ionic.  The emulated
-        # device is not hot-unpluggable, so this is a module cycle.
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
-          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
-        set -e
-        sudo modprobe -r ionic_rdma 2>/dev/null || true
-        sudo modprobe -r ionic 2>/dev/null || true
-        sudo depmod -a
-        sudo modprobe ionic
-        sudo modprobe ionic_rdma
-        sleep 5
-        # updates/extra/dkms in the path, not just "a module loaded":
-        # modprobe happily reloads the image's original driver if the
-        # install did not replace it, and then the test below would be
-        # covering the very thing this step exists to replace.
-        modinfo ionic_rdma | grep -E '^(filename|version|srcversion)'
-        modinfo ionic_rdma | grep -qE 'filename:.*(updates|extra|dkms)'
-
-        # The cycle above returns the netdev to DOWN, and nothing in the
-        # guest brings it back: there is no netplan entry for it, and the
-        # loopback backend gives it no carrier to trigger one.  Left down,
-        # the device still registers and ibv_devices still lists it, but
-        # the port reports PORT_DOWN and every modify_qp to RTR fails,
-        # because the AV cannot resolve without a GID.  That surfaces
-        # three steps later as test_srq_transfer printing "Network is
-        # unreachable" while test_srq passes, since nothing test_srq does
-        # needs an address.
-        #
-        # This repeats what ernic_guest_setup's driver_common.yml already
-        # does at provisioning time; the reload undid it.
-        for NET in /sys/class/infiniband/"$RDMA_DEVICE"/device/net/*; do
-            [ -e "$NET" ] || continue
-            sudo ip link set "$(basename "$NET")" up
-        done
-
-        # Assert it came back, rather than letting a PORT_DOWN travel
-        # three steps to be reported against the SRQ datapath.
-        PORT_OK=0
-        for _ in $(seq 1 30); do
-            if ibv_devinfo -d "$RDMA_DEVICE" 2>/dev/null \
-                 | grep -q PORT_ACTIVE; then
-                PORT_OK=1
-                break
-            fi
-            sleep 2
-        done
-        ibv_devinfo -d "$RDMA_DEVICE" \
-          | grep -E 'state:|phys_state:|link_layer:' || true
-        if [ "$PORT_OK" -ne 1 ]; then
-            echo "✗ $RDMA_DEVICE did not return to PORT_ACTIVE after the reload"
-            exit 1
-        fi
-        echo "✓ $RDMA_DEVICE back to PORT_ACTIVE with its netdev up"
-        EOFVM
-
+        # Every step below gates on this.  The role asserts the loaded
+        # module came from updates/extra/dkms and that the port returned
+        # to ACTIVE, so reaching here means the driver really was
+        # replaced -- not merely that ansible-playbook exited 0.
         echo "srq_driver=installed" >> "$GITHUB_OUTPUT"
         echo "✓ SRQ-capable ionic driver installed and loaded"
 

@@ -3,9 +3,29 @@
 #
 # Included per-ref from main.yml with ernic_srq_src set to the list entry.
 
-- name: "Set the checkout path for {{ ernic_srq_src.ref[:12] }}"
+- name: "Set the checkout paths for {{ ernic_srq_src.ref[:12] }}"
   ansible.builtin.set_fact:
-    ernic_srq_dir: "{{ ernic_srq_dkms_source_root }}/{{ ernic_srq_src.ref }}"
+    # Where the build happens: the staging root for a controller-fetched run,
+    # the role's own source root for a local one.
+    ernic_srq_dir: >-
+      {{ (ernic_srq_dkms_stage_dir
+          if ernic_srq_dkms_fetch_on_controller | bool
+          else ernic_srq_dkms_source_root) ~ '/' ~ ernic_srq_src.ref }}
+    # Where the controller fetches and patches. Unused when the fetch is local.
+    ernic_srq_ctl_dir: >-
+      {{ ernic_srq_dkms_controller_root ~ '/' ~ ernic_srq_src.ref }}
+    # Which copy of setup-ionic-dkms.sh to run. The staged one is on the
+    # target; the default is a controller path that only resolves when the
+    # target IS the controller.
+    ernic_srq_dkms_script: >-
+      {{ ernic_srq_dkms_stage_dir ~ '/setup-ionic-dkms.sh'
+         if ernic_srq_dkms_fetch_on_controller | bool
+         else ernic_srq_dkms_scripts_dir ~ '/setup-ionic-dkms.sh' }}
+
+- name: "Stage the sources from the controller
+    ({{ ernic_srq_src.ref[:12] }})"
+  when: ernic_srq_dkms_fetch_on_controller | bool
+  ansible.builtin.include_tasks: stage.yml
 
 # Discarded rather than reused, because this role exists to VERIFY the patches
 # apply and build. Both available caches key on the kernel ref alone -- a
@@ -17,13 +37,16 @@
 # costs a merged patch that does not apply.
 - name: "Discard any cached checkout for {{ ernic_srq_src.ref[:12] }}"
   become: true
-  when: ernic_srq_dkms_force_fetch | bool
+  when:
+    - not (ernic_srq_dkms_fetch_on_controller | bool)
+    - ernic_srq_dkms_force_fetch | bool
   ansible.builtin.file:
     path: "{{ ernic_srq_dir }}"
     state: absent
 
 - name: "Fetch ionic sources at {{ ernic_srq_src.ref[:12] }}"
   become: true
+  when: not (ernic_srq_dkms_fetch_on_controller | bool)
   ansible.builtin.command:
     cmd: >-
       {{ ernic_srq_dkms_scripts_dir }}/fetch-ionic-sources.sh
@@ -43,6 +66,7 @@
 # even in trees with no SRQ support, so a bare grep matches both.
 - name: "Confirm {{ ernic_srq_src.ref[:12] }} actually carries SRQ support"
   become: true
+  when: not (ernic_srq_dkms_fetch_on_controller | bool)
   ansible.builtin.command:
     cmd: >-
       grep -lE 'ionic_create_srq_cmd|\.create_srq[[:space:]]*='
@@ -53,6 +77,7 @@
 
 - name: "Fail when {{ ernic_srq_src.ref[:12] }} has no SRQ support"
   when:
+    - not (ernic_srq_dkms_fetch_on_controller | bool)
     - ernic_srq_dkms_require_srq | bool
     - ernic_srq_probe.rc != 0
   ansible.builtin.fail:
@@ -68,7 +93,7 @@
   become: true
   ansible.builtin.command:
     cmd: >-
-      {{ ernic_srq_dkms_scripts_dir }}/setup-ionic-dkms.sh
+      {{ ernic_srq_dkms_script }}
       --source-dir {{ ernic_srq_dir }}
       --kernel-ref {{ ernic_srq_src.ref }}
       {{ '--build-only' if not (ernic_srq_dkms_install | bool) else '' }}
