@@ -372,6 +372,14 @@ target_compile_definitions(test_ionic_port_info PRIVATE
 target_compile_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# Server lifecycle test: forks the real server and drives it through
+# startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
+# shutdown. Needs no symbols from the server, so it is a plain program.
+add_executable(test_server_lifecycle test_server_lifecycle.c)
+target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE)
+target_compile_options(test_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_server_lifecycle PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
 # side buffers the driver reads its answer out of can be inspected directly.
@@ -667,6 +675,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_query_qp
+    test_server_lifecycle
     test_ionic_srq_adminq
     test_ionic_cq_arm
     test_ionic_rq_wrap
@@ -832,6 +841,20 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_port_info>
 )
 set_tests_properties(ionic-port-info-unit PROPERTIES TIMEOUT 30)
+
+# Server lifecycle: a client that hangs up or sends garbage during vfio-user
+# negotiation must not kill the server, and SIGTERM/SIGINT must reach a clean
+# "Shutdown complete". When the server is built with ERNIC_USE_SANITIZERS,
+# LeakSanitizer runs at its exit, so this is also the ionic teardown leak
+# check. One server per row, each on its own socket.
+add_test(
+    NAME server-lifecycle
+    COMMAND $<TARGET_FILE:test_server_lifecycle> $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(server-lifecycle PROPERTIES
+    TIMEOUT 300
+    SKIP_RETURN_CODE 77
+)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and

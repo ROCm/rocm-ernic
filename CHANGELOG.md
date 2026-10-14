@@ -244,6 +244,16 @@
   `tests/test_tcp_accept_stop.c` (CTest `tcp-accept-stop-unit`) covers it. A
   manager can still take up to `ERNIC_TCP_HEALTH_INTERVAL` seconds to exit
   while its health-check thread finishes sleeping.
+* The server no longer exits when a client disconnects or sends something
+  other than a version message during vfio-user negotiation. A port probe or a
+  client that crashed while connecting used to take the server down; it now
+  logs `client dropped during negotiation` and waits for the next client.
+  Other attach errors are still fatal.
+* The server frees the emulated ionic device at shutdown, and no longer leaks
+  the parsed path of an `nvmeof` backend's `file=` namespace. LeakSanitizer
+  and valgrind reported both. `tests/test_server_lifecycle.c` (CTest
+  `server-lifecycle`) starts the real server and checks that misbehaving
+  clients and SIGTERM/SIGINT end in a clean shutdown with no sanitizer report.
 
 ### Limitations
 
