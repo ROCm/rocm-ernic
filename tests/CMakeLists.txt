@@ -62,6 +62,7 @@ set(ERNIC_GUEST_ONLY_TESTS
     test_srq_transfer
     test_ud_transfer
     test_ud_sq_reclaim
+    test_ud_mesh
 )
 foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
     add_executable(${guest_test} ${guest_test}.c)
@@ -620,6 +621,7 @@ set(ERNIC_TEST_TARGETS
     test_srq_transfer
     test_ud_transfer
     test_ud_sq_reclaim
+    test_ud_mesh
     test_ernic_device
     test_rdma_backend_query_port
     test_write_imm
