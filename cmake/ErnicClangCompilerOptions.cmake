@@ -40,6 +40,39 @@ function(ernic_check_fortify_used_but_marked_unused outvar)
     set(${outvar} ${ERNIC_FORTIFY_ALLOWS_USED_BUT_MARKED_UNUSED} PARENT_SCOPE)
 endfunction()
 
+# Check whether the C library's own macros trip -Wdisabled-macro-expansion
+#
+# Some glibc macros expand to a call of the function they're named
+# after, and clang reports every use of them outside a system header:
+#
+#   - glibc 2.43 and later wrap strchr, strstr, memchr, and similar
+#     functions in const-preserving macros of the same name
+#   - With _FORTIFY_SOURCE, glibc before 2.40 makes printf, fprintf,
+#     snprintf, and the like macros when compiling C with clang, so the
+#     self-referencing stderr macro is expanded inside their arguments
+#
+# ``flags`` are added to the compile, and ``resultvar`` names the cache
+# variable that holds the result, so each set of flags is only checked
+# once.
+function(ernic_check_libc_disabled_macro_expansion outvar flags resultvar)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_FLAGS "${flags} -Werror=disabled-macro-expansion")
+    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_c_source_compiles("
+        #include <stdio.h>
+        #include <string.h>
+        int main(void)
+        {
+            char buf[8];
+            snprintf(buf, sizeof(buf), \"%d\", 1);
+            fprintf(stderr, \"%s\", buf);
+            return strchr(buf, '1') != NULL && strstr(buf, \"1\") != NULL
+                && memchr(buf, '1', sizeof(buf)) != NULL;
+        }" ${resultvar})
+    cmake_pop_check_state()
+    set(${outvar} ${${resultvar}} PARENT_SCOPE)
+endfunction()
+
 # Populate ``outvar`` with clang warning flags appropriate for
 # the given ``compiler_version``.
 function(get_ernic_clang_warning_flags outvar compiler_version)
@@ -250,6 +283,21 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         if(NOT fortify_allows_warning)
             list(REMOVE_ITEM flags -Wused-but-marked-unused)
         endif()
+    endif()
+
+    # Drop -Wdisabled-macro-expansion when the C library's own macros trip
+    # it, with or without _FORTIFY_SOURCE, since there's nothing to fix in
+    # our code. With a multi-config generator, this drops it from every
+    # configuration.
+    ernic_check_libc_disabled_macro_expansion(libc_allows_warning ""
+      ERNIC_LIBC_ALLOWS_DISABLED_MACRO_EXPANSION)
+    if(libc_allows_warning AND fortify_flags)
+        ernic_check_libc_disabled_macro_expansion(libc_allows_warning
+          "-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
+          ERNIC_FORTIFY_ALLOWS_DISABLED_MACRO_EXPANSION)
+    endif()
+    if(NOT libc_allows_warning)
+        list(REMOVE_ITEM flags -Wdisabled-macro-expansion)
     endif()
 
     set(flags
