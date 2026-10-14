@@ -73,13 +73,18 @@ static bool path_is_socket(const char *path)
 static int connect_unix(const char *path)
 {
     struct sockaddr_un addr;
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    size_t len = strlen(path);
+    int fd;
 
+    /* A path that does not fit sun_path cannot be connected to. */
+    if (len >= sizeof(addr.sun_path))
+        return -1;
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    memcpy(addr.sun_path, path, len + 1);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
         return -1;
