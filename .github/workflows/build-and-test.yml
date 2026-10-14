@@ -422,14 +422,21 @@ jobs:
     permissions:
       contents: write # push to the badges branch
     # One publish at a time. A newer pending run replaces an older one.
+    # This does not order the publishes: the build jobs are in groups of
+    # their own, so runs can reach here out of order. "Publish to badges"
+    # does that.
     concurrency:
       group: ${{ github.workflow }}-publish-coverage-badge
       cancel-in-progress: false
     steps:
-      # Only for a repository to push from: nothing in the checkout runs.
+      # Only for a repository to push from and for develop's history:
+      # nothing in the checkout runs.
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The whole history, for the ancestry check in "Publish to
+          # badges".
+          fetch-depth: 0
           # "Publish to badges" pushes through origin with this token.
           persist-credentials: true
 
@@ -448,11 +455,34 @@ jobs:
           git config user.email "rocm-ernic-ci@users.noreply.github.com"
           git config commit.gpgSign false
 
+          # Runs can get here out of order, and an old run can be re-run,
+          # so a run whose commit is the published one or an ancestor of
+          # it publishes nothing. The published commit is the
+          # Source-Commit trailer of the badges commit. If that is not
+          # in develop's history (develop was rewritten), this run
+          # publishes. The push's lease makes it fail, rather than
+          # overwrite, if badges moved after this check.
+          lease=$(git ls-remote origin refs/heads/badges | cut -f1)
+          if [ -n "${lease}" ]; then
+            git fetch --quiet origin "${lease}"
+            published=$(git log -1 \
+              --format='%(trailers:key=Source-Commit,valueonly)' "${lease}")
+            if [[ "${published}" =~ ^[0-9a-f]{40}$ ]] &&
+               git cat-file -e "${published}^{commit}" 2>/dev/null &&
+               git merge-base --is-ancestor "${GITHUB_SHA}" "${published}"; then
+              echo "badges has ${published}, which contains ${GITHUB_SHA}: not published"
+              exit 0
+            fi
+          fi
+
           git worktree add --quiet --orphan -b badges ../badges
           cp "${RUNNER_TEMP}/coverage-badge/coverage.json" ../badges/
           git -C ../badges add coverage.json
           git -C ../badges commit --quiet \
             -m "Coverage badge from ${GITHUB_SHA}" \
-            -m "Published by build-and-test.yml. [skip ci]"
-          git -C ../badges push --quiet --force origin HEAD:refs/heads/badges
+            -m "Published by build-and-test.yml. [skip ci]" \
+            -m "Source-Commit: ${GITHUB_SHA}"
+          git -C ../badges push --quiet \
+            --force-with-lease="refs/heads/badges:${lease}" \
+            origin HEAD:refs/heads/badges
           echo "published: $(cat ../badges/coverage.json)"
