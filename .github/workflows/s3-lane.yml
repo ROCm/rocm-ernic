@@ -32,13 +32,6 @@ on:
         type: boolean
         default: false
 
-env:
-  # Pinned here rather than taken as an input: `env` is not available
-  # in a caller's `with:`, so passing it would mean a literal copy in
-  # every caller.  system-tests.yml and nvmeof-lane.yml keep their own
-  # copies; keep the three in step.
-  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
-
 jobs:
   system-test-s3:
     # Only the configuration, not the lane name: every caller's name is
@@ -73,6 +66,15 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
+
+    # The guest image pin, from the one file that holds it. Loading it into
+    # the job environment keeps $GUEST_ARTIFACT_TAG usable in later shell
+    # steps (diagnostics name the image they expected) without any lane
+    # carrying its own copy of the tag.
+    - name: Load the guest image pin
+      shell: bash
+      run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ci/guest-image.env
+        >> "$GITHUB_ENV"
 
     - name: Select QEMU accelerator and guest size
       shell: bash
@@ -691,7 +693,7 @@ jobs:
 
     - name: Upload test logs
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: s3-backend-test-logs
         path: |
@@ -704,7 +706,7 @@ jobs:
     # ── Publish (nightly only) ───────────────────────
     - name: Upload the S3 sweep
       if: inputs.publish && always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: s3-perf-csv
         path: ${{ env.S3_RESULTS }}/perf-csv/

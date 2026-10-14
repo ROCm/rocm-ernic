@@ -4,28 +4,43 @@
 name: rocm-ernic - Build and Test
 
 on:
+  # Pushes to develop run too, so that develop's code coverage can be
+  # published for the README's Coverage badge (publish-coverage-badge
+  # below).
   pull_request:
     branches: [ develop ]
-    paths:
+    paths: &paths
       - 'src/**'
       - 'third-party/**'
       - 'tests/**'
       - 'service/**'
+      # src/rocm_ernic_server.c and src/rdma/rdma_backend_tcp.c include
+      # shared/rocm-ernic-warnings.h, so a change there changes what this
+      # matrix compiles. Without this entry, editing a warning suppression
+      # skipped every build leg and all of ctest.
+      - 'shared/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/build-and-test.yml'
+  push:
+    branches: [ develop ]
+    paths: *paths
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer commit on a pull request cancels the run for the older one.
+# Every other run (a push, a manual run) gets a group of its own: in a
+# shared group, a newer run replaces a pending one even without
+# cancel-in-progress, which would leave a develop commit untested.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   build-test:
-    name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }}, ${{ matrix.build_type }}, ${{ matrix.sanitizer }})
+    name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }}, ${{ matrix.build_type }}, ${{ matrix.sanitizer }}${{ matrix.coverage == 'on' && ', coverage' || '' }})
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -55,6 +70,20 @@ jobs:
         # is what makes the Release tsan legs a stronger race check than the
         # Debug ones (see the -Og note in the configure step below).
         build_type: [Debug, Release]
+        # coverage is a matrix key, 'off' everywhere, only so the include
+        # below adds a leg: an include whose keys all match an existing
+        # combination would turn that combination into the coverage leg
+        # instead of adding one.
+        coverage: [ 'off' ]
+        include:
+          # One code coverage leg (LLVM source-based coverage, so Clang).
+          # Debug, so the report's lines match the source. The unit tests
+          # still build with their own ASan, as on every non-tsan leg.
+          - os: ubuntu-24.04
+            compiler: clang
+            sanitizer: 'off'
+            build_type: Debug
+            coverage: 'on'
 
     # UBSan's default is to print a diagnostic and keep going with a zero
     # exit status, so without halt_on_error the asan legs would report
@@ -96,6 +125,15 @@ jobs:
             librdmacm-dev \
             libglib2.0-dev
 
+      # The coverage report needs the llvm-profdata and llvm-cov of the
+      # compiler's own LLVM version, since the profile format changes
+      # between versions, so the package is picked from clang's.
+      - name: Install LLVM coverage tools
+        if: matrix.coverage == 'on'
+        run: |
+          major=$(clang -dumpversion | cut -d. -f1)
+          sudo apt-get install -y "llvm-${major}"
+
       - name: Cache libvfio-user build
         id: cache-libvfio-user
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -133,6 +171,7 @@ jobs:
         env:
           SANITIZER: ${{ matrix.sanitizer }}
           BUILD_TYPE: ${{ matrix.build_type }}
+          COVERAGE: ${{ matrix.coverage }}
         run: |
           asan=OFF
           tsan=OFF
@@ -140,6 +179,10 @@ jobs:
             asan) asan=ON ;;
             tsan) tsan=ON ;;
           esac
+          coverage=OFF
+          if [ "$COVERAGE" = "on" ]; then
+            coverage=ON
+          fi
 
           # Only the Debug legs need their optimisation level adjusted, and
           # only for tsan. Debug is -O0, which makes a weaker tsan leg than
@@ -176,8 +219,9 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DERNIC_WERROR=ON \
             -DERNIC_USE_SANITIZERS=$asan \
-            -DERNIC_USE_THREAD_SANITIZER=$tsan
-      
+            -DERNIC_USE_THREAD_SANITIZER=$tsan \
+            -DERNIC_USE_CODE_COVERAGE=$coverage
+
       - name: Build project
         run: cmake --build build
       
@@ -266,11 +310,79 @@ jobs:
           TEST_BIN=build/tests/test_data_transfer \
           $TEST_WRAP tests/test_loopback_ci.sh
 
+      # Runs after every test step, so the report counts the loopback
+      # configurations as well as ctest. The report's summary goes on the
+      # run's summary page, and the job fails if line coverage of src/ is
+      # below MIN_LINE_COVERAGE, a floor under the measured figure
+      # that stops it sliding; raise it as tests are added. The step also
+      # writes the line coverage to build/coverage/coverage.json, in the
+      # format of a shields.io endpoint badge, which the
+      # publish-coverage-badge job publishes for the README's badge.
+      - name: Code coverage report
+        if: matrix.coverage == 'on'
+        env:
+          MIN_LINE_COVERAGE: 35
+        run: |
+          cmake --build build --target ernic-coverage
+          {
+            echo '# Code coverage'
+            echo '```'
+            cat build/coverage/report.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          # The TOTAL line's tenth field is the line coverage, e.g. 40.02%
+          awk -v min="${MIN_LINE_COVERAGE}" \
+            -v badge=build/coverage/coverage.json '
+            $1 == "TOTAL" { lines = $10 }
+            END {
+              if (lines == "") {
+                print "::error::No TOTAL line in the coverage report"
+                exit 1
+              }
+              sub(/%$/, "", lines)
+              if (lines !~ /^[0-9]+(\.[0-9]+)?$/) {
+                printf "::error::Bad line coverage in the report: %s\n", lines
+                exit 1
+              }
+              # Coverage below the floor fails the job, so the badge is
+              # never published with it and keeps the last passing value.
+              pct = lines + 0
+              color = pct >= 90 ? "brightgreen" : \
+                      pct >= 75 ? "green" : \
+                      pct >= 60 ? "yellowgreen" : \
+                      pct >= 40 ? "yellow" : \
+                      pct >= 20 ? "orange" : "red"
+              printf "{\"schemaVersion\":1,\"label\":\"coverage\",\"message\":\"%s%%\",\"color\":\"%s\"}\n", \
+                lines, color > badge
+              close(badge)
+              if (pct < min) {
+                printf "::error::Line coverage is %s%%, below the %s%% floor\n", lines, min
+                exit 1
+              }
+              printf "Line coverage is %s%% (floor %s%%)\n", lines, min
+            }' build/coverage/report.txt
+
+      # Only develop's coverage goes on the badge, not a pull request's or
+      # another branch's.
+      - name: Upload coverage badge data
+        if: >-
+          matrix.coverage == 'on' &&
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-badge
+          path: build/coverage/coverage.json
+          if-no-files-found: error
+          retention-days: 1
+
+      # The coverage leg shares its compiler, build type and sanitizer with
+      # a plain leg, and artifact names must be unique within a run.
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizer }}
+          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizer }}${{ matrix.coverage == 'on' && '-coverage' || '' }}
           path: build/Testing/
           retention-days: 7
 
@@ -289,7 +401,7 @@ jobs:
         if: >-
           success() && matrix.sanitizer == 'off'
           && matrix.compiler == 'gcc' && matrix.build_type == 'Release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}
           path: |
@@ -297,3 +409,85 @@ jobs:
             build/tests/test_pci_client
             build/tests/test_data_transfer
           retention-days: 7
+
+  # Publish develop's line coverage for the README's Coverage badge, which
+  # shields.io draws from coverage.json on the badges branch. That branch
+  # holds a single commit with only that file, replaced on every run, so
+  # it never grows. It is kept off gh-pages so it never races the perf
+  # lanes and docs-deploy for that branch. This is a separate job so that
+  # the token that can push to the repository is never present while the
+  # repository's code runs; this job only copies the build job's JSON into
+  # the branch. It runs only when every build leg passes, so the badge
+  # shows the coverage of the latest develop commit that passed.
+  publish-coverage-badge:
+    name: Publish Coverage Badge
+    needs: build-test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push to the badges branch
+    # One publish at a time. A newer pending run replaces an older one.
+    # This does not order the publishes: the build jobs are in groups of
+    # their own, so runs can reach here out of order. "Publish to badges"
+    # does that.
+    concurrency:
+      group: ${{ github.workflow }}-publish-coverage-badge
+      cancel-in-progress: false
+    steps:
+      # Only for a repository to push from and for develop's history:
+      # nothing in the checkout runs.
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history, for the ancestry check in "Publish to
+          # badges".
+          fetch-depth: 0
+          # "Publish to badges" pushes through origin with this token.
+          persist-credentials: true
+
+      # Outside the workspace, so it can't land in either worktree.
+      - name: Download coverage badge data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-badge
+          path: ${{ runner.temp }}/coverage-badge
+
+      - name: Publish to badges
+        run: |
+          set -euo pipefail
+
+          git config user.name  "rocm-ernic-ci"
+          git config user.email "rocm-ernic-ci@users.noreply.github.com"
+          git config commit.gpgSign false
+
+          # Runs can get here out of order, and an old run can be re-run,
+          # so a run whose commit is the published one or an ancestor of
+          # it publishes nothing. The published commit is the
+          # Source-Commit trailer of the badges commit. If that is not
+          # in develop's history (develop was rewritten), this run
+          # publishes. The push's lease makes it fail, rather than
+          # overwrite, if badges moved after this check.
+          lease=$(git ls-remote origin refs/heads/badges | cut -f1)
+          if [ -n "${lease}" ]; then
+            git fetch --quiet origin "${lease}"
+            published=$(git log -1 \
+              --format='%(trailers:key=Source-Commit,valueonly)' "${lease}")
+            if [[ "${published}" =~ ^[0-9a-f]{40}$ ]] &&
+               git cat-file -e "${published}^{commit}" 2>/dev/null &&
+               git merge-base --is-ancestor "${GITHUB_SHA}" "${published}"; then
+              echo "badges has ${published}, which contains ${GITHUB_SHA}: not published"
+              exit 0
+            fi
+          fi
+
+          git worktree add --quiet --orphan -b badges ../badges
+          cp "${RUNNER_TEMP}/coverage-badge/coverage.json" ../badges/
+          git -C ../badges add coverage.json
+          git -C ../badges commit --quiet \
+            -m "Coverage badge from ${GITHUB_SHA}" \
+            -m "Published by build-and-test.yml. [skip ci]" \
+            -m "Source-Commit: ${GITHUB_SHA}"
+          git -C ../badges push --quiet \
+            --force-with-lease="refs/heads/badges:${lease}" \
+            origin HEAD:refs/heads/badges
+          echo "published: $(cat ../badges/coverage.json)"

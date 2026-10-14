@@ -59,6 +59,21 @@
   launcher picks per instance, which is what selects `nvmeof` for that lane.
 * CI job `ionic-patches` verifies that every patch in `patches/` still applies
   to the pinned `IONIC_KERNEL_REF`.
+* `-DERNIC_USE_CODE_COVERAGE=ON` (Clang only) builds with LLVM source-based
+  coverage, and the `ernic-coverage` target reports the line coverage of
+  `src/` after `ctest`. The Build and Test workflow has a coverage leg that
+  fails below a floor, and on `develop` publishes the figure for the README's
+  Coverage badge.
+* `-DERNIC_USE_IWYU=ON` runs include-what-you-use on rocm-ernic's own sources
+  as they compile, which prints suggestions for `#include` lines to add or
+  remove. The suggestions don't fail the build. It needs CMake 3.27 or later
+  and is best built with the clang that IWYU is built on. The new IWYU
+  workflow runs it on every change to the C sources and lists the
+  suggestions, failing only if IWYU itself fails.
+* rocm-ernic can be built as part of another CMake project with
+  `add_subdirectory()`. When it is, it leaves the build type to the parent
+  project instead of defaulting it to `Debug`. The CTest `cmake-subproject`
+  test builds the server this way.
 
 ### Changed
 
@@ -87,6 +102,12 @@
   `ernic_vms_total` is now `ernic_vms`. They count what exists right now, not
   a running total. The shipped dashboard is updated; hand-written dashboards,
   alerts and recording rules referring to the old names must be changed.
+* The tests are only built when `BUILD_TESTING` is on, which it is by
+  default. `-DBUILD_TESTING=OFF` builds just the server.
+* The CMake cache variables that hold the git SHA built into the server are
+  now `ERNIC_GIT_SHA_FULL` and `ERNIC_GIT_SHA_SHORT`, rather than
+  `GIT_SHA_FULL` and `GIT_SHA_SHORT`, so they can't collide with a parent
+  project's.
 
 ### Removed
 
@@ -216,6 +237,13 @@
   16 * 2^40 bytes and drive a walk of four billion iterations. Widening the product
   above narrowed the mismatch case but left the count unbounded, so this
   completes that fix rather than replacing it.
+* A server on the TCP backend no longer hangs on SIGTERM waiting for its accept
+  thread, which stayed blocked in `accept()` until a peer happened to connect;
+  shutdown now wakes it. A worker that fails to register with its manager also
+  stops its accept thread before freeing the state that thread uses.
+  `tests/test_tcp_accept_stop.c` (CTest `tcp-accept-stop-unit`) covers it. A
+  manager can still take up to `ERNIC_TCP_HEALTH_INTERVAL` seconds to exit
+  while its health-check thread finishes sleeping.
 
 ### Limitations
 

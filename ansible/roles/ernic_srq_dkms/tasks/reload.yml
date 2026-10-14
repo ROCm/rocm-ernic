@@ -1,0 +1,112 @@
+---
+# Cycle the ionic modules so the running kernel picks up what was just built,
+# and prove the modules that came back are the new ones.
+#
+# Run once, after every ref has been built, and only when
+# ernic_srq_dkms_reload is set: this unloads the driver out from under
+# anything using it, so the caller has to say when that is safe.
+
+# ionic_rdma first: it holds a reference on ionic. The emulated device is not
+# hot-unpluggable, so this is a module cycle rather than a rebind.
+- name: Unload the ionic modules
+  become: true
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      modprobe -r ionic_rdma 2>/dev/null || true
+      modprobe -r ionic 2>/dev/null || true
+      depmod -a
+  changed_when: true
+
+- name: Load the rebuilt ionic modules
+  become: true
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      modprobe ionic
+      modprobe ionic_rdma
+  changed_when: true
+
+- name: Let the device settle after the reload
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Report which ionic_rdma is loaded
+  become: true
+  ansible.builtin.command:
+    cmd: modinfo ionic_rdma
+  register: ernic_srq_dkms_modinfo
+  changed_when: false
+
+- name: Show the loaded module's identity
+  ansible.builtin.debug:
+    msg: >-
+      {{ ernic_srq_dkms_modinfo.stdout_lines
+         | select('match', '^(filename|version|srcversion)') | list }}
+
+# updates/extra/dkms in the path, not merely "a module loaded". modprobe
+# happily reloads the image's original driver when the install did not replace
+# it, and every SRQ test downstream would then be covering the very driver
+# this role exists to replace -- passing or failing for reasons that have
+# nothing to do with the patch series.
+- name: Assert the DKMS modules are the ones loaded
+  ansible.builtin.assert:
+    that:
+      - ernic_srq_dkms_modinfo.stdout is search('filename:.*(updates|extra|dkms)')
+    fail_msg: >-
+      ionic_rdma loaded from outside updates/extra/dkms, so the module cycle
+      brought back the image's own driver rather than the one just built.
+      Installing did not replace it; check the DKMS build output above.
+
+# The cycle returns the netdev to DOWN and nothing in a guest brings it back:
+# there is no netplan entry for it, and the loopback backend gives it no
+# carrier to trigger one. Left down the device still registers and ibv_devices
+# still lists it, but the port reports PORT_DOWN and every modify_qp to RTR
+# fails because the AV cannot resolve without a GID -- which surfaces several
+# steps later as a transfer test reporting "Network is unreachable" while the
+# control-path test passes.
+#
+# This is the same restore ernic_guest_setup's driver_common.yml performs at
+# provisioning time; the reload undid it.
+- name: Bring the RDMA netdev back up after the reload
+  become: true
+  when: ernic_srq_dkms_rdma_dev | length > 0
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      DEV={{ ernic_srq_dkms_rdma_dev | quote }}
+      for NET in /sys/class/infiniband/"$DEV"/device/net/*; do
+        [ -e "$NET" ] || continue
+        ip link set "$(basename "$NET")" up
+      done
+  changed_when: true
+
+# Asserted here rather than left to travel several steps and be reported
+# against whatever runs next.
+- name: Wait for the RDMA port to become active again
+  become: true
+  when: ernic_srq_dkms_rdma_dev | length > 0
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      awk '{print $2}' \
+        /sys/class/infiniband/{{ ernic_srq_dkms_rdma_dev | quote }}/ports/1/state |
+        grep -qx 'ACTIVE'
+  register: ernic_srq_dkms_port_active
+  until: ernic_srq_dkms_port_active.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the port did not return to ACTIVE
+  when: ernic_srq_dkms_rdma_dev | length > 0
+  ansible.builtin.assert:
+    that: ernic_srq_dkms_port_active.rc == 0
+    fail_msg: >-
+      {{ ernic_srq_dkms_rdma_dev }} did not return to PORT_ACTIVE after the
+      module cycle. Its netdev is down or the driver did not rebind, and every
+      modify_qp to RTR will fail for want of a GID.

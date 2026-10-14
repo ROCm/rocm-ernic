@@ -12,11 +12,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <assert.h>
 #include <pthread.h>
-#include <inttypes.h>  /* For PRId64, PRIx64 */
-#include <sys/mman.h>  /* For PROT_READ, PROT_WRITE */
-#include <arpa/inet.h> /* For inet_addr */
+#include <sys/mman.h> /* For PROT_READ, PROT_WRITE */
+#include <sys/uio.h>
+
+#include <glib.h>
+#include <infiniband/verbs.h>
 
 /* Define libvfio-user types we need - full structs to avoid incomplete type */
 #include <vfio-user/libvfio-user.h>
@@ -31,11 +32,12 @@
 #include "vmw/pvrdma.h"
 #include "vmw/pvrdma_qp_ops.h"
 #include "rdma_backend.h"
+#include "rdma_backend_defs.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
+#include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 #include "hw/pci/pci.h"
 
 /*
@@ -57,10 +59,9 @@ typedef struct dma_mapping {
 static void dma_mapping_free(gpointer data);
 
 static GHashTable *dma_map_table;
-static unsigned int dma_map_count;
 
 /*
- * Protects dma_map_table and dma_map_count.  Recursive so that
+ * Protects dma_map_table.  Recursive so that
  * g_hash_table_remove/replace value destructors and vfu_sgl_* paths
  * cannot deadlock if they re-enter map/sync/unmap on the same thread.
  */
@@ -78,7 +79,6 @@ static void dma_map_global_init(void)
 
     dma_map_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                           dma_mapping_free);
-    dma_map_count = 0;
 }
 
 static void dma_map_ensure(void)
@@ -423,7 +423,7 @@ void pvrdma_adminq_count(pvrdma_handle_t handle)
 }
 
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op op)
+                             uint64_t bytes, enum pvrdma_stat_op stat_op)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     PVRDMAQPStats *qp;
@@ -434,7 +434,7 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
 
     qp = qp_id == PVRDMA_STAT_NO_QP ? NULL : pvrdma_get_qp_stats(pvrdma, qp_id);
 
-    switch (op) {
+    switch (stat_op) {
     case PVRDMA_STAT_SEND:
         pvrdma->stats.total_bytes_sent += bytes;
         if (qp) {
@@ -746,7 +746,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     dma_map_ensure();
     DMA_MAP_LOCK();
     g_hash_table_replace(dma_map_table, host_addr, m);
-    dma_map_count = g_hash_table_size(dma_map_table);
     DMA_MAP_UNLOCK();
 
     return host_addr;
@@ -813,9 +812,7 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
     dma_map_ensure();
     DMA_MAP_LOCK();
 
-    if (g_hash_table_remove(dma_map_table, buffer)) {
-        dma_map_count = g_hash_table_size(dma_map_table);
-    } else {
+    if (!g_hash_table_remove(dma_map_table, buffer)) {
         rdma_debug_report(
             "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
             buffer);
@@ -887,6 +884,73 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     if (!pvrdma)
         return;
     rdma_rm_dealloc_cq(&pvrdma->rdma_dev_res, cq_handle);
+}
+
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, pd_handle, max_wr, max_sge,
+                             srq_limit, srq_handle, NULL);
+}
+
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_srq(&pvrdma->rdma_dev_res, srq_handle);
+}
+
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    struct ibv_srq_attr attr = {.srq_limit = srq_limit};
+
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+    /*
+     * A limit of 0 disables the low-watermark and is a legal value that the
+     * guest driver accepts, but rdma_rm_modify_srq() rejects it outright
+     * (rdma_rm.c: IBV_SRQ_LIMIT with srq_limit == 0 is -EINVAL). There is
+     * nothing for the backend to hold for "no limit", and the authoritative
+     * copy lives in the adminq's SRQ map, so succeed here rather than
+     * turning a valid ibv_modify_srq() into an error.
+     */
+    if (srq_limit == 0)
+        return 0;
+    /* IBV_SRQ_LIMIT only: the depth is fixed at create time, and the guest
+     * driver's modify path carries nothing else (ionic_admin_modify_srq is
+     * qid + low_wqes_limit). */
+    return rdma_rm_modify_srq(&pvrdma->rdma_dev_res, srq_handle, &attr,
+                              IBV_SRQ_LIMIT);
+}
+
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    struct ibv_srq_attr attr = {0};
+    int ret;
+
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+        return -EINVAL;
+
+    ret = rdma_rm_query_srq(&pvrdma->rdma_dev_res, srq_handle, &attr);
+    if (ret)
+        return ret;
+
+    if (max_wr)
+        *max_wr = attr.max_wr;
+    if (max_sge)
+        *max_sge = attr.max_sge;
+    if (srq_limit)
+        *srq_limit = attr.srq_limit;
+    return 0;
 }
 
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)

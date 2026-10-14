@@ -27,69 +27,69 @@ if(ERNIC_INSTALL_SERVICE)
 
     # systemd unit files
     install(FILES
-        ${CMAKE_SOURCE_DIR}/service/rocm-ernic.service
-        ${CMAKE_SOURCE_DIR}/service/rocm-ernic-driver-pack.service
+        ${PROJECT_SOURCE_DIR}/service/rocm-ernic.service
+        ${PROJECT_SOURCE_DIR}/service/rocm-ernic-driver-pack.service
         DESTINATION lib/systemd/system
     )
 
     # Launcher and driver-pack scripts
     install(PROGRAMS
-        ${CMAKE_SOURCE_DIR}/service/rocm-ernic-launcher
-        ${CMAKE_SOURCE_DIR}/service/rocm-ernic-driver-pack
+        ${PROJECT_SOURCE_DIR}/service/rocm-ernic-launcher
+        ${PROJECT_SOURCE_DIR}/service/rocm-ernic-driver-pack
         DESTINATION ${ERNIC_LIBEXEC_DIR}
     )
 
     # ernicctl CLI
     install(PROGRAMS
-        ${CMAKE_SOURCE_DIR}/service/ernicctl
+        ${PROJECT_SOURCE_DIR}/service/ernicctl
         DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 
     # Prometheus exporter
     install(PROGRAMS
-        ${CMAKE_SOURCE_DIR}/prometheus/ernic-exporter
+        ${PROJECT_SOURCE_DIR}/prometheus/ernic-exporter
         DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 
     # ernic-exporter systemd unit
     install(FILES
-        ${CMAKE_SOURCE_DIR}/prometheus/ernic-exporter.service
+        ${PROJECT_SOURCE_DIR}/prometheus/ernic-exporter.service
         DESTINATION lib/systemd/system
     )
 
     # Exporter Python dependencies
     install(FILES
-        ${CMAKE_SOURCE_DIR}/prometheus/requirements-exporter.txt
+        ${PROJECT_SOURCE_DIR}/prometheus/requirements-exporter.txt
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
     # Grafana dashboard
     install(FILES
-        ${CMAKE_SOURCE_DIR}/prometheus/grafana/ernic-dashboard.json
+        ${PROJECT_SOURCE_DIR}/prometheus/grafana/ernic-dashboard.json
         DESTINATION ${ERNIC_SHARE_DIR}/grafana
     )
 
     # Default environment file
     install(FILES
-        ${CMAKE_SOURCE_DIR}/service/rocm-ernic.env
+        ${PROJECT_SOURCE_DIR}/service/rocm-ernic.env
         DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/rocm-ernic
     )
 
     # vm-driver-install template
     install(FILES
-        ${CMAKE_SOURCE_DIR}/service/vm-driver-install.sh.in
+        ${PROJECT_SOURCE_DIR}/service/vm-driver-install.sh.in
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
     # ionic driver patches and helper scripts
     install(DIRECTORY
-        ${CMAKE_SOURCE_DIR}/patches/
+        ${PROJECT_SOURCE_DIR}/patches/
         DESTINATION ${ERNIC_SHARE_DIR}/patches
         FILES_MATCHING PATTERN "*.patch"
     )
     install(PROGRAMS
-        ${CMAKE_SOURCE_DIR}/scripts/setup-ionic-dkms.sh
-        ${CMAKE_SOURCE_DIR}/scripts/fetch-ionic-sources.sh
+        ${PROJECT_SOURCE_DIR}/scripts/setup-ionic-dkms.sh
+        ${PROJECT_SOURCE_DIR}/scripts/fetch-ionic-sources.sh
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
@@ -102,11 +102,11 @@ if(ERNIC_INSTALL_SERVICE)
             "before ErnicInstall")
     endif()
     file(GENERATE
-        OUTPUT ${CMAKE_BINARY_DIR}/ionic-kernel-ref
+        OUTPUT ${PROJECT_BINARY_DIR}/ionic-kernel-ref
         CONTENT "${IONIC_KERNEL_REF}\n"
     )
     install(FILES
-        ${CMAKE_BINARY_DIR}/ionic-kernel-ref
+        ${PROJECT_BINARY_DIR}/ionic-kernel-ref
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 endif()

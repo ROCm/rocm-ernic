@@ -35,8 +35,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "s3_target.h"
-
+struct s3_dma_ops;
+struct s3_target;
 struct s3_tcp;
 
 #define S3_TCP_MAX_CONNS 8
