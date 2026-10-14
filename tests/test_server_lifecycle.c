@@ -2,16 +2,19 @@
  * Lifecycle tests for the rocm-ernic server: startup, misbehaving clients,
  * and signal-driven shutdown.
  *
- * Each row starts the real server binary on the loopback backend, does
- * something to it (nothing, a client that hangs up, a client that sends a
- * bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Two things are pinned here:
+ * Each row starts the real server binary, mostly on the loopback backend,
+ * does something to it (nothing, a client that hangs up, a client that sends
+ * a bad header, a client that never speaks), signals it, and checks the exit
+ * status and the log.  Three things are pinned here:
  *
  *   - a client that drops out during vfio-user negotiation no longer takes
  *     the server down: it logs the drop and waits for the next client;
  *   - a clean shutdown frees the ionic layer.  When the server itself is
  *     built with -DERNIC_USE_SANITIZERS=ON, LeakSanitizer runs at its exit
- *     and any report fails the row.
+ *     and any report fails the row;
+ *   - on the TCP backend, SIGTERM stops the backend's threads promptly
+ *     rather than waiting out a blocking accept() or the health-check
+ *     interval.
  *
  * Usage: test_server_lifecycle <server binary>
  *
@@ -24,6 +27,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -90,6 +94,33 @@ static int connect_unix(const char *path)
         close(fd);
         return -1;
     }
+    return fd;
+}
+
+/*
+ * A listening TCP socket on an ephemeral port, on every address as the TCP
+ * manager binds.  Its port is stored in *port.  Closing it frees the port
+ * for the server; keeping it open gives a worker a "manager" that accepts
+ * its connection (in the kernel's backlog) and never answers.
+ */
+static int listen_ephemeral(uint16_t *port)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0)
+        return -1;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        listen(fd, 4) < 0 ||
+        getsockname(fd, (struct sockaddr *)&addr, &len) < 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
     return fd;
 }
 
@@ -204,9 +235,13 @@ struct lifecycle_case {
     const char *category;
     const char *description;
     const char *expected;
-    const char *backend; /* --backend value; @DIR@ is the scratch dir */
-    bool want_socket;    /* the socket should appear */
-    bool settle;         /* let the server reach its attach loop first */
+    /* --backend value: @DIR@ is the scratch dir, @PORT@ a free TCP port */
+    const char *backend;
+    const char *env_name; /* an environment variable for the server, or NULL */
+    const char *env_value;
+    bool fake_manager; /* hold @PORT@ open as a manager that never answers */
+    bool want_socket;  /* the socket should appear */
+    bool settle;       /* let the server reach its attach loop first */
     enum action action;
     int clients;           /* how many times to do the action */
     int sig;               /* signal to send (0: none, wait for exit) */
@@ -248,6 +283,25 @@ static const struct lifecycle_case cases[] = {
      .description = "nvmeof backend with a file-backed namespace, then SIGTERM",
      .expected = "a clean shutdown that also frees the parsed namespace path",
      .backend = "nvmeof:size=1M,file=@DIR@/ns.img",
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    /* The interval is longer than EXIT_WAIT_MS, so a health-check thread
+     * that sleeps it out instead of being woken fails the row. */
+    {.category = "positive",
+     .description = "TCP mesh manager with a 60 s health-check interval, then "
+                    "SIGTERM",
+     .expected = "exits 0 without waiting out the interval or a blocked "
+                 "accept()",
+     .backend = "tcp:manager:listen:@PORT@",
+     .env_name = "ERNIC_TCP_HEALTH_INTERVAL",
+     .env_value = "60",
      .want_socket = true,
      .settle = true,
      .action = IDLE,
@@ -301,6 +355,23 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "nvmeof backend: cannot open"},
+    {.category = "negative",
+     .description = "TCP mesh worker whose manager accepts it and never "
+                    "answers",
+     .expected = "registration times out after 5 s, the backend unwinds its "
+                 "threads, and the server exits non-zero",
+     .backend = "tcp:worker:127.0.0.1:@PORT@",
+     .fake_manager = true,
+     .want_socket = false,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "Registration timeout"},
     {.category = "boundary",
      .description = "SIGTERM as soon as the socket appears",
      .expected = "a clean shutdown even before the attach loop is reached",
@@ -357,31 +428,49 @@ static const struct lifecycle_case cases[] = {
 };
 
 static const char *g_server;
-static char g_dir[256];
 
-/* Copy src to dst with each "@DIR@" replaced by the scratch directory. */
-static void expand_dir(const char *src, char *dst, size_t len)
+/*
+ * The scratch directory.  It's always under /tmp, not $TMPDIR: the server's
+ * socket goes in it, and a socket path has to fit the 108 bytes of sun_path.
+ */
+static char g_dir[] = "/tmp/ernic-lifecycle-XXXXXX";
+
+/*
+ * Copy src to dst with each "@DIR@" replaced by the scratch directory and
+ * each "@PORT@" by port.  Returns false if the result doesn't fit.
+ */
+static bool expand_backend(const char *src, uint16_t port, char *dst,
+                           size_t len)
 {
+    char port_str[8];
     size_t n = 0;
 
-    while (*src && n + 1 < len) {
-        if (strncmp(src, "@DIR@", 5) == 0) {
-            size_t dl = strlen(g_dir);
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    while (*src) {
+        const char *sub = NULL;
+        size_t skip = 1;
 
-            if (dl > len - 1 - n)
-                dl = len - 1 - n;
-            memcpy(dst + n, g_dir, dl);
-            n += dl;
-            src += 5;
-        } else {
-            dst[n++] = *src++;
+        if (strncmp(src, "@DIR@", 5) == 0) {
+            sub = g_dir;
+            skip = 5;
+        } else if (strncmp(src, "@PORT@", 6) == 0) {
+            sub = port_str;
+            skip = 6;
         }
+        size_t sl = sub ? strlen(sub) : 1;
+
+        if (sl >= len - n)
+            return false;
+        memcpy(dst + n, sub ? sub : src, sl);
+        n += sl;
+        src += skip;
     }
     dst[n] = '\0';
+    return true;
 }
 
-static pid_t start_server(const char *backend, const char *sock,
-                          const char *log)
+static pid_t start_server(const struct lifecycle_case *c, const char *backend,
+                          const char *sock, const char *log)
 {
     pid_t pid = fork();
 
@@ -389,6 +478,8 @@ static pid_t start_server(const char *backend, const char *sock,
         int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
         if (fd < 0)
+            _exit(126);
+        if (c->env_name && setenv(c->env_name, c->env_value, 1) < 0)
             _exit(126);
         dup2(fd, STDOUT_FILENO);
         dup2(fd, STDERR_FILENO);
@@ -436,7 +527,8 @@ static void describe_status(int status, char *buf, size_t len)
 static int run_case(size_t idx, const struct lifecycle_case *c)
 {
     char sock[320], log[320], backend[512], why[480] = "", got[64] = "";
-    int held[8], nheld = 0, status = 0;
+    int held[8], nheld = 0, status = 0, port_fd = -1;
+    uint16_t port = 0;
     bool ok = true;
     pid_t pid;
 
@@ -444,10 +536,30 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     snprintf(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
     unlink(sock);
 
-    expand_dir(c->backend, backend, sizeof(backend));
-    pid = start_server(backend, sock, log);
+    if (strstr(c->backend, "@PORT@")) {
+        port_fd = listen_ephemeral(&port);
+        if (port_fd < 0) {
+            printf("FAIL %s: %s; no free TCP port\n", c->category,
+                   c->description);
+            return 1;
+        }
+        if (!c->fake_manager) {
+            close(port_fd);
+            port_fd = -1;
+        }
+    }
+    if (!expand_backend(c->backend, port, backend, sizeof(backend))) {
+        printf("FAIL %s: %s; backend string too long\n", c->category,
+               c->description);
+        if (port_fd >= 0)
+            close(port_fd);
+        return 1;
+    }
+    pid = start_server(c, backend, sock, log);
     if (pid < 0) {
         printf("FAIL %s: %s; could not fork\n", c->category, c->description);
+        if (port_fd >= 0)
+            close(port_fd);
         return 1;
     }
 
@@ -533,6 +645,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
     for (int i = 0; i < nheld; i++)
         close(held[i]);
+    if (port_fd >= 0)
+        close(port_fd);
 
     if (ok && !exit_matches(status, c->want_exit)) {
         snprintf(why, sizeof(why), "%s (want %s)", got,
@@ -567,7 +681,6 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
 
 int main(int argc, char **argv)
 {
-    const char *tmp = getenv("TMPDIR");
     int failures = 0;
 
     if (argc != 2) {
@@ -579,8 +692,6 @@ int main(int argc, char **argv)
         printf("SKIP: server not found: %s\n", g_server);
         return 77;
     }
-    snprintf(g_dir, sizeof(g_dir), "%s/ernic-lifecycle-XXXXXX",
-             tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(g_dir)) {
         perror("mkdtemp");
         return 1;

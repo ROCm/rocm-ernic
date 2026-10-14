@@ -173,8 +173,11 @@ started with `qemu_thread_create()`.
   same lock.
 - **Every thread you start must be stoppable and joined.** Give it an
   atomic stop flag that it polls with a bounded timeout, and join it at
-  teardown. A thread that never returns hangs shutdown (see
-  [Adjacent issues](#adjacent-issues)).
+  teardown. A thread that never returns hangs shutdown. If it blocks, the
+  stop has to wake it: `tcp_stop_accept_thread()` in
+  `rdma_backend_tcp.c` shuts down the socket a thread is blocked on, and
+  `tcp_stop_health_check_thread()` signals the condition variable a thread
+  waits on between passes.
 - **Test concurrency with TSan, in both Debug and Release.** Configure
   with `-DERNIC_USE_THREAD_SANITIZER=ON`, which can't be combined with
   `ERNIC_USE_SANITIZERS`. For Debug, also pass
@@ -646,15 +649,6 @@ Observed alongside the GID bug, not yet diagnosed against the source:
   **not** confirmed against the code.
 - Node ids are assigned monotonically, so they are not stable across
   runs.
-- **A mesh node can hang on shutdown.** A worker sent SIGTERM logs
-  `TCP backend: Cleaning up` and then blocks in `tcp_fini()` on a futex
-  with its threads still alive — a join against a thread that never
-  returns. The process survives SIGTERM indefinitely and needs SIGKILL.
-  Only the TCP backend does this; a loopback server exits cleanly, which
-  is why `tests/test_ionic_ci.sh` can `kill` and `wait` while
-  `tests/test_tcp_mesh_ci.sh` has to bound its cleanup and escalate.
-  Anything that stops a mesh node — a test harness, systemd, `docker
-  stop` — pays a full termination timeout per node.
 
 Note that nodes are never evicted from `mesh_nodes` — a dead node is
 marked `is_alive = false` and reconnects under the same id — so the GID

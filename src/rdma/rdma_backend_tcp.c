@@ -29,7 +29,6 @@
 #include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <infiniband/verbs.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -538,7 +537,13 @@ struct TcpBackendPrivate {
 
     /* Multi-connection support */
     GHashTable *connections; /* node_id -> TcpConnection* */
-    QemuMutex conn_table_lock;
+    /*
+     * Connections the manager has accepted that haven't registered, or were
+     * refused.  Registration moves a connection from here to connections.
+     * Kept so teardown can stop their receive threads and free them.
+     */
+    GPtrArray *pending_conns;
+    QemuMutex conn_table_lock; /* Protects connections and pending_conns */
 
     /*
      * What each node says it owns: node_id -> TcpNodeGids.  This is the
@@ -587,7 +592,14 @@ struct TcpBackendPrivate {
     GHashTable *mesh_nodes; /* node_id -> MeshNodeInfo* */
     QemuMutex mesh_table_lock;
     QemuThread health_check_thread;
-    bool health_check_running;
+    /*
+     * Cleared under health_check_lock, with health_check_cond signalled, to
+     * stop the thread; see tcp_stop_health_check_thread().  The thread also
+     * reads it without the lock at the top of each pass.
+     */
+    atomic_bool health_check_running;
+    QemuMutex health_check_lock;
+    QemuCond health_check_cond;
     uint32_t health_check_interval_sec; /* Default: 5 seconds */
     uint32_t next_available_node_id;    /* For auto-assigning node IDs */
 
@@ -1994,8 +2006,9 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 g_hash_table_insert(priv->mesh_nodes,
                                     GUINT_TO_POINTER(assigned_id), node);
 
-                /* Add to connections table */
+                /* Move from the pending list to the connections table */
                 qemu_mutex_lock(&priv->conn_table_lock);
+                g_ptr_array_remove_fast(priv->pending_conns, conn);
                 g_hash_table_insert(priv->connections,
                                     GUINT_TO_POINTER(assigned_id), conn);
                 qemu_mutex_unlock(&priv->conn_table_lock);
@@ -2686,15 +2699,20 @@ static void *tcp_accept_thread(void *opaque)
             conn->priv = priv;
             qemu_mutex_init(&conn->lock);
 
-            /* Start receive thread - it will handle REGISTER_NODE */
+            /*
+             * Start receive thread - it will handle REGISTER_NODE, which
+             * moves the connection to the connections table.  It goes on
+             * the pending list first, under the lock, so the move can't
+             * happen before it's there.
+             */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
+            qemu_mutex_lock(&priv->conn_table_lock);
+            g_ptr_array_add(priv->pending_conns, conn);
             atomic_store(&conn->recv_thread_running, true);
             qemu_thread_create(&conn->recv_thread, thread_name,
                                tcp_recv_thread_per_conn, conn,
                                QEMU_THREAD_JOINABLE);
-
-            /* Connection will be added to table when REGISTER_NODE is received
-             */
+            qemu_mutex_unlock(&priv->conn_table_lock);
         } else {
             /* Worker mode: receive handshake to identify remote node */
             int retry_count = 0;
@@ -3000,7 +3018,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
 
     rdma_info_report("TCP: Manager health check thread started");
 
-    while (priv->health_check_running) {
+    while (atomic_load(&priv->health_check_running)) {
         qemu_mutex_lock(&priv->mesh_table_lock);
 
         GHashTableIter iter;
@@ -3123,8 +3141,24 @@ static void *tcp_manager_health_check_thread(void *opaque)
 
         qemu_mutex_unlock(&priv->mesh_table_lock);
 
-        /* Sleep for health check interval */
-        g_usleep(priv->health_check_interval_sec * G_USEC_PER_SEC);
+        /*
+         * Wait out the interval, or until tcp_stop_health_check_thread()
+         * clears the flag.  The flag is checked under the lock the stop
+         * holds while clearing it, so a stop can't slip in between the
+         * check and the wait and go unseen.
+         */
+        struct timespec deadline;
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += priv->health_check_interval_sec;
+        qemu_mutex_lock(&priv->health_check_lock);
+        while (atomic_load(&priv->health_check_running)) {
+            if (!qemu_cond_timedwait_until(&priv->health_check_cond,
+                                           &priv->health_check_lock,
+                                           &deadline)) {
+                break;
+            }
+        }
+        qemu_mutex_unlock(&priv->health_check_lock);
     }
 
     rdma_info_report("TCP: Manager health check thread exiting");
@@ -3192,30 +3226,18 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
 
     /* Wait for registration to complete (handled by receive thread) */
     qemu_mutex_lock(&priv->registration_mutex);
-    int timeout_sec = 5; /* 5 seconds */
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += timeout_sec;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += 5;
 
     while (!priv->registration_complete) {
-        /* Use pthread directly for timed wait */
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec &&
-                                             now.tv_nsec >= deadline.tv_nsec)) {
+        if (!qemu_cond_timedwait_until(&priv->registration_cond,
+                                       &priv->registration_mutex, &deadline) &&
+            !priv->registration_complete) {
             qemu_mutex_unlock(&priv->registration_mutex);
             rdma_error_report("TCP: Registration timeout");
             return -1;
         }
-        int wait_ret =
-            pthread_cond_timedwait(&priv->registration_cond.cond,
-                                   &priv->registration_mutex.lock, &deadline);
-        if (wait_ret == ETIMEDOUT) {
-            qemu_mutex_unlock(&priv->registration_mutex);
-            rdma_error_report("TCP: Registration timeout");
-            return -1;
-        }
-        /* If we were signaled, check registration_complete flag */
     }
 
     bool success = (tcp_local_node(priv) != 0);
@@ -3254,6 +3276,85 @@ static void tcp_stop_accept_thread(TcpBackendPrivate *priv)
     qemu_thread_join(&priv->accept_thread);
 }
 
+/*
+ * Stop the manager's health-check thread and wait for it.  The thread spends
+ * nearly all its time waiting out health_check_interval_sec, so clearing the
+ * flag alone would leave the join (and a SIGTERM shutdown) waiting up to that
+ * long; the signal ends the wait at once.  The flag is cleared under
+ * health_check_lock so the thread can't miss the signal.  A no-op when the
+ * thread was never started.
+ */
+static void tcp_stop_health_check_thread(TcpBackendPrivate *priv)
+{
+    if (!atomic_load(&priv->health_check_running)) {
+        return;
+    }
+    qemu_mutex_lock(&priv->health_check_lock);
+    atomic_store(&priv->health_check_running, false);
+    qemu_cond_signal(&priv->health_check_cond);
+    qemu_mutex_unlock(&priv->health_check_lock);
+    qemu_thread_join(&priv->health_check_thread);
+}
+
+/* Clear conn's stop flag and queue its thread for a join, if it's running. */
+static void tcp_claim_recv_thread(GPtrArray *batch, TcpConnection *conn)
+{
+    if (atomic_exchange(&conn->recv_thread_running, false)) {
+        g_ptr_array_add(batch, conn);
+    }
+}
+
+/*
+ * Stop every receive thread and wait for them, freeing nothing.  A receive
+ * thread can reach any connection, and the mesh and GID tables, through
+ * priv, so none of that may be freed while any of them still runs.  A
+ * running thread can also add a connection with a thread of its own (a
+ * worker connects to the peers in a topology update), so this repeats until
+ * a pass finds nothing left to stop.  The accept and health-check threads,
+ * which add connections too, must already be stopped.
+ */
+static void tcp_stop_recv_threads(TcpBackendPrivate *priv)
+{
+    for (;;) {
+        GPtrArray *batch = g_ptr_array_new();
+        GHashTableIter iter;
+        gpointer value;
+
+        qemu_mutex_lock(&priv->conn_table_lock);
+        g_hash_table_iter_init(&iter, priv->connections);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            tcp_claim_recv_thread(batch, value);
+        }
+        for (guint i = 0; i < priv->pending_conns->len; i++) {
+            tcp_claim_recv_thread(batch,
+                                  g_ptr_array_index(priv->pending_conns, i));
+        }
+        if (priv->manager_conn) {
+            tcp_claim_recv_thread(batch, priv->manager_conn);
+        }
+        qemu_mutex_unlock(&priv->conn_table_lock);
+
+        guint stopped = batch->len;
+        for (guint i = 0; i < stopped; i++) {
+            TcpConnection *conn = g_ptr_array_index(batch, i);
+            qemu_thread_join(&conn->recv_thread);
+        }
+        g_ptr_array_free(batch, TRUE);
+        if (stopped == 0) {
+            return;
+        }
+    }
+}
+
+/* Free the pending connections; their threads must already be stopped. */
+static void tcp_free_pending_conns(TcpBackendPrivate *priv)
+{
+    for (guint i = 0; i < priv->pending_conns->len; i++) {
+        tcp_connection_free(g_ptr_array_index(priv->pending_conns, i));
+    }
+    g_ptr_array_free(priv->pending_conns, TRUE);
+}
+
 static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 {
     TcpBackendPrivate *priv;
@@ -3275,6 +3376,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->pending_conns = g_ptr_array_new();
     priv->node_gids =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
@@ -3309,7 +3411,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     /* Initialize manager/worker fields */
     priv->is_manager = false;
     priv->mesh_nodes = NULL;
-    priv->health_check_running = false;
+    atomic_init(&priv->health_check_running, false);
+    qemu_mutex_init(&priv->health_check_lock);
+    qemu_cond_init(&priv->health_check_cond);
     /* tcp_env_int() only returns positive values */
     priv->health_check_interval_sec = (uint32_t)tcp_env_int(
         "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
@@ -3404,7 +3508,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
                            tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
 
         /* Start health check thread */
-        priv->health_check_running = true;
+        atomic_store(&priv->health_check_running, true);
         qemu_thread_create(&priv->health_check_thread, "tcp-health",
                            tcp_manager_health_check_thread, priv,
                            QEMU_THREAD_JOINABLE);
@@ -3488,10 +3592,11 @@ error:
     if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
     }
-    if (priv->health_check_running) {
-        priv->health_check_running = false;
-        qemu_thread_join(&priv->health_check_thread);
-    }
+    tcp_stop_health_check_thread(priv);
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
+    tcp_stop_recv_threads(priv);
+    tcp_free_pending_conns(priv);
     if (priv->mesh_nodes) {
         g_hash_table_destroy(priv->mesh_nodes);
     }
@@ -3532,10 +3637,9 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     rdma_info_report("TCP backend: Cleaning up");
 
     /* Stop health check thread (manager only) */
-    if (priv->health_check_running) {
-        priv->health_check_running = false;
-        qemu_thread_join(&priv->health_check_thread);
-    }
+    tcp_stop_health_check_thread(priv);
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
 
     tcp_stop_accept_thread(priv);
 
@@ -3544,6 +3648,10 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
         close(priv->listen_fd);
         priv->listen_fd = -1;
     }
+
+    /* Nothing below may be freed while a receive thread can still use it */
+    tcp_stop_recv_threads(priv);
+    tcp_free_pending_conns(priv);
 
     /* Clean up manager/worker specific resources */
     if (priv->mesh_nodes) {
@@ -3559,7 +3667,6 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
 
-    /* Clean up all connections (threads are stopped in tcp_connection_free) */
     g_hash_table_destroy(priv->connections);
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
