@@ -57,10 +57,9 @@ typedef struct dma_mapping {
 static void dma_mapping_free(gpointer data);
 
 static GHashTable *dma_map_table;
-static unsigned int dma_map_count;
 
 /*
- * Protects dma_map_table and dma_map_count.  Recursive so that
+ * Protects dma_map_table.  Recursive so that
  * g_hash_table_remove/replace value destructors and vfu_sgl_* paths
  * cannot deadlock if they re-enter map/sync/unmap on the same thread.
  */
@@ -78,7 +77,6 @@ static void dma_map_global_init(void)
 
     dma_map_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                           dma_mapping_free);
-    dma_map_count = 0;
 }
 
 static void dma_map_ensure(void)
@@ -423,7 +421,7 @@ void pvrdma_adminq_count(pvrdma_handle_t handle)
 }
 
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op op)
+                             uint64_t bytes, enum pvrdma_stat_op stat_op)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
     PVRDMAQPStats *qp;
@@ -434,7 +432,7 @@ void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
 
     qp = qp_id == PVRDMA_STAT_NO_QP ? NULL : pvrdma_get_qp_stats(pvrdma, qp_id);
 
-    switch (op) {
+    switch (stat_op) {
     case PVRDMA_STAT_SEND:
         pvrdma->stats.total_bytes_sent += bytes;
         if (qp) {
@@ -746,7 +744,6 @@ void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
     dma_map_ensure();
     DMA_MAP_LOCK();
     g_hash_table_replace(dma_map_table, host_addr, m);
-    dma_map_count = g_hash_table_size(dma_map_table);
     DMA_MAP_UNLOCK();
 
     return host_addr;
@@ -813,9 +810,7 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
     dma_map_ensure();
     DMA_MAP_LOCK();
 
-    if (g_hash_table_remove(dma_map_table, buffer)) {
-        dma_map_count = g_hash_table_size(dma_map_table);
-    } else {
+    if (!g_hash_table_remove(dma_map_table, buffer)) {
         rdma_debug_report(
             "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
             buffer);

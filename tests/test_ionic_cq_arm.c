@@ -242,12 +242,12 @@ void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
     (void)pvrdma_opcode;
 }
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op op)
+                             uint64_t bytes, enum pvrdma_stat_op stat_op)
 {
     (void)handle;
     (void)qp_id;
     (void)bytes;
-    (void)op;
+    (void)stat_op;
 }
 
 /* ---- Harness ----------------------------------------------------------- */
