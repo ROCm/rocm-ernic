@@ -279,7 +279,7 @@ static int run_case(const struct testcase *tc)
 
     memset(&priv, 0, sizeof(priv));
     priv.is_manager = true;
-    priv.local_node_id = 1;
+    atomic_store(&priv.local_node_id, 1);
     priv.mesh_nodes = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&priv.mesh_table_lock);
