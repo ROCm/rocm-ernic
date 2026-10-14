@@ -32,6 +32,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -47,20 +48,20 @@
 
 /* ---- Helpers ----------------------------------------------------------- */
 
-static void sleep_ms(long ms)
+static void sleep_ms(uint32_t ms)
 {
-    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000};
 
     while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
         ;
 }
 
-static long now_ms(void)
+static int64_t now_ms(void)
 {
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static bool path_is_socket(const char *path)
@@ -128,7 +129,7 @@ static int count_in_log(const char *path, const char *needle)
 
 static bool wait_for_log(const char *path, const char *needle, int count)
 {
-    long deadline = now_ms() + LOG_WAIT_MS;
+    int64_t deadline = now_ms() + LOG_WAIT_MS;
 
     while (now_ms() < deadline) {
         if (count_in_log(path, needle) >= count)
@@ -144,6 +145,7 @@ static bool sanitizer_reported(const char *path)
     static const char *const markers[] = {
         "ERROR: LeakSanitizer",
         "ERROR: AddressSanitizer",
+        "WARNING: ThreadSanitizer",
         "runtime error:",
     };
 
@@ -156,7 +158,7 @@ static bool sanitizer_reported(const char *path)
 /* waitpid() with a deadline; the server is SIGKILLed if it overstays. */
 static int wait_exit(pid_t pid, int *status)
 {
-    long deadline = now_ms() + EXIT_WAIT_MS;
+    int64_t deadline = now_ms() + EXIT_WAIT_MS;
 
     while (now_ms() < deadline) {
         pid_t r = waitpid(pid, status, WNOHANG);
@@ -400,7 +402,7 @@ static pid_t start_server(const char *backend, const char *sock,
 
 static bool wait_for_socket(pid_t pid, const char *sock)
 {
-    long deadline = now_ms() + SOCKET_WAIT_MS;
+    int64_t deadline = now_ms() + SOCKET_WAIT_MS;
 
     while (now_ms() < deadline) {
         if (path_is_socket(sock))
