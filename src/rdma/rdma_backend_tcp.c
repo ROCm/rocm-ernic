@@ -3102,6 +3102,37 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
     qemu_mutex_unlock(&priv->gid_broadcast_lock);
 }
 
+/*
+ * Stop conn's receive thread and close its socket, but leave conn allocated:
+ * it stays in the connections table, where other threads can still find it,
+ * until a new connection replaces it or teardown frees it.
+ *
+ * Safe to call again on a connection already retired.  The thread is joined
+ * only if this call is the one that clears its flag, as in
+ * tcp_claim_recv_thread(), and the socket is shut down before the join so a
+ * send the thread is blocked in can't hold it up.  The descriptor is closed
+ * under conn->lock because senders read conn->sockfd under that lock; one
+ * that read it just before an unlocked close could send on the descriptor
+ * after it was reused for another connection.
+ */
+static void tcp_retire_conn(TcpConnection *conn)
+{
+    if (atomic_exchange(&conn->recv_thread_running, false)) {
+        if (conn->sockfd >= 0) {
+            shutdown(conn->sockfd, SHUT_RDWR);
+        }
+        qemu_thread_join(&conn->recv_thread);
+    }
+
+    qemu_mutex_lock(&conn->lock);
+    if (conn->sockfd >= 0) {
+        close(conn->sockfd);
+    }
+    conn->sockfd = -1;
+    conn->is_connected = false;
+    qemu_mutex_unlock(&conn->lock);
+}
+
 /* Manager health check thread */
 static void *tcp_manager_health_check_thread(void *opaque)
 {
@@ -3170,16 +3201,16 @@ static void *tcp_manager_health_check_thread(void *opaque)
                             &priv->tcp_stats.reconnect_attempts, 1,
                             memory_order_relaxed);
 
-                        TcpConnection *old_conn = node->conn;
-
-                        if (old_conn) {
-                            atomic_store(&old_conn->recv_thread_running, false);
-                            qemu_thread_join(&old_conn->recv_thread);
-                            if (old_conn->sockfd >= 0) {
-                                close(old_conn->sockfd);
-                            }
-                            old_conn->sockfd = -1;
-                            old_conn->is_connected = false;
+                        /*
+                         * node->conn is cleared once the old connection is
+                         * retired, so if this reconnect fails below, the next
+                         * attempt doesn't find it and stop it again.  The
+                         * connections table still owns it until a new
+                         * connection replaces it.
+                         */
+                        if (node->conn) {
+                            tcp_retire_conn(node->conn);
+                            node->conn = NULL;
                         }
 
                         TcpConnection *new_conn = tcp_connection_new(

@@ -274,6 +274,15 @@
   started is closed instead of kept, and a node whose accept or health-check
   thread can't be started fails to initialize. `tcp-thread-stop-unit` covers
   it.
+* A TCP mesh manager whose reconnect to an unresponsive node fails no longer
+  stops that node's old connection a second time on the next attempt. It
+  joined the old receive thread again, which is undefined behavior and could
+  crash the manager or hang its health check. The old connection's socket is
+  also now shut down before its thread is joined, so a send the thread is
+  blocked in can't stall the reconnect, and closed under the connection's
+  lock, so a thread sending on that connection can't send on the descriptor
+  after it has been reused for another connection. `tcp-thread-stop-unit`
+  covers the failed reconnect.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
