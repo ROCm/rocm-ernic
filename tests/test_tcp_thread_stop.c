@@ -936,7 +936,9 @@ static int run_fini_case(const struct fini_case *c)
     if (c->block == BLOCK_HEARTBEAT) {
         TcpConnection *conn = tcp_get_connection(priv, 1);
 
-        if (!held_elsewhere(&conn->lock))
+        if (!conn)
+            why = "worker 1's connection is gone";
+        else if (!held_elsewhere(&conn->lock))
             why = "the health check never blocked on worker 1";
         goto stop;
     }
