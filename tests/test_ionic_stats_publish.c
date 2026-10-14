@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Pull in the code under test (including its static functions). */
@@ -121,7 +122,11 @@ static uint64_t guest_qword(uint64_t pa, unsigned int idx)
 
 static uint64_t counter(struct ionic_eth_emu *emu, unsigned int idx)
 {
-    return ionic_eth_emu_get_stats(emu)->lif[idx];
+    const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(emu);
+
+    if (!st)
+        abort(); /* only a NULL emu has no stats */
+    return st->lif[idx];
 }
 
 /* Bytes in [@pa, @pa + @len) still holding POISON. */
