@@ -248,6 +248,18 @@ typedef struct {
 } TcpNodeGids;
 
 /*
+ * View a GID array as const, for the functions that only read one.  Before
+ * C23, ISO C does not convert uint8_t (*)[16] to const uint8_t (*)[16]
+ * implicitly, because the const qualifies the array's elements rather than
+ * the array.  Taking the array through a typed parameter keeps its [16]
+ * shape checked, which a bare cast at each call site would not.
+ */
+static inline const uint8_t (*tcp_const_gids(uint8_t (*gids)[16]))[16]
+{
+    return (const uint8_t(*)[16])gids;
+}
+
+/*
  * TCP Backend Data Structures
  */
 
@@ -2067,11 +2079,13 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                  * them locally too: a QP whose destination is this node's own
                  * guest has to resolve to the local node, not fail.
                  */
-                tcp_gid_claims_set(priv, assigned_id, priv->local_gids,
+                tcp_gid_claims_set(priv, assigned_id,
+                                   tcp_const_gids(priv->local_gids),
                                    priv->num_local_gids);
 
                 TcpNodeGidsPayload mine;
-                tcp_fill_node_gids(&mine, assigned_id, priv->local_gids,
+                tcp_fill_node_gids(&mine, assigned_id,
+                                   tcp_const_gids(priv->local_gids),
                                    priv->num_local_gids);
                 tcp_send_node_gids(priv, conn, &mine);
                 break;
@@ -2920,7 +2934,8 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
     for (uint32_t i = 0; i < nodes; i++) {
         TcpNodeGidsPayload payload;
 
-        tcp_fill_node_gids(&payload, per_node[i].node_id, per_node[i].gids,
+        tcp_fill_node_gids(&payload, per_node[i].node_id,
+                           tcp_const_gids(per_node[i].gids),
                            per_node[i].num_gids);
 
         qemu_mutex_lock(&priv->conn_table_lock);
@@ -3265,7 +3280,8 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 
         /* The manager's id is fixed, so it can claim its GIDs immediately;
          * a worker has to wait for REGISTER_RESP. */
-        tcp_gid_claims_set(priv, 0, priv->local_gids, priv->num_local_gids);
+        tcp_gid_claims_set(priv, 0, tcp_const_gids(priv->local_gids),
+                           priv->num_local_gids);
 
         ret = parse_tcp_config_manager(config, &manager_host, &manager_port,
                                        &listen_mode);

@@ -22,7 +22,7 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wextra
 
         # Avoid non-standard C behavior
-        #-pedantic # TODO: Fix issues
+        -pedantic
 
         # Stack protection
         -fstack-clash-protection
@@ -119,7 +119,7 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
 
     if(compiler_version VERSION_GREATER_EQUAL 10)
         set(flags
-            #-Warith-conversion # TODO: Fix issues
+            -Warith-conversion
             ${flags}
         )
     endif()
