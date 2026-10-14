@@ -18,6 +18,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -285,6 +286,95 @@ static void test_reply_peer_round_trip(void)
     ok(name);
 }
 
+/*
+ * Two limits bound the code s3_reply_format() can send, and they are not
+ * the same.  The parser reads back at most three digits, so only 0-999
+ * survives the trip and anything else goes out as 500.  The buffer is
+ * looser: S3_REPLY_MAX leaves seven bytes ahead of the token, room for
+ * six digits (or a sign and five) and the colon, so a code past that
+ * would have run the token off the end.  The cases sit on both sides of
+ * each limit, plus INT_MIN and INT_MAX.
+ *
+ * The reply is written into a larger buffer whose tail holds a known
+ * pattern, so an overrun past S3_REPLY_MAX fails here in any build rather
+ * than only under ASan.  INT_MIN, the longest, would overrun by five.
+ */
+static void test_reply_format_codes(void)
+{
+    const char *name = "reply-format-codes";
+    enum { GUARD = 16 };
+
+    static const struct {
+        int in;
+        int want;
+    } cases[] = {
+        /* Sent as given. */
+        {0, 0},
+        {1, 1},
+        {99, 99},
+        {100, 100},
+        {200, 200},
+        {999, 999},
+        /* Would fit the buffer, but not the parser. */
+        {-1, 500},
+        {1000, 500},
+        {-99999, 500},
+        {999999, 500},
+        /* Would fit neither. */
+        {-100000, 500},
+        {1000000, 500},
+        {INT_MIN, 500},
+        {INT_MAX, 500},
+    };
+
+    struct s3_token peer, back;
+    char hex[S3_TOKEN_HEX_LEN + 1];
+
+    if (!s3_token_decode(REF_HEX, &peer)) {
+        fail(name, "decode rejected the reference token");
+        return;
+    }
+    s3_token_encode(&peer, hex);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const int in = cases[i].in;
+        char buf[S3_REPLY_MAX + GUARD];
+        char want[sizeof(buf)];
+        int code = 0;
+
+        memset(buf, '#', sizeof(buf));
+        s3_reply_format(in, &peer, buf);
+
+        bool overran = false;
+        for (size_t j = S3_REPLY_MAX; j < sizeof(buf); j++)
+            overran = overran || buf[j] != '#';
+        if (overran) {
+            fail(name, "code %d: wrote past S3_REPLY_MAX", in);
+            continue;
+        }
+        /* Comparing the NUL too means @buf is a string once this passes. */
+        snprintf(want, sizeof(want), "%d:%s", cases[i].want, hex);
+        if (memcmp(buf, want, strlen(want) + 1) != 0) {
+            fail(name, "code %d: formatted\n  %.*s\nwant\n  %s", in,
+                 S3_REPLY_MAX, buf, want);
+            continue;
+        }
+
+        if (!s3_reply_parse_peer(buf, strlen(buf), &back, &code)) {
+            fail(name, "code %d: could not parse \"%s\"", in, buf);
+            continue;
+        }
+        if (code != cases[i].want)
+            fail(name, "code %d: read back as %d, want %d", in, code,
+                 cases[i].want);
+        if (memcmp(&back, &peer, sizeof(peer)) != 0)
+            fail(name, "code %d: peer token did not survive the round trip",
+                 in);
+    }
+
+    ok(name);
+}
+
 static void test_gid_ipv4(void)
 {
     const char *name = "gid-ipv4";
@@ -326,6 +416,7 @@ int main(void)
     test_parse_header_bare_and_bad();
     test_reply_codes();
     test_reply_peer_round_trip();
+    test_reply_format_codes();
     test_gid_ipv4();
 
     if (failures)
