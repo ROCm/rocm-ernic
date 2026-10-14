@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <errno.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -208,6 +209,23 @@ void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
  */
 void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
                                        const char *connection_str);
+
+/**
+ * pvrdma_set_stats_nic_profile - Set the NIC profile for stats display
+ * @handle:  Device handle
+ * @profile: the profile chain and hash, e.g. "compat (hash 0x...)" (may be
+ *           NULL; shown as "(not set)" in stats file)
+ */
+void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile);
+
+/**
+ * pvrdma_set_stats_section - Add a section to the stats file
+ * @handle: Device handle
+ * @fn:     writes the section, after "Device Statistics" (NULL removes it)
+ * @opaque: passed to @fn
+ */
+void pvrdma_set_stats_section(pvrdma_handle_t handle,
+                              void (*fn)(FILE *fp, void *opaque), void *opaque);
 
 /**
  * pvrdma_inc_stats_reset_count - Increment device reset count for stats

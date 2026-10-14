@@ -10,6 +10,8 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -33,6 +35,15 @@ typedef void (*ionic_rdma_devcmd_fn_t)(void *opaque, const uint8_t *cmd,
 struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx,
                                            size_t bar2_size);
 void ionic_eth_emu_destroy(struct ionic_eth_emu *emu);
+
+/*
+ * Give the device the identity and link of @profile (ionic_profile.h)
+ * instead of compat.  Call before any client connects: the guest reads the
+ * identity once, at probe.
+ */
+struct ionic_profile;
+void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
+                               const struct ionic_profile *profile);
 
 /* Register the RDMA devcmd handler (called before any client connects). */
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
@@ -108,6 +119,36 @@ void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
  */
 int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
                                  size_t len);
+
+/*
+ * Rewrite struct ionic_lif_stats in the guest's LIF info block if
+ * stats.interval_ms has passed since the last write, by @now_ms (any
+ * monotonic millisecond clock).  The first call after LIF_INIT writes at
+ * once; nothing is written before LIF_INIT or after LIF_RESET or a device
+ * reset.  Main loop thread only.
+ */
+void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms);
+
+struct ionic_emu_stats;
+
+/*
+ * The counters behind the published block, with the off-thread ones folded
+ * in, for the --stats-file writer.  Main loop thread only.
+ */
+const struct ionic_emu_stats *ionic_eth_emu_get_stats(
+    struct ionic_eth_emu *emu);
+
+/*
+ * Write the "LIF Statistics" section of the --stats-file: every named
+ * counter of struct ionic_lif_stats, by its ionic_if.h name, zero or not, so
+ * the set of lines never changes.  @opaque is the struct ionic_eth_emu; the
+ * signature matches pvrdma_set_stats_section().  Main loop thread only.
+ */
+void ionic_eth_emu_write_stats(FILE *fp, void *opaque);
+
+/* Count one RDMA message of @bytes in the LIF's tx/rx_rdma_ucast_* stats. */
+void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
+                              bool is_tx);
 
 /*
  * Move any frames waiting on the host backend or on the off-thread queue

@@ -52,10 +52,27 @@ from a real fuzz run under ASan without rebuilding via Nix:
 |---|---|---|
 | `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
+| `fuzz_profile_parse` | `ionic_profile_apply_text()`, the `--nic-profile` ini loader | Pure text parser; checks a rejected layer changes nothing and an accepted one is in range and round-trips through `--print-profile` output |
+| `fuzz_eth_classify` | `ionic_emu_mac_class()` and `ionic_eth_flow_hash()`, the per-frame MAC class and Rx steering hash | Pure functions of the frame bytes; checks the class against a reference, the hash is stable, below 12 bytes is empty, and does not change when an 802.1Q tag is added to a frame with fewer than two |
 
 Inputs are copied into an exact-size heap buffer before each call, so
 AddressSanitizer flags any read the parser performs past the supplied
 length.
+
+`fuzz_profile_parse` layers arbitrary bytes onto the `compat` profile. A
+rejected layer must leave a message and the profile exactly as it was; an
+accepted one must leave every value in its documented range, and its
+printed form must read back to the same values and hash. Its
+`LLVMFuzzerInitialize()` first runs a table of seed profiles (positive,
+negative, boundary and corner rows, each with a description and expected
+outcome) through the same checks, and aborts if any row fails, so the
+oracle is tested on every run. With `FUZZ_EMIT_SEEDS=<dir>` it writes the
+seeds out as a corpus; the Nix build does that for every harness marked
+`seeds = true`.
+
+`fuzz_eth_classify` checks its own seed table the same way: well-formed,
+tagged, fragmented and truncated frames, each with the kind of hash it
+should produce (L3, or the L2 hash of the two MACs).
 
 ## Not yet fuzzed (device-fixture required)
 

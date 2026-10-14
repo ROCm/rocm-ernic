@@ -84,3 +84,24 @@ ernic_add_fuzz_replay(rdma_cm_proto
 
 # net_headers.h is header-only, so this harness links no extra sources.
 ernic_add_fuzz_replay(net_headers)
+
+# The NIC profile loader is pure text handling. Like the parsers above it
+# needs no device, and it checks a seed table in LLVMFuzzerInitialize()
+# before replaying.
+ernic_add_fuzz_replay(profile_parse
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_compile_definitions(fuzz_replay_profile_parse PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# The per-frame MAC class and Rx steering hash: pure functions of the frame
+# bytes, with their own seed table.
+ernic_add_fuzz_replay(eth_classify
+    ${CMAKE_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_eth_steer.c
+)
+target_compile_definitions(fuzz_replay_eth_classify PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)

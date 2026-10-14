@@ -10,6 +10,10 @@
 # Harnesses target the genuinely self-contained parsers:
 #   fuzz_rdma_cm_proto   rdma_cm_process_message() — pure TCP-payload parser
 #   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
+#   fuzz_profile_parse   ionic_profile_apply_text() — the --nic-profile ini
+#                        loader
+#   fuzz_eth_classify    ionic_emu_mac_class() + ionic_eth_flow_hash() — the
+#                        per-frame MAC class and Rx steering hash
 #
 # Deliberately NOT fuzzed here: the ionic devcmd and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
 # through rdma_pci_dma_map() and manipulate the RDMA resource manager, so a
@@ -32,7 +36,9 @@ let
 
   symbolizer = "${lib.getBin pkgs.llvm}/bin/llvm-symbolizer";
 
-  # name -> extra .c files linked alongside nix/analysis/fuzz/fuzz_<name>.c
+  # name -> extra .c files linked alongside nix/analysis/fuzz/fuzz_<name>.c,
+  # and whether the harness writes its own seed corpus (FUZZ_EMIT_SEEDS,
+  # from the seed table it checks at startup).
   #
   # These targets are opt-in, so tests/nix/CMakeLists.txt also builds every
   # harness against a plain main() during the ordinary CMake build to keep
@@ -45,6 +51,12 @@ let
       ]; }
     { name = "net_headers";
       extra = [ ]; }
+    { name = "profile_parse";
+      extra = [ "src/ionic_profile.c" "src/ionic_profiles.c" ];
+      seeds = true; }
+    { name = "eth_classify";
+      extra = [ "src/ionic_emu_stats.c" "src/ionic_eth_steer.c" ];
+      seeds = true; }
   ];
 
   names = map (h: h.name) harnesses;
@@ -59,6 +71,10 @@ let
     # A trivial seed so each corpus starts non-empty.
     mkdir -p "out/corpus/${h.name}"
     printf '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0' > "out/corpus/${h.name}/seed0"
+  '' + lib.optionalString (h.seeds or false) ''
+    # The harness checks its seed table at startup and writes it out as a
+    # corpus; a failing seed fails the build.
+    FUZZ_EMIT_SEEDS="out/corpus/${h.name}" "out/bin/fuzz_${h.name}" -runs=0
   '') harnesses;
 
   # writeShellApplication so it is shellcheck-checked and self-contained
