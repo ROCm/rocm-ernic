@@ -166,6 +166,49 @@ void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id);
  */
 void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
 
+/* Device totals, as reported to the guest by the ionic STATS_VALS command. */
+struct pvrdma_dev_counters {
+    uint64_t commands;
+    uint64_t total_bytes_sent;
+    uint64_t total_bytes_received;
+    uint64_t total_bytes_rdma_read;
+    uint64_t total_bytes_rdma_write;
+};
+
+/* One QP's counters, as reported by the ionic QP_STATS_VALS command. */
+struct pvrdma_qp_counters {
+    uint64_t doorbell_send;
+    uint64_t doorbell_recv;
+    uint64_t wqes_processed;
+    uint64_t cqes_posted;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+    uint64_t bytes_rdma_read;
+    uint64_t bytes_rdma_write;
+};
+
+/**
+ * pvrdma_get_dev_counters - Snapshot the device totals
+ * @handle: Device handle
+ * @out: Filled on success, zeroed on failure
+ *
+ * Returns 0, or -EINVAL for a NULL handle or @out.
+ */
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out);
+
+/**
+ * pvrdma_get_qp_counters - Snapshot one QP's counters
+ * @handle: Device handle
+ * @qp_id: QP to read
+ * @out: Filled on success, zeroed on failure
+ *
+ * A QP that has not counted anything yet reads as all zeros; this does not
+ * create an entry for it.  Returns 0, or -EINVAL for a NULL handle or @out.
+ */
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out);
+
 /*
  * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
  */

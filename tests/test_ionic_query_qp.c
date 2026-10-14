@@ -255,6 +255,14 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     (void)length;
     (void)buf;
 }
+void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
+                                  uint32_t qp_id,
+                                  uint64_t out[IONIC_DP_RDMA_COUNT])
+{
+    (void)dp;
+    (void)qp_id;
+    memset(out, 0, IONIC_DP_RDMA_COUNT * sizeof(out[0]));
+}
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
 {
     (void)dp;
@@ -292,6 +300,24 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
 {
     (void)handle;
     (void)qp_id;
+}
+/* Not exercised here; a variable so the handler's error paths stay live. */
+static int g_counters_rc;
+
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out)
+{
+    (void)handle;
+    memset(out, 0, sizeof(*out));
+    return g_counters_rc;
+}
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out)
+{
+    (void)handle;
+    (void)qp_id;
+    memset(out, 0, sizeof(*out));
+    return g_counters_rc;
 }
 
 /* ---- Test helpers ------------------------------------------------------ */

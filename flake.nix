@@ -157,6 +157,10 @@
           libvfio-user = libvfioUser;
           default = rocm-ernic;
 
+          # Guest tool: RDMA errors on an ionic_rdma device, checked against
+          # hw_counters. See tests/guest/ernic_rdma_errors.c.
+          ernic-rdma-errors = pkgs.callPackage ./nix/rdma-errors.nix { };
+
           # Compilation database (consumed by clang-tidy / cppcheck).
           compile-db = analysis.compileDb;
 

@@ -32,6 +32,25 @@ target_link_libraries(test_data_transfer PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
+# -- ernic-rdma-errors (guest tool; requires libibverbs) ---------
+# Run in a guest on an ionic_rdma device, not by ctest: it makes the RDMA
+# errors the emulator counts happen and checks hw_counters moved.
+add_executable(ernic-rdma-errors
+    guest/ernic_rdma_errors.c
+)
+target_compile_definitions(ernic-rdma-errors PRIVATE
+    _GNU_SOURCE
+)
+target_include_directories(ernic-rdma-errors PRIVATE
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_link_directories(ernic-rdma-errors PRIVATE
+    ${IBVERBS_LIBRARY_DIRS}
+)
+target_link_libraries(ernic-rdma-errors PRIVATE
+    ${IBVERBS_LIBRARIES}
+)
+
 # -- test_rdma_cm (requires libibverbs) --------------------------
 add_executable(test_rdma_cm
     test_rdma_cm.c
@@ -361,6 +380,41 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 target_compile_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# ionic hardware statistics test. Like the QUERY_QP test it #includes the
+# admin queue translation unit and backs DMA with a plain buffer, so the
+# header table and values the driver builds hw_counters from can be checked.
+add_executable(test_ionic_stats test_ionic_stats.c)
+target_include_directories(test_ionic_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_stats PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
+# ionic RDMA error-counter test. It #includes the datapath translation unit
+# and fakes guest memory, the mesh and the clock, so each error path runs
+# end to end with no vfio-user link and the RNR and pending-timeout rows sit
+# exactly on their boundaries.
+add_executable(test_ionic_dp_errors test_ionic_dp_errors.c)
+target_include_directories(test_ionic_dp_errors PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_dp_errors SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_dp_errors PRIVATE _GNU_SOURCE)
+target_compile_options(test_ionic_dp_errors PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_dp_errors PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_libraries(test_ionic_dp_errors PRIVATE pthread)
+
 # ionic CQ arm-semantics test. It #includes the datapath translation unit to
 # reach the private CQ state and counts the event callback in-process, so no
 # vfio-user link or guest memory is needed.
@@ -563,7 +617,9 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_query_qp
+    test_ionic_stats
     test_ionic_cq_arm
+    test_ionic_dp_errors
     test_tcp_mesh_topology
     test_tcp_gid_resolve
     test_tcp_mr_bounds
@@ -734,6 +790,15 @@ add_test(
 )
 set_tests_properties(ionic-query-qp-unit PROPERTIES TIMEOUT 30)
 
+# ionic hardware statistics unit test: asserts the four stats admin commands
+# answer with the header table and LE64 values the driver turns into its
+# hw_counters files, clamped to the buffer, and fail on an unknown QP.
+add_test(
+    NAME ionic-stats-unit
+    COMMAND $<TARGET_FILE:test_ionic_stats>
+)
+set_tests_properties(ionic-stats-unit PROPERTIES TIMEOUT 30)
+
 # ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
 # raises the event immediately, rather than waiting for a CQE that never comes.
 add_test(
@@ -741,6 +806,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_cq_arm>
 )
 set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
+
+# ionic RDMA error-counter unit test: asserts each RDMA error the data path
+# hands the guest moves exactly the hw_counters it names, on the device and
+# on the QP involved, and nothing else.
+add_test(
+    NAME ionic-dp-errors-unit
+    COMMAND $<TARGET_FILE:test_ionic_dp_errors>
+)
+set_tests_properties(ionic-dp-errors-unit PROPERTIES TIMEOUT 30)
 
 # TCP mesh-topology broadcast unit test: asserts the unused node slots in the
 # fixed-size payload are zeroed rather than carrying stack contents.

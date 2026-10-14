@@ -184,6 +184,12 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_RDMA_QP_OPCODES    16
 #define IONIC_RDMA_ADMIN_OPCODES 19
 
+/* rdma.stats_type: enum ionic_lif_rdma_stat_type in ionic_if.h.  Without a
+ * bit set the driver never sends STATS_HDRS / QP_STATS_HDRS, so the guest
+ * gets no hw_counters directory and no rdma statistic qp counters. */
+#define IONIC_LIF_RDMA_STAT_GLOBAL 0x1u
+#define IONIC_LIF_RDMA_STAT_QP     0x2u
+
 /* Page table and MR counts for emulated device */
 /* 2M page table entries. This is the knob that sets the guest's maximum
  * memory-region size, and it is not obvious from here, so: the driver does
@@ -1095,6 +1101,12 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(eq + 4, &u, 4);
     u = le32(0);
     memcpy(eq + 8, &u, 4);
+
+    /* stats_type (le16) at rdma+92, straight after eq_qtype. */
+#define LIF_ID_RDMA_STATS_TYPE_OFF (32 + 5 * QTYPE_SZ)
+    uint16_t stats_type =
+        le16((uint16_t)(IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP));
+    memcpy(rdma + LIF_ID_RDMA_STATS_TYPE_OFF, &stats_type, 2);
 
     comp[0] = 0; /* status OK */
     comp[1] = 1; /* version   */
