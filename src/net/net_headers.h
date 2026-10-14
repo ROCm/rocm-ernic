@@ -11,6 +11,7 @@
 #ifndef NET_HEADERS_H
 #define NET_HEADERS_H
 
+#include <arpa/inet.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -110,26 +111,6 @@ struct udp_header {
 #define UDP_PORT_DHCP_CLIENT 68
 
 /* Helper functions */
-static inline uint16_t ntohs(uint16_t val)
-{
-    return (uint16_t)(((val & 0xFF00) >> 8) | ((val & 0x00FF) << 8));
-}
-
-static inline uint16_t htons(uint16_t val)
-{
-    return ntohs(val);
-}
-
-static inline uint32_t ntohl(uint32_t val)
-{
-    return ((val & 0xFF000000) >> 24) | ((val & 0x00FF0000) >> 8) |
-           ((val & 0x0000FF00) << 8) | ((val & 0x000000FF) << 24);
-}
-
-static inline uint32_t htonl(uint32_t val)
-{
-    return ntohl(val);
-}
 
 /* Parse Ethernet header from frame */
 static inline bool parse_eth_header(void *frame, size_t len,

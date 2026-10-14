@@ -22,12 +22,11 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <limits.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <syslog.h>
 #include <getopt.h>
-#include <assert.h>
 #include <time.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -41,6 +40,8 @@
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "ionic_eth_emu.h"
+#include "ionic_rdma_devcmd.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #include "rocm-ernic-warnings.h"

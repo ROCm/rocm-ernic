@@ -14,9 +14,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <errno.h>
-
-#include <vfio-user/libvfio-user.h>
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;

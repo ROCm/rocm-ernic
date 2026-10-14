@@ -32,12 +32,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
 #include <endian.h>
 #include <sys/mman.h>
+#include <sys/uio.h>
 #include <pthread.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -46,6 +46,7 @@
 #include "ionic_eth_net.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
+#include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
 /* -------------------------------------------------------------------------

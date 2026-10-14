@@ -37,11 +37,13 @@
 #include <pthread.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
+#include "nvmeof.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
 #include "rocm_ernic_compat.h"

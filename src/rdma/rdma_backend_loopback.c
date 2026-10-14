@@ -15,19 +15,23 @@
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
+#include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
+#include "exec/memory.h"
 #include "hw/rdma/rdma.h"    /* For rdma_pci_dma_map/unmap */
 #include "hw/pci/pci.h"      /* For PCIDevice and pci_dma_sync */
 #include "hw/pci/pci_regs.h" /* For PVRDMA_DEV */
 #include "vmw/pvrdma.h"      /* For PVRDMADev and stats */
 #include "pvrdma_comp_ctx.h"
 #include "vmw/pvrdma_qp_ops.h"
+#include "qemu/thread.h"
 #include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 #include <glib.h>
 #include <stdio.h>
-#include <limits.h>
 #include <stdlib.h>
 #include <infiniband/verbs.h>
 

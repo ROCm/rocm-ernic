@@ -303,6 +303,63 @@ them and where their configuration files are picked up.
   pass with undefined behavior in its output. See [Tests](#tests) for the
   TSan `setarch` wrapper and the ASan timeouts, and
   [Thread safety](#thread-safety) for the TSan build flags.
+- **include-what-you-use (IWYU)** (`apt install iwyu`; needs CMake 3.27 or
+  later): it prints the `#include` lines it suggests adding or removing for
+  each file as the build compiles it. IWYU parses with its own clang, which
+  rejects options it doesn't know, such as GCC 15's
+  `-fzero-init-padding-bits`, so configure a separate build directory with
+  the clang that IWYU is built on, whose version
+  `include-what-you-use --version` prints. To see the suggestions in the
+  build output:
+
+  ```bash
+  cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
+    -DERNIC_USE_IWYU=ON
+  cmake --build build-iwyu
+  ```
+
+  To check the build as CI does, which collects every IWYU run, fails if
+  IWYU itself failed on any file (a parse error or an option it rejected),
+  and lists the files with suggestions, run IWYU through the wrapper:
+
+  ```bash
+  cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
+    -DERNIC_USE_IWYU=ON -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
+  mkdir build-iwyu/iwyu-runs
+  ERNIC_IWYU_LOG_DIR="$PWD/build-iwyu/iwyu-runs" cmake --build build-iwyu
+  ci/iwyu/check-iwyu.sh build-iwyu/iwyu-runs
+  ```
+
+  The build doesn't rerun IWYU on files that are already up to date, so
+  start from an empty build directory, or `ninja -C build-iwyu -t clean`,
+  and an empty `iwyu-runs`. The vendored sources in `third-party/` are
+  skipped.
+
+  Unlike the other checks, IWYU doesn't have to report nothing, since some
+  of its suggestions are wrong. Make the suggestions that are right for the
+  files you touch, such as adding a header for a symbol the file uses but
+  only gets indirectly. That includes removing `<stdint.h>` from a file
+  that includes `<inttypes.h>`, which C11 requires to include it. Ignore
+  the wrong ones and leave the code as it is. These are wrong:
+  - Adding a forward declaration, such as `struct nvmeof_cm;`, of a
+    module's opaque type to a file that includes the module's header,
+    which already declares it.
+  - Anything for a test that `#include`s the translation unit under test
+    (for example, `test_tcp_mesh_topology.c` includes
+    `rdma/rdma_backend_tcp.c`). The test gets its declarations from that
+    file's includes on purpose, and IWYU asks it to repeat them.
+  - Naming an internal header instead of the public one, or insisting on
+    one of several headers that repeat a typedef (C11 allows that, and the
+    QEMU compatibility headers in `src/qemu-compat/include/` do it for
+    `PCIDevice`, `dma_addr_t`, and others). Fix these with a mapping in
+    [`cmake/iwyu-libc.imp`](cmake/iwyu-libc.imp) or
+    [`cmake/iwyu-ernic.imp`](cmake/iwyu-ernic.imp), or with an
+    `// IWYU pragma: export` on the include in the header that should
+    provide the symbol, as `hw/pci/pci.h` does for `hw/pci/pci_device.h`.
+
+  CI ([iwyu.yml](.github/workflows/iwyu.yml)) runs IWYU but only fails if
+  IWYU itself stops working. It lists the files with suggestions in the job
+  summary without failing.
 - **Static analysis** (clang-tidy, cppcheck, flawfinder, and the Clang
   static analyzer, through the Nix toolkit in `nix/analysis/`) runs on a
   PR when it has the `run-static` label

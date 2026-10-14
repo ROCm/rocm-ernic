@@ -27,6 +27,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "nvmeof.h"
 #include "nvmeof_target.h"
 
 #define HOST_BUF_SIZE (256 * 1024)

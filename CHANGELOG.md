@@ -64,6 +64,12 @@
   `src/` after `ctest`. The Build and Test workflow has a coverage leg that
   fails below a floor, and on `develop` publishes the figure for the README's
   Coverage badge.
+* `-DERNIC_USE_IWYU=ON` runs include-what-you-use on rocm-ernic's own sources
+  as they compile, which prints suggestions for `#include` lines to add or
+  remove. The suggestions don't fail the build. It needs CMake 3.27 or later
+  and is best built with the clang that IWYU is built on. The new IWYU
+  workflow runs it on every change to the C sources and lists the
+  suggestions, failing only if IWYU itself fails.
 * rocm-ernic can be built as part of another CMake project with
   `add_subdirectory()`. When it is, it leaves the build type to the parent
   project instead of defaulting it to `Debug`. The CTest `cmake-subproject`
