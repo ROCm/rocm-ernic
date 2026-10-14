@@ -1,0 +1,44 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# The guest image pin, checked rather than asked for politely.
+#
+# tools/check-guest-image-tag.sh existed but nothing ran it, so the comment
+# in ci/guest-image.env promising it "fails the build if a literal tag
+# reappears" was not true -- a reintroduced copy would be caught only by a
+# lane quietly testing an older guest, which presents as a flaky backend
+# rather than as a stale pin.
+#
+# Its own workflow, and deliberately with no paths filter. The check greps
+# the whole tree, so a stray pin can arrive in any file; gating it on a
+# paths list would excuse exactly the files most likely to carry one --
+# ansible/, ci/, tools/ and the lane workflows, none of which appear in
+# build-and-test.yml's filter, where this job used to live. codespell.yml
+# is the precedent: a tree-wide check takes a tree-wide trigger.
+name: rocm-ernic - Guest image pin
+
+on:
+  pull_request:
+    branches: [ develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guest-image-pin:
+    name: Guest image pin is single-sourced
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: No literal guest image tag outside ci/guest-image.env
+        run: tools/check-guest-image-tag.sh

@@ -62,6 +62,13 @@ enum ionic_v1_admin_op {
     IONIC_V1_ADMIN_DESTROY_AH = 16,
     IONIC_V1_ADMIN_QP_STATS_HDRS = 17,
     IONIC_V1_ADMIN_QP_STATS_VALS = 18,
+    /* 19-25 reserved upstream for series in flight (RCQ and friends); the
+     * SRQ opcodes were assigned explicitly at 26 and must keep those
+     * numbers. See enum ionic_v1_admin_op in the kernel's ionic_fw.h. */
+    IONIC_V1_ADMIN_CREATE_SRQ = 26,
+    IONIC_V1_ADMIN_MODIFY_SRQ = 27,
+    IONIC_V1_ADMIN_QUERY_SRQ = 28,
+    IONIC_V1_ADMIN_DESTROY_SRQ = 29,
 };
 
 /*
@@ -102,6 +109,10 @@ enum ionic_v1_admin_op {
 #define MAX_AQ     4
 #define MAX_CQ_MAP 256
 #define MAX_QP_MAP 256
+/* Tied to the advertised ceiling, not merely equal to it today: max_srq comes
+ * from IONIC_EMU_SRQ_COUNT, and a map smaller than that silently loses the
+ * mappings for every SRQ past the end. */
+#define MAX_SRQ_MAP IONIC_EMU_SRQ_COUNT
 /*
  * One entry per region the rdma_rm table can hold.  At 256 against a
  * 1024-entry table, every MR past the 256th was created successfully and then
@@ -142,6 +153,11 @@ struct ionic_adminq_ctx {
     /* pvrdma handle for calling ionic_rm_* compat wrappers. */
     pvrdma_handle_t pvrdma_handle;
 
+    /* Bytes a handler DMA'd into the command's response buffer, for the
+     * completion's status_length. Reset before every dispatch; only the
+     * handlers that write a response set it. */
+    uint32_t resp_len;
+
     /* Raises an EQ event once a CQE has been written. */
     ionic_adminq_cq_event_fn_t cq_event_fn;
     void *cq_event_opaque;
@@ -167,6 +183,31 @@ struct ionic_adminq_ctx {
         uint32_t mr_id;
         uint32_t handle;
     } mr_map[MAX_MR_MAP];
+
+    /*
+     * SRQs differ from every map above: WE pick the id, not the driver.
+     * The LIF identity advertises IONIC_LIF_RDMA_ALLOC_QID_SRQ, which tells
+     * the driver that firmware allocates SRQ qids, so CREATE_SRQ carries the
+     * driver's qid only as a hint and takes the real one out of the DMA'd
+     * response (ionic_controlpath.c: srq->rq.qid = le32_to_cpu(resp_buf->id)).
+     * adminq_alloc_srq() is that allocator, and the slot index below is the
+     * id: see the comment there for why it is not a counter.
+     */
+    struct ionic_srq_map_entry {
+        bool valid;
+        uint32_t srq_id;
+        uint32_t handle;
+        /*
+         * Ours, not the resource manager's. rdma_rm_modify_srq() rejects a
+         * limit of 0 outright (rdma_rm.c), but 0 is the legal value meaning
+         * "no low-watermark", and the guest driver accepts it -- so routing
+         * every limit through the resource manager turned a valid
+         * ibv_modify_srq(srq_limit=0) into an error. The resource manager
+         * never does anything with the value either way: nothing reads it
+         * back except QUERY_SRQ, which now reads this.
+         */
+        uint32_t srq_limit;
+    } srq_map[MAX_SRQ_MAP];
 
     /* ionic allocates protection domains entirely in the driver, so no PD
      * ever reaches us.  rdma_rm still needs one, so share a single backend PD
@@ -211,6 +252,79 @@ static void adminq_map_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
     }
     vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: CQ map full, cq_id=%u",
             cq_id);
+}
+
+/*
+ * Allocate an SRQ id and its map entry together, and derive the id from the
+ * slot that holds it.
+ *
+ * The id has to land inside the datapath's SRQ table, which is indexed by
+ * srq_id - IONIC_SRQ_QID_BASE and holds IONIC_EMU_SRQ_COUNT entries. Taking
+ * the id from the slot index makes that true by construction: every id this
+ * can return is in range, and an id is reusable the moment DESTROY_SRQ frees
+ * its slot.
+ *
+ * The counter this replaced was monotonic -- ++next_srq_id, decremented only
+ * when the map was full and never on destroy -- so it drifted upwards with
+ * churn rather than with live SRQs. After 255 cumulative creates it handed
+ * out IONIC_SRQ_QID_BASE + 256, one past the table; srq_by_qid() returned
+ * NULL, registration silently did nothing, and CREATE_SRQ still reported
+ * success. It also started at +1, so slot 0 was never used at all.
+ *
+ * False when the map is full, and the caller must fail the command on it. A
+ * warning is not enough: CREATE_SRQ would still return the id it allocated,
+ * so the guest would hold an SRQ that every later lookup misses -- posts go
+ * nowhere and the failure surfaces as a hang in the datapath rather than as
+ * an error from the verb that caused it.
+ */
+static bool adminq_alloc_srq(struct ionic_adminq_ctx *ctx, uint32_t handle,
+                             uint32_t srq_limit, uint32_t *srq_id)
+{
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
+        if (ctx->srq_map[i].valid)
+            continue;
+        *srq_id = IONIC_SRQ_QID_BASE + i;
+        ctx->srq_map[i] = (struct ionic_srq_map_entry){.valid = true,
+                                                       .srq_id = *srq_id,
+                                                       .handle = handle,
+                                                       .srq_limit = srq_limit};
+        return true;
+    }
+    vfu_log(ctx->vfu_ctx, LOG_WARNING,
+            "ionic_adminq: SRQ map full at %u SRQs, refusing",
+            (unsigned)MAX_SRQ_MAP);
+    return false;
+}
+
+static struct ionic_srq_map_entry *adminq_srq_entry(
+    struct ionic_adminq_ctx *ctx, uint32_t srq_id)
+{
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
+        if (ctx->srq_map[i].valid && ctx->srq_map[i].srq_id == srq_id)
+            return &ctx->srq_map[i];
+    }
+    return NULL;
+}
+
+static bool adminq_lookup_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
+                              uint32_t *handle)
+{
+    const struct ionic_srq_map_entry *e = adminq_srq_entry(ctx, srq_id);
+
+    if (!e)
+        return false;
+    *handle = e->handle;
+    return true;
+}
+
+static void adminq_unmap_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id)
+{
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
+        if (ctx->srq_map[i].valid && ctx->srq_map[i].srq_id == srq_id) {
+            ctx->srq_map[i].valid = false;
+            return;
+        }
+    }
 }
 
 static bool adminq_lookup_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
@@ -455,12 +569,20 @@ static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
  * at -- the WQEs themselves never name one.
  *
  * Fills @dgid with the destination GID (IPv4 in the ::ffff:a.b.c.d mapped
- * form the rest of the stack expects) and @dmac with the destination MAC.
+ * form the rest of the stack expects), @sgid with the source GID from the
+ * same header, and @dmac with the destination MAC.
+ *
+ * The source is worth taking: it is the guest's own GID for the sgid_index
+ * the driver resolved, and it is the only place this emulator can learn it.
+ * A UD datagram leaving for another instance has to carry it in the GRH, and
+ * the alternative -- reusing the destination -- tells the receiver that it
+ * sent the datagram to itself.
+ *
  * Returns 1 on success, 0 if the template could not be parsed.
  */
 static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
                                  uint32_t len, uint8_t dgid[16],
-                                 uint8_t dmac[6])
+                                 uint8_t sgid[16], uint8_t dmac[6])
 {
     uint8_t hdr[128];
 
@@ -482,20 +604,25 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
     }
     off += 2;
 
-    if (ethertype == 0x0800) { /* IPv4: daddr at +16 */
+    if (ethertype == 0x0800) { /* IPv4: saddr at +12, daddr at +16 */
         if (off + 20 > len)
             return 0;
         memset(dgid, 0, 16);
         dgid[10] = 0xff;
         dgid[11] = 0xff;
         memcpy(dgid + 12, hdr + off + 16, 4);
+        memset(sgid, 0, 16);
+        sgid[10] = 0xff;
+        sgid[11] = 0xff;
+        memcpy(sgid + 12, hdr + off + 12, 4);
         return 1;
     }
 
-    if (ethertype == 0x86dd) { /* IPv6: daddr at +24 */
+    if (ethertype == 0x86dd) { /* IPv6: saddr at +8, daddr at +24 */
         if (off + 40 > len)
             return 0;
         memcpy(dgid, hdr + off + 24, 16);
+        memcpy(sgid, hdr + off + 8, 16);
         return 1;
     }
 
@@ -511,7 +638,7 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
 
 static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
                            struct ionic_aq_ring *r, uint16_t cmd_idx,
-                           uint8_t cmd_op, uint8_t status)
+                           uint8_t cmd_op, uint8_t status, uint32_t resp_len)
 {
     /* ionic_v1_cqe layout for admin completions (32 bytes, see ionic_fw.h):
      *   [0:1]   be16 cmd_idx  — AQ consumer index this completes
@@ -529,7 +656,16 @@ static void post_admin_cqe(struct ionic_adminq_ctx *ctx,
     memcpy(cqe + 0, &ci, 2);
     cqe[2] = cmd_op;
 
-    uint32_t sl = htobe32(status ? ((uint32_t)status << 24) : 0);
+    /* status_length is one field doing two jobs: the status in bits[31:24]
+     * when the error bit is set, and otherwise the number of response bytes
+     * written. Returning 0 on success is not "no length given" to a driver
+     * that reads it -- ionic_create_srq_cmd() compares it against
+     * IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN and reports EOPNOTSUPP when it is
+     * short, so a successful CREATE_SRQ surfaced in the guest as
+     * ibv_create_srq() returning "Operation not supported" on a device that
+     * had just handled the command. The ops that DMA no response still send
+     * 0, which is their correct length. */
+    uint32_t sl = htobe32(status ? ((uint32_t)status << 24) : resp_len);
     memcpy(cqe + 24, &sl, 4);
 
     /* qid_type_flags: bit 0 = color, bit 1 = error, bits[7:5] = type
@@ -687,6 +823,341 @@ static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
     }
 }
 
+/*
+ * CREATE_SRQ (opcode 26)
+ *
+ * struct ionic_admin_create_srq, 42 bytes:
+ *   le64 dma_addr        [0:7]    page table of the SRQ ring
+ *   le32 map_count       [8:11]
+ *   le32 pd_id           [12:15]
+ *   le32 qid             [16:19]  driver's hint; we assign the real one
+ *   le16 dbid            [20:21]
+ *   le16 low_wqes_limit  [22:23]  srq_limit -- the SRQ_LIMIT event watermark
+ *   le16 flags           [24:25]  IONIC_SRQF_CMB
+ *   u8   depth_log2      [26]
+ *   u8   stride_log2     [27]
+ *   u8   page_size_log2  [28]
+ *   u8   udma_mask       [29]
+ *   le32 resp_buf_len    [30:33]
+ *   le64 resp_dma_addr   [34:41]
+ *
+ * The response is DMA'd rather than returned in the completion:
+ *   struct ionic_admin_create_srq_resp, 5 bytes: le32 id, u8 udma_idx
+ */
+#define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24u
+#define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4u
+#define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42u
+#define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5u
+/* type_state is the last field, at [62], so the body runs to 63 -- see the
+ * layout above handle_create_qp_op(). The guard there read 60, which covers
+ * id_ver at [56:59] and nothing after it, so a 60-byte body still had its
+ * QP type taken from three bytes the guest never sent. */
+#define IONIC_ADMIN_CREATE_QP_IN_V1_LEN 63u
+
+/* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. The driver
+ * rejects a create whose max_sge exceeds it, so the two have to agree. */
+/* IONIC_MAX_SRQ_SGES now lives in rocm_ernic_compat.h. */
+
+/*
+ * Undo a partly built SRQ. Safe at any point after the id is allocated:
+ * ionic_datapath_unregister_srq() does nothing for a slot that was never
+ * registered, so the one helper serves every failure path and none of them
+ * can forget a piece.
+ */
+static void adminq_srq_unwind(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
+                              uint32_t srq_handle)
+{
+    ionic_datapath_unregister_srq(ctx->dp, srq_id);
+    ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
+    adminq_unmap_srq(ctx, srq_id);
+}
+
+static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
+                                    const uint8_t *body, uint16_t len)
+{
+    if (!ctx->pvrdma_handle) {
+        vfu_log(ctx->vfu_ctx, LOG_WARNING,
+                "ionic_adminq CREATE_SRQ: no pvrdma_handle (stub ok)");
+        return 0;
+    }
+    if (len < IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ: short body (%u)", len);
+        return 1;
+    }
+
+    uint16_t low_wqes_limit;
+    uint32_t resp_buf_len;
+    uint64_t resp_dma_addr;
+    memcpy(&low_wqes_limit, body + 22, 2);
+    memcpy(&resp_buf_len, body + 30, 4);
+    memcpy(&resp_dma_addr, body + 34, 8);
+
+    /*
+     * Bound the ring geometry before anything shifts by it. body[26..28] are
+     * guest bytes: 1u << body[26] with body[26] >= 32 is undefined behaviour
+     * in C, reachable from a single malformed WQE, and body[27] reaches the
+     * receive path as the stride that decides how much of a WQE to walk.
+     * Refuse the command rather than clamping -- a driver that asks for a
+     * geometry the device never advertised is wrong, and silently giving it
+     * a different one produces a queue neither side agrees about.
+     */
+    if (body[26] > IONIC_SRQ_MAX_DEPTH_LOG2 ||
+        body[27] > IONIC_SRQ_MAX_STRIDE_LOG2 ||
+        body[27] < IONIC_SRQ_MIN_STRIDE_LOG2) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ: refusing depth_log2=%u "
+                "stride_log2=%u (depth max %u, stride %u..%u)",
+                body[26], body[27], IONIC_SRQ_MAX_DEPTH_LOG2,
+                IONIC_SRQ_MIN_STRIDE_LOG2, IONIC_SRQ_MAX_STRIDE_LOG2);
+        return 1;
+    }
+
+    uint32_t pd_handle;
+    int ret = adminq_get_pd(ctx, &pd_handle);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ: rdma_rm_alloc_pd failed (%d)", ret);
+        return 1;
+    }
+
+    /* max_sge is the device's IONIC_MAX_SRQ_SGES; the ring geometry gives
+     * the depth. Bounded above, so the shift is defined. */
+    uint32_t max_wr = 1u << body[26];
+    uint32_t srq_handle;
+    ret = ionic_rm_alloc_srq(ctx->pvrdma_handle, pd_handle, max_wr,
+                             IONIC_MAX_SRQ_SGES, le16toh(low_wqes_limit),
+                             &srq_handle);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ: rdma_rm_alloc_srq failed (%d)", ret);
+        return 1;
+    }
+
+    /* Above the QP id space: there is no SRQ doorbell qtype, so the guest's
+     * RQ doorbell carries either a QP id or this, and only the range tells
+     * them apart. See IONIC_SRQ_QID_BASE. */
+    uint32_t srq_id;
+    if (!adminq_alloc_srq(ctx, srq_handle, le16toh(low_wqes_limit), &srq_id)) {
+        ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
+        return 1;
+    }
+
+    /*
+     * Give the datapath the ring, not just the resource. The guest posts
+     * receives into this ring and rings a doorbell on the SRQ qtype; without
+     * the registration that doorbell lands on an unknown queue and every
+     * posted receive is lost, which shows up as a SEND to an SRQ-bound QP
+     * hanging with nothing logged here. The id is ours, not the guest's
+     * qid field: the driver adopts what CREATE_SRQ returns as srq->rq.qid
+     * and uses it for both the doorbell and CREATE_QP's srq reference.
+     *
+     * Its failure is the command's failure. Reporting success for an SRQ
+     * with no receive ring hands the guest a queue that accepts posts and
+     * completes nothing -- the silent hang this whole feature exists to
+     * remove, arriving by a different road.
+     */
+    {
+        uint32_t srq_map_count;
+        uint64_t srq_dma;
+        memcpy(&srq_map_count, body + 8, 4);
+        memcpy(&srq_dma, body + 0, 8);
+        struct ionic_dp_ring_desc srq_ring = {
+            .buf = {.dma_addr = le64toh(srq_dma),
+                    .map_count = le32toh(srq_map_count),
+                    .page_size_log2 = body[28]},
+            .depth_log2 = body[26],
+            .stride_log2 = body[27],
+        };
+        int reg = ionic_datapath_register_srq(ctx->dp, srq_id, &srq_ring);
+        if (reg) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_SRQ %u: datapath registration failed "
+                    "(%d)",
+                    srq_id, reg);
+            adminq_srq_unwind(ctx, srq_id, srq_handle);
+            return 1;
+        }
+    }
+
+    /*
+     * Hand the id back by DMA. The driver adopts what this returns as
+     * srq->rq.qid and names it in every later MODIFY, QUERY and DESTROY, so
+     * an SRQ whose id never reaches the guest is one the guest can neither
+     * use nor free: it occupies a table slot until the device is reset, and
+     * 256 of them exhaust the table.
+     *
+     * That makes an unusable response buffer the command's failure, not
+     * something to skip past. Reporting success without writing the id left
+     * the driver holding the zero its buffer came with, which names SRQ id
+     * IONIC_SRQ_QID_BASE + 0 -- a real and probably someone else's queue.
+     */
+    if (le32toh(resp_buf_len) < IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN ||
+        !resp_dma_addr) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_SRQ %u: response buffer is %u bytes at "
+                "%#" PRIx64 ", need %u at a non-zero address; the driver "
+                "could not learn the id",
+                srq_id, le32toh(resp_buf_len), le64toh(resp_dma_addr),
+                IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
+        adminq_srq_unwind(ctx, srq_id, srq_handle);
+        return 1;
+    }
+
+    {
+        uint8_t resp[IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN] = {0};
+        uint32_t id_le = htole32(srq_id);
+        memcpy(resp, &id_le, 4);
+        resp[4] = 0; /* udma_idx: single udma in this emulation */
+        if (dma_write(ctx->vfu_ctx, le64toh(resp_dma_addr), resp,
+                      sizeof(resp)) < 0) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_SRQ %u: response DMA failed", srq_id);
+            adminq_srq_unwind(ctx, srq_id, srq_handle);
+            return 1;
+        }
+        /* What the driver compares against
+         * IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN before trusting resp_buf. */
+        ctx->resp_len = IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN;
+    }
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO,
+            "ionic_adminq CREATE_SRQ srq_id=%u handle=%u depth=2^%u limit=%u",
+            srq_id, srq_handle, body[26], le16toh(low_wqes_limit));
+    return 0;
+}
+
+/* MODIFY_SRQ (27): le32 qid, le16 low_wqes_limit */
+static uint8_t handle_modify_srq_op(struct ionic_adminq_ctx *ctx,
+                                    const uint8_t *body, uint16_t len)
+{
+    if (!ctx->pvrdma_handle)
+        return 0;
+    if (len < 6) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq MODIFY_SRQ: short body (%u)", len);
+        return 1;
+    }
+
+    uint32_t qid;
+    uint16_t low_wqes_limit;
+    memcpy(&qid, body + 0, 4);
+    memcpy(&low_wqes_limit, body + 4, 2);
+    qid = le32toh(qid);
+
+    struct ionic_srq_map_entry *e = adminq_srq_entry(ctx, qid);
+    if (!e) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq MODIFY_SRQ: unknown id %u",
+                qid);
+        return 1;
+    }
+
+    uint32_t limit = le16toh(low_wqes_limit);
+
+    /*
+     * Zero disables the low-watermark and is a legal value; the resource
+     * manager rejects it, so it never goes there. Non-zero still does, to
+     * keep its copy from drifting for anything that reads the backend
+     * object directly.
+     *
+     * NOTE: setting the limit is all that happens. Raising
+     * IBV_EVENT_SRQ_LIMIT_REACHED when the queue drains past it would need
+     * an asynchronous event channel to the guest, and this emulator has
+     * none -- the only path to the driver is a CQ completion through an EQ.
+     * A consumer that arms the watermark and waits for the event will wait
+     * forever. UCX's rc_verbs does not: it refills from its own accounting.
+     */
+    if (limit) {
+        int ret = ionic_rm_modify_srq(ctx->pvrdma_handle, e->handle, limit);
+        if (ret) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq MODIFY_SRQ %u: failed (%d)", qid, ret);
+            return 1;
+        }
+    }
+    e->srq_limit = limit;
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO,
+            "ionic_adminq MODIFY_SRQ srq_id=%u limit=%u", qid, limit);
+    return 0;
+}
+
+/* QUERY_SRQ (28): le32 qid. Attributes are read back through the resource
+ * manager; the driver keeps its own copy of depth and sge, so this exists to
+ * confirm the queue is live rather than to transport them. */
+static uint8_t handle_query_srq_op(struct ionic_adminq_ctx *ctx,
+                                   const uint8_t *body, uint16_t len)
+{
+    if (!ctx->pvrdma_handle)
+        return 0;
+    if (len < 4) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq QUERY_SRQ: short body (%u)", len);
+        return 1;
+    }
+
+    uint32_t qid;
+    memcpy(&qid, body + 0, 4);
+    qid = le32toh(qid);
+
+    const struct ionic_srq_map_entry *e = adminq_srq_entry(ctx, qid);
+    if (!e) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_SRQ: unknown id %u",
+                qid);
+        return 1;
+    }
+
+    uint32_t max_wr = 0, max_sge = 0, rm_limit = 0;
+    if (ionic_rm_query_srq(ctx->pvrdma_handle, e->handle, &max_wr, &max_sge,
+                           &rm_limit)) {
+        return 1;
+    }
+
+    /* The limit comes from the map, not from rm_limit: a limit of 0 never
+     * reaches the resource manager, so its copy would read back as whatever
+     * was set last rather than as "disabled". */
+    vfu_log(ctx->vfu_ctx, LOG_INFO,
+            "ionic_adminq QUERY_SRQ srq_id=%u max_wr=%u max_sge=%u limit=%u",
+            qid, max_wr, max_sge, e->srq_limit);
+    return 0;
+}
+
+/* DESTROY_SRQ (29): le32 qid */
+static uint8_t handle_destroy_srq_op(struct ionic_adminq_ctx *ctx,
+                                     const uint8_t *body, uint16_t len)
+{
+    if (!ctx->pvrdma_handle)
+        return 0;
+    if (len < 4) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq DESTROY_SRQ: short body (%u)", len);
+        return 1;
+    }
+
+    uint32_t qid;
+    memcpy(&qid, body + 0, 4);
+    qid = le32toh(qid);
+
+    uint32_t handle;
+    if (!adminq_lookup_srq(ctx, qid, &handle)) {
+        /* Not an error worth failing the command for: a destroy of something
+         * already gone is harmless, and the driver cannot retry it usefully. */
+        vfu_log(ctx->vfu_ctx, LOG_WARNING,
+                "ionic_adminq DESTROY_SRQ: unknown id %u", qid);
+        return 0;
+    }
+
+    /* Drop the ring before the resource: a receive in flight on another
+     * thread takes the SRQ lock, and unregister clears valid under it. */
+    ionic_datapath_unregister_srq(ctx->dp, qid);
+
+    ionic_rm_dealloc_srq(ctx->pvrdma_handle, handle);
+    adminq_unmap_srq(ctx, qid);
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq DESTROY_SRQ srq_id=%u", qid);
+    return 0;
+}
+
 static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
@@ -695,9 +1166,10 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
                 "ionic_adminq CREATE_QP: no pvrdma_handle (stub ok)");
         return 0;
     }
-    if (len < 60) {
+    if (len < IONIC_ADMIN_CREATE_QP_IN_V1_LEN) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_QP: short body (%u)", len);
+                "ionic_adminq CREATE_QP: short body (%u, need %u)", len,
+                IONIC_ADMIN_CREATE_QP_IN_V1_LEN);
         return 1;
     }
 
@@ -718,6 +1190,31 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_QP %u: unknown cq (sq=%u rq=%u)", qp_id,
                 sq_cq_id, rq_cq_id);
+        return 1;
+    }
+
+    /*
+     * rq_tbl_index_srq_id is overloaded: ~0 means "no SRQ", anything else
+     * is the SRQ's qid. Only an SRQ we actually created will do --
+     * ionic_datapath_bind_qp_srq() checks the range but not whether
+     * anything lives at it, since srq_by_qid() returns the slot either way,
+     * and a QP bound to an empty slot has no receive ring at all: it
+     * accepts receives and completes none of them.
+     *
+     * Checked here, before anything is allocated, rather than at the bind
+     * below. Refusing after ionic_rm_alloc_qp(), adminq_map_qp() and
+     * ionic_datapath_register_qp() have run would leak a backend QP and
+     * leave qp_id mapped on every rejected command, so a guest could
+     * exhaust the table with commands the device is busy refusing.
+     */
+    uint32_t rq_tbl_index_srq_id;
+    memcpy(&rq_tbl_index_srq_id, body + 40, 4);
+    rq_tbl_index_srq_id = le32toh(rq_tbl_index_srq_id);
+    if (rq_tbl_index_srq_id != 0xffffffffu &&
+        !adminq_srq_entry(ctx, rq_tbl_index_srq_id)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: names unknown SRQ %u", qp_id,
+                rq_tbl_index_srq_id);
         return 1;
     }
 
@@ -768,6 +1265,16 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     ionic_datapath_register_qp(ctx->dp, qp_id, ib_qp_type, sq_cq_id, &sq,
                                rq_cq_id, &rq);
 
+    /*
+     * The id was read and checked before any of the above was allocated.
+     * ~0 means "no SRQ"; anything else named an SRQ that exists, and the
+     * driver left every rq_* field zero because the QP has no receive ring
+     * of its own. Binding is what sends its receives to the shared ring;
+     * without it the QP would draw from an empty RQ and never complete one.
+     */
+    if (rq_tbl_index_srq_id != 0xffffffffu)
+        ionic_datapath_bind_qp_srq(ctx->dp, qp_id, rq_tbl_index_srq_id);
+
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_QP qp_id=%u qpn=%u type=%u sq_cq=%u/%u "
             "rq_cq=%u/%u pd=%u",
@@ -781,10 +1288,93 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
  * -------------------------------------------------------------------------
  */
 
+/* -------------------------------------------------------------------------
+ * Address handles
+ * -------------------------------------------------------------------------
+ */
+
+/*
+ *   le64 dma_addr      [0:7]    RoCE header template from ib_ud_header_pack
+ *   le32 length        [8:11]   its length
+ *   le32 pd_id         [12:15]
+ *   le32 id_ver        [16:19]  ah_id in the low 24 bits
+ *   le16 dbid_flags    [20:21]
+ *   u8   csum_profile  [22]
+ *   u8   crypto        [23]
+ *
+ * The template is the only statement of where the handle points; a UD send
+ * WQE carries just the id. Parsing it once here is what lets the datapath
+ * resolve a datagram's destination node without re-reading guest memory on
+ * every send.
+ */
+static uint8_t handle_create_ah_op(struct ionic_adminq_ctx *ctx,
+                                   const uint8_t *body, uint16_t len)
+{
+    if (len < IONIC_ADMIN_CREATE_AH_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_AH: short body (%u)", len);
+        return 1;
+    }
+
+    uint64_t hdr_dma;
+    uint32_t hdr_len, id_ver;
+    memcpy(&hdr_dma, body + 0, 8);
+    memcpy(&hdr_len, body + 8, 4);
+    memcpy(&id_ver, body + 16, 4);
+    hdr_dma = le64toh(hdr_dma);
+    hdr_len = le32toh(hdr_len);
+    uint32_t ah_id = le32toh(id_ver) & 0x00ffffffu;
+
+    uint8_t dgid[16] = {0};
+    uint8_t sgid[16] = {0};
+    uint8_t dmac[6] = {0};
+    bool dgid_valid = false;
+    if (hdr_len && hdr_dma)
+        dgid_valid =
+            adminq_parse_roce_hdr(ctx, hdr_dma, hdr_len, dgid, sgid, dmac);
+
+    /*
+     * An unparsable template is not fatal. A handle naming a peer inside
+     * this instance needs no address -- the datagram is routed by its QPN --
+     * so refusing the create would break the local case to protect the
+     * remote one. Register it without a node and let the send path complain
+     * if it ever needs an address it has not got.
+     */
+    uint32_t node =
+        dgid_valid ? ionic_dp_node_from_gid(ctx->dp, dgid) : UINT32_MAX;
+
+    ionic_datapath_register_ah(ctx->dp, ah_id, dgid_valid ? dgid : NULL,
+                               dgid_valid ? sgid : NULL,
+                               dgid_valid ? dmac : NULL, node);
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq CREATE_AH %u: node %u%s",
+            ah_id, node, dgid_valid ? "" : " (no address in the RoCE header)");
+    return 0;
+}
+
+static uint8_t handle_destroy_ah_op(struct ionic_adminq_ctx *ctx,
+                                    const uint8_t *body, uint16_t len)
+{
+    if (len < IONIC_ADMIN_DESTROY_AH_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq DESTROY_AH: short body (%u)", len);
+        return 1;
+    }
+
+    uint32_t ah_id;
+    memcpy(&ah_id, body + 0, 4);
+    ah_id = le32toh(ah_id) & 0x00ffffffu;
+
+    ionic_datapath_unregister_ah(ctx->dp, ah_id);
+    return 0;
+}
+
 static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                             const uint8_t *body, uint16_t len)
 {
     vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq: WQE op=%u len=%u", op, len);
+
+    ctx->resp_len = 0;
 
     switch (op) {
     case IONIC_V1_ADMIN_NOOP:
@@ -795,6 +1385,18 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
     case IONIC_V1_ADMIN_CREATE_QP:
         return handle_create_qp_op(ctx, body, len);
+
+    case IONIC_V1_ADMIN_CREATE_SRQ:
+        return handle_create_srq_op(ctx, body, len);
+
+    case IONIC_V1_ADMIN_MODIFY_SRQ:
+        return handle_modify_srq_op(ctx, body, len);
+
+    case IONIC_V1_ADMIN_QUERY_SRQ:
+        return handle_query_srq_op(ctx, body, len);
+
+    case IONIC_V1_ADMIN_DESTROY_SRQ:
+        return handle_destroy_srq_op(ctx, body, len);
 
     case IONIC_V1_ADMIN_CREATE_MR: {
         if (len < 45 || !ctx->pvrdma_handle) {
@@ -989,6 +1591,7 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         bool dgid_valid = false;
         uint64_t ah_dma;
         uint8_t dgid[16] = {0};
+        uint8_t sgid[16] = {0}; /* parsed but unused here; see CREATE_AH */
         uint8_t dmac[6] = {0};
 
         memcpy(&ah_id_len, body + 32, 4);
@@ -999,7 +1602,7 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         uint32_t hdr_len = ah_id_len >> 24;
         if (hdr_len && ah_dma)
             dgid_valid =
-                adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, dmac);
+                adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, sgid, dmac);
 
         if (dgid_valid)
             vfu_log(ctx->vfu_ctx, LOG_DEBUG,
@@ -1008,6 +1611,15 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     qp_id, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5],
                     dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
                     dgid[14], dgid[15]);
+
+        /*
+         * IB_QP_QKEY: the same field, read the other way. The datapath needs
+         * it because a datagram is only delivered into a QP that presents
+         * that QP's Q_Key -- without it the destination QPN alone selected
+         * any queue in the device, including other processes' and GSI.
+         */
+        if (attr_mask & (1u << 6))
+            ionic_datapath_set_qkey(ctx->dp, qp_id, qkey_dest_qpn);
 
         /* IB_QP_DEST_QPN: the driver names the peer by its own qpid, but the
          * backend routes on its QPNs.  For UD this field is the qkey instead,
@@ -1149,13 +1761,19 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
     }
 
     case IONIC_V1_ADMIN_CREATE_AH:
-    case IONIC_V1_ADMIN_QUERY_AH:
+        return handle_create_ah_op(ctx, body, len);
+
     case IONIC_V1_ADMIN_DESTROY_AH:
-        /* Remaining opcodes: stub */
+        return handle_destroy_ah_op(ctx, body, len);
+
+    case IONIC_V1_ADMIN_QUERY_AH:
+        /* Still a stub, and harmlessly so: the driver only issues it to read
+         * back a header template it already has, and nothing here consumes
+         * the result. CREATE_AH is the one that had to be real. */
         (void)body;
         (void)len;
-        vfu_log(ctx->vfu_ctx, LOG_WARNING,
-                "ionic_adminq: op=%u stub (succeeds)", op);
+        vfu_log(ctx->vfu_ctx, LOG_DEBUG,
+                "ionic_adminq: QUERY_AH stub (succeeds)");
         return 0;
 
     case IONIC_V1_ADMIN_STATS_HDRS:
@@ -1236,7 +1854,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             uint16_t cmd_idx = (uint16_t)slot;
             uint8_t status =
                 dispatch_wqe(ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
-            post_admin_cqe(ctx, r, cmd_idx, op, status);
+            post_admin_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
             pvrdma_adminq_count(ctx->pvrdma_handle);
 
             /* Never write back to guest WQE memory — the driver owns the ring.

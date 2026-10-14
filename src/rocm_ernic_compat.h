@@ -257,6 +257,34 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe,
 void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle);
 
 /**
+ * ionic_rm_alloc_srq - Allocate a shared receive queue
+ * @pd_handle: protection domain the SRQ belongs to
+ * @srq_limit: low-watermark at which the device raises an SRQ_LIMIT event
+ * @srq_handle: output: allocated SRQ handle
+ */
+int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+                       uint32_t *srq_handle);
+
+/**
+ * ionic_rm_dealloc_srq - Free a shared receive queue
+ */
+void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle);
+
+/**
+ * ionic_rm_modify_srq - Change an SRQ's low-watermark
+ */
+int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                        uint32_t srq_limit);
+
+/**
+ * ionic_rm_query_srq - Read back an SRQ's attributes
+ */
+int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+                       uint32_t *max_wr, uint32_t *max_sge,
+                       uint32_t *srq_limit);
+
+/**
  * ionic_rm_alloc_pd - Allocate a protection domain
  */
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);
@@ -349,6 +377,79 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  * agree.
  */
 #define IONIC_MESH_MAX_MSG (16u << 20)
+
+/*
+ * SRQ sizing, shared because three places have to agree and nothing else
+ * makes them: ionic_eth_emu.c puts the count in the LIF identity (it
+ * becomes the guest's max_srq verbatim), rdma_backend_tcp.c sizes
+ * rdma_rm's SRQ table from it, and ionic_adminq.c reports the SGE limit
+ * in CREATE_SRQ. A count advertised to the guest but not reflected in the
+ * table is not a smaller ceiling -- it is a table of size zero, so the
+ * first ibv_create_srq() fails EINVAL on a device claiming max_srq=32768.
+ *
+ * 256 because that is what every table behind it can actually hold. This was
+ * 1<<15, which no table matched: ionic_adminq.c tracks the id->handle mapping
+ * in a fixed 256-entry array, so the 257th CREATE_SRQ stored nothing and still
+ * handed the guest an id -- a live SRQ id that no later lookup could resolve.
+ * An advertised ceiling is a promise the admin path has to keep, and the
+ * cheapest way to keep it is to promise what the smallest table holds.
+ *
+ * Raising this is fine, but raise the adminq map with it: that map is scanned
+ * linearly, so a large value wants an indexed lookup rather than a bigger
+ * scan. The ids are dense (IONIC_SRQ_QID_BASE + n), so indexing is easy when
+ * it is needed.
+ */
+#define IONIC_EMU_SRQ_COUNT 256u
+
+/*
+ * SRQ ids start above the QP id space, and they have to.
+ *
+ * There is no separate SRQ doorbell qtype: ionic_post_recv_common() rings
+ * lif_cfg.rq_qtype for an SRQ exactly as it does for a QP's own RQ, so a
+ * qtype-7 doorbell carries either a QP id or an SRQ id and the device has to
+ * tell them apart by the number alone. The two come from different
+ * allocators -- the driver allocates QP ids itself, while SRQ ids are
+ * firmware-assigned (IONIC_LIF_RDMA_ALLOC_QID_SRQ; there is no equivalent
+ * bit for QPs) -- so without a disjoint range they would collide, and an SRQ
+ * doorbell would be credited to whichever QP shared its number.
+ *
+ * The guest's QP ids are bounded by the qp_count in the LIF identity, so
+ * starting SRQ ids at that bound keeps the two apart with no table to
+ * consult.
+ */
+#define IONIC_EMU_QP_COUNT_SHARED (1u << 15)
+#define IONIC_SRQ_QID_BASE        IONIC_EMU_QP_COUNT_SHARED
+
+/* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
+#define IONIC_MAX_SRQ_SGES 2
+
+/*
+ * Ceilings for the ring geometry exponents a guest may ask for.
+ *
+ * These are shift counts taken straight off the admin queue, so they are
+ * attacker-controlled in the only sense that matters here: a malformed WQE
+ * reaches them before anything has looked at the values. Shifting a 32-bit
+ * type by 32 or more is undefined in C, so they must be bounded before use,
+ * not merely clamped afterwards.
+ *
+ * DEPTH: 2^16 entries matches the max_srq_wr the device advertises (0xffff),
+ * so no legitimate driver asks for more.
+ *
+ * STRIDE: 2^8 is the WQE buffer the receive path reads into -- see the
+ * rwqe[256] in deliver_recv(). The driver's SRQ WQE is 64 bytes, so this is
+ * two doublings of headroom above anything real.
+ *
+ * The stride needs a floor as well as a ceiling, and for a different
+ * reason. deliver_recv() reads min(stride, sizeof rwqe) bytes and then
+ * takes the work request id from offset 0 and the SGE count from offset 9.
+ * A stride below the payload offset leaves those bytes unwritten, so the
+ * receive is driven by whatever was on the stack. 2^5 is that offset --
+ * ionic_datapath.c static-asserts the two agree -- and the driver asks for
+ * 2^6, so this rejects only geometries no real driver requests.
+ */
+#define IONIC_SRQ_MAX_DEPTH_LOG2  16u
+#define IONIC_SRQ_MAX_STRIDE_LOG2 8u
+#define IONIC_SRQ_MIN_STRIDE_LOG2 5u
 
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,

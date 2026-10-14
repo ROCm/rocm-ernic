@@ -4,12 +4,18 @@ description: Pull the guest qcow2 and its metadata from the ORAS artifact.
 
 inputs:
   repo:
-    description: Artifact repository
+    description: >-
+      Artifact repository. Defaults to GUEST_ARTIFACT_REPO in
+      ci/guest-image.env, which is the only place the pin lives.
     required: false
-    default: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+    default: ''
   tag:
-    description: Artifact tag; pin an immutable date-prefixed one in CI
-    required: true
+    description: >-
+      Artifact tag. Defaults to GUEST_ARTIFACT_TAG in ci/guest-image.env.
+      Pass one only to test a guest other than the pinned image -- a literal
+      here is a second copy of the pin and will drift.
+    required: false
+    default: ''
   dest:
     description: Directory to unpack into
     required: false
@@ -36,6 +42,24 @@ runs:
       INFO_TYPE: ${{ inputs.info_artifact_type }}
     run: |
       set -euo pipefail
+
+      # The pin lives in exactly one file. Reading it here rather than in
+      # every caller is what stops the three lanes drifting apart: a bump is
+      # one edit, and a lane cannot keep testing an older guest because its
+      # own copy was missed.
+      PIN="${GITHUB_WORKSPACE}/ci/guest-image.env"
+      if [ -z "${REPO}" ] || [ -z "${TAG}" ]; then
+        if [ ! -f "${PIN}" ]; then
+          echo "::error::ci/guest-image.env not found at ${PIN}." \
+               "fetch-guest-vm reads the image pin from there, so the" \
+               "repository must be checked out before this action runs."
+          exit 1
+        fi
+        # shellcheck source=/dev/null
+        . "${PIN}"
+        REPO="${REPO:-${GUEST_ARTIFACT_REPO}}"
+        TAG="${TAG:-${GUEST_ARTIFACT_TAG}}"
+      fi
       REF="${REPO}:${TAG}"
 
       retry() {

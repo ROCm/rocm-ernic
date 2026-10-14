@@ -1,0 +1,131 @@
+---
+# Fetch and patch on the controller, then ship the result to the target.
+#
+# Included from build_one.yml, once per ref, when
+# ernic_srq_dkms_fetch_on_controller is set. Everything here runs with
+# delegate_to: localhost and become: false, the way ernic_srq_provider's
+# controller-side tasks do -- the scripts and patches/srq are paths in the
+# controller's checkout and exist nowhere else.
+#
+# The split is not a style choice. setup-ionic-dkms.sh builds for
+# KVER=$(uname -r) on whichever host runs it, so the BUILD has to happen on the
+# target; the fetch has to happen where the checkout and the network are.
+
+- name: "Discard any controller checkout for {{ ernic_srq_src.ref[:12] }}"
+  delegate_to: localhost
+  become: false
+  when: ernic_srq_dkms_force_fetch | bool
+  ansible.builtin.file:
+    path: "{{ ernic_srq_ctl_dir }}"
+    state: absent
+
+- name: "Fetch and patch ionic sources on the controller
+    ({{ ernic_srq_src.ref[:12] }})"
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: >-
+      {{ ernic_srq_dkms_scripts_dir }}/fetch-ionic-sources.sh
+      --source-dir {{ ernic_srq_ctl_dir }}
+      --kernel-ref {{ ernic_srq_src.ref }}
+      --repo {{ ernic_srq_src.repo }}
+      --patches-dir {{ ernic_srq_dkms_patches_dir }}
+    creates: "{{ ernic_srq_ctl_dir }}/drivers/infiniband/hw/ionic"
+
+# The same guard build_one.yml applies for a local build, applied where the
+# sources now are. A ref predating the series fetches and builds fine and
+# yields a driver with no SRQ, which surfaces far downstream as a guest
+# reporting max_srq=0 with nothing pointing back at this role.
+- name: "Confirm the controller sources carry SRQ
+    ({{ ernic_srq_src.ref[:12] }})"
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: >-
+      grep -lE 'ionic_create_srq_cmd|\.create_srq[[:space:]]*='
+      {{ ernic_srq_ctl_dir }}/drivers/infiniband/hw/ionic/ionic_controlpath.c
+  register: ernic_srq_dkms_ctl_probe
+  changed_when: false
+  failed_when: false
+
+- name: "Fail when the ref has no SRQ support ({{ ernic_srq_src.ref[:12] }})"
+  when:
+    - ernic_srq_dkms_require_srq | bool
+    - ernic_srq_dkms_ctl_probe.rc != 0
+  ansible.builtin.fail:
+    msg: >-
+      {{ ernic_srq_src.ref }} does not implement SRQ: no create_srq verb in
+      ionic_controlpath.c. Building it would produce a driver that reports
+      max_srq=0, which is exactly the state this role exists to avoid. The
+      series is in rdma/for-next; pick a ref that contains
+      "RDMA/ionic: add Shared receive queue (SRQ) support", or set
+      ernic_srq_dkms_require_srq=false to build it anyway.
+
+- name: "Create the staging directory on the target
+    ({{ ernic_srq_src.ref[:12] }})"
+  become: true
+  ansible.builtin.file:
+    path: "{{ ernic_srq_dir }}"
+    state: absent
+
+- name: "Create the staging root on the target ({{ ernic_srq_src.ref[:12] }})"
+  become: true
+  ansible.builtin.file:
+    path: "{{ ernic_srq_dkms_stage_dir }}"
+    state: directory
+    mode: "0755"
+
+# Archived rather than copied file by file: the patched tree is a kernel
+# checkout, and ansible.builtin.copy over that many files is slow enough to
+# dominate the role. .git is excluded because setup-ionic-dkms.sh stages
+# files, not history, and the pack is most of the transfer.
+#
+# unarchive with a controller-side src, rather than synchronize: rsync need
+# not be installed in a guest, and the port-forwarded ssh these guests use
+# suits it poorly.
+- name: "Archive the patched tree on the controller
+    ({{ ernic_srq_src.ref[:12] }})"
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: >-
+      tar -C {{ ernic_srq_ctl_dir | dirname }}
+      --exclude=.git
+      -czf {{ ernic_srq_ctl_dir }}.tar.gz
+      {{ ernic_srq_ctl_dir | basename }}
+    creates: "{{ ernic_srq_ctl_dir }}.tar.gz"
+
+- name: "Unpack the tree on the target ({{ ernic_srq_src.ref[:12] }})"
+  become: true
+  ansible.builtin.unarchive:
+    src: "{{ ernic_srq_ctl_dir }}.tar.gz"
+    dest: "{{ ernic_srq_dkms_stage_dir }}"
+    remote_src: false
+    owner: root
+    group: root
+
+# The archive's top-level directory is the ref, and both ernic_srq_ctl_dir and
+# ernic_srq_dir end in it, so unpacking into the staging root lands the tree
+# exactly where the build step looks. Checked rather than assumed: getting it
+# wrong gives DKMS an empty source dir and a far less obvious error.
+- name: "Confirm the staged tree arrived ({{ ernic_srq_src.ref[:12] }})"
+  become: true
+  ansible.builtin.stat:
+    path: "{{ ernic_srq_dir }}/drivers/infiniband/hw/ionic"
+  register: ernic_srq_dkms_staged
+
+- name: "Fail when the staged tree is incomplete
+    ({{ ernic_srq_src.ref[:12] }})"
+  ansible.builtin.assert:
+    that: ernic_srq_dkms_staged.stat.isdir | default(false)
+    fail_msg: >-
+      {{ ernic_srq_dir }}/drivers/infiniband/hw/ionic is missing on
+      {{ inventory_hostname }} after staging. The archive did not unpack
+      where the build expects it.
+
+- name: Stage the DKMS build script on the target
+  become: true
+  ansible.builtin.copy:
+    src: "{{ ernic_srq_dkms_scripts_dir }}/setup-ionic-dkms.sh"
+    dest: "{{ ernic_srq_dkms_stage_dir }}/setup-ionic-dkms.sh"
+    mode: "0755"

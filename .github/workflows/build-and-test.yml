@@ -14,6 +14,11 @@ on:
       - 'third-party/**'
       - 'tests/**'
       - 'service/**'
+      # src/rocm_ernic_server.c and src/rdma/rdma_backend_tcp.c include
+      # shared/rocm-ernic-warnings.h, so a change there changes what this
+      # matrix compiles. Without this entry, editing a warning suppression
+      # skipped every build leg and all of ctest.
+      - 'shared/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/build-and-test.yml'
