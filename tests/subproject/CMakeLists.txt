@@ -9,13 +9,15 @@
 # The parent project builds rocm-ernic with this build's compiler,
 # options, and dependencies. It doesn't build the tests, which would make
 # the test take much longer. PKG_CONFIG_PATH, if set, reaches the parent
-# through the environment.
+# through the environment. CMAKE_PREFIX_PATH is read as a normal
+# variable, not from the cache, so that it includes any prefixes a
+# project above rocm-ernic added with list(APPEND).
 set(ERNIC_SUBPROJECT_CACHE ${CMAKE_CURRENT_BINARY_DIR}/parent-cache.cmake)
 string(CONCAT ERNIC_SUBPROJECT_CACHE_ENTRIES
     "set(ERNIC_SUBPROJECT_SOURCE_DIR \"${PROJECT_SOURCE_DIR}\" CACHE PATH \"\")\n"
-    "set(CMAKE_PREFIX_PATH \"$CACHE{CMAKE_PREFIX_PATH}\" CACHE STRING \"\")\n"
     "set(BUILD_TESTING OFF CACHE BOOL \"\")\n")
 foreach(var IN ITEMS
+        CMAKE_PREFIX_PATH
         CMAKE_C_COMPILER
         ERNIC_WERROR
         ERNIC_USE_SANITIZERS
