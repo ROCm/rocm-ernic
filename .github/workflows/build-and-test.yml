@@ -364,7 +364,7 @@ jobs:
           matrix.coverage == 'on' &&
           github.event_name != 'pull_request' &&
           github.ref == 'refs/heads/develop'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-badge
           path: build/coverage/coverage.json
@@ -375,7 +375,7 @@ jobs:
       # a plain leg, and artifact names must be unique within a run.
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.sanitizer }}${{ matrix.coverage == 'on' && '-coverage' || '' }}
           path: build/Testing/
@@ -396,7 +396,7 @@ jobs:
         if: >-
           success() && matrix.sanitizer == 'off'
           && matrix.compiler == 'gcc' && matrix.build_type == 'Release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}
           path: |
@@ -442,7 +442,7 @@ jobs:
 
       # Outside the workspace, so it can't land in either worktree.
       - name: Download coverage badge data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-badge
           path: ${{ runner.temp }}/coverage-badge
