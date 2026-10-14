@@ -242,6 +242,17 @@ bool s3_reply_parse_peer(const char *reply, size_t len, struct s3_token *peer,
 
 void s3_reply_format(int http_code, const struct s3_token *peer, char *out)
 {
+    /* Room for the longest code s3_reply_parse_code() reads back, its
+     * colon, the token and the NUL. */
+    _Static_assert(S3_REPLY_MAX >= 3 + 1 + S3_TOKEN_HEX_LEN + 1,
+                   "S3_REPLY_MAX cannot hold a reply");
+
+    /* Any other code would be unreadable to the client, and a long
+     * enough one would run the token off the end of @out.  A caller
+     * passing one is a server bug, which is what 500 says. */
+    if (http_code < 0 || http_code > 999)
+        http_code = 500;
+
     int n = snprintf(out, S3_REPLY_MAX, "%d:", http_code);
     s3_token_encode(peer, out + n);
 }
