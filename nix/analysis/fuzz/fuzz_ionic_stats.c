@@ -41,6 +41,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -330,18 +331,28 @@ static size_t encode_seed(const struct seed *s, uint8_t *out)
     return IN_HDR + s->body_len;
 }
 
+/*
+ * The seed directory comes from the environment, so it must not climb out
+ * of where the build asked for it, and the files are private to the user.
+ */
 static void emit_seed(const char *dir, size_t i, const uint8_t *buf, size_t len)
 {
     char path[512];
+    int fd;
     FILE *f;
 
+    if (strstr(dir, "..") != NULL) {
+        fprintf(stderr,
+                "fuzz_ionic_stats: FUZZ_EMIT_SEEDS must not contain ..\n");
+        exit(EXIT_FAILURE);
+    }
     snprintf(path, sizeof(path), "%s/seed-%02zu", dir, i);
-    f = fopen(path, "wb");
-    if (!f || fwrite(buf, 1, len, f) != len) {
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    f = fd < 0 ? NULL : fdopen(fd, "wb");
+    if (!f || fwrite(buf, 1, len, f) != len || fclose(f) != 0) {
         fprintf(stderr, "fuzz_ionic_stats: cannot write %s\n", path);
         exit(EXIT_FAILURE);
     }
-    fclose(f);
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)

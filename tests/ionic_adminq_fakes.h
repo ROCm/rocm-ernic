@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---- Fake guest memory ------------------------------------------------- */
@@ -314,15 +315,23 @@ static uint64_t qp_value(uint32_t qp_id, size_t i)
     return g_max ? UINT64_MAX : ((uint64_t)qp_id << 8) + i + 1;
 }
 
+/*
+ * Build the values in a local array and copy them in once.  Writing each
+ * value at a byte offset into the caller's struct makes gcc 13's -O3
+ * stringop-overflow analysis lose track of the destination size.
+ */
+#define FAKE_COUNTERS_MAX 64
+
 static void fill_counters(void *out, size_t size, uint64_t (*value)(size_t))
 {
-    uint8_t *p = out;
+    uint64_t vals[FAKE_COUNTERS_MAX] = {0};
+    size_t n = size / sizeof(vals[0]);
 
-    for (size_t i = 0; i < size / sizeof(uint64_t); i++) {
-        uint64_t v = value(i);
-
-        memcpy(p + i * sizeof(v), &v, sizeof(v));
-    }
+    if (n > FAKE_COUNTERS_MAX)
+        abort();
+    for (size_t i = 0; i < n; i++)
+        vals[i] = value(i);
+    memcpy(out, vals, n * sizeof(vals[0]));
 }
 
 static uint64_t qp_value_for_counters(size_t i)
