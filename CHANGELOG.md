@@ -237,6 +237,13 @@
   16 * 2^40 bytes and drive a walk of four billion iterations. Widening the product
   above narrowed the mismatch case but left the count unbounded, so this
   completes that fix rather than replacing it.
+* A server on the TCP backend no longer hangs on SIGTERM waiting for its accept
+  thread, which stayed blocked in `accept()` until a peer happened to connect;
+  shutdown now wakes it. A worker that fails to register with its manager also
+  stops its accept thread before freeing the state that thread uses.
+  `tests/test_tcp_accept_stop.c` (CTest `tcp-accept-stop-unit`) covers it. A
+  manager can still take up to `ERNIC_TCP_HEALTH_INTERVAL` seconds to exit
+  while its health-check thread finishes sleeping.
 
 ### Limitations
 
