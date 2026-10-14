@@ -19,6 +19,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_datapath.h"
+#include "ionic_profile.h"
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
@@ -134,6 +135,9 @@ struct rocm_ernic_dev {
     /* MAC address */
     uint8_t mac_addr[6]; /* Device MAC address */
     bool mac_addr_set;   /* Whether MAC address was explicitly set */
+
+    /* NIC identity and link: compat plus each --nic-profile layer */
+    struct ionic_profile profile;
 };
 
 #endif /* ROCM_ERNIC_INTERNAL_H */

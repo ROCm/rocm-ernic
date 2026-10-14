@@ -306,7 +306,10 @@ target_link_libraries(test_loopback_sge_copy PRIVATE
 # ionic MSI-X mask/pending test. It #includes the ionic emulator translation
 # unit to reach the per-vector interrupt state and stubs vfu_irq_trigger()
 # with a per-vector counter, so no vfio-user link or live context is needed.
-add_executable(test_ionic_intr_pending test_ionic_intr_pending.c)
+add_executable(test_ionic_intr_pending test_ionic_intr_pending.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -322,12 +325,17 @@ target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
 target_compile_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARIES})
 
 # ionic PORT_INIT port-info test. It #includes the eth emulator translation
 # unit and backs the DMA entry points with a plain buffer, so the structure
 # the driver reads its link speed out of can be inspected directly -- no
 # guest, no VM and no vfio-user socket.
-add_executable(test_ionic_port_info test_ionic_port_info.c)
+add_executable(test_ionic_port_info test_ionic_port_info.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
 target_include_directories(test_ionic_port_info PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -343,6 +351,51 @@ target_compile_definitions(test_ionic_port_info PRIVATE
     _GNU_SOURCE)
 target_compile_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_ionic_port_info PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_port_info PRIVATE ${GLIB2_LIBRARIES})
+
+# NIC profile loader test: ini layering, strict validation and atomic
+# layers, built-in profiles by name and files by path. Pure: no ionic TU.
+add_executable(test_ionic_profile test_ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_include_directories(test_ionic_profile PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_profile SYSTEM PRIVATE
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_profile PRIVATE
+    _GNU_SOURCE
+    ERNIC_PROFILES_DIR="${CMAKE_SOURCE_DIR}/profiles")
+target_compile_options(test_ionic_profile PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_profile PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
+
+# ionic NIC identity test. It #includes the eth emulator translation unit,
+# checks the compat profile against golden bytes captured before profiles
+# existed, and checks where each identity and link key lands.
+add_executable(test_ionic_identity test_ionic_identity.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profile.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_include_directories(test_ionic_identity PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_include_directories(test_ionic_identity SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_identity PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_identity PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_identity PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(test_ionic_identity PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_identity PRIVATE ${GLIB2_LIBRARIES})
 
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
@@ -562,6 +615,8 @@ set(ERNIC_TEST_TARGETS
     test_loopback_sge_copy
     test_ionic_intr_pending
     test_ionic_port_info
+    test_ionic_profile
+    test_ionic_identity
     test_ionic_query_qp
     test_ionic_cq_arm
     test_tcp_mesh_topology
@@ -724,6 +779,24 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_port_info>
 )
 set_tests_properties(ionic-port-info-unit PROPERTIES TIMEOUT 30)
+
+# NIC profile loader unit test: asserts strict validation (every error names
+# the source, line and key), atomic layers, and that the built-in profiles
+# match the files shipped in profiles/.
+add_test(
+    NAME ionic-profile-unit
+    COMMAND $<TARGET_FILE:test_ionic_profile>
+)
+set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
+
+# ionic NIC identity unit test: asserts compat is byte-identical to the
+# device before profiles, and each identity/link key reaches the field the
+# driver reads.
+add_test(
+    NAME ionic-identity-unit
+    COMMAND $<TARGET_FILE:test_ionic_identity>
+)
+set_tests_properties(ionic-identity-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and
