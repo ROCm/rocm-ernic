@@ -26,10 +26,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "s3_http.h"
-#include "s3_token.h"
-
+struct s3_http_request;
+struct s3_http_response;
 struct s3_target;
+struct s3_token;
 
 #define S3_BUCKET_MAX 64
 #define S3_KEY_MAX    512

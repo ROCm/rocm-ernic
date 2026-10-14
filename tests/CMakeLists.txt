@@ -66,9 +66,9 @@ endif()
 # warning-checked -- a target-wide -w would disable warnings everywhere,
 # since GCC honours -w regardless of where it appears in the flag list.
 set(ERNIC_TEST_VENDORED_SOURCES
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
 )
 set_source_files_properties(${ERNIC_TEST_VENDORED_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"
@@ -79,24 +79,24 @@ set_source_files_properties(${ERNIC_TEST_VENDORED_SOURCES}
 # under test never reach libibverbs or the DMA layer.
 add_executable(test_rdma_backend_query_port
     test_rdma_backend_query_port.c
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
 )
 target_include_directories(test_rdma_backend_query_port PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/rdma
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
 )
 # The vendored header trees are SYSTEM includes so their warnings stay quiet
 # while the test source itself is still warning-checked. The vendored .c
 # files are silenced per-source via ERNIC_TEST_VENDORED_SOURCES.
 target_include_directories(test_rdma_backend_query_port SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -143,7 +143,7 @@ target_link_options(test_ernic_device PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # net_headers.h checksum helpers are header-only and self-contained.
 add_executable(test_net_checksum test_net_checksum.c)
 target_include_directories(test_net_checksum PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_compile_options(test_net_checksum PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_net_checksum PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -161,16 +161,16 @@ endif()
 
 add_executable(test_rdma_cm_proto
     test_rdma_cm_proto.c
-    ${CMAKE_SOURCE_DIR}/src/net/rdma_cm_proto.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/net/rdma_cm_proto.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 target_include_directories(test_rdma_cm_proto PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
 )
 # Vendored header trees are SYSTEM includes.
 target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
@@ -183,7 +183,7 @@ target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
 # Strict integer parser (parse_int.h) unit test (header-only).
 add_executable(test_parse_int test_parse_int.c)
 target_include_directories(test_parse_int PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_compile_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -193,10 +193,10 @@ target_link_options(test_parse_int PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # byte array in for guest memory -- no VM, no RDMA device, no server.
 add_executable(test_nvmeof_target
     test_nvmeof_target.c
-    ${CMAKE_SOURCE_DIR}/src/nvmeof_target.c
+    ${PROJECT_SOURCE_DIR}/src/nvmeof_target.c
 )
 target_include_directories(test_nvmeof_target PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_include_directories(test_nvmeof_target SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -209,11 +209,11 @@ target_link_options(test_nvmeof_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # emits and dissects the replies; no MAD ever reaches a wire.
 add_executable(test_nvmeof_cm
     test_nvmeof_cm.c
-    ${CMAKE_SOURCE_DIR}/src/nvmeof_cm.c
-    ${CMAKE_SOURCE_DIR}/src/nvmeof_target.c
+    ${PROJECT_SOURCE_DIR}/src/nvmeof_cm.c
+    ${PROJECT_SOURCE_DIR}/src/nvmeof_target.c
 )
 target_include_directories(test_nvmeof_cm PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_include_directories(test_nvmeof_cm SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -226,9 +226,9 @@ target_link_options(test_nvmeof_cm PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # with hipObject, so this links nothing but the codec itself.
 add_executable(test_s3_token
     test_s3_token.c
-    ${CMAKE_SOURCE_DIR}/src/s3_token.c
+    ${PROJECT_SOURCE_DIR}/src/s3_token.c
 )
-target_include_directories(test_s3_token PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_s3_token PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_token PRIVATE _GNU_SOURCE)
 target_compile_options(test_s3_token PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_s3_token PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -236,9 +236,9 @@ target_link_options(test_s3_token PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # S3 control-plane HTTP subset test: buffers in, buffers out, no socket.
 add_executable(test_s3_http
     test_s3_http.c
-    ${CMAKE_SOURCE_DIR}/src/s3_http.c
+    ${PROJECT_SOURCE_DIR}/src/s3_http.c
 )
-target_include_directories(test_s3_http PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_s3_http PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_http PRIVATE _GNU_SOURCE)
 target_compile_options(test_s3_http PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_s3_http PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -248,11 +248,11 @@ target_link_options(test_s3_http PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # no VM, RDMA device or server process is involved.
 add_executable(test_s3_target
     test_s3_target.c
-    ${CMAKE_SOURCE_DIR}/src/s3_target.c
-    ${CMAKE_SOURCE_DIR}/src/s3_http.c
-    ${CMAKE_SOURCE_DIR}/src/s3_token.c
+    ${PROJECT_SOURCE_DIR}/src/s3_target.c
+    ${PROJECT_SOURCE_DIR}/src/s3_http.c
+    ${PROJECT_SOURCE_DIR}/src/s3_token.c
 )
-target_include_directories(test_s3_target PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_s3_target PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_target PRIVATE _GNU_SOURCE)
 target_compile_options(test_s3_target PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_s3_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
@@ -263,14 +263,14 @@ target_link_options(test_s3_target PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # an independent implementation in the test.
 add_executable(test_s3_tcp
     test_s3_tcp.c
-    ${CMAKE_SOURCE_DIR}/src/s3_tcp.c
-    ${CMAKE_SOURCE_DIR}/src/s3_target.c
-    ${CMAKE_SOURCE_DIR}/src/s3_http.c
-    ${CMAKE_SOURCE_DIR}/src/s3_token.c
+    ${PROJECT_SOURCE_DIR}/src/s3_tcp.c
+    ${PROJECT_SOURCE_DIR}/src/s3_target.c
+    ${PROJECT_SOURCE_DIR}/src/s3_http.c
+    ${PROJECT_SOURCE_DIR}/src/s3_token.c
 )
 target_include_directories(test_s3_tcp PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/shared
 )
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 target_compile_options(test_s3_tcp PRIVATE ${ERNIC_UNIT_TEST_SAN})
@@ -281,15 +281,15 @@ target_link_options(test_s3_tcp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # mapping, so no RDMA subsystem link is needed.
 add_executable(test_loopback_sge_copy test_loopback_sge_copy.c)
 target_include_directories(test_loopback_sge_copy PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
 # it is warning-checked.
 target_include_directories(test_loopback_sge_copy SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -308,7 +308,7 @@ target_link_libraries(test_loopback_sge_copy PRIVATE
 # with a per-vector counter, so no vfio-user link or live context is needed.
 add_executable(test_ionic_intr_pending test_ionic_intr_pending.c)
 target_include_directories(test_ionic_intr_pending PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -329,7 +329,7 @@ target_link_options(test_ionic_intr_pending PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # guest, no VM and no vfio-user socket.
 add_executable(test_ionic_port_info test_ionic_port_info.c)
 target_include_directories(test_ionic_port_info PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -349,7 +349,7 @@ target_link_options(test_ionic_port_info PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # side buffers the driver reads its answer out of can be inspected directly.
 add_executable(test_ionic_query_qp test_ionic_query_qp.c)
 target_include_directories(test_ionic_query_qp PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_include_directories(test_ionic_query_qp SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -366,7 +366,7 @@ target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 # vfio-user link or guest memory is needed.
 add_executable(test_ionic_cq_arm test_ionic_cq_arm.c)
 target_include_directories(test_ionic_cq_arm PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -392,16 +392,16 @@ target_link_libraries(test_ionic_cq_arm PRIVATE
 # RDMA subsystem link is needed; the broadcast goes over a socketpair.
 add_executable(test_tcp_mesh_topology test_tcp_mesh_topology.c)
 target_include_directories(test_tcp_mesh_topology PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
 # it is warning-checked.
 target_include_directories(test_tcp_mesh_topology SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -422,16 +422,16 @@ target_link_libraries(test_tcp_mesh_topology PRIVATE
 # thread is involved.
 add_executable(test_tcp_gid_resolve test_tcp_gid_resolve.c)
 target_include_directories(test_tcp_gid_resolve PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
 # it is warning-checked.
 target_include_directories(test_tcp_gid_resolve SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -452,16 +452,16 @@ target_link_libraries(test_tcp_gid_resolve PRIVATE
 # a socketpair.
 add_executable(test_tcp_mr_bounds test_tcp_mr_bounds.c)
 target_include_directories(test_tcp_mr_bounds PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
 # it is warning-checked.
 target_include_directories(test_tcp_mr_bounds SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -512,26 +512,26 @@ target_link_libraries(test_tcp_accept_stop PRIVATE
 # rocm-ernic-warnings.h macros around the #include, so the test's own code is
 # still warning-checked.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
 )
 # third-party/qemu is a normal include here: the test reaches rdma_rm.c
 # through it and relies on its own warning-suppression macros, not the
 # include path, to silence that file.
 target_include_directories(test_rdma_res_tbl PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/rdma
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target.
 target_include_directories(test_rdma_res_tbl SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -550,13 +550,13 @@ target_link_libraries(test_rdma_res_tbl PRIVATE
 # directly. The vendored header trees are SYSTEM includes, as in the main
 # build, so the test source itself is still warning-checked.
 add_executable(test_qemu_stubs test_qemu_stubs.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
 target_include_directories(test_qemu_stubs PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
 )
 target_include_directories(test_qemu_stubs SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -840,7 +840,7 @@ set_tests_properties(ionic-server-smoke PROPERTIES
 add_test(
     NAME ionic-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_ci.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 set_tests_properties(ionic-ci PROPERTIES
     TIMEOUT 60
@@ -856,7 +856,7 @@ set_tests_properties(ionic-ci PROPERTIES
 add_test(
     NAME tcp-mesh-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_tcp_mesh_ci.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 # Generous timeout: the suite starts several servers and waits on mesh
 # convergence, and runs in every build leg including thread-sanitizer
@@ -876,7 +876,7 @@ set_tests_properties(tcp-mesh-ci PROPERTIES
 add_test(
     NAME nvmeof-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_nvmeof_ci.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 set_tests_properties(nvmeof-ci PROPERTIES
     TIMEOUT 120
@@ -892,7 +892,7 @@ set_tests_properties(nvmeof-ci PROPERTIES
 add_test(
     NAME s3-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_s3_ci.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 set_tests_properties(s3-ci PROPERTIES
     TIMEOUT 120
@@ -907,3 +907,8 @@ set_tests_properties(s3-ci PROPERTIES
 # Builds nix/analysis/fuzz/ against a plain main() so the harnesses cannot
 # go stale between opt-in fuzz runs. See tests/nix/CMakeLists.txt.
 add_subdirectory(nix)
+
+# ---------------------------------------------------------------
+# Build as a subproject of another CMake project
+# ---------------------------------------------------------------
+add_subdirectory(subproject)

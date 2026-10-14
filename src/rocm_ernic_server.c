@@ -22,12 +22,11 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <limits.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <syslog.h>
 #include <getopt.h>
-#include <assert.h>
 #include <time.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -41,6 +40,8 @@
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "ionic_eth_emu.h"
+#include "ionic_rdma_devcmd.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #include "rocm-ernic-warnings.h"
@@ -800,7 +801,8 @@ static const char *get_backend_type_base(const char *backend_str)
  * @device: Output parameter for device name (caller must free)
  * @ethdev: Output parameter for ethdev name (caller must free)
  * @port: Output parameter for port number
- * @return: 0 on success, -1 on error
+ * @return: 0 on success; -1 on error, with *device and *ethdev freed and
+ *          set to NULL
  */
 static int parse_verbs_options(const char *backend_str, char **device,
                                char **ethdev, uint8_t *port)
@@ -831,8 +833,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
             if (!*device) {
                 *device = strdup(token);
                 if (!*device) {
-                    free(options_copy);
-                    return -1;
+                    goto fail;
                 }
             }
         } else {
@@ -846,8 +847,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
                 }
                 *device = strdup(value);
                 if (!*device) {
-                    free(options_copy);
-                    return -1;
+                    goto fail;
                 }
             } else if (!strcmp(key, "ethdev")) {
                 if (*ethdev) {
@@ -855,10 +855,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
                 }
                 *ethdev = strdup(value);
                 if (!*ethdev) {
-                    free(options_copy);
-                    free(*device);
-                    *device = NULL;
-                    return -1;
+                    goto fail;
                 }
             } else if (!strcmp(key, "port")) {
                 int port_val = atoi(value);
@@ -867,12 +864,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
                             "Error: Invalid port number '%s' (must be "
                             "1-255)\n",
                             value);
-                    free(options_copy);
-                    free(*device);
-                    free(*ethdev);
-                    *device = NULL;
-                    *ethdev = NULL;
-                    return -1;
+                    goto fail;
                 }
                 *port = (uint8_t)port_val;
             } else {
@@ -885,6 +877,15 @@ static int parse_verbs_options(const char *backend_str, char **device,
 
     free(options_copy);
     return 0;
+
+fail:
+    /* Hand back nothing, so the caller has nothing to free. */
+    free(options_copy);
+    free(*device);
+    free(*ethdev);
+    *device = NULL;
+    *ethdev = NULL;
+    return -1;
 }
 
 /**

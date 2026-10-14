@@ -14,9 +14,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <errno.h>
-
-#include <vfio-user/libvfio-user.h>
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
@@ -121,10 +118,10 @@ enum pvrdma_stat_op {
  * @handle: Device handle
  * @qp_id: QP to attribute the bytes to, or PVRDMA_STAT_NO_QP for totals only
  * @bytes: Number of bytes actually moved
- * @op: Operation class
+ * @stat_op: Operation class
  */
 void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op op);
+                             uint64_t bytes, enum pvrdma_stat_op stat_op);
 
 /**
  * pvrdma_qp_doorbell_count - Record one doorbell ring against a QP

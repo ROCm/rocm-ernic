@@ -12,14 +12,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 
 /* Include QEMU headers for type definitions */
 #include "hw/pci/pci_device.h"
 #include "qemu/notify.h"
-#include "exec/memory.h"
 #include "qom/object.h"
 
 /*

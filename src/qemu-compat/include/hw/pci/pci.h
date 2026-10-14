@@ -12,7 +12,8 @@
 #define QEMU_PCI_H
 
 #include <stdint.h>
-#include "hw/pci/pci_device.h"
+/* As in QEMU, PCIDevice is reached through this header */
+#include "hw/pci/pci_device.h" // IWYU pragma: export
 
 /* PCI BAR indices */
 #define PCI_NUM_REGIONS 6

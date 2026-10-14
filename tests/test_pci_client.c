@@ -11,15 +11,12 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <assert.h>
 #include <err.h>
-#include <errno.h>
 #include <getopt.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
