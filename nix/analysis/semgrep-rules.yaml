@@ -54,18 +54,29 @@ rules:
     message: memcpy with sizeof(pointer) likely copies only pointer size, not data
     languages: [c, cpp]
     severity: WARNING
+  # A use (*p, p->f, p[i]) that follows p = malloc(...) without first
+  # passing an if that tests p. Fixtures: semgrep-tests/malloc-no-null-check.c
   - id: malloc-no-null-check
     patterns:
-      - pattern: |
-          $PTR = malloc(...);
+      - pattern-either:
+          - pattern-inside: |
+              $PTR = malloc(...);
+              ...
+          - pattern-inside: |
+              $T *$PTR = malloc(...);
+              ...
+      - pattern-not-inside: |
+          if (<... $PTR ...>) { ... }
           ...
-          *$PTR
-      - pattern-not: |
-          $PTR = malloc(...);
+      - pattern-not-inside: |
+          if (<... $PTR ...>) return ...;
           ...
-          if ($PTR == NULL) { ... }
-          ...
-          *$PTR
+      # sizeof(*p) in the malloc call itself is not a use.
+      - pattern-not-inside: sizeof(...)
+      - pattern-either:
+          - pattern: "*$PTR"
+          - pattern: $PTR->$F
+          - pattern: $PTR[$I]
     message: malloc() result used without NULL check
     languages: [c]
     severity: WARNING
@@ -170,8 +181,9 @@ rules:
     severity: INFO
 
   # ── Category 9: Code Quality / Defensive Programming ─────────
+  # Fixtures: semgrep-tests/goto-usage.c
   - id: goto-usage
-    pattern: goto $LABEL
+    pattern: goto $LABEL;
     message: goto usage — consider structured control flow alternatives
     languages: [c, cpp]
     severity: INFO
