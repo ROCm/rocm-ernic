@@ -84,3 +84,28 @@ ernic_add_fuzz_replay(rdma_cm_proto
 
 # net_headers.h is header-only, so this harness links no extra sources.
 ernic_add_fuzz_replay(net_headers)
+
+# The stats harness #includes the admin queue translation unit and the
+# shared fake device from tests/, like tests/test_ionic_stats.c does, and
+# defines LLVMFuzzerInitialize() to check its seed table before replaying.
+ernic_add_fuzz_replay(ionic_stats
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(fuzz_replay_ionic_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_include_directories(fuzz_replay_ionic_stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+)
+target_compile_definitions(fuzz_replay_ionic_stats PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# The fault spec parser is pure string handling; like the stats harness it
+# checks a seed table in LLVMFuzzerInitialize() before replaying.
+ernic_add_fuzz_replay(fault_parse
+    ${CMAKE_SOURCE_DIR}/src/ionic_fault.c
+)
+target_compile_definitions(fuzz_replay_fault_parse PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)

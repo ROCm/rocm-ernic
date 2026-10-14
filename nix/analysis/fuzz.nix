@@ -7,20 +7,23 @@
 #              crash inputs and a symbolized report (always exits 0 — the
 #              crashes are the deliverable, not a build failure)
 #
-# Harnesses target the genuinely self-contained parsers:
+# Harnesses:
 #   fuzz_rdma_cm_proto   rdma_cm_process_message() — pure TCP-payload parser
 #   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
+#   fuzz_ionic_stats     the ionic STATS_HDRS/VALS admin commands, through
+#                        dispatch_wqe() over the fake device shared with
+#                        tests/test_ionic_stats.c (tests/ionic_adminq_fakes.h)
+#   fuzz_fault_parse     ionic_fault_parse() — the --inject fault spec parser
 #
-# Deliberately NOT fuzzed here: the ionic devcmd and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
-# through rdma_pci_dma_map() and manipulate the RDMA resource manager, so a
-# faithful harness needs a fully-wired device (PCI + DMA + backend) fixture
-# rather than a byte buffer. Reaching them meaningfully is a device-emulation
-# harness, tracked as future work; see nix/analysis/fuzz/README.md.
+# Not fuzzed yet: the rest of the ionic devcmd and datapath handlers. They
+# manipulate the RDMA resource manager and the rings, so they need more of
+# the device faked than the stats commands do; see nix/analysis/fuzz/README.md.
 
 { ctx, src }:
 
 let
   inherit (ctx) pkgs lib compat version;
+  libvfioUser = ctx."libvfio-user";
 
   includeFlags = lib.concatStringsSep " " [
     "-Isrc"
@@ -32,7 +35,9 @@ let
 
   symbolizer = "${lib.getBin pkgs.llvm}/bin/llvm-symbolizer";
 
-  # name -> extra .c files linked alongside nix/analysis/fuzz/fuzz_<name>.c
+  # name -> extra .c files linked alongside nix/analysis/fuzz/fuzz_<name>.c,
+  # optional extra compiler flags, and whether the harness writes its own
+  # seed corpus (FUZZ_EMIT_SEEDS, from the seed table it checks at startup).
   #
   # These targets are opt-in, so tests/nix/CMakeLists.txt also builds every
   # harness against a plain main() during the ordinary CMake build to keep
@@ -45,13 +50,20 @@ let
       ]; }
     { name = "net_headers";
       extra = [ ]; }
+    { name = "ionic_stats";
+      extra = [ "src/ionic_fault.c" ];
+      cflags = "-Itests -I${libvfioUser}/include";
+      seeds = true; }
+    { name = "fault_parse";
+      extra = [ "src/ionic_fault.c" ];
+      seeds = true; }
   ];
 
   names = map (h: h.name) harnesses;
 
   compileLines = lib.concatMapStringsSep "\n" (h: ''
     echo "Building fuzz_${h.name}..."
-    clang ${sanFlags} ${includeFlags} -D_GNU_SOURCE \
+    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} -D_GNU_SOURCE \
       "nix/analysis/fuzz/fuzz_${h.name}.c" \
       ${lib.concatStringsSep " " (map (f: "\"${f}\"") h.extra)} \
       $GLIB \
@@ -59,6 +71,10 @@ let
     # A trivial seed so each corpus starts non-empty.
     mkdir -p "out/corpus/${h.name}"
     printf '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0' > "out/corpus/${h.name}/seed0"
+  '' + lib.optionalString (h.seeds or false) ''
+    # The harness checks its seed table at startup and writes it out as a
+    # corpus; a failing seed fails the build.
+    FUZZ_EMIT_SEEDS="out/corpus/${h.name}" "out/bin/fuzz_${h.name}" -runs=0
   '') harnesses;
 
   # writeShellApplication so it is shellcheck-checked and self-contained

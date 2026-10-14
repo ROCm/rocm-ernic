@@ -46,6 +46,7 @@
 #include "ionic_eth_net.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
+#include "ionic_status.h"
 #include "rocm_ernic_internal.h"
 
 /* -------------------------------------------------------------------------
@@ -159,10 +160,6 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_CMD_Q_INIT             40
 #define IONIC_CMD_Q_CONTROL          41
 
-/* Completion status codes (enum ionic_status_code in ionic_if.h) */
-#define IONIC_RC_SUCCESS 0
-#define IONIC_RC_EOPCODE 2
-
 /* LIF capabilities */
 #define IONIC_LIF_CAP_ETH  (1u << 0)
 #define IONIC_LIF_CAP_RDMA (1u << 1)
@@ -183,6 +180,12 @@ static inline uint64_t le64(uint64_t v)
 #define IONIC_RDMA_VERSION       1
 #define IONIC_RDMA_QP_OPCODES    16
 #define IONIC_RDMA_ADMIN_OPCODES 19
+
+/* rdma.stats_type: enum ionic_lif_rdma_stat_type in ionic_if.h.  Without a
+ * bit set the driver never sends STATS_HDRS / QP_STATS_HDRS, so the guest
+ * gets no hw_counters directory and no rdma statistic qp counters. */
+#define IONIC_LIF_RDMA_STAT_GLOBAL 0x1u
+#define IONIC_LIF_RDMA_STAT_QP     0x2u
 
 /* Page table and MR counts for emulated device */
 /* 2M page table entries. This is the knob that sets the guest's maximum
@@ -1095,6 +1098,12 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(eq + 4, &u, 4);
     u = le32(0);
     memcpy(eq + 8, &u, 4);
+
+    /* stats_type (le16) at rdma+92, straight after eq_qtype. */
+#define LIF_ID_RDMA_STATS_TYPE_OFF (32 + 5 * QTYPE_SZ)
+    uint16_t stats_type =
+        le16((uint16_t)(IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP));
+    memcpy(rdma + LIF_ID_RDMA_STATS_TYPE_OFF, &stats_type, 2);
 
     comp[0] = 0; /* status OK */
     comp[1] = 1; /* version   */
