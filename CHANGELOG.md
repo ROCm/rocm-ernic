@@ -64,6 +64,10 @@
   `src/` after `ctest`. The Build and Test workflow has a coverage leg that
   fails below a floor, and on `develop` publishes the figure for the README's
   Coverage badge.
+* rocm-ernic can be built as part of another CMake project with
+  `add_subdirectory()`. When it is, it leaves the build type to the parent
+  project instead of defaulting it to `Debug`. The CTest `cmake-subproject`
+  test builds the server this way.
 
 ### Changed
 
@@ -92,6 +96,12 @@
   `ernic_vms_total` is now `ernic_vms`. They count what exists right now, not
   a running total. The shipped dashboard is updated; hand-written dashboards,
   alerts and recording rules referring to the old names must be changed.
+* The tests are only built when `BUILD_TESTING` is on, which it is by
+  default. `-DBUILD_TESTING=OFF` builds just the server.
+* The CMake cache variables that hold the git SHA built into the server are
+  now `ERNIC_GIT_SHA_FULL` and `ERNIC_GIT_SHA_SHORT`, rather than
+  `GIT_SHA_FULL` and `GIT_SHA_SHORT`, so they can't collide with a parent
+  project's.
 
 ### Removed
 
