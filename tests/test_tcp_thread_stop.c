@@ -20,6 +20,8 @@
  * the threads of connections the manager had accepted but not registered.
  * tcp_stop_recv_threads() now stops every receive thread, registered,
  * pending or the worker's manager connection, before anything is freed.
+ * A thread waiting for the rest of a payload a peer is withholding gives up
+ * when its flag is cleared, so the peer can't hold up the join either.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -38,6 +40,7 @@
  */
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -376,7 +379,7 @@ static double recv_heartbeat(int fd, int timeout_ms)
     if (poll(&pfd, 1, timeout_ms) != 1)
         return -1.0;
     at = now_s();
-    if (tcp_recv_message(fd, &hdr, &payload, NULL) < 0)
+    if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL) < 0)
         return -1.0;
     g_free(payload);
     return hdr.msg_type == TCP_MSG_HEARTBEAT ? at : -1.0;
@@ -483,22 +486,28 @@ struct recv_case {
     bool manager;         /* a manager connection, thread running */
     bool first_exited;    /* the first table thread returns before the stop */
     bool one_not_started; /* plus a table connection with no thread */
+    bool withheld;        /* each peer announces a payload, sends part */
     int stops;            /* how many times to call the stop */
     int want_joins;
 };
 
 static const struct recv_case recv_cases[] = {
     {"positive", "two registered, one pending and a manager connection",
-     "every thread is stopped and joined once", 2, 1, true, false, false, 1, 4},
+     "every thread is stopped and joined once", 2, 1, true, false, false, false,
+     1, 4},
     {"negative", "no connections at all", "a no-op: no join", 0, 0, false,
-     false, false, 1, 0},
+     false, false, false, 1, 0},
+    {"negative",
+     "registered and pending peers that send half a payload and stop",
+     "the stop ends the wait for the rest: both joined once", 1, 1, false,
+     false, false, true, 1, 2},
     {"boundary", "a thread that already returned when its peer hung up",
      "still joined, once, along with the running one", 2, 0, false, true, false,
-     1, 2},
+     false, 1, 2},
     {"corner", "a connection whose thread was never started",
-     "not joined; the running one is", 1, 0, false, false, true, 1, 1},
+     "not joined; the running one is", 1, 0, false, false, true, false, 1, 1},
     {"corner", "stop twice", "the second stop is a no-op: no more joins", 1, 1,
-     false, false, false, 2, 2},
+     false, false, false, false, 2, 2},
 };
 
 #define MAX_RECV_CONNS 8
@@ -516,6 +525,8 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     conn->priv = priv;
     conn->sockfd = sv[0];
     conn->is_connected = true;
+    /* Non-blocking, as the backend makes every connection's socket. */
+    fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
     *peer = sv[1];
     if (start) {
         atomic_store(&conn->recv_thread_running, true);
@@ -524,6 +535,24 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
                            QEMU_THREAD_JOINABLE);
     }
     return conn;
+}
+
+/*
+ * Send a header announcing a 64-byte payload, then only half of it, so the
+ * receiving thread sits in tcp_recv_message() waiting for the rest.
+ */
+static bool send_partial_message(int fd)
+{
+    struct {
+        TcpMsgHeader hdr;
+        uint8_t half[32];
+    } msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
+    msg.hdr.msg_len = htonl(2 * sizeof(msg.half));
+    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
 }
 
 static bool wait_for_exits(int n)
@@ -550,6 +579,7 @@ static int run_recv_case(const struct recv_case *c)
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
+    tcp_bufpool_init(&priv->recv_pool);
 
     for (uint32_t i = 0; i < total && i < MAX_RECV_CONNS; i++) {
         bool not_started = c->one_not_started && i == 0;
@@ -571,6 +601,18 @@ static int run_recv_case(const struct recv_case *c)
             priv->manager_conn = conn;
         else
             g_ptr_array_add(priv->pending_conns, conn);
+    }
+
+    if (ok && c->withheld) {
+        for (int i = 0; i < n; i++) {
+            if (!send_partial_message(peers[i])) {
+                printf("FAIL recv %s: %s; could not send the header\n",
+                       c->category, c->description);
+                ok = false;
+                break;
+            }
+        }
+        sleep_ms(200); /* let the threads reach the payload loop */
     }
 
     if (ok && c->first_exited) {
@@ -617,6 +659,7 @@ static int run_recv_case(const struct recv_case *c)
     for (int i = 0; i < n; i++)
         if (peers[i] >= 0)
             close(peers[i]);
+    tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->conn_table_lock);
     g_free(priv);
     return ok ? 0 : 1;

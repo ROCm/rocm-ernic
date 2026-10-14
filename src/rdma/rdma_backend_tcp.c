@@ -1537,8 +1537,15 @@ static int tcp_send_message(int sockfd, TcpMsgType msg_type,
                              seq, src_node, dst_node, src_qpn, dst_qpn);
 }
 
+/*
+ * Receive one message.  The socket is non-blocking, so the payload loop
+ * waits for the rest of a payload whose header has arrived.  A peer can
+ * withhold it, or trickle it, indefinitely, so when running is not NULL the
+ * loop gives up as soon as the flag is cleared; otherwise the thread's stop
+ * would wait on the peer.
+ */
 static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                            TcpBufPool *pool)
+                            TcpBufPool *pool, atomic_bool *running)
 {
     ssize_t ret;
     size_t total_recv = 0;
@@ -1588,6 +1595,12 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             pool ? tcp_bufpool_get(pool, hdr->msg_len) : g_malloc(hdr->msg_len);
         total_recv = 0;
         while (total_recv < hdr->msg_len) {
+            if (running && !atomic_load(running)) {
+                rdma_info_report("TCP: Stopped while receiving payload");
+                g_free(*payload);
+                *payload = NULL;
+                return -1;
+            }
             ret = recv(sockfd, (char *)*payload + total_recv,
                        hdr->msg_len - total_recv, 0);
             if (ret < 0) {
@@ -1647,7 +1660,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
         if (pfd.revents & POLLIN) {
             ret = tcp_recv_message(conn->sockfd, &hdr, &payload,
-                                   conn->priv ? &conn->priv->recv_pool : NULL);
+                                   conn->priv ? &conn->priv->recv_pool : NULL,
+                                   &conn->recv_thread_running);
             if (ret == -EAGAIN) {
                 continue;
             }
@@ -2720,7 +2734,8 @@ static void *tcp_accept_thread(void *opaque)
             int recv_ret;
 
             while (retry_count < max_retries) {
-                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL);
+                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL,
+                                            &priv->accept_thread_running);
                 if (recv_ret == 0) {
                     /* Message received successfully */
                     if (hdr.msg_type == TCP_MSG_HANDSHAKE) {

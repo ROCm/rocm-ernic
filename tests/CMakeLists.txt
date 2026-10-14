@@ -558,8 +558,8 @@ target_link_libraries(test_tcp_mr_bounds PRIVATE
 # the real accept, health-check and receive threads on loopback sockets and
 # socketpairs, with the thread entry points backed by pthreads, so a stop that
 # never returns fails the test.
-add_executable(test_tcp_thread_stop test_tcp_thread_stop.c)
-target_include_directories(test_tcp_thread_stop PRIVATE
+add_executable(ernic-test-tcp-thread-stop test_tcp_thread_stop.c)
+target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
@@ -567,21 +567,21 @@ target_include_directories(test_tcp_thread_stop PRIVATE
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
 # it is warning-checked.
-target_include_directories(test_tcp_thread_stop SYSTEM PRIVATE
+target_include_directories(ernic-test-tcp-thread-stop SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/third-party/qemu/include
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(test_tcp_thread_stop PRIVATE
+target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
     _GNU_SOURCE)
-target_compile_options(test_tcp_thread_stop PRIVATE
+target_compile_options(ernic-test-tcp-thread-stop PRIVATE
     ${ERNIC_UNIT_TEST_SAN})
-target_link_options(test_tcp_thread_stop PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
-target_link_directories(test_tcp_thread_stop PRIVATE
+target_link_options(ernic-test-tcp-thread-stop PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+target_link_directories(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_tcp_thread_stop PRIVATE
+target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # RDMA resource-table allocator test. It #includes the resource-manager
@@ -683,7 +683,7 @@ set(ERNIC_TEST_TARGETS
     test_tcp_mesh_topology
     test_tcp_gid_resolve
     test_tcp_mr_bounds
-    test_tcp_thread_stop
+    ernic-test-tcp-thread-stop
     test_rdma_res_tbl
     test_qemu_stubs
 )
@@ -924,7 +924,7 @@ set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 # backend with no thread still using it.
 add_test(
     NAME tcp-thread-stop-unit
-    COMMAND $<TARGET_FILE:test_tcp_thread_stop>
+    COMMAND $<TARGET_FILE:ernic-test-tcp-thread-stop>
 )
 set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 30)
 
