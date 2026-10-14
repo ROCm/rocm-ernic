@@ -379,6 +379,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#include-what-you-use">include-what-you-use</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-ionic-modules">Guest ionic Modules</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-documentation">Building Documentation</a></li>
 </ul>
@@ -478,37 +479,42 @@ is never broken by a new warning; CI turns it on
 <td><p>Build with LLVM source-based code coverage; Clang only
 (see <a class="reference internal" href="#code-coverage"><span class="std std-ref">Code Coverage</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_IWYU</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
+<td><p>Run include-what-you-use while compiling; advisory
+(see <a class="reference internal" href="#iwyu"><span class="std std-ref">include-what-you-use</span></a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build Sphinx + Breathe + Doxygen documentation</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Configure only documentation targets (no library
 dependencies required)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable the DKMS targets that build the patched
 upstream ionic guest modules (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code></p></td>
 <td><p>Linux kernel tag or SHA the ionic sources are fetched
 from; must be <code class="docutils literal notranslate"><span class="pre">v6.18</span></code> or newer</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
 <td><p>kernel.org stable</p></td>
 <td><p>Linux kernel git repository the ionic sources are
 fetched from</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Also install the systemd units, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, the
 launcher, and the Prometheus exporter
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
 </tr>
@@ -566,6 +572,29 @@ run’s summary page and fails if line coverage drops below the
 floor set in the workflow. On <code class="docutils literal notranslate"><span class="pre">develop</span></code> it also publishes the
 figure to the <code class="docutils literal notranslate"><span class="pre">badges</span></code> branch, which the README’s Coverage
 badge reads.</p>
+</section>
+<section id="include-what-you-use">
+<span id="iwyu"></span><h2>include-what-you-use<a class="headerlink" href="#include-what-you-use" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_IWYU</span></code> runs <a class="reference external" href="https://include-what-you-use.org/">include-what-you-use</a> (IWYU) on the server’s
+and the tests’ sources as they compile, which prints the
+<code class="docutils literal notranslate"><span class="pre">#include</span></code> lines it suggests adding or removing. The
+suggestions don’t fail the build, and some are wrong. The
+vendored sources in <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> are skipped. It needs
+CMake 3.27 or later.</p>
+<p>IWYU parses with its own clang, which rejects compiler options
+that it doesn’t know, so build with the clang that IWYU is
+built on. <code class="docutils literal notranslate"><span class="pre">include-what-you-use</span> <span class="pre">--version</span></code> prints its
+version:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build-iwyu<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang-19<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_USE_IWYU<span class="o">=</span>ON
+cmake<span class="w"> </span>--build<span class="w"> </span>build-iwyu
+</pre></div>
+</div>
+<p>The mapping files <code class="docutils literal notranslate"><span class="pre">cmake/iwyu-*.imp</span></code> correct IWYU where it
+names the wrong header. CI’s IWYU workflow lists the files with
+suggestions on the run’s summary page, and fails only if IWYU
+itself fails. <code class="docutils literal notranslate"><span class="pre">AGENTS.md</span></code> describes how to run that check
+locally and which suggestions to ignore.</p>
 </section>
 <section id="guest-ionic-modules">
 <h2>Guest ionic Modules<a class="headerlink" href="#guest-ionic-modules" title="Link to this heading">#</a></h2>
@@ -654,6 +683,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#include-what-you-use">include-what-you-use</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-ionic-modules">Guest ionic Modules</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-documentation">Building Documentation</a></li>
 </ul>
