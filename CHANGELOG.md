@@ -258,8 +258,12 @@
   anything is freed. A thread waiting for the rest of a message now also gives
   up when it is stopped, so a peer that sends a message header and withholds
   the payload can no longer hold up shutdown, whether it does so to a receive
-  thread or to a worker's accept thread during the handshake.
-  `tcp-thread-stop-unit` covers both.
+  thread or to a worker's accept thread during the handshake. Nor can a peer
+  that stops reading, leaving a receive thread blocked sending it a reply:
+  stopping a receive thread now shuts its socket down, which fails the send.
+  Sends now use `MSG_NOSIGNAL`, so a failed send to a peer that has gone
+  returns an error instead of raising a SIGPIPE that could kill the server.
+  `tcp-thread-stop-unit` covers all three.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now

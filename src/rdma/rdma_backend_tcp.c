@@ -39,7 +39,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
-#include <sys/uio.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -1441,7 +1440,7 @@ static int tcp_listen_on_port(uint16_t port)
 /*
  * The payload may be given in two parts so a caller that already holds a
  * header and a body separately does not have to splice them into one buffer
- * first -- writev sends them as one message either way.
+ * first -- sendmsg() sends them as one message either way.
  */
 static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
                              const void *payload, size_t payload_len,
@@ -1476,8 +1475,8 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     iov[0].iov_base = &hdr;
     iov[0].iov_len = sizeof(hdr);
 
-    /* struct iovec serves readv() as well as writev(), so iov_base is not
-     * const even though writev() only reads through it. */
+    /* struct iovec serves readv() as well as sendmsg(), so iov_base is not
+     * const even though sendmsg() only reads through it. */
     ROCM_ERNIC_WARN_CAST_AWAY_CONST_OFF
     if (payload && payload_len > 0) {
         iov[iovcnt].iov_base = (void *)payload;
@@ -1497,8 +1496,9 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
 
     while (sent < total) {
         struct iovec cur[3];
-        int cur_cnt = 0;
+        size_t cur_cnt = 0;
         size_t skip = sent;
+        struct msghdr msg;
 
         for (int i = 0; i < iovcnt; i++) {
             if (skip >= iov[i].iov_len) {
@@ -1511,7 +1511,15 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
             skip = 0;
         }
 
-        ret = writev(sockfd, cur, cur_cnt);
+        /*
+         * MSG_NOSIGNAL: a peer that has gone, or a socket that teardown has
+         * shut down to wake this loop, fails with EPIPE rather than raising
+         * a SIGPIPE that would kill the server.
+         */
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = cur;
+        msg.msg_iovlen = cur_cnt;
+        ret = sendmsg(sockfd, &msg, MSG_NOSIGNAL);
         if (ret < 0) {
             if (errno == EAGAIN) {
                 struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
@@ -2045,7 +2053,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 /*
                  * conn->lock serialises writes to this socket.
                  * The data path holds it across multi-megabyte
-                 * writev()s, so an unlocked control message here
+                 * sendmsg()s, so an unlocked control message here
                  * would interleave into the middle of one and the
                  * peer would read a header from the payload.
                  * Released before broadcasting: that path takes
@@ -3311,10 +3319,21 @@ static void tcp_stop_health_check_thread(TcpBackendPrivate *priv)
     qemu_thread_join(&priv->health_check_thread);
 }
 
-/* Clear conn's stop flag and queue its thread for a join, if it's running. */
+/*
+ * Clear conn's stop flag and queue its thread for a join, if it's running.
+ * The flag alone isn't enough: the thread may be blocked sending to a peer
+ * that has stopped reading, and that loop waits on the peer, not the flag.
+ * Shutting the socket down fails any send in progress, or to come, with
+ * EPIPE, and any receive with end-of-file.  The descriptor stays open, so
+ * the thread can't end up using a reused one; it's closed when conn is
+ * freed.
+ */
 static void tcp_claim_recv_thread(GPtrArray *batch, TcpConnection *conn)
 {
     if (atomic_exchange(&conn->recv_thread_running, false)) {
+        if (conn->sockfd >= 0) {
+            shutdown(conn->sockfd, SHUT_RDWR);
+        }
         g_ptr_array_add(batch, conn);
     }
 }

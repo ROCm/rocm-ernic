@@ -20,8 +20,10 @@
  * the threads of connections the manager had accepted but not registered.
  * tcp_stop_recv_threads() now stops every receive thread, registered,
  * pending or the worker's manager connection, before anything is freed.
- * A thread waiting for the rest of a payload a peer is withholding gives up
- * when its flag is cleared, so the peer can't hold up the join either.
+ * A peer can't hold up the join either: a thread waiting for the rest of a
+ * payload the peer is withholding gives up when its flag is cleared, and
+ * one blocked sending to a peer that has stopped reading is released when
+ * the stop shuts the socket down.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -40,6 +42,7 @@
  */
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -477,6 +480,13 @@ out:
 
 /* ---- Receive threads --------------------------------------------------- */
 
+/* What each running connection's peer does before the stop. */
+enum peer_action {
+    PEER_QUIET,         /* nothing */
+    PEER_WITHHOLDS,     /* announces a payload and sends half of it */
+    PEER_STOPS_READING, /* asks for a reply and never reads it */
+};
+
 struct recv_case {
     const char *category;
     const char *description;
@@ -486,28 +496,33 @@ struct recv_case {
     bool manager;         /* a manager connection, thread running */
     bool first_exited;    /* the first table thread returns before the stop */
     bool one_not_started; /* plus a table connection with no thread */
-    bool withheld;        /* each peer announces a payload, sends part */
-    int stops;            /* how many times to call the stop */
+    enum peer_action peer;
+    int stops; /* how many times to call the stop */
     int want_joins;
 };
 
 static const struct recv_case recv_cases[] = {
     {"positive", "two registered, one pending and a manager connection",
-     "every thread is stopped and joined once", 2, 1, true, false, false, false,
-     1, 4},
+     "every thread is stopped and joined once", 2, 1, true, false, false,
+     PEER_QUIET, 1, 4},
     {"negative", "no connections at all", "a no-op: no join", 0, 0, false,
-     false, false, false, 1, 0},
+     false, false, PEER_QUIET, 1, 0},
     {"negative",
      "registered and pending peers that send half a payload and stop",
      "the stop ends the wait for the rest: both joined once", 1, 1, false,
-     false, false, true, 1, 2},
+     false, false, PEER_WITHHOLDS, 1, 2},
+    {"negative",
+     "registered and pending peers that never read the manager's replies",
+     "the stop fails the blocked sends: both joined once", 1, 1, false, false,
+     false, PEER_STOPS_READING, 1, 2},
     {"boundary", "a thread that already returned when its peer hung up",
      "still joined, once, along with the running one", 2, 0, false, true, false,
-     false, 1, 2},
+     PEER_QUIET, 1, 2},
     {"corner", "a connection whose thread was never started",
-     "not joined; the running one is", 1, 0, false, false, true, false, 1, 1},
+     "not joined; the running one is", 1, 0, false, false, true, PEER_QUIET, 1,
+     1},
     {"corner", "stop twice", "the second stop is a no-op: no more joins", 1, 1,
-     false, false, false, false, 2, 2},
+     false, false, false, PEER_QUIET, 2, 2},
 };
 
 #define MAX_RECV_CONNS 8
@@ -538,21 +553,51 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
 }
 
 /*
- * Send a header announcing a 64-byte payload, then only half of it, so the
- * receiving thread sits in tcp_recv_message() waiting for the rest.
+ * Send a header announcing a payload of len bytes, followed by the first
+ * sent bytes of it, all zero.
  */
-static bool send_partial_message(int fd)
+static bool send_message(int fd, TcpMsgType type, uint32_t len, uint32_t sent)
 {
     struct {
         TcpMsgHeader hdr;
-        uint8_t half[32];
+        uint8_t payload[TCP_REGISTER_NODE_LEN_V3];
     } msg;
+    size_t size = sizeof(msg.hdr) + sent;
 
+    if (sent > sizeof(msg.payload))
+        return false;
     memset(&msg, 0, sizeof(msg));
     msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
-    msg.hdr.msg_len = htonl(2 * sizeof(msg.half));
-    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+    msg.hdr.msg_type = htonl(type);
+    msg.hdr.msg_len = htonl(len);
+    return send(fd, &msg, size, 0) == (ssize_t)size;
+}
+
+/*
+ * Make the peer do its part.  PEER_WITHHOLDS leaves the thread in
+ * tcp_recv_message() waiting for the rest of a payload.  PEER_STOPS_READING
+ * fills the connection's send buffer, as a peer that stopped reading
+ * eventually would, then sends a registration from a pre-v4 node; the
+ * manager's refusal can't be sent, and the thread waits in the send loop.
+ */
+static bool peer_act(TcpConnection *conn, int peer, enum peer_action action)
+{
+    static const uint8_t fill[4096];
+
+    switch (action) {
+    case PEER_QUIET:
+        return true;
+    case PEER_WITHHOLDS:
+        return send_message(peer, TCP_MSG_HEARTBEAT, 64, 32);
+    case PEER_STOPS_READING:
+        while (send(conn->sockfd, fill, sizeof(fill), 0) > 0)
+            ;
+        return errno == EAGAIN &&
+               send_message(peer, TCP_MSG_REGISTER_NODE,
+                            TCP_REGISTER_NODE_LEN_V3, TCP_REGISTER_NODE_LEN_V3);
+    default:
+        return false;
+    }
 }
 
 static bool wait_for_exits(int n)
@@ -580,6 +625,9 @@ static int run_recv_case(const struct recv_case *c)
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
     tcp_bufpool_init(&priv->recv_pool);
+    /* So a registration gets the manager's refusal */
+    priv->is_manager = true;
+    atomic_init(&priv->next_seq, 1);
 
     for (uint32_t i = 0; i < total && i < MAX_RECV_CONNS; i++) {
         bool not_started = c->one_not_started && i == 0;
@@ -603,16 +651,16 @@ static int run_recv_case(const struct recv_case *c)
             g_ptr_array_add(priv->pending_conns, conn);
     }
 
-    if (ok && c->withheld) {
+    if (ok && c->peer != PEER_QUIET) {
         for (int i = 0; i < n; i++) {
-            if (!send_partial_message(peers[i])) {
-                printf("FAIL recv %s: %s; could not send the header\n",
+            if (!peer_act(all[i], peers[i], c->peer)) {
+                printf("FAIL recv %s: %s; the peer could not do its part\n",
                        c->category, c->description);
                 ok = false;
                 break;
             }
         }
-        sleep_ms(200); /* let the threads reach the payload loop */
+        sleep_ms(200); /* let the threads block */
     }
 
     if (ok && c->first_exited) {
