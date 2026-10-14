@@ -361,6 +361,23 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 target_compile_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
+# ionic hardware statistics test. Like the QUERY_QP test it #includes the
+# admin queue translation unit and backs DMA with a plain buffer, so the
+# header table and values the driver builds hw_counters from can be checked.
+add_executable(test_ionic_stats test_ionic_stats.c)
+target_include_directories(test_ionic_stats PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_stats PRIVATE
+    _GNU_SOURCE)
+target_compile_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN})
+target_link_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
+
 # ionic CQ arm-semantics test. It #includes the datapath translation unit to
 # reach the private CQ state and counts the event callback in-process, so no
 # vfio-user link or guest memory is needed.
@@ -563,6 +580,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_query_qp
+    test_ionic_stats
     test_ionic_cq_arm
     test_tcp_mesh_topology
     test_tcp_gid_resolve
@@ -733,6 +751,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_query_qp>
 )
 set_tests_properties(ionic-query-qp-unit PROPERTIES TIMEOUT 30)
+
+# ionic hardware statistics unit test: asserts the four stats admin commands
+# answer with the header table and LE64 values the driver turns into its
+# hw_counters files, clamped to the buffer, and fail on an unknown QP.
+add_test(
+    NAME ionic-stats-unit
+    COMMAND $<TARGET_FILE:test_ionic_stats>
+)
+set_tests_properties(ionic-stats-unit PROPERTIES TIMEOUT 30)
 
 # ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
 # raises the event immediately, rather than waiting for a CQE that never comes.
