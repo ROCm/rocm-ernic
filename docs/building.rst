@@ -75,6 +75,10 @@ Build Options
    * - ``ERNIC_USE_THREAD_SANITIZER``
      - ``OFF``
      - Enable TSAN (mutually exclusive with above)
+   * - ``ERNIC_USE_CODE_COVERAGE``
+     - ``OFF``
+     - Build with LLVM source-based code coverage; Clang only
+       (see :ref:`code-coverage`)
    * - ``ERNIC_BUILD_DOCS``
      - ``OFF``
      - Build Sphinx + Breathe + Doxygen documentation
@@ -131,6 +135,41 @@ builds are the one exception; they configure with it off
 because gcc 15 and current clang emit warnings on the
 QEMU-ported headers that these builds cannot suppress.
 Those lanes are informational and do not gate merges.
+
+.. _code-coverage:
+
+Code Coverage
+-------------
+
+``ERNIC_USE_CODE_COVERAGE`` instruments the server and the
+test programs with LLVM source-based coverage. It needs Clang,
+and the ``llvm-profdata`` and ``llvm-cov`` of the same LLVM
+version (on Ubuntu, the ``llvm-<version>`` package). Each
+instrumented program writes its profile to ``coverage/profraw``
+in the build directory however it is started, so the servers
+that the CTest scripts launch are counted too. The
+``ernic-coverage`` target merges the profiles and reports the
+coverage of ``src/``:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang \
+     -DERNIC_USE_CODE_COVERAGE=ON
+   cmake --build build
+   ctest --test-dir build
+   cmake --build build --target ernic-coverage
+
+The report goes in ``coverage/report.txt`` (a summary for each
+file) and ``coverage/lines.txt`` (the count for each line).
+The profiles accumulate across runs; delete
+``coverage/profraw`` to start over.
+
+CI's Build and Test workflow runs one coverage leg (Clang,
+Debug, no project-wide sanitizer). It puts the report on the
+run's summary page and fails if line coverage drops below the
+floor set in the workflow. On ``develop`` it also publishes the
+figure to the ``badges`` branch, which the README's Coverage
+badge reads.
 
 Guest ionic Modules
 -------------------

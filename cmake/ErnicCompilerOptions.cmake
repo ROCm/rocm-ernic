@@ -10,6 +10,7 @@
 include(ErnicClangCompilerOptions)
 include(ErnicGNUCompilerOptions)
 include(ErnicSanitizers)
+include(ErnicCoverage)
 
 # Apply compiler warning and hardening flags to ``target``
 # based on the compiler (GCC or Clang) used for each source.
@@ -38,4 +39,8 @@ function(ernic_set_compiler_flags target)
     endforeach()
 
     ernic_add_sanitizers(${target})
+
+    if(ERNIC_USE_CODE_COVERAGE)
+        ernic_add_coverage(${target})
+    endif()
 endfunction()
