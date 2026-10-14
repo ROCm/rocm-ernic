@@ -481,16 +481,16 @@ target_link_libraries(test_tcp_mr_bounds PRIVATE
 # points backed by pthreads, so a stop that never returns fails the test.
 add_executable(test_tcp_accept_stop test_tcp_accept_stop.c)
 target_include_directories(test_tcp_accept_stop PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target. The #included translation unit is reached through src, so
 # it is warning-checked.
 target_include_directories(test_tcp_accept_stop SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
