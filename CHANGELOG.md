@@ -254,16 +254,20 @@
   those threads could still read it, which ThreadSanitizer reported, and never
   stopped or freed the connection of a peer that connected but didn't
   register, such as one it refused for running an older protocol version,
-  which LeakSanitizer reported. Every receive thread is now stopped before
-  anything is freed. A thread waiting for the rest of a message now also gives
-  up when it is stopped, so a peer that sends a message header and withholds
-  the payload can no longer hold up shutdown, whether it does so to a receive
-  thread or to a worker's accept thread during the handshake. Nor can a peer
-  that stops reading, leaving a receive thread blocked sending it a reply:
-  stopping a receive thread now shuts its socket down, which fails the send.
-  Sends now use `MSG_NOSIGNAL`, so a failed send to a peer that has gone
-  returns an error instead of raising a SIGPIPE that could kill the server.
-  `tcp-thread-stop-unit` covers all three.
+  which LeakSanitizer reported. The backend now stops every one of its threads
+  before it frees any of its state. A thread waiting for the rest of a message
+  now also gives up when it is stopped, so a peer that sends a message header
+  and withholds the payload can no longer hold up shutdown, whether it does so
+  to a receive thread or to a worker's accept thread during the handshake. Nor
+  can a peer that stops reading. A thread sending to it -- a receive thread
+  replying, a broadcast to every node, the health check's heartbeat -- waits
+  for room in the socket while holding locks that shutdown needs, and other
+  threads can wait on those locks in turn. Once shutdown begins, such a send
+  now gives up instead of waiting, and stopping a receive thread also shuts its
+  socket down. Sends now use `MSG_NOSIGNAL`, so a failed send to a peer that
+  has gone returns an error instead of raising a SIGPIPE that could kill the
+  server. `tcp-thread-stop-unit` covers all three, and runs a manager's whole
+  shutdown with a worker that has stopped reading.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
@@ -300,4 +304,11 @@
   `connect()` with no timeout of its own, so a SIGTERM that arrives while it is
   connecting to a host that doesn't answer waits for the kernel to give up,
   about two minutes by default. Registrations wait behind it too, since it
-  holds the mesh table's lock throughout.
+  holds the mesh table's lock throughout. A worker has the same problem while
+  it connects to a peer it has just learned about from the manager, and
+  meanwhile its data path waits for the connection table it holds.
+* While the TCP backend is running, a mesh node that stops reading can stall
+  the node sending to it. A send waits for room in the socket for as long as
+  it takes, and a broadcast to every node does that while holding the
+  connection table's lock, which the data path needs too. Only shutdown makes
+  such a send give up.

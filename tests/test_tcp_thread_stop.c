@@ -25,6 +25,15 @@
  * one blocked sending to a peer that has stopped reading is released when
  * the stop shuts the socket down.
  *
+ * That shutdown comes too late for a send that blocks while holding a lock
+ * the stop needs first.  A broadcast sends under conn_table_lock, which
+ * tcp_stop_recv_threads() takes before it shuts anything down, and the
+ * health-check thread, joined before any socket is shut down, can be
+ * blocked in a heartbeat or waiting for a connection's lock.
+ * tcp_stop_threads() therefore sets priv->stopping before any join, and a
+ * send that would have to wait gives up instead.  The last rows run
+ * tcp_init() and tcp_fini() on a manager with a worker that stops reading.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
@@ -122,6 +131,7 @@ void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
  * so "the join came back" and "the thread actually left its loop" are
  * checked separately.
  */
+static atomic_int g_creates;
 static atomic_int g_joins;
 static atomic_int g_exits;
 
@@ -156,6 +166,7 @@ int qemu_thread_create(QemuThread *thread, const char *name,
         free(t);
         return -1;
     }
+    atomic_fetch_add(&g_creates, 1);
     return 0;
 }
 void qemu_thread_exit(void *retval)
@@ -713,6 +724,260 @@ static int run_recv_case(const struct recv_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- The whole backend ------------------------------------------------- */
+
+/*
+ * tcp_init() as a manager, with workers that are plain sockets in this
+ * process, then tcp_fini().  A worker that stops reading leaves a manager
+ * thread blocked sending to it, holding that connection's lock and, in a
+ * broadcast, conn_table_lock as well.  tcp_fini() has to return anyway.
+ *
+ * The workers are attached over socketpairs rather than accepted over TCP.
+ * A TCP socket whose peer has stopped reading doesn't refuse every send:
+ * the kernel grows its buffer for a while, and appends a small send to a
+ * segment already queued, so whether a given heartbeat blocks is up to the
+ * kernel.  A Unix stream socket that is full stays full until the peer
+ * reads.  The backend handles either the same way.
+ */
+
+/* Where the manager is left blocked when tcp_fini() is called. */
+enum mgr_block {
+    BLOCK_NONE,      /* nowhere: the workers' sockets have room */
+    BLOCK_HEARTBEAT, /* the health check, on worker 1's connection */
+    BLOCK_BROADCAST, /* worker 2's registration broadcast, to worker 1 */
+};
+
+struct fini_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum mgr_block block;
+    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+};
+
+static const struct fini_case fini_cases[] = {
+    {"positive", "a manager with two registered workers",
+     "tcp_fini() returns and every thread exits", BLOCK_NONE, "3600"},
+    {"negative", "a worker that stops reading the manager's heartbeats",
+     "the blocked heartbeat gives up, so the health-check join returns",
+     BLOCK_HEARTBEAT, "1"},
+    {"negative", "a worker that stops reading while another registers",
+     "the broadcast blocked under conn_table_lock gives up, so the receive "
+     "threads can be stopped",
+     BLOCK_BROADCAST, "3600"},
+};
+
+/* A TCP port that is free on every address, as the manager binds. */
+static uint16_t free_port(void)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    uint16_t port = 0;
+
+    if (fd < 0)
+        return 0;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+        getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+        port = ntohs(addr.sin_port);
+    close(fd);
+    return port;
+}
+
+/*
+ * Attach a worker to the manager, as tcp_accept_thread() does with a
+ * connection it accepts, and register it.  Returns the worker's end of the
+ * socketpair.  The worker never reads from it; what the manager sends during
+ * these rows fits in the socket's buffer unless fill_conn() fills it first.
+ */
+static int worker_register(TcpBackendPrivate *priv)
+{
+    TcpConnection *conn;
+    TcpMsgHeader hdr;
+    TcpRegisterNodePayload reg;
+    uint8_t buf[sizeof(hdr) + sizeof(reg)];
+    int sv[2];
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0)
+        return -1;
+    fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
+    conn = tcp_connection_new(UINT32_MAX, "worker", 0);
+    conn->sockfd = sv[0];
+    conn->is_connected = true;
+    conn->priv = priv;
+    qemu_mutex_lock(&priv->conn_table_lock);
+    g_ptr_array_add(priv->pending_conns, conn);
+    atomic_store(&conn->recv_thread_running, true);
+    qemu_thread_create(&conn->recv_thread, "tcp-recv-pending",
+                       tcp_recv_thread_per_conn, conn, QEMU_THREAD_JOINABLE);
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr.msg_type = htonl(TCP_MSG_REGISTER_NODE);
+    hdr.msg_len = htonl((uint32_t)sizeof(reg));
+    memset(&reg, 0, sizeof(reg));
+    /* Nothing listens on port 1, so a health-check reconnect fails at once */
+    snprintf(reg.hostname, sizeof(reg.hostname), "127.0.0.1");
+    reg.port = htons(1);
+    reg.requested_node_id = htonl(UINT32_MAX);
+    reg.version = htonl(TCP_PROTOCOL_VERSION);
+    memcpy(buf, &hdr, sizeof(hdr));
+    memcpy(buf + sizeof(hdr), &reg, sizeof(reg));
+
+    /* On failure the connection stays pending, for tcp_fini() to free */
+    if (send(sv[1], buf, sizeof(buf), 0) != (ssize_t)sizeof(buf)) {
+        close(sv[1]);
+        return -1;
+    }
+    return sv[1];
+}
+
+/* Wait up to 5 s for the manager to have n registered connections. */
+static bool wait_for_registered(TcpBackendPrivate *priv, guint n)
+{
+    for (int i = 0; i < 500; i++) {
+        guint have;
+
+        qemu_mutex_lock(&priv->conn_table_lock);
+        have = g_hash_table_size(priv->connections);
+        qemu_mutex_unlock(&priv->conn_table_lock);
+        if (have >= n)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+/*
+ * Fill the manager's socket to a worker, as a worker that has stopped
+ * reading eventually would.  Under conn->lock, like every other writer.
+ */
+static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
+{
+    static const uint8_t fill[4096];
+    TcpConnection *conn = tcp_get_connection(priv, node_id);
+    bool full;
+
+    if (!conn)
+        return false;
+    qemu_mutex_lock(&conn->lock);
+    while (send(conn->sockfd, fill, sizeof(fill), MSG_NOSIGNAL) > 0)
+        ;
+    full = errno == EAGAIN;
+    qemu_mutex_unlock(&conn->lock);
+    return full;
+}
+
+/*
+ * Wait up to 5 s for another thread to hold lock for 100 ms straight, which
+ * a send that has room never does.
+ */
+static bool held_elsewhere(QemuMutex *lock)
+{
+    int busy = 0;
+
+    for (int i = 0; i < 500 && busy < 10; i++) {
+        if (qemu_mutex_trylock(lock) == 0) {
+            qemu_mutex_unlock(lock);
+            busy = 0;
+        } else {
+            busy++;
+        }
+        sleep_ms(10);
+    }
+    return busy >= 10;
+}
+
+static int run_fini_case(const struct fini_case *c)
+{
+    RdmaBackendDev dev;
+    TcpBackendPrivate *priv;
+    char config[64];
+    const char *why = NULL;
+    int w1 = -1, w2 = -1;
+    uint16_t port = free_port();
+    double start, took = 0.0;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (port == 0 || tcp_init(&dev, config) != 0) {
+        printf("FAIL fini %s: %s; could not start a manager\n", c->category,
+               c->description);
+        alarm(0);
+        return 1;
+    }
+    priv = dev.backend_private;
+
+    w1 = worker_register(priv);
+    if (w1 < 0 || !wait_for_registered(priv, 1)) {
+        why = "worker 1 did not register";
+        goto stop;
+    }
+    /* Let worker 1's registration finish sending to it, while there's room */
+    sleep_ms(200);
+
+    if (c->block != BLOCK_NONE && !fill_conn(priv, 1)) {
+        why = "could not fill worker 1's socket";
+        goto stop;
+    }
+    if (c->block == BLOCK_HEARTBEAT) {
+        TcpConnection *conn = tcp_get_connection(priv, 1);
+
+        if (!held_elsewhere(&conn->lock))
+            why = "the health check never blocked on worker 1";
+        goto stop;
+    }
+
+    w2 = worker_register(priv);
+    if (w2 < 0) {
+        why = "could not attach worker 2";
+        goto stop;
+    }
+    if (c->block == BLOCK_BROADCAST) {
+        /* Not wait_for_registered(): the blocked broadcast holds its lock */
+        if (!held_elsewhere(&priv->conn_table_lock))
+            why = "worker 2's broadcast never blocked on worker 1";
+    } else if (!wait_for_registered(priv, 2)) {
+        why = "worker 2 did not register";
+    }
+
+stop:
+    start = now_s();
+    tcp_fini(&dev);
+    took = now_s() - start;
+    alarm(0);
+
+    ok = !why && took < 2.0 &&
+         atomic_load(&g_exits) == atomic_load(&g_creates) &&
+         !dev.backend_private;
+
+    printf("%s fini %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
+           c->description, c->expected);
+    if (!ok)
+        printf("     %s%s%d of %d thread(s) exited, tcp_fini() took %.3f s\n",
+               why ? why : "", why ? "; " : "", atomic_load(&g_exits),
+               atomic_load(&g_creates), took);
+
+    if (w1 >= 0)
+        close(w1);
+    if (w2 >= 0)
+        close(w2);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -724,6 +989,8 @@ int main(void)
         failures += run_health_case(&health_cases[i]);
     for (size_t i = 0; i < sizeof(recv_cases) / sizeof(recv_cases[0]); i++)
         failures += run_recv_case(&recv_cases[i]);
+    for (size_t i = 0; i < sizeof(fini_cases) / sizeof(fini_cases[0]); i++)
+        failures += run_fini_case(&fini_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

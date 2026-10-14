@@ -919,9 +919,10 @@ set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # TCP thread stop unit test: asserts stopping the accept thread returns while
 # it is blocked in accept(), stopping the health-check thread returns without
-# waiting out its interval, and every receive thread is stopped and joined
-# once, which is what lets tcp_fini() finish on SIGTERM promptly and free the
-# backend with no thread still using it.
+# waiting out its interval, every receive thread is stopped and joined once,
+# and tcp_fini() returns while a manager thread is blocked sending to a worker
+# that stopped reading, which is what lets tcp_fini() finish on SIGTERM
+# promptly and free the backend with no thread still using it.
 add_test(
     NAME tcp-thread-stop-unit
     COMMAND $<TARGET_FILE:ernic-test-tcp-thread-stop>
