@@ -11,8 +11,10 @@
 #ifndef QEMU_THREAD_H
 #define QEMU_THREAD_H
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <time.h>
 
 /* QemuMutex - wrapper around pthread_mutex */
 typedef struct QemuMutex {
@@ -112,10 +114,19 @@ int qemu_thread_create(QemuThread *thread, const char *name,
 _Noreturn void qemu_thread_exit(void *retval);
 void qemu_thread_join(QemuThread *thread);
 
-/* Condition variable operations */
+/*
+ * Condition variable operations.  As in QEMU, timed waits are measured
+ * against CLOCK_MONOTONIC, so a change to the wall clock neither cuts a wait
+ * short nor stretches it.
+ */
 static inline void qemu_cond_init(QemuCond *cond)
 {
-    pthread_cond_init(&cond->cond, NULL);
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&cond->cond, &attr);
+    pthread_condattr_destroy(&attr);
 }
 
 static inline void qemu_cond_destroy(QemuCond *cond)
@@ -142,6 +153,24 @@ static inline void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex,
 }
 
 #define qemu_cond_wait(c, m) qemu_cond_wait_impl(c, m, __FILE__, __LINE__)
+
+/*
+ * Wait until signalled or until deadline, a CLOCK_MONOTONIC time.  Returns
+ * false once the deadline has passed.  Like qemu_cond_wait(), it can also
+ * return without a signal, so callers recheck their condition in a loop.
+ */
+static inline bool qemu_cond_timedwait_until_impl(
+    QemuCond *cond, QemuMutex *mutex, const struct timespec *deadline,
+    const char *file, int line)
+{
+    (void)file;
+    (void)line;
+    return pthread_cond_timedwait(&cond->cond, &mutex->lock, deadline) !=
+           ETIMEDOUT;
+}
+
+#define qemu_cond_timedwait_until(c, m, d) \
+    qemu_cond_timedwait_until_impl(c, m, d, __FILE__, __LINE__)
 
 /* Thread-safety analysis attributes - no-ops for GCC */
 #define TSA_NO_TSA

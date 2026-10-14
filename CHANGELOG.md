@@ -237,13 +237,43 @@
   16 * 2^40 bytes and drive a walk of four billion iterations. Widening the product
   above narrowed the mismatch case but left the count unbounded, so this
   completes that fix rather than replacing it.
-* A server on the TCP backend no longer hangs on SIGTERM waiting for its accept
-  thread, which stayed blocked in `accept()` until a peer happened to connect;
-  shutdown now wakes it. A worker that fails to register with its manager also
-  stops its accept thread before freeing the state that thread uses.
-  `tests/test_tcp_accept_stop.c` (CTest `tcp-accept-stop-unit`) covers it. A
-  manager can still take up to `ERNIC_TCP_HEALTH_INTERVAL` seconds to exit
-  while its health-check thread finishes sleeping.
+* A server on the TCP backend no longer hangs on SIGTERM. Its accept thread
+  stayed blocked in `accept()` until a peer happened to connect, and a
+  manager's health-check thread slept out the whole
+  `ERNIC_TCP_HEALTH_INTERVAL` before it noticed the shutdown; shutdown now
+  wakes both. A worker that fails to register with its manager also stops its
+  accept thread before freeing the state that thread uses, and its 5-second
+  registration timeout is now measured on the monotonic clock, so a change to
+  the system time no longer shortens or stretches it.
+  `tests/test_tcp_thread_stop.c` (CTest `tcp-thread-stop-unit`) covers both
+  threads, and `server-lifecycle` checks that a manager exits promptly.
+  `tcp-mesh-ci` no longer SIGKILLs its nodes: a node still running 30 seconds
+  after SIGTERM, or one that exits with a non-zero status, fails the test.
+* A TCP mesh node no longer frees its backend at shutdown while receive
+  threads are still using it. A manager freed its table of mesh nodes while
+  those threads could still read it, which ThreadSanitizer reported, and never
+  stopped or freed the connection of a peer that connected but didn't
+  register, such as one it refused for running an older protocol version,
+  which LeakSanitizer reported. The backend now stops every one of its threads
+  before it frees any of its state. A thread waiting for the rest of a message
+  now also gives up when it is stopped, so a peer that sends a message header
+  and withholds the payload can no longer hold up shutdown, whether it does so
+  to a receive thread or to a worker's accept thread during the handshake. Nor
+  can a peer that stops reading. A thread sending to it -- a receive thread
+  replying, a broadcast to every node, the health check's heartbeat -- waits
+  for room in the socket while holding locks that shutdown needs, and other
+  threads can wait on those locks in turn. Once shutdown begins, such a send
+  now gives up instead of waiting, and stopping a receive thread also shuts its
+  socket down. Sends now use `MSG_NOSIGNAL`, so a failed send to a peer that
+  has gone returns an error instead of raising a SIGPIPE that could kill the
+  server. `tcp-thread-stop-unit` covers all three, and runs a manager's whole
+  shutdown with a worker that has stopped reading.
+* A TCP mesh node that can't start one of its threads, because the process is
+  out of threads or memory, no longer tries to join that thread at shutdown,
+  which could crash the server. A connection whose receive thread can't be
+  started is closed instead of kept, and a node whose accept or health-check
+  thread can't be started fails to initialize. `tcp-thread-stop-unit` covers
+  it.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
@@ -275,3 +305,16 @@
   `tcp_mr_range_ok()`, the loopback one by skipping regions without a mapping during
   translation -- but the registration itself is unchanged, and neither
   `cmd->start` nor `cmd->length` is validated before it.
+* A TCP mesh manager can still be slow to stop while its health check is
+  reconnecting to a node that has gone away. The reconnect uses a blocking
+  `connect()` with no timeout of its own, so a SIGTERM that arrives while it is
+  connecting to a host that doesn't answer waits for the kernel to give up,
+  about two minutes by default. Registrations wait behind it too, since it
+  holds the mesh table's lock throughout. A worker has the same problem while
+  it connects to a peer it has just learned about from the manager, and
+  meanwhile its data path waits for the connection table it holds.
+* While the TCP backend is running, a mesh node that stops reading can stall
+  the node sending to it. A send waits for room in the socket for as long as
+  it takes, and a broadcast to every node does that while holding the
+  connection table's lock, which the data path needs too. Only shutdown makes
+  such a send give up.

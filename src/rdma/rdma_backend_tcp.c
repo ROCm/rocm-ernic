@@ -29,7 +29,6 @@
 #include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <infiniband/verbs.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -40,7 +39,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
-#include <sys/uio.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -538,7 +536,13 @@ struct TcpBackendPrivate {
 
     /* Multi-connection support */
     GHashTable *connections; /* node_id -> TcpConnection* */
-    QemuMutex conn_table_lock;
+    /*
+     * Connections the manager has accepted that haven't registered, or were
+     * refused.  Registration moves a connection from here to connections.
+     * Kept so teardown can stop their receive threads and free them.
+     */
+    GPtrArray *pending_conns;
+    QemuMutex conn_table_lock; /* Protects connections and pending_conns */
 
     /*
      * What each node says it owns: node_id -> TcpNodeGids.  This is the
@@ -582,12 +586,28 @@ struct TcpBackendPrivate {
     QemuThread accept_thread;
     atomic_bool accept_thread_running;
 
+    /*
+     * Set at the start of teardown and never cleared.  From then on a send
+     * that would have to wait for the peer fails instead (see
+     * tcp_send_message2()), so a thread blocked sending to a peer that has
+     * stopped reading lets go of the locks it holds, and teardown's joins
+     * don't wait on that peer.
+     */
+    atomic_bool stopping;
+
     /* Manager-specific fields */
     bool is_manager;
     GHashTable *mesh_nodes; /* node_id -> MeshNodeInfo* */
     QemuMutex mesh_table_lock;
     QemuThread health_check_thread;
-    bool health_check_running;
+    /*
+     * Cleared under health_check_lock, with health_check_cond signalled, to
+     * stop the thread; see tcp_stop_health_check_thread().  The thread also
+     * reads it without the lock at the top of each pass.
+     */
+    atomic_bool health_check_running;
+    QemuMutex health_check_lock;
+    QemuCond health_check_cond;
     uint32_t health_check_interval_sec; /* Default: 5 seconds */
     uint32_t next_available_node_id;    /* For auto-assigning node IDs */
 
@@ -1429,12 +1449,20 @@ static int tcp_listen_on_port(uint16_t port)
 /*
  * The payload may be given in two parts so a caller that already holds a
  * header and a body separately does not have to splice them into one buffer
- * first -- writev sends them as one message either way.
+ * first -- sendmsg() sends them as one message either way.
+ *
+ * The socket is non-blocking, so when the peer isn't reading fast enough the
+ * loop waits for room.  Once priv->stopping is set it fails instead of
+ * waiting, possibly part-way through the message; teardown is about to shut
+ * the socket down anyway.  Callers usually hold conn->lock, and some hold
+ * conn_table_lock too, so without this a peer that stops reading would hold
+ * those locks, and teardown, indefinitely.
  */
-static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
-                             const void *payload, size_t payload_len,
-                             const void *payload2, size_t payload2_len,
-                             uint32_t seq, uint32_t src_node, uint32_t dst_node,
+static int tcp_send_message2(TcpBackendPrivate *priv, int sockfd,
+                             TcpMsgType msg_type, const void *payload,
+                             size_t payload_len, const void *payload2,
+                             size_t payload2_len, uint32_t seq,
+                             uint32_t src_node, uint32_t dst_node,
                              uint32_t src_qpn, uint32_t dst_qpn)
 {
     TcpMsgHeader hdr;
@@ -1464,8 +1492,8 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     iov[0].iov_base = &hdr;
     iov[0].iov_len = sizeof(hdr);
 
-    /* struct iovec serves readv() as well as writev(), so iov_base is not
-     * const even though writev() only reads through it. */
+    /* struct iovec serves readv() as well as sendmsg(), so iov_base is not
+     * const even though sendmsg() only reads through it. */
     ROCM_ERNIC_WARN_CAST_AWAY_CONST_OFF
     if (payload && payload_len > 0) {
         iov[iovcnt].iov_base = (void *)payload;
@@ -1485,8 +1513,9 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
 
     while (sent < total) {
         struct iovec cur[3];
-        int cur_cnt = 0;
+        size_t cur_cnt = 0;
         size_t skip = sent;
+        struct msghdr msg;
 
         for (int i = 0; i < iovcnt; i++) {
             if (skip >= iov[i].iov_len) {
@@ -1499,10 +1528,23 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
             skip = 0;
         }
 
-        ret = writev(sockfd, cur, cur_cnt);
+        /*
+         * MSG_NOSIGNAL: a peer that has gone, or a socket that teardown has
+         * shut down to wake this loop, fails with EPIPE rather than raising
+         * a SIGPIPE that would kill the server.
+         */
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = cur;
+        msg.msg_iovlen = cur_cnt;
+        ret = sendmsg(sockfd, &msg, MSG_NOSIGNAL);
         if (ret < 0) {
             if (errno == EAGAIN) {
                 struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
+
+                if (atomic_load(&priv->stopping)) {
+                    rdma_info_report("TCP: Stopped while sending message");
+                    return -1;
+                }
                 poll(&pfd, 1, 5);
                 continue;
             }
@@ -1516,17 +1558,25 @@ static int tcp_send_message2(int sockfd, TcpMsgType msg_type,
     return 0;
 }
 
-static int tcp_send_message(int sockfd, TcpMsgType msg_type,
-                            const void *payload, size_t payload_len,
-                            uint32_t seq, uint32_t src_node, uint32_t dst_node,
-                            uint32_t src_qpn, uint32_t dst_qpn)
+static int tcp_send_message(TcpBackendPrivate *priv, int sockfd,
+                            TcpMsgType msg_type, const void *payload,
+                            size_t payload_len, uint32_t seq, uint32_t src_node,
+                            uint32_t dst_node, uint32_t src_qpn,
+                            uint32_t dst_qpn)
 {
-    return tcp_send_message2(sockfd, msg_type, payload, payload_len, NULL, 0,
-                             seq, src_node, dst_node, src_qpn, dst_qpn);
+    return tcp_send_message2(priv, sockfd, msg_type, payload, payload_len, NULL,
+                             0, seq, src_node, dst_node, src_qpn, dst_qpn);
 }
 
+/*
+ * Receive one message.  The socket is non-blocking, so the payload loop
+ * waits for the rest of a payload whose header has arrived.  A peer can
+ * withhold it, or trickle it, indefinitely, so when running is not NULL the
+ * loop gives up as soon as the flag is cleared; otherwise the thread's stop
+ * would wait on the peer.
+ */
 static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                            TcpBufPool *pool)
+                            TcpBufPool *pool, atomic_bool *running)
 {
     ssize_t ret;
     size_t total_recv = 0;
@@ -1576,6 +1626,12 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             pool ? tcp_bufpool_get(pool, hdr->msg_len) : g_malloc(hdr->msg_len);
         total_recv = 0;
         while (total_recv < hdr->msg_len) {
+            if (running && !atomic_load(running)) {
+                rdma_info_report("TCP: Stopped while receiving payload");
+                g_free(*payload);
+                *payload = NULL;
+                return -1;
+            }
             ret = recv(sockfd, (char *)*payload + total_recv,
                        hdr->msg_len - total_recv, 0);
             if (ret < 0) {
@@ -1603,6 +1659,43 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
     }
 
     return 0;
+}
+
+static void *tcp_recv_thread_per_conn(void *opaque);
+
+/*
+ * Start a backend thread whose stop flag is *running.  The flag is set
+ * first, because the thread exits as soon as it finds it clear.  If the
+ * thread can't be created (the process is out of threads or memory), the
+ * flag is cleared again and false is returned: every stop joins only when
+ * the flag is set, and a join of a thread that was never created is
+ * undefined behavior.
+ *
+ * No stop may run between the set and the clear.  Callers hold the lock the
+ * stop takes first, or start the thread before the stop can reach it.
+ */
+static bool tcp_start_thread(QemuThread *thread, const char *name,
+                             void *(*fn)(void *), void *arg,
+                             atomic_bool *running)
+{
+    atomic_store(running, true);
+    if (qemu_thread_create(thread, name, fn, arg, QEMU_THREAD_JOINABLE) != 0) {
+        atomic_store(running, false);
+        rdma_error_report("TCP: Failed to start thread %s", name);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Start conn's receive thread.  On failure the caller frees conn rather than
+ * publishing it.  Callers either hold conn_table_lock or start the thread
+ * before tcp_stop_recv_threads() can reach conn.
+ */
+static bool tcp_start_recv_thread(TcpConnection *conn, const char *name)
+{
+    return tcp_start_thread(&conn->recv_thread, name, tcp_recv_thread_per_conn,
+                            conn, &conn->recv_thread_running);
 }
 
 /* Per-connection receive thread */
@@ -1635,7 +1728,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
         if (pfd.revents & POLLIN) {
             ret = tcp_recv_message(conn->sockfd, &hdr, &payload,
-                                   conn->priv ? &conn->priv->recv_pool : NULL);
+                                   conn->priv ? &conn->priv->recv_pool : NULL,
+                                   &conn->recv_thread_running);
             if (ret == -EAGAIN) {
                 continue;
             }
@@ -1726,9 +1820,9 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                     qemu_mutex_lock(&sc->lock);
                                     if (sc->sockfd >= 0) {
                                         tcp_send_message(
-                                            sc->sockfd, TCP_MSG_COMPLETION,
-                                            NULL, 0, hdr.seq,
-                                            tcp_local_node(priv),
+                                            priv, sc->sockfd,
+                                            TCP_MSG_COMPLETION, NULL, 0,
+                                            hdr.seq, tcp_local_node(priv),
                                             hdr.src_node_id, hdr.dst_qpn,
                                             hdr.src_qpn);
                                     }
@@ -1820,8 +1914,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                             qemu_mutex_lock(&src_conn->lock);
                             if (src_conn->sockfd >= 0) {
                                 tcp_send_message(
-                                    src_conn->sockfd, TCP_MSG_COMPLETION, NULL,
-                                    0, hdr.seq, tcp_local_node(priv),
+                                    priv, src_conn->sockfd, TCP_MSG_COMPLETION,
+                                    NULL, 0, hdr.seq, tcp_local_node(priv),
                                     hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
                                 rdma_info_report(
                                     "TCP: Sent completion ACK to node %u",
@@ -1939,7 +2033,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                     qemu_mutex_lock(&conn->lock);
                     tcp_send_message(
-                        conn->sockfd, TCP_MSG_REGISTER_RESP, &nak, sizeof(nak),
+                        priv, conn->sockfd, TCP_MSG_REGISTER_RESP, &nak,
+                        sizeof(nak),
                         atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                   memory_order_relaxed),
                         tcp_local_node(priv), hdr.src_node_id, 0, 0);
@@ -1994,8 +2089,9 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 g_hash_table_insert(priv->mesh_nodes,
                                     GUINT_TO_POINTER(assigned_id), node);
 
-                /* Add to connections table */
+                /* Move from the pending list to the connections table */
                 qemu_mutex_lock(&priv->conn_table_lock);
+                g_ptr_array_remove_fast(priv->pending_conns, conn);
                 g_hash_table_insert(priv->connections,
                                     GUINT_TO_POINTER(assigned_id), conn);
                 qemu_mutex_unlock(&priv->conn_table_lock);
@@ -2018,7 +2114,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 /*
                  * conn->lock serialises writes to this socket.
                  * The data path holds it across multi-megabyte
-                 * writev()s, so an unlocked control message here
+                 * sendmsg()s, so an unlocked control message here
                  * would interleave into the middle of one and the
                  * peer would read a header from the payload.
                  * Released before broadcasting: that path takes
@@ -2026,8 +2122,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                  * recursive.
                  */
                 qemu_mutex_lock(&conn->lock);
-                tcp_send_message(conn->sockfd, TCP_MSG_REGISTER_RESP, &resp,
-                                 sizeof(resp),
+                tcp_send_message(priv, conn->sockfd, TCP_MSG_REGISTER_RESP,
+                                 &resp, sizeof(resp),
                                  atomic_fetch_add_explicit(
                                      &priv->next_seq, 1, memory_order_relaxed),
                                  tcp_local_node(priv), assigned_id, 0, 0);
@@ -2222,10 +2318,10 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     char thread_name[32];
                     snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
                              peer_id);
-                    atomic_store(&peer_conn->recv_thread_running, true);
-                    qemu_thread_create(&peer_conn->recv_thread, thread_name,
-                                       tcp_recv_thread_per_conn, peer_conn,
-                                       QEMU_THREAD_JOINABLE);
+                    if (!tcp_start_recv_thread(peer_conn, thread_name)) {
+                        tcp_connection_free(peer_conn);
+                        continue;
+                    }
 
                     /* Add to connections table */
                     g_hash_table_insert(priv->connections,
@@ -2323,7 +2419,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                      * REGISTER_RESP send above. */
                     qemu_mutex_lock(&conn->lock);
                     tcp_send_message(
-                        conn->sockfd, TCP_MSG_HEARTBEAT_RESP, NULL, 0,
+                        priv, conn->sockfd, TCP_MSG_HEARTBEAT_RESP, NULL, 0,
                         atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                   memory_order_relaxed),
                         tcp_local_node(priv), hdr.src_node_id, 0, 0);
@@ -2334,7 +2430,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                      * liveness timestamp. */
                     qemu_mutex_lock(&conn->lock);
                     tcp_send_message(
-                        conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
+                        priv, conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
                         atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                   memory_order_relaxed),
                         tcp_local_node(priv), hdr.src_node_id, 0, 0);
@@ -2376,10 +2472,10 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                     if (fwd && fwd->is_connected && fwd->sockfd >= 0) {
                         qemu_mutex_lock(&fwd->lock);
-                        tcp_send_message(fwd->sockfd, TCP_MSG_IONIC, payload,
-                                         hdr.msg_len, hdr.seq, hdr.src_node_id,
-                                         hdr.dst_node_id, hdr.src_qpn,
-                                         hdr.dst_qpn);
+                        tcp_send_message(priv, fwd->sockfd, TCP_MSG_IONIC,
+                                         payload, hdr.msg_len, hdr.seq,
+                                         hdr.src_node_id, hdr.dst_node_id,
+                                         hdr.src_qpn, hdr.dst_qpn);
                         qemu_mutex_unlock(&fwd->lock);
                     } else {
                         rdma_error_report("TCP: cannot relay ionic message "
@@ -2459,8 +2555,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 if (src_conn && src_conn->is_connected &&
                     src_conn->sockfd >= 0) {
                     qemu_mutex_lock(&src_conn->lock);
-                    tcp_send_message(src_conn->sockfd, TCP_MSG_COMPLETION, NULL,
-                                     0, hdr.seq, tcp_local_node(priv),
+                    tcp_send_message(priv, src_conn->sockfd, TCP_MSG_COMPLETION,
+                                     NULL, 0, hdr.seq, tcp_local_node(priv),
                                      hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
                     qemu_mutex_unlock(&src_conn->lock);
                 }
@@ -2515,10 +2611,10 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 if (src_conn && src_conn->is_connected &&
                     src_conn->sockfd >= 0) {
                     qemu_mutex_lock(&src_conn->lock);
-                    tcp_send_message(src_conn->sockfd, TCP_MSG_RDMA_READ_RESP,
-                                     host_src, dlen, hdr.seq,
-                                     tcp_local_node(priv), hdr.src_node_id,
-                                     hdr.dst_qpn, hdr.src_qpn);
+                    tcp_send_message(priv, src_conn->sockfd,
+                                     TCP_MSG_RDMA_READ_RESP, host_src, dlen,
+                                     hdr.seq, tcp_local_node(priv),
+                                     hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
                     qemu_mutex_unlock(&src_conn->lock);
                 }
                 break;
@@ -2619,9 +2715,9 @@ static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
      * not recursive.
      */
     qemu_mutex_lock(&conn->lock);
-    int ret =
-        tcp_send_message(conn->sockfd, msg_type, &payload, sizeof(payload), 1,
-                         local_node_id, conn->node_id, 0, 0);
+    int ret = tcp_send_message(conn->priv, conn->sockfd, msg_type, &payload,
+                               sizeof(payload), 1, local_node_id, conn->node_id,
+                               0, 0);
     qemu_mutex_unlock(&conn->lock);
     return ret;
 }
@@ -2686,15 +2782,21 @@ static void *tcp_accept_thread(void *opaque)
             conn->priv = priv;
             qemu_mutex_init(&conn->lock);
 
-            /* Start receive thread - it will handle REGISTER_NODE */
-            snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
-            atomic_store(&conn->recv_thread_running, true);
-            qemu_thread_create(&conn->recv_thread, thread_name,
-                               tcp_recv_thread_per_conn, conn,
-                               QEMU_THREAD_JOINABLE);
-
-            /* Connection will be added to table when REGISTER_NODE is received
+            /*
+             * Start receive thread - it will handle REGISTER_NODE, which
+             * moves the connection to the connections table.  The lock is
+             * held until the connection is on the pending list, so the move
+             * can't happen before it's there.
              */
+            snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
+            qemu_mutex_lock(&priv->conn_table_lock);
+            if (!tcp_start_recv_thread(conn, thread_name)) {
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                tcp_connection_free(conn);
+                continue;
+            }
+            g_ptr_array_add(priv->pending_conns, conn);
+            qemu_mutex_unlock(&priv->conn_table_lock);
         } else {
             /* Worker mode: receive handshake to identify remote node */
             int retry_count = 0;
@@ -2702,7 +2804,8 @@ static void *tcp_accept_thread(void *opaque)
             int recv_ret;
 
             while (retry_count < max_retries) {
-                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL);
+                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL,
+                                            &priv->accept_thread_running);
                 if (recv_ret == 0) {
                     /* Message received successfully */
                     if (hdr.msg_type == TCP_MSG_HANDSHAKE) {
@@ -2788,6 +2891,20 @@ static void *tcp_accept_thread(void *opaque)
             conn->priv = priv;
             qemu_mutex_init(&conn->lock);
 
+            /*
+             * Start the receive thread before the connection is published,
+             * so a connection without one is never in the table.
+             */
+            snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                     remote_node_id);
+            if (!tcp_start_recv_thread(conn, thread_name)) {
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                tcp_connection_free(conn);
+                g_free(payload);
+                payload = NULL;
+                continue;
+            }
+
             /* Add to connection table */
             g_hash_table_insert(priv->connections,
                                 GUINT_TO_POINTER(remote_node_id), conn);
@@ -2796,14 +2913,6 @@ static void *tcp_accept_thread(void *opaque)
             /* Send handshake response */
             tcp_send_handshake(conn, tcp_local_node(priv),
                                TCP_MSG_HANDSHAKE_RESP);
-
-            /* Start receive thread for this connection */
-            snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
-                     remote_node_id);
-            atomic_store(&conn->recv_thread_running, true);
-            qemu_thread_create(&conn->recv_thread, thread_name,
-                               tcp_recv_thread_per_conn, conn,
-                               QEMU_THREAD_JOINABLE);
 
             g_free(payload);
             payload = NULL;
@@ -2869,7 +2978,7 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
         TcpConnection *conn = (TcpConnection *)value;
         if (conn && conn->is_connected && conn->sockfd >= 0) {
             qemu_mutex_lock(&conn->lock);
-            tcp_send_message(conn->sockfd, TCP_MSG_MESH_TOPOLOGY, &topo,
+            tcp_send_message(priv, conn->sockfd, TCP_MSG_MESH_TOPOLOGY, &topo,
                              sizeof(TcpMeshTopologyPayload),
                              atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                        memory_order_relaxed),
@@ -2908,7 +3017,7 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
 
     qemu_mutex_lock(&conn->lock);
     tcp_send_message(
-        conn->sockfd, TCP_MSG_NODE_GIDS, payload, sizeof(*payload),
+        priv, conn->sockfd, TCP_MSG_NODE_GIDS, payload, sizeof(*payload),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
         tcp_local_node(priv), conn->node_id, 0, 0);
     qemu_mutex_unlock(&conn->lock);
@@ -3000,7 +3109,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
 
     rdma_info_report("TCP: Manager health check thread started");
 
-    while (priv->health_check_running) {
+    while (atomic_load(&priv->health_check_running)) {
         qemu_mutex_lock(&priv->mesh_table_lock);
 
         GHashTableIter iter;
@@ -3017,7 +3126,8 @@ static void *tcp_manager_health_check_thread(void *opaque)
             if (node->conn && node->conn->is_connected &&
                 node->conn->sockfd >= 0) {
                 qemu_mutex_lock(&node->conn->lock);
-                tcp_send_message(node->conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
+                tcp_send_message(priv, node->conn->sockfd, TCP_MSG_HEARTBEAT,
+                                 NULL, 0,
                                  atomic_fetch_add_explicit(
                                      &priv->next_seq, 1, memory_order_relaxed),
                                  tcp_local_node(priv), node->node_id, 0, 0);
@@ -3090,10 +3200,10 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         char tname[32];
                         snprintf(tname, sizeof(tname), "tcp-recv-%u",
                                  node->node_id);
-                        atomic_store(&new_conn->recv_thread_running, true);
-                        qemu_thread_create(&new_conn->recv_thread, tname,
-                                           tcp_recv_thread_per_conn, new_conn,
-                                           QEMU_THREAD_JOINABLE);
+                        if (!tcp_start_recv_thread(new_conn, tname)) {
+                            tcp_connection_free(new_conn);
+                            goto reconnect_done;
+                        }
 
                         qemu_mutex_lock(&priv->conn_table_lock);
                         g_hash_table_replace(priv->connections,
@@ -3123,8 +3233,24 @@ static void *tcp_manager_health_check_thread(void *opaque)
 
         qemu_mutex_unlock(&priv->mesh_table_lock);
 
-        /* Sleep for health check interval */
-        g_usleep(priv->health_check_interval_sec * G_USEC_PER_SEC);
+        /*
+         * Wait out the interval, or until tcp_stop_health_check_thread()
+         * clears the flag.  The flag is checked under the lock the stop
+         * holds while clearing it, so a stop can't slip in between the
+         * check and the wait and go unseen.
+         */
+        struct timespec deadline;
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += priv->health_check_interval_sec;
+        qemu_mutex_lock(&priv->health_check_lock);
+        while (atomic_load(&priv->health_check_running)) {
+            if (!qemu_cond_timedwait_until(&priv->health_check_cond,
+                                           &priv->health_check_lock,
+                                           &deadline)) {
+                break;
+            }
+        }
+        qemu_mutex_unlock(&priv->health_check_lock);
     }
 
     rdma_info_report("TCP: Manager health check thread exiting");
@@ -3164,10 +3290,11 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     /* Start receive thread for manager connection */
     char thread_name[32];
     snprintf(thread_name, sizeof(thread_name), "tcp-mgr-recv");
-    atomic_store(&priv->manager_conn->recv_thread_running, true);
-    qemu_thread_create(&priv->manager_conn->recv_thread, thread_name,
-                       tcp_recv_thread_per_conn, priv->manager_conn,
-                       QEMU_THREAD_JOINABLE);
+    if (!tcp_start_recv_thread(priv->manager_conn, thread_name)) {
+        tcp_connection_free(priv->manager_conn);
+        priv->manager_conn = NULL;
+        return -1;
+    }
 
     /* Prepare registration payload */
     memset(&reg, 0, sizeof(reg));
@@ -3181,7 +3308,8 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
      * carrying traffic, so serialise on conn->lock. */
     qemu_mutex_lock(&priv->manager_conn->lock);
     ret = tcp_send_message(
-        priv->manager_conn->sockfd, TCP_MSG_REGISTER_NODE, &reg, sizeof(reg),
+        priv, priv->manager_conn->sockfd, TCP_MSG_REGISTER_NODE, &reg,
+        sizeof(reg),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed), 0,
         0, 0, 0);
     qemu_mutex_unlock(&priv->manager_conn->lock);
@@ -3192,30 +3320,18 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
 
     /* Wait for registration to complete (handled by receive thread) */
     qemu_mutex_lock(&priv->registration_mutex);
-    int timeout_sec = 5; /* 5 seconds */
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += timeout_sec;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += 5;
 
     while (!priv->registration_complete) {
-        /* Use pthread directly for timed wait */
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec &&
-                                             now.tv_nsec >= deadline.tv_nsec)) {
+        if (!qemu_cond_timedwait_until(&priv->registration_cond,
+                                       &priv->registration_mutex, &deadline) &&
+            !priv->registration_complete) {
             qemu_mutex_unlock(&priv->registration_mutex);
             rdma_error_report("TCP: Registration timeout");
             return -1;
         }
-        int wait_ret =
-            pthread_cond_timedwait(&priv->registration_cond.cond,
-                                   &priv->registration_mutex.lock, &deadline);
-        if (wait_ret == ETIMEDOUT) {
-            qemu_mutex_unlock(&priv->registration_mutex);
-            rdma_error_report("TCP: Registration timeout");
-            return -1;
-        }
-        /* If we were signaled, check registration_complete flag */
     }
 
     bool success = (tcp_local_node(priv) != 0);
@@ -3254,6 +3370,118 @@ static void tcp_stop_accept_thread(TcpBackendPrivate *priv)
     qemu_thread_join(&priv->accept_thread);
 }
 
+/*
+ * Stop the manager's health-check thread and wait for it.  The thread spends
+ * nearly all its time waiting out health_check_interval_sec, so clearing the
+ * flag alone would leave the join (and a SIGTERM shutdown) waiting up to that
+ * long; the signal ends the wait at once.  The flag is cleared under
+ * health_check_lock so the thread can't miss the signal.  A no-op when the
+ * thread was never started.
+ */
+static void tcp_stop_health_check_thread(TcpBackendPrivate *priv)
+{
+    if (!atomic_load(&priv->health_check_running)) {
+        return;
+    }
+    qemu_mutex_lock(&priv->health_check_lock);
+    atomic_store(&priv->health_check_running, false);
+    qemu_cond_signal(&priv->health_check_cond);
+    qemu_mutex_unlock(&priv->health_check_lock);
+    qemu_thread_join(&priv->health_check_thread);
+}
+
+/*
+ * Clear conn's stop flag and queue its thread for a join, if it's running.
+ * The flag alone isn't enough: the thread may be blocked sending to a peer
+ * that has stopped reading, and that loop waits on the peer, not the flag.
+ * Shutting the socket down fails any send in progress, or to come, with
+ * EPIPE, and any receive with end-of-file.  The descriptor stays open, so
+ * the thread can't end up using a reused one; it's closed when conn is
+ * freed.
+ */
+static void tcp_claim_recv_thread(GPtrArray *batch, TcpConnection *conn)
+{
+    if (atomic_exchange(&conn->recv_thread_running, false)) {
+        if (conn->sockfd >= 0) {
+            shutdown(conn->sockfd, SHUT_RDWR);
+        }
+        g_ptr_array_add(batch, conn);
+    }
+}
+
+/*
+ * Stop every receive thread and wait for them, freeing nothing.  A receive
+ * thread can reach any connection, and the mesh and GID tables, through
+ * priv, so none of that may be freed while any of them still runs.  A
+ * running thread can also add a connection with a thread of its own (a
+ * worker connects to the peers in a topology update), so this repeats until
+ * a pass finds nothing left to stop.  The accept and health-check threads,
+ * which add connections too, must already be stopped.
+ */
+static void tcp_stop_recv_threads(TcpBackendPrivate *priv)
+{
+    for (;;) {
+        GPtrArray *batch = g_ptr_array_new();
+        GHashTableIter iter;
+        gpointer value;
+
+        qemu_mutex_lock(&priv->conn_table_lock);
+        g_hash_table_iter_init(&iter, priv->connections);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            tcp_claim_recv_thread(batch, value);
+        }
+        for (guint i = 0; i < priv->pending_conns->len; i++) {
+            tcp_claim_recv_thread(batch,
+                                  g_ptr_array_index(priv->pending_conns, i));
+        }
+        if (priv->manager_conn) {
+            tcp_claim_recv_thread(batch, priv->manager_conn);
+        }
+        qemu_mutex_unlock(&priv->conn_table_lock);
+
+        guint stopped = batch->len;
+        for (guint i = 0; i < stopped; i++) {
+            TcpConnection *conn = g_ptr_array_index(batch, i);
+            qemu_thread_join(&conn->recv_thread);
+        }
+        g_ptr_array_free(batch, TRUE);
+        if (stopped == 0) {
+            return;
+        }
+    }
+}
+
+/* Free the pending connections; their threads must already be stopped. */
+static void tcp_free_pending_conns(TcpBackendPrivate *priv)
+{
+    for (guint i = 0; i < priv->pending_conns->len; i++) {
+        tcp_connection_free(g_ptr_array_index(priv->pending_conns, i));
+    }
+    g_ptr_array_free(priv->pending_conns, TRUE);
+}
+
+/*
+ * Stop every backend thread and wait for them, freeing nothing.
+ *
+ * stopping is set first, before any join.  Any thread can be blocked
+ * sending to a peer that has stopped reading, holding that connection's lock
+ * and possibly conn_table_lock (a broadcast sends under it).  The
+ * health-check thread can then be waiting for the connection's lock, and
+ * tcp_stop_recv_threads() for conn_table_lock, before it can shut any socket
+ * down.  With the flag set, such a send fails within one poll interval and
+ * releases its locks.
+ *
+ * The health-check and accept threads add connections, so they go before
+ * the receive threads.
+ */
+static void tcp_stop_threads(TcpBackendPrivate *priv)
+{
+    atomic_store(&priv->stopping, true);
+    tcp_stop_health_check_thread(priv);
+    tcp_stop_accept_thread(priv);
+    tcp_stop_recv_threads(priv);
+}
+
 static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
 {
     TcpBackendPrivate *priv;
@@ -3275,6 +3503,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->pending_conns = g_ptr_array_new();
     priv->node_gids =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
@@ -3293,6 +3522,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->listen_fd = -1;
     priv->is_listening = false;
     atomic_init(&priv->accept_thread_running, false);
+    atomic_init(&priv->stopping, false);
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
@@ -3309,7 +3539,9 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     /* Initialize manager/worker fields */
     priv->is_manager = false;
     priv->mesh_nodes = NULL;
-    priv->health_check_running = false;
+    atomic_init(&priv->health_check_running, false);
+    qemu_mutex_init(&priv->health_check_lock);
+    qemu_cond_init(&priv->health_check_cond);
     /* tcp_env_int() only returns positive values */
     priv->health_check_interval_sec = (uint32_t)tcp_env_int(
         "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
@@ -3398,16 +3630,16 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         }
         priv->is_listening = true;
 
-        /* Start accept thread */
-        atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
-
-        /* Start health check thread */
-        priv->health_check_running = true;
-        qemu_thread_create(&priv->health_check_thread, "tcp-health",
-                           tcp_manager_health_check_thread, priv,
-                           QEMU_THREAD_JOINABLE);
+        /* Start the accept and health check threads */
+        if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
+                              tcp_accept_thread, priv,
+                              &priv->accept_thread_running) ||
+            !tcp_start_thread(&priv->health_check_thread, "tcp-health",
+                              tcp_manager_health_check_thread, priv,
+                              &priv->health_check_running)) {
+            g_free(manager_host);
+            goto error;
+        }
 
         g_free(manager_host);
         rdma_info_report("TCP backend: Manager initialized");
@@ -3457,9 +3689,11 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->is_listening = true;
 
         /* Start accept thread */
-        atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+        if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
+                              tcp_accept_thread, priv,
+                              &priv->accept_thread_running)) {
+            goto error;
+        }
 
         /* Register with manager */
         ret = tcp_worker_register_with_manager(priv);
@@ -3482,16 +3716,15 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     return 0;
 
 error:
-    /* A worker that fails to register has already started its accept
-     * thread; it must be gone before priv is freed under it. */
-    tcp_stop_accept_thread(priv);
+    /* A worker that fails to register has already started its accept and
+     * receive threads; they must be gone before priv is freed under them. */
+    tcp_stop_threads(priv);
     if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
     }
-    if (priv->health_check_running) {
-        priv->health_check_running = false;
-        qemu_thread_join(&priv->health_check_thread);
-    }
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
+    tcp_free_pending_conns(priv);
     if (priv->mesh_nodes) {
         g_hash_table_destroy(priv->mesh_nodes);
     }
@@ -3531,19 +3764,18 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
 
     rdma_info_report("TCP backend: Cleaning up");
 
-    /* Stop health check thread (manager only) */
-    if (priv->health_check_running) {
-        priv->health_check_running = false;
-        qemu_thread_join(&priv->health_check_thread);
-    }
-
-    tcp_stop_accept_thread(priv);
+    /* Nothing below may be freed while a backend thread can still use it */
+    tcp_stop_threads(priv);
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
 
     /* Close listen socket */
     if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
         priv->listen_fd = -1;
     }
+
+    tcp_free_pending_conns(priv);
 
     /* Clean up manager/worker specific resources */
     if (priv->mesh_nodes) {
@@ -3559,7 +3791,6 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
 
-    /* Clean up all connections (threads are stopped in tcp_connection_free) */
     g_hash_table_destroy(priv->connections);
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
@@ -4411,7 +4642,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 }
             }
 
-            ret = tcp_send_message(conn->sockfd, TCP_MSG_RDMA_WRITE, buf,
+            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_RDMA_WRITE, buf,
                                    payload_sz, seq, tcp_local_node(priv),
                                    dst_node, qpn, dst_qpn);
             g_free(buf);
@@ -4428,8 +4659,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             oh.rkey = rkey;
             oh.data_len = (uint32_t)total_len;
 
-            ret = tcp_send_message(conn->sockfd, TCP_MSG_RDMA_READ_REQ, &oh,
-                                   sizeof(oh), seq, tcp_local_node(priv),
+            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_RDMA_READ_REQ,
+                                   &oh, sizeof(oh), seq, tcp_local_node(priv),
                                    dst_node, qpn, dst_qpn);
             if (ret < 0)
                 rdma_error_report("TCP: RDMA READ REQ send failed");
@@ -4452,7 +4683,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 }
             }
 
-            ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, buf,
+            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_SEND, buf,
                                    payload_sz, seq, tcp_local_node(priv),
                                    dst_node, qpn, dst_qpn);
             g_free(buf);
@@ -4466,7 +4697,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
              * SGE separately to avoid copying multi-MB
              * payloads through a temporary buffer.
              */
-            ret = tcp_send_message(conn->sockfd, TCP_MSG_POST_SEND, wr,
+            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_SEND, wr,
                                    sizeof(*wr), seq, tcp_local_node(priv),
                                    dst_node, qpn, dst_qpn);
             if (ret < 0) {
@@ -4477,9 +4708,9 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                 for (uint32_t i = 0; i < num_sge && i < 32; i++) {
                     if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
                         ret = tcp_send_message(
-                            conn->sockfd, TCP_MSG_DATA, wr->sge[i].host_addr,
-                            wr->sge[i].length, seq, tcp_local_node(priv),
-                            dst_node, qpn, dst_qpn);
+                            priv, conn->sockfd, TCP_MSG_DATA,
+                            wr->sge[i].host_addr, wr->sge[i].length, seq,
+                            tcp_local_node(priv), dst_node, qpn, dst_qpn);
                         if (ret < 0) {
                             rdma_error_report("TCP: DATA send "
                                               "failed");
@@ -4593,8 +4824,8 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             if (src_conn->sockfd >= 0) {
                 seq = atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                 memory_order_relaxed);
-                tcp_send_message(src_conn->sockfd, TCP_MSG_COMPLETION, NULL, 0,
-                                 seq, tcp_local_node(priv),
+                tcp_send_message(priv, src_conn->sockfd, TCP_MSG_COMPLETION,
+                                 NULL, 0, seq, tcp_local_node(priv),
                                  pending->src_node_id, qpn, pending->src_qpn);
             }
             qemu_mutex_unlock(&src_conn->lock);
@@ -4620,8 +4851,9 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     /* Send POST_RECV message over TCP */
     qemu_mutex_lock(&conn->lock);
     if (conn->sockfd >= 0) {
-        tcp_send_message(conn->sockfd, TCP_MSG_POST_RECV, wr, sizeof(*wr), seq,
-                         tcp_local_node(priv), dst_node, qpn, tqp->remote_qpn);
+        tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_RECV, wr, sizeof(*wr),
+                         seq, tcp_local_node(priv), dst_node, qpn,
+                         tqp->remote_qpn);
     }
     qemu_mutex_unlock(&conn->lock);
 
@@ -4844,7 +5076,7 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
 
     qemu_mutex_lock(&conn->lock);
     rc = tcp_send_message2(
-        conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body, body_len,
+        priv, conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body, body_len,
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
         tcp_local_node(priv), dst_node, 0, 0);
     qemu_mutex_unlock(&conn->lock);
