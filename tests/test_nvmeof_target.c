@@ -187,7 +187,8 @@ static int do_connect(struct nvmeof_queue *q, struct host_mem *h, uint16_t qid,
     struct capsule c;
     uint64_t addr = HOST_BASE;
 
-    cap_init(&c, NVME_ADMIN_FABRICS, 0x10 + qid);
+    /* The CID is an opaque 16-bit tag, so wrapping it is harmless. */
+    cap_init(&c, NVME_ADMIN_FABRICS, (uint16_t)(0x10u + qid));
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
     nvme_put_le16(c.b + NVMEOF_CONNECT_QID_OFF, qid);
     nvme_put_le16(c.b + NVMEOF_CONNECT_SQSIZE_OFF, sqsize);

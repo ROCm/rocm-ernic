@@ -1128,7 +1128,7 @@ static uint8_t dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
          * limits, so 1 is the single outstanding operation ionic_datapath
          * actually supports. */
         uint8_t rqbuf[12] = {0};
-        rqbuf[0] = (uint8_t)((state & 0x0fu) << 4 | ((path_mtu + 7) & 0x0fu));
+        rqbuf[0] = (uint8_t)((state & 0x0fu) << 4 | ((path_mtu + 7u) & 0x0fu));
         rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
         rqbuf[2] = 1;
         rqbuf[3] = 1;

@@ -1289,7 +1289,7 @@ int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
      * Connect yet simply reports zero.
      */
     if (q->sqsize != 0) {
-        q->sq_head = (uint16_t)((q->sq_head + 1) % ((uint32_t)q->sqsize + 1));
+        q->sq_head = (uint16_t)((q->sq_head + 1u) % ((uint32_t)q->sqsize + 1u));
     }
 
     nvme_put_le16(out + NVME_CQE_SQHD_OFF, q->sq_head);

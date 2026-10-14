@@ -549,7 +549,7 @@ static void test_reconnect(void)
         req_defaults(&p);
         p.comm_id = 0x1000 + i;
         p.qpn = 0x100 + i;
-        p.qid = (uint16_t)(i % (cfg->max_queues + 1));
+        p.qid = (uint16_t)(i % (cfg->max_queues + 1u));
         build_req(req, &p);
         nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
         if (get_be16(rsp + MAD_ATTR_ID) == ATTR_REP) {
