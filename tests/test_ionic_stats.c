@@ -10,8 +10,8 @@
  * The tests are one table: each row posts one command through
  * dispatch_wqe() against a fake guest memory pre-filled with a poison byte,
  * and checks the completion status, how many bytes the handler wrote, and
- * what it wrote.  The translation unit is #included to reach
- * dispatch_wqe(), and its external symbols are stubbed.
+ * what it wrote.  The admin queue is compiled separately with a test interface
+ * to dispatch_wqe(), and its external symbols are stubbed.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -27,8 +27,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_adminq.c"
+#include <endian.h>
+#include <syslog.h>
+#include <sys/mman.h>
+#include "ionic_adminq_internal.h"
 
 #include "ionic_adminq_fakes.h"
 
@@ -291,7 +293,7 @@ static void run_case(const struct stats_case *c)
     g_max = c->max;
     build_body(body, sizeof(body), c->dma, c->length, c->id_ver);
 
-    rc = dispatch_wqe(&g_ctx, c->op, body, c->body_len);
+    rc = ionic_adminq_test_dispatch(&g_ctx, c->op, body, c->body_len);
     written = bytes_written(c->dma);
     ok = rc == c->want_rc && written == c->want_written &&
          one_write_or_none(c) && content_matches(c);

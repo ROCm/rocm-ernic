@@ -74,8 +74,9 @@ the write.
 `LLVMFuzzerInitialize()` first runs a table of seed inputs (positive,
 negative, boundary and corner rows, each with a description and expected
 outcome) through the same checks, and aborts if any fails, so a broken
-oracle can't fuzz quietly. With `FUZZ_EMIT_SEEDS=<dir>` it also writes the
-rows out; `fuzz.nix` does that to build the harness's seed corpus.
+oracle can't fuzz quietly. With `FUZZ_EMIT_SEEDS=1` it also writes the
+rows into the current directory as private files, refusing existing files
+or symlinks; `fuzz.nix` does that to build the harness's seed corpus.
 
 ## Not yet fuzzed (device-fixture required)
 

@@ -361,10 +361,11 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 target_compile_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_query_qp PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 
-# ionic hardware statistics test. Like the QUERY_QP test it #includes the
-# admin queue translation unit and backs DMA with a plain buffer, so the
+# ionic hardware statistics test. Compile the admin queue separately and
+# back DMA with a plain buffer, so the
 # header table and values the driver builds hw_counters from can be checked.
-add_executable(test_ionic_stats test_ionic_stats.c)
+add_executable(test_ionic_stats test_ionic_stats.c
+    ${CMAKE_SOURCE_DIR}/src/ionic_adminq.c)
 target_include_directories(test_ionic_stats PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -374,7 +375,7 @@ target_include_directories(test_ionic_stats SYSTEM PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_ionic_stats PRIVATE
-    _GNU_SOURCE)
+    _GNU_SOURCE ERNIC_ADMINQ_TEST)
 target_compile_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_ionic_stats PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
 

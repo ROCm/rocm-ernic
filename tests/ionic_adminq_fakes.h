@@ -1,7 +1,7 @@
 /*
  * Fakes for driving the ionic admin queue's dispatch_wqe() in-process.
  *
- * Include this straight after "ionic_adminq.c".  It backs the DMA entry
+ * Include this after "ionic_adminq_internal.h".  It backs the DMA entry
  * points with a plain buffer -- a "GPA" is an offset into g_mem -- records
  * every region handed out for writing, and stubs the translation unit's
  * other external symbols.  The stats counters come from knobs (g_dev_rc,
