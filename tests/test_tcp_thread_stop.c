@@ -37,7 +37,9 @@
  * Every stop joins its thread only if the thread's flag is set, so a thread
  * that couldn't be created must leave its flag clear; a join of a thread
  * that doesn't exist is undefined behavior.  The last rows make
- * qemu_thread_create() fail in tcp_init() and in the accept thread.
+ * qemu_thread_create() fail in tcp_init(), in the accept thread, and in a
+ * health-check reconnect, after which the retired connection must not be
+ * stopped again.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -145,6 +147,7 @@ static atomic_int g_exits;
  * pthread_create() does when the process is out of threads; -1 for no limit.
  */
 static atomic_int g_creates_left = -1;
+static atomic_int g_create_failures; /* calls failed by g_creates_left */
 
 struct trampoline {
     void *(*fn)(void *);
@@ -173,8 +176,10 @@ int qemu_thread_create(QemuThread *thread, const char *name,
     while (left > 0 &&
            !atomic_compare_exchange_weak(&g_creates_left, &left, left - 1))
         ;
-    if (left == 0)
+    if (left == 0) {
+        atomic_fetch_add(&g_create_failures, 1);
         return EAGAIN;
+    }
     t = malloc(sizeof(*t));
     if (!t)
         return -1;
@@ -1141,6 +1146,143 @@ out:
     return ok ? 0 : 1;
 }
 
+/* ---- Health-check reconnect -------------------------------------------- */
+
+/*
+ * The health check reconnects to a node that has stopped answering: it
+ * retires the node's old connection, joining its receive thread, and opens a
+ * new one.  When the new connection's receive thread can't be created, the
+ * retired connection must not be left on the node, or the next attempt would
+ * join its thread a second time.
+ *
+ * The node is made to look 4 s dead, so the thread's first pass, on a 1 s
+ * interval, attempts a reconnect; attempts back off to whole powers of two
+ * seconds, so the next would be at 8 s.  The target is a listening socket
+ * here, where the kernel completes the connect.
+ */
+static int run_reconnect_case(void)
+{
+    static const char desc[] =
+        "a reconnect whose receive thread can't be created, then a retry";
+    static const char expected[] =
+        "the old connection is retired, and its thread joined, once";
+    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpConnection *old = NULL;
+    MeshNodeInfo *node = NULL;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    const char *why = NULL;
+    int peer = -1, lfd = listen_loopback();
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    atomic_store(&g_create_failures, 0);
+    atomic_init(&priv->stopping, false);
+    atomic_init(&priv->next_seq, 1);
+    atomic_init(&priv->health_check_running, false);
+    qemu_mutex_init(&priv->health_check_lock);
+    qemu_cond_init(&priv->health_check_cond);
+    priv->health_check_interval_sec = 1;
+    priv->mesh_nodes = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
+    qemu_mutex_init(&priv->mesh_table_lock);
+    priv->connections = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    qemu_mutex_init(&priv->conn_table_lock);
+    tcp_bufpool_init(&priv->recv_pool);
+
+    g_current_row = desc;
+    alarm(ROW_TIMEOUT_S);
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+        why = "could not open a listening socket";
+    } else if (!(old = recv_conn_new(priv, 1, true, &peer))) {
+        why = "could not set up the old connection";
+    } else {
+        g_hash_table_insert(priv->connections, GUINT_TO_POINTER(1), old);
+        node = mesh_node_info_new(1, "127.0.0.1", ntohs(addr.sin_port));
+        if (!node)
+            why = "could not create the mesh node";
+    }
+
+    if (!why) {
+        TcpConnection *on_node, *in_table;
+        time_t t0 = time(NULL);
+        int fd;
+
+        node->conn = old;
+        node->is_alive = false; /* already reported dead: no broadcast */
+        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1), node);
+
+        /* Start just after the second ticks over, so the first pass sees 4 s */
+        while (time(NULL) == t0)
+            sleep_ms(5);
+        node->last_heartbeat = time(NULL) - 4;
+        atomic_store(&g_creates_left, 1); /* the health thread; no more */
+        atomic_store(&priv->health_check_running, true);
+        qemu_thread_create(&priv->health_check_thread, "tcp-health",
+                           tcp_manager_health_check_thread, priv,
+                           QEMU_THREAD_JOINABLE);
+
+        for (uint32_t i = 0; i < 600 && atomic_load(&g_create_failures) == 0;
+             i++)
+            sleep_ms(10);
+
+        /* The attempt holds mesh_table_lock until it has given up */
+        qemu_mutex_lock(&priv->mesh_table_lock);
+        on_node = node->conn;
+        qemu_mutex_unlock(&priv->mesh_table_lock);
+        qemu_mutex_lock(&priv->conn_table_lock);
+        in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
+        qemu_mutex_unlock(&priv->conn_table_lock);
+        qemu_mutex_lock(&old->lock);
+        fd = old->sockfd;
+        qemu_mutex_unlock(&old->lock);
+
+        if (atomic_load(&g_create_failures) == 0)
+            why = "no reconnect was attempted";
+        else if (on_node)
+            why = "the node still points at its retired connection";
+        else if (in_table != old)
+            why = "the retired connection left the connections table";
+        else if (fd != -1 || atomic_load(&old->recv_thread_running))
+            why = "the old connection wasn't retired";
+        else if (atomic_load(&g_joins) != 1)
+            why = "the old receive thread wasn't joined exactly once";
+
+        tcp_stop_health_check_thread(priv);
+        /* What a retry that still found the retired connection would do */
+        tcp_retire_conn(old);
+    }
+    alarm(0);
+    atomic_store(&g_creates_left, -1);
+
+    /* The old receive thread and the health-check thread, each once */
+    ok = !why && atomic_load(&g_joins) == 2 && atomic_load(&g_exits) == 2;
+
+    printf("%s reconnect negative: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           desc, expected);
+    if (!ok)
+        printf("     %s%s%d join(s) (want 2), %d exited (want 2)\n",
+               why ? why : "", why ? "; " : "", atomic_load(&g_joins),
+               atomic_load(&g_exits));
+
+    g_hash_table_destroy(priv->mesh_nodes);
+    g_hash_table_destroy(priv->connections);
+    if (peer >= 0)
+        close(peer);
+    if (lfd >= 0)
+        close(lfd);
+    tcp_bufpool_destroy(&priv->recv_pool);
+    qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->mesh_table_lock);
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
+    g_free(priv);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -1156,6 +1298,7 @@ int main(void)
         failures += run_fini_case(&fini_cases[i]);
     for (size_t i = 0; i < sizeof(create_cases) / sizeof(create_cases[0]); i++)
         failures += run_create_case(&create_cases[i]);
+    failures += run_reconnect_case();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
