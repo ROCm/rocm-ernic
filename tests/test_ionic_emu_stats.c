@@ -472,8 +472,9 @@ static void test_fill(void)
 static const uint8_t *tagged_to(const uint8_t *dst, size_t len, uint16_t tpid,
                                 int pcp)
 {
-    uint8_t *f = (uint8_t *)frame_to(dst, len);
+    uint8_t *f = frame_buf; /* frame_to() fills it */
 
+    (void)frame_to(dst, len);
     if (pcp >= 0 && len >= 16) {
         f[12] = (uint8_t)(tpid >> 8);
         f[13] = (uint8_t)tpid;
@@ -756,6 +757,7 @@ static void test_port_counting(void)
         const uint8_t *f =
             tagged_to(c->in.dst, c->in.len, c->in.tpid, c->in.pcp);
         char got[512];
+        char returned[24] = "";
         bool accepted, ok;
 
         ionic_emu_stats_reset(&st);
@@ -764,14 +766,14 @@ static void test_port_counting(void)
         ok = port_matches(&st, c->want, MAX_PORT_EXPECT, got, sizeof(got));
         if (accepted != c->accepted) {
             ok = false;
-            snprintf(got + strlen(got), sizeof(got) - strlen(got),
-                     " returned %s", accepted ? "true" : "false");
+            snprintf(returned, sizeof(returned), " returned %s",
+                     accepted ? "true" : "false");
         }
         if (ok) {
             printf("ok %s: %s\n", c->category, c->description);
         } else {
-            printf("FAIL %s: %s; expected: %s; got: %s\n", c->category,
-                   c->description, c->expected, got);
+            printf("FAIL %s: %s; expected: %s; got: %s%s\n", c->category,
+                   c->description, c->expected, got, returned);
             failures++;
         }
     }
