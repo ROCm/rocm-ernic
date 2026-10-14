@@ -212,6 +212,8 @@ static void run_case(const struct hook_case *c)
     case BACKEND_NULL:
         devp = NULL;
         break;
+    default:
+        abort(); /* every row names one of the cases above */
     }
 
     switch (c->hook) {
@@ -228,6 +230,8 @@ static void run_case(const struct hook_case *c)
             snprintf(got, sizeof(got), "rc %d (want %d)", rc, c->want_rc);
         }
         break;
+    default:
+        abort(); /* every row names one of the cases above */
     }
 
     if (tcp && c->hook != HOOK_SEND) {
