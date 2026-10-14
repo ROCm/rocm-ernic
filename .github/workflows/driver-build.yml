@@ -12,6 +12,12 @@ on:
       - 'scripts/setup-ionic-dkms.sh'
       - 'cmake/ErnicKernelModule.cmake'
       - 'ansible/roles/ernic_srq_dkms/**'
+      # The rdma-core base SHA lives here as well as in
+      # patches/rdma-core/README.md, and the rdma-core-patches job below
+      # now checks the two agree. Without this entry, bumping the role's
+      # copy alone -- which is the edit someone makes when #1799 is
+      # force-pushed -- changes which tree gets built and runs no check.
+      - 'ansible/roles/ernic_srq_provider/**'
       - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
@@ -207,6 +213,30 @@ jobs:
           exit 1
         fi
         echo "rdma-core base: $BASE"
+
+        # The same SHA lives in the role that builds the provider. The role
+        # asserts the two agree, but only once a VM is up, which is far too
+        # late to tell a reviewer that the series and its rationale describe
+        # different trees. Check it here, the way the kernel half already
+        # resolves its ref from one place: a bump in one file cannot leave
+        # CI testing the other.
+        PROVIDER_DEFAULTS=ansible/roles/ernic_srq_provider/defaults/main.yml
+        ROLE_BASE=$(sed -n \
+          's/^ernic_srq_provider_base: *\([0-9a-f]\{40\}\).*/\1/p' \
+          "$PROVIDER_DEFAULTS" | head -1)
+        if [ -z "$ROLE_BASE" ]; then
+          echo "::error file=$PROVIDER_DEFAULTS::could not read" \
+               "ernic_srq_provider_base"
+          exit 1
+        fi
+        if [ "$ROLE_BASE" != "$BASE" ]; then
+          echo "::error file=$PROVIDER_DEFAULTS::ernic_srq_provider_base is" \
+               "$ROLE_BASE but $PATCHES/README.md documents $BASE."
+          echo "  Bump both, or the build and its rationale describe" \
+               "different trees."
+          exit 1
+        fi
+        echo "rdma-core base agrees with $PROVIDER_DEFAULTS"
 
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
