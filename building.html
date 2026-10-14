@@ -378,6 +378,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-ionic-modules">Guest ionic Modules</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-documentation">Building Documentation</a></li>
 </ul>
@@ -466,37 +467,42 @@ is never broken by a new warning; CI turns it on
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable TSAN (mutually exclusive with above)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
+<td><p>Build with LLVM source-based code coverage; Clang only
+(see <a class="reference internal" href="#code-coverage"><span class="std std-ref">Code Coverage</span></a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build Sphinx + Breathe + Doxygen documentation</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Configure only documentation targets (no library
 dependencies required)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable the DKMS targets that build the patched
 upstream ionic guest modules (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code></p></td>
 <td><p>Linux kernel tag or SHA the ionic sources are fetched
 from; must be <code class="docutils literal notranslate"><span class="pre">v6.18</span></code> or newer</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
 <td><p>kernel.org stable</p></td>
 <td><p>Linux kernel git repository the ionic sources are
 fetched from</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Also install the systemd units, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, the
 launcher, and the Prometheus exporter
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
 </tr>
@@ -525,6 +531,35 @@ builds are the one exception; they configure with it off
 because gcc 15 and current clang emit warnings on the
 QEMU-ported headers that these builds cannot suppress.
 Those lanes are informational and do not gate merges.</p>
+</section>
+<section id="code-coverage">
+<span id="id1"></span><h2>Code Coverage<a class="headerlink" href="#code-coverage" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code> instruments the server and the
+test programs with LLVM source-based coverage. It needs Clang,
+and the <code class="docutils literal notranslate"><span class="pre">llvm-profdata</span></code> and <code class="docutils literal notranslate"><span class="pre">llvm-cov</span></code> of the same LLVM
+version (on Ubuntu, the <code class="docutils literal notranslate"><span class="pre">llvm-&lt;version&gt;</span></code> package). Each
+instrumented program writes its profile to <code class="docutils literal notranslate"><span class="pre">coverage/profraw</span></code>
+in the build directory however it is started, so the servers
+that the CTest scripts launch are counted too. The
+<code class="docutils literal notranslate"><span class="pre">ernic-coverage</span></code> target merges the profiles and reports the
+coverage of <code class="docutils literal notranslate"><span class="pre">src/</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_USE_CODE_COVERAGE<span class="o">=</span>ON
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+ctest<span class="w"> </span>--test-dir<span class="w"> </span>build
+cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>ernic-coverage
+</pre></div>
+</div>
+<p>The report goes in <code class="docutils literal notranslate"><span class="pre">coverage/report.txt</span></code> (a summary for each
+file) and <code class="docutils literal notranslate"><span class="pre">coverage/lines.txt</span></code> (the count for each line).
+The profiles accumulate across runs; delete
+<code class="docutils literal notranslate"><span class="pre">coverage/profraw</span></code> to start over.</p>
+<p>CI’s Build and Test workflow runs one coverage leg (Clang,
+Debug, no project-wide sanitizer). It puts the report on the
+run’s summary page and fails if line coverage drops below the
+floor set in the workflow. On <code class="docutils literal notranslate"><span class="pre">develop</span></code> it also publishes the
+figure to the <code class="docutils literal notranslate"><span class="pre">badges</span></code> branch, which the README’s Coverage
+badge reads.</p>
 </section>
 <section id="guest-ionic-modules">
 <h2>Guest ionic Modules<a class="headerlink" href="#guest-ionic-modules" title="Link to this heading">#</a></h2>
@@ -612,6 +647,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-ionic-modules">Guest ionic Modules</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-documentation">Building Documentation</a></li>
 </ul>
