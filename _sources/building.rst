@@ -62,7 +62,12 @@ Build Options
      - Description
    * - ``CMAKE_BUILD_TYPE``
      - ``Debug``
-     - Build type (Debug, Release, RelWithDebInfo, etc.)
+     - Build type (Debug, Release, RelWithDebInfo, etc.).
+       When rocm-ernic is a subproject, the parent project's
+       build type is used instead
+   * - ``BUILD_TESTING``
+     - ``ON``
+     - Build the tests and register them with CTest
    * - ``ERNIC_WERROR``
      - ``OFF``
      - Treat compiler warnings as errors for project code.

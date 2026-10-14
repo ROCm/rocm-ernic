@@ -450,59 +450,65 @@ Prometheus exporter, and the ionic driver patches;
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_BUILD_TYPE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Debug</span></code></p></td>
-<td><p>Build type (Debug, Release, RelWithDebInfo, etc.)</p></td>
+<td><p>Build type (Debug, Release, RelWithDebInfo, etc.).
+When rocm-ernic is a subproject, the parent project’s
+build type is used instead</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BUILD_TESTING</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ON</span></code></p></td>
+<td><p>Build the tests and register them with CTest</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Treat compiler warnings as errors for project code.
 Off by default so a build with an unfamiliar compiler
 is never broken by a new warning; CI turns it on
 (see <a class="reference internal" href="#werror-policy"><span class="std std-ref">Warnings as Errors</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_SANITIZERS</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_SANITIZERS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable ASAN / LSAN / UBSAN</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_THREAD_SANITIZER</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_THREAD_SANITIZER</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable TSAN (mutually exclusive with above)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build with LLVM source-based code coverage; Clang only
 (see <a class="reference internal" href="#code-coverage"><span class="std std-ref">Code Coverage</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build Sphinx + Breathe + Doxygen documentation</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Configure only documentation targets (no library
 dependencies required)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable the DKMS targets that build the patched
 upstream ionic guest modules (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code></p></td>
 <td><p>Linux kernel tag or SHA the ionic sources are fetched
 from; must be <code class="docutils literal notranslate"><span class="pre">v6.18</span></code> or newer</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
 <td><p>kernel.org stable</p></td>
 <td><p>Linux kernel git repository the ionic sources are
 fetched from</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Also install the systemd units, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, the
 launcher, and the Prometheus exporter
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
 </tr>
