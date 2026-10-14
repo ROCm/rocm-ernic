@@ -266,7 +266,7 @@ int main(void)
     struct ibv_context *ctx = NULL;
     struct ibv_pd *pd = NULL;
     struct ibv_ah *ah = NULL;
-    struct ud_ep a = {0}, b = {0};
+    struct ud_ep a = {.cq = NULL}, b = {.cq = NULL};
     union ibv_gid gid;
     unsigned char *src_two = NULL;
     struct ibv_mr *mr_two = NULL;
@@ -356,7 +356,8 @@ int main(void)
     const char *iter_env = getenv("ERNIC_UD_ITERS");
     int iters = iter_env ? atoi(iter_env) : 0;
     for (int n = 0; n < iters; n++) {
-        if (post_recv(&b, 0xC000 + n) || do_send_quiet(&a, &b, ah, n & 1)) {
+        if (post_recv(&b, 0xC000 + (uint64_t)n) ||
+            do_send_quiet(&a, &b, ah, n & 1)) {
             fprintf(stderr, "FAIL: stalled at iteration %d of %d\n", n, iters);
             goto out;
         }

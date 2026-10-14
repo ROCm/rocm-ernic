@@ -45,9 +45,8 @@
 
 #include "ernic_device.h"
 
-#define SRQ_DEPTH   16
-#define SRQ_SGE_MAX 2
-#define BUF_LEN     4096
+#define SRQ_DEPTH 16
+#define BUF_LEN   4096
 
 static int fail(const char *what)
 {

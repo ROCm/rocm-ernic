@@ -22,7 +22,14 @@ on:
       - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
       - 'patches/**'              # staged into the guest in ionic mode
       - 'udev/**'                 # driver_common installs these
-      - 'ci/lib/common.sh'        # carries a third copy of the guest tag
+      # Everything under ci/ drives these lanes: guest-image.env is the
+      # guest image pin itself, lib/common.sh reads it, and jobs/ is what
+      # the self-hosted lanes run. Listing the directory rather than the
+      # files is deliberate -- this entry used to name ci/lib/common.sh
+      # alone, "carries a third copy of the guest tag", and when the pin
+      # moved to ci/guest-image.env that comment stopped being true and a
+      # repin matched no path, so bumping the guest image ran no VM lane.
+      - 'ci/**'
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
       - '.github/workflows/s3-lane.yml'       # the s3 job's body

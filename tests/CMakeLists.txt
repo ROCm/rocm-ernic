@@ -46,6 +46,33 @@ target_link_libraries(test_rdma_cm PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
+# -- Guest-only SRQ and UD tests (require libibverbs) ------------
+# Built here, never registered with CTest, for the reason the comment
+# further down gives for test_data_transfer and test_rdma_cm: they need a
+# real RDMA device, and on a host without one they exit 77, which CTest
+# scores as a pass. They run for real in the guest, from system-tests.yml.
+#
+# Building them is still worth it. Until they were added here they were in
+# no target at all, so a syntax or type error in any of them surfaced only
+# when gcc ran inside the VM, well into a 60-minute self-hosted job. Now
+# the hosted build legs catch it in seconds, under the same warning and
+# hardening flags as every other test target.
+set(ERNIC_GUEST_ONLY_TESTS
+    test_srq
+    test_srq_transfer
+    test_ud_transfer
+    test_ud_sq_reclaim
+)
+foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
+    add_executable(${guest_test} ${guest_test}.c)
+    target_compile_definitions(${guest_test} PRIVATE _GNU_SOURCE)
+    target_include_directories(${guest_test} PRIVATE
+        ${ERNIC_IBVERBS_INCLUDE_DIRS}
+    )
+    target_link_directories(${guest_test} PRIVATE ${IBVERBS_LIBRARY_DIRS})
+    target_link_libraries(${guest_test} PRIVATE ${IBVERBS_LIBRARIES})
+endforeach()
+
 # -- Unit tests --------------------------------------------------
 # Built with AddressSanitizer + LeakSanitizer + UBSan (unless the project
 # is already built with ThreadSanitizer, which is incompatible) so a NULL
@@ -589,6 +616,10 @@ set(ERNIC_TEST_TARGETS
     test_pci_client
     test_data_transfer
     test_rdma_cm
+    test_srq
+    test_srq_transfer
+    test_ud_transfer
+    test_ud_sq_reclaim
     test_ernic_device
     test_rdma_backend_query_port
     test_write_imm
@@ -658,7 +689,8 @@ set_tests_properties(ernic-device-tuple-unit PROPERTIES
     RUN_SERIAL TRUE
 )
 
-# test_data_transfer, test_write_imm and test_rdma_cm are deliberately not
+# test_data_transfer, test_write_imm and test_rdma_cm -- and the guest-only
+# SRQ and UD tests built alongside them -- are deliberately not
 # registered with CTest. They need a real RDMA device, which no host running
 # ctest has -- hosted runners and the self-hosted pool both run ctest outside
 # the guest. Registered here they returned 77 and CTest reported the skip as

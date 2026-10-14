@@ -203,7 +203,8 @@ int main(void)
         struct ibv_sge sge = {.addr = (uintptr_t)buf,
                               .length = GRH_LEN + MSG_LEN,
                               .lkey = mr->lkey};
-        struct ibv_recv_wr wr = {.wr_id = i, .sg_list = &sge, .num_sge = 1};
+        struct ibv_recv_wr wr = {
+            .wr_id = (uint64_t)i, .sg_list = &sge, .num_sge = 1};
         struct ibv_recv_wr *bad = NULL;
         if (ibv_post_recv(rqp, &wr, &bad)) {
             perror("ibv_post_recv");
@@ -225,7 +226,7 @@ int main(void)
                               .length = MSG_LEN,
                               .lkey = mr->lkey};
         struct ibv_send_wr wr = {
-            .wr_id = n,
+            .wr_id = (uint64_t)n,
             .sg_list = &sge,
             .num_sge = 1,
             .opcode = IBV_WR_SEND,

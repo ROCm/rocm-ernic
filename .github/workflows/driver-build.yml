@@ -28,7 +28,8 @@ jobs:
   # What CI can check on a hosted runner is that the pinned upstream ref still
   # exists and that every patch still applies to it -- the modules themselves
   # need kernel >= 6.18 headers, which hosted runners do not have.  Compiling
-  # and loading them is the VM lane's job (.github/workflows/srq-vm.yml).
+  # and loading them is the VM lane's job, in the SRQ steps of
+  # .github/workflows/system-tests.yml.
   #
   # Two series are checked, because there are two.  patches/ is what the
   # shipping driver is built from, pinned to the cmake ref; patches/srq is the
