@@ -263,14 +263,16 @@ static void test_speed_is_non_zero(void)
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
 
-    CHECK(rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF) == IONIC_ETH_LINK_SPEED_MBPS,
+    CHECK(rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF) ==
+              emu->profile.link.speed_mbps,
           "status.speed is %u Mbps, expected %u",
           rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF),
-          (unsigned)IONIC_ETH_LINK_SPEED_MBPS);
-    CHECK(rd32(IONIC_PORT_INFO_CONFIG_SPEED_OFF) == IONIC_ETH_LINK_SPEED_MBPS,
+          (unsigned)emu->profile.link.speed_mbps);
+    CHECK(rd32(IONIC_PORT_INFO_CONFIG_SPEED_OFF) ==
+              emu->profile.link.speed_mbps,
           "config.speed is %u Mbps, expected %u",
           rd32(IONIC_PORT_INFO_CONFIG_SPEED_OFF),
-          (unsigned)IONIC_ETH_LINK_SPEED_MBPS);
+          (unsigned)emu->profile.link.speed_mbps);
     CHECK(rd32(IONIC_PORT_INFO_STATUS_SPEED_OFF) != 0,
           "status.speed is zero -- UCX computes bandwidth 0.00 from this and "
           "refuses to create an endpoint");

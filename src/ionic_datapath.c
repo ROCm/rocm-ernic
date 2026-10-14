@@ -392,6 +392,31 @@ struct ionic_datapath {
 };
 
 /* -------------------------------------------------------------------------
+ * Byte accounting
+ * -------------------------------------------------------------------------
+ */
+
+/* Directions for dp_rdma_bytes(); a local copy both sends and receives. */
+#define DP_RDMA_TX 1u
+#define DP_RDMA_RX 2u
+
+/*
+ * Count @bytes of RDMA payload once for the stats file (by @op, against
+ * @qp_id) and once per direction in @dirs for the guest's struct
+ * ionic_lif_stats (tx/rx_rdma_ucast_*).
+ */
+static void dp_rdma_bytes(struct ionic_datapath *dp, uint32_t qp_id,
+                          uint64_t bytes, enum pvrdma_stat_op op,
+                          unsigned int dirs)
+{
+    pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, bytes, op);
+    if (dirs & DP_RDMA_TX)
+        ionic_eth_emu_count_rdma(dp->eth_emu, bytes, true);
+    if (dirs & DP_RDMA_RX)
+        ionic_eth_emu_count_rdma(dp->eth_emu, bytes, false);
+}
+
+/* -------------------------------------------------------------------------
  * DMA helpers
  * -------------------------------------------------------------------------
  */
@@ -1425,8 +1450,7 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
      */
     bool truncated = copied < src->total;
 
-    pvrdma_rdma_bytes_count(dp->pvrdma_handle, dst_qp_id, copied,
-                            PVRDMA_STAT_RECV);
+    dp_rdma_bytes(dp, dst_qp_id, copied, PVRDMA_STAT_RECV, DP_RDMA_RX);
 
     /* GSI (1) and UD (4) receives carry a source MAC; nothing else does. */
     uint8_t smac[6];
@@ -1769,12 +1793,11 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         /* A READ has moved nothing yet; it is counted when the response
          * scatters into p->local. */
         if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM)
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, payload_len,
-                                    PVRDMA_STAT_RDMA_WRITE);
+            dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_RDMA_WRITE,
+                          DP_RDMA_TX);
         else if (wire_op != IONIC_WIRE_READ_REQ &&
                  wire_op != IONIC_WIRE_ATOMIC_REQ)
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, payload_len,
-                                    PVRDMA_STAT_SEND);
+            dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_SEND, DP_RDMA_TX);
     } else {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u send to node %u failed", qp_id,
@@ -2151,8 +2174,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     "%u bytes from QP %u",
                     dst_id, src.total, qp_id);
         else
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, src.total,
-                                    PVRDMA_STAT_SEND);
+            dp_rdma_bytes(dp, qp_id, src.total, PVRDMA_STAT_SEND, DP_RDMA_TX);
         break;
     }
 
@@ -2190,9 +2212,10 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             break;
         }
 
-        pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, moved,
-                                to_remote ? PVRDMA_STAT_RDMA_WRITE
-                                          : PVRDMA_STAT_RDMA_READ);
+        dp_rdma_bytes(dp, qp_id, moved,
+                      to_remote ? PVRDMA_STAT_RDMA_WRITE
+                                : PVRDMA_STAT_RDMA_READ,
+                      DP_RDMA_TX | DP_RDMA_RX);
 
         /* Only the _IMM form consumes a receive on the far side, and it does
          * so with no payload: the data already landed via the rkey.  The
@@ -2419,8 +2442,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         } else {
             /* The responder counts what landed in its own memory too, so each
              * instance's totals describe the traffic it actually moved. */
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, stat_qp, n,
-                                    PVRDMA_STAT_RDMA_WRITE);
+            dp_rdma_bytes(dp, stat_qp, n, PVRDMA_STAT_RDMA_WRITE, DP_RDMA_RX);
 
             if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
                 struct dp_sge_list written = {.count = 0, .total = n};
@@ -2446,8 +2468,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     rkey, (unsigned long)remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else {
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, stat_qp, length,
-                                    PVRDMA_STAT_RDMA_READ);
+            dp_rdma_bytes(dp, stat_qp, length, PVRDMA_STAT_RDMA_READ,
+                          DP_RDMA_TX);
         }
 
         dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, h, status,
@@ -2493,8 +2515,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
             /* The requester's READ bytes only exist once they have landed. */
             if (h->op == IONIC_WIRE_READ_RESP)
-                pvrdma_rdma_bytes_count(dp->pvrdma_handle, p->qp_id, got,
-                                        PVRDMA_STAT_RDMA_READ);
+                dp_rdma_bytes(dp, p->qp_id, got, PVRDMA_STAT_RDMA_READ,
+                              DP_RDMA_RX);
         }
         pending_complete(dp, p, status);
         break;
