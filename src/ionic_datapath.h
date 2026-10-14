@@ -8,6 +8,7 @@
 #ifndef IONIC_DATAPATH_H
 #define IONIC_DATAPATH_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>

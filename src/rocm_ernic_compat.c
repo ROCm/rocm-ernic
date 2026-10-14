@@ -12,11 +12,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <assert.h>
 #include <pthread.h>
-#include <inttypes.h>  /* For PRId64, PRIx64 */
-#include <sys/mman.h>  /* For PROT_READ, PROT_WRITE */
-#include <arpa/inet.h> /* For inet_addr */
+#include <sys/mman.h> /* For PROT_READ, PROT_WRITE */
+#include <sys/uio.h>
+
+#include <glib.h>
+#include <infiniband/verbs.h>
 
 /* Define libvfio-user types we need - full structs to avoid incomplete type */
 #include <vfio-user/libvfio-user.h>
@@ -31,11 +32,12 @@
 #include "vmw/pvrdma.h"
 #include "vmw/pvrdma_qp_ops.h"
 #include "rdma_backend.h"
+#include "rdma_backend_defs.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
+#include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "standard-headers/drivers/infiniband/hw/vmw_pvrdma/pvrdma_dev_api.h"
 #include "hw/pci/pci.h"
 
 /*

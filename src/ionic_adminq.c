@@ -24,6 +24,7 @@
 #include <syslog.h>
 #include <endian.h>
 #include <sys/mman.h> /* PROT_READ, PROT_WRITE */
+#include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 

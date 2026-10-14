@@ -15,7 +15,9 @@
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
 #include "rdma_utils.h"
-#include <errno.h>
+#include <infiniband/verbs.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 
 /* Init/Fini */

@@ -71,7 +71,7 @@
  * variadic macro called with no variadic arguments in a way that ignores
  * diagnostic pragmas, so the macros below cannot silence it.
  */
-#include "rdma_utils.h"
+#include "rdma_utils.h" // IWYU pragma: keep
 
 /*
  * Pull in the code under test (including its static functions). rdma_rm.c

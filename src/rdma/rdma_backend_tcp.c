@@ -17,16 +17,22 @@
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
 #include "rdma_rm.h"
+#include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
 #include "vmw/pvrdma.h"
+#include "exec/memory.h"
 #include "hw/pci/pci.h"        /* For pci_dma_map/unmap/sync */
 #include "rocm_ernic_compat.h" /* IONIC_MESH_MAX_MSG, kept in step below */
 #include "parse_int.h"
-#include "qemu/compiler.h" /* For container_of() */
+#include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include <errno.h>
+#include <infiniband/verbs.h>
+#include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <glib.h>
 #include <stdio.h>

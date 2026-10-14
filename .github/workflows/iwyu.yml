@@ -1,0 +1,137 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Builds with ERNIC_USE_IWYU to check that include-what-you-use still
+# runs. IWYU's suggestions are advisory: they're listed in the job summary
+# and a warning annotation, but they don't fail the job. It fails only
+# when IWYU itself fails, which means building with ERNIC_USE_IWYU is
+# broken.
+#
+# Don't make this a required check. Which suggestions IWYU makes depends
+# on its version, so a new image or IWYU package can change them.
+name: rocm-ernic - IWYU
+
+on:
+  # The Build and Test workflow's paths, since anything it compiles can
+  # break IWYU, plus the other sources IWYU reads and this workflow's own
+  # file and scripts
+  pull_request:
+    branches: [ develop ]
+    paths: &paths
+      - 'src/**'
+      - 'third-party/**'
+      - 'tests/**'
+      - 'shared/**'
+      - 'nix/analysis/fuzz/**'
+      - 'service/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'ci/iwyu/**'
+      - '.github/workflows/iwyu.yml'
+  push:
+    branches: [ develop ]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit on a pull request cancels the run for the older one.
+# Every other run (a push, a manual run) gets a group of its own: in a
+# shared group, a newer run replaces a pending one even without
+# cancel-in-progress, which would leave a commit untested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  iwyu:
+    name: include-what-you-use (advisory)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # build-essential, cmake, ninja-build and pkg-config are
+      # preinstalled on the hosted image. Ninja keeps each command's output
+      # together, so IWYU's output for one file isn't interleaved with
+      # another's in the build log.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            iwyu \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev
+
+      # The same key and paths as the Build and Test workflow, so the two
+      # share the cached build
+      - name: Cache libvfio-user build
+        id: cache-libvfio-user
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/lib/x86_64-linux-gnu/libvfio-user*
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+            /usr/include/vfio-user
+          key: libvfio-user-20e9803-ubuntu-24.04
+
+      # Keep the pinned commit in step with build-and-test.yml
+      - name: Clone and build libvfio-user
+        if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout 20e9803
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: Reload ldconfig after cache restore
+        if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+
+      # IWYU parses with its own clang, which rejects options that it
+      # doesn't know, such as GCC-only ones like -fzero-init-padding-bits
+      # (GCC 15 and later) or a newer Clang's. So the compiler is the
+      # clang that IWYU is built on, which isn't the image's default
+      # clang.
+      - name: Install IWYU's clang
+        run: |
+          include-what-you-use --version
+          major=$(include-what-you-use --version \
+            | sed -n 's/.*clang version \([0-9]*\).*/\1/p')
+          if [ -z "${major}" ]; then
+            echo "::error::Can't find IWYU's clang version"
+            exit 1
+          fi
+          sudo apt-get install -y "clang-${major}"
+          echo "IWYU_CC=clang-${major}" >> "${GITHUB_ENV}"
+
+      # CMake hides IWYU's failures (see ci/iwyu/iwyu-wrapper.sh), so it
+      # runs IWYU through a wrapper that records every run for the check
+      # step.
+      #
+      # ERNIC_WERROR is off: the Build and Test workflow checks for
+      # warnings, and this job is only about IWYU.
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER="${IWYU_CC}" \
+            -DERNIC_USE_IWYU=ON \
+            -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
+
+      - name: Build
+        run: |
+          mkdir build/iwyu-runs
+          ERNIC_IWYU_LOG_DIR="$PWD/build/iwyu-runs" \
+            cmake --build build -j"$(nproc)"
+
+      - name: Check IWYU
+        run: ci/iwyu/check-iwyu.sh build/iwyu-runs "$GITHUB_STEP_SUMMARY"

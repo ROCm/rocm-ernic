@@ -11,6 +11,7 @@ include(ErnicClangCompilerOptions)
 include(ErnicGNUCompilerOptions)
 include(ErnicSanitizers)
 include(ErnicCoverage)
+include(ErnicIWYU)
 
 # Apply compiler warning and hardening flags to ``target``
 # based on the compiler (GCC or Clang) used for each source.
@@ -43,4 +44,6 @@ function(ernic_set_compiler_flags target)
     if(ERNIC_USE_CODE_COVERAGE)
         ernic_add_coverage(${target})
     endif()
+
+    ernic_set_iwyu(${target})
 endfunction()

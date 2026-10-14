@@ -21,7 +21,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

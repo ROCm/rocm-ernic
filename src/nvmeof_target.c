@@ -38,7 +38,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */

@@ -29,6 +29,7 @@
 #include <syslog.h>
 #include <endian.h>
 #include <sys/mman.h>
+#include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 
