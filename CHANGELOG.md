@@ -268,6 +268,12 @@
   has gone returns an error instead of raising a SIGPIPE that could kill the
   server. `tcp-thread-stop-unit` covers all three, and runs a manager's whole
   shutdown with a worker that has stopped reading.
+* A TCP mesh node that can't start one of its threads, because the process is
+  out of threads or memory, no longer tries to join that thread at shutdown,
+  which could crash the server. A connection whose receive thread can't be
+  started is closed instead of kept, and a node whose accept or health-check
+  thread can't be started fails to initialize. `tcp-thread-stop-unit` covers
+  it.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now

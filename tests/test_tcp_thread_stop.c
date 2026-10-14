@@ -31,8 +31,13 @@
  * health-check thread, joined before any socket is shut down, can be
  * blocked in a heartbeat or waiting for a connection's lock.
  * tcp_stop_threads() therefore sets priv->stopping before any join, and a
- * send that would have to wait gives up instead.  The last rows run
+ * send that would have to wait gives up instead.  Later rows run
  * tcp_init() and tcp_fini() on a manager with a worker that stops reading.
+ *
+ * Every stop joins its thread only if the thread's flag is set, so a thread
+ * that couldn't be created must leave its flag clear; a join of a thread
+ * that doesn't exist is undefined behavior.  The last rows make
+ * qemu_thread_create() fail in tcp_init() and in the accept thread.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -135,6 +140,12 @@ static atomic_int g_creates;
 static atomic_int g_joins;
 static atomic_int g_exits;
 
+/*
+ * How many more qemu_thread_create() calls succeed before the rest fail, as
+ * pthread_create() does when the process is out of threads; -1 for no limit.
+ */
+static atomic_int g_creates_left = -1;
+
 struct trampoline {
     void *(*fn)(void *);
     void *arg;
@@ -154,10 +165,17 @@ static void *trampoline_run(void *opaque)
 int qemu_thread_create(QemuThread *thread, const char *name,
                        void *(*start_routine)(void *), void *arg, int mode)
 {
-    struct trampoline *t = malloc(sizeof(*t));
+    struct trampoline *t;
+    int left = atomic_load(&g_creates_left);
 
     (void)name;
     (void)mode;
+    while (left > 0 &&
+           !atomic_compare_exchange_weak(&g_creates_left, &left, left - 1))
+        ;
+    if (left == 0)
+        return EAGAIN;
+    t = malloc(sizeof(*t));
     if (!t)
         return -1;
     t->fn = start_routine;
@@ -368,7 +386,7 @@ static const struct health_case health_cases[] = {
      "returns at once, the thread exits, one join", BLOCKED, LONG_INTERVAL_S,
      false, 1, 1, true},
     {"positive", "a 1 s interval with a connected node, then stop",
-     "a heartbeat each pass, about 1 s apart; the stop returns at once",
+     "a heartbeat each pass, at least 0.5 s apart; the stop returns at once",
      BLOCKED, 1, true, 1, 1, true},
     {"negative", "stop when the thread was never started", "a no-op: no join",
      NOT_STARTED, LONG_INTERVAL_S, false, 1, 0, false},
@@ -379,24 +397,45 @@ static const struct health_case health_cases[] = {
      BLOCKED, LONG_INTERVAL_S, false, 2, 1, true},
 };
 
-/*
- * Wait up to timeout_ms for one message on fd and check that it's a
- * heartbeat.  Returns its arrival time, or a negative value.
- */
-static double recv_heartbeat(int fd, int timeout_ms)
+/* Wait up to timeout_ms for one message on fd, and check it's a heartbeat. */
+static bool recv_heartbeat(int fd, int timeout_ms)
 {
     struct pollfd pfd = {.fd = fd, .events = POLLIN};
     TcpMsgHeader hdr;
     void *payload = NULL;
-    double at;
 
     if (poll(&pfd, 1, timeout_ms) != 1)
-        return -1.0;
-    at = now_s();
+        return false;
     if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL) < 0)
-        return -1.0;
+        return false;
     g_free(payload);
-    return hdr.msg_type == TCP_MSG_HEARTBEAT ? at : -1.0;
+    return hdr.msg_type == TCP_MSG_HEARTBEAT;
+}
+
+/*
+ * Check that the health-check thread waits between passes, sending a
+ * heartbeat on each, by finding two heartbeats sent at least 0.5 s apart.
+ *
+ * The times the heartbeats are read can't show that: a reader scheduled late
+ * finds two already queued however far apart they were sent.  Silence can.
+ * A heartbeat arrives only after it is sent, so if nothing more arrives for
+ * 0.5 s after one is read, the next was sent at least 0.5 s after it.  A late
+ * reader that finds the next one already there tries again with that one,
+ * within a 5 s budget; a thread that doesn't wait never leaves a gap.
+ */
+static bool heartbeats_spaced(int fd)
+{
+    double end = now_s() + 5.0;
+
+    while (now_s() < end) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+
+        if (!recv_heartbeat(fd, 5000))
+            return false;
+        if (poll(&pfd, 1, 500) == 0)
+            return recv_heartbeat(fd, 5000);
+    }
+    return false;
 }
 
 static int run_health_case(const struct health_case *c)
@@ -404,8 +443,8 @@ static int run_health_case(const struct health_case *c)
     TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
     TcpConnection *conn = NULL;
     int sv[2] = {-1, -1};
-    double start, took, first = -1.0, second = -1.0;
-    bool ok = true;
+    double start, took;
+    bool ok = true, spaced = false;
 
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
@@ -447,15 +486,9 @@ static int run_health_case(const struct health_case *c)
             sleep_ms(100);
     }
 
-    /*
-     * The first pass sends at once and the second after one interval.  Only
-     * a lower bound on the gap is checked, loosely, so a slow runner can't
-     * fail the row: a wait that returned early would send them back to back.
-     */
-    if (c->peer) {
-        first = recv_heartbeat(sv[1], 5000);
-        second = first < 0 ? -1.0 : recv_heartbeat(sv[1], 5000);
-    }
+    /* A wait that returned early would send the heartbeats back to back */
+    if (c->peer)
+        spaced = heartbeats_spaced(sv[1]);
 
     start = now_s();
     for (int i = 0; i < c->stops; i++)
@@ -466,16 +499,15 @@ static int run_health_case(const struct health_case *c)
     ok = atomic_load(&g_joins) == c->want_joins &&
          atomic_load(&g_exits) == (c->want_exited ? 1 : 0) &&
          !atomic_load(&priv->health_check_running) && took < 2.0 &&
-         (!c->peer || (first >= 0 && second >= 0 && second - first >= 0.5));
+         (!c->peer || spaced);
 
     printf("%s health %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
     if (!ok)
         printf("     got %d join(s) (want %d), exited %d (want %d), "
-               "stop took %.3f s, heartbeat gap %.3f s\n",
+               "stop took %.3f s, heartbeats spaced %d\n",
                atomic_load(&g_joins), c->want_joins, atomic_load(&g_exits),
-               (int)c->want_exited, took,
-               first >= 0 && second >= 0 ? second - first : -1.0);
+               (int)c->want_exited, took, (int)spaced);
 
 out:
     g_hash_table_destroy(priv->mesh_nodes);
@@ -878,9 +910,9 @@ static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
  */
 static bool held_elsewhere(QemuMutex *lock)
 {
-    int busy = 0;
+    uint32_t busy = 0;
 
-    for (int i = 0; i < 500 && busy < 10; i++) {
+    for (uint32_t i = 0; i < 500 && busy < 10; i++) {
         if (qemu_mutex_trylock(lock) == 0) {
             qemu_mutex_unlock(lock);
             busy = 0;
@@ -980,6 +1012,135 @@ stop:
     return ok ? 0 : 1;
 }
 
+/* ---- Threads that can't be created ------------------------------------- */
+
+/*
+ * A thread that couldn't be created must not be joined: its stop flag has to
+ * be left clear, and a receive thread's connection freed rather than kept.
+ */
+
+enum create_fail {
+    FAIL_IN_INIT,   /* tcp_init() starting the manager's threads */
+    FAIL_ON_ACCEPT, /* the accept thread starting a connection's thread */
+};
+
+struct create_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum create_fail when;
+    int creates_left; /* g_creates_left from then on */
+    bool want_init;   /* tcp_init() succeeds */
+};
+
+static const struct create_case create_cases[] = {
+    {"negative", "the manager's accept thread can't be created",
+     "tcp_init() fails and joins nothing", FAIL_IN_INIT, 0, false},
+    {"negative", "the manager's health-check thread can't be created",
+     "tcp_init() fails and joins only the accept thread", FAIL_IN_INIT, 1,
+     false},
+    {"negative", "an accepted connection's receive thread can't be created",
+     "the connection is closed, not left pending, and tcp_fini() joins only "
+     "the threads that exist",
+     FAIL_ON_ACCEPT, 0, true},
+};
+
+/* A blocking TCP connection to the loopback port, or -1. */
+static int connect_loopback(uint16_t port)
+{
+    struct sockaddr_in addr;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0)
+        return -1;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* Wait up to 5 s for the other end of fd to close it, sending nothing. */
+static bool closed_by_peer(int fd)
+{
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    char c;
+
+    return poll(&pfd, 1, 5000) == 1 && recv(fd, &c, 1, 0) == 0;
+}
+
+static int run_create_case(const struct create_case *c)
+{
+    RdmaBackendDev dev;
+    char config[64];
+    const char *why = NULL;
+    uint16_t port = free_port();
+    int init_ret = -1, fd = -1;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (port == 0) {
+        why = "no free TCP port";
+        goto out;
+    }
+    if (c->when == FAIL_IN_INIT)
+        atomic_store(&g_creates_left, c->creates_left);
+    init_ret = tcp_init(&dev, config);
+
+    if (c->when == FAIL_ON_ACCEPT && init_ret == 0) {
+        TcpBackendPrivate *priv = dev.backend_private;
+        guint pending;
+
+        atomic_store(&g_creates_left, c->creates_left);
+        fd = connect_loopback(port);
+        if (fd < 0 || !closed_by_peer(fd)) {
+            why = "the manager didn't close the connection";
+        } else {
+            qemu_mutex_lock(&priv->conn_table_lock);
+            pending = priv->pending_conns->len;
+            qemu_mutex_unlock(&priv->conn_table_lock);
+            if (pending != 0)
+                why = "the connection was left pending";
+        }
+    }
+    atomic_store(&g_creates_left, -1);
+    if (init_ret == 0)
+        tcp_fini(&dev);
+
+out:
+    alarm(0);
+    atomic_store(&g_creates_left, -1);
+    ok = !why && (init_ret == 0) == c->want_init &&
+         atomic_load(&g_joins) == atomic_load(&g_creates) &&
+         atomic_load(&g_exits) == atomic_load(&g_creates);
+
+    printf("%s create %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s%stcp_init() returned %d, %d thread(s) created, %d "
+               "joined, %d exited\n",
+               why ? why : "", why ? "; " : "", init_ret,
+               atomic_load(&g_creates), atomic_load(&g_joins),
+               atomic_load(&g_exits));
+
+    if (fd >= 0)
+        close(fd);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -993,6 +1154,8 @@ int main(void)
         failures += run_recv_case(&recv_cases[i]);
     for (size_t i = 0; i < sizeof(fini_cases) / sizeof(fini_cases[0]); i++)
         failures += run_fini_case(&fini_cases[i]);
+    for (size_t i = 0; i < sizeof(create_cases) / sizeof(create_cases[0]); i++)
+        failures += run_create_case(&create_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

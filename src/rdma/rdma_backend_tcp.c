@@ -1661,6 +1661,43 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
     return 0;
 }
 
+static void *tcp_recv_thread_per_conn(void *opaque);
+
+/*
+ * Start a backend thread whose stop flag is *running.  The flag is set
+ * first, because the thread exits as soon as it finds it clear.  If the
+ * thread can't be created (the process is out of threads or memory), the
+ * flag is cleared again and false is returned: every stop joins only when
+ * the flag is set, and a join of a thread that was never created is
+ * undefined behavior.
+ *
+ * No stop may run between the set and the clear.  Callers hold the lock the
+ * stop takes first, or start the thread before the stop can reach it.
+ */
+static bool tcp_start_thread(QemuThread *thread, const char *name,
+                             void *(*fn)(void *), void *arg,
+                             atomic_bool *running)
+{
+    atomic_store(running, true);
+    if (qemu_thread_create(thread, name, fn, arg, QEMU_THREAD_JOINABLE) != 0) {
+        atomic_store(running, false);
+        rdma_error_report("TCP: Failed to start thread %s", name);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Start conn's receive thread.  On failure the caller frees conn rather than
+ * publishing it.  Callers either hold conn_table_lock or start the thread
+ * before tcp_stop_recv_threads() can reach conn.
+ */
+static bool tcp_start_recv_thread(TcpConnection *conn, const char *name)
+{
+    return tcp_start_thread(&conn->recv_thread, name, tcp_recv_thread_per_conn,
+                            conn, &conn->recv_thread_running);
+}
+
 /* Per-connection receive thread */
 static void *tcp_recv_thread_per_conn(void *opaque)
 {
@@ -2281,10 +2318,10 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     char thread_name[32];
                     snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
                              peer_id);
-                    atomic_store(&peer_conn->recv_thread_running, true);
-                    qemu_thread_create(&peer_conn->recv_thread, thread_name,
-                                       tcp_recv_thread_per_conn, peer_conn,
-                                       QEMU_THREAD_JOINABLE);
+                    if (!tcp_start_recv_thread(peer_conn, thread_name)) {
+                        tcp_connection_free(peer_conn);
+                        continue;
+                    }
 
                     /* Add to connections table */
                     g_hash_table_insert(priv->connections,
@@ -2747,17 +2784,18 @@ static void *tcp_accept_thread(void *opaque)
 
             /*
              * Start receive thread - it will handle REGISTER_NODE, which
-             * moves the connection to the connections table.  It goes on
-             * the pending list first, under the lock, so the move can't
-             * happen before it's there.
+             * moves the connection to the connections table.  The lock is
+             * held until the connection is on the pending list, so the move
+             * can't happen before it's there.
              */
             snprintf(thread_name, sizeof(thread_name), "tcp-recv-pending");
             qemu_mutex_lock(&priv->conn_table_lock);
+            if (!tcp_start_recv_thread(conn, thread_name)) {
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                tcp_connection_free(conn);
+                continue;
+            }
             g_ptr_array_add(priv->pending_conns, conn);
-            atomic_store(&conn->recv_thread_running, true);
-            qemu_thread_create(&conn->recv_thread, thread_name,
-                               tcp_recv_thread_per_conn, conn,
-                               QEMU_THREAD_JOINABLE);
             qemu_mutex_unlock(&priv->conn_table_lock);
         } else {
             /* Worker mode: receive handshake to identify remote node */
@@ -2853,6 +2891,20 @@ static void *tcp_accept_thread(void *opaque)
             conn->priv = priv;
             qemu_mutex_init(&conn->lock);
 
+            /*
+             * Start the receive thread before the connection is published,
+             * so a connection without one is never in the table.
+             */
+            snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                     remote_node_id);
+            if (!tcp_start_recv_thread(conn, thread_name)) {
+                qemu_mutex_unlock(&priv->conn_table_lock);
+                tcp_connection_free(conn);
+                g_free(payload);
+                payload = NULL;
+                continue;
+            }
+
             /* Add to connection table */
             g_hash_table_insert(priv->connections,
                                 GUINT_TO_POINTER(remote_node_id), conn);
@@ -2861,14 +2913,6 @@ static void *tcp_accept_thread(void *opaque)
             /* Send handshake response */
             tcp_send_handshake(conn, tcp_local_node(priv),
                                TCP_MSG_HANDSHAKE_RESP);
-
-            /* Start receive thread for this connection */
-            snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
-                     remote_node_id);
-            atomic_store(&conn->recv_thread_running, true);
-            qemu_thread_create(&conn->recv_thread, thread_name,
-                               tcp_recv_thread_per_conn, conn,
-                               QEMU_THREAD_JOINABLE);
 
             g_free(payload);
             payload = NULL;
@@ -3156,10 +3200,10 @@ static void *tcp_manager_health_check_thread(void *opaque)
                         char tname[32];
                         snprintf(tname, sizeof(tname), "tcp-recv-%u",
                                  node->node_id);
-                        atomic_store(&new_conn->recv_thread_running, true);
-                        qemu_thread_create(&new_conn->recv_thread, tname,
-                                           tcp_recv_thread_per_conn, new_conn,
-                                           QEMU_THREAD_JOINABLE);
+                        if (!tcp_start_recv_thread(new_conn, tname)) {
+                            tcp_connection_free(new_conn);
+                            goto reconnect_done;
+                        }
 
                         qemu_mutex_lock(&priv->conn_table_lock);
                         g_hash_table_replace(priv->connections,
@@ -3246,10 +3290,11 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     /* Start receive thread for manager connection */
     char thread_name[32];
     snprintf(thread_name, sizeof(thread_name), "tcp-mgr-recv");
-    atomic_store(&priv->manager_conn->recv_thread_running, true);
-    qemu_thread_create(&priv->manager_conn->recv_thread, thread_name,
-                       tcp_recv_thread_per_conn, priv->manager_conn,
-                       QEMU_THREAD_JOINABLE);
+    if (!tcp_start_recv_thread(priv->manager_conn, thread_name)) {
+        tcp_connection_free(priv->manager_conn);
+        priv->manager_conn = NULL;
+        return -1;
+    }
 
     /* Prepare registration payload */
     memset(&reg, 0, sizeof(reg));
@@ -3585,16 +3630,16 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         }
         priv->is_listening = true;
 
-        /* Start accept thread */
-        atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
-
-        /* Start health check thread */
-        atomic_store(&priv->health_check_running, true);
-        qemu_thread_create(&priv->health_check_thread, "tcp-health",
-                           tcp_manager_health_check_thread, priv,
-                           QEMU_THREAD_JOINABLE);
+        /* Start the accept and health check threads */
+        if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
+                              tcp_accept_thread, priv,
+                              &priv->accept_thread_running) ||
+            !tcp_start_thread(&priv->health_check_thread, "tcp-health",
+                              tcp_manager_health_check_thread, priv,
+                              &priv->health_check_running)) {
+            g_free(manager_host);
+            goto error;
+        }
 
         g_free(manager_host);
         rdma_info_report("TCP backend: Manager initialized");
@@ -3644,9 +3689,11 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         priv->is_listening = true;
 
         /* Start accept thread */
-        atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+        if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
+                              tcp_accept_thread, priv,
+                              &priv->accept_thread_running)) {
+            goto error;
+        }
 
         /* Register with manager */
         ret = tcp_worker_register_with_manager(priv);
