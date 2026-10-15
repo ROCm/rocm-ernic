@@ -243,6 +243,14 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     /* Clean up backend using the new abstraction */
     rdma_backend_fini_with_ops(&pvrdma->backend_dev);
 
+    /* Undo pvrdma_qp_ops_init() from pvrdma_device_realize(). Its state is
+     * global, so without this a second device in the same process leaks
+     * the first one's deferred-completion queue. It has to follow the
+     * backend's fini, which joins the TCP receive threads: they post
+     * completions into that queue. Safe on a device that was never
+     * realized, since the fini tolerates state that was never set up. */
+    pvrdma_qp_ops_fini();
+
     /* Free stats hash table */
     if (pvrdma->stats.qp_stats) {
         g_hash_table_destroy(pvrdma->stats.qp_stats);

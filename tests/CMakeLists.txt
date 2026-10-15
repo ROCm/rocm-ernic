@@ -648,6 +648,62 @@ target_link_directories(test_qemu_stubs PRIVATE
 target_link_libraries(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# In-process ionic device harness. It links every source the server is
+# built from except rocm_ernic_server.c, with fake_vfu.c standing in for
+# libvfio-user, and ionic_harness.c drives the device the way the guest
+# driver does: registers, doorbells, and rings in fake guest memory. No VM,
+# socket or RDMA device is involved, so it runs in every build leg. The
+# source lists come from the top-level CMakeLists.txt, so the harness keeps
+# linking what the server links.
+set(ERNIC_HARNESS_DEVICE_SOURCES
+    ${BRIDGE_SOURCES}
+    ${IONIC_EMU_SOURCES}
+    ${NVMEOF_SOURCES}
+    ${S3_SOURCES}
+    ${RDMA_BACKEND_SOURCES}
+    ${NET_SOURCES}
+    ${QEMU_COMPAT_SOURCES}
+)
+list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
+set(ERNIC_HARNESS_VENDORED_SOURCES ${ERNIC_VENDORED_SOURCES})
+list(TRANSFORM ERNIC_HARNESS_VENDORED_SOURCES
+    PREPEND "${PROJECT_SOURCE_DIR}/")
+set_source_files_properties(${ERNIC_HARNESS_VENDORED_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "-w"
+)
+add_executable(ernic-test-ionic-harness
+    test_ionic_harness.c
+    ionic_harness.c
+    fake_vfu.c
+    ${ERNIC_HARNESS_DEVICE_SOURCES}
+    ${ERNIC_HARNESS_VENDORED_SOURCES}
+)
+target_include_directories(ernic-test-ionic-harness PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
+)
+# Vendored and third-party header trees are SYSTEM includes, matching the
+# main target.
+target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-ionic-harness PRIVATE _GNU_SOURCE)
+target_compile_options(ernic-test-ionic-harness PRIVATE
+    ${GLIB2_CFLAGS_OTHER} ${ERNIC_UNIT_TEST_SAN})
+target_link_options(ernic-test-ionic-harness PRIVATE
+    ${ERNIC_UNIT_TEST_SAN_LINK})
+# No libvfio-user: fake_vfu.c defines the entry points the device calls.
+target_link_directories(ernic-test-ionic-harness PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(ernic-test-ionic-harness PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
 # ---------------------------------------------------------------
@@ -686,6 +742,7 @@ set(ERNIC_TEST_TARGETS
     ernic-test-tcp-thread-stop
     test_rdma_res_tbl
     test_qemu_stubs
+    ernic-test-ionic-harness
 )
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
@@ -943,6 +1000,22 @@ add_test(
     COMMAND $<TARGET_FILE:test_qemu_stubs>
 )
 set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
+
+# In-process ionic device harness: the whole device, driven as the guest
+# driver drives it, one CTest test per group so a failure names its area.
+# Bring-up and devcmds, refused admin commands, RC transfers, atomics and
+# fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
+# CM handshake and Connect over the GSI QP.
+foreach(ernic_harness_group
+        devcmds bringup admin rc atomic cq-events ud srq eth nvmeof)
+    add_test(
+        NAME ionic-harness-${ernic_harness_group}
+        COMMAND $<TARGET_FILE:ernic-test-ionic-harness>
+            ${ernic_harness_group}
+    )
+    set_tests_properties(ionic-harness-${ernic_harness_group} PROPERTIES
+        TIMEOUT 60)
+endforeach()
 
 # ionic server smoke test: start the server, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.
