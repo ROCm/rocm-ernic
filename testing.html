@@ -379,6 +379,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-rdma-device-tuple">find-rdma-device-tuple</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-ionic-device-harness">In-process ionic device harness</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-tests">S3-over-RDMA tests</a></li>
 </ul>
@@ -487,6 +488,42 @@ needs <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN
 <span class="nv">ERNIC_TEST_TAP</span><span class="o">=</span>ernic-ci0<span class="w"> </span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-ci
 </pre></div>
 </div>
+</section>
+<section id="in-process-ionic-device-harness">
+<h3>In-process ionic device harness<a class="headerlink" href="#in-process-ionic-device-harness" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ernic-test-ionic-harness</span></code> runs the whole emulated device
+inside the test process. It links every source the server is
+built from except <code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>, and replaces
+libvfio-user with <code class="docutils literal notranslate"><span class="pre">tests/fake_vfu.c</span></code>, which keeps guest
+memory in heap buffers and counts interrupts instead of
+delivering them. <code class="docutils literal notranslate"><span class="pre">tests/ionic_harness.c</span></code> then plays the
+guest driver: devcmds through BAR0, doorbells through BAR2,
+and rings, work requests and completions in guest memory.
+It needs no VM, socket or RDMA device, so it runs in every
+CI build leg, sanitizers included.</p>
+<p>Each group of checks is its own CTest test:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-devcmds</span></code>, <code class="docutils literal notranslate"><span class="pre">-bringup</span></code>: the devcmds, the
+Ethernet admin queue, the RDMA bootstrap, and MSI-X
+masking</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-admin</span></code>: admin commands the device must
+refuse</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-rc</span></code>, <code class="docutils literal notranslate"><span class="pre">-atomic</span></code>, <code class="docutils literal notranslate"><span class="pre">-cq-events</span></code>: sends,
+RDMA reads and writes, atomics and fast registration
+between two RC QPs on the loopback backend, and CQ arming</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-ud</span></code>, <code class="docutils literal notranslate"><span class="pre">-srq</span></code>: datagrams, address handles
+and shared receive queues</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-eth</span></code>: Ethernet transmit and receive</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-nvmeof</span></code>: the IB CM handshake on GSI, then
+a Fabrics Connect and an Identify on the RC QP it binds</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-harness
+</pre></div>
+</div>
+<p>To run one group directly, pass its name, for example
+<code class="docutils literal notranslate"><span class="pre">build/tests/ernic-test-ionic-harness</span> <span class="pre">rc</span></code>. Setting
+<code class="docutils literal notranslate"><span class="pre">ERNIC_FAKE_VFU_LOG_LEVEL</span></code> to a syslog level (<code class="docutils literal notranslate"><span class="pre">7</span></code> for
+everything) prints the device’s <code class="docutils literal notranslate"><span class="pre">vfu_log()</span></code> messages.</p>
 </section>
 <section id="nvme-of-tests">
 <h3>NVMe-oF tests<a class="headerlink" href="#nvme-of-tests" title="Link to this heading">#</a></h3>
@@ -1039,6 +1076,7 @@ this is a public repository.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-rdma-device-tuple">find-rdma-device-tuple</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-ionic-device-harness">In-process ionic device harness</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-tests">S3-over-RDMA tests</a></li>
 </ul>
