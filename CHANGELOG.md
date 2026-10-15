@@ -283,6 +283,14 @@
   lock, so a thread sending on that connection can't send on the descriptor
   after it has been reused for another connection. `tcp-thread-stop-unit`
   covers the failed reconnect.
+* A TCP mesh worker no longer crashes on a malformed handshake from a host
+  that connects to its listen port. A handshake with no payload crashed it
+  with a NULL pointer dereference, and one too short to hold a node id and
+  protocol version was read past its end; both are now refused. So is a
+  message of another type followed by a second connection that hangs up or
+  sends nothing, which freed the first message's payload a second time. A
+  worker also no longer takes up to 5 seconds to shut down while a peer that
+  has connected sends nothing. `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now

@@ -1573,13 +1573,17 @@ static int tcp_send_message(TcpBackendPrivate *priv, int sockfd,
  * waits for the rest of a payload whose header has arrived.  A peer can
  * withhold it, or trickle it, indefinitely, so when running is not NULL the
  * loop gives up as soon as the flag is cleared; otherwise the thread's stop
- * would wait on the peer.
+ * would wait on the peer.  *payload is set on every return, to NULL unless a
+ * payload was received, so a caller that frees it after a failure never
+ * frees a buffer from an earlier message.
  */
 static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                             TcpBufPool *pool, atomic_bool *running)
 {
     ssize_t ret;
     size_t total_recv = 0;
+
+    *payload = NULL;
 
     /* Receive header */
     while (total_recv < sizeof(*hdr)) {
@@ -1654,8 +1658,6 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
             }
             total_recv += (size_t)ret;
         }
-    } else {
-        *payload = NULL;
     }
 
     return 0;
@@ -2822,7 +2824,17 @@ static void *tcp_accept_thread(void *opaque)
                         goto next_connection;
                     }
                 } else if (recv_ret == -EAGAIN) {
-                    /* Socket would block, retry */
+                    /*
+                     * Nothing yet.  A peer can connect and send nothing, so
+                     * check the flag before each wait, or a stop would wait
+                     * out every retry.
+                     */
+                    if (!atomic_load(&priv->accept_thread_running)) {
+                        rdma_info_report(
+                            "TCP: Stopped while waiting for a handshake");
+                        close(sockfd);
+                        goto next_connection;
+                    }
                     usleep(100000); /* 100ms */
                     retry_count++;
                     continue;
@@ -2845,6 +2857,17 @@ static void *tcp_accept_thread(void *opaque)
                 if (payload) {
                     g_free(payload);
                 }
+                continue;
+            }
+
+            /* The length is the peer's to choose, down to no payload at all */
+            if (!payload || hdr.msg_len < sizeof(TcpHandshakePayload)) {
+                rdma_error_report("TCP: Handshake payload is %u bytes, "
+                                  "need %zu",
+                                  hdr.msg_len, sizeof(TcpHandshakePayload));
+                close(sockfd);
+                g_free(payload);
+                payload = NULL;
                 continue;
             }
 
