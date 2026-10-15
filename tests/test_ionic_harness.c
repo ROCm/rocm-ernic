@@ -1013,7 +1013,7 @@ static void test_ud(void)
     struct ih h;
     struct ih_cq cqc, cqd;
     struct ih_qp c, d, rcq;
-    struct ih_mr mr;
+    struct ih_mr mr = {0};
     struct ih_cqe e;
 
     if (!setup(T, &h, "loopback"))
@@ -1078,8 +1078,13 @@ static void test_ud(void)
               "UD payload is not behind the GRH");
     }
 
-    /* The wrong Q_Key, and a connected destination, are refused; the send
-     * still completes and the receive stays posted */
+    /* The wrong Q_Key, and a connected destination, are refused even with a
+     * receive posted at each; the send still completes. D and the RC QP
+     * share a CQ, so either delivery would show up on it. */
+    struct ih_sge rc_dst = {
+        .va = dst_va + 512, .len = sizeof(got), .lkey = mr.lkey};
+    ih_post_recv(&h, &d, &dst, 1);
+    ih_post_recv(&h, &rcq, &rc_dst, 1);
     s.qkey = 0x22222222u;
     ih_post_send(&h, &c, &s);
     s.qkey = UD_QKEY;
@@ -1087,7 +1092,6 @@ static void test_ud(void)
     ih_post_send(&h, &c, &s);
     check(T, ih_cq_poll(&h, &cqc, &e) && ih_cq_poll(&h, &cqc, &e),
           "refused UD sends did not complete");
-    ih_post_recv(&h, &d, &dst, 1);
     check(T, cq_empty(&h, &cqd), "a refused datagram was delivered");
 
     /* Unsignalled, and naming an AH that was never created: delivered all
@@ -1146,7 +1150,7 @@ static void test_srq(void)
     struct ih_cq cqf, cqg;
     struct ih_qp f, g;
     struct ih_srq srq;
-    struct ih_mr mr;
+    struct ih_mr mr = {0};
     struct ih_cqe e;
 
     if (!setup(T, &h, "loopback"))
@@ -1523,7 +1527,7 @@ static void test_nvmeof(void)
     struct ih h;
     struct ih_cq gcq, rcq;
     struct ih_qp gsi, rc;
-    struct ih_mr mr;
+    struct ih_mr mr = {0};
     uint8_t mad[IB_MAD_SIZE], reply[IB_MAD_SIZE];
 
     if (!setup(T, &h, NV_BACKEND))
