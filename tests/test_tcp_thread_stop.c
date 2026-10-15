@@ -77,6 +77,12 @@
  * joined, that only so many may wait to register, and that a failed accept()
  * isn't retried in a tight loop.
  *
+ * The node a message's header names as its sender is whatever the sender
+ * wrote.  The sender rows name another node in a heartbeat and in data-path
+ * requests, and check that the heartbeat is credited, and the answer sent,
+ * by connection instead.  They also check that a dead node that answers a
+ * heartbeat again is reported alive to the rest of the mesh.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
@@ -117,11 +123,15 @@
 
 /* ---- Stubs ------------------------------------------------------------- */
 
+/* The one memory region there is, while a row sets it; see the sender rows */
+static _Atomic(RdmaRmMR *) g_mr;
+
 RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
 {
+    RdmaRmMR *mr = atomic_load(&g_mr);
+
     (void)dev_res;
-    (void)mr_handle;
-    return NULL;
+    return mr && mr->rkey == mr_handle ? mr : NULL;
 }
 
 static atomic_int g_errors; /* error_report() calls */
@@ -1478,10 +1488,14 @@ static int run_hs_case(const struct hs_case *c)
 /* The id the manager gives the first node to register */
 #define RC_NEW_NODE_ID 10
 
+/* The id of a connection that belongs to no node in the mesh */
+#define RC_STRAY_ID 50
+
 /*
  * A manager whose nodes 1 to nodes have stopped answering.  For node i + 1:
  * node[i] is its mesh entry, at port on loopback, old[i] its old connection,
- * with the receive thread running, and peer[i] the node's end of it.
+ * with the receive thread running, and peer[i] the node's end of it.  A row
+ * can add a connection for no node, whose far end is stray_peer.
  */
 struct rc_fixture {
     TcpBackendPrivate *priv;
@@ -1489,6 +1503,7 @@ struct rc_fixture {
     TcpConnection *old[RC_MAX_NODES];
     MeshNodeInfo *node[RC_MAX_NODES];
     int peer[RC_MAX_NODES];
+    int stray_peer;
 };
 
 /* Set up fx; returns NULL, or what failed.  rc_teardown() either way. */
@@ -1501,6 +1516,7 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
     fx->priv = priv;
     for (uint32_t i = 0; i < RC_MAX_NODES; i++)
         fx->peer[i] = -1;
+    fx->stray_peer = -1;
     priv->is_manager = true;
     /* Clear of the fixture's nodes, and of node 0, the manager itself */
     priv->next_available_node_id = RC_NEW_NODE_ID;
@@ -1515,6 +1531,7 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
     priv->mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
+    qemu_mutex_init(&priv->topology_broadcast_lock);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
@@ -1572,8 +1589,11 @@ static void rc_teardown(struct rc_fixture *fx)
     for (uint32_t i = 0; i < RC_MAX_NODES; i++)
         if (fx->peer[i] >= 0)
             close(fx->peer[i]);
+    if (fx->stray_peer >= 0)
+        close(fx->stray_peer);
     tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->topology_broadcast_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
     qemu_mutex_destroy(&priv->health_check_lock);
@@ -1938,23 +1958,33 @@ static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
 }
 
 /*
- * RC_HEARTBEAT: a heartbeat arrives on node 1's old connection while the
- * health check connects, then the connect is let through.  *filler and
- * *fresh get the listener's ends of the filler and of the new connection,
- * for the caller to close.
+ * RC_HEARTBEAT: a heartbeat arrives while the health check connects, then
+ * the connect is let through.  It comes on a connection that belongs to no
+ * node, so that it doesn't revive node 1, though it names node 1: the
+ * manager credits a heartbeat to the node whose connection it came on.
+ * *filler and *fresh get the listener's ends of the filler and of the new
+ * connection, for the caller to close.
  */
 static const char *rc_heartbeat(struct rc_fixture *fx, int lfd, int *filler,
                                 int *fresh)
 {
-    TcpConnection *on_node, *in_table;
+    TcpConnection *on_node, *in_table, *stray;
     bool alive;
 
-    /* From node 0, which isn't in this mesh, so it doesn't revive node 1 */
-    if (!send_heartbeat(fx->peer[0], 0))
+    stray = recv_conn_new(fx->priv, RC_STRAY_ID, true, &fx->stray_peer);
+    if (!stray)
+        return "could not set up the connection for no node";
+    /* In the table, so teardown stops and frees it */
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(RC_STRAY_ID),
+                        stray);
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
+
+    if (!send_heartbeat(fx->stray_peer, 1))
         return "could not send the heartbeat";
-    if (!recv_type(fx->peer[0], TCP_MSG_HEARTBEAT_RESP, 2000))
-        return "the old receive thread couldn't answer while the health check "
-               "connected";
+    if (!recv_type(fx->stray_peer, TCP_MSG_HEARTBEAT_RESP, 2000))
+        return "a receive thread couldn't record a heartbeat while the health "
+               "check connected";
 
     *filler = accept_within(lfd);
     *fresh = accept_within(lfd);
@@ -2025,8 +2055,12 @@ static const char *rc_recovers(struct rc_fixture *fx, int lfd, int *filler,
     for (uint32_t i = 0; i < fx->nodes; i++) {
         if (!send_heartbeat(fx->peer[i], i + 1))
             return "could not send a heartbeat";
-        /* The manager answers once it has recorded the heartbeat */
-        if (!recv_type(fx->peer[i], TCP_MSG_HEARTBEAT_RESP, 2000))
+        /*
+         * The manager answers once it has recorded the heartbeat.  The
+         * topology update reporting an earlier node alive again can come
+         * first.
+         */
+        if (!wait_for_type(fx->peer[i], TCP_MSG_HEARTBEAT_RESP, 2000))
             return "a heartbeat wasn't recorded while the health check "
                    "connected";
     }
@@ -3809,9 +3843,9 @@ static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
 
 /*
  * Read messages from fd for up to timeout_ms, until a topology update that
- * reports node id dead.
+ * reports node id alive, or dead.
  */
-static bool reported_dead(int fd, uint32_t id, int timeout_ms)
+static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
 {
     double end = now_s() + timeout_ms / 1000.0;
 
@@ -3820,7 +3854,7 @@ static bool reported_dead(int fd, uint32_t id, int timeout_ms)
         int left = (int)((end - now_s()) * 1000.0);
         TcpMsgHeader hdr;
         void *payload = NULL;
-        bool dead = false;
+        bool found = false;
 
         if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
             continue;
@@ -3833,11 +3867,11 @@ static bool reported_dead(int fd, uint32_t id, int timeout_ms)
 
             for (uint32_t i = 0; i < n && i < G_N_ELEMENTS(topo->nodes); i++)
                 if (ntohl(topo->nodes[i].node_id) == id &&
-                    !topo->nodes[i].is_alive)
-                    dead = true;
+                    (topo->nodes[i].is_alive != 0) == alive)
+                    found = true;
         }
         g_free(payload);
-        if (dead)
+        if (found)
             return true;
     }
     return false;
@@ -3871,7 +3905,7 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
 
     close(w2);
     start = now_s();
-    if (!reported_dead(w1, 2, 5000))
+    if (!reported(w1, 2, false, 5000))
         return "worker 1 wasn't told worker 2 is dead";
     if (now_s() - start >= 2.5)
         return "worker 2 was only declared dead once it went silent";
@@ -3978,6 +4012,274 @@ static int run_reap_case(const struct reap_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- Which node a message is from -------------------------------------- */
+
+/*
+ * A message's header names the node that sent it, and the sender writes
+ * that.  The manager used to credit a heartbeat to the node the header named,
+ * so any registered worker could keep another, dead, node alive.  Every node
+ * also sent its answer to a data-path request, a completion or the memory
+ * asked for, to the node the request named, so a peer could have it
+ * delivered to another node.  A heartbeat is now credited to the node whose
+ * connection it came on, and an answer goes back on the connection the
+ * request came on.
+ *
+ * A node the manager had declared dead that answered a heartbeat again
+ * stayed dead to the rest of the mesh until its topology next changed.  The
+ * manager now reports it alive.
+ *
+ * Each row starts a manager with tcp_init(), on a one-hour interval so the
+ * health check leaves the nodes alone, and registers two workers over
+ * socketpairs, as in the fini rows: nodes 1 and 2.
+ */
+
+enum sender_scenario {
+    SENDER_HEARTBEAT, /* worker 1's heartbeat names node 2, which is dead */
+    SENDER_REVIVES,   /* node 2, declared dead, answers a heartbeat */
+    SENDER_WRITE,     /* worker 1's RDMA write names node 2 as its sender */
+    SENDER_READ,      /* worker 1's RDMA read names node 2 as its sender */
+};
+
+struct sender_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum sender_scenario scenario;
+};
+
+static const struct sender_case sender_cases[] = {
+    {"negative", "worker 1 sends a heartbeat naming node 2, which is dead",
+     "credited to node 1; node 2 stays dead", SENDER_HEARTBEAT},
+    {"positive", "node 2, declared dead, answers a heartbeat",
+     "node 2 is alive again, and worker 1 is told so", SENDER_REVIVES},
+    {"negative", "worker 1 sends an RDMA write naming node 2 as its sender",
+     "the write lands, and the completion goes to worker 1, not worker 2",
+     SENDER_WRITE},
+    {"negative", "worker 1 asks to read memory, naming node 2 as its sender",
+     "the memory goes to worker 1, not worker 2", SENDER_READ},
+};
+
+/* The memory region the RDMA rows write and read, at g_mr while they run */
+#define SENDER_MR_START UINT64_C(0x10000)
+#define SENDER_MR_RKEY  0x5eedu
+#define SENDER_LEN      8u
+#define SENDER_BYTE     0xab /* what the write writes */
+
+static uint8_t g_sender_mem[SENDER_LEN];
+static RdmaRmMR g_sender_mr;
+
+/* Set node id's liveness and the time of its last heartbeat. */
+static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
+                     time_t last)
+{
+    MeshNodeInfo *node;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    if (node) {
+        node->is_alive = alive;
+        node->last_heartbeat = last;
+    }
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+}
+
+/* Get them; false if there is no node id. */
+static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
+                     time_t *last)
+{
+    MeshNodeInfo *node;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    if (node) {
+        *alive = node->is_alive;
+        *last = node->last_heartbeat;
+    }
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    return node != NULL;
+}
+
+/*
+ * Send an RDMA write of SENDER_LEN bytes of SENDER_BYTE to the region, or a
+ * request to read SENDER_LEN bytes of it, naming node src as the sender.
+ * The operation header is in host byte order, as the backend sends it.
+ */
+static bool send_rdma(int fd, TcpMsgType type, uint32_t src)
+{
+    TcpMsgHeader hdr;
+    TcpRdmaOpHeader op;
+    uint8_t buf[sizeof(hdr) + sizeof(op) + SENDER_LEN];
+    size_t len =
+        type == TCP_MSG_RDMA_WRITE ? sizeof(buf) : sizeof(hdr) + sizeof(op);
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr.msg_type = htonl(type);
+    hdr.msg_len = htonl((uint32_t)(len - sizeof(hdr)));
+    hdr.seq = htonl(1);
+    hdr.src_node_id = htonl(src);
+    hdr.src_qpn = htonl(11);
+    hdr.dst_qpn = htonl(12);
+    memset(&op, 0, sizeof(op));
+    op.remote_addr = SENDER_MR_START;
+    op.rkey = SENDER_MR_RKEY;
+    op.data_len = SENDER_LEN;
+    memset(buf, SENDER_BYTE, sizeof(buf));
+    memcpy(buf, &hdr, sizeof(hdr));
+    memcpy(buf + sizeof(hdr), &op, sizeof(op));
+    return send(fd, buf, len, 0) == (ssize_t)len;
+}
+
+/*
+ * SENDER_HEARTBEAT: node 1 is alive but hasn't answered for a while, and
+ * node 2 is dead.  The manager answers the heartbeat once it has recorded
+ * it.
+ */
+static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
+{
+    time_t dead_since = time(NULL) - 1000, before, last1, last2;
+    bool alive1, alive2;
+
+    node_set(priv, 1, true, dead_since);
+    node_set(priv, 2, false, dead_since);
+    before = time(NULL);
+    if (!send_heartbeat(w1, 2))
+        return "could not send the heartbeat";
+    if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000))
+        return "the heartbeat wasn't answered";
+    if (!node_get(priv, 1, &alive1, &last1) ||
+        !node_get(priv, 2, &alive2, &last2))
+        return "a node is missing";
+    if (alive2 || last2 != dead_since)
+        return "node 2 was revived by a heartbeat that wasn't its own";
+    return last1 >= before ? NULL
+                           : "the heartbeat wasn't credited to node 1, whose "
+                             "connection it came on";
+}
+
+/*
+ * SENDER_REVIVES: worker 1 is first sent node 2's registration, and anything
+ * after that reporting node 2 alive is from the revival.
+ */
+static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
+{
+    time_t last;
+    bool alive;
+
+    if (!reported(w1, 2, true, 5000))
+        return "worker 1 wasn't told node 2 registered";
+    node_set(priv, 2, false, time(NULL) - 1000);
+    if (!send_heartbeat(w2, 2))
+        return "could not send the heartbeat";
+    if (!reported(w1, 2, true, 2000))
+        return "worker 1 wasn't told node 2 is alive again";
+    if (!node_get(priv, 2, &alive, &last) || !alive)
+        return "node 2 is still dead";
+    return NULL;
+}
+
+/* SENDER_WRITE and SENDER_READ */
+static const char *sender_rdma(int w1, int w2, enum sender_scenario scenario)
+{
+    bool is_write = scenario == SENDER_WRITE;
+    TcpMsgType answer = is_write ? TCP_MSG_COMPLETION : TCP_MSG_RDMA_READ_RESP;
+
+    if (!send_rdma(w1, is_write ? TCP_MSG_RDMA_WRITE : TCP_MSG_RDMA_READ_REQ,
+                   2))
+        return "could not send the request";
+    if (!wait_for_type(w1, answer, 2000))
+        return "the answer didn't come back to worker 1";
+    if (count_type(w2, answer) != 0)
+        return "the answer went to worker 2";
+    if (is_write) {
+        for (uint32_t i = 0; i < SENDER_LEN; i++)
+            if (g_sender_mem[i] != SENDER_BYTE)
+                return "the write didn't land";
+    }
+    return NULL;
+}
+
+static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
+                              enum sender_scenario scenario)
+{
+    switch (scenario) {
+    case SENDER_HEARTBEAT:
+        return sender_heartbeat(priv, w1);
+    case SENDER_REVIVES:
+        return sender_revives(priv, w1, w2);
+    case SENDER_WRITE:
+    case SENDER_READ:
+        return sender_rdma(w1, w2, scenario);
+    default:
+        return "unknown scenario";
+    }
+}
+
+static int run_sender_case(const struct sender_case *c)
+{
+    RdmaBackendDev dev;
+    TcpBackendPrivate *priv;
+    char config[64];
+    const char *why;
+    uint16_t port = free_port();
+    int w1 = -1, w2 = -1;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    memset(g_sender_mem, 0, sizeof(g_sender_mem));
+    memset(&g_sender_mr, 0, sizeof(g_sender_mr));
+    g_sender_mr.virt = g_sender_mem;
+    g_sender_mr.start = SENDER_MR_START;
+    g_sender_mr.length = sizeof(g_sender_mem);
+    g_sender_mr.rkey = SENDER_MR_RKEY;
+    atomic_store(&g_mr, &g_sender_mr);
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (port == 0 || tcp_init(&dev, config) != 0) {
+        printf("FAIL sender %s: %s; could not start a manager\n", c->category,
+               c->description);
+        alarm(0);
+        atomic_store(&g_mr, NULL);
+        return 1;
+    }
+    priv = dev.backend_private;
+
+    w1 = worker_register(priv);
+    if (w1 < 0 || !wait_for_registered(priv, 1))
+        why = "worker 1 did not register";
+    else if ((w2 = worker_register(priv)) < 0 || !wait_for_registered(priv, 2))
+        why = "worker 2 did not register";
+    else
+        why = sender_run(priv, w1, w2, c->scenario);
+
+    tcp_fini(&dev);
+    alarm(0);
+    atomic_store(&g_mr, NULL);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s sender %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s\n", why);
+    fflush(stdout);
+
+    if (w1 >= 0)
+        close(w1);
+    if (w2 >= 0)
+        close(w2);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -4010,6 +4312,8 @@ int main(void)
         failures += run_sp_case(&sp_cases[i]);
     for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++)
         failures += run_reap_case(&reap_cases[i]);
+    for (size_t i = 0; i < sizeof(sender_cases) / sizeof(sender_cases[0]); i++)
+        failures += run_sender_case(&sender_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
