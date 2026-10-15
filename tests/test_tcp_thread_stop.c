@@ -1617,6 +1617,7 @@ enum rc_scenario {
     RC_STOP,      /* the thread is stopped */
     RC_TIMEOUT,   /* the connect waits out its timeout */
     RC_REGISTERS, /* a node registers while the reconnects wait */
+    RC_STARVES,   /* the first node never answers, the second does */
 };
 
 struct rc_case {
@@ -1652,6 +1653,12 @@ static const struct rc_case rc_cases[] = {
      "the reconnects stop after an interval, so the new node is sent a "
      "heartbeat before it can be declared dead",
      RC_REGISTERS, 3, 2, 8},
+    {"corner",
+     "two nodes due together, the first never answering and the second "
+     "answering, on a 1 s interval",
+     "the second is deferred, not starved: it goes first on the next pass, "
+     "and is reconnected",
+     RC_STARVES, 2, 1, 4},
 };
 
 /*
@@ -1691,6 +1698,7 @@ enum connect_target {
     CT_CLOSED,          /* a port nothing listens on */
     CT_UNANSWERING,     /* a listener that doesn't answer */
     CT_TWO_UNANSWERING, /* two addresses, neither of which answers */
+    CT_REFUSED_FIRST,   /* two addresses, the first refused, then listening */
 };
 
 struct connect_case {
@@ -1714,6 +1722,10 @@ static const struct connect_case connect_cases[] = {
      "connect to two addresses, neither of which answers, with a 1 s timeout",
      "gives up after 1 s in all, not 1 s for each", CT_TWO_UNANSWERING, 1,
      false, 1.0, 1.8},
+    {"negative",
+     "connect to two addresses, the first refused, with a 1 s timeout",
+     "a failure before the deadline moves on: connected to the second",
+     CT_REFUSED_FIRST, 1, true, 0.0, 1.0},
 };
 
 static int run_connect_case(const struct connect_case *c)
@@ -1723,7 +1735,9 @@ static int run_connect_case(const struct connect_case *c)
     socklen_t len = sizeof(addr[0]);
     int lfd[2] = {-1, -1}, filler[2] = {-1, -1}, fd = -1;
     uint16_t port[2] = {0, 0};
-    uint32_t addrs = c->target == CT_TWO_UNANSWERING ? 2 : 1;
+    uint32_t addrs =
+        c->target == CT_TWO_UNANSWERING || c->target == CT_REFUSED_FIRST ? 2
+                                                                         : 1;
     uint64_t deadline_ms = 0;
     double start, took = 0.0;
     bool ok = false;
@@ -1731,11 +1745,16 @@ static int run_connect_case(const struct connect_case *c)
     switch (c->target) {
     case CT_LISTENING:
     case CT_CLOSED:
-        lfd[0] = listen_loopback();
-        if (lfd[0] >= 0 &&
-            getsockname(lfd[0], (struct sockaddr *)&addr[0], &len) == 0)
-            port[0] = ntohs(addr[0].sin_port);
-        if (c->target == CT_CLOSED && lfd[0] >= 0) {
+    case CT_REFUSED_FIRST:
+        for (uint32_t i = 0; i < addrs; i++) {
+            len = sizeof(addr[i]);
+            lfd[i] = listen_loopback();
+            if (lfd[i] >= 0 &&
+                getsockname(lfd[i], (struct sockaddr *)&addr[i], &len) == 0)
+                port[i] = ntohs(addr[i].sin_port);
+        }
+        /* Nothing listens on the first port once its listener is closed */
+        if (c->target != CT_LISTENING && lfd[0] >= 0) {
             close(lfd[0]);
             lfd[0] = -1;
         }
@@ -1969,13 +1988,83 @@ static const char *rc_registers(struct rc_fixture *fx)
     return why;
 }
 
+/*
+ * RC_STARVES: point the node the health check comes to second at a listener
+ * that answers, leaving the first at the one that doesn't, which uses up
+ * the pass's interval.  Returns the new listener, or -1, and the node in
+ * *second.  Called before the health check starts.
+ */
+static int rc_second_answers(struct rc_fixture *fx, MeshNodeInfo **second)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    GHashTableIter iter;
+    gpointer value;
+    uint32_t n = 0;
+    int lfd = listen_loopback();
+
+    *second = NULL;
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+        if (lfd >= 0)
+            close(lfd);
+        return -1;
+    }
+    /* The scan walks the table in this order */
+    g_hash_table_iter_init(&iter, fx->priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+        if (n++ == 1)
+            *second = value;
+    if (*second)
+        (*second)->port = ntohs(addr.sin_port);
+    return lfd;
+}
+
+/*
+ * RC_STARVES: the second node is passed over on the first pass, and has to
+ * be reconnected on a later one.  *fresh is as for rc_heartbeat().
+ */
+static const char *rc_starves(struct rc_fixture *fx, MeshNodeInfo *second,
+                              int lfd, int *fresh)
+{
+    TcpConnection *on_node, *in_table;
+
+    *fresh = accept_within(lfd);
+    if (*fresh < 0)
+        return "the second node was never tried";
+    if (!recv_type(*fresh, TCP_MSG_HANDSHAKE, 5000))
+        return "the second node's new connection sent no handshake";
+    /* The broadcast comes after the new connection is published */
+    if (!recv_type(*fresh, TCP_MSG_MESH_TOPOLOGY, 5000))
+        return "the reconnect wasn't broadcast";
+
+    qemu_mutex_lock(&fx->priv->mesh_table_lock);
+    on_node = second->conn;
+    qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    in_table = g_hash_table_lookup(fx->priv->connections,
+                                   GUINT_TO_POINTER(second->node_id));
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
+    /* The new connection replaced the old one, which freed it */
+    for (uint32_t i = 0; i < fx->nodes; i++)
+        if (fx->node[i] == second)
+            fx->old[i] = NULL;
+
+    if (atomic_load(&fx->priv->tcp_stats.reconnect_successes) != 1)
+        return "the second node's reconnect didn't succeed";
+    if (!on_node || on_node != in_table)
+        return "the node and the connections table don't both have the new "
+               "connection";
+    return NULL;
+}
+
 static int run_rc_case(const struct rc_case *c)
 {
     struct rc_fixture fx;
     const char *why;
-    int filler = -1, filler_accepted = -1, fresh = -1;
+    int filler = -1, filler_accepted = -1, fresh = -1, answering = -1;
     uint16_t port;
     int lfd = listen_unanswering(&port, &filler);
+    MeshNodeInfo *second = NULL;
     double start, took = 0.0;
     bool ok;
 
@@ -1986,6 +2075,9 @@ static int run_rc_case(const struct rc_case *c)
     why = rc_setup(&fx, port, c->nodes, c->interval);
     if (!why && lfd < 0)
         why = "could not open a listener that doesn't answer";
+    if (!why && c->scenario == RC_STARVES &&
+        (answering = rc_second_answers(&fx, &second)) < 0)
+        why = "could not open a listener that answers";
 
     if (!why) {
         rc_start(&fx, c->dead_s);
@@ -2026,6 +2118,10 @@ static int run_rc_case(const struct rc_case *c)
         case RC_REGISTERS:
             why = rc_registers(&fx);
             break;
+        case RC_STARVES:
+            why = second ? rc_starves(&fx, second, answering, &fresh)
+                         : "the fixture has no second node";
+            break;
         default:
             why = "unknown scenario";
             break;
@@ -2047,6 +2143,8 @@ static int run_rc_case(const struct rc_case *c)
         close(filler_accepted);
     if (fresh >= 0)
         close(fresh);
+    if (answering >= 0)
+        close(answering);
     if (lfd >= 0)
         close(lfd);
     return ok ? 0 : 1;

@@ -530,6 +530,11 @@ typedef struct {
      * registration, so that thread may read it without the lock.
      */
     TcpConnection *conn;
+    /*
+     * Due a reconnect that the last pass ran out of time for.  Used only by
+     * the health-check thread, so it needs no lock.
+     */
+    bool reconnect_deferred;
 } MeshNodeInfo;
 
 struct TcpBackendPrivate {
@@ -1438,7 +1443,12 @@ static int tcp_connect_any(const struct addrinfo *addrs,
 
         err = errno;
         close(sockfd);
-        if (err == ECANCELED || err == ETIMEDOUT)
+        /*
+         * Any other failure, including the kernel giving up on this address
+         * with ETIMEDOUT, moves on to the next address.
+         */
+        if (err == ECANCELED ||
+            (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms))
             break;
     }
     errno = err;
@@ -3339,7 +3349,11 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                 backoff *= 2;
             if (backoff > 60)
                 backoff = 60;
-            item.reconnect = dead_sec % backoff == 0 && node->hostname != NULL;
+            item.reconnect =
+                (node->reconnect_deferred || dead_sec % backoff == 0) &&
+                node->hostname != NULL;
+        } else {
+            node->reconnect_deferred = false;
         }
 
         if (item.conn || item.reconnect)
@@ -3348,6 +3362,18 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
     return newly_dead;
+}
+
+/*
+ * Deferred reconnects first.  g_array_sort() is stable, so the order is
+ * otherwise the scan's.
+ */
+static gint tcp_health_check_item_cmp(gconstpointer a, gconstpointer b)
+{
+    const TcpHealthCheckItem *x = a, *y = b;
+
+    return (gint)y->node->reconnect_deferred -
+           (gint)x->node->reconnect_deferred;
 }
 
 /*
@@ -3501,27 +3527,37 @@ static void *tcp_manager_health_check_thread(void *opaque)
             tcp_broadcast_mesh_topology(priv);
 
         /*
-         * All of the pass's reconnects share one interval; a node whose turn
-         * comes after it has run out waits for a later pass.  No heartbeat
+         * All of the pass's reconnects share one interval.  No heartbeat
          * goes out until the next pass, an interval after this one ends,
          * and a node is declared dead after three intervals without one.
          * With the reconnects bounded, the answer to this pass's heartbeat,
          * or the registration of a node that joins meanwhile, is less than
          * three intervals old when the next pass looks at it.
+         *
+         * A node whose turn comes after the interval has run out is
+         * deferred: it is due on the next pass whatever its backoff, and
+         * goes ahead of the nodes that had a turn.  Otherwise a node that
+         * never answers, and comes first in the table, would use up every
+         * pass's interval, and the nodes after it would never be tried.
          */
         uint64_t deadline_ms =
             tcp_monotonic_ms() +
             (uint64_t)priv->health_check_interval_sec * 1000u;
 
+        g_array_sort(items, tcp_health_check_item_cmp);
         for (guint i = 0;
-             i < items->len && atomic_load(&priv->health_check_running) &&
-             tcp_monotonic_ms() < deadline_ms;
-             i++) {
+             i < items->len && atomic_load(&priv->health_check_running); i++) {
             const TcpHealthCheckItem *item =
                 &g_array_index(items, TcpHealthCheckItem, i);
 
-            if (item->reconnect &&
-                tcp_health_check_reconnect(priv, item, deadline_ms))
+            if (!item->reconnect)
+                continue;
+            if (tcp_monotonic_ms() >= deadline_ms) {
+                item->node->reconnect_deferred = true;
+                continue;
+            }
+            item->node->reconnect_deferred = false;
+            if (tcp_health_check_reconnect(priv, item, deadline_ms))
                 reconnected = true;
         }
 

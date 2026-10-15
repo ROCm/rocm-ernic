@@ -314,7 +314,9 @@
   than when the kernel gives up on each, about two minutes later. No
   heartbeats go out while they wait, so several unreachable nodes could
   otherwise get the nodes that were still answering, or had just
-  registered, declared dead. SIGTERM no longer waits for a reconnect either.
+  registered, declared dead. A node that a pass runs out of time for goes
+  first in the next one, so a node that never answers can't keep the others
+  from being reconnected. SIGTERM no longer waits for a reconnect either.
   `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
