@@ -41,6 +41,10 @@
  * health-check reconnect, after which the retired connection must not be
  * stopped again.
  *
+ * A worker's accept thread waits for a handshake from each peer that
+ * connects, and has to stop waiting when it is stopped.  The handshake rows
+ * check that, and also send it handshakes it has to refuse.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
@@ -402,8 +406,8 @@ static const struct health_case health_cases[] = {
      BLOCKED, LONG_INTERVAL_S, false, 2, 1, true},
 };
 
-/* Wait up to timeout_ms for one message on fd, and check it's a heartbeat. */
-static bool recv_heartbeat(int fd, int timeout_ms)
+/* Wait up to timeout_ms for one message on fd, and check its type. */
+static bool recv_type(int fd, TcpMsgType type, int timeout_ms)
 {
     struct pollfd pfd = {.fd = fd, .events = POLLIN};
     TcpMsgHeader hdr;
@@ -414,7 +418,7 @@ static bool recv_heartbeat(int fd, int timeout_ms)
     if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL) < 0)
         return false;
     g_free(payload);
-    return hdr.msg_type == TCP_MSG_HEARTBEAT;
+    return hdr.msg_type == type;
 }
 
 /*
@@ -435,10 +439,10 @@ static bool heartbeats_spaced(int fd)
     while (now_s() < end) {
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
 
-        if (!recv_heartbeat(fd, 5000))
+        if (!recv_type(fd, TCP_MSG_HEARTBEAT, 5000))
             return false;
         if (poll(&pfd, 1, 500) == 0)
-            return recv_heartbeat(fd, 5000);
+            return recv_type(fd, TCP_MSG_HEARTBEAT, 5000);
     }
     return false;
 }
@@ -1146,6 +1150,207 @@ out:
     return ok ? 0 : 1;
 }
 
+/* ---- A worker's handshake ---------------------------------------------- */
+
+/*
+ * A worker's accept thread reads a handshake from each peer that connects
+ * before it gives the connection a receive thread.  It waits up to 5 s for
+ * one, and used to wait all of it even when stopped, so a peer that
+ * connected and sent nothing held up shutdown.  The other rows send what the
+ * thread must refuse.  It read the node id and version from a handshake
+ * whatever its length: through a NULL pointer when there was no payload,
+ * past the end of a short one.  And after refusing a message of another
+ * type, it kept the freed payload's pointer and freed it again when the next
+ * peer hung up.  After each, the thread must still accept a good handshake.
+ */
+
+#define HS_NODE 7 /* the node id the test's peers claim */
+
+enum hs_peer {
+    HS_GOOD,         /* only the good handshake */
+    HS_SILENT,       /* connects and sends nothing */
+    HS_EMPTY,        /* a handshake with no payload */
+    HS_SHORT,        /* a handshake one byte short */
+    HS_OTHER_HANGUP, /* another message type, then a peer that hangs up */
+};
+
+struct hs_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum hs_peer peer;
+};
+
+static const struct hs_case hs_cases[] = {
+    {"positive", "a peer that sends a handshake",
+     "answered and given a receive thread; both threads joined once", HS_GOOD},
+    {"negative", "a peer that connects and sends nothing",
+     "the stop doesn't wait out the handshake timeout: one join, at once",
+     HS_SILENT},
+    {"negative", "a handshake with no payload",
+     "refused; the next peer's handshake is accepted", HS_EMPTY},
+    {"boundary", "a handshake one byte short",
+     "refused without reading past it; the next is accepted", HS_SHORT},
+    {"corner", "another message type, then a peer that hangs up",
+     "both refused, the message freed once; the next is accepted",
+     HS_OTHER_HANGUP},
+};
+
+/* Send a message of type with the first len bytes of a handshake payload. */
+static bool send_hs(int fd, TcpMsgType type, uint32_t len)
+{
+    struct {
+        TcpMsgHeader hdr;
+        TcpHandshakePayload hs;
+    } msg;
+    size_t size = sizeof(msg.hdr) + len;
+
+    if (len > sizeof(msg.hs))
+        return false;
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(type);
+    msg.hdr.msg_len = htonl(len);
+    msg.hdr.src_node_id = htonl(HS_NODE);
+    msg.hs.node_id = htonl(HS_NODE);
+    msg.hs.version = htonl(TCP_PROTOCOL_VERSION);
+    return send(fd, &msg, size, 0) == (ssize_t)size;
+}
+
+/* Connect a peer that sends what the row says, and check it's refused. */
+static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
+{
+    int hup;
+
+    *fd = connect_loopback(port);
+    if (*fd < 0)
+        return "could not connect";
+    switch (peer) {
+    case HS_GOOD:
+        return "not a bad peer";
+    case HS_SILENT:
+        sleep_ms(200); /* let the thread start waiting for the handshake */
+        return NULL;
+    case HS_EMPTY:
+        if (!send_hs(*fd, TCP_MSG_HANDSHAKE, 0))
+            return "could not send the handshake";
+        break;
+    case HS_SHORT:
+        if (!send_hs(*fd, TCP_MSG_HANDSHAKE,
+                     (uint32_t)sizeof(TcpHandshakePayload) - 1))
+            return "could not send the handshake";
+        break;
+    case HS_OTHER_HANGUP:
+        if (!send_hs(*fd, TCP_MSG_HEARTBEAT,
+                     (uint32_t)sizeof(TcpHandshakePayload)))
+            return "could not send the message";
+        if (!closed_by_peer(*fd))
+            return "the message wasn't refused";
+        hup = connect_loopback(port);
+        if (hup < 0)
+            return "could not connect the peer that hangs up";
+        close(hup);
+        return NULL;
+    default:
+        return NULL;
+    }
+    return closed_by_peer(*fd) ? NULL : "the handshake wasn't refused";
+}
+
+/* Connect a peer that sends a good handshake, and check it's accepted. */
+static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port, int *fd)
+{
+    TcpConnection *conn;
+
+    *fd = connect_loopback(port);
+    if (*fd < 0)
+        return "could not connect the good peer";
+    if (!send_hs(*fd, TCP_MSG_HANDSHAKE, (uint32_t)sizeof(TcpHandshakePayload)))
+        return "could not send the good handshake";
+    /* The thread answers after it has published the connection */
+    if (!recv_type(*fd, TCP_MSG_HANDSHAKE_RESP, 5000))
+        return "the good handshake wasn't answered";
+    qemu_mutex_lock(&priv->conn_table_lock);
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(HS_NODE));
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    return conn ? NULL : "the good peer's connection isn't in the table";
+}
+
+static int run_hs_case(const struct hs_case *c)
+{
+    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    const char *why = NULL;
+    int bad = -1, good = -1;
+    int want_joins = c->peer == HS_SILENT ? 1 : 2;
+    double start, took = 0.0;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    atomic_init(&priv->accept_thread_running, false);
+    atomic_init(&priv->stopping, false);
+    atomic_init(&priv->next_seq, 1);
+    atomic_init(&priv->local_node_id, 1);
+    priv->connections = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->pending_conns = g_ptr_array_new();
+    qemu_mutex_init(&priv->conn_table_lock);
+    tcp_bufpool_init(&priv->recv_pool);
+    priv->listen_fd = listen_loopback();
+    memset(&addr, 0, sizeof(addr));
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (priv->listen_fd < 0 ||
+        getsockname(priv->listen_fd, (struct sockaddr *)&addr, &len) < 0) {
+        why = "could not open a listening socket";
+    } else {
+        atomic_store(&priv->accept_thread_running, true);
+        qemu_thread_create(&priv->accept_thread, "tcp-accept",
+                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+        if (c->peer != HS_GOOD)
+            why = hs_bad_peer(c->peer, ntohs(addr.sin_port), &bad);
+        if (!why && c->peer != HS_SILENT)
+            why = hs_good_peer(priv, ntohs(addr.sin_port), &good);
+    }
+
+    start = now_s();
+    tcp_stop_accept_thread(priv);
+    took = now_s() - start;
+    tcp_stop_recv_threads(priv);
+    if (!why && c->peer == HS_SILENT && !closed_by_peer(bad))
+        why = "the silent peer's connection was left open";
+    alarm(0);
+
+    ok = !why && took < 2.0 && atomic_load(&g_joins) == want_joins &&
+         atomic_load(&g_exits) == atomic_load(&g_creates);
+
+    printf("%s handshake %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s%s%d join(s) (want %d), %d of %d exited, the accept "
+               "thread's stop took %.3f s\n",
+               why ? why : "", why ? "; " : "", atomic_load(&g_joins),
+               want_joins, atomic_load(&g_exits), atomic_load(&g_creates),
+               took);
+
+    g_hash_table_destroy(priv->connections);
+    tcp_free_pending_conns(priv);
+    if (bad >= 0)
+        close(bad);
+    if (good >= 0)
+        close(good);
+    if (priv->listen_fd >= 0)
+        close(priv->listen_fd);
+    tcp_bufpool_destroy(&priv->recv_pool);
+    qemu_mutex_destroy(&priv->conn_table_lock);
+    g_free(priv);
+    return ok ? 0 : 1;
+}
+
 /* ---- Health-check reconnect -------------------------------------------- */
 
 /*
@@ -1298,6 +1503,8 @@ int main(void)
         failures += run_fini_case(&fini_cases[i]);
     for (size_t i = 0; i < sizeof(create_cases) / sizeof(create_cases[0]); i++)
         failures += run_create_case(&create_cases[i]);
+    for (size_t i = 0; i < sizeof(hs_cases) / sizeof(hs_cases[0]); i++)
+        failures += run_hs_case(&hs_cases[i]);
     failures += run_reconnect_case();
 
     if (failures) {
