@@ -298,6 +298,19 @@
   use. Any host that could reach the manager's port could crash it this way.
   A registration on a connection that has already registered is now ignored.
   `tcp-thread-stop-unit` covers it.
+* A TCP mesh manager no longer deadlocks when a node it has declared dead
+  sends a heartbeat while the manager reconnects to it. The health check held
+  the mesh table's lock throughout, and the reconnect waits for the old
+  connection's receive thread, which needed that lock to record the
+  heartbeat; the manager then stopped registering nodes, and hung on SIGTERM.
+  The health check now holds the lock only to decide what to do, so
+  registrations and heartbeats no longer wait for a reconnect, or for a
+  heartbeat sent to a node that has stopped reading, and a node registering
+  while the health check reports a dead node can no longer cut its pass
+  short. A reconnect now gives up on a node that doesn't answer after one
+  health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default)
+  rather than when the kernel does, about two minutes later, and SIGTERM no
+  longer waits for it. `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
@@ -329,14 +342,11 @@
   `tcp_mr_range_ok()`, the loopback one by skipping regions without a mapping during
   translation -- but the registration itself is unchanged, and neither
   `cmd->start` nor `cmd->length` is validated before it.
-* A TCP mesh manager can still be slow to stop while its health check is
-  reconnecting to a node that has gone away. The reconnect uses a blocking
-  `connect()` with no timeout of its own, so a SIGTERM that arrives while it is
-  connecting to a host that doesn't answer waits for the kernel to give up,
-  about two minutes by default. Registrations wait behind it too, since it
-  holds the mesh table's lock throughout. A worker has the same problem while
-  it connects to a peer it has just learned about from the manager, and
-  meanwhile its data path waits for the connection table it holds.
+* A TCP mesh worker can still be slow to stop while it connects to a peer it
+  has just learned about from the manager. The connect has no timeout of its
+  own, so a SIGTERM that arrives while it is connecting to a host that doesn't
+  answer waits for the kernel to give up, about two minutes by default, and
+  meanwhile the worker's data path waits for the connection table it holds.
 * While the TCP backend is running, a mesh node that stops reading can stall
   the node sending to it. A send waits for room in the socket for as long as
   it takes, and a broadcast to every node does that while holding the
