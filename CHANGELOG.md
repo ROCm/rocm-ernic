@@ -371,3 +371,10 @@
   it takes, and a broadcast to every node does that while holding the
   connection table's lock, which the data path needs too. Only shutdown makes
   such a send give up.
+* The TCP backend still looks up mesh nodes' hostnames with a lookup that
+  can't be interrupted or given a deadline. A worker advertises its
+  `gethostname()`, which its peers and the manager's health check look up
+  before each connect, so a slow DNS server can make SIGTERM wait for the
+  resolver to give up, which its configured timeouts and retries bound. A
+  hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
+  wait.

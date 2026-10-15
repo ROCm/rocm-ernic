@@ -1948,10 +1948,17 @@ static bool tcp_worker_peer_current(TcpBackendPrivate *priv,
  * Called on the peer-connect thread without conn_table_lock, which every
  * lookup on the data path takes: the connect can take until the deadline,
  * and the handshake can wait on the peer.  The lock is taken only to
- * publish, and the table checked again then, because the accept thread may
- * have published a connection to the same node meanwhile; that one is kept,
- * and this one closed.  The connection is also closed if an update that came
- * during the connect no longer names the peer.
+ * publish.
+ *
+ * Either of the checks the pass made can be out of date once the connect
+ * returns: an update can have dropped the peer, and the accept thread can
+ * have published the peer's own connection to this node.  Both are checked
+ * again before the handshake, since the peer publishes the connection when
+ * it gets the handshake, and keeps it even after this worker closes it; a
+ * connection closed before then leaves nothing behind.  After the handshake
+ * the connection is kept, as one made just before an update would be, unless
+ * the table has a connection to the peer by then: that one is kept, and this
+ * one closed.
  */
 static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
                                     const TcpPeerTarget *target,
@@ -1976,19 +1983,26 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
     peer_conn->sockfd = fd;
     peer_conn->is_connected = true;
 
+    if (!tcp_worker_peer_current(priv, target)) {
+        rdma_info_report("TCP: Peer node %u was dropped from the topology "
+                         "meanwhile; closing the new connection",
+                         target->node_id);
+        tcp_connection_free(peer_conn);
+        return false;
+    }
+    if (tcp_get_connection(priv, target->node_id)) {
+        rdma_info_report("TCP: Peer node %u connected to this node meanwhile; "
+                         "closing the new connection",
+                         target->node_id);
+        tcp_connection_free(peer_conn);
+        return false;
+    }
+
     /* Before the connection is published, so nothing goes out ahead of it */
     if (tcp_send_handshake(peer_conn, tcp_local_node(priv), TCP_MSG_HANDSHAKE) <
         0) {
         rdma_error_report("TCP: Failed to send handshake to peer %u",
                           target->node_id);
-        tcp_connection_free(peer_conn);
-        return false;
-    }
-
-    if (!tcp_worker_peer_current(priv, target)) {
-        rdma_info_report("TCP: Peer node %u was dropped from the topology "
-                         "meanwhile; closing the new connection",
-                         target->node_id);
         tcp_connection_free(peer_conn);
         return false;
     }

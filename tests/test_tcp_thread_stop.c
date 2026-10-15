@@ -2403,7 +2403,8 @@ static int run_reg_case(const struct reg_case *c)
  * Each gives up after a health-check interval, or at once when the thread is
  * stopped.  Every peer is tried on every pass, and a pass comes on each
  * update and otherwise an interval after the last.  A peer that an update
- * during the pass drops isn't connected to, or its new connection is closed.
+ * during the pass drops isn't connected to, or its new connection is closed
+ * before the handshake, which would have the peer publish it.
  *
  * The worker here is node TP_LOCAL.  Its connection to the manager is a
  * socketpair whose other end the test writes the updates to, and its
@@ -2463,7 +2464,7 @@ static const struct tp_case tp_cases[] = {
      "connected on a later pass, with no new update", TP_RETRY, 1},
     {"corner",
      "the peer connects to the worker while the worker connects to it",
-     "the peer's connection is kept, and the worker's closed after its "
+     "the peer's connection is kept, and the worker's closed without a "
      "handshake",
      TP_RACE, LONG_INTERVAL_S},
     {"corner", "a new peer connection whose receive thread can't be started",
@@ -2477,7 +2478,7 @@ static const struct tp_case tp_cases[] = {
     {"corner",
      "an update reporting a peer dead while the worker's connect to it is in "
      "progress",
-     "closed after its handshake, not published", TP_DIES, LONG_INTERVAL_S},
+     "closed without a handshake, not published", TP_DIES, LONG_INTERVAL_S},
 };
 
 /* A worker that is node TP_LOCAL, with a connection to the manager. */
@@ -2869,10 +2870,8 @@ static const char *tp_race(struct tp_fixture *fx, struct tp_net *net)
     fd = tp_keep(net, accept_within(net->lfd[0]));
     if (fd < 0)
         return "the connect never got through";
-    if (!recv_type(fd, TCP_MSG_HANDSHAKE, 5000))
-        return "the worker sent no handshake";
     if (!closed_by_peer(fd))
-        return "the worker kept its own connection";
+        return "the worker sent a handshake, or kept its own connection";
     if (tp_lookup(fx, TP_PEER) != theirs || tp_count(fx) != 1)
         return "the peer's connection was replaced";
     return NULL;
@@ -2956,10 +2955,8 @@ static const char *tp_dies(struct tp_fixture *fx, struct tp_net *net)
     fd = tp_keep(net, accept_within(net->lfd[0]));
     if (fd < 0)
         return "the connect never got through";
-    if (!recv_type(fd, TCP_MSG_HANDSHAKE, 5000))
-        return "the worker sent no handshake";
     if (!closed_by_peer(fd))
-        return "the worker kept the connection";
+        return "the worker sent a handshake, or kept the connection";
     return tp_count(fx) == 0 ? NULL : "the connection was published";
 }
 
