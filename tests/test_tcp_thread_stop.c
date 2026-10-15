@@ -71,11 +71,11 @@
  * deadline, or a hang-up ends the wait.
  *
  * A manager has to close the connections it is done with: a peer's that hung
- * up or was refused before registering, or never registered, and a
- * registered worker's that hung up.  The reap rows connect such peers, check
- * that the connections are closed and their threads joined, that only so
- * many may wait to register, and that a failed accept() isn't retried in a
- * tight loop.
+ * up, was refused, or sent something else before registering, or never
+ * registered, and a registered worker's that hung up.  The reap rows connect
+ * such peers, check that the connections are closed and their threads
+ * joined, that only so many may wait to register, and that a failed accept()
+ * isn't retried in a tight loop.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -518,7 +518,7 @@ static int run_health_case(const struct health_case *c)
         }
         conn = tcp_connection_new(1, "peer", 0);
         conn->sockfd = sv[0];
-        conn->is_connected = true;
+        atomic_store(&conn->is_connected, true);
         node->conn = conn;
         node->is_alive = true;
         node->last_heartbeat = time(NULL);
@@ -634,7 +634,7 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     conn = tcp_connection_new(id, "peer", 0);
     conn->priv = priv;
     conn->sockfd = sv[0];
-    conn->is_connected = true;
+    atomic_store(&conn->is_connected, true);
     /* Non-blocking, as the backend makes every connection's socket. */
     fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
     *peer = sv[1];
@@ -886,7 +886,7 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
     conn = tcp_connection_new(UINT32_MAX, "worker", 0);
     conn->sockfd = sv[0];
-    conn->is_connected = true;
+    atomic_store(&conn->is_connected, true);
     conn->priv = priv;
     /* Or a reap would find it past the registration timeout */
     conn->accepted_ms = tcp_monotonic_ms();
@@ -3437,9 +3437,11 @@ static int run_sp_case(const struct sp_case *c)
  * The accept thread now reaps the pending connections that are done with
  * whenever a peer connects, and the health check on every pass: those whose
  * receive thread has exited, and those that haven't registered within
- * TCP_REGISTER_TIMEOUT_MS.  At most TCP_MAX_PENDING_CONNS wait at once.  The
- * health check also closes the connection of a registered node that hangs
- * up, and reports the node dead.  A failed accept() is retried after 100 ms.
+ * TCP_REGISTER_TIMEOUT_MS.  At most TCP_MAX_PENDING_CONNS wait at once, and a
+ * peer that sends anything but a registration before registering is hung
+ * up on, since a relay made for it could block the reaper.  The health
+ * check also closes the connection of a registered node that hangs up, and
+ * reports the node dead.  A failed accept() is retried after 100 ms.
  *
  * Each row starts a manager with tcp_init(), and its peers connect over
  * loopback, or, to register, are attached over socketpairs as in the fini
@@ -3449,6 +3451,7 @@ static int run_sp_case(const struct sp_case *c)
 enum reap_scenario {
     REAP_PROBES,  /* peers that connect and hang up */
     REAP_REFUSED, /* a peer refused for running an older protocol version */
+    REAP_EARLY,   /* a peer that sends something else before registering */
     REAP_TIMEOUT, /* a peer that says nothing for the registration timeout */
     REAP_YOUNG,   /* a peer that has said nothing, with time left */
     REAP_CAP,     /* more peers waiting to register than the cap */
@@ -3472,6 +3475,11 @@ static const struct reap_case reap_cases[] = {
     {"negative", "a peer refused for running an older protocol version",
      "sent the refusal, then closed by the next health-check pass",
      REAP_REFUSED, "1"},
+    {"negative",
+     "a peer that, before registering, sends an ionic message for a "
+     "registered worker",
+     "not relayed; the connection is closed by the next health-check pass",
+     REAP_EARLY, "1"},
     {"negative", "a peer that has sent nothing for the registration timeout",
      "closed by the next health-check pass", REAP_TIMEOUT, "1"},
     {"boundary", "a peer that has sent nothing, with time left to register",
@@ -3606,6 +3614,54 @@ static const char *reap_refused(TcpBackendPrivate *priv, uint16_t port,
                                     : "the refused peer is still waiting";
 }
 
+/* Send an ionic message from node src to node dst, with an 8-byte payload. */
+static bool send_ionic(int fd, uint32_t src, uint32_t dst)
+{
+    struct {
+        TcpMsgHeader hdr;
+        uint8_t payload[8];
+    } msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(TCP_MSG_IONIC);
+    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.payload));
+    msg.hdr.src_node_id = htonl(src);
+    msg.hdr.dst_node_id = htonl(dst);
+    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+}
+
+/*
+ * REAP_EARLY: a peer that hasn't registered asks the manager to relay an
+ * ionic message to worker 1.  A relay to a worker that has stopped reading
+ * would block the peer's receive thread, and the reaper that joins it.  The
+ * message must not be relayed, and the peer is hung up on, so its thread
+ * ends and the next pass closes it.  Anything relayed would be in the
+ * worker's socket before the peer's thread ended.
+ */
+static const char *reap_early(TcpBackendPrivate *priv, uint16_t port,
+                              struct reap_fds *k)
+{
+    int w = reap_keep(k, worker_register(priv));
+    int fd;
+
+    if (w < 0 || !wait_for_registered(priv, 1))
+        return "the worker did not register";
+    fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
+    if (fd < 0)
+        return "the peer wasn't given a receive thread";
+    if (!send_ionic(fd, 5, 1))
+        return "could not send the ionic message";
+    /* A pass comes within the 1 s interval, the timeout after 5 s */
+    if (!closed_within(fd, 2500))
+        return "the peer's connection was left open";
+    if (!wait_for_count(&g_joins, 1))
+        return "the peer's thread wasn't joined";
+    if (count_type(w, TCP_MSG_IONIC) != 0)
+        return "the peer's message was relayed";
+    return pending_count(priv) == 0 ? NULL : "the peer is still waiting";
+}
+
 /*
  * REAP_TIMEOUT: the peer is made to look TCP_REGISTER_TIMEOUT_MS old, and
  * the next pass has to close it.
@@ -3712,18 +3768,27 @@ static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
     *errors = -1;
     if (getrlimit(RLIMIT_NOFILE, &old) < 0)
         return "could not read the descriptor limit";
-    /* Every descriptor below the lowest free one is open */
-    lowest = open("/dev/null", O_RDONLY);
-    if (lowest < 0)
-        return "could not open /dev/null";
-    low = old;
-    low.rlim_cur = (rlim_t)lowest + 1;
-    if (setrlimit(RLIMIT_NOFILE, &low) < 0) {
+    /*
+     * The sanitizer runtime briefly takes a descriptor now and then, and
+     * if it takes the last one first, the peer's socket() fails with
+     * EMFILE.  Lift the limit and try again.
+     */
+    fd = -1;
+    for (int attempt = 0; attempt < 5 && fd < 0; attempt++) {
+        setrlimit(RLIMIT_NOFILE, &old);
+        /* Every descriptor below the lowest free one is open */
+        lowest = open("/dev/null", O_RDONLY);
+        if (lowest < 0)
+            return "could not open /dev/null";
+        low = old;
+        low.rlim_cur = (rlim_t)lowest + 1;
+        if (setrlimit(RLIMIT_NOFILE, &low) < 0) {
+            close(lowest);
+            return "could not lower the descriptor limit";
+        }
         close(lowest);
-        return "could not lower the descriptor limit";
+        fd = reap_keep(k, connect_loopback(port));
     }
-    close(lowest);
-    fd = reap_keep(k, connect_loopback(port));
 
     atomic_store(&g_errors, 0);
     sleep_ms(500);
@@ -3840,6 +3905,8 @@ static const char *reap_run(TcpBackendPrivate *priv, uint16_t port,
         return reap_probes(priv, port, k);
     case REAP_REFUSED:
         return reap_refused(priv, port, k);
+    case REAP_EARLY:
+        return reap_early(priv, port, k);
     case REAP_TIMEOUT:
         return reap_timeout(priv, port, k);
     case REAP_YOUNG:

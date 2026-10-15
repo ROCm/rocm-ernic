@@ -289,7 +289,7 @@ static int run_case(const struct testcase *tc)
     memset(&conn, 0, sizeof(conn));
     conn.node_id = 42;
     conn.sockfd = sv[0];
-    conn.is_connected = true;
+    atomic_store(&conn.is_connected, true);
     conn.priv = &priv;
     qemu_mutex_init(&conn.lock);
     g_hash_table_insert(priv.connections, GUINT_TO_POINTER(42u), &conn);

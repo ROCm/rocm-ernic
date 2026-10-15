@@ -443,7 +443,15 @@ typedef struct {
     char *remote_host;
     uint16_t remote_port;
     QemuThread recv_thread;
-    bool is_connected;
+    /*
+     * Whether the connection can be sent on.  tcp_retire_conn() clears it,
+     * under lock, with sockfd, but senders read it without the lock to pick
+     * a connection, so it is atomic.  It is only a hint: a connection can be
+     * retired just after it was picked.  sockfd is the authority, read only
+     * under lock, and a sender checks it there, in the same critical section
+     * as the send.
+     */
+    _Atomic bool is_connected;
     /*
      * Stop flag for recv_thread, polled by tcp_recv_thread_per_conn() while
      * a teardown path clears it from another thread. Atomic because a plain
@@ -1199,7 +1207,7 @@ static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
     conn->sockfd = -1;
     conn->remote_host = g_strdup(host);
     conn->remote_port = port;
-    conn->is_connected = false;
+    atomic_store(&conn->is_connected, false);
     atomic_store(&conn->recv_thread_running, false);
     atomic_store(&conn->recv_thread_exited, false);
     qemu_mutex_init(&conn->lock);
@@ -2035,7 +2043,7 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
         tcp_connection_new(target->node_id, target->host, target->port);
     peer_conn->priv = priv;
     peer_conn->sockfd = fd;
-    peer_conn->is_connected = true;
+    atomic_store(&peer_conn->is_connected, true);
 
     if (!tcp_worker_peer_current(priv, target)) {
         rdma_info_report("TCP: Peer node %u was dropped from the topology "
@@ -2173,7 +2181,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
     void *payload = NULL;
     int ret;
     struct pollfd pfd;
-    bool hang_up = false; /* a handler is done with the peer */
+    bool hang_up = false; /* done with the peer: close after this message */
 
     rdma_info_report("TCP: Receive thread started for node %u", conn->node_id);
 
@@ -2205,6 +2213,25 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 rdma_info_report("TCP: Receive error on node %u, closing",
                                  conn->node_id);
                 break;
+            }
+
+            /*
+             * A manager's connection that hasn't registered (its node id is
+             * set only by registration, on this thread) may only register.
+             * A worker registers before it sends anything else, so anything
+             * else is a peer that isn't one, and it gets no further: a relay
+             * or a reply sent for it could wait on a node that has stopped
+             * reading, and the reaper that joins this thread would wait too.
+             */
+            if (conn->priv && conn->priv->is_manager &&
+                conn->node_id == UINT32_MAX &&
+                hdr.msg_type != TCP_MSG_REGISTER_NODE) {
+                rdma_error_report("TCP: message type %u from %s:%u, which "
+                                  "hasn't registered; closing the connection",
+                                  hdr.msg_type, conn->remote_host,
+                                  conn->remote_port);
+                hang_up = true;
+                goto message_done;
             }
 
             /* Handle message based on type */
@@ -2280,11 +2307,12 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                                 TcpConnection *sc =
                                     tcp_get_connection(priv, hdr.src_node_id);
-                                if ((!sc || !sc->is_connected) &&
+                                if ((!sc || !atomic_load(&sc->is_connected)) &&
                                     priv->manager_conn &&
-                                    priv->manager_conn->is_connected)
+                                    atomic_load(
+                                        &priv->manager_conn->is_connected))
                                     sc = priv->manager_conn;
-                                if (sc && sc->is_connected) {
+                                if (sc && atomic_load(&sc->is_connected)) {
                                     qemu_mutex_lock(&sc->lock);
                                     if (sc->sockfd >= 0) {
                                         tcp_send_message(
@@ -2374,11 +2402,12 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                         /* Send completion ACK back to sender */
                         TcpConnection *src_conn =
                             tcp_get_connection(priv, hdr.src_node_id);
-                        if ((!src_conn || !src_conn->is_connected) &&
+                        if ((!src_conn ||
+                             !atomic_load(&src_conn->is_connected)) &&
                             priv->manager_conn &&
-                            priv->manager_conn->is_connected)
+                            atomic_load(&priv->manager_conn->is_connected))
                             src_conn = priv->manager_conn;
-                        if (src_conn && src_conn->is_connected) {
+                        if (src_conn && atomic_load(&src_conn->is_connected)) {
                             qemu_mutex_lock(&src_conn->lock);
                             if (src_conn->sockfd >= 0) {
                                 tcp_send_message(
@@ -2878,15 +2907,20 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     /* Worker-to-worker: relay to the addressed node. */
                     TcpConnection *fwd =
                         tcp_get_connection(priv, hdr.dst_node_id);
+                    bool relayed = false;
 
-                    if (fwd && fwd->is_connected && fwd->sockfd >= 0) {
+                    if (fwd && atomic_load(&fwd->is_connected)) {
                         qemu_mutex_lock(&fwd->lock);
-                        tcp_send_message(priv, fwd->sockfd, TCP_MSG_IONIC,
-                                         payload, hdr.msg_len, hdr.seq,
-                                         hdr.src_node_id, hdr.dst_node_id,
-                                         hdr.src_qpn, hdr.dst_qpn);
+                        if (fwd->sockfd >= 0) {
+                            tcp_send_message(priv, fwd->sockfd, TCP_MSG_IONIC,
+                                             payload, hdr.msg_len, hdr.seq,
+                                             hdr.src_node_id, hdr.dst_node_id,
+                                             hdr.src_qpn, hdr.dst_qpn);
+                            relayed = true;
+                        }
                         qemu_mutex_unlock(&fwd->lock);
-                    } else {
+                    }
+                    if (!relayed) {
                         rdma_error_report("TCP: cannot relay ionic message "
                                           "from node %u to node %u",
                                           hdr.src_node_id, hdr.dst_node_id);
@@ -2958,15 +2992,18 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                 TcpConnection *src_conn =
                     tcp_get_connection(priv, hdr.src_node_id);
-                if ((!src_conn || !src_conn->is_connected) &&
-                    priv->manager_conn && priv->manager_conn->is_connected)
+                if ((!src_conn || !atomic_load(&src_conn->is_connected)) &&
+                    priv->manager_conn &&
+                    atomic_load(&priv->manager_conn->is_connected))
                     src_conn = priv->manager_conn;
-                if (src_conn && src_conn->is_connected &&
-                    src_conn->sockfd >= 0) {
+                if (src_conn && atomic_load(&src_conn->is_connected)) {
                     qemu_mutex_lock(&src_conn->lock);
-                    tcp_send_message(priv, src_conn->sockfd, TCP_MSG_COMPLETION,
-                                     NULL, 0, hdr.seq, tcp_local_node(priv),
-                                     hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
+                    if (src_conn->sockfd >= 0) {
+                        tcp_send_message(priv, src_conn->sockfd,
+                                         TCP_MSG_COMPLETION, NULL, 0, hdr.seq,
+                                         tcp_local_node(priv), hdr.src_node_id,
+                                         hdr.dst_qpn, hdr.src_qpn);
+                    }
                     qemu_mutex_unlock(&src_conn->lock);
                 }
                 break;
@@ -3014,16 +3051,18 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                 TcpConnection *src_conn =
                     tcp_get_connection(priv, hdr.src_node_id);
-                if ((!src_conn || !src_conn->is_connected) &&
-                    priv->manager_conn && priv->manager_conn->is_connected)
+                if ((!src_conn || !atomic_load(&src_conn->is_connected)) &&
+                    priv->manager_conn &&
+                    atomic_load(&priv->manager_conn->is_connected))
                     src_conn = priv->manager_conn;
-                if (src_conn && src_conn->is_connected &&
-                    src_conn->sockfd >= 0) {
+                if (src_conn && atomic_load(&src_conn->is_connected)) {
                     qemu_mutex_lock(&src_conn->lock);
-                    tcp_send_message(priv, src_conn->sockfd,
-                                     TCP_MSG_RDMA_READ_RESP, host_src, dlen,
-                                     hdr.seq, tcp_local_node(priv),
-                                     hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
+                    if (src_conn->sockfd >= 0) {
+                        tcp_send_message(
+                            priv, src_conn->sockfd, TCP_MSG_RDMA_READ_RESP,
+                            host_src, dlen, hdr.seq, tcp_local_node(priv),
+                            hdr.src_node_id, hdr.dst_qpn, hdr.src_qpn);
+                    }
                     qemu_mutex_unlock(&src_conn->lock);
                 }
                 break;
@@ -3087,6 +3126,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 break;
             }
 
+        message_done:
             if (payload) {
                 if (conn->priv)
                     tcp_bufpool_put(&conn->priv->recv_pool, payload,
@@ -3252,7 +3292,7 @@ static void *tcp_accept_thread(void *opaque)
                 tcp_connection_new(UINT32_MAX, inet_ntoa(client_addr.sin_addr),
                                    ntohs(client_addr.sin_port));
             conn->sockfd = sockfd;
-            conn->is_connected = true;
+            atomic_store(&conn->is_connected, true);
             conn->priv = priv;
             conn->accepted_ms = tcp_monotonic_ms();
 
@@ -3393,7 +3433,7 @@ static void *tcp_accept_thread(void *opaque)
             conn->sockfd = sockfd;
             conn->remote_host = g_strdup(inet_ntoa(client_addr.sin_addr));
             conn->remote_port = ntohs(client_addr.sin_port);
-            conn->is_connected = true;
+            atomic_store(&conn->is_connected, true);
             conn->priv = priv;
             qemu_mutex_init(&conn->lock);
 
@@ -3487,7 +3527,7 @@ static void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
         }
         /* Checked under the lock tcp_retire_conn() changes them under */
         qemu_mutex_lock(&conn->lock);
-        if (conn->is_connected && conn->sockfd >= 0) {
+        if (atomic_load(&conn->is_connected) && conn->sockfd >= 0) {
             tcp_send_message(priv, conn->sockfd, TCP_MSG_MESH_TOPOLOGY, &topo,
                              sizeof(TcpMeshTopologyPayload),
                              atomic_fetch_add_explicit(&priv->next_seq, 1,
@@ -3527,7 +3567,7 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
 
     /* Checked under the lock tcp_retire_conn() changes them under */
     qemu_mutex_lock(&conn->lock);
-    if (conn->is_connected && conn->sockfd >= 0) {
+    if (atomic_load(&conn->is_connected) && conn->sockfd >= 0) {
         tcp_send_message(
             priv, conn->sockfd, TCP_MSG_NODE_GIDS, payload, sizeof(*payload),
             atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
@@ -3643,7 +3683,7 @@ static void tcp_retire_conn(TcpConnection *conn)
         close(conn->sockfd);
     }
     conn->sockfd = -1;
-    conn->is_connected = false;
+    atomic_store(&conn->is_connected, false);
     qemu_mutex_unlock(&conn->lock);
 }
 
@@ -3851,7 +3891,7 @@ static bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
         tcp_connection_new(node->node_id, node->hostname, node->port);
     new_conn->priv = priv;
     new_conn->sockfd = fd;
-    new_conn->is_connected = true;
+    atomic_store(&new_conn->is_connected, true);
 
     if (tcp_send_handshake(new_conn, tcp_local_node(priv), TCP_MSG_HANDSHAKE) <
         0) {
@@ -3960,7 +4000,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
             if (!conn)
                 continue;
             qemu_mutex_lock(&conn->lock);
-            if (conn->is_connected && conn->sockfd >= 0) {
+            if (atomic_load(&conn->is_connected) && conn->sockfd >= 0) {
                 tcp_send_message(priv, conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
                                  atomic_fetch_add_explicit(
                                      &priv->next_seq, 1, memory_order_relaxed),
@@ -4040,7 +4080,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
         return -1;
     }
 
-    priv->manager_conn->is_connected = true;
+    atomic_store(&priv->manager_conn->is_connected, true);
 
     /* Start receive thread for manager connection */
     char thread_name[32];
@@ -5322,11 +5362,11 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     }
 
     conn = tcp_get_connection(priv, dst_node);
-    if ((!conn || !conn->is_connected) && priv->manager_conn &&
-        priv->manager_conn->is_connected) {
+    if ((!conn || !atomic_load(&conn->is_connected)) && priv->manager_conn &&
+        atomic_load(&priv->manager_conn->is_connected)) {
         conn = priv->manager_conn;
     }
-    if (!conn || !conn->is_connected) {
+    if (!conn || !atomic_load(&conn->is_connected)) {
         rdma_error_report("TCP: No connection to node %u", dst_node);
         goto fail;
     }
@@ -5609,7 +5649,7 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
         TcpConnection *src_conn =
             tcp_get_connection(priv, pending->src_node_id);
-        if (src_conn && src_conn->is_connected) {
+        if (src_conn && atomic_load(&src_conn->is_connected)) {
             qemu_mutex_lock(&src_conn->lock);
             if (src_conn->sockfd >= 0) {
                 seq = atomic_fetch_add_explicit(&priv->next_seq, 1,
@@ -5634,7 +5674,7 @@ static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 
     /* Get connection */
     conn = tcp_get_connection(priv, dst_node);
-    if (!conn || !conn->is_connected) {
+    if (!conn || !atomic_load(&conn->is_connected)) {
         return;
     }
 
@@ -5854,17 +5894,25 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
 
     /* A worker has no direct socket to another worker; the manager relays. */
     conn = tcp_get_connection(priv, dst_node);
-    if ((!conn || !conn->is_connected || conn->sockfd < 0) &&
-        priv->manager_conn && priv->manager_conn->is_connected)
+    if ((!conn || !atomic_load(&conn->is_connected)) && priv->manager_conn &&
+        atomic_load(&priv->manager_conn->is_connected))
         conn = priv->manager_conn;
 
-    if (!conn || !conn->is_connected || conn->sockfd < 0) {
+    if (!conn || !atomic_load(&conn->is_connected)) {
         rdma_error_report("TCP: no connection to node %u for ionic message",
                           dst_node);
         return -ENOTCONN;
     }
 
+    /* Retired since it was picked: no socket left to send on */
     qemu_mutex_lock(&conn->lock);
+    if (conn->sockfd < 0) {
+        qemu_mutex_unlock(&conn->lock);
+        rdma_error_report("TCP: connection to node %u closed before an ionic "
+                          "message could be sent",
+                          dst_node);
+        return -ENOTCONN;
+    }
     rc = tcp_send_message2(
         priv, conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body, body_len,
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),

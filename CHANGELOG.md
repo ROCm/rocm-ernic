@@ -358,7 +358,11 @@
   connects, or within a health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`,
   5 seconds by default), and closes one that hasn't registered within 5
   seconds of connecting. At most 64 connections wait to register at once;
-  any more are closed as they arrive. A registered node that hangs up is
+  any more are closed as they arrive. A peer that sends anything but a
+  registration before it has registered is now disconnected: the manager
+  used to act on such messages, including relaying traffic to other nodes,
+  and a relay to a node that had stopped reading could then hold up
+  closing the connection. A registered node that hangs up is
   reported dead to the rest of the mesh within a health-check interval,
   rather than after three. A node that runs out of file descriptors also no
   longer retries accepting a connection in a tight loop that logged an error
