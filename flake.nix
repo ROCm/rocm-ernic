@@ -192,6 +192,20 @@
         # oci-image-{aarch64,riscv64}[-debug] on an x86_64 host. See nix/oci.nix.
         // ociPackages;
 
+        checks.analysis-runners = pkgs.runCommand "analysis-runner-tests" {
+          nativeBuildInputs = [ pkgs.python3 pkgs.jq ];
+        } ''
+          export ERNIC_TEST_EXERCISE=${import ./nix/analysis/run-loopback.nix {
+            inherit pkgs;
+            startupAttempts = 20;
+            pollSeconds = "0.02";
+            clientTimeout = "0.4s";
+            shutdownTimeout = "0.4s";
+          }}/bin/run-loopback-exercise
+          python3 ${./nix/analysis}/test_runners.py
+          touch "$out"
+        '';
+
         devShells.default = devshell;
       });
 }

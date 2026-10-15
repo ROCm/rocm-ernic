@@ -55,7 +55,7 @@ rules:
     languages: [c, cpp]
     severity: WARNING
   # A use (*p, p->f, p[i]) that follows p = malloc(...) without first
-  # passing an if that tests p. Fixtures: semgrep-tests/malloc-no-null-check.c
+  # passing a NULL-return guard or entering a non-NULL branch. Fixtures: semgrep-tests/malloc-no-null-check.c
   - id: malloc-no-null-check
     patterns:
       - pattern-either:
@@ -66,10 +66,14 @@ rules:
               $T *$PTR = malloc(...);
               ...
       - pattern-not-inside: |
-          if (<... $PTR ...>) { ... }
+          if ($PTR) { ... }
+      - pattern-not-inside: |
+          if ($PTR != NULL) { ... }
+      - pattern-not-inside: |
+          if (!$PTR) { return ...; }
           ...
       - pattern-not-inside: |
-          if (<... $PTR ...>) return ...;
+          if ($PTR == NULL) { return ...; }
           ...
       # sizeof(*p) in the malloc call itself is not a use.
       - pattern-not-inside: sizeof(...)

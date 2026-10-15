@@ -255,3 +255,16 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 | `nix/compat-cflags.nix` | gcc-15 C99-error downgrade (build + shell) |
 | `nix/analysis/` | static + dynamic + fuzz analysis modules |
 | `nix/analysis/triage/` | finding prioritiser (Python) |
+
+### Analysis runner regression checks
+
+`nix build .#checks.x86_64-linux.analysis-runners --no-link -L` tests the
+packaged exercise driver with successful, failed, missing, and hung clients
+and servers. A failed client or timed-out shutdown records an incomplete
+exercise, even when the server printed a clean shutdown marker.
+
+The Semgrep report rejects failed executions, invalid JSON, missing scan
+results, and engine errors. Known source partial-parsing warnings remain
+visible in `coverage.txt`, `report.txt`, and aggregate summaries; their finding
+counts describe incomplete coverage, not a clean scan. Rule fixtures verify
+that merely observing a malloc result does not guard a later dereference.

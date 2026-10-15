@@ -97,3 +97,27 @@ void calloc_not_covered(void)
     // ok: malloc-no-null-check
     *p = 5;
 }
+
+/* corner: observing a pointer is not a guard for later use -> reported */
+void observed_then_used(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p) {
+        (void)p;
+    }
+    // ruleid: malloc-no-null-check
+    *p = 6;
+    free(p);
+}
+
+/* negative: returning on success leaves NULL for the use -> reported */
+void reversed_guard(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p)
+        return;
+    // ruleid: malloc-no-null-check
+    *p = 7;
+}
