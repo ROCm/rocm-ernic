@@ -77,45 +77,6 @@ needs ``CAP_NET_ADMIN``:
    sudo ip tuntap add dev ernic-ci0 mode tap user "$USER"
    ERNIC_TEST_TAP=ernic-ci0 ctest --test-dir build -R ionic-ci
 
-In-process ionic device harness
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-``ernic-test-ionic-harness`` runs the whole emulated device
-inside the test process. It links every source the server is
-built from except ``rocm_ernic_server.c``, and replaces
-libvfio-user with ``tests/fake_vfu.c``, which keeps guest
-memory in heap buffers and counts interrupts instead of
-delivering them. ``tests/ionic_harness.c`` then plays the
-guest driver: devcmds through BAR0, doorbells through BAR2,
-and rings, work requests and completions in guest memory.
-It needs no VM, socket or RDMA device, so it runs in every
-CI build leg, sanitizers included.
-
-Each group of checks is its own CTest test:
-
-- ``ionic-harness-devcmds``, ``-bringup``: the devcmds, the
-  Ethernet admin queue, the RDMA bootstrap, and MSI-X
-  masking
-- ``ionic-harness-admin``: admin commands the device must
-  refuse
-- ``ionic-harness-rc``, ``-atomic``, ``-cq-events``: sends,
-  RDMA reads and writes, atomics and fast registration
-  between two RC QPs on the loopback backend, and CQ arming
-- ``ionic-harness-ud``, ``-srq``: datagrams, address handles
-  and shared receive queues
-- ``ionic-harness-eth``: Ethernet transmit and receive
-- ``ionic-harness-nvmeof``: the IB CM handshake on GSI, then
-  a Fabrics Connect and an Identify on the RC QP it binds
-
-.. code-block:: bash
-
-   ctest --test-dir build -R ionic-harness
-
-To run one group directly, pass its name, for example
-``build/tests/ernic-test-ionic-harness rc``. Setting
-``ERNIC_FAKE_VFU_LOG_LEVEL`` to a syslog level (``7`` for
-everything) prints the device's ``vfu_log()`` messages.
-
 NVMe-oF tests
 ^^^^^^^^^^^^^
 
