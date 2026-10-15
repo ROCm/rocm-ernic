@@ -13,8 +13,8 @@
  * uses a private block smaller than TcpBackendPrivate, so ASan catches a
  * write past its end.
  *
- * The functions are reached by #including the translation unit, as
- * test_tcp_gid_resolve.c does, with the same stubs.
+ * The backend is compiled separately with a private fixture interface
+ * and stubs for its external symbols.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -33,8 +33,8 @@
 
 #include "rocm-ernic-warnings.h"
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+#include "rdma/tcp_ionic_test.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the ionic hooks; they exist only to
@@ -182,7 +182,8 @@ static void run_case(const struct hook_case *c)
     TcpBackendPrivate *tcp = NULL;
     uint8_t *other = NULL;
     static const uint8_t hdr[8] = {1};
-    int opaque_target = 0;
+    /* The callback retains this pointer; give it static storage. */
+    static int opaque_target;
     int rc = 0;
     bool ok = true;
     char got[160] = "";
@@ -190,15 +191,11 @@ static void run_case(const struct hook_case *c)
     memset(&dev, 0, sizeof(dev));
     switch (c->backend) {
     case BACKEND_TCP:
-        tcp = g_new0(TcpBackendPrivate, 1);
-        qemu_mutex_init(&tcp->lock);
-        tcp->local_node_id = 1;
-        if (c->hook == HOOK_CLEAR_CB) {
-            tcp->ionic_recv_fn = recv_fn;
-            tcp->ionic_recv_opaque = &opaque_target;
-        }
+        tcp = tcp_ionic_test_new();
         dev.backend_type = RDMA_BACKEND_TYPE_TCP;
         dev.backend_private = tcp;
+        if (c->hook == HOOK_CLEAR_CB)
+            tcp_backend_set_ionic_recv_cb(&dev, recv_fn, &opaque_target);
         break;
     case BACKEND_LOOPBACK:
         other = g_malloc(OTHER_PRIV_SIZE);
@@ -235,15 +232,13 @@ static void run_case(const struct hook_case *c)
     }
 
     if (tcp && c->hook != HOOK_SEND) {
-        bool stored = tcp->ionic_recv_fn == recv_fn &&
-                      tcp->ionic_recv_opaque == &opaque_target;
-        bool cleared = !tcp->ionic_recv_fn && !tcp->ionic_recv_opaque;
+        bool stored = tcp_ionic_test_matches(tcp, recv_fn, &opaque_target);
+        bool cleared = tcp_ionic_test_matches(tcp, NULL, NULL);
 
         if (c->want_stored ? !stored : !cleared) {
             ok = false;
-            snprintf(got, sizeof(got), "fn %s, opaque %s",
-                     tcp->ionic_recv_fn ? "set" : "NULL",
-                     tcp->ionic_recv_opaque ? "set" : "NULL");
+            snprintf(got, sizeof(got), "callback state: stored %d, cleared %d",
+                     (int)stored, (int)cleared);
         }
     }
     for (size_t i = 0; other && i < OTHER_PRIV_SIZE; i++) {
@@ -263,10 +258,8 @@ static void run_case(const struct hook_case *c)
         failures++;
     }
 
-    if (tcp) {
-        qemu_mutex_destroy(&tcp->lock);
-        g_free(tcp);
-    }
+    if (tcp)
+        tcp_ionic_test_free(tcp);
     g_free(other);
 }
 

@@ -446,18 +446,18 @@ target_link_directories(test_tcp_gid_resolve PRIVATE
 target_link_libraries(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP backend ionic hooks unit test. Like the GID test it #includes the TCP
-# backend translation unit and stubs its externals; it checks the hooks
+# TCP backend ionic hooks unit test. Compile the backend separately and
+# stub its externals; check that the hooks
 # leave a non-TCP backend's private block alone.
-add_executable(test_tcp_ionic_hooks test_tcp_ionic_hooks.c)
+add_executable(test_tcp_ionic_hooks test_tcp_ionic_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c)
 target_include_directories(test_tcp_ionic_hooks PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
     ${CMAKE_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# main target. The backend source remains warning-checked.
 target_include_directories(test_tcp_ionic_hooks SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/third-party/qemu/include
     ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
@@ -466,7 +466,7 @@ target_include_directories(test_tcp_ionic_hooks SYSTEM PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_tcp_ionic_hooks PRIVATE
-    _GNU_SOURCE)
+    _GNU_SOURCE ERNIC_TCP_IONIC_TEST)
 target_compile_options(test_tcp_ionic_hooks PRIVATE
     ${ERNIC_UNIT_TEST_SAN})
 target_link_options(test_tcp_ionic_hooks PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
