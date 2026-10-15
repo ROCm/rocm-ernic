@@ -531,10 +531,12 @@ typedef struct {
      */
     TcpConnection *conn;
     /*
-     * Due a reconnect that the last pass ran out of time for.  Used only by
-     * the health-check thread, so it needs no lock.
+     * Nonzero while the node is due a reconnect that a pass ran out of time
+     * for: the value of reconnect_deferrals when it was deferred, so the
+     * nodes deferred longest go first.  Used only by the health-check
+     * thread, so it needs no lock.
      */
-    bool reconnect_deferred;
+    uint64_t reconnect_deferred;
 } MeshNodeInfo;
 
 struct TcpBackendPrivate {
@@ -628,6 +630,9 @@ struct TcpBackendPrivate {
     QemuCond health_check_cond;
     uint32_t health_check_interval_sec; /* Default: 5 seconds */
     uint32_t next_available_node_id;    /* For auto-assigning node IDs */
+    /* Reconnects deferred so far; health-check thread only (see MeshNodeInfo)
+     */
+    uint64_t reconnect_deferrals;
 
     /* Worker-specific fields */
     char *manager_host;
@@ -3350,10 +3355,10 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
             if (backoff > 60)
                 backoff = 60;
             item.reconnect =
-                (node->reconnect_deferred || dead_sec % backoff == 0) &&
+                (node->reconnect_deferred != 0 || dead_sec % backoff == 0) &&
                 node->hostname != NULL;
         } else {
-            node->reconnect_deferred = false;
+            node->reconnect_deferred = 0;
         }
 
         if (item.conn || item.reconnect)
@@ -3365,15 +3370,21 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
 }
 
 /*
- * Deferred reconnects first.  g_array_sort() is stable, so the order is
- * otherwise the scan's.
+ * Deferred reconnects first, the longest deferred first.  g_array_sort() is
+ * stable, so the rest keep the scan's order.
  */
 static gint tcp_health_check_item_cmp(gconstpointer a, gconstpointer b)
 {
-    const TcpHealthCheckItem *x = a, *y = b;
+    uint64_t x = ((const TcpHealthCheckItem *)a)->node->reconnect_deferred;
+    uint64_t y = ((const TcpHealthCheckItem *)b)->node->reconnect_deferred;
 
-    return (gint)y->node->reconnect_deferred -
-           (gint)x->node->reconnect_deferred;
+    if (x == y)
+        return 0;
+    if (x == 0)
+        return 1;
+    if (y == 0)
+        return -1;
+    return x < y ? -1 : 1;
 }
 
 /*
@@ -3482,6 +3493,44 @@ static bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
 }
 
 /*
+ * The reconnect phase of a health-check pass: try the items due a
+ * reconnect, until deadline_ms (on tcp_monotonic_ms()'s clock) or a stop.
+ * Returns true if a node was reconnected.
+ *
+ * A node whose turn comes after the deadline is deferred: it is due on the
+ * next pass whatever its backoff, and goes first, after any node deferred
+ * before it.  The first in line is always tried, so every deferred node
+ * moves up a place each pass until it has its turn.  Otherwise a node that
+ * never answers would use up every pass's time, and the nodes behind it
+ * would never be tried.
+ */
+static bool tcp_health_check_reconnects(TcpBackendPrivate *priv, GArray *items,
+                                        uint64_t deadline_ms)
+{
+    bool reconnected = false;
+
+    g_array_sort(items, tcp_health_check_item_cmp);
+    for (guint i = 0;
+         i < items->len && atomic_load(&priv->health_check_running); i++) {
+        const TcpHealthCheckItem *item =
+            &g_array_index(items, TcpHealthCheckItem, i);
+
+        if (!item->reconnect)
+            continue;
+        if (tcp_monotonic_ms() >= deadline_ms) {
+            /* Already in line, it keeps its place */
+            if (item->node->reconnect_deferred == 0)
+                item->node->reconnect_deferred = ++priv->reconnect_deferrals;
+            continue;
+        }
+        item->node->reconnect_deferred = 0;
+        if (tcp_health_check_reconnect(priv, item, deadline_ms))
+            reconnected = true;
+    }
+    return reconnected;
+}
+
+/*
  * Manager health check thread.  Each pass sends every other node a
  * heartbeat, declares dead the nodes that haven't answered for three
  * intervals, and tries to reconnect to them.
@@ -3500,8 +3549,6 @@ static void *tcp_manager_health_check_thread(void *opaque)
     rdma_info_report("TCP: Manager health check thread started");
 
     while (atomic_load(&priv->health_check_running)) {
-        bool reconnected = false;
-
         g_array_set_size(items, 0);
         bool newly_dead = tcp_health_check_scan(priv, items, time(NULL));
 
@@ -3533,35 +3580,11 @@ static void *tcp_manager_health_check_thread(void *opaque)
          * With the reconnects bounded, the answer to this pass's heartbeat,
          * or the registration of a node that joins meanwhile, is less than
          * three intervals old when the next pass looks at it.
-         *
-         * A node whose turn comes after the interval has run out is
-         * deferred: it is due on the next pass whatever its backoff, and
-         * goes ahead of the nodes that had a turn.  Otherwise a node that
-         * never answers, and comes first in the table, would use up every
-         * pass's interval, and the nodes after it would never be tried.
          */
-        uint64_t deadline_ms =
-            tcp_monotonic_ms() +
-            (uint64_t)priv->health_check_interval_sec * 1000u;
-
-        g_array_sort(items, tcp_health_check_item_cmp);
-        for (guint i = 0;
-             i < items->len && atomic_load(&priv->health_check_running); i++) {
-            const TcpHealthCheckItem *item =
-                &g_array_index(items, TcpHealthCheckItem, i);
-
-            if (!item->reconnect)
-                continue;
-            if (tcp_monotonic_ms() >= deadline_ms) {
-                item->node->reconnect_deferred = true;
-                continue;
-            }
-            item->node->reconnect_deferred = false;
-            if (tcp_health_check_reconnect(priv, item, deadline_ms))
-                reconnected = true;
-        }
-
-        if (reconnected)
+        if (tcp_health_check_reconnects(
+                priv, items,
+                tcp_monotonic_ms() +
+                    (uint64_t)priv->health_check_interval_sec * 1000u))
             tcp_broadcast_mesh_topology(priv);
 
         /*

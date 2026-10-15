@@ -2150,6 +2150,99 @@ static int run_rc_case(const struct rc_case *c)
     return ok ? 0 : 1;
 }
 
+/*
+ * A node deferred for lack of time has to keep its place in line, or nodes
+ * tried more recently can get ahead of it.  With a deferred flag alone,
+ * three nodes due on every pass, A and B never answering and C answering,
+ * were tried A, B, A, B, and C never: whichever of A and B had just been
+ * tried was deferred on the next pass, and back in front of C on the one
+ * after.  The thread can't be made to find all three due on every pass,
+ * which takes their backoffs lining up with the passes, so this row runs
+ * the reconnect phase itself, pass by pass, as if it had.
+ */
+static int run_queue_case(void)
+{
+    static const char desc[] =
+        "three nodes due every pass, the first two never answering";
+    static const char expected[] =
+        "the third, deferred longest, goes first on the third pass, and is "
+        "reconnected";
+    struct rc_fixture fx;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
+    const char *why;
+    int filler = -1, fresh = -1, answering = listen_loopback();
+    uint16_t port;
+    int lfd = listen_unanswering(&port, &filler);
+    uint32_t passes = 0;
+    bool ok;
+
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    g_current_row = desc;
+    alarm(ROW_TIMEOUT_S);
+    why = rc_setup(&fx, port, 3, LONG_INTERVAL_S);
+    if (!why && (lfd < 0 || answering < 0 ||
+                 getsockname(answering, (struct sockaddr *)&addr, &len) < 0))
+        why = "could not open the listeners";
+
+    if (!why) {
+        fx.node[2]->port = ntohs(addr.sin_port);
+        for (uint32_t i = 0; i < fx.nodes; i++)
+            fx.node[i]->last_heartbeat = time(NULL) - 4 * LONG_INTERVAL_S;
+        /* The connects stop when this is cleared; no thread is started */
+        atomic_store(&fx.priv->health_check_running, true);
+
+        while (passes < 6 &&
+               atomic_load(&fx.priv->tcp_stats.reconnect_successes) == 0) {
+            g_array_set_size(items, 0);
+            for (uint32_t i = 0; i < fx.nodes; i++) {
+                TcpHealthCheckItem item = {fx.node[i], fx.node[i]->conn, true};
+
+                g_array_append_val(items, item);
+            }
+            /* Long enough to try one node that doesn't answer, and no more */
+            tcp_health_check_reconnects(fx.priv, items,
+                                        tcp_monotonic_ms() + 300);
+            passes++;
+        }
+        atomic_store(&fx.priv->health_check_running, false);
+
+        if (atomic_load(&fx.priv->tcp_stats.reconnect_successes) == 0)
+            why = "the third node was never tried";
+        else if (passes != 3)
+            why = "the third node wasn't tried on the third pass";
+        else if ((fresh = accept_within(answering)) < 0 ||
+                 !recv_type(fresh, TCP_MSG_HANDSHAKE, 5000))
+            why = "the third node's new connection sent no handshake";
+        else if (fx.node[2]->conn == NULL)
+            why = "the third node has no connection";
+        else
+            fx.old[2] = NULL; /* replaced, which freed it */
+    }
+
+    ok = !why;
+    printf("%s reconnect corner: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           desc, expected);
+    if (!ok)
+        printf("     %s after %u pass(es)\n", why, passes);
+    fflush(stdout);
+
+    rc_teardown(&fx);
+    alarm(0);
+    g_array_free(items, TRUE);
+    if (fresh >= 0)
+        close(fresh);
+    if (filler >= 0)
+        close(filler);
+    if (answering >= 0)
+        close(answering);
+    if (lfd >= 0)
+        close(lfd);
+    return ok ? 0 : 1;
+}
+
 /* ---- Registering twice ------------------------------------------------- */
 
 /*
@@ -2312,6 +2405,7 @@ int main(void)
         failures += run_connect_case(&connect_cases[i]);
     for (size_t i = 0; i < sizeof(rc_cases) / sizeof(rc_cases[0]); i++)
         failures += run_rc_case(&rc_cases[i]);
+    failures += run_queue_case();
     for (size_t i = 0; i < sizeof(reg_cases) / sizeof(reg_cases[0]); i++)
         failures += run_reg_case(&reg_cases[i]);
 
