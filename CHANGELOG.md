@@ -307,10 +307,15 @@
   registrations and heartbeats no longer wait for a reconnect, or for a
   heartbeat sent to a node that has stopped reading, and a node registering
   while the health check reports a dead node can no longer cut its pass
-  short. A reconnect now gives up on a node that doesn't answer after one
-  health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default)
-  rather than when the kernel does, about two minutes later, and SIGTERM no
-  longer waits for it. `tcp-thread-stop-unit` covers each case.
+  short. A node that answers while the manager is reconnecting to it keeps
+  its connection. The reconnects in each health-check pass now give up on
+  nodes that don't answer after one health-check interval
+  (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default) between them, rather
+  than when the kernel gives up on each, about two minutes later. No
+  heartbeats go out while they wait, so several unreachable nodes could
+  otherwise get the nodes that were still answering, or had just
+  registered, declared dead. SIGTERM no longer waits for a reconnect either.
+  `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now

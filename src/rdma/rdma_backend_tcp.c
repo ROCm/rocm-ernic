@@ -1371,15 +1371,13 @@ static uint64_t tcp_monotonic_ms(void)
 /*
  * Wait for the non-blocking connect() in progress on sockfd to finish.
  * Returns 0 once it has succeeded, or -1 with errno set: to the connect's
- * own error, to ETIMEDOUT once timeout_s seconds have passed (if timeout_s
- * isn't zero), or to ECANCELED once *running is cleared (if running isn't
- * NULL).
+ * own error, to ETIMEDOUT once tcp_monotonic_ms() reaches deadline_ms (if
+ * deadline_ms isn't zero), or to ECANCELED once *running is cleared (if
+ * running isn't NULL).
  */
 static int tcp_wait_connected(int sockfd, const atomic_bool *running,
-                              uint32_t timeout_s)
+                              uint64_t deadline_ms)
 {
-    uint64_t deadline = tcp_monotonic_ms() + (uint64_t)timeout_s * 1000u;
-
     for (;;) {
         struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
         int err = 0;
@@ -1390,7 +1388,7 @@ static int tcp_wait_connected(int sockfd, const atomic_bool *running,
             errno = ECANCELED;
             return -1;
         }
-        if (timeout_s != 0 && tcp_monotonic_ms() >= deadline) {
+        if (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms) {
             errno = ETIMEDOUT;
             return -1;
         }
@@ -1413,22 +1411,59 @@ static int tcp_wait_connected(int sockfd, const atomic_bool *running,
 }
 
 /*
+ * Connect to each address in addrs in turn until one connects, all within
+ * the one deadline (see tcp_wait_connected()).  Returns the socket,
+ * non-blocking, or -1 with errno set by the last attempt.  Gives up on the
+ * remaining addresses once the deadline passes or *running is cleared.
+ */
+static int tcp_connect_any(const struct addrinfo *addrs,
+                           const atomic_bool *running, uint64_t deadline_ms)
+{
+    int err = ENOENT;
+
+    for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next) {
+        int sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sockfd < 0) {
+            err = errno;
+            continue;
+        }
+
+        int flags = fcntl(sockfd, F_GETFL, 0);
+        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
+            (errno == EINPROGRESS &&
+             tcp_wait_connected(sockfd, running, deadline_ms) == 0))
+            return sockfd;
+
+        err = errno;
+        close(sockfd);
+        if (err == ECANCELED || err == ETIMEDOUT)
+            break;
+    }
+    errno = err;
+    return -1;
+}
+
+/*
  * Connect to host:port and return the connected socket, non-blocking, or -1.
  *
  * The connect itself is non-blocking, so a host that doesn't answer doesn't
  * hold the caller until the kernel gives up on it, about two minutes.  A
  * caller that passes its thread's stop flag in running gets control back
- * within 100 ms of the flag being cleared, and a nonzero timeout_s gives up
- * after that many seconds.  With neither, it waits as long as a blocking
- * connect() would.  Resolving host can still block.
+ * within 100 ms of the flag being cleared, and a nonzero deadline_ms, a time
+ * on tcp_monotonic_ms()'s clock, gives up then, however many addresses host
+ * has.  With neither, it waits as long as a blocking connect() would.
+ * Resolving host can still block.
  */
 static int tcp_connect_to_remote(const char *host, uint16_t port,
-                                 const atomic_bool *running, uint32_t timeout_s)
+                                 const atomic_bool *running,
+                                 uint64_t deadline_ms)
 {
-    struct addrinfo hints, *res, *rp;
+    struct addrinfo hints, *res;
     char port_str[8];
-    int sockfd = -1;
-    int err = 0;
+    int sockfd;
+    int err;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -1443,27 +1478,8 @@ static int tcp_connect_to_remote(const char *host, uint16_t port,
         return -1;
     }
 
-    for (rp = res; rp; rp = rp->ai_next) {
-        sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (sockfd < 0) {
-            err = errno;
-            continue;
-        }
-
-        int flags = fcntl(sockfd, F_GETFL, 0);
-        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
-
-        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
-            (errno == EINPROGRESS &&
-             tcp_wait_connected(sockfd, running, timeout_s) == 0))
-            break;
-
-        err = errno;
-        close(sockfd);
-        sockfd = -1;
-        if (err == ECANCELED)
-            break;
-    }
+    sockfd = tcp_connect_any(res, running, deadline_ms);
+    err = errno;
     freeaddrinfo(res);
 
     if (sockfd < 0 && err == ECANCELED) {
@@ -3275,6 +3291,17 @@ typedef struct {
 } TcpHealthCheckItem;
 
 /*
+ * Whether node has gone too long without a heartbeat, which is three
+ * intervals.  The caller holds mesh_table_lock.
+ */
+static bool tcp_node_silent(const TcpBackendPrivate *priv,
+                            const MeshNodeInfo *node, time_t now)
+{
+    return now - node->last_heartbeat >
+           (time_t)priv->health_check_interval_sec * 3;
+}
+
+/*
  * The part of a health-check pass that needs mesh_table_lock: note each
  * other node's connection, declare the nodes that have stopped answering
  * dead, and pick the ones due a reconnect attempt.  Returns true if a node
@@ -3297,7 +3324,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
         if (node->node_id == tcp_local_node(priv))
             continue;
 
-        if (dead_sec > (time_t)priv->health_check_interval_sec * 3) {
+        if (tcp_node_silent(priv, node, now)) {
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u failed health check (last "
                                  "heartbeat: %ld seconds ago)",
@@ -3324,24 +3351,55 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
 }
 
 /*
- * Reconnect to item->node, retiring item->conn.  Called without
- * mesh_table_lock: the connect can take up to timeout_s, the handshake can
- * wait on the peer, and retiring the old connection joins its receive
- * thread, whose handlers take mesh_table_lock.  Returns true if the node has
- * a new connection.
+ * Whether node is still silent.  The scan's verdict can be out of date by
+ * the time it's acted on: a node that answers a heartbeat late, on the
+ * connection a reconnect would retire, has its heartbeat recorded while the
+ * reconnect is under way.
+ */
+static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
+{
+    bool silent;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    silent = tcp_node_silent(priv, node, time(NULL));
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    if (!silent)
+        rdma_info_report("TCP: Node %u has answered; not reconnecting",
+                         node->node_id);
+    return silent;
+}
+
+/*
+ * Reconnect to item->node, retiring item->conn, giving up at deadline_ms
+ * (on tcp_monotonic_ms()'s clock).  Called without mesh_table_lock: the
+ * connect can take until the deadline, the handshake can wait on the peer,
+ * and retiring the old connection joins its receive thread, whose handlers
+ * take mesh_table_lock.  Returns true if the node has a new connection.
+ *
+ * A node that answers before the connect, or during it, is left alone.  One
+ * that answers once its old connection is being retired gets the new
+ * connection anyway; if that fails, the node goes silent again, so a later
+ * pass reconnects to it.
  */
 static bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
                                        const TcpHealthCheckItem *item,
-                                       uint32_t timeout_s)
+                                       uint64_t deadline_ms)
 {
     MeshNodeInfo *node = item->node;
+
+    if (!tcp_node_still_silent(priv, node))
+        return false;
 
     rdma_info_report("TCP: Attempting reconnect to node %u (%s:%u)",
                      node->node_id, node->hostname, node->port);
     int fd = tcp_connect_to_remote(node->hostname, node->port,
-                                   &priv->health_check_running, timeout_s);
+                                   &priv->health_check_running, deadline_ms);
     if (fd < 0)
         return false;
+    if (!tcp_node_still_silent(priv, node)) {
+        close(fd);
+        return false;
+    }
     atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_attempts, 1,
                               memory_order_relaxed);
 
@@ -3443,19 +3501,27 @@ static void *tcp_manager_health_check_thread(void *opaque)
             tcp_broadcast_mesh_topology(priv);
 
         /*
-         * Each connect is given one interval.  No heartbeat goes out while it
-         * waits, and a node that misses three intervals' worth is declared
-         * dead, so a longer wait would put the nodes that are still answering
-         * at risk.
+         * All of the pass's reconnects share one interval; a node whose turn
+         * comes after it has run out waits for a later pass.  No heartbeat
+         * goes out until the next pass, an interval after this one ends,
+         * and a node is declared dead after three intervals without one.
+         * With the reconnects bounded, the answer to this pass's heartbeat,
+         * or the registration of a node that joins meanwhile, is less than
+         * three intervals old when the next pass looks at it.
          */
+        uint64_t deadline_ms =
+            tcp_monotonic_ms() +
+            (uint64_t)priv->health_check_interval_sec * 1000u;
+
         for (guint i = 0;
-             i < items->len && atomic_load(&priv->health_check_running); i++) {
+             i < items->len && atomic_load(&priv->health_check_running) &&
+             tcp_monotonic_ms() < deadline_ms;
+             i++) {
             const TcpHealthCheckItem *item =
                 &g_array_index(items, TcpHealthCheckItem, i);
 
             if (item->reconnect &&
-                tcp_health_check_reconnect(priv, item,
-                                           priv->health_check_interval_sec))
+                tcp_health_check_reconnect(priv, item, deadline_ms))
                 reconnected = true;
         }
 
