@@ -368,6 +368,22 @@
   longer retries accepting a connection in a tight loop that logged an error
   each time, which could fill the disk; it now waits 100 ms between
   attempts. `tcp-thread-stop-unit` covers each case.
+* A TCP mesh node no longer trusts the sender a message names in its header,
+  which the sender writes. A manager credited a heartbeat to the node the
+  heartbeat named, so any registered node could keep another, dead, node
+  alive, or bring it back; it now credits the node whose connection the
+  heartbeat came on. Every node sent its answer to an RDMA write or read, or
+  to a send, to the node the request named, so a peer could have the
+  completion, or the memory it asked to read, delivered to another node; the
+  answer now goes back on the connection the request came on.
+  `tcp-thread-stop-unit` covers each case.
+* A TCP mesh node that the manager has declared dead and that answers a
+  heartbeat again is now reported alive to the rest of the mesh at once. The
+  other nodes used to keep treating it as dead, and not connect to it, until
+  a node joined, died, or was reconnected. Topology updates sent at about the
+  same time can also no longer reach the nodes out of order, which could
+  leave them with an older picture of the mesh than the manager's.
+  `tcp-thread-stop-unit` covers the revival.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now

@@ -284,6 +284,7 @@ static int run_case(const struct testcase *tc)
     priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&priv.mesh_table_lock);
     qemu_mutex_init(&priv.conn_table_lock);
+    qemu_mutex_init(&priv.topology_broadcast_lock);
 
     /* One "worker" on the near end of the socketpair */
     memset(&conn, 0, sizeof(conn));
@@ -372,6 +373,7 @@ out:
     close(sv[0]);
     close(sv[1]);
     qemu_mutex_destroy(&conn.lock);
+    qemu_mutex_destroy(&priv.topology_broadcast_lock);
     qemu_mutex_destroy(&priv.conn_table_lock);
     qemu_mutex_destroy(&priv.mesh_table_lock);
     g_hash_table_destroy(priv.connections);
