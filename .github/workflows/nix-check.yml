@@ -56,3 +56,7 @@ jobs:
 
       - name: List exposed packages
         run: nix flake show
+
+      # This check uses fake processes and jq; it does not build the server.
+      - name: Test analysis runner contracts
+        run: nix build .#checks.x86_64-linux.analysis-runners --no-link -L

@@ -18,7 +18,7 @@ let
 
   runner = pkgs.writeShellApplication {
     name = "run-semgrep-analysis";
-    runtimeInputs = with pkgs; [ semgrep coreutils gnugrep cacert ];
+    runtimeInputs = with pkgs; [ semgrep coreutils gnugrep cacert jq ];
     text = ''
       source_dir="$1"
       output_dir="$2"
@@ -29,9 +29,11 @@ let
       export SEMGREP_SEND_METRICS=off
       export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
       export OTEL_TRACES_EXPORTER=none
-      # semgrep needs a writable HOME for its config/cache
-      HOME="$(mktemp -d)"
-      export HOME
+      # Keep Semgrep settings/logs writable without changing the caller's HOME.
+      semgrep_home="$(mktemp -d)"
+      trap 'rm -rf "$semgrep_home"' EXIT
+      export SEMGREP_SETTINGS_FILE="$semgrep_home/settings.yml"
+      export SEMGREP_LOG_FILE="$semgrep_home/semgrep.log"
 
       # One fixture per run: semgrep --test pairs a single target file with
       # the config, and exits non-zero on a missed or unexpected finding.
@@ -52,25 +54,27 @@ let
         --no-git-ignore \
         "$source_dir/src" \
         "$source_dir/third-party" \
-        > "$output_dir/report.json" 2>&1 || true
+        > "$output_dir/report.json" 2> "$output_dir/scan-errors.txt" || {
+          cat "$output_dir/scan-errors.txt" >&2
+          echo "semgrep: scan failed" >&2
+          exit 1
+        }
 
-      semgrep \
-        --config ${rulesFile} \
-        --metrics=off \
-        --no-git-ignore \
-        "$source_dir/src" \
-        "$source_dir/third-party" \
-        > "$output_dir/report.txt" 2>&1 || true
-
-      if grep -q '"Rule parse error"' "$output_dir/report.json"; then
-        grep -o '"message": "Rule parse error in rule [^:]*' \
-          "$output_dir/report.json" >&2 || true
-        echo "semgrep: a rule in semgrep-rules.yaml does not parse" >&2
-        exit 1
+      # Validate structure and engine errors before counting findings. Keep
+      # diagnostics out of JSON, and derive the text view from this same scan.
+      jq -esr -f ${./semgrep-report.jq} "$output_dir/report.json" \
+        > "$output_dir/count.txt"
+      warnings=$(jq '.errors | length' "$output_dir/report.json")
+      if [ "$warnings" -gt 0 ]; then
+        echo "PARTIAL COVERAGE: $warnings source parsing warnings; findings are incomplete" \
+          | tee "$output_dir/coverage.txt" >&2
+      else
+        echo 'Complete scan: no source parsing warnings' > "$output_dir/coverage.txt"
       fi
-
-      findings=$(grep -o '"check_id"' "$output_dir/report.json" | wc -l || echo "0")
-      echo "$findings" > "$output_dir/count.txt"
+      cat "$output_dir/coverage.txt" > "$output_dir/report.txt"
+      jq -r '.errors[] | .message' "$output_dir/report.json" >> "$output_dir/report.txt"
+      jq -r '.results[] | "\(.path):\(.start.line): \(.check_id): \(.extra.message)"' \
+        "$output_dir/report.json" >> "$output_dir/report.txt"
     '';
   };
 in
