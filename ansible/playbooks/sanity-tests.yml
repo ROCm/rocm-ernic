@@ -186,6 +186,21 @@
       ansible.builtin.debug:
         var: ib_send_bw_result.stdout_lines
 
+    # The server can still be finishing when the client returns.  Until it
+    # exits it holds port 18515, where the ibv_rc_pingpong server listens
+    # next, and its log, which is written at exit, is empty.
+    - name: Wait for the ib_send_bw server unit to finish
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p SubState --value ib-send-bw-server'
+      register: ib_send_bw_substate
+      until: ib_send_bw_substate.stdout | trim != 'running'
+      retries: 12
+      delay: 5
+      changed_when: false
+      failed_when: false
+
     - name: Collect ib_send_bw server log
       ansible.builtin.shell:
         cmd: >-
@@ -230,6 +245,19 @@
     - name: Display ibv_rc_pingpong client results
       ansible.builtin.debug:
         var: ibv_rc_pingpong_result.stdout_lines
+
+    # As for ib_send_bw: the UD mesh server listens on port 18515 next
+    - name: Wait for the ibv_rc_pingpong server unit to finish
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p SubState --value ibv-rc-pingpong-server'
+      register: ibv_rc_pingpong_substate
+      until: ibv_rc_pingpong_substate.stdout | trim != 'running'
+      retries: 12
+      delay: 5
+      changed_when: false
+      failed_when: false
 
     - name: Collect ibv_rc_pingpong server log
       ansible.builtin.shell:
