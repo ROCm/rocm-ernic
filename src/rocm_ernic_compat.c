@@ -236,6 +236,12 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
         return;
     }
 
+    /* Undo pvrdma_qp_ops_init() from pvrdma_device_realize(). Its state is
+     * global, so without this a second device in the same process leaks
+     * the first one's deferred-completion queue. Safe on a device that was
+     * never realized: the fini tolerates state that was never set up. */
+    pvrdma_qp_ops_fini();
+
     /* Clean up resource manager */
     rdma_rm_fini(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
                  pvrdma->backend_eth_device_name);
