@@ -335,6 +335,17 @@
   the manager reports dead, including one reported dead while the worker is
   connecting to it or to another peer. `tcp-thread-stop-unit` covers each
   case.
+* A TCP mesh node no longer drops a connection when a message header arrives
+  in parts. A header that had partly arrived was given up on and the part
+  read was lost, so the next read started in the middle of the header, failed
+  the protocol magic check, and closed the connection. A header can straddle
+  a TCP segment boundary anywhere in a busy connection, so this could happen
+  under load on a real network. A node now waits for the rest of the header,
+  as it already did for the rest of a payload. A worker's listen port gives a
+  connecting peer 5 seconds to send all of its handshake, including the rest
+  of one it has started, so a peer that sends part of one and stops holds up
+  the peers behind it no longer than one that sends nothing.
+  `tcp-thread-stop-unit` covers messages split at several points.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
