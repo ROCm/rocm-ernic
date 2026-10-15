@@ -746,6 +746,39 @@ __attribute__((unused)) static void loopback_post_completion(
  * Backend Lifecycle
  */
 
+/* A queued receive owns the completion context its wr_id points at, as in
+ * loopback_destroy_srq(). */
+static void loopback_wr_free(gpointer data)
+{
+    LoopbackWR *wr = data;
+
+    if (wr->wr_id) {
+        g_free((PvrdmaCompHandlerCtx *)(uintptr_t)wr->wr_id);
+    }
+    g_free(wr);
+}
+
+/* Destructors for the CQ and QP tables. Each object owns queues and a
+ * mutex, so g_free() of the object alone leaks them at teardown. */
+static void loopback_cq_free(gpointer data)
+{
+    LoopbackCQ *lcq = data;
+
+    g_queue_free_full(lcq->completions, g_free);
+    qemu_mutex_destroy(&lcq->lock);
+    g_free(lcq);
+}
+
+static void loopback_qp_free(gpointer data)
+{
+    LoopbackQP *lqp = data;
+
+    g_queue_free_full(lqp->send_queue, loopback_wr_free);
+    g_queue_free_full(lqp->recv_queue, loopback_wr_free);
+    qemu_mutex_destroy(&lqp->lock);
+    g_free(lqp);
+}
+
 static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
 {
     LoopbackBackendPrivate *priv;
@@ -759,9 +792,9 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
     priv->mrs =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     priv->cqs = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      (GDestroyNotify)g_free);
+                                      loopback_cq_free);
     priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      (GDestroyNotify)g_free);
+                                      loopback_qp_free);
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     priv->next_pd_handle = 1;
