@@ -4158,16 +4158,33 @@ static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
 }
 
 /*
- * SENDER_REVIVES: worker 1 is first sent node 2's registration, and anything
- * after that reporting node 2 alive is from the revival.
+ * Wait for the manager to finish with everything the worker on fd has sent
+ * it so far, its registration included.  The worker's receive thread
+ * handles one message at a time, so once it has answered a heartbeat sent
+ * now, the handlers before it have returned, broadcasts and all, and what
+ * they sent is waiting in the workers' sockets.
+ */
+static bool worker_settled(int fd, uint32_t id)
+{
+    return send_heartbeat(fd, id) &&
+           wait_for_type(fd, TCP_MSG_HEARTBEAT_RESP, 2000);
+}
+
+/*
+ * SENDER_REVIVES: anything reporting node 2 alive after it is declared dead
+ * has to be from the revival.  Either registration's broadcast can report
+ * node 2 alive: wait_for_registered() returns once a connection is in the
+ * table, before its registration has broadcast, so worker 1's can come
+ * after node 2 has registered.  Both are finished and discarded first.
  */
 static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
 {
     time_t last;
     bool alive;
 
-    if (!reported(w1, 2, true, 5000))
-        return "worker 1 wasn't told node 2 registered";
+    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+        return "a registration wasn't finished";
+    count_type(w1, TCP_MSG_MESH_TOPOLOGY);
     node_set(priv, 2, false, time(NULL) - 1000);
     if (!send_heartbeat(w2, 2))
         return "could not send the heartbeat";
