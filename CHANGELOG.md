@@ -64,14 +64,6 @@
   `src/` after `ctest`. The Build and Test workflow has a coverage leg that
   fails below a floor, and on `develop` publishes the figure for the README's
   Coverage badge.
-* `ernic-test-ionic-harness` (CTest `ionic-harness-*`) runs the whole ionic
-  device in-process, with a fake libvfio-user over heap memory, and drives it
-  the way the guest drivers do: bring-up, the RDMA admin queue, RC and UD
-  transfers, atomics, fast registration, SRQs, CQ events, Ethernet Tx and Rx,
-  and the NVMe-oF connect over GSI. It needs no VM or RDMA device, so the data
-  path is now tested in every CI build leg, sanitizers included. It raises
-  the line coverage of `src/` from about 51% to about 67%, and the coverage
-  leg's floor goes from 45% to 60%.
 * `-DERNIC_USE_IWYU=ON` runs include-what-you-use on rocm-ernic's own sources
   as they compile, which prints suggestions for `#include` lines to add or
   remove. The suggestions don't fail the build. It needs CMake 3.27 or later
@@ -131,14 +123,6 @@
 
 ### Fixed
 
-* Shutting down a `loopback`, `nvmeof` or `s3` server that a guest had
-  connected to locked a mutex and wrote past the end of the backend's state
-  on the heap: the data path cleared its mesh receive callback through the
-  TCP backend whatever the backend was. The TCP backend's ionic entry points
-  now do nothing on another backend. Found by `ionic-harness-*`.
-* Shutdown leaked the queues and mutex of every CQ and QP the loopback
-  backend held, and the deferred-completion queue set up when the device was
-  realized.
 * The driver pack recorded a hardcoded `v7.2.4` as the ionic baseline
   regardless of `IONIC_KERNEL_REF`, so bumping the cmake pin left guests
   fetching the old sources while the patches shipped beside them came from the

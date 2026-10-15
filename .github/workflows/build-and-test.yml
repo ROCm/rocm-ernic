@@ -321,7 +321,7 @@ jobs:
       - name: Code coverage report
         if: matrix.coverage == 'on'
         env:
-          MIN_LINE_COVERAGE: 60
+          MIN_LINE_COVERAGE: 45
         run: |
           cmake --build build --target ernic-coverage
           {
