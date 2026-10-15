@@ -290,6 +290,8 @@ static int run_case(const struct testcase *tc)
     memset(&conn, 0, sizeof(conn));
     conn.node_id = 42;
     conn.sockfd = sv[0];
+    /* The fixture's own reference: a lookup's ref and unref can't free it */
+    atomic_init(&conn.refcount, 1);
     atomic_store(&conn.is_connected, true);
     conn.priv = &priv;
     qemu_mutex_init(&conn.lock);

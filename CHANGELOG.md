@@ -400,6 +400,19 @@
   same time can also no longer reach the nodes out of order, which could
   leave them with an older picture of the mesh than the manager's.
   `tcp-thread-stop-unit` covers the revival.
+* A TCP mesh manager that reconnects to a node that has stopped answering no
+  longer frees the node's old connection while another thread is still
+  using it, sending on it or relaying through it. Connections are now
+  reference counted, and the last thread to finish with one frees it. The
+  connection of a node that hangs up, or that the manager reconnects to, is
+  also taken out of the manager's connection table, instead of staying there
+  closed until shutdown.
+* Data that reaches a TCP mesh node before the guest has posted a receive for
+  it is now completed on the connection it came on, once the receive is
+  posted. The completion used to go to whichever connection the node named
+  as the data's sender had by then, so a peer could have it delivered to
+  another node. If that connection has closed meanwhile, no completion is
+  sent. `tcp-thread-stop-unit` covers both fixes.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
