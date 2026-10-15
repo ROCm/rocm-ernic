@@ -646,7 +646,7 @@ struct TcpBackendPrivate {
      * The peers this worker is to connect to, as TcpPeerTarget, from the
      * latest topology update.  A receive thread replaces them and sets
      * peer_targets_changed; the peer-connect thread connects to them.  Both
-     * are protected by peer_lock.
+     * are protected by peer_lock, which is never held with another lock.
      */
     GArray *peer_targets;
     bool peer_targets_changed;
@@ -1915,6 +1915,32 @@ static void tcp_worker_set_peers(TcpBackendPrivate *priv,
 }
 
 /*
+ * Whether the latest topology update still has the worker connect to target,
+ * at the same address.  The peer-connect thread works from a copy of the
+ * targets taken at the start of its pass, and a connect can take an interval,
+ * so an update that came meanwhile may have reported the peer dead.
+ */
+static bool tcp_worker_peer_current(TcpBackendPrivate *priv,
+                                    const TcpPeerTarget *target)
+{
+    bool current = false;
+
+    qemu_mutex_lock(&priv->peer_lock);
+    for (guint i = 0; i < priv->peer_targets->len; i++) {
+        const TcpPeerTarget *latest =
+            &g_array_index(priv->peer_targets, TcpPeerTarget, i);
+
+        if (latest->node_id == target->node_id) {
+            current = latest->port == target->port &&
+                      strcmp(latest->host, target->host) == 0;
+            break;
+        }
+    }
+    qemu_mutex_unlock(&priv->peer_lock);
+    return current;
+}
+
+/*
  * Connect a worker to target and publish the connection, giving up at
  * deadline_ms (on tcp_monotonic_ms()'s clock) or when *running is cleared.
  * Returns true if the connection was published.
@@ -1924,7 +1950,8 @@ static void tcp_worker_set_peers(TcpBackendPrivate *priv,
  * and the handshake can wait on the peer.  The lock is taken only to
  * publish, and the table checked again then, because the accept thread may
  * have published a connection to the same node meanwhile; that one is kept,
- * and this one closed.
+ * and this one closed.  The connection is also closed if an update that came
+ * during the connect no longer names the peer.
  */
 static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
                                     const TcpPeerTarget *target,
@@ -1954,6 +1981,14 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
         0) {
         rdma_error_report("TCP: Failed to send handshake to peer %u",
                           target->node_id);
+        tcp_connection_free(peer_conn);
+        return false;
+    }
+
+    if (!tcp_worker_peer_current(priv, target)) {
+        rdma_info_report("TCP: Peer node %u was dropped from the topology "
+                         "meanwhile; closing the new connection",
+                         target->node_id);
         tcp_connection_free(peer_conn);
         return false;
     }
@@ -1989,6 +2024,8 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
  * worker has no connection to.  Every one is tried, and each connect gives up
  * after a health-check interval, so a peer that doesn't answer delays the
  * ones after it by no more than that, and can't keep them from connecting.
+ * A target that an update during the pass no longer names is skipped; one
+ * the update added is left to the next pass, which comes straight after.
  */
 static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 {
@@ -1996,7 +2033,8 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
          i < targets->len && atomic_load(&priv->peer_thread_running); i++) {
         const TcpPeerTarget *target = &g_array_index(targets, TcpPeerTarget, i);
 
-        if (tcp_get_connection(priv, target->node_id)) {
+        if (tcp_get_connection(priv, target->node_id) ||
+            !tcp_worker_peer_current(priv, target)) {
             continue;
         }
         tcp_worker_connect_peer(priv, target, &priv->peer_thread_running,

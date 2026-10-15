@@ -332,7 +332,9 @@
   worker from connecting to the others. A peer the worker couldn't connect
   to was left unconnected until the mesh changed; it is now tried again
   every interval or so. A worker also no longer tries to connect to peers
-  the manager reports dead. `tcp-thread-stop-unit` covers each case.
+  the manager reports dead, including one reported dead while the worker is
+  connecting to it or to another peer. `tcp-thread-stop-unit` covers each
+  case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
