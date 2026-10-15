@@ -315,3 +315,16 @@ root login is key-only. Like `run-ionic-guest-test`, it needs no root,
 | `nix/compat-cflags.nix` | gcc-15 C99-error downgrade (build + shell) |
 | `nix/analysis/` | static + dynamic + fuzz analysis modules |
 | `nix/analysis/triage/` | finding prioritiser (Python) |
+
+### Launcher regression checks
+
+`nix build .#checks.x86_64-linux.launchers --no-link -L` exercises the
+packaged `ernic-run` with controlled servers and commands, including
+failed startup, server death, command failures, ignored TERM, interrupted
+launchers, and interactive input. It also checks guest module assertion
+boundaries and JSON encoding of runtime socket paths. No VM is required.
+
+The launcher preserves command exit codes, stops a waiting command when
+its server dies, and gives owned process groups ten seconds to stop before
+using KILL. Caller-owned paths are preserved on rejected startup; temporary
+socket directories created by the launcher are removed when empty.
