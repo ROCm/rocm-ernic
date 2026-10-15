@@ -510,15 +510,33 @@ typedef enum {
     TCP_MODE_WORKER,
 } TcpMode;
 
-/* Mesh node information (for manager) */
+/*
+ * Mesh node information (for manager).  A node stays in mesh_nodes from
+ * registration until teardown, so a thread that found it under
+ * mesh_table_lock can keep using the pointer after dropping the lock.
+ * node_id, hostname, port and sockfd are set before the node is published
+ * and never change; is_alive, last_heartbeat and conn are protected by
+ * mesh_table_lock.
+ */
 typedef struct {
     uint32_t node_id;
     char *hostname;
     uint16_t port;
     bool is_alive;
     time_t last_heartbeat;
-    int sockfd;          /* Connection to this node (for manager) */
-    TcpConnection *conn; /* Connection object */
+    int sockfd; /* Connection to this node (for manager) */
+    /*
+     * Connection object.  Only the health-check thread changes it after
+     * registration, so that thread may read it without the lock.
+     */
+    TcpConnection *conn;
+    /*
+     * Nonzero while the node is due a reconnect that a pass ran out of time
+     * for: the value of reconnect_deferrals when it was deferred, so the
+     * nodes deferred longest go first.  Used only by the health-check
+     * thread, so it needs no lock.
+     */
+    uint64_t reconnect_deferred;
 } MeshNodeInfo;
 
 struct TcpBackendPrivate {
@@ -612,6 +630,9 @@ struct TcpBackendPrivate {
     QemuCond health_check_cond;
     uint32_t health_check_interval_sec; /* Default: 5 seconds */
     uint32_t next_available_node_id;    /* For auto-assigning node IDs */
+    /* Reconnects deferred so far; health-check thread only (see MeshNodeInfo)
+     */
+    uint64_t reconnect_deferrals;
 
     /* Worker-specific fields */
     char *manager_host;
@@ -1348,11 +1369,116 @@ static void tcp_tune_sockbuf(int sockfd)
     }
 }
 
-static int tcp_connect_to_remote(const char *host, uint16_t port)
+/* Milliseconds on the monotonic clock, for timeouts. */
+static uint64_t tcp_monotonic_ms(void)
 {
-    struct addrinfo hints, *res, *rp;
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/*
+ * Wait for the non-blocking connect() in progress on sockfd to finish.
+ * Returns 0 once it has succeeded, or -1 with errno set: to the connect's
+ * own error, to ETIMEDOUT once tcp_monotonic_ms() reaches deadline_ms (if
+ * deadline_ms isn't zero), or to ECANCELED once *running is cleared (if
+ * running isn't NULL).
+ */
+static int tcp_wait_connected(int sockfd, const atomic_bool *running,
+                              uint64_t deadline_ms)
+{
+    for (;;) {
+        struct pollfd pfd = {.fd = sockfd, .events = POLLOUT};
+        int err = 0;
+        socklen_t len = sizeof(err);
+        int ret;
+
+        if (running && !atomic_load(running)) {
+            errno = ECANCELED;
+            return -1;
+        }
+        if (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        ret = poll(&pfd, 1, 100);
+        if (ret < 0 && errno != EINTR) {
+            return -1;
+        }
+        if (ret <= 0) {
+            continue;
+        }
+        if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) {
+            return -1;
+        }
+        if (err != 0) {
+            errno = err;
+            return -1;
+        }
+        return 0;
+    }
+}
+
+/*
+ * Connect to each address in addrs in turn until one connects, all within
+ * the one deadline (see tcp_wait_connected()).  Returns the socket,
+ * non-blocking, or -1 with errno set by the last attempt.  Gives up on the
+ * remaining addresses once the deadline passes or *running is cleared.
+ */
+static int tcp_connect_any(const struct addrinfo *addrs,
+                           const atomic_bool *running, uint64_t deadline_ms)
+{
+    int err = ENOENT;
+
+    for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next) {
+        int sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sockfd < 0) {
+            err = errno;
+            continue;
+        }
+
+        int flags = fcntl(sockfd, F_GETFL, 0);
+        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
+            (errno == EINPROGRESS &&
+             tcp_wait_connected(sockfd, running, deadline_ms) == 0))
+            return sockfd;
+
+        err = errno;
+        close(sockfd);
+        /*
+         * Any other failure, including the kernel giving up on this address
+         * with ETIMEDOUT, moves on to the next address.
+         */
+        if (err == ECANCELED ||
+            (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms))
+            break;
+    }
+    errno = err;
+    return -1;
+}
+
+/*
+ * Connect to host:port and return the connected socket, non-blocking, or -1.
+ *
+ * The connect itself is non-blocking, so a host that doesn't answer doesn't
+ * hold the caller until the kernel gives up on it, about two minutes.  A
+ * caller that passes its thread's stop flag in running gets control back
+ * within 100 ms of the flag being cleared, and a nonzero deadline_ms, a time
+ * on tcp_monotonic_ms()'s clock, gives up then, however many addresses host
+ * has.  With neither, it waits as long as a blocking connect() would.
+ * Resolving host can still block.
+ */
+static int tcp_connect_to_remote(const char *host, uint16_t port,
+                                 const atomic_bool *running,
+                                 uint64_t deadline_ms)
+{
+    struct addrinfo hints, *res;
     char port_str[8];
-    int sockfd = -1;
+    int sockfd;
+    int err;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -1367,22 +1493,17 @@ static int tcp_connect_to_remote(const char *host, uint16_t port)
         return -1;
     }
 
-    for (rp = res; rp; rp = rp->ai_next) {
-        sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (sockfd < 0)
-            continue;
-
-        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0)
-            break;
-
-        close(sockfd);
-        sockfd = -1;
-    }
+    sockfd = tcp_connect_any(res, running, deadline_ms);
+    err = errno;
     freeaddrinfo(res);
 
+    if (sockfd < 0 && err == ECANCELED) {
+        rdma_info_report("TCP: Stopped while connecting to %s:%u", host, port);
+        return -1;
+    }
     if (sockfd < 0) {
         rdma_error_report("TCP: Failed to connect to %s:%u: %s", host, port,
-                          strerror(errno));
+                          strerror(err));
         return -1;
     }
 
@@ -1391,10 +1512,6 @@ static int tcp_connect_to_remote(const char *host, uint16_t port)
     setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
     tcp_tune_sockbuf(sockfd);
-
-    /* Set socket to non-blocking */
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
 
     rdma_info_report("TCP: Connected to %s:%u", host, port);
     return sockfd;
@@ -2314,7 +2431,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                         tcp_connection_new(peer_id, peer_host, peer_port);
                     peer_conn->priv = priv;
                     peer_conn->sockfd =
-                        tcp_connect_to_remote(peer_host, peer_port);
+                        tcp_connect_to_remote(peer_host, peer_port, NULL, 0);
 
                     if (peer_conn->sockfd < 0) {
                         rdma_error_report("TCP: Failed to connect to peer %u",
@@ -3175,136 +3292,300 @@ static void tcp_retire_conn(TcpConnection *conn)
     qemu_mutex_unlock(&conn->lock);
 }
 
-/* Manager health check thread */
+/*
+ * One node's part in a health-check pass.  Decided under mesh_table_lock by
+ * tcp_health_check_scan() and carried out without it, which is safe because
+ * node outlives the pass (see MeshNodeInfo) and conn, the node's connection
+ * when the pass began, can only be retired or freed by the health-check
+ * thread itself.
+ */
+typedef struct {
+    MeshNodeInfo *node;
+    TcpConnection *conn;
+    bool reconnect; /* due a reconnect attempt */
+} TcpHealthCheckItem;
+
+/*
+ * Whether node has gone too long without a heartbeat, which is three
+ * intervals.  The caller holds mesh_table_lock.
+ */
+static bool tcp_node_silent(const TcpBackendPrivate *priv,
+                            const MeshNodeInfo *node, time_t now)
+{
+    return now - node->last_heartbeat >
+           (time_t)priv->health_check_interval_sec * 3;
+}
+
+/*
+ * The part of a health-check pass that needs mesh_table_lock: note each
+ * other node's connection, declare the nodes that have stopped answering
+ * dead, and pick the ones due a reconnect attempt.  Returns true if a node
+ * was newly declared dead, which the rest of the mesh has to be told.
+ */
+static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
+                                  time_t now)
+{
+    bool newly_dead = false;
+    GHashTableIter iter;
+    gpointer value;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        MeshNodeInfo *node = (MeshNodeInfo *)value;
+        TcpHealthCheckItem item = {node, node->conn, false};
+        time_t dead_sec = now - node->last_heartbeat;
+
+        if (node->node_id == tcp_local_node(priv))
+            continue;
+
+        if (tcp_node_silent(priv, node, now)) {
+            if (node->is_alive) {
+                rdma_warn_report("TCP: Node %u failed health check (last "
+                                 "heartbeat: %ld seconds ago)",
+                                 node->node_id, (long)dead_sec);
+                node->is_alive = false;
+                newly_dead = true;
+            }
+
+            /* Attempt reconnection with exponential backoff (max 60 s) */
+            time_t backoff = 1;
+            while (backoff * 2 <= dead_sec && backoff < 60)
+                backoff *= 2;
+            if (backoff > 60)
+                backoff = 60;
+            item.reconnect =
+                (node->reconnect_deferred != 0 || dead_sec % backoff == 0) &&
+                node->hostname != NULL;
+        } else {
+            node->reconnect_deferred = 0;
+        }
+
+        if (item.conn || item.reconnect)
+            g_array_append_val(items, item);
+    }
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    return newly_dead;
+}
+
+/*
+ * Deferred reconnects first, the longest deferred first.  g_array_sort() is
+ * stable, so the rest keep the scan's order.
+ */
+static gint tcp_health_check_item_cmp(gconstpointer a, gconstpointer b)
+{
+    uint64_t x = ((const TcpHealthCheckItem *)a)->node->reconnect_deferred;
+    uint64_t y = ((const TcpHealthCheckItem *)b)->node->reconnect_deferred;
+
+    if (x == y)
+        return 0;
+    if (x == 0)
+        return 1;
+    if (y == 0)
+        return -1;
+    return x < y ? -1 : 1;
+}
+
+/*
+ * Whether node is still silent.  The scan's verdict can be out of date by
+ * the time it's acted on: a node that answers a heartbeat late, on the
+ * connection a reconnect would retire, has its heartbeat recorded while the
+ * reconnect is under way.
+ */
+static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
+{
+    bool silent;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    silent = tcp_node_silent(priv, node, time(NULL));
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    if (!silent)
+        rdma_info_report("TCP: Node %u has answered; not reconnecting",
+                         node->node_id);
+    return silent;
+}
+
+/*
+ * Reconnect to item->node, retiring item->conn, giving up at deadline_ms
+ * (on tcp_monotonic_ms()'s clock).  Called without mesh_table_lock: the
+ * connect can take until the deadline, the handshake can wait on the peer,
+ * and retiring the old connection joins its receive thread, whose handlers
+ * take mesh_table_lock.  Returns true if the node has a new connection.
+ *
+ * A node that answers before the connect, or during it, is left alone.  One
+ * that answers once its old connection is being retired gets the new
+ * connection anyway; if that fails, the node goes silent again, so a later
+ * pass reconnects to it.
+ */
+static bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
+                                       const TcpHealthCheckItem *item,
+                                       uint64_t deadline_ms)
+{
+    MeshNodeInfo *node = item->node;
+
+    if (!tcp_node_still_silent(priv, node))
+        return false;
+
+    rdma_info_report("TCP: Attempting reconnect to node %u (%s:%u)",
+                     node->node_id, node->hostname, node->port);
+    int fd = tcp_connect_to_remote(node->hostname, node->port,
+                                   &priv->health_check_running, deadline_ms);
+    if (fd < 0)
+        return false;
+    if (!tcp_node_still_silent(priv, node)) {
+        close(fd);
+        return false;
+    }
+    atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_attempts, 1,
+                              memory_order_relaxed);
+
+    /*
+     * node->conn is cleared once the old connection is retired, so if this
+     * reconnect fails below, the next attempt doesn't find it and stop it
+     * again.  The connections table still owns it until a new connection
+     * replaces it.
+     */
+    if (item->conn) {
+        tcp_retire_conn(item->conn);
+        qemu_mutex_lock(&priv->mesh_table_lock);
+        node->conn = NULL;
+        qemu_mutex_unlock(&priv->mesh_table_lock);
+    }
+
+    TcpConnection *new_conn =
+        tcp_connection_new(node->node_id, node->hostname, node->port);
+    new_conn->priv = priv;
+    new_conn->sockfd = fd;
+    new_conn->is_connected = true;
+
+    if (tcp_send_handshake(new_conn, tcp_local_node(priv), TCP_MSG_HANDSHAKE) <
+        0) {
+        rdma_error_report("TCP: Failed to send handshake after reconnect to "
+                          "node %u",
+                          node->node_id);
+        tcp_connection_free(new_conn);
+        return false;
+    }
+
+    char tname[32];
+    snprintf(tname, sizeof(tname), "tcp-recv-%u", node->node_id);
+    if (!tcp_start_recv_thread(new_conn, tname)) {
+        tcp_connection_free(new_conn);
+        return false;
+    }
+
+    /* Both tables together, so no thread finds one updated and not the other */
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    qemu_mutex_lock(&priv->conn_table_lock);
+    g_hash_table_replace(priv->connections, GUINT_TO_POINTER(node->node_id),
+                         new_conn);
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    node->conn = new_conn;
+    node->is_alive = true;
+    node->last_heartbeat = time(NULL);
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    rdma_info_report("TCP: Reconnected to node %u", node->node_id);
+    atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_successes, 1,
+                              memory_order_relaxed);
+    return true;
+}
+
+/*
+ * The reconnect phase of a health-check pass: try the items due a
+ * reconnect, until deadline_ms (on tcp_monotonic_ms()'s clock) or a stop.
+ * Returns true if a node was reconnected.
+ *
+ * A node whose turn comes after the deadline is deferred: it is due on the
+ * next pass whatever its backoff, and goes first, after any node deferred
+ * before it.  The first in line is always tried, so every deferred node
+ * moves up a place each pass until it has its turn.  Otherwise a node that
+ * never answers would use up every pass's time, and the nodes behind it
+ * would never be tried.
+ */
+static bool tcp_health_check_reconnects(TcpBackendPrivate *priv, GArray *items,
+                                        uint64_t deadline_ms)
+{
+    bool reconnected = false;
+
+    g_array_sort(items, tcp_health_check_item_cmp);
+    for (guint i = 0;
+         i < items->len && atomic_load(&priv->health_check_running); i++) {
+        const TcpHealthCheckItem *item =
+            &g_array_index(items, TcpHealthCheckItem, i);
+
+        if (!item->reconnect)
+            continue;
+        if (tcp_monotonic_ms() >= deadline_ms) {
+            /* Already in line, it keeps its place */
+            if (item->node->reconnect_deferred == 0)
+                item->node->reconnect_deferred = ++priv->reconnect_deferrals;
+            continue;
+        }
+        item->node->reconnect_deferred = 0;
+        if (tcp_health_check_reconnect(priv, item, deadline_ms))
+            reconnected = true;
+    }
+    return reconnected;
+}
+
+/*
+ * Manager health check thread.  Each pass sends every other node a
+ * heartbeat, declares dead the nodes that haven't answered for three
+ * intervals, and tries to reconnect to them.
+ *
+ * Only the scan holds mesh_table_lock.  The rest of the pass can wait on a
+ * peer for as long as a connect takes, which would keep registrations
+ * waiting, and a reconnect joins the old connection's receive thread, which
+ * takes mesh_table_lock to record a heartbeat; holding the lock across the
+ * join would deadlock with it.
+ */
 static void *tcp_manager_health_check_thread(void *opaque)
 {
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
+    GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
 
     rdma_info_report("TCP: Manager health check thread started");
 
     while (atomic_load(&priv->health_check_running)) {
-        qemu_mutex_lock(&priv->mesh_table_lock);
+        g_array_set_size(items, 0);
+        bool newly_dead = tcp_health_check_scan(priv, items, time(NULL));
 
-        GHashTableIter iter;
-        gpointer key, value;
-        g_hash_table_iter_init(&iter, priv->mesh_nodes);
+        for (guint i = 0; i < items->len; i++) {
+            const TcpHealthCheckItem *item =
+                &g_array_index(items, TcpHealthCheckItem, i);
+            TcpConnection *conn = item->conn;
 
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            MeshNodeInfo *node = (MeshNodeInfo *)value;
-
-            if (node->node_id == tcp_local_node(priv))
+            if (!conn)
                 continue;
-
-            /* Send heartbeat request */
-            if (node->conn && node->conn->is_connected &&
-                node->conn->sockfd >= 0) {
-                qemu_mutex_lock(&node->conn->lock);
-                tcp_send_message(priv, node->conn->sockfd, TCP_MSG_HEARTBEAT,
-                                 NULL, 0,
+            qemu_mutex_lock(&conn->lock);
+            if (conn->is_connected && conn->sockfd >= 0) {
+                tcp_send_message(priv, conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
                                  atomic_fetch_add_explicit(
                                      &priv->next_seq, 1, memory_order_relaxed),
-                                 tcp_local_node(priv), node->node_id, 0, 0);
-                qemu_mutex_unlock(&node->conn->lock);
+                                 tcp_local_node(priv), item->node->node_id, 0,
+                                 0);
             }
-
-            /* Check if node hasn't responded */
-            time_t now = time(NULL);
-            if (now - node->last_heartbeat >
-                priv->health_check_interval_sec * 3) {
-                if (node->is_alive) {
-                    rdma_warn_report("TCP: Node %u failed health "
-                                     "check (last heartbeat: "
-                                     "%ld seconds ago)",
-                                     node->node_id, now - node->last_heartbeat);
-                    node->is_alive = false;
-                    qemu_mutex_unlock(&priv->mesh_table_lock);
-                    tcp_broadcast_mesh_topology(priv);
-                    qemu_mutex_lock(&priv->mesh_table_lock);
-                }
-
-                /*
-                 * Attempt reconnection with
-                 * exponential backoff (max 60 s).
-                 */
-                time_t dead_sec = now - node->last_heartbeat;
-                time_t backoff = 1;
-                while (backoff * 2 <= dead_sec && backoff < 60)
-                    backoff *= 2;
-                if (backoff > 60)
-                    backoff = 60;
-
-                if (dead_sec % backoff == 0 && node->hostname) {
-                    rdma_info_report("TCP: Attempting reconnect "
-                                     "to node %u (%s:%u)",
-                                     node->node_id, node->hostname, node->port);
-                    int fd = tcp_connect_to_remote(node->hostname, node->port);
-                    if (fd >= 0) {
-                        atomic_fetch_add_explicit(
-                            &priv->tcp_stats.reconnect_attempts, 1,
-                            memory_order_relaxed);
-
-                        /*
-                         * node->conn is cleared once the old connection is
-                         * retired, so if this reconnect fails below, the next
-                         * attempt doesn't find it and stop it again.  The
-                         * connections table still owns it until a new
-                         * connection replaces it.
-                         */
-                        if (node->conn) {
-                            tcp_retire_conn(node->conn);
-                            node->conn = NULL;
-                        }
-
-                        TcpConnection *new_conn = tcp_connection_new(
-                            node->node_id, node->hostname, node->port);
-                        new_conn->priv = priv;
-                        new_conn->sockfd = fd;
-                        new_conn->is_connected = true;
-
-                        if (tcp_send_handshake(new_conn, tcp_local_node(priv),
-                                               TCP_MSG_HANDSHAKE) < 0) {
-                            rdma_error_report("TCP: Failed to send handshake "
-                                              "after reconnect to node %u",
-                                              node->node_id);
-                            tcp_connection_free(new_conn);
-                            goto reconnect_done;
-                        }
-
-                        char tname[32];
-                        snprintf(tname, sizeof(tname), "tcp-recv-%u",
-                                 node->node_id);
-                        if (!tcp_start_recv_thread(new_conn, tname)) {
-                            tcp_connection_free(new_conn);
-                            goto reconnect_done;
-                        }
-
-                        qemu_mutex_lock(&priv->conn_table_lock);
-                        g_hash_table_replace(priv->connections,
-                                             GUINT_TO_POINTER(node->node_id),
-                                             new_conn);
-                        qemu_mutex_unlock(&priv->conn_table_lock);
-
-                        node->conn = new_conn;
-                        node->is_alive = true;
-                        node->last_heartbeat = now;
-
-                        rdma_info_report("TCP: Reconnected to "
-                                         "node %u",
-                                         node->node_id);
-                        atomic_fetch_add_explicit(
-                            &priv->tcp_stats.reconnect_successes, 1,
-                            memory_order_relaxed);
-
-                        qemu_mutex_unlock(&priv->mesh_table_lock);
-                        tcp_broadcast_mesh_topology(priv);
-                        qemu_mutex_lock(&priv->mesh_table_lock);
-                    }
-                reconnect_done:;
-                }
-            }
+            qemu_mutex_unlock(&conn->lock);
         }
 
-        qemu_mutex_unlock(&priv->mesh_table_lock);
+        if (newly_dead)
+            tcp_broadcast_mesh_topology(priv);
+
+        /*
+         * All of the pass's reconnects share one interval.  No heartbeat
+         * goes out until the next pass, an interval after this one ends,
+         * and a node is declared dead after three intervals without one.
+         * With the reconnects bounded, the answer to this pass's heartbeat,
+         * or the registration of a node that joins meanwhile, is less than
+         * three intervals old when the next pass looks at it.
+         */
+        if (tcp_health_check_reconnects(
+                priv, items,
+                tcp_monotonic_ms() +
+                    (uint64_t)priv->health_check_interval_sec * 1000u))
+            tcp_broadcast_mesh_topology(priv);
 
         /*
          * Wait out the interval, or until tcp_stop_health_check_thread()
@@ -3326,6 +3607,7 @@ static void *tcp_manager_health_check_thread(void *opaque)
         qemu_mutex_unlock(&priv->health_check_lock);
     }
 
+    g_array_free(items, TRUE);
     rdma_info_report("TCP: Manager health check thread exiting");
     return NULL;
 }
@@ -3348,7 +3630,7 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
         tcp_connection_new(0, priv->manager_host, priv->manager_port);
     priv->manager_conn->priv = priv;
     priv->manager_conn->sockfd =
-        tcp_connect_to_remote(priv->manager_host, priv->manager_port);
+        tcp_connect_to_remote(priv->manager_host, priv->manager_port, NULL, 0);
 
     if (priv->manager_conn->sockfd < 0) {
         rdma_error_report("TCP: Failed to connect to manager at %s:%u",
@@ -3376,9 +3658,9 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
     reg.version = htonl(TCP_PROTOCOL_VERSION);
 
-    /* Send registration request. Re-registration can happen
-     * on reconnect while the manager connection is already
-     * carrying traffic, so serialise on conn->lock. */
+    /* Send registration request, under conn->lock like every write to a
+     * connection's socket: its receive thread is already running and
+     * writes to the socket too. */
     qemu_mutex_lock(&priv->manager_conn->lock);
     ret = tcp_send_message(
         priv, priv->manager_conn->sockfd, TCP_MSG_REGISTER_NODE, &reg,

@@ -41,6 +41,16 @@
  * health-check reconnect, after which the retired connection must not be
  * stopped again.
  *
+ * The health check must not hold the mesh table's lock while it reconnects:
+ * the old connection's receive thread, which the reconnect joins, takes it
+ * to record a heartbeat.  The reconnect rows connect to a node that doesn't
+ * answer, and check that the lock is free and a heartbeat is answered
+ * meanwhile, that a stop or the interval ends the wait, that a node that
+ * answers meanwhile keeps its connection, and that a pass's reconnects
+ * together take no more than an interval.  The connect rows check
+ * tcp_connect_to_remote(), which waits for the connect, on its own,
+ * including a deadline shared by several addresses.
+ *
  * A worker's accept thread waits for a handshake from each peer that
  * connects, and has to stop waiting when it is stopped.  The handshake rows
  * check that, and also send it handshakes it has to refuse.
@@ -1375,6 +1385,113 @@ static int run_hs_case(const struct hs_case *c)
 
 /* ---- Health-check reconnect -------------------------------------------- */
 
+#define RC_MAX_NODES 3
+
+/* The id the manager gives the first node to register */
+#define RC_NEW_NODE_ID 10
+
+/*
+ * A manager whose nodes 1 to nodes have stopped answering.  For node i + 1:
+ * node[i] is its mesh entry, at port on loopback, old[i] its old connection,
+ * with the receive thread running, and peer[i] the node's end of it.
+ */
+struct rc_fixture {
+    TcpBackendPrivate *priv;
+    uint32_t nodes;
+    TcpConnection *old[RC_MAX_NODES];
+    MeshNodeInfo *node[RC_MAX_NODES];
+    int peer[RC_MAX_NODES];
+};
+
+/* Set up fx; returns NULL, or what failed.  rc_teardown() either way. */
+static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
+                            uint32_t nodes, uint32_t interval)
+{
+    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+
+    memset(fx, 0, sizeof(*fx));
+    fx->priv = priv;
+    for (uint32_t i = 0; i < RC_MAX_NODES; i++)
+        fx->peer[i] = -1;
+    priv->is_manager = true;
+    /* Clear of the fixture's nodes, and of node 0, the manager itself */
+    priv->next_available_node_id = RC_NEW_NODE_ID;
+    atomic_init(&priv->stopping, false);
+    atomic_init(&priv->next_seq, 1);
+    atomic_init(&priv->tcp_stats.reconnect_attempts, 0);
+    atomic_init(&priv->tcp_stats.reconnect_successes, 0);
+    atomic_init(&priv->health_check_running, false);
+    qemu_mutex_init(&priv->health_check_lock);
+    qemu_cond_init(&priv->health_check_cond);
+    priv->health_check_interval_sec = interval;
+    priv->mesh_nodes = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
+    qemu_mutex_init(&priv->mesh_table_lock);
+    priv->connections = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->pending_conns = g_ptr_array_new();
+    qemu_mutex_init(&priv->conn_table_lock);
+    tcp_bufpool_init(&priv->recv_pool);
+
+    for (uint32_t i = 0; i < nodes && i < RC_MAX_NODES; i++) {
+        uint32_t id = i + 1;
+
+        fx->old[i] = recv_conn_new(priv, id, true, &fx->peer[i]);
+        if (!fx->old[i])
+            return "could not set up an old connection";
+        g_hash_table_insert(priv->connections, GUINT_TO_POINTER(id),
+                            fx->old[i]);
+        fx->node[i] = mesh_node_info_new(id, "127.0.0.1", port);
+        if (!fx->node[i])
+            return "could not create a mesh node";
+        fx->node[i]->conn = fx->old[i];
+        fx->node[i]->is_alive = false; /* already reported dead: no broadcast */
+        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(id),
+                            fx->node[i]);
+        fx->nodes++;
+    }
+    return NULL;
+}
+
+/*
+ * Make the nodes look dead_s seconds dead, and start the health-check
+ * thread.  It starts just after the second ticks over, so its first pass,
+ * which comes at once, sees exactly dead_s.
+ */
+static void rc_start(struct rc_fixture *fx, time_t dead_s)
+{
+    time_t t0 = time(NULL);
+
+    while (time(NULL) == t0)
+        sleep_ms(5);
+    for (uint32_t i = 0; i < fx->nodes; i++)
+        fx->node[i]->last_heartbeat = time(NULL) - dead_s;
+    atomic_store(&fx->priv->health_check_running, true);
+    qemu_thread_create(&fx->priv->health_check_thread, "tcp-health",
+                       tcp_manager_health_check_thread, fx->priv,
+                       QEMU_THREAD_JOINABLE);
+}
+
+static void rc_teardown(struct rc_fixture *fx)
+{
+    TcpBackendPrivate *priv = fx->priv;
+
+    tcp_stop_health_check_thread(priv);
+    tcp_stop_recv_threads(priv);
+    g_hash_table_destroy(priv->mesh_nodes);
+    g_hash_table_destroy(priv->connections);
+    tcp_free_pending_conns(priv);
+    for (uint32_t i = 0; i < RC_MAX_NODES; i++)
+        if (fx->peer[i] >= 0)
+            close(fx->peer[i]);
+    tcp_bufpool_destroy(&priv->recv_pool);
+    qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->mesh_table_lock);
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
+    g_free(priv);
+}
+
 /*
  * The health check reconnects to a node that has stopped answering: it
  * retires the node's old connection, joining its receive thread, and opens a
@@ -1393,76 +1510,46 @@ static int run_reconnect_case(void)
         "a reconnect whose receive thread can't be created, then a retry";
     static const char expected[] =
         "the old connection is retired, and its thread joined, once";
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
-    TcpConnection *old = NULL;
-    MeshNodeInfo *node = NULL;
+    struct rc_fixture fx;
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
-    const char *why = NULL;
-    int peer = -1, lfd = listen_loopback();
+    const char *why;
+    int lfd = listen_loopback();
+    uint16_t port = 0;
     bool ok;
 
     atomic_store(&g_creates, 0);
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     atomic_store(&g_create_failures, 0);
-    atomic_init(&priv->stopping, false);
-    atomic_init(&priv->next_seq, 1);
-    atomic_init(&priv->health_check_running, false);
-    qemu_mutex_init(&priv->health_check_lock);
-    qemu_cond_init(&priv->health_check_cond);
-    priv->health_check_interval_sec = 1;
-    priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
-    qemu_mutex_init(&priv->mesh_table_lock);
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    qemu_mutex_init(&priv->conn_table_lock);
-    tcp_bufpool_init(&priv->recv_pool);
+    if (lfd >= 0 && getsockname(lfd, (struct sockaddr *)&addr, &len) == 0)
+        port = ntohs(addr.sin_port);
 
     g_current_row = desc;
     alarm(ROW_TIMEOUT_S);
-    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+    why = rc_setup(&fx, port, 1, 1);
+    if (!why && port == 0)
         why = "could not open a listening socket";
-    } else if (!(old = recv_conn_new(priv, 1, true, &peer))) {
-        why = "could not set up the old connection";
-    } else {
-        g_hash_table_insert(priv->connections, GUINT_TO_POINTER(1), old);
-        node = mesh_node_info_new(1, "127.0.0.1", ntohs(addr.sin_port));
-        if (!node)
-            why = "could not create the mesh node";
-    }
 
     if (!why) {
-        TcpConnection *on_node, *in_table;
-        time_t t0 = time(NULL);
+        TcpConnection *on_node, *in_table, *old = fx.old[0];
         int fd;
 
-        node->conn = old;
-        node->is_alive = false; /* already reported dead: no broadcast */
-        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1), node);
-
-        /* Start just after the second ticks over, so the first pass sees 4 s */
-        while (time(NULL) == t0)
-            sleep_ms(5);
-        node->last_heartbeat = time(NULL) - 4;
         atomic_store(&g_creates_left, 1); /* the health thread; no more */
-        atomic_store(&priv->health_check_running, true);
-        qemu_thread_create(&priv->health_check_thread, "tcp-health",
-                           tcp_manager_health_check_thread, priv,
-                           QEMU_THREAD_JOINABLE);
+        rc_start(&fx, 4);
 
         for (uint32_t i = 0; i < 600 && atomic_load(&g_create_failures) == 0;
              i++)
             sleep_ms(10);
 
-        /* The attempt holds mesh_table_lock until it has given up */
-        qemu_mutex_lock(&priv->mesh_table_lock);
-        on_node = node->conn;
-        qemu_mutex_unlock(&priv->mesh_table_lock);
-        qemu_mutex_lock(&priv->conn_table_lock);
-        in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
-        qemu_mutex_unlock(&priv->conn_table_lock);
+        /* node->conn is cleared before the new receive thread is started */
+        qemu_mutex_lock(&fx.priv->mesh_table_lock);
+        on_node = fx.node[0]->conn;
+        qemu_mutex_unlock(&fx.priv->mesh_table_lock);
+        qemu_mutex_lock(&fx.priv->conn_table_lock);
+        in_table =
+            g_hash_table_lookup(fx.priv->connections, GUINT_TO_POINTER(1));
+        qemu_mutex_unlock(&fx.priv->conn_table_lock);
         qemu_mutex_lock(&old->lock);
         fd = old->sockfd;
         qemu_mutex_unlock(&old->lock);
@@ -1478,7 +1565,7 @@ static int run_reconnect_case(void)
         else if (atomic_load(&g_joins) != 1)
             why = "the old receive thread wasn't joined exactly once";
 
-        tcp_stop_health_check_thread(priv);
+        tcp_stop_health_check_thread(fx.priv);
         /* What a retry that still found the retired connection would do */
         tcp_retire_conn(old);
     }
@@ -1495,18 +1582,664 @@ static int run_reconnect_case(void)
                why ? why : "", why ? "; " : "", atomic_load(&g_joins),
                atomic_load(&g_exits));
 
-    g_hash_table_destroy(priv->mesh_nodes);
-    g_hash_table_destroy(priv->connections);
-    if (peer >= 0)
-        close(peer);
+    rc_teardown(&fx);
     if (lfd >= 0)
         close(lfd);
-    tcp_bufpool_destroy(&priv->recv_pool);
-    qemu_mutex_destroy(&priv->conn_table_lock);
-    qemu_mutex_destroy(&priv->mesh_table_lock);
-    qemu_cond_destroy(&priv->health_check_cond);
-    qemu_mutex_destroy(&priv->health_check_lock);
-    g_free(priv);
+    return ok ? 0 : 1;
+}
+
+/* ---- Reconnecting without the mesh table's lock ------------------------ */
+
+/*
+ * The health check used to hold mesh_table_lock for its whole pass,
+ * reconnects included.  A reconnect joins the old connection's receive
+ * thread, and that thread takes mesh_table_lock to record a heartbeat, so a
+ * node that answered just as it was declared dead deadlocked the manager.
+ * The connect, which can take minutes against a host that doesn't answer,
+ * also held up every registration, and a stop.
+ *
+ * Without the lock, the reconnect has to check that the node is still
+ * silent, since a heartbeat can now be recorded while it runs, and the
+ * pass's reconnects have to stop after an interval between them, since no
+ * heartbeats go out until they're done.
+ *
+ * These rows reconnect to a listener that doesn't answer (see
+ * listen_unanswering()), so the health-check thread waits in the connect
+ * for as long as a row needs.  The nodes look dead_s seconds dead at the
+ * first pass, which is past three intervals and a whole number of backoffs,
+ * so the pass attempts to reconnect to each, right after sending them all a
+ * heartbeat.
+ */
+
+enum rc_scenario {
+    RC_HEARTBEAT, /* a heartbeat from no node, then the connect completes */
+    RC_RECOVERS,  /* the nodes answer, then the first connect completes */
+    RC_STOP,      /* the thread is stopped */
+    RC_TIMEOUT,   /* the connect waits out its timeout */
+    RC_REGISTERS, /* a node registers while the reconnects wait */
+    RC_STARVES,   /* the first node never answers, the second does */
+};
+
+struct rc_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum rc_scenario scenario;
+    uint32_t nodes;
+    uint32_t interval; /* health_check_interval_sec, the reconnects' budget */
+    time_t dead_s;
+};
+
+static const struct rc_case rc_cases[] = {
+    {"positive", "a heartbeat from no node while the health check reconnects",
+     "answered at once; the old thread is joined once, and the node gets the "
+     "new connection",
+     RC_HEARTBEAT, 1, LONG_INTERVAL_S, 3 * LONG_INTERVAL_S + 60},
+    {"negative",
+     "two nodes answer while the health check reconnects to the first",
+     "neither is reconnected: the first's new connection is closed unused, "
+     "and the second isn't tried",
+     RC_RECOVERS, 2, LONG_INTERVAL_S, 3 * LONG_INTERVAL_S + 60},
+    {"negative", "a stop while reconnecting to a node that doesn't answer",
+     "returns at once, without waiting for the connect; the mesh table is "
+     "free meanwhile, and the old connection untouched",
+     RC_STOP, 1, LONG_INTERVAL_S, 3 * LONG_INTERVAL_S + 60},
+    {"boundary", "a reconnect to a node that doesn't answer, on a 1 s interval",
+     "the connect gives up after the interval, and the next pass runs",
+     RC_TIMEOUT, 1, 1, 4},
+    {"boundary",
+     "three nodes that don't answer, and one that registers meanwhile, on a "
+     "2 s interval",
+     "the reconnects stop after an interval, so the new node is sent a "
+     "heartbeat before it can be declared dead",
+     RC_REGISTERS, 3, 2, 8},
+    {"corner",
+     "two nodes due together, the first never answering and the second "
+     "answering, on a 1 s interval",
+     "the second is deferred, not starved: it goes first on the next pass, "
+     "and is reconnected",
+     RC_STARVES, 2, 1, 4},
+};
+
+/*
+ * A loopback listener that doesn't answer, like a host that has gone away.
+ * Its backlog holds one connection, which *filler takes up, and the kernel
+ * drops the SYN of every connect after that, so the connecting side waits
+ * and retransmits.  Accepting the filler makes room, and the next
+ * retransmission, a second or more after the connect began, gets through.
+ */
+static int listen_unanswering(uint16_t *port, int *filler)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    *port = 0;
+    *filler = -1;
+    if (fd < 0)
+        return -1;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        listen(fd, 0) < 0 ||
+        getsockname(fd, (struct sockaddr *)&addr, &len) < 0 ||
+        (*filler = connect_loopback(ntohs(addr.sin_port))) < 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
+    return fd;
+}
+
+/* What the connect rows connect to. */
+enum connect_target {
+    CT_LISTENING,       /* a listening port */
+    CT_CLOSED,          /* a port nothing listens on */
+    CT_UNANSWERING,     /* a listener that doesn't answer */
+    CT_TWO_UNANSWERING, /* two addresses, neither of which answers */
+    CT_REFUSED_FIRST,   /* two addresses, the first refused, then listening */
+};
+
+struct connect_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum connect_target target;
+    uint32_t timeout_s; /* from the call to its deadline; 0 for none */
+    bool want_fd;
+    double min_s, max_s; /* how long the call may take */
+};
+
+static const struct connect_case connect_cases[] = {
+    {"positive", "connect to a listening port",
+     "a connected socket, left non-blocking", CT_LISTENING, 0, true, 0.0, 1.0},
+    {"negative", "connect to a port nothing listens on", "fails at once",
+     CT_CLOSED, 0, false, 0.0, 1.0},
+    {"boundary", "connect to a node that doesn't answer, with a 1 s timeout",
+     "gives up after 1 s", CT_UNANSWERING, 1, false, 1.0, 3.0},
+    {"boundary",
+     "connect to two addresses, neither of which answers, with a 1 s timeout",
+     "gives up after 1 s in all, not 1 s for each", CT_TWO_UNANSWERING, 1,
+     false, 1.0, 1.8},
+    {"negative",
+     "connect to two addresses, the first refused, with a 1 s timeout",
+     "a failure before the deadline moves on: connected to the second",
+     CT_REFUSED_FIRST, 1, true, 0.0, 1.0},
+};
+
+static int run_connect_case(const struct connect_case *c)
+{
+    struct sockaddr_in addr[2];
+    struct addrinfo ai[2];
+    socklen_t len = sizeof(addr[0]);
+    int lfd[2] = {-1, -1}, filler[2] = {-1, -1}, fd = -1;
+    uint16_t port[2] = {0, 0};
+    uint32_t addrs =
+        c->target == CT_TWO_UNANSWERING || c->target == CT_REFUSED_FIRST ? 2
+                                                                         : 1;
+    uint64_t deadline_ms = 0;
+    double start, took = 0.0;
+    bool ok = false;
+
+    switch (c->target) {
+    case CT_LISTENING:
+    case CT_CLOSED:
+    case CT_REFUSED_FIRST:
+        for (uint32_t i = 0; i < addrs; i++) {
+            len = sizeof(addr[i]);
+            lfd[i] = listen_loopback();
+            if (lfd[i] >= 0 &&
+                getsockname(lfd[i], (struct sockaddr *)&addr[i], &len) == 0)
+                port[i] = ntohs(addr[i].sin_port);
+        }
+        /* Nothing listens on the first port once its listener is closed */
+        if (c->target != CT_LISTENING && lfd[0] >= 0) {
+            close(lfd[0]);
+            lfd[0] = -1;
+        }
+        break;
+    case CT_UNANSWERING:
+    case CT_TWO_UNANSWERING:
+        for (uint32_t i = 0; i < addrs; i++)
+            lfd[i] = listen_unanswering(&port[i], &filler[i]);
+        break;
+    default:
+        break;
+    }
+
+    /* The list getaddrinfo() would return for a name with both addresses */
+    memset(addr, 0, sizeof(addr));
+    memset(ai, 0, sizeof(ai));
+    for (uint32_t i = 0; i < addrs; i++) {
+        addr[i].sin_family = AF_INET;
+        addr[i].sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr[i].sin_port = htons(port[i]);
+        ai[i].ai_family = AF_INET;
+        ai[i].ai_socktype = SOCK_STREAM;
+        ai[i].ai_addr = (struct sockaddr *)&addr[i];
+        ai[i].ai_addrlen = sizeof(addr[i]);
+        ai[i].ai_next = i + 1 < addrs ? &ai[i + 1] : NULL;
+    }
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (port[0] != 0 && (addrs == 1 || port[1] != 0)) {
+        start = now_s();
+        if (c->timeout_s != 0)
+            deadline_ms = tcp_monotonic_ms() + c->timeout_s * UINT64_C(1000);
+        if (addrs == 1)
+            fd = tcp_connect_to_remote("127.0.0.1", port[0], NULL, deadline_ms);
+        else
+            fd = tcp_connect_any(ai, NULL, deadline_ms);
+        took = now_s() - start;
+        ok = (fd >= 0) == c->want_fd && took >= c->min_s && took < c->max_s &&
+             (fd < 0 || (fcntl(fd, F_GETFL, 0) & O_NONBLOCK));
+    }
+    alarm(0);
+
+    printf("%s connect %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     port %u, got fd %d after %.3f s\n", (unsigned)port[0], fd,
+               took);
+
+    if (fd >= 0)
+        close(fd);
+    for (uint32_t i = 0; i < 2; i++) {
+        if (filler[i] >= 0)
+            close(filler[i]);
+        if (lfd[i] >= 0)
+            close(lfd[i]);
+    }
+    return ok ? 0 : 1;
+}
+
+/* Accept a connection on lfd within 5 s, or return -1. */
+static int accept_within(int lfd)
+{
+    struct pollfd pfd = {.fd = lfd, .events = POLLIN};
+
+    return poll(&pfd, 1, 5000) == 1 ? accept(lfd, NULL, NULL) : -1;
+}
+
+/* Send a heartbeat as node src, which is how a worker answers the manager. */
+static bool send_heartbeat(int fd, uint32_t src)
+{
+    TcpMsgHeader hdr;
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
+    hdr.src_node_id = htonl(src);
+    return send(fd, &hdr, sizeof(hdr), 0) == (ssize_t)sizeof(hdr);
+}
+
+/* Read messages from fd until one of type arrives, for up to timeout_ms. */
+static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
+{
+    double end = now_s() + timeout_ms / 1000.0;
+
+    while (now_s() < end) {
+        int left = (int)((end - now_s()) * 1000.0);
+
+        if (recv_type(fd, type, left > 0 ? left : 1))
+            return true;
+    }
+    return false;
+}
+
+/*
+ * RC_HEARTBEAT: a heartbeat arrives on node 1's old connection while the
+ * health check connects, then the connect is let through.  *filler and
+ * *fresh get the listener's ends of the filler and of the new connection,
+ * for the caller to close.
+ */
+static const char *rc_heartbeat(struct rc_fixture *fx, int lfd, int *filler,
+                                int *fresh)
+{
+    TcpConnection *on_node, *in_table;
+    bool alive;
+
+    /* From node 0, which isn't in this mesh, so it doesn't revive node 1 */
+    if (!send_heartbeat(fx->peer[0], 0))
+        return "could not send the heartbeat";
+    if (!recv_type(fx->peer[0], TCP_MSG_HEARTBEAT_RESP, 2000))
+        return "the old receive thread couldn't answer while the health check "
+               "connected";
+
+    *filler = accept_within(lfd);
+    *fresh = accept_within(lfd);
+    if (*filler < 0 || *fresh < 0)
+        return "the connect never got through";
+    if (!recv_type(*fresh, TCP_MSG_HANDSHAKE, 5000))
+        return "the new connection sent no handshake";
+    /* The broadcast comes after the new connection is published */
+    if (!recv_type(*fresh, TCP_MSG_MESH_TOPOLOGY, 5000))
+        return "the reconnect wasn't broadcast";
+
+    qemu_mutex_lock(&fx->priv->mesh_table_lock);
+    on_node = fx->node[0]->conn;
+    alive = fx->node[0]->is_alive;
+    qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    in_table = g_hash_table_lookup(fx->priv->connections, GUINT_TO_POINTER(1));
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
+    /* The new connection replaced the old one, which freed it */
+    fx->old[0] = NULL;
+
+    if (atomic_load(&fx->priv->tcp_stats.reconnect_successes) != 1)
+        return "the reconnect didn't succeed";
+    if (!on_node || on_node != in_table || !alive)
+        return "the node and the connections table don't both have the new "
+               "connection";
+    if (atomic_load(&g_joins) != 1)
+        return "the old receive thread wasn't joined exactly once";
+    return NULL;
+}
+
+/*
+ * The reconnects to every node have failed or been abandoned, and left the
+ * old connections as they were.
+ */
+static const char *rc_untouched(struct rc_fixture *fx)
+{
+    if (atomic_load(&fx->priv->tcp_stats.reconnect_attempts) != 0)
+        return "a connect succeeded";
+    for (uint32_t i = 0; i < fx->nodes; i++) {
+        TcpConnection *on_node;
+        int fd;
+
+        qemu_mutex_lock(&fx->priv->mesh_table_lock);
+        on_node = fx->node[i]->conn;
+        qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+        qemu_mutex_lock(&fx->old[i]->lock);
+        fd = fx->old[i]->sockfd;
+        qemu_mutex_unlock(&fx->old[i]->lock);
+        if (on_node != fx->old[i] || fd < 0 ||
+            !atomic_load(&fx->old[i]->recv_thread_running))
+            return "an old connection was retired";
+    }
+    return NULL;
+}
+
+/*
+ * RC_RECOVERS: both nodes answer the pass's heartbeat late, while the
+ * health check connects to whichever comes first, then that connect is let
+ * through.  It has to see the answer and close the new connection, and skip
+ * the other node.  *filler and *fresh are as for rc_heartbeat().
+ */
+static const char *rc_recovers(struct rc_fixture *fx, int lfd, int *filler,
+                               int *fresh)
+{
+    struct pollfd pfd = {.fd = lfd, .events = POLLIN};
+
+    for (uint32_t i = 0; i < fx->nodes; i++) {
+        if (!send_heartbeat(fx->peer[i], i + 1))
+            return "could not send a heartbeat";
+        /* The manager answers once it has recorded the heartbeat */
+        if (!recv_type(fx->peer[i], TCP_MSG_HEARTBEAT_RESP, 2000))
+            return "a heartbeat wasn't recorded while the health check "
+                   "connected";
+    }
+
+    *filler = accept_within(lfd);
+    *fresh = accept_within(lfd);
+    if (*filler < 0 || *fresh < 0)
+        return "the connect never got through";
+    if (!closed_by_peer(*fresh))
+        return "a node that answered was reconnected to";
+    /* A connect to the second node would get straight in now */
+    if (poll(&pfd, 1, 1500) != 0)
+        return "the second node was reconnected to";
+    if (atomic_load(&g_joins) != 0)
+        return "an old receive thread was joined";
+    return rc_untouched(fx);
+}
+
+/*
+ * RC_REGISTERS: a node registers while the pass's reconnects wait.  The
+ * next pass has to come soon enough to send it a heartbeat while it still
+ * counts as alive.
+ */
+static const char *rc_registers(struct rc_fixture *fx)
+{
+    MeshNodeInfo *node;
+    bool alive = false;
+    int fd = worker_attach(fx->priv, NULL);
+    const char *why = NULL;
+
+    if (fd < 0 || !send_register(fd, "127.0.0.1", UINT32_MAX))
+        why = "could not register the new node";
+    else if (!wait_for_type(fd, TCP_MSG_HEARTBEAT, 9000))
+        why = "the new node was never sent a heartbeat";
+
+    if (!why) {
+        qemu_mutex_lock(&fx->priv->mesh_table_lock);
+        node = g_hash_table_lookup(fx->priv->mesh_nodes,
+                                   GUINT_TO_POINTER(RC_NEW_NODE_ID));
+        alive = node && node->is_alive;
+        qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+        if (!alive)
+            why = "the new node was declared dead before its first heartbeat";
+    }
+    if (fd >= 0)
+        close(fd);
+    return why;
+}
+
+/*
+ * RC_STARVES: point the node the health check comes to second at a listener
+ * that answers, leaving the first at the one that doesn't, which uses up
+ * the pass's interval.  Returns the new listener, or -1, and the node in
+ * *second.  Called before the health check starts.
+ */
+static int rc_second_answers(struct rc_fixture *fx, MeshNodeInfo **second)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    GHashTableIter iter;
+    gpointer value;
+    uint32_t n = 0;
+    int lfd = listen_loopback();
+
+    *second = NULL;
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+        if (lfd >= 0)
+            close(lfd);
+        return -1;
+    }
+    /* The scan walks the table in this order */
+    g_hash_table_iter_init(&iter, fx->priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+        if (n++ == 1)
+            *second = value;
+    if (*second)
+        (*second)->port = ntohs(addr.sin_port);
+    return lfd;
+}
+
+/*
+ * RC_STARVES: the second node is passed over on the first pass, and has to
+ * be reconnected on a later one.  *fresh is as for rc_heartbeat().
+ */
+static const char *rc_starves(struct rc_fixture *fx, MeshNodeInfo *second,
+                              int lfd, int *fresh)
+{
+    TcpConnection *on_node, *in_table;
+
+    *fresh = accept_within(lfd);
+    if (*fresh < 0)
+        return "the second node was never tried";
+    if (!recv_type(*fresh, TCP_MSG_HANDSHAKE, 5000))
+        return "the second node's new connection sent no handshake";
+    /* The broadcast comes after the new connection is published */
+    if (!recv_type(*fresh, TCP_MSG_MESH_TOPOLOGY, 5000))
+        return "the reconnect wasn't broadcast";
+
+    qemu_mutex_lock(&fx->priv->mesh_table_lock);
+    on_node = second->conn;
+    qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    in_table = g_hash_table_lookup(fx->priv->connections,
+                                   GUINT_TO_POINTER(second->node_id));
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
+    /* The new connection replaced the old one, which freed it */
+    for (uint32_t i = 0; i < fx->nodes; i++)
+        if (fx->node[i] == second)
+            fx->old[i] = NULL;
+
+    if (atomic_load(&fx->priv->tcp_stats.reconnect_successes) != 1)
+        return "the second node's reconnect didn't succeed";
+    if (!on_node || on_node != in_table)
+        return "the node and the connections table don't both have the new "
+               "connection";
+    return NULL;
+}
+
+static int run_rc_case(const struct rc_case *c)
+{
+    struct rc_fixture fx;
+    const char *why;
+    int filler = -1, filler_accepted = -1, fresh = -1, answering = -1;
+    uint16_t port;
+    int lfd = listen_unanswering(&port, &filler);
+    MeshNodeInfo *second = NULL;
+    double start, took = 0.0;
+    bool ok;
+
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    why = rc_setup(&fx, port, c->nodes, c->interval);
+    if (!why && lfd < 0)
+        why = "could not open a listener that doesn't answer";
+    if (!why && c->scenario == RC_STARVES &&
+        (answering = rc_second_answers(&fx, &second)) < 0)
+        why = "could not open a listener that answers";
+
+    if (!why) {
+        rc_start(&fx, c->dead_s);
+        for (uint32_t i = 0; i < fx.nodes && !why; i++)
+            if (!recv_type(fx.peer[i], TCP_MSG_HEARTBEAT, 5000))
+                why = "the first pass sent no heartbeat";
+    }
+    if (!why) {
+        sleep_ms(200); /* into the connect */
+        switch (c->scenario) {
+        case RC_HEARTBEAT:
+            why = rc_heartbeat(&fx, lfd, &filler_accepted, &fresh);
+            break;
+        case RC_RECOVERS:
+            why = rc_recovers(&fx, lfd, &filler_accepted, &fresh);
+            break;
+        case RC_STOP:
+            if (qemu_mutex_trylock(&fx.priv->mesh_table_lock) != 0) {
+                why = "the health check held mesh_table_lock while connecting";
+            } else {
+                qemu_mutex_unlock(&fx.priv->mesh_table_lock);
+            }
+            start = now_s();
+            tcp_stop_health_check_thread(fx.priv);
+            took = now_s() - start;
+            if (!why && (took >= 1.0 || atomic_load(&g_exits) != 1))
+                why = "the stop waited for the connect";
+            else if (!why)
+                why = rc_untouched(&fx);
+            break;
+        case RC_TIMEOUT:
+            /* The next pass only comes once the connect has given up */
+            if (!recv_type(fx.peer[0], TCP_MSG_HEARTBEAT, 5000))
+                why = "the connect didn't give up after the interval";
+            else
+                why = rc_untouched(&fx);
+            break;
+        case RC_REGISTERS:
+            why = rc_registers(&fx);
+            break;
+        case RC_STARVES:
+            why = second ? rc_starves(&fx, second, answering, &fresh)
+                         : "the fixture has no second node";
+            break;
+        default:
+            why = "unknown scenario";
+            break;
+        }
+    }
+
+    ok = !why;
+    printf("%s reconnect %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; stop took %.3f s\n", why, took);
+    fflush(stdout);
+
+    rc_teardown(&fx);
+    alarm(0);
+    if (filler >= 0)
+        close(filler);
+    if (filler_accepted >= 0)
+        close(filler_accepted);
+    if (fresh >= 0)
+        close(fresh);
+    if (answering >= 0)
+        close(answering);
+    if (lfd >= 0)
+        close(lfd);
+    return ok ? 0 : 1;
+}
+
+/*
+ * A node deferred for lack of time has to keep its place in line, or nodes
+ * tried more recently can get ahead of it.  With a deferred flag alone,
+ * three nodes due on every pass, A and B never answering and C answering,
+ * were tried A, B, A, B, and C never: whichever of A and B had just been
+ * tried was deferred on the next pass, and back in front of C on the one
+ * after.  The thread can't be made to find all three due on every pass,
+ * which takes their backoffs lining up with the passes, so this row runs
+ * the reconnect phase itself, pass by pass, as if it had.
+ */
+static int run_queue_case(void)
+{
+    static const char desc[] =
+        "three nodes due every pass, the first two never answering";
+    static const char expected[] =
+        "the third, deferred longest, goes first on the third pass, and is "
+        "reconnected";
+    struct rc_fixture fx;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
+    const char *why;
+    int filler = -1, fresh = -1, answering = listen_loopback();
+    uint16_t port;
+    int lfd = listen_unanswering(&port, &filler);
+    uint32_t passes = 0;
+    bool ok;
+
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    g_current_row = desc;
+    alarm(ROW_TIMEOUT_S);
+    why = rc_setup(&fx, port, 3, LONG_INTERVAL_S);
+    if (!why && (lfd < 0 || answering < 0 ||
+                 getsockname(answering, (struct sockaddr *)&addr, &len) < 0))
+        why = "could not open the listeners";
+
+    if (!why) {
+        fx.node[2]->port = ntohs(addr.sin_port);
+        for (uint32_t i = 0; i < fx.nodes; i++)
+            fx.node[i]->last_heartbeat = time(NULL) - 4 * LONG_INTERVAL_S;
+        /* The connects stop when this is cleared; no thread is started */
+        atomic_store(&fx.priv->health_check_running, true);
+
+        while (passes < 6 &&
+               atomic_load(&fx.priv->tcp_stats.reconnect_successes) == 0) {
+            g_array_set_size(items, 0);
+            for (uint32_t i = 0; i < fx.nodes; i++) {
+                TcpHealthCheckItem item = {fx.node[i], fx.node[i]->conn, true};
+
+                g_array_append_val(items, item);
+            }
+            /* Long enough to try one node that doesn't answer, and no more */
+            tcp_health_check_reconnects(fx.priv, items,
+                                        tcp_monotonic_ms() + 300);
+            passes++;
+        }
+        atomic_store(&fx.priv->health_check_running, false);
+
+        if (atomic_load(&fx.priv->tcp_stats.reconnect_successes) == 0)
+            why = "the third node was never tried";
+        else if (passes != 3)
+            why = "the third node wasn't tried on the third pass";
+        else if ((fresh = accept_within(answering)) < 0 ||
+                 !recv_type(fresh, TCP_MSG_HANDSHAKE, 5000))
+            why = "the third node's new connection sent no handshake";
+        else if (fx.node[2]->conn == NULL)
+            why = "the third node has no connection";
+        else
+            fx.old[2] = NULL; /* replaced, which freed it */
+    }
+
+    ok = !why;
+    printf("%s reconnect corner: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           desc, expected);
+    if (!ok)
+        printf("     %s after %u pass(es)\n", why, passes);
+    fflush(stdout);
+
+    rc_teardown(&fx);
+    alarm(0);
+    g_array_free(items, TRUE);
+    if (fresh >= 0)
+        close(fresh);
+    if (filler >= 0)
+        close(filler);
+    if (answering >= 0)
+        close(answering);
+    if (lfd >= 0)
+        close(lfd);
     return ok ? 0 : 1;
 }
 
@@ -1667,6 +2400,12 @@ int main(void)
     for (size_t i = 0; i < sizeof(hs_cases) / sizeof(hs_cases[0]); i++)
         failures += run_hs_case(&hs_cases[i]);
     failures += run_reconnect_case();
+    for (size_t i = 0; i < sizeof(connect_cases) / sizeof(connect_cases[0]);
+         i++)
+        failures += run_connect_case(&connect_cases[i]);
+    for (size_t i = 0; i < sizeof(rc_cases) / sizeof(rc_cases[0]); i++)
+        failures += run_rc_case(&rc_cases[i]);
+    failures += run_queue_case();
     for (size_t i = 0; i < sizeof(reg_cases) / sizeof(reg_cases[0]); i++)
         failures += run_reg_case(&reg_cases[i]);
 
