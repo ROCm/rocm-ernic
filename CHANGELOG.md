@@ -323,13 +323,16 @@
   which the data path takes to find a peer's connection, across each
   connect, so a peer that didn't answer stalled the worker until the kernel
   gave up on the connect, about two minutes later, and SIGTERM waited as
-  long. The connects are now made without the lock, SIGTERM no longer waits
-  for them, and together they give up after one health-check interval
-  (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default), so the worker answers
-  the manager's heartbeats in time to not be declared dead. A peer that the
-  interval runs out before is tried again on the next topology update. A
-  worker also no longer tries to connect to peers the manager reports dead.
-  `tcp-thread-stop-unit` covers each case.
+  long. The connects also ran on the thread that answers the manager's
+  heartbeats, so the manager could declare the worker dead meanwhile. A
+  worker now connects to its peers on a thread of its own, without the lock,
+  and SIGTERM no longer waits for a connect. Each connect gives up after one
+  health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default),
+  and every peer is tried in turn, so one that doesn't answer can't keep the
+  worker from connecting to the others. A peer the worker couldn't connect
+  to was left unconnected until the mesh changed; it is now tried again
+  every interval or so. A worker also no longer tries to connect to peers
+  the manager reports dead. `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
