@@ -927,7 +927,7 @@ add_test(
     NAME tcp-thread-stop-unit
     COMMAND $<TARGET_FILE:ernic-test-tcp-thread-stop>
 )
-set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 30)
+set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 45)
 
 # RDMA resource-table allocator unit test: asserts a full table refuses the
 # next allocation rather than handing back a handle one past the end.

@@ -318,6 +318,18 @@
   in the next one, in the order they were put off, so nodes that never answer
   can't keep the others from being reconnected. SIGTERM no longer waits for a reconnect either.
   `tcp-thread-stop-unit` covers each case.
+* A TCP mesh worker's RDMA traffic no longer stalls while it connects to the
+  peers the manager tells it about. It held the connection table's lock,
+  which the data path takes to find a peer's connection, across each
+  connect, so a peer that didn't answer stalled the worker until the kernel
+  gave up on the connect, about two minutes later, and SIGTERM waited as
+  long. The connects are now made without the lock, SIGTERM no longer waits
+  for them, and together they give up after one health-check interval
+  (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default), so the worker answers
+  the manager's heartbeats in time to not be declared dead. A peer that the
+  interval runs out before is tried again on the next topology update. A
+  worker also no longer tries to connect to peers the manager reports dead.
+  `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
@@ -349,11 +361,6 @@
   `tcp_mr_range_ok()`, the loopback one by skipping regions without a mapping during
   translation -- but the registration itself is unchanged, and neither
   `cmd->start` nor `cmd->length` is validated before it.
-* A TCP mesh worker can still be slow to stop while it connects to a peer it
-  has just learned about from the manager. The connect has no timeout of its
-  own, so a SIGTERM that arrives while it is connecting to a host that doesn't
-  answer waits for the kernel to give up, about two minutes by default, and
-  meanwhile the worker's data path waits for the connection table it holds.
 * While the TCP backend is running, a mesh node that stops reading can stall
   the node sending to it. A send waits for room in the socket for as long as
   it takes, and a broadcast to every node does that while holding the

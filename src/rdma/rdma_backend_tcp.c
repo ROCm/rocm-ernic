@@ -1819,6 +1819,176 @@ static bool tcp_start_recv_thread(TcpConnection *conn, const char *name)
                             conn, &conn->recv_thread_running);
 }
 
+/* A peer a worker is to connect to, picked from a MESH_TOPOLOGY update. */
+typedef struct {
+    uint32_t node_id;
+    char host[256];
+    uint16_t port;
+} TcpPeerTarget;
+
+/*
+ * The peers a worker has to connect to, out of the first num_nodes entries
+ * of a MESH_TOPOLOGY update, appended to targets: each node the manager
+ * reports alive, other than this one and the manager, that has no
+ * connection yet.  Of each pair of workers, only the one with the lower id
+ * connects, so the two don't connect to each other at once.
+ */
+static void tcp_topology_targets(TcpBackendPrivate *priv,
+                                 const TcpMeshTopologyPayload *topo,
+                                 uint32_t num_nodes, GArray *targets)
+{
+    uint32_t local = tcp_local_node(priv);
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    for (uint32_t i = 0; i < num_nodes && i < G_N_ELEMENTS(topo->nodes); i++) {
+        const TcpMeshNodeInfo *entry = &topo->nodes[i];
+        uint32_t peer_id = ntohl(entry->node_id);
+        TcpPeerTarget target;
+
+        if (peer_id == local) {
+            continue; /* Skip self */
+        }
+
+        if (g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(peer_id))) {
+            continue; /* Already connected */
+        }
+
+        /* Workers already have manager_conn to node 0, skip it */
+        if (peer_id == 0 && priv->manager_conn != NULL) {
+            rdma_info_report("TCP: Skipping peer connection to node 0 "
+                             "(manager) - already connected via manager_conn");
+            continue;
+        }
+
+        if (local > peer_id) {
+            rdma_info_report("TCP: Skipping connection to peer %u (will accept "
+                             "incoming connection from lower-ID node)",
+                             peer_id);
+            continue;
+        }
+
+        /* A connect to a node the manager can't reach would only wait */
+        if (!entry->is_alive) {
+            rdma_info_report("TCP: Skipping connection to peer %u, which the "
+                             "manager reports dead",
+                             peer_id);
+            continue;
+        }
+
+        target.node_id = peer_id;
+        /* Not g_strlcpy(): the peer's hostname may not be terminated */
+        strncpy(target.host, entry->hostname, sizeof(target.host) - 1);
+        target.host[sizeof(target.host) - 1] = '\0';
+        target.port = ntohs(entry->port);
+        g_array_append_val(targets, target);
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+}
+
+/*
+ * Connect a worker to target and publish the connection, giving up at
+ * deadline_ms (on tcp_monotonic_ms()'s clock) or when *running is cleared.
+ * Returns true if the connection was published.
+ *
+ * Called without conn_table_lock, which every lookup on the data path takes:
+ * the connect can take until the deadline, and the handshake can wait on the
+ * peer.  The lock is taken only to publish, and the table checked again
+ * then, because the accept thread may have published a connection to the
+ * same node meanwhile; that one is kept, and this one closed.
+ */
+static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
+                                    const TcpPeerTarget *target,
+                                    const atomic_bool *running,
+                                    uint64_t deadline_ms)
+{
+    rdma_info_report("TCP: Connecting to peer node %u at %s:%u",
+                     target->node_id, target->host, target->port);
+
+    int fd =
+        tcp_connect_to_remote(target->host, target->port, running, deadline_ms);
+    if (fd < 0) {
+        rdma_error_report("TCP: Failed to connect to peer %u", target->node_id);
+        return false;
+    }
+
+    TcpConnection *peer_conn =
+        tcp_connection_new(target->node_id, target->host, target->port);
+    peer_conn->priv = priv;
+    peer_conn->sockfd = fd;
+    peer_conn->is_connected = true;
+
+    /* Before the connection is published, so nothing goes out ahead of it */
+    if (tcp_send_handshake(peer_conn, tcp_local_node(priv), TCP_MSG_HANDSHAKE) <
+        0) {
+        rdma_error_report("TCP: Failed to send handshake to peer %u",
+                          target->node_id);
+        tcp_connection_free(peer_conn);
+        return false;
+    }
+
+    char thread_name[32];
+    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", target->node_id);
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    if (g_hash_table_lookup(priv->connections,
+                            GUINT_TO_POINTER(target->node_id))) {
+        qemu_mutex_unlock(&priv->conn_table_lock);
+        rdma_info_report("TCP: Peer node %u connected to this node meanwhile; "
+                         "closing the new connection",
+                         target->node_id);
+        tcp_connection_free(peer_conn);
+        return false;
+    }
+    if (!tcp_start_recv_thread(peer_conn, thread_name)) {
+        qemu_mutex_unlock(&priv->conn_table_lock);
+        tcp_connection_free(peer_conn);
+        return false;
+    }
+    g_hash_table_insert(priv->connections, GUINT_TO_POINTER(target->node_id),
+                        peer_conn);
+    qemu_mutex_unlock(&priv->conn_table_lock);
+
+    rdma_info_report("TCP: Connected to peer node %u", target->node_id);
+    return true;
+}
+
+/*
+ * Connect a worker to the peers in a MESH_TOPOLOGY update that it isn't
+ * connected to yet.  Runs on the receive thread of the connection the update
+ * came on, and running is that thread's stop flag, so a stop doesn't wait
+ * for a connect.
+ *
+ * The connects share one health-check interval (ERNIC_TCP_HEALTH_INTERVAL),
+ * and the peers left once it has passed are skipped.  The thread answers
+ * the manager's heartbeats too, and the manager declares a node dead after
+ * three intervals without an answer, so connecting to peers that don't
+ * answer must not keep it from answering for longer than that.  A skipped
+ * peer is tried again on the next update.
+ */
+static void tcp_worker_connect_peers(TcpBackendPrivate *priv,
+                                     const TcpMeshTopologyPayload *topo,
+                                     uint32_t num_nodes,
+                                     const atomic_bool *running)
+{
+    GArray *targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
+    uint64_t deadline_ms =
+        tcp_monotonic_ms() + (uint64_t)priv->health_check_interval_sec * 1000u;
+
+    tcp_topology_targets(priv, topo, num_nodes, targets);
+    for (guint i = 0; i < targets->len && atomic_load(running); i++) {
+        const TcpPeerTarget *target = &g_array_index(targets, TcpPeerTarget, i);
+
+        if (tcp_monotonic_ms() >= deadline_ms) {
+            rdma_error_report("TCP: Out of time to connect to peer %u; the "
+                              "next topology update tries again",
+                              target->node_id);
+            continue;
+        }
+        tcp_worker_connect_peer(priv, target, running, deadline_ms);
+    }
+    g_array_free(targets, TRUE);
+}
+
 /* Per-connection receive thread */
 static void *tcp_recv_thread_per_conn(void *opaque)
 {
@@ -2384,90 +2554,8 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 rdma_info_report("TCP: Received mesh topology with %u nodes",
                                  num_nodes);
 
-                /* Connect to all other nodes */
-                qemu_mutex_lock(&priv->conn_table_lock);
-                for (uint32_t i = 0; i < num_nodes && i < 64; i++) {
-                    uint32_t peer_id = ntohl(topo->nodes[i].node_id);
-                    if (peer_id == tcp_local_node(priv)) {
-                        continue; /* Skip self */
-                    }
-
-                    /* Check if already connected */
-                    if (g_hash_table_lookup(priv->connections,
-                                            GUINT_TO_POINTER(peer_id))) {
-                        continue;
-                    }
-
-                    /* Workers already have manager_conn to node 0, skip it */
-                    if (!priv->is_manager && peer_id == 0 &&
-                        priv->manager_conn != NULL) {
-                        rdma_info_report("TCP: Skipping peer connection to "
-                                         "node 0 (manager) - "
-                                         "already connected via manager_conn");
-                        continue;
-                    }
-
-                    /* Only initiate connection if we have lower node ID to
-                     * avoid duplicate connections when both peers try to
-                     * connect simultaneously */
-                    if (tcp_local_node(priv) > peer_id) {
-                        rdma_info_report(
-                            "TCP: Skipping connection to peer %u (will accept "
-                            "incoming connection from lower-ID node)",
-                            peer_id);
-                        continue;
-                    }
-
-                    char peer_host[256];
-                    strncpy(peer_host, topo->nodes[i].hostname,
-                            sizeof(peer_host) - 1);
-                    peer_host[sizeof(peer_host) - 1] = '\0';
-                    uint16_t peer_port = ntohs(topo->nodes[i].port);
-
-                    rdma_info_report("TCP: Connecting to peer node %u at %s:%u",
-                                     peer_id, peer_host, peer_port);
-
-                    TcpConnection *peer_conn =
-                        tcp_connection_new(peer_id, peer_host, peer_port);
-                    peer_conn->priv = priv;
-                    peer_conn->sockfd =
-                        tcp_connect_to_remote(peer_host, peer_port, NULL, 0);
-
-                    if (peer_conn->sockfd < 0) {
-                        rdma_error_report("TCP: Failed to connect to peer %u",
-                                          peer_id);
-                        tcp_connection_free(peer_conn);
-                        continue;
-                    }
-
-                    peer_conn->is_connected = true;
-
-                    /* Send handshake */
-                    if (tcp_send_handshake(peer_conn, tcp_local_node(priv),
-                                           TCP_MSG_HANDSHAKE) < 0) {
-                        rdma_error_report(
-                            "TCP: Failed to send handshake to peer %u",
-                            peer_id);
-                        tcp_connection_free(peer_conn);
-                        continue;
-                    }
-
-                    /* Start receive thread */
-                    char thread_name[32];
-                    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
-                             peer_id);
-                    if (!tcp_start_recv_thread(peer_conn, thread_name)) {
-                        tcp_connection_free(peer_conn);
-                        continue;
-                    }
-
-                    /* Add to connections table */
-                    g_hash_table_insert(priv->connections,
-                                        GUINT_TO_POINTER(peer_id), peer_conn);
-
-                    rdma_info_report("TCP: Connected to peer node %u", peer_id);
-                }
-                qemu_mutex_unlock(&priv->conn_table_lock);
+                tcp_worker_connect_peers(priv, topo, num_nodes,
+                                         &conn->recv_thread_running);
                 break;
             }
 
