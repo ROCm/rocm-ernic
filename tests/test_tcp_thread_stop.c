@@ -65,6 +65,11 @@
  * free meanwhile, that a stop or the interval ends the wait, and that a
  * connection the peer opened meanwhile is kept.
  *
+ * A message's header can arrive in parts, and tcp_recv_message() has to wait
+ * for the rest rather than lose the part it has read.  The partial rows split
+ * messages at several points and check what is read, and that a stop, a
+ * deadline, or a hang-up ends the wait.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
@@ -435,7 +440,7 @@ static bool recv_type(int fd, TcpMsgType type, int timeout_ms)
 
     if (poll(&pfd, 1, timeout_ms) != 1)
         return false;
-    if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL) < 0)
+    if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
         return false;
     g_free(payload);
     return hdr.msg_type == type;
@@ -1200,13 +1205,24 @@ out:
  * past the end of a short one.  And after refusing a message of another
  * type, it kept the freed payload's pointer and freed it again when the next
  * peer hung up.  After each, the thread must still accept a good handshake.
+ *
+ * A handshake can also arrive in parts.  The thread used to give up on a
+ * header that had only partly arrived, losing the bytes it had read, and
+ * then read the rest as a header of its own and refuse it.  It now waits for
+ * the rest, until it is stopped or the handshake's deadline passes.
  */
 
 #define HS_NODE 7 /* the node id the test's peers claim */
 
+/* How much of a header goes first when a row splits one, and the pause */
+#define HS_SPLIT_AT 10
+#define HS_SPLIT_MS 50
+
 enum hs_peer {
     HS_GOOD,         /* only the good handshake */
     HS_SILENT,       /* connects and sends nothing */
+    HS_PARTIAL,      /* sends part of a handshake's header, then nothing */
+    HS_SPLIT,        /* a good handshake whose header comes in two parts */
     HS_EMPTY,        /* a handshake with no payload */
     HS_SHORT,        /* a handshake one byte short */
     HS_OTHER_HANGUP, /* another message type, then a peer that hangs up */
@@ -1225,6 +1241,10 @@ static const struct hs_case hs_cases[] = {
     {"negative", "a peer that connects and sends nothing",
      "the stop doesn't wait out the handshake timeout: one join, at once",
      HS_SILENT},
+    {"negative", "a peer that sends part of a handshake's header",
+     "the stop ends the wait for the rest: one join, at once", HS_PARTIAL},
+    {"boundary", "a handshake whose header comes in two parts, 50 ms apart",
+     "answered and given a receive thread, as if it came whole", HS_SPLIT},
     {"negative", "a handshake with no payload",
      "refused; the next peer's handshake is accepted", HS_EMPTY},
     {"boundary", "a handshake one byte short",
@@ -1234,8 +1254,13 @@ static const struct hs_case hs_cases[] = {
      HS_OTHER_HANGUP},
 };
 
-/* Send a message of type with the first len bytes of a handshake payload. */
-static bool send_hs(int fd, TcpMsgType type, uint32_t len)
+/*
+ * Send a message of type with the first len bytes of a handshake payload.
+ * If split isn't zero, send only the first split bytes of the header, then
+ * pause for HS_SPLIT_MS; if rest, send the rest of the message after that.
+ */
+static bool send_hs_split(int fd, TcpMsgType type, uint32_t len, size_t split,
+                          bool rest)
 {
     struct {
         TcpMsgHeader hdr;
@@ -1243,7 +1268,7 @@ static bool send_hs(int fd, TcpMsgType type, uint32_t len)
     } msg;
     size_t size = sizeof(msg.hdr) + len;
 
-    if (len > sizeof(msg.hs))
+    if (len > sizeof(msg.hs) || split >= sizeof(msg.hdr))
         return false;
     memset(&msg, 0, sizeof(msg));
     msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
@@ -1252,7 +1277,24 @@ static bool send_hs(int fd, TcpMsgType type, uint32_t len)
     msg.hdr.src_node_id = htonl(HS_NODE);
     msg.hs.node_id = htonl(HS_NODE);
     msg.hs.version = htonl(TCP_PROTOCOL_VERSION);
-    return send(fd, &msg, size, 0) == (ssize_t)size;
+    if (split == 0)
+        return send(fd, &msg, size, 0) == (ssize_t)size;
+    if (send(fd, &msg, split, 0) != (ssize_t)split)
+        return false;
+    sleep_ms(HS_SPLIT_MS);
+    return !rest || send(fd, (char *)&msg + split, size - split, 0) ==
+                        (ssize_t)(size - split);
+}
+
+static bool send_hs(int fd, TcpMsgType type, uint32_t len)
+{
+    return send_hs_split(fd, type, len, 0, false);
+}
+
+/* The rows whose peer leaves the thread waiting, so no good peer follows */
+static bool hs_waits(enum hs_peer peer)
+{
+    return peer == HS_SILENT || peer == HS_PARTIAL;
 }
 
 /* Connect a peer that sends what the row says, and check it's refused. */
@@ -1265,9 +1307,17 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
         return "could not connect";
     switch (peer) {
     case HS_GOOD:
+    case HS_SPLIT:
         return "not a bad peer";
     case HS_SILENT:
         sleep_ms(200); /* let the thread start waiting for the handshake */
+        return NULL;
+    case HS_PARTIAL:
+        if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE,
+                           (uint32_t)sizeof(TcpHandshakePayload), HS_SPLIT_AT,
+                           false))
+            return "could not send part of the handshake";
+        sleep_ms(150); /* the thread is waiting for the rest by now */
         return NULL;
     case HS_EMPTY:
         if (!send_hs(*fd, TCP_MSG_HANDSHAKE, 0))
@@ -1295,15 +1345,21 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
     return closed_by_peer(*fd) ? NULL : "the handshake wasn't refused";
 }
 
-/* Connect a peer that sends a good handshake, and check it's accepted. */
-static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port, int *fd)
+/*
+ * Connect a peer that sends a good handshake, the header in two parts if
+ * split, and check it's accepted.
+ */
+static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
+                                bool split, int *fd)
 {
     TcpConnection *conn;
 
     *fd = connect_loopback(port);
     if (*fd < 0)
         return "could not connect the good peer";
-    if (!send_hs(*fd, TCP_MSG_HANDSHAKE, (uint32_t)sizeof(TcpHandshakePayload)))
+    if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE,
+                       (uint32_t)sizeof(TcpHandshakePayload),
+                       split ? HS_SPLIT_AT : 0, true))
         return "could not send the good handshake";
     /* The thread answers after it has published the connection */
     if (!recv_type(*fd, TCP_MSG_HANDSHAKE_RESP, 5000))
@@ -1321,7 +1377,7 @@ static int run_hs_case(const struct hs_case *c)
     socklen_t len = sizeof(addr);
     const char *why = NULL;
     int bad = -1, good = -1;
-    int want_joins = c->peer == HS_SILENT ? 1 : 2;
+    int want_joins = hs_waits(c->peer) ? 1 : 2;
     double start, took = 0.0;
     bool ok;
 
@@ -1349,18 +1405,19 @@ static int run_hs_case(const struct hs_case *c)
         atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
-        if (c->peer != HS_GOOD)
+        if (c->peer != HS_GOOD && c->peer != HS_SPLIT)
             why = hs_bad_peer(c->peer, ntohs(addr.sin_port), &bad);
-        if (!why && c->peer != HS_SILENT)
-            why = hs_good_peer(priv, ntohs(addr.sin_port), &good);
+        if (!why && !hs_waits(c->peer))
+            why = hs_good_peer(priv, ntohs(addr.sin_port), c->peer == HS_SPLIT,
+                               &good);
     }
 
     start = now_s();
     tcp_stop_accept_thread(priv);
     took = now_s() - start;
     tcp_stop_recv_threads(priv);
-    if (!why && c->peer == HS_SILENT && !closed_by_peer(bad))
-        why = "the silent peer's connection was left open";
+    if (!why && hs_waits(c->peer) && !closed_by_peer(bad))
+        why = "the waiting peer's connection was left open";
     alarm(0);
 
     ok = !why && took < 2.0 && atomic_load(&g_joins) == want_joins &&
@@ -2295,7 +2352,7 @@ static int count_type(int fd, TcpMsgType type)
         TcpMsgHeader hdr;
         void *payload = NULL;
 
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL) < 0)
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
             break;
         g_free(payload);
         if (hdr.msg_type == type)
@@ -3087,6 +3144,257 @@ static int run_tp_case(const struct tp_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- A message that arrives in parts ----------------------------------- */
+
+/*
+ * tcp_recv_message() reads a message from a non-blocking socket, and returns
+ * -EAGAIN when nothing has arrived.  It used to return -EAGAIN as well when
+ * part of the header had arrived and the rest hadn't, and the bytes it had
+ * read were lost: the next call started in the middle of the header, failed
+ * the magic check, and the connection was dropped.  A header can straddle a
+ * TCP segment boundary, so a busy connection would eventually hit this.
+ *
+ * Each row writes part of a stream of two messages to a socketpair before the
+ * first call, and more of it 50 ms later from another thread, while a call is
+ * waiting.  The rows check the messages read, then what the next call
+ * returns: -EAGAIN once all that was sent has been read, so nothing was lost
+ * or left behind.  Others clear the stop flag, let a deadline pass, or hang
+ * up while a call waits for the rest, and that call must fail promptly.
+ */
+
+#define SP_HDR      ((uint32_t)sizeof(TcpMsgHeader))
+#define SP_A_LEN    24u                 /* the first message's payload */
+#define SP_B_LEN    16u                 /* the second's */
+#define SP_A        (SP_HDR + SP_A_LEN) /* the first message, on the wire */
+#define SP_ALL      (SP_A + SP_HDR + SP_B_LEN)
+#define SP_LATER_MS 50
+
+/* What the writer does after sending the later bytes */
+enum sp_end {
+    SP_NOTHING, /* nothing more */
+    SP_STOP,    /* clears the receiver's running flag */
+    SP_HANGUP,  /* shuts down its end */
+};
+
+struct sp_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    uint32_t first;       /* bytes of the stream sent before the first call */
+    uint32_t later;       /* bytes sent after SP_LATER_MS */
+    enum sp_end end;      /* and then */
+    uint32_t deadline_ms; /* from the first call; 0 for none */
+    int want_msgs;        /* messages that must be read, in order */
+    int want_ret;         /* what the call after them returns */
+};
+
+static const struct sp_case sp_cases[] = {
+    {"positive", "a whole message already there",
+     "read at once; the next call finds nothing", SP_A, 0, SP_NOTHING, 0, 1,
+     -EAGAIN},
+    {"positive", "10 bytes of a header, the rest of the message 50 ms later",
+     "the call waits for the rest and reads the message", 10, SP_A - 10,
+     SP_NOTHING, 0, 1, -EAGAIN},
+    {"boundary", "nothing there", "-EAGAIN at once, for the caller to wait", 0,
+     0, SP_NOTHING, 0, 0, -EAGAIN},
+    {"boundary", "all of a header but its last byte, then the rest",
+     "the call waits for the last byte and reads the message", SP_HDR - 1,
+     SP_A - (SP_HDR - 1), SP_NOTHING, 0, 1, -EAGAIN},
+    {"boundary", "a header, then its payload 50 ms later",
+     "the call waits for the payload and reads the message", SP_HDR, SP_A_LEN,
+     SP_NOTHING, 0, 1, -EAGAIN},
+    {"corner", "a message and 10 bytes of the next, then the rest",
+     "both read, in order, the second after the wait", SP_A + 10,
+     SP_ALL - SP_A - 10, SP_NOTHING, 0, 2, -EAGAIN},
+    {"negative", "10 bytes of a header, then the stop flag cleared",
+     "the call gives up promptly with -1", 10, 0, SP_STOP, 0, 0, -1},
+    {"negative", "10 bytes of a header and a 200 ms deadline",
+     "the call gives up at the deadline with -1", 10, 0, SP_NOTHING, 200, 0,
+     -1},
+    {"negative", "a header and part of its payload and a 200 ms deadline",
+     "the call gives up at the deadline with -1", SP_HDR + 8, 0, SP_NOTHING,
+     200, 0, -1},
+    {"negative", "10 bytes of a header, then the peer hangs up",
+     "the call gives up with -1", 10, 0, SP_HANGUP, 0, 0, -1},
+};
+
+/* The writer's half of a row: the rest of what the row sends, and the end */
+struct sp_writer {
+    int fd;
+    const uint8_t *buf;
+    uint32_t len;
+    enum sp_end end;
+    atomic_bool *running;
+    bool ok;
+};
+
+static void *sp_write(void *opaque)
+{
+    struct sp_writer *w = opaque;
+
+    sleep_ms(SP_LATER_MS);
+    w->ok = w->len == 0 || send(w->fd, w->buf, w->len, 0) == (ssize_t)w->len;
+    if (w->end == SP_STOP)
+        atomic_store(w->running, false);
+    else if (w->end == SP_HANGUP)
+        w->ok = w->ok && shutdown(w->fd, SHUT_WR) == 0;
+    return NULL;
+}
+
+/* Put a message on the wire at buf: header, then len bytes of fill. */
+static void sp_put(uint8_t *buf, TcpMsgType type, uint32_t seq, uint32_t len,
+                   uint8_t fill)
+{
+    TcpMsgHeader hdr;
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr.msg_type = htonl(type);
+    hdr.msg_len = htonl(len);
+    hdr.seq = htonl(seq);
+    hdr.src_node_id = htonl(seq + 1);
+    hdr.dst_node_id = htonl(seq + 2);
+    hdr.src_qpn = htonl(seq + 3);
+    hdr.dst_qpn = htonl(seq + 4);
+    memcpy(buf, &hdr, sizeof(hdr));
+    memset(buf + sizeof(hdr), fill, len);
+}
+
+/* Check a message read against what sp_put() wrote. */
+static bool sp_matches(const TcpMsgHeader *hdr, const void *payload,
+                       TcpMsgType type, uint32_t seq, uint32_t len,
+                       uint8_t fill)
+{
+    if (hdr->magic != TCP_PROTOCOL_MAGIC || hdr->msg_type != type ||
+        hdr->msg_len != len || hdr->seq != seq || hdr->src_node_id != seq + 1 ||
+        hdr->dst_node_id != seq + 2 || hdr->src_qpn != seq + 3 ||
+        hdr->dst_qpn != seq + 4 || !payload)
+        return false;
+    for (uint32_t i = 0; i < len; i++)
+        if (((const uint8_t *)payload)[i] != fill)
+            return false;
+    return true;
+}
+
+/*
+ * Read the row's messages and then one more call, which may wait for the
+ * writer.  Returns why the row failed, or NULL.
+ */
+static const char *sp_read(const struct sp_case *c, int fd,
+                           atomic_bool *running, int *ret)
+{
+    static const struct {
+        TcpMsgType type;
+        uint32_t seq, len;
+        uint8_t fill;
+    } want[] = {{TCP_MSG_HEARTBEAT, 100, SP_A_LEN, 0xa5},
+                {TCP_MSG_HANDSHAKE, 200, SP_B_LEN, 0x5a}};
+    uint64_t deadline_ms =
+        c->deadline_ms ? tcp_monotonic_ms() + c->deadline_ms : 0;
+
+    for (int i = 0; i <= c->want_msgs; i++) {
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+        const char *why = NULL;
+
+        *ret = tcp_recv_message(fd, &hdr, &payload, NULL, running, deadline_ms);
+        if (i == c->want_msgs)
+            why = payload ? "the last call returned a payload" : NULL;
+        else if (*ret != 0)
+            why = "a message wasn't read";
+        else if (!sp_matches(&hdr, payload, want[i].type, want[i].seq,
+                             want[i].len, want[i].fill))
+            why = "a message read isn't the one sent";
+        g_free(payload);
+        if (why)
+            return why;
+    }
+    return NULL;
+}
+
+/*
+ * Start the writer on the rest of stream, read the row's messages from fd
+ * while it writes, and join it.  *took is how long the reads took.
+ */
+static const char *sp_run(const struct sp_case *c, int fd, int peer,
+                          const uint8_t *stream, atomic_bool *running, int *ret,
+                          double *took)
+{
+    struct sp_writer w = {peer,   stream + c->first, c->later,
+                          c->end, running,           false};
+    pthread_t writer;
+    const char *why;
+    double start;
+
+    if (pthread_create(&writer, NULL, sp_write, &w) != 0)
+        return "could not start the writer";
+    start = now_s();
+    why = sp_read(c, fd, running, ret);
+    *took = now_s() - start;
+    pthread_join(writer, NULL);
+    if (!why && !w.ok)
+        why = "the writer could not send";
+    return why;
+}
+
+static int run_sp_case(const struct sp_case *c)
+{
+    uint8_t stream[SP_ALL];
+    atomic_bool running;
+    const char *why = NULL;
+    int sv[2] = {-1, -1}, ret = 0;
+    double took = 0.0;
+    bool ok;
+
+    /* The two messages sp_read() expects */
+    sp_put(stream, TCP_MSG_HEARTBEAT, 100, SP_A_LEN, 0xa5);
+    sp_put(stream + SP_A, TCP_MSG_HANDSHAKE, 200, SP_B_LEN, 0x5a);
+    atomic_init(&running, true);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (c->first + c->later > SP_ALL) {
+        why = "the row sends more than the stream";
+    } else if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+        why = "could not open a socketpair";
+    } else if (fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK) <
+                   0 ||
+               (c->first &&
+                send(sv[1], stream, c->first, 0) != (ssize_t)c->first)) {
+        why = "could not send the first bytes";
+    } else {
+        why = sp_run(c, sv[0], sv[1], stream, &running, &ret, &took);
+    }
+    alarm(0);
+
+    if (!why && ret != c->want_ret)
+        why = "the last call returned the wrong value";
+    /*
+     * A wait that ends early, or on the writer, rather than at the deadline.
+     * tcp_monotonic_ms() truncates to the millisecond, so the deadline can
+     * fall just before start + deadline_ms.
+     */
+    if (!why && c->deadline_ms &&
+        (took < (c->deadline_ms - 10) / 1000.0 ||
+         took >= c->deadline_ms / 1000.0 + 1))
+        why = "the call didn't give up at the deadline";
+    if (!why && took >= 1.0 + (c->deadline_ms ? c->deadline_ms / 1000.0 : 0))
+        why = "the call didn't give up promptly";
+
+    ok = !why;
+    printf("%s partial %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; last call returned %d (want %d), %.3f s\n", why, ret,
+               c->want_ret, took);
+
+    if (sv[0] >= 0)
+        close(sv[0]);
+    if (sv[1] >= 0)
+        close(sv[1]);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -3115,6 +3423,8 @@ int main(void)
         failures += run_reg_case(&reg_cases[i]);
     for (size_t i = 0; i < sizeof(tp_cases) / sizeof(tp_cases[0]); i++)
         failures += run_tp_case(&tp_cases[i]);
+    for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++)
+        failures += run_sp_case(&sp_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

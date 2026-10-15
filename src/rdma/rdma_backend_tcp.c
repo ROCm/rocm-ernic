@@ -70,6 +70,8 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
 #define TCP_PROTOCOL_VERSION   4u
 #define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
 #define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
+/* How long a peer that connects to a worker has to send its whole handshake */
+#define TCP_HANDSHAKE_TIMEOUT_MS 5000u
 
 /* ionic sizes its own wire payload against this; keep the two in step. */
 _Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
@@ -1707,39 +1709,86 @@ static int tcp_send_message(TcpBackendPrivate *priv, int sockfd,
 }
 
 /*
- * Receive one message.  The socket is non-blocking, so the payload loop
- * waits for the rest of a payload whose header has arrived.  A peer can
- * withhold it, or trickle it, indefinitely, so when running is not NULL the
- * loop gives up as soon as the flag is cleared; otherwise the thread's stop
- * would wait on the peer.  *payload is set on every return, to NULL unless a
- * payload was received, so a caller that frees it after a failure never
- * frees a buffer from an earlier message.
+ * Read from a non-blocking socket into buf until it holds len bytes, of which
+ * the first got are already there, waiting for each part as it comes.  A peer
+ * can withhold the rest, or trickle it, indefinitely, so the wait gives up
+ * once *running is cleared, if running isn't NULL (otherwise the thread's stop
+ * would wait on the peer), or once tcp_monotonic_ms() reaches deadline_ms, if
+ * deadline_ms isn't zero.  what names the part being read, for the log.
  */
-static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                            TcpBufPool *pool, atomic_bool *running)
+static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
+                         atomic_bool *running, uint64_t deadline_ms,
+                         const char *what)
 {
     ssize_t ret;
-    size_t total_recv = 0;
 
-    *payload = NULL;
-
-    /* Receive header */
-    while (total_recv < sizeof(*hdr)) {
-        ret = recv(sockfd, (char *)hdr + total_recv, sizeof(*hdr) - total_recv,
-                   0);
+    while (got < len) {
+        if (running && !atomic_load(running)) {
+            rdma_info_report("TCP: Stopped while receiving %s", what);
+            return -1;
+        }
+        if (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms) {
+            rdma_error_report("TCP: Timed out receiving %s", what);
+            return -1;
+        }
+        ret = recv(sockfd, (char *)buf + got, len - got, 0);
         if (ret < 0) {
             if (errno == EAGAIN) {
-                return -EAGAIN;
+                struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
+                poll(&pfd, 1, 5);
+                continue;
             }
-            rdma_error_report("TCP: Failed to receive header: %s",
+            rdma_error_report("TCP: Failed to receive %s: %s", what,
                               strerror(errno));
             return -1;
         }
         if (ret == 0) {
-            rdma_info_report("TCP: Connection closed by peer");
+            rdma_info_report("TCP: Connection closed during %s", what);
             return -1;
         }
-        total_recv += (size_t)ret;
+        got += (size_t)ret;
+    }
+
+    return 0;
+}
+
+/*
+ * Receive one message.  The socket is non-blocking.  If nothing has arrived,
+ * this returns -EAGAIN for the caller to wait.  Once any of the message has,
+ * it reads the whole message, waiting for the rest with tcp_recv_rest():
+ * returning early would lose the bytes already read, and the next call would
+ * start in the middle of the message.  A header can straddle a TCP segment
+ * boundary, so this happens to the header as well as to the payload.  running
+ * and deadline_ms bound that wait, as tcp_recv_rest() describes.
+ *
+ * *payload is set on every return, to NULL unless a payload was received, so
+ * a caller that frees it after a failure never frees a buffer from an earlier
+ * message.
+ */
+static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
+                            TcpBufPool *pool, atomic_bool *running,
+                            uint64_t deadline_ms)
+{
+    ssize_t ret;
+
+    *payload = NULL;
+
+    /* Receive header */
+    ret = recv(sockfd, hdr, sizeof(*hdr), 0);
+    if (ret < 0) {
+        if (errno == EAGAIN) {
+            return -EAGAIN;
+        }
+        rdma_error_report("TCP: Failed to receive header: %s", strerror(errno));
+        return -1;
+    }
+    if (ret == 0) {
+        rdma_info_report("TCP: Connection closed by peer");
+        return -1;
+    }
+    if (tcp_recv_rest(sockfd, hdr, sizeof(*hdr), (size_t)ret, running,
+                      deadline_ms, "header") < 0) {
+        return -1;
     }
 
     /* Convert from network byte order */
@@ -1766,35 +1815,11 @@ static int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
     if (hdr->msg_len > 0) {
         *payload =
             pool ? tcp_bufpool_get(pool, hdr->msg_len) : g_malloc(hdr->msg_len);
-        total_recv = 0;
-        while (total_recv < hdr->msg_len) {
-            if (running && !atomic_load(running)) {
-                rdma_info_report("TCP: Stopped while receiving payload");
-                g_free(*payload);
-                *payload = NULL;
-                return -1;
-            }
-            ret = recv(sockfd, (char *)*payload + total_recv,
-                       hdr->msg_len - total_recv, 0);
-            if (ret < 0) {
-                if (errno == EAGAIN) {
-                    struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
-                    poll(&pfd, 1, 5);
-                    continue;
-                }
-                rdma_error_report("TCP: Failed to receive payload: %s",
-                                  strerror(errno));
-                g_free(*payload);
-                *payload = NULL;
-                return -1;
-            }
-            if (ret == 0) {
-                rdma_info_report("TCP: Connection closed during payload");
-                g_free(*payload);
-                *payload = NULL;
-                return -1;
-            }
-            total_recv += (size_t)ret;
+        if (tcp_recv_rest(sockfd, *payload, hdr->msg_len, 0, running,
+                          deadline_ms, "payload") < 0) {
+            g_free(*payload);
+            *payload = NULL;
+            return -1;
         }
     }
 
@@ -2142,7 +2167,7 @@ static void *tcp_recv_thread_per_conn(void *opaque)
         if (pfd.revents & POLLIN) {
             ret = tcp_recv_message(conn->sockfd, &hdr, &payload,
                                    conn->priv ? &conn->priv->recv_pool : NULL,
-                                   &conn->recv_thread_running);
+                                   &conn->recv_thread_running, 0);
             if (ret == -EAGAIN) {
                 continue;
             }
@@ -3145,14 +3170,21 @@ static void *tcp_accept_thread(void *opaque)
             g_ptr_array_add(priv->pending_conns, conn);
             qemu_mutex_unlock(&priv->conn_table_lock);
         } else {
-            /* Worker mode: receive handshake to identify remote node */
-            int retry_count = 0;
-            int max_retries = 50; /* 5 seconds with 100ms sleep */
+            /*
+             * Worker mode: receive handshake to identify remote node.  The
+             * deadline covers the whole handshake, including a wait inside
+             * tcp_recv_message() for the rest of one that has started, so a
+             * peer that sends only part of one holds up the peers behind it
+             * no longer than one that sends nothing.
+             */
+            uint64_t deadline_ms =
+                tcp_monotonic_ms() + TCP_HANDSHAKE_TIMEOUT_MS;
             int recv_ret;
 
-            while (retry_count < max_retries) {
-                recv_ret = tcp_recv_message(sockfd, &hdr, &payload, NULL,
-                                            &priv->accept_thread_running);
+            for (;;) {
+                recv_ret =
+                    tcp_recv_message(sockfd, &hdr, &payload, NULL,
+                                     &priv->accept_thread_running, deadline_ms);
                 if (recv_ret == 0) {
                     /* Message received successfully */
                     if (hdr.msg_type == TCP_MSG_HANDSHAKE) {
@@ -3172,7 +3204,7 @@ static void *tcp_accept_thread(void *opaque)
                     /*
                      * Nothing yet.  A peer can connect and send nothing, so
                      * check the flag before each wait, or a stop would wait
-                     * out every retry.
+                     * out the deadline.
                      */
                     if (!atomic_load(&priv->accept_thread_running)) {
                         rdma_info_report(
@@ -3180,11 +3212,16 @@ static void *tcp_accept_thread(void *opaque)
                         close(sockfd);
                         goto next_connection;
                     }
+                    if (tcp_monotonic_ms() >= deadline_ms) {
+                        rdma_error_report("TCP: Timeout waiting for handshake "
+                                          "from incoming connection");
+                        close(sockfd);
+                        goto next_connection;
+                    }
                     usleep(100000); /* 100ms */
-                    retry_count++;
                     continue;
                 } else {
-                    /* Real error */
+                    /* An error, a hang-up, a stop, or the deadline */
                     rdma_error_report("TCP: Error receiving handshake from "
                                       "incoming connection");
                     close(sockfd);
@@ -3193,16 +3230,6 @@ static void *tcp_accept_thread(void *opaque)
                     }
                     goto next_connection;
                 }
-            }
-
-            if (retry_count >= max_retries) {
-                rdma_error_report("TCP: Timeout waiting for handshake from "
-                                  "incoming connection");
-                close(sockfd);
-                if (payload) {
-                    g_free(payload);
-                }
-                continue;
             }
 
             /* The length is the peer's to choose, down to no payload at all */
