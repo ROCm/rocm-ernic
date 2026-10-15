@@ -538,8 +538,9 @@ struct TcpBackendPrivate {
     GHashTable *connections; /* node_id -> TcpConnection* */
     /*
      * Connections the manager has accepted that haven't registered, or were
-     * refused.  Registration moves a connection from here to connections.
-     * Kept so teardown can stop their receive threads and free them.
+     * refused.  Registration moves a connection from here to connections,
+     * and only a connection still here can register.  Kept so teardown can
+     * stop their receive threads and free them.
      */
     GPtrArray *pending_conns;
     QemuMutex conn_table_lock; /* Protects connections and pending_conns */
@@ -598,6 +599,7 @@ struct TcpBackendPrivate {
     /* Manager-specific fields */
     bool is_manager;
     GHashTable *mesh_nodes; /* node_id -> MeshNodeInfo* */
+    /* Protects mesh_nodes; taken before conn_table_lock when both are held */
     QemuMutex mesh_table_lock;
     QemuThread health_check_thread;
     /*
@@ -2056,6 +2058,24 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 worker_host[host_len] = '\0';
 
                 qemu_mutex_lock(&priv->mesh_table_lock);
+                qemu_mutex_lock(&priv->conn_table_lock);
+
+                /*
+                 * Only a connection on the pending list can register, and
+                 * only once: taking it off the list claims the registration.
+                 * A second REGISTER_NODE on the same socket would otherwise
+                 * put the connection in the table under a second id, and
+                 * teardown would free it once for each.
+                 */
+                if (!g_ptr_array_remove_fast(priv->pending_conns, conn)) {
+                    qemu_mutex_unlock(&priv->conn_table_lock);
+                    qemu_mutex_unlock(&priv->mesh_table_lock);
+                    rdma_error_report(
+                        "TCP: ignoring REGISTER_NODE on node %u's connection, "
+                        "which is not waiting to register",
+                        conn->node_id);
+                    break;
+                }
 
                 /* Assign node ID */
                 uint32_t assigned_id = requested_id;
@@ -2071,9 +2091,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     priv->next_available_node_id = assigned_id + 1;
                 }
 
-                /* Update connection with assigned node ID */
-                conn->node_id = assigned_id;
-
                 /* Create mesh node info */
                 MeshNodeInfo *node =
                     mesh_node_info_new(assigned_id, worker_host, worker_port);
@@ -2081,23 +2098,25 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     rdma_error_report("TCP: Failed to create mesh node info "
                                       "for worker node %u",
                                       assigned_id);
+                    /* Still unregistered, so teardown has to find it */
+                    g_ptr_array_add(priv->pending_conns, conn);
+                    qemu_mutex_unlock(&priv->conn_table_lock);
                     qemu_mutex_unlock(&priv->mesh_table_lock);
                     break;
                 }
                 node->sockfd = conn->sockfd;
                 node->conn = conn;
 
-                /* Add to mesh table */
+                /* Update connection with assigned node ID */
+                conn->node_id = assigned_id;
+
+                /* Add to the mesh and connections tables */
                 g_hash_table_insert(priv->mesh_nodes,
                                     GUINT_TO_POINTER(assigned_id), node);
-
-                /* Move from the pending list to the connections table */
-                qemu_mutex_lock(&priv->conn_table_lock);
-                g_ptr_array_remove_fast(priv->pending_conns, conn);
                 g_hash_table_insert(priv->connections,
                                     GUINT_TO_POINTER(assigned_id), conn);
-                qemu_mutex_unlock(&priv->conn_table_lock);
 
+                qemu_mutex_unlock(&priv->conn_table_lock);
                 qemu_mutex_unlock(&priv->mesh_table_lock);
 
                 rdma_info_report("TCP: Registered node %u at %s:%u",

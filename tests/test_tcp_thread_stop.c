@@ -45,6 +45,10 @@
  * connects, and has to stop waiting when it is stopped.  The handshake rows
  * check that, and also send it handshakes it has to refuse.
  *
+ * A manager must register a connection only once, or teardown frees it
+ * once for each time.  The registration rows send a second REGISTER_NODE
+ * on the same connection.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
@@ -830,16 +834,12 @@ static uint16_t free_port(void)
 
 /*
  * Attach a worker to the manager, as tcp_accept_thread() does with a
- * connection it accepts, and register it.  Returns the worker's end of the
- * socketpair.  The worker never reads from it; what the manager sends during
- * these rows fits in the socket's buffer unless fill_conn() fills it first.
+ * connection it accepts, without registering it.  Returns the worker's end
+ * of the socketpair, and the manager's connection in *connp if it isn't NULL.
  */
-static int worker_register(TcpBackendPrivate *priv)
+static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
 {
     TcpConnection *conn;
-    TcpMsgHeader hdr;
-    TcpRegisterNodePayload reg;
-    uint8_t buf[sizeof(hdr) + sizeof(reg)];
     int sv[2];
 
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0)
@@ -855,26 +855,48 @@ static int worker_register(TcpBackendPrivate *priv)
     qemu_thread_create(&conn->recv_thread, "tcp-recv-pending",
                        tcp_recv_thread_per_conn, conn, QEMU_THREAD_JOINABLE);
     qemu_mutex_unlock(&priv->conn_table_lock);
+    if (connp)
+        *connp = conn;
+    return sv[1];
+}
+
+/* Send a v4 REGISTER_NODE for hostname, asking for node id requested. */
+static bool send_register(int fd, const char *hostname, uint32_t requested)
+{
+    TcpMsgHeader hdr;
+    TcpRegisterNodePayload reg;
+    uint8_t buf[sizeof(hdr) + sizeof(reg)];
 
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
     hdr.msg_type = htonl(TCP_MSG_REGISTER_NODE);
     hdr.msg_len = htonl((uint32_t)sizeof(reg));
     memset(&reg, 0, sizeof(reg));
+    snprintf(reg.hostname, sizeof(reg.hostname), "%s", hostname);
     /* Nothing listens on port 1, so a health-check reconnect fails at once */
-    snprintf(reg.hostname, sizeof(reg.hostname), "127.0.0.1");
     reg.port = htons(1);
-    reg.requested_node_id = htonl(UINT32_MAX);
+    reg.requested_node_id = htonl(requested);
     reg.version = htonl(TCP_PROTOCOL_VERSION);
     memcpy(buf, &hdr, sizeof(hdr));
     memcpy(buf + sizeof(hdr), &reg, sizeof(reg));
+    return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
+}
+
+/*
+ * Attach a worker and register it.  Returns the worker's end of the
+ * socketpair.  The worker never reads from it; what the manager sends during
+ * these rows fits in the socket's buffer unless fill_conn() fills it first.
+ */
+static int worker_register(TcpBackendPrivate *priv)
+{
+    int fd = worker_attach(priv, NULL);
 
     /* On failure the connection stays pending, for tcp_fini() to free */
-    if (send(sv[1], buf, sizeof(buf), 0) != (ssize_t)sizeof(buf)) {
-        close(sv[1]);
+    if (fd >= 0 && !send_register(fd, "127.0.0.1", UINT32_MAX)) {
+        close(fd);
         return -1;
     }
-    return sv[1];
+    return fd;
 }
 
 /* Wait up to 5 s for the manager to have n registered connections. */
@@ -1488,6 +1510,145 @@ static int run_reconnect_case(void)
     return ok ? 0 : 1;
 }
 
+/* ---- Registering twice ------------------------------------------------- */
+
+/*
+ * A manager used to register a connection for every REGISTER_NODE it
+ * received on it.  A second registration on the same socket gave the
+ * connection a second node id, so it was in the connections table under
+ * both, and tcp_fini() freed it twice.  Only a connection on the pending
+ * list can register now, and registering takes it off.
+ *
+ * The worker sends its registrations and then shuts down its side, so the
+ * receive thread handles every message before it reads end-of-file and
+ * exits.  Once it has, everything it sent is waiting in the worker's socket.
+ */
+
+struct reg_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    const char *first_host; /* the hostname in the first registration */
+    bool second;            /* send a second registration */
+    uint32_t second_id;     /* the node id the second one asks for */
+};
+
+static const struct reg_case reg_cases[] = {
+    {"positive", "one registration", "registered once, with one answer",
+     "127.0.0.1", false, 0},
+    {"negative", "a second registration asking for any node id",
+     "ignored: one table entry, one mesh node and one answer", "127.0.0.1",
+     true, UINT32_MAX},
+    {"negative", "a second registration asking for an unused node id",
+     "ignored: the id isn't given out", "127.0.0.1", true, 42},
+    {"corner", "a registration with no hostname, then a good one",
+     "the first leaves the connection pending; the second registers it", "",
+     true, UINT32_MAX},
+};
+
+/* Read every message waiting on fd, and count those of type. */
+static int count_type(int fd, TcpMsgType type)
+{
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    int n = 0;
+
+    while (poll(&pfd, 1, 0) == 1) {
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL) < 0)
+            break;
+        g_free(payload);
+        if (hdr.msg_type == type)
+            n++;
+    }
+    return n;
+}
+
+static guint mesh_node_count(TcpBackendPrivate *priv)
+{
+    guint n;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    n = g_hash_table_size(priv->mesh_nodes);
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    return n;
+}
+
+static int run_reg_case(const struct reg_case *c)
+{
+    RdmaBackendDev dev;
+    TcpBackendPrivate *priv;
+    TcpConnection *conn = NULL;
+    char config[64];
+    const char *why = NULL;
+    uint16_t port = free_port();
+    guint entries = 0, table = 0, pending = 0, nodes_before, nodes = 0;
+    int fd, answers = 0;
+    bool ok;
+
+    atomic_store(&g_exits, 0);
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (port == 0 || tcp_init(&dev, config) != 0) {
+        printf("FAIL registration %s: %s; could not start a manager\n",
+               c->category, c->description);
+        alarm(0);
+        return 1;
+    }
+    priv = dev.backend_private;
+    nodes_before = mesh_node_count(priv);
+
+    fd = worker_attach(priv, &conn);
+    if (fd < 0) {
+        why = "could not attach the worker";
+    } else if (!send_register(fd, c->first_host, UINT32_MAX) ||
+               (c->second && !send_register(fd, "127.0.0.1", c->second_id)) ||
+               shutdown(fd, SHUT_WR) < 0) {
+        why = "could not send the registrations";
+    } else if (!wait_for_exits(1)) {
+        why = "the receive thread never read to the end of the stream";
+    } else {
+        GHashTableIter iter;
+        gpointer value;
+
+        nodes = mesh_node_count(priv) - nodes_before;
+        qemu_mutex_lock(&priv->conn_table_lock);
+        table = g_hash_table_size(priv->connections);
+        g_hash_table_iter_init(&iter, priv->connections);
+        while (g_hash_table_iter_next(&iter, NULL, &value))
+            entries += value == conn ? 1u : 0u;
+        pending = priv->pending_conns->len;
+        qemu_mutex_unlock(&priv->conn_table_lock);
+        answers = count_type(fd, TCP_MSG_REGISTER_RESP);
+    }
+
+    ok = !why && entries == 1 && table == 1 && pending == 0 && nodes == 1 &&
+         answers == 1;
+
+    printf("%s registration %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s%s%u table entr%s for the connection (want 1), %u in "
+               "the table (want 1), %u pending (want 0), %u new mesh node(s) "
+               "(want 1), %d answer(s) (want 1)\n",
+               why ? why : "", why ? "; " : "", entries,
+               entries == 1 ? "y" : "ies", table, pending, nodes, answers);
+    /* A connection in the table twice is freed twice, and ASan aborts */
+    fflush(stdout);
+
+    tcp_fini(&dev);
+    alarm(0);
+    if (fd >= 0)
+        close(fd);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -1506,6 +1667,8 @@ int main(void)
     for (size_t i = 0; i < sizeof(hs_cases) / sizeof(hs_cases[0]); i++)
         failures += run_hs_case(&hs_cases[i]);
     failures += run_reconnect_case();
+    for (size_t i = 0; i < sizeof(reg_cases) / sizeof(reg_cases[0]); i++)
+        failures += run_reg_case(&reg_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

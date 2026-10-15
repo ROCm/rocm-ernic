@@ -291,6 +291,13 @@
   sends nothing, which freed the first message's payload a second time. A
   worker also no longer takes up to 5 seconds to shut down while a peer that
   has connected sends nothing. `tcp-thread-stop-unit` covers each case.
+* A TCP mesh manager no longer registers a connection a second time when a
+  peer sends a second registration on it. The connection was given a second
+  node id and kept under both, so shutdown freed it twice, and a reconnect
+  that replaced one of the two could free it while the other was still in
+  use. Any host that could reach the manager's port could crash it this way.
+  A registration on a connection that has already registered is now ignored.
+  `tcp-thread-stop-unit` covers it.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
