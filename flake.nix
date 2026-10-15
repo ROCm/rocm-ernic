@@ -219,6 +219,8 @@
         # nix/ionic-guest-test.nix and nix/ionic-vm.nix.
         // guestPackages;
 
+        checks.launchers = import ./nix/launcher-tests.nix { inherit pkgs; };
+
         checks.analysis-runners = pkgs.runCommand "analysis-runner-tests" {
           nativeBuildInputs = [ pkgs.python3 pkgs.jq ];
         } ''

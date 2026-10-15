@@ -9,17 +9,38 @@
 # Exit status is CMD's. It is non-zero if the server never creates its
 # socket, or exits before CMD finishes.
 
-{ pkgs, rocm-ernic }:
+{ pkgs, rocm-ernic, startupAttempts ? 100, pollSeconds ? "0.1", shutdownTimeout ? "10s" }:
 
 pkgs.writeShellApplication {
   name = "ernic-run";
-  runtimeInputs = [ rocm-ernic pkgs.coreutils ];
+  runtimeInputs = [ rocm-ernic pkgs.coreutils pkgs.util-linux ];
   text = ''
     usage() {
       echo 'usage: ernic-run [--socket PATH] [--backend SPEC] [--stats-file F] [--log-file F] -- CMD [ARGS...]' >&2
       exit 2
     }
     socket=""
+    socket_dir=""
+    server=""
+    command_pid=""
+    stop_group() {
+      local pid="$1"
+      kill -TERM -- "-$pid" 2>/dev/null || true
+      timeout --kill-after=1s ${shutdownTimeout} tail --sleep-interval=0.05 --pid="$pid" -f /dev/null || true
+      kill -KILL -- "-$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    }
+    cleanup() {
+      if [ -n "$command_pid" ]; then stop_group "$command_pid"; fi
+      if [ -n "$server" ]; then
+        stop_group "$server"
+        rm -f "$socket"
+      fi
+      if [ -n "$socket_dir" ]; then rmdir "$socket_dir" 2>/dev/null || true; fi
+    }
+    trap 'cleanup' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     server_args=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -34,38 +55,46 @@ pkgs.writeShellApplication {
       socket_dir=$(mktemp -d -t ernic-run-XXXXXX)
       socket="$socket_dir/ernic.sock"
     fi
-    if [ -e "$socket" ]; then
+    if [ -e "$socket" ] || [ -L "$socket" ]; then
       echo "ernic-run: $socket already exists" >&2
       exit 1
     fi
 
-    rocm-ernic --socket "$socket" "''${server_args[@]}" &
+    setsid rocm-ernic --socket "$socket" "''${server_args[@]}" &
     server=$!
-    # Stop the server however we exit; single quotes defer the expansion.
-    trap 'kill -TERM "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true; rm -f "$socket"' EXIT
-
     # The server creates the socket in vfu_realize_ctx and then attaches
     # without blocking, so the socket appearing means QEMU may connect.
-    for _ in $(seq 1 100); do
+    for _ in $(seq 1 ${toString startupAttempts}); do
       [ -S "$socket" ] && break
       if ! kill -0 "$server" 2>/dev/null; then
         echo 'ernic-run: rocm-ernic exited before creating its socket' >&2
         exit 1
       fi
-      sleep 0.1
+      sleep ${pollSeconds}
     done
     if [ ! -S "$socket" ]; then
-      echo "ernic-run: no socket at $socket after 10s" >&2
+      echo "ernic-run: no socket at $socket before the startup deadline" >&2
       exit 1
     fi
 
     export ERNIC_SOCKET="$socket"
+    setsid "$@" <&0 &
+    command_pid=$!
+    while kill -0 "$command_pid" 2>/dev/null; do
+      if ! kill -0 "$server" 2>/dev/null; then
+        echo 'ernic-run: rocm-ernic exited while the command ran' >&2
+        exit 1
+      fi
+      sleep ${pollSeconds}
+    done
     rc=0
-    "$@" || rc=$?
+    wait "$command_pid" || rc=$?
     if [ "$rc" -eq 0 ] && ! kill -0 "$server" 2>/dev/null; then
       echo 'ernic-run: rocm-ernic exited while the command ran' >&2
       rc=1
     fi
+    cleanup
+    trap - EXIT
     exit "$rc"
   '';
 }
