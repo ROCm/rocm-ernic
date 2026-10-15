@@ -346,6 +346,28 @@
   of one it has started, so a peer that sends part of one and stops holds up
   the peers behind it no longer than one that sends nothing.
   `tcp-thread-stop-unit` covers messages split at several points.
+* A TCP mesh manager now closes the connections it is done with. A peer that
+  connected and hung up without registering -- a port scan, a load
+  balancer's health check, a node refused for running an older protocol
+  version -- left its socket open in `CLOSE_WAIT`, and a thread behind it,
+  until the manager shut down, and a peer that connected and sent nothing
+  kept them indefinitely. A registered node that went away left its socket
+  open until the manager reconnected to it, which might be never. Enough of
+  these ran the manager out of file descriptors. The manager now closes a
+  connection whose peer has hung up or been refused when the next peer
+  connects, or within a health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`,
+  5 seconds by default), and closes one that hasn't registered within 5
+  seconds of connecting. At most 64 connections wait to register at once;
+  any more are closed as they arrive. A peer that sends anything but a
+  registration before it has registered is now disconnected: the manager
+  used to act on such messages, including relaying traffic to other nodes,
+  and a relay to a node that had stopped reading could then hold up
+  closing the connection. A registered node that hangs up is
+  reported dead to the rest of the mesh within a health-check interval,
+  rather than after three. A node that runs out of file descriptors also no
+  longer retries accepting a connection in a tight loop that logged an error
+  each time, which could fill the disk; it now waits 100 ms between
+  attempts. `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
@@ -389,3 +411,8 @@
   resolver to give up, which its configured timeouts and retries bound. A
   hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
   wait.
+* A TCP mesh worker keeps its connection to another worker after that worker
+  hangs up, with the socket open in `CLOSE_WAIT`, until it shuts down. The
+  two workers then stay disconnected, because each refuses or skips a new
+  connection to the other as a duplicate of the dead one, until the worker
+  holding it restarts.

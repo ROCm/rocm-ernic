@@ -638,11 +638,23 @@ vendored completion thread without first making these real atomics.
 
 ### Adjacent issues
 
-Observed alongside the GID bug, not yet diagnosed against the source:
+Observed alongside the GID bug. The first two have since been traced in
+the source; the rest have not:
 
-- `CLOSE_WAIT` socket leak.
+- `CLOSE_WAIT` socket leak. Nothing closed a connection whose peer hung
+  up: its receive thread just returned. A manager now reaps connections
+  that never registered (`tcp_reap_pending_conns()`) and retires a
+  registered node's connection when it hangs up
+  (`tcp_health_check_retire()`). A worker still keeps a dead connection to
+  another worker, and the pair never reconnect. Fixing that needs
+  reference counting on `TcpConnection` first, because the data path keeps
+  connection pointers without a lock.
 - An `EMFILE` retry loop with no backoff. One run produced 295 GB of
-  logs.
+  logs. This was the accept thread: an `accept()` that fails for lack of
+  descriptors leaves the connection queued, so the next one fails at once
+  too, and each failure was logged. A failed `accept()` is now retried
+  after 100 ms. The leak above is the likely way the process ran out of
+  descriptors.
 - A registration wall at roughly 40 nodes. The number is measured on a
   64-node run; the full-mesh connection-cost mechanism behind it was
   inferred from socket counts and a slot-freeing experiment and is

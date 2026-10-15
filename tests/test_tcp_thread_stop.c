@@ -70,6 +70,13 @@
  * messages at several points and check what is read, and that a stop, a
  * deadline, or a hang-up ends the wait.
  *
+ * A manager has to close the connections it is done with: a peer's that hung
+ * up, was refused, or sent something else before registering, or never
+ * registered, and a registered worker's that hung up.  The reap rows connect
+ * such peers, check that the connections are closed and their threads
+ * joined, that only so many may wait to register, and that a failed accept()
+ * isn't retried in a tight loop.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
@@ -87,6 +94,7 @@
  */
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -99,6 +107,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -114,9 +123,13 @@ RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
     (void)mr_handle;
     return NULL;
 }
+
+static atomic_int g_errors; /* error_report() calls */
+
 void error_report(const char *fmt, ...)
 {
     (void)fmt;
+    atomic_fetch_add(&g_errors, 1);
 }
 void warn_report(const char *fmt, ...)
 {
@@ -489,6 +502,9 @@ static int run_health_case(const struct health_case *c)
     priv->mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
+    /* Each pass reaps the pending connections, of which there are none */
+    priv->pending_conns = g_ptr_array_new();
+    qemu_mutex_init(&priv->conn_table_lock);
 
     if (c->peer) {
         MeshNodeInfo *node = mesh_node_info_new(1, "peer", 0);
@@ -502,7 +518,7 @@ static int run_health_case(const struct health_case *c)
         }
         conn = tcp_connection_new(1, "peer", 0);
         conn->sockfd = sv[0];
-        conn->is_connected = true;
+        atomic_store(&conn->is_connected, true);
         node->conn = conn;
         node->is_alive = true;
         node->last_heartbeat = time(NULL);
@@ -548,6 +564,8 @@ out:
     tcp_connection_free(conn);
     if (sv[1] >= 0)
         close(sv[1]);
+    g_ptr_array_free(priv->pending_conns, TRUE);
+    qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
     qemu_mutex_destroy(&priv->health_check_lock);
@@ -616,7 +634,7 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     conn = tcp_connection_new(id, "peer", 0);
     conn->priv = priv;
     conn->sockfd = sv[0];
-    conn->is_connected = true;
+    atomic_store(&conn->is_connected, true);
     /* Non-blocking, as the backend makes every connection's socket. */
     fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
     *peer = sv[1];
@@ -868,8 +886,10 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
     conn = tcp_connection_new(UINT32_MAX, "worker", 0);
     conn->sockfd = sv[0];
-    conn->is_connected = true;
+    atomic_store(&conn->is_connected, true);
     conn->priv = priv;
+    /* Or a reap would find it past the registration timeout */
+    conn->accepted_ms = tcp_monotonic_ms();
     qemu_mutex_lock(&priv->conn_table_lock);
     g_ptr_array_add(priv->pending_conns, conn);
     atomic_store(&conn->recv_thread_running, true);
@@ -1116,13 +1136,18 @@ static int connect_loopback(uint16_t port)
     return fd;
 }
 
-/* Wait up to 5 s for the other end of fd to close it, sending nothing. */
-static bool closed_by_peer(int fd)
+/* Wait up to timeout_ms for fd's other end to close it, sending nothing. */
+static bool closed_within(int fd, int timeout_ms)
 {
     struct pollfd pfd = {.fd = fd, .events = POLLIN};
     char c;
 
-    return poll(&pfd, 1, 5000) == 1 && recv(fd, &c, 1, 0) == 0;
+    return poll(&pfd, 1, timeout_ms) == 1 && recv(fd, &c, 1, 0) == 0;
+}
+
+static bool closed_by_peer(int fd)
+{
+    return closed_within(fd, 5000);
 }
 
 static int run_create_case(const struct create_case *c)
@@ -2261,7 +2286,8 @@ static int run_queue_case(void)
                atomic_load(&fx.priv->tcp_stats.reconnect_successes) == 0) {
             g_array_set_size(items, 0);
             for (uint32_t i = 0; i < fx.nodes; i++) {
-                TcpHealthCheckItem item = {fx.node[i], fx.node[i]->conn, true};
+                TcpHealthCheckItem item = {fx.node[i], fx.node[i]->conn, true,
+                                           false};
 
                 g_array_append_val(items, item);
             }
@@ -3395,6 +3421,563 @@ static int run_sp_case(const struct sp_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- Connections that are done with ------------------------------------ */
+
+/*
+ * A manager kept every connection it accepted until teardown, or until a
+ * reconnect replaced it.  A peer that connected and hung up without
+ * registering -- a port probe, a load balancer's health check, a peer
+ * refused for running an older protocol version -- left its descriptor in
+ * CLOSE_WAIT and its receive thread unjoined, and so did a registered worker
+ * that went away.  A peer that connected and said nothing kept a thread
+ * waiting for it.  Enough of them ran the process out of descriptors, and
+ * the accept thread then retried accept(), which failed at once, in a loop
+ * that filled the disk with its log.
+ *
+ * The accept thread now reaps the pending connections that are done with
+ * whenever a peer connects, and the health check on every pass: those whose
+ * receive thread has exited, and those that haven't registered within
+ * TCP_REGISTER_TIMEOUT_MS.  At most TCP_MAX_PENDING_CONNS wait at once, and a
+ * peer that sends anything but a registration before registering is hung
+ * up on, since a relay made for it could block the reaper.  The health
+ * check also closes the connection of a registered node that hangs up, and
+ * reports the node dead.  A failed accept() is retried after 100 ms.
+ *
+ * Each row starts a manager with tcp_init(), and its peers connect over
+ * loopback, or, to register, are attached over socketpairs as in the fini
+ * rows.  tcp_fini() then has to join every thread exactly once.
+ */
+
+enum reap_scenario {
+    REAP_PROBES,  /* peers that connect and hang up */
+    REAP_REFUSED, /* a peer refused for running an older protocol version */
+    REAP_EARLY,   /* a peer that sends something else before registering */
+    REAP_TIMEOUT, /* a peer that says nothing for the registration timeout */
+    REAP_YOUNG,   /* a peer that has said nothing, with time left */
+    REAP_CAP,     /* more peers waiting to register than the cap */
+    REAP_NO_FDS,  /* a peer connects while the process is out of descriptors */
+    REAP_HANGUP,  /* a registered worker hangs up */
+};
+
+struct reap_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum reap_scenario scenario;
+    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+};
+
+static const struct reap_case reap_cases[] = {
+    {"positive", "100 peers that connect and hang up without registering",
+     "each is closed, and its thread joined, by the time the next connects: "
+     "one left waiting, and 2 descriptors more open, not 102",
+     REAP_PROBES, "3600"},
+    {"negative", "a peer refused for running an older protocol version",
+     "sent the refusal, then closed by the next health-check pass",
+     REAP_REFUSED, "1"},
+    {"negative",
+     "a peer that, before registering, sends an ionic message for a "
+     "registered worker",
+     "not relayed; the connection is closed by the next health-check pass",
+     REAP_EARLY, "1"},
+    {"negative", "a peer that has sent nothing for the registration timeout",
+     "closed by the next health-check pass", REAP_TIMEOUT, "1"},
+    {"boundary", "a peer that has sent nothing, with time left to register",
+     "kept through two health-check passes", REAP_YOUNG, "1"},
+    {"boundary", "64 peers waiting to register, then another",
+     "the next is closed at once; once one of the 64 hangs up, the one after "
+     "it is let in",
+     REAP_CAP, "3600"},
+    {"negative", "a peer that connects while the manager is out of descriptors",
+     "accept() is retried every 100 ms, not in a loop that floods the log, "
+     "and succeeds once descriptors are free",
+     REAP_NO_FDS, "3600"},
+    {"negative", "a registered worker that hangs up",
+     "the next health-check pass closes its connection, joins its thread, "
+     "and reports it dead to the other workers",
+     REAP_HANGUP, "1"},
+};
+
+/* The peers' descriptors a row keeps open, closed at the end of the row */
+#define REAP_MAX_FDS (TCP_MAX_PENDING_CONNS + 4u)
+
+struct reap_fds {
+    int fd[REAP_MAX_FDS];
+    uint32_t n;
+};
+
+/* Keep fd, if it's open, to be closed at the end of the row; returns it. */
+static int reap_keep(struct reap_fds *k, int fd)
+{
+    if (fd >= 0 && k->n < REAP_MAX_FDS)
+        k->fd[k->n++] = fd;
+    return fd;
+}
+
+/* How many descriptors the process has open, give or take a constant. */
+static int open_fds(void)
+{
+    DIR *dir = opendir("/proc/self/fd");
+    int n = 0;
+
+    if (!dir)
+        return -1;
+    while (readdir(dir))
+        n++;
+    closedir(dir);
+    return n;
+}
+
+/* Wait up to 5 s for n threads to have been created, or joined, in all. */
+static bool wait_for_count(atomic_int *count, int n)
+{
+    for (int i = 0; i < 5000 && atomic_load(count) < n; i++)
+        sleep_ms(1);
+    return atomic_load(count) >= n;
+}
+
+static guint pending_count(TcpBackendPrivate *priv)
+{
+    guint n;
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    n = priv->pending_conns->len;
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    return n;
+}
+
+/*
+ * Connect to the manager, and wait for it to start the connection's receive
+ * thread, the creates-th thread created.  Returns the peer's end, or -1.
+ */
+static int reap_connect(uint16_t port, int creates)
+{
+    int fd = connect_loopback(port);
+
+    if (fd >= 0 && !wait_for_count(&g_creates, creates)) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/*
+ * REAP_PROBES: once the threads have seen their peers hang up, the next peer
+ * to connect has the accept thread reap them all.
+ */
+static const char *reap_probes(TcpBackendPrivate *priv, uint16_t port,
+                               struct reap_fds *k)
+{
+    int base = atomic_load(&g_creates);
+    int fds = open_fds();
+
+    for (int i = 0; i < 100; i++) {
+        int fd = reap_connect(port, base + i + 1);
+
+        if (fd < 0)
+            return "a peer wasn't given a receive thread";
+        close(fd);
+    }
+    if (!wait_for_exits(100))
+        return "a receive thread didn't see its peer hang up";
+    if (reap_keep(k, reap_connect(port, base + 101)) < 0)
+        return "the last peer wasn't given a receive thread";
+    if (atomic_load(&g_joins) != 100)
+        return "the threads of the peers that hung up weren't each joined once";
+    if (pending_count(priv) != 1)
+        return "peers that hung up are still waiting to register";
+    return open_fds() - fds <= 2
+               ? NULL
+               : "the descriptors of the peers that hung up are still open";
+}
+
+/* REAP_REFUSED: the refusal ends the receive thread, so a pass reaps it. */
+static const char *reap_refused(TcpBackendPrivate *priv, uint16_t port,
+                                struct reap_fds *k)
+{
+    int fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
+
+    if (fd < 0)
+        return "the peer wasn't given a receive thread";
+    /* All zeros, so version 0 */
+    if (!send_message(fd, TCP_MSG_REGISTER_NODE, TCP_REGISTER_NODE_LEN_V3,
+                      TCP_REGISTER_NODE_LEN_V3))
+        return "could not send the registration";
+    if (!recv_type(fd, TCP_MSG_REGISTER_RESP, 2000))
+        return "the registration wasn't refused";
+    /* A pass comes within the 1 s interval, the timeout after 5 s */
+    if (!closed_within(fd, 2500))
+        return "the refused peer's connection was left open";
+    if (!wait_for_count(&g_joins, 1))
+        return "the refused peer's thread wasn't joined";
+    return pending_count(priv) == 0 ? NULL
+                                    : "the refused peer is still waiting";
+}
+
+/* Send an ionic message from node src to node dst, with an 8-byte payload. */
+static bool send_ionic(int fd, uint32_t src, uint32_t dst)
+{
+    struct {
+        TcpMsgHeader hdr;
+        uint8_t payload[8];
+    } msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(TCP_MSG_IONIC);
+    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.payload));
+    msg.hdr.src_node_id = htonl(src);
+    msg.hdr.dst_node_id = htonl(dst);
+    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+}
+
+/*
+ * REAP_EARLY: a peer that hasn't registered asks the manager to relay an
+ * ionic message to worker 1.  A relay to a worker that has stopped reading
+ * would block the peer's receive thread, and the reaper that joins it.  The
+ * message must not be relayed, and the peer is hung up on, so its thread
+ * ends and the next pass closes it.  Anything relayed would be in the
+ * worker's socket before the peer's thread ended.
+ */
+static const char *reap_early(TcpBackendPrivate *priv, uint16_t port,
+                              struct reap_fds *k)
+{
+    int w = reap_keep(k, worker_register(priv));
+    int fd;
+
+    if (w < 0 || !wait_for_registered(priv, 1))
+        return "the worker did not register";
+    fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
+    if (fd < 0)
+        return "the peer wasn't given a receive thread";
+    if (!send_ionic(fd, 5, 1))
+        return "could not send the ionic message";
+    /* A pass comes within the 1 s interval, the timeout after 5 s */
+    if (!closed_within(fd, 2500))
+        return "the peer's connection was left open";
+    if (!wait_for_count(&g_joins, 1))
+        return "the peer's thread wasn't joined";
+    if (count_type(w, TCP_MSG_IONIC) != 0)
+        return "the peer's message was relayed";
+    return pending_count(priv) == 0 ? NULL : "the peer is still waiting";
+}
+
+/*
+ * REAP_TIMEOUT: the peer is made to look TCP_REGISTER_TIMEOUT_MS old, and
+ * the next pass has to close it.
+ */
+static const char *reap_timeout(TcpBackendPrivate *priv, uint16_t port,
+                                struct reap_fds *k)
+{
+    int fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
+    bool aged = false;
+
+    if (fd < 0)
+        return "the peer wasn't given a receive thread";
+    qemu_mutex_lock(&priv->conn_table_lock);
+    if (priv->pending_conns->len == 1) {
+        TcpConnection *conn = g_ptr_array_index(priv->pending_conns, 0);
+
+        if (conn->accepted_ms >= TCP_REGISTER_TIMEOUT_MS) {
+            conn->accepted_ms -= TCP_REGISTER_TIMEOUT_MS;
+            aged = true;
+        }
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    if (!aged)
+        return "could not age the peer's connection";
+    if (!closed_within(fd, 2500))
+        return "the peer's connection was left open";
+    if (!wait_for_count(&g_joins, 1))
+        return "the peer's thread wasn't joined";
+    return pending_count(priv) == 0 ? NULL : "the peer is still waiting";
+}
+
+/*
+ * REAP_YOUNG: a registered worker shows when passes run.  Its heartbeats are
+ * drained once the peer is waiting, so the second that comes after is from
+ * a pass that began after the peer connected.
+ */
+static const char *reap_young(TcpBackendPrivate *priv, uint16_t port,
+                              struct reap_fds *k)
+{
+    struct pollfd pfd;
+    int w = reap_keep(k, worker_register(priv));
+    int fd;
+
+    if (w < 0 || !wait_for_registered(priv, 1))
+        return "the worker did not register";
+    fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
+    if (fd < 0)
+        return "the peer wasn't given a receive thread";
+    count_type(w, TCP_MSG_HEARTBEAT);
+    if (!wait_for_type(w, TCP_MSG_HEARTBEAT, 3000) ||
+        !wait_for_type(w, TCP_MSG_HEARTBEAT, 3000))
+        return "the health check didn't make two passes";
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    if (poll(&pfd, 1, 0) != 0 || pending_count(priv) != 1)
+        return "the peer was closed with time left to register";
+    return NULL;
+}
+
+/*
+ * REAP_CAP: a peer past the cap is closed without a receive thread.  One of
+ * those waiting hangs up, and the next peer takes its place.
+ */
+static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
+                            struct reap_fds *k)
+{
+    int base = atomic_load(&g_creates);
+    int cap = (int)TCP_MAX_PENDING_CONNS;
+    uint32_t first = k->n;
+
+    for (int i = 0; i < cap; i++)
+        if (reap_keep(k, reap_connect(port, base + i + 1)) < 0)
+            return "a peer under the cap wasn't given a receive thread";
+    if (!closed_within(reap_keep(k, connect_loopback(port)), 2000))
+        return "the peer past the cap was kept";
+    if (atomic_load(&g_creates) != base + cap)
+        return "the peer past the cap was given a receive thread";
+
+    close(k->fd[first]);
+    k->fd[first] = -1;
+    if (!wait_for_exits(1))
+        return "the thread didn't see its peer hang up";
+    if (reap_keep(k, reap_connect(port, base + cap + 1)) < 0)
+        return "the peer after one hung up wasn't let in";
+    if (atomic_load(&g_joins) != 1)
+        return "the thread of the peer that hung up wasn't joined once";
+    return pending_count(priv) == TCP_MAX_PENDING_CONNS
+               ? NULL
+               : "the wrong number of peers are waiting";
+}
+
+/*
+ * REAP_NO_FDS: lower the descriptor limit until the peer's socket takes the
+ * last one, so the manager's accept() fails with EMFILE while the
+ * connection waits.  Each failure is logged once, so the log shows how often
+ * it is retried.  *errors gets how many there were in 500 ms.
+ */
+static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
+{
+    struct rlimit old, low;
+    int base = atomic_load(&g_creates);
+    int lowest, fd;
+
+    *errors = -1;
+    if (getrlimit(RLIMIT_NOFILE, &old) < 0)
+        return "could not read the descriptor limit";
+    /*
+     * The sanitizer runtime briefly takes a descriptor now and then, and
+     * if it takes the last one first, the peer's socket() fails with
+     * EMFILE.  Lift the limit and try again.
+     */
+    fd = -1;
+    for (int attempt = 0; attempt < 5 && fd < 0; attempt++) {
+        setrlimit(RLIMIT_NOFILE, &old);
+        /* Every descriptor below the lowest free one is open */
+        lowest = open("/dev/null", O_RDONLY);
+        if (lowest < 0)
+            return "could not open /dev/null";
+        low = old;
+        low.rlim_cur = (rlim_t)lowest + 1;
+        if (setrlimit(RLIMIT_NOFILE, &low) < 0) {
+            close(lowest);
+            return "could not lower the descriptor limit";
+        }
+        close(lowest);
+        fd = reap_keep(k, connect_loopback(port));
+    }
+
+    atomic_store(&g_errors, 0);
+    sleep_ms(500);
+    *errors = atomic_load(&g_errors);
+    setrlimit(RLIMIT_NOFILE, &old);
+
+    if (fd < 0)
+        return "could not connect";
+    if (*errors == 0)
+        return "accept() didn't fail";
+    if (*errors > 8)
+        return "accept() was retried without a pause";
+    /* The next retry has a descriptor to give it */
+    return wait_for_count(&g_creates, base + 1)
+               ? NULL
+               : "the peer wasn't accepted once descriptors were free";
+}
+
+/*
+ * Read messages from fd for up to timeout_ms, until a topology update that
+ * reports node id dead.
+ */
+static bool reported_dead(int fd, uint32_t id, int timeout_ms)
+{
+    double end = now_s() + timeout_ms / 1000.0;
+
+    while (now_s() < end) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int left = (int)((end - now_s()) * 1000.0);
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+        bool dead = false;
+
+        if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
+            continue;
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+            return false;
+        if (hdr.msg_type == TCP_MSG_MESH_TOPOLOGY && payload &&
+            hdr.msg_len >= sizeof(TcpMeshTopologyPayload)) {
+            const TcpMeshTopologyPayload *topo = payload;
+            uint32_t n = ntohl(topo->num_nodes);
+
+            for (uint32_t i = 0; i < n && i < G_N_ELEMENTS(topo->nodes); i++)
+                if (ntohl(topo->nodes[i].node_id) == id &&
+                    !topo->nodes[i].is_alive)
+                    dead = true;
+        }
+        g_free(payload);
+        if (dead)
+            return true;
+    }
+    return false;
+}
+
+/*
+ * REAP_HANGUP: worker 2 hangs up.  A node is declared dead after three
+ * intervals without a heartbeat, which can't be before 3 s here, so a report
+ * sooner than that is from the hang-up.
+ */
+static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
+{
+    TcpConnection *conn;
+    MeshNodeInfo *node;
+    bool on_node, alive;
+    double start;
+    int w1 = reap_keep(k, worker_register(priv));
+    int w2, fd;
+
+    if (w1 < 0 || !wait_for_registered(priv, 1))
+        return "worker 1 did not register";
+    w2 = worker_register(priv);
+    if (w2 < 0 || !wait_for_registered(priv, 2)) {
+        if (w2 >= 0)
+            close(w2);
+        return "worker 2 did not register";
+    }
+    conn = tcp_get_connection(priv, 2);
+    if (!conn)
+        return "worker 2 isn't node 2";
+
+    close(w2);
+    start = now_s();
+    if (!reported_dead(w1, 2, 5000))
+        return "worker 1 wasn't told worker 2 is dead";
+    if (now_s() - start >= 2.5)
+        return "worker 2 was only declared dead once it went silent";
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(2));
+    on_node = node && node->conn;
+    alive = node && node->is_alive;
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    qemu_mutex_lock(&conn->lock);
+    fd = conn->sockfd;
+    qemu_mutex_unlock(&conn->lock);
+
+    if (!node || on_node || alive)
+        return "node 2 is still alive, or still has its connection";
+    if (fd != -1 || atomic_load(&conn->recv_thread_running))
+        return "worker 2's connection wasn't closed";
+    if (atomic_load(&g_joins) != 1)
+        return "worker 2's receive thread wasn't joined once";
+    return tcp_get_connection(priv, 2) == conn
+               ? NULL
+               : "worker 2's connection left the connections table";
+}
+
+static const char *reap_run(TcpBackendPrivate *priv, uint16_t port,
+                            enum reap_scenario scenario, struct reap_fds *k,
+                            int *errors)
+{
+    switch (scenario) {
+    case REAP_PROBES:
+        return reap_probes(priv, port, k);
+    case REAP_REFUSED:
+        return reap_refused(priv, port, k);
+    case REAP_EARLY:
+        return reap_early(priv, port, k);
+    case REAP_TIMEOUT:
+        return reap_timeout(priv, port, k);
+    case REAP_YOUNG:
+        return reap_young(priv, port, k);
+    case REAP_CAP:
+        return reap_cap(priv, port, k);
+    case REAP_NO_FDS:
+        return reap_no_fds(port, k, errors);
+    case REAP_HANGUP:
+        return reap_hangup(priv, k);
+    default:
+        return "unknown scenario";
+    }
+}
+
+static int run_reap_case(const struct reap_case *c)
+{
+    RdmaBackendDev dev;
+    struct reap_fds k;
+    char config[64];
+    const char *why;
+    uint16_t port = free_port();
+    int errors = -1;
+    double start, took;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    memset(&k, 0, sizeof(k));
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    if (port == 0 || tcp_init(&dev, config) != 0) {
+        printf("FAIL reap %s: %s; could not start a manager\n", c->category,
+               c->description);
+        alarm(0);
+        return 1;
+    }
+    why = reap_run(dev.backend_private, port, c->scenario, &k, &errors);
+
+    start = now_s();
+    tcp_fini(&dev);
+    took = now_s() - start;
+    alarm(0);
+    if (!why && took >= 2.0)
+        why = "tcp_fini() waited";
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s reap %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
+           c->description, c->expected);
+    if (!ok)
+        printf("     %s; %d thread(s) created, %d joined, %d exited, %d "
+               "error(s) logged, tcp_fini() took %.3f s\n",
+               why, atomic_load(&g_creates), atomic_load(&g_joins),
+               atomic_load(&g_exits), errors, took);
+    fflush(stdout);
+
+    for (uint32_t i = 0; i < k.n; i++)
+        if (k.fd[i] >= 0)
+            close(k.fd[i]);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -3425,6 +4008,8 @@ int main(void)
         failures += run_tp_case(&tp_cases[i]);
     for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++)
         failures += run_sp_case(&sp_cases[i]);
+    for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++)
+        failures += run_reap_case(&reap_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
