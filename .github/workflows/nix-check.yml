@@ -56,3 +56,6 @@ jobs:
 
       - name: List exposed packages
         run: nix flake show
+
+      - name: Test packaged launchers and module assertions
+        run: nix build .#checks.x86_64-linux.launchers --no-link -L
