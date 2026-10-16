@@ -116,6 +116,11 @@
   now `ERNIC_GIT_SHA_FULL` and `ERNIC_GIT_SHA_SHORT`, rather than
   `GIT_SHA_FULL` and `GIT_SHA_SHORT`, so they can't collide with a parent
   project's.
+* The server and tests are linked with the OpenSSF hardening options whenever
+  the linker supports them: as position-independent executables, with full
+  RELRO (`-z relro -z now`), a non-executable stack (`-z noexecstack`), and
+  `--as-needed --no-copy-dt-needed-entries`. Ubuntu's GCC already did all of
+  this by default, but other toolchains, such as upstream Clang, didn't.
 
 ### Removed
 
