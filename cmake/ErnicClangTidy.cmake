@@ -71,6 +71,21 @@ function(ernic_set_clang_tidy target)
         return()
     endif()
 
-    set_target_properties(${target} PROPERTIES
-      C_CLANG_TIDY "${ERNIC_CLANG_TIDY_COMMAND}")
+    set(command ${ERNIC_CLANG_TIDY_COMMAND})
+
+    # GLib 2.78 and later, built with a C library that has free_sized()
+    # (glibc 2.43 and later), define g_free() as a macro that may call
+    # g_free_sized() instead. The analyzer only knows g_free() frees
+    # memory, so it would miss use-after-free and double free through it,
+    # and report less than it does with an older C library, such as CI's.
+    # Capping the GLib API at 2.76 for clang-tidy's parse, not the
+    # compile's, leaves g_free() a plain function. GLIB2_VERSION is from
+    # the pkg_check_modules() in the top-level CMakeLists.txt.
+    if(GLIB2_VERSION VERSION_GREATER_EQUAL 2.78)
+        list(APPEND command
+          "--extra-arg=-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_76"
+          "--extra-arg=-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_76")
+    endif()
+
+    set_target_properties(${target} PROPERTIES C_CLANG_TIDY "${command}")
 endfunction()

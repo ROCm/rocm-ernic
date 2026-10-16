@@ -85,6 +85,10 @@ jobs:
       # this repository. Exporting the key by its fingerprint from a
       # scratch keyring leaves out any other key in the download, and
       # exports nothing if the key isn't there.
+      #
+      # The unit tests always link with ASan and UBSan (see
+      # tests/CMakeLists.txt), whose runtimes are in libclang-rt, which
+      # --no-install-recommends leaves out.
       - name: Install clang and clang-tidy
         run: |
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -106,7 +110,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             "clang-${LLVM_VERSION}" \
-            "clang-tidy-${LLVM_VERSION}"
+            "clang-tidy-${LLVM_VERSION}" \
+            "libclang-rt-${LLVM_VERSION}-dev"
           "clang-tidy-${LLVM_VERSION}" --version
 
       # The same key and paths as the Build and Test workflow, so the two
