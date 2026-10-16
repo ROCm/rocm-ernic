@@ -7,6 +7,8 @@
 # Follows the pattern from hipFile AISSanitizers.cmake and
 # rocm-xio XIOSanitizers.cmake.
 
+include_guard(GLOBAL)
+
 option(ERNIC_USE_SANITIZERS
   "Build with -fsanitize=address, leak, and undefined" OFF)
 option(ERNIC_USE_THREAD_SANITIZER

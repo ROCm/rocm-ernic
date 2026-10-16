@@ -4,6 +4,8 @@
 
 # Install targets for rocm-ernic.
 
+include_guard(GLOBAL)
+
 include(GNUInstallDirs)
 
 install(TARGETS rocm-ernic

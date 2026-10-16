@@ -6,6 +6,8 @@
 # in the binary. Falls back to safe defaults when git is not
 # available (e.g. tarball builds).
 
+include_guard(GLOBAL)
+
 find_program(GIT_EXECUTABLE git)
 
 set(ERNIC_GIT_SHA_FULL
