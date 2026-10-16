@@ -275,7 +275,11 @@ bool ih_destroy(struct ih *h)
     rocm_ernic_dev_t *dev = h->dev;
 
     if (dev) {
-        /* The server's ionic_device_fini(), then its pvrdma teardown. */
+        /*
+         * The server's ionic_device_fini(), then its pvrdma teardown, both
+         * before the context goes, as in the server: the backend's teardown
+         * puts back mappings through it.
+         */
         ionic_datapath_destroy(dev->ionic_dp);
         ionic_rdma_devcmd_destroy(dev->ionic_rdma);
         ionic_eth_emu_destroy(dev->ionic_emu);

@@ -1391,6 +1391,19 @@ static void tcp_pending_free(TcpPendingData *pending)
     g_free(pending);
 }
 
+/*
+ * GDestroyNotify for cqs: the completions not yet polled, and the CQ.  Run
+ * by tcp_destroy_cq() and, for the CQs still there, by teardown.
+ */
+static void tcp_cq_destroy_notify(gpointer data)
+{
+    TcpCQ *tcq = data;
+
+    g_queue_free_full(tcq->completions, g_free);
+    qemu_mutex_destroy(&tcq->lock);
+    g_free(tcq);
+}
+
 /* Unmap and free every work request on queue, then the queue. */
 static void tcp_wr_queue_free(TcpQP *tqp, GQueue *queue)
 {
@@ -4559,7 +4572,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     priv->mrs =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     priv->cqs = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      (GDestroyNotify)g_free);
+                                      tcp_cq_destroy_notify);
     priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                       tcp_qp_destroy_notify);
     priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -5073,27 +5086,14 @@ static void tcp_destroy_cq(RdmaBackendCQ *cq)
 {
     TcpBackendPrivate *priv = get_private(cq->backend_dev);
     uint32_t handle = (uint32_t)(uintptr_t)cq->ibcq;
-    TcpCQ *tcq;
 
     if (!priv) {
         return;
     }
 
+    /* The table's destroy notifier frees the CQ and its completions */
     qemu_mutex_lock(&priv->lock);
-    tcq = g_hash_table_lookup(priv->cqs, GUINT_TO_POINTER(handle));
-    if (tcq) {
-        /* Free all completions */
-        while (!g_queue_is_empty(tcq->completions)) {
-            TcpCompletion *comp = g_queue_pop_head(tcq->completions);
-            g_free(comp);
-        }
-        g_queue_free(tcq->completions);
-        qemu_mutex_destroy(&tcq->lock);
-        /* Note: g_hash_table_remove will automatically free tcq via g_free
-         * since the hash table was created with g_free as the
-         * value_destroy_func */
-        g_hash_table_remove(priv->cqs, GUINT_TO_POINTER(handle));
-    }
+    g_hash_table_remove(priv->cqs, GUINT_TO_POINTER(handle));
     qemu_mutex_unlock(&priv->lock);
 
     rdma_info_report("TCP: Destroyed CQ handle %u", handle);

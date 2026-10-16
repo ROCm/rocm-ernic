@@ -1007,7 +1007,7 @@ set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
 # fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
 # CM handshake and Connect over the GSI QP.
 foreach(ernic_harness_group
-        devcmds bringup admin rc atomic cq-events ud srq eth nvmeof)
+        devcmds bringup admin rc atomic cq-events ud srq eth nvmeof teardown)
     add_test(
         NAME ionic-harness-${ernic_harness_group}
         COMMAND $<TARGET_FILE:ernic-test-ionic-harness>

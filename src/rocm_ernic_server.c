@@ -1493,14 +1493,19 @@ int main(int argc, char *argv[])
     /* Cleanup: the ionic layer first, while the ctx it was built on and
      * the pvrdma backend it registered with are both still alive. */
     ionic_device_fini(dev);
-    vfu_destroy_ctx(vfu_ctx);
-    g_vfu_ctx = NULL;
 
-    /* Destroy PVRDMA device */
+    /*
+     * Then the PVRDMA device, before the ctx: its backend's teardown puts
+     * back the guest memory mapped for work requests still queued, and
+     * pci_dma_unmap() does that through the ctx each mapping was made with.
+     */
     if (dev->pvrdma_handle) {
         pvrdma_device_destroy(dev->pvrdma_handle);
         dev->pvrdma_handle = NULL;
     }
+
+    vfu_destroy_ctx(vfu_ctx);
+    g_vfu_ctx = NULL;
 
 
     free(dev->stats_file_path);
