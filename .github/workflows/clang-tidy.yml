@@ -1,0 +1,186 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Builds with ERNIC_USE_CLANG_TIDY, which runs clang-tidy on each C file
+# as it's compiled, with the checks in .clang-tidy. Every finding is an
+# error, so the job fails if clang-tidy reports anything.
+#
+# This uses upstream clang-tidy from apt.llvm.org, as hipObject's
+# clang-tidy workflow does, with the clang of the same version as the
+# compiler, so the two agree on every flag the build passes.
+name: rocm-ernic - clang-tidy
+
+on:
+  # The Build and Test workflow's paths, since anything it compiles can
+  # have findings, plus the fuzz harnesses, which the tests compile, and
+  # the configuration and this workflow's own file
+  pull_request:
+    branches: [ develop ]
+    paths: &paths
+      - 'src/**'
+      - 'third-party/**'
+      - 'tests/**'
+      - 'shared/**'
+      - 'nix/analysis/fuzz/**'
+      - 'service/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.clang-tidy'
+      - '.github/workflows/clang-tidy.yml'
+  push:
+    branches: [ develop ]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit on a pull request cancels the run for the older one.
+# Every other run (a push, a manual run) gets a group of its own: in a
+# shared group, a newer run replaces a pending one even without
+# cancel-in-progress, which would leave a commit untested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  clang-tidy:
+    name: clang-tidy (${{ matrix.build_type }})
+    runs-on: ubuntu-24.04
+
+    # Release defines NDEBUG and _FORTIFY_SOURCE=3, which change the code
+    # that clang-tidy's analyzer sees, so check both
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    env:
+      LLVM_VERSION: 23
+      # The Ubuntu release of the runner, for apt.llvm.org
+      UBUNTU_CODENAME: noble
+      # The fingerprint of apt.llvm.org's signing key, which is public
+      LLVM_SIGNER_FINGERPRINT: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # build-essential, cmake, ninja-build and pkg-config are
+      # preinstalled on the hosted image. Ninja keeps each command's output
+      # together, so clang-tidy's output for one file isn't interleaved
+      # with another's in the build log.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev
+
+      # apt only trusts the key with the known fingerprint, and only for
+      # this repository. Exporting the key by its fingerprint from a
+      # scratch keyring leaves out any other key in the download, and
+      # exports nothing if the key isn't there.
+      - name: Install clang and clang-tidy
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            -o /tmp/llvm.asc
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          gpg --batch --import /tmp/llvm.asc
+          sudo install -d -m 0755 /etc/apt/keyrings
+          gpg --batch --export "${LLVM_SIGNER_FINGERPRINT}" \
+            | sudo tee /etc/apt/keyrings/llvm.gpg > /dev/null
+          if [[ ! -s /etc/apt/keyrings/llvm.gpg ]]; then
+            echo "::error::apt.llvm.org's key isn't ${LLVM_SIGNER_FINGERPRINT}"
+            exit 1
+          fi
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg]" \
+            "https://apt.llvm.org/${UBUNTU_CODENAME}/" \
+            "llvm-toolchain-${UBUNTU_CODENAME}-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "clang-${LLVM_VERSION}" \
+            "clang-tidy-${LLVM_VERSION}"
+          "clang-tidy-${LLVM_VERSION}" --version
+
+      # The same key and paths as the Build and Test workflow, so the two
+      # share the cached build
+      - name: Cache libvfio-user build
+        id: cache-libvfio-user
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/lib/x86_64-linux-gnu/libvfio-user*
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+            /usr/include/vfio-user
+          key: libvfio-user-20e9803-ubuntu-24.04
+
+      # Keep the pinned commit in step with build-and-test.yml
+      - name: Clone and build libvfio-user
+        if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout 20e9803
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: Reload ldconfig after cache restore
+        if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+
+      # ERNIC_CLANG_TIDY_EXE is the variable ErnicClangTidy.cmake searches
+      # for clang-tidy with, so setting it skips the search.
+      #
+      # ERNIC_WERROR is off: the Build and Test workflow checks for
+      # warnings with the image's compilers, and this job is only about
+      # clang-tidy.
+      - name: Configure
+        env:
+          BUILD_TYPE: ${{ matrix.build_type }}
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER="clang-${LLVM_VERSION}" \
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+            -DERNIC_USE_CLANG_TIDY=ON \
+            -DERNIC_CLANG_TIDY_EXE="/usr/bin/clang-tidy-${LLVM_VERSION}"
+
+      # -k 0 keeps building after a file fails, so one run reports every
+      # finding, not just those in the first files to fail. pipefail
+      # keeps tee from hiding the build's exit status.
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build -j"$(nproc)" -- -k 0 2>&1 \
+            | tee build/clang-tidy.log
+
+      # A header's findings are reported once for each file that includes
+      # it, so the lines are deduplicated before they're counted. There's
+      # no log if an earlier step failed.
+      - name: Summarize findings
+        if: failure()
+        run: |
+          if [[ ! -f build/clang-tidy.log ]]; then
+            exit 0
+          fi
+          {
+            echo "# clang-tidy findings (${{ matrix.build_type }})"
+            echo
+            echo 'Findings by check or compiler warning:'
+            echo '```'
+            grep -E ': (warning|error): .*\[[^][]+\]$' \
+              build/clang-tidy.log \
+              | sort -u \
+              | sed -E 's/.*\[([^][]+)\]$/\1/; s/,-warnings-as-errors$//; s/^-Werror,//' \
+              | sort | uniq -c | sort -rn
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

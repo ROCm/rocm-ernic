@@ -1,0 +1,157 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+# clang-tidy configuration for rocm-ernic
+#
+# Build with -DERNIC_USE_CLANG_TIDY=ON (and Clang as the C compiler) to
+# run these checks. Every finding is an error.
+#
+# Whole groups are enabled, and individual checks are turned off below.
+# Later entries override earlier ones. A group's C++ and Objective-C
+# checks don't run on C code, so the groups are enabled whole, which also
+# picks up the checks that a newer clang-tidy adds to them.
+#
+# This needs clang-tidy 19 or later, for ExcludeHeaderFilterRegex. CI
+# (clang-tidy.yml) uses upstream clang-tidy 23.
+#
+# Some checks have more than one name (aliases), so a check that's turned
+# off is listed under each of its names in the enabled groups. Each alias
+# follows the check it's an alias of.
+---
+Checks:
+  - -*
+  # The android-cloexec checks apply to any Linux program, and
+  # android-comparison-in-temp-failure-retry to glibc's TEMP_FAILURE_RETRY
+  - android-*
+  - bugprone-*
+  - cert-*
+  - clang-analyzer-*
+  - concurrency-*
+  - cppcoreguidelines-*
+  - misc-*
+  - modernize-*
+  - performance-*
+  - portability-*
+  - readability-*
+
+  # Not enabled, since they're for other platforms or code bases. The
+  # checks named in parentheses report something in the current code:
+  #   altera-*: OpenCL kernels for Intel FPGAs (altera-struct-pack-align,
+  #     altera-unroll-loops)
+  #   darwin-*: Apple's OSSpinLock and dispatch_once
+  #   google-*: Google's style. Its checks for C are aliases of enabled
+  #     ones, google-global-names-in-headers (C++ using-declarations), and
+  #     google-readability-todo (TODO(username) comments).
+  #     google-runtime-int, which hipObject enables, is C++ only
+  #   linuxkernel-*: the kernel's ERR_PTR() convention
+  #   llvm-*: LLVM's conventions (llvm-header-guard, llvm-include-order)
+  #     and aliases of enabled checks
+  #   llvmlibc-*: LLVM's C library (llvmlibc-restrict-system-libc-headers)
+  #   mpi-*: MPI programs
+  # abseil, boost, fuchsia, objc, openmp, and zircon have no checks that
+  # run on C.
+
+  # TODO: These checks report problems in the current code. Fix the code
+  # and delete the check's line here, or move it to a "Not wanted"
+  # section with a reason. The count is the number of places clang-tidy
+  # 23 reports in the Debug and Release builds together.
+  - -android-cloexec-fopen  # TODO(5)
+  - -android-cloexec-open  # TODO(8)
+  - -android-cloexec-pipe  # TODO(3)
+  - -bugprone-assignment-in-if-condition  # TODO(8)
+  - -bugprone-branch-clone  # TODO(1)
+  - -bugprone-easily-swappable-parameters  # TODO(252)
+  - -bugprone-implicit-widening-of-multiplication-result  # TODO(73)
+  - -bugprone-invalid-enum-default-initialization  # TODO(3)
+  - -bugprone-multi-level-implicit-pointer-conversion  # TODO(2)
+  - -bugprone-not-null-terminated-result  # TODO(1)
+  - -bugprone-reserved-identifier  # TODO(4)
+  - -cert-dcl37-c  # TODO: the same check
+  - -cert-dcl51-cpp  # TODO: the same check
+  - -bugprone-signed-bitwise  # TODO(602)
+  - -bugprone-suspicious-include  # TODO(12): tests that #include a .c file
+  - -bugprone-suspicious-memory-comparison  # TODO(2)
+  - -cert-exp42-c  # TODO: the same check
+  - -cert-flp37-c  # TODO: the same check
+  - -bugprone-unchecked-string-to-number-conversion  # TODO(10)
+  - -cert-err34-c  # TODO: the same check
+  - -cert-err33-c  # TODO(426): unchecked return values
+  - -clang-analyzer-core.CallAndMessage  # TODO(7)
+  - -clang-analyzer-core.NonNullParamChecker  # TODO(2)
+  - -clang-analyzer-core.NullDereference  # TODO(1)
+  - -clang-analyzer-core.StackAddressEscape  # TODO(1)
+  - -clang-analyzer-optin.performance.Padding  # TODO(6)
+  - -clang-analyzer-optin.taint.GenericTaint  # TODO(1)
+  # Only reported in Release, and only with the other checks here off.
+  # The analyzer follows paths through the code, so which problems it
+  # finds can change with the set of checks
+  - -clang-analyzer-optin.taint.TaintedAlloc  # TODO(1)
+  - -clang-analyzer-security.ArrayBound  # TODO(3)
+  # It wants C11's Annex K functions, such as memcpy_s(), which glibc
+  # doesn't have
+  - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling  # TODO(1198)
+  - -clang-analyzer-unix.Stream  # TODO(1)
+  # A compiler warning, new in Clang 23, which clang-tidy reports too
+  - -clang-diagnostic-unused-but-set-global  # TODO(4)
+  - -concurrency-mt-unsafe  # TODO(22)
+  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(116)
+  - -cppcoreguidelines-init-variables  # TODO(545)
+  - -cppcoreguidelines-interfaces-global-init  # TODO(1)
+  # hipObject turns this off, since IWYU checks the includes
+  - -misc-include-cleaner  # TODO(686)
+  - -misc-no-recursion  # TODO(6)
+  - -misc-predictable-rand  # TODO(2)
+  - -cert-msc30-c  # TODO: the same check
+  - -cert-msc50-cpp  # TODO: the same check
+  - -misc-redundant-expression  # TODO(2)
+  - -misc-unused-parameters  # TODO(96)
+  - -misc-use-internal-linkage  # TODO(2)
+  - -modernize-avoid-c-style-cast  # TODO(6)
+  - -modernize-macro-to-enum  # TODO(912)
+  - -cppcoreguidelines-macro-to-enum  # TODO: the same check
+  - -performance-no-int-to-ptr  # TODO(47)
+  - -readability-avoid-nested-conditional-operator  # TODO(7)
+  - -readability-braces-around-statements  # TODO(1490)
+  - -readability-duplicate-include  # TODO(1)
+  - -readability-else-after-return  # TODO(3)
+  - -readability-function-cognitive-complexity  # TODO(59)
+  # hipObject turns this off
+  - -readability-identifier-length  # TODO(1849)
+  - -readability-implicit-bool-conversion  # TODO(160)
+  - -readability-inconsistent-declaration-parameter-name  # TODO(3)
+  - -readability-inconsistent-ifelse-braces  # TODO(2)
+  - -readability-isolate-declaration  # TODO(158)
+  - -readability-magic-numbers  # TODO(2849)
+  - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
+  - -readability-math-missing-parentheses  # TODO(100)
+  - -readability-non-const-parameter  # TODO(17)
+  - -readability-redundant-casting  # TODO(5)
+  - -readability-redundant-nested-if  # TODO(4)
+  - -readability-redundant-parentheses  # TODO(2)
+  - -readability-suspicious-call-argument  # TODO(2)
+  - -readability-trailing-comma  # TODO(167)
+  - -readability-uppercase-literal-suffix  # TODO(344)
+  - -readability-use-concise-preprocessor-directives  # TODO(3)
+WarningsAsErrors: '*'
+
+CheckOptions:
+  # rocm-ernic only builds with glibc, so report the functions that glibc
+  # documents as thread-unsafe. The default adds POSIX's list, which
+  # includes getenv() and dlerror(): glibc's getenv() only races with
+  # changes to the environment, and its dlerror() keeps per-thread state.
+  # Revisit this if rocm-ernic is built with another C library.
+  concurrency-mt-unsafe.FunctionSet: glibc
+  # The default, Remove, mistakes the comma after an empty {} argument for
+  # a trailing comma, as in {a, b, {}, c}, and its fix doesn't compile.
+  # Multi-line lists still need a trailing comma, which also keeps
+  # clang-format from packing several elements onto a line
+  readability-trailing-comma.SingleLineCommaPolicy: Ignore
+
+# Report problems in every header that isn't a system header, except the
+# vendored ones under third-party/, which aren't ours to fix. Most of
+# those are SYSTEM includes anyway, but a test can #include a vendored .c
+# file (test_rdma_res_tbl.c includes rdma_rm.c).
+HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: '.*/third-party/.*'
+SystemHeaders: false

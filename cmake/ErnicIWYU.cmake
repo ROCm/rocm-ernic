@@ -16,8 +16,6 @@ include_guard(GLOBAL)
 option(ERNIC_USE_IWYU
   "Run include-what-you-use when compiling" OFF)
 
-set(ERNIC_IWYU_VENDORED_DIR "${PROJECT_SOURCE_DIR}/third-party")
-
 if(ERNIC_USE_IWYU)
     # The vendored sources are compiled in the same targets as ours, and
     # the SKIP_LINTING source property, which keeps IWYU off them, is new
@@ -65,13 +63,11 @@ if(ERNIC_USE_IWYU)
     endforeach()
 endif()
 
-# Run include-what-you-use on a target's sources, except the vendored
-# ones under third-party/
+# Run include-what-you-use on a target's sources
 #
 # This is set per target instead of with CMAKE_C_INCLUDE_WHAT_YOU_USE so
-# that a superproject's targets aren't checked. Source file properties
-# belong to a directory, so call this from the directory that creates
-# the target.
+# that a superproject's targets aren't checked. ernic_set_compiler_flags()
+# keeps it off the vendored sources under third-party/.
 function(ernic_set_iwyu target)
     if(NOT ERNIC_USE_IWYU)
         return()
@@ -79,17 +75,4 @@ function(ernic_set_iwyu target)
 
     set_target_properties(${target} PROPERTIES
       C_INCLUDE_WHAT_YOU_USE "${ERNIC_IWYU_COMMAND}")
-
-    get_target_property(sources ${target} SOURCES)
-    get_target_property(source_dir ${target} SOURCE_DIR)
-    foreach(source IN LISTS sources)
-        cmake_path(ABSOLUTE_PATH source BASE_DIRECTORY "${source_dir}"
-          OUTPUT_VARIABLE path)
-        cmake_path(IS_PREFIX ERNIC_IWYU_VENDORED_DIR "${path}" NORMALIZE
-          vendored)
-        if(vendored)
-            set_source_files_properties(${source} PROPERTIES
-              SKIP_LINTING ON)
-        endif()
-    endforeach()
 endfunction()

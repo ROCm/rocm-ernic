@@ -5,6 +5,12 @@
 # clang-tidy's own check set is independent of the compile command's -w,
 # so the vendored sources are still analysed. header-filter restricts
 # diagnostics to headers in those two trees.
+#
+# Any --config keeps clang-tidy from reading the repository's
+# .clang-tidy, which is for the ERNIC_USE_CLANG_TIDY build: its
+# WarningsAsErrors would change the check names that triage parses, and
+# it excludes the third-party/ headers. This one only repeats a default.
+# It can't be '{}', which xargs -I{} would replace with the file name.
 { pkgs, mkCompileDbReport }:
 
 let
@@ -21,6 +27,7 @@ let
         xargs -0 -P "$(nproc)" -I{} \
           clang-tidy \
             -p "$compile_db" \
+            --config='WarningsAsErrors: ""' \
             --header-filter='.*/(src|third-party)/.*' \
             --checks='-*,bugprone-*,cert-*,clang-analyzer-*,misc-*,readability-*' \
             {} \
