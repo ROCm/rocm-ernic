@@ -158,22 +158,64 @@ void info_report(const char *fmt, ...)
 {
     (void)fmt;
 }
+
+/*
+ * DMA mappings, which only a work request through a DMA memory region makes
+ * (see the sender rows): each pci_dma_map() hands out the next slot, and
+ * pci_dma_unmap() counts the unmaps of each.  The rows map only from the
+ * test's own thread, but a receive thread may unmap.
+ */
+#define DMA_SLOTS    4
+#define DMA_SLOT_LEN 64u
+
+static uint8_t g_dma_mem[DMA_SLOTS][DMA_SLOT_LEN];
+static atomic_int g_dma_maps;
+static atomic_int g_dma_unmaps[DMA_SLOTS];
+static atomic_int g_dma_stray_unmaps; /* of an address that isn't a slot */
+
+static void dma_reset(void)
+{
+    atomic_store(&g_dma_maps, 0);
+    for (int i = 0; i < DMA_SLOTS; i++)
+        atomic_store(&g_dma_unmaps[i], 0);
+    atomic_store(&g_dma_stray_unmaps, 0);
+}
+
+/* Whether every mapping handed out has been unmapped once, and only once. */
+static bool dma_unmapped_once(void)
+{
+    for (int i = 0; i < atomic_load(&g_dma_maps); i++)
+        if (atomic_load(&g_dma_unmaps[i]) != 1)
+            return false;
+    return atomic_load(&g_dma_stray_unmaps) == 0;
+}
+
 void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
 {
+    int slot = atomic_load(&g_dma_maps);
+
     (void)dev;
     (void)addr;
-    (void)len;
     (void)dir;
-    return NULL;
+    if (slot >= DMA_SLOTS || *len > DMA_SLOT_LEN)
+        return NULL;
+    atomic_store(&g_dma_maps, slot + 1);
+    return g_dma_mem[slot];
 }
 void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
                    uint64_t access_len)
 {
     (void)dev;
-    (void)buffer;
     (void)len;
     (void)dir;
     (void)access_len;
+    for (int i = 0; i < DMA_SLOTS; i++) {
+        if (buffer == g_dma_mem[i]) {
+            atomic_fetch_add(&g_dma_unmaps[i], 1);
+            return;
+        }
+    }
+    atomic_fetch_add(&g_dma_stray_unmaps, 1);
 }
 int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
 {
@@ -4043,7 +4085,12 @@ static int run_reap_case(const struct reap_case *c)
  * now goes back on the connection the data came on, which the waiting data
  * holds a reference to: the pending rows check it reaches worker 1, and that
  * nothing is sent, and nothing is used after it is freed, if worker 1's
- * connection is retired while the data waits.
+ * connection is retired while the data waits.  Teardown frees what is still
+ * queued on a QP: the teardown rows leave data waiting, with worker 1's
+ * connection in the table or retired, and check that teardown drops the
+ * data's reference; and leave an RDMA write waiting for its completion and
+ * a receive waiting for data, both mapped through a DMA memory region, and
+ * check that teardown unmaps each mapping once.
  *
  * A node the manager had declared dead that answered a heartbeat again
  * stayed dead to the rest of the mesh until its topology next changed.  The
@@ -4060,7 +4107,10 @@ enum sender_scenario {
     SENDER_WRITE,     /* worker 1's RDMA write names node 2 as its sender */
     SENDER_READ,      /* worker 1's RDMA read names node 2 as its sender */
     SENDER_PENDING,   /* worker 1's data, naming node 2, waits for a receive */
-    SENDER_PENDING_GONE, /* and worker 1's connection is retired meanwhile */
+    SENDER_PENDING_GONE,  /* and worker 1's connection is retired meanwhile */
+    SENDER_TEARDOWN_KEPT, /* data waits, never received, at teardown */
+    SENDER_TEARDOWN_RETIRED, /* and worker 1's connection is retired first */
+    SENDER_TEARDOWN_QUEUED,  /* a write and a receive still queued */
 };
 
 struct sender_case {
@@ -4091,6 +4141,23 @@ static const struct sender_case sender_cases[] = {
      "retired before one is",
      "the data lands, no completion is sent, and the connection is freed",
      SENDER_PENDING_GONE},
+    {"corner",
+     "worker 1 sends data before a receive is posted, and none is before "
+     "teardown",
+     "teardown frees the data and drops its reference to worker 1's "
+     "connection, as well as the table's",
+     SENDER_TEARDOWN_KEPT},
+    {"corner",
+     "worker 1 sends data before a receive is posted, its connection is "
+     "retired, and no receive is posted before teardown",
+     "teardown frees the data and drops the connection's last reference but "
+     "the test's",
+     SENDER_TEARDOWN_RETIRED},
+    {"corner",
+     "an RDMA write waits for worker 1's completion, and a receive for data, "
+     "both mapped through a DMA memory region, at teardown",
+     "teardown unmaps each mapping once and frees both requests",
+     SENDER_TEARDOWN_QUEUED},
 };
 
 /* The memory region the RDMA rows write and read, at g_mr while they run */
@@ -4099,11 +4166,16 @@ static const struct sender_case sender_cases[] = {
 #define SENDER_LEN      8u
 #define SENDER_BYTE     0xab /* what the write writes */
 
-#define SENDER_QPN 12u /* the QP the requests are addressed to */
+#define SENDER_QPN      12u    /* the QP the requests are addressed to */
+#define SENDER_DMA_KEY  0xd3au /* a DMA memory region's key */
+#define SENDER_DMA_ADDR UINT64_C(0x20000)
 
 static uint8_t g_sender_mem[SENDER_LEN];
 static RdmaRmMR g_sender_mr;
-static TcpCQ g_sender_cq; /* the pending rows' QP has to have one */
+static RdmaRmMR g_sender_dma_mr; /* starts at 0 with no length: DMA */
+static TcpCQ g_sender_cq;        /* the QP these rows add has to have one */
+/* A reference a teardown row keeps to worker 1's connection past tcp_fini() */
+static TcpConnection *g_sender_held;
 
 /* Set node id's liveness and the time of its last heartbeat. */
 static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
@@ -4272,13 +4344,18 @@ static bool send_data(int fd, uint32_t src)
     return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
 }
 
-/* Add SENDER_QPN to the manager's QPs, as tcp_create_qp() would. */
-static void sender_qp_add(TcpBackendPrivate *priv, RdmaBackendDev *dev)
+/*
+ * Add SENDER_QPN to the manager's QPs, connected to node remote, as
+ * tcp_create_qp() and an RTR would.
+ */
+static void sender_qp_add(TcpBackendPrivate *priv, uint32_t remote)
 {
     TcpQP *tqp = g_new0(TcpQP, 1);
 
     tqp->qpn = SENDER_QPN;
-    tqp->backend_dev = dev;
+    tqp->backend_dev = priv->backend_dev;
+    tqp->remote_node_id = remote;
+    tqp->scq = &g_sender_cq;
     tqp->rcq = &g_sender_cq;
     tqp->send_queue = g_queue_new();
     tqp->recv_queue = g_queue_new();
@@ -4310,21 +4387,48 @@ static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
     return taken;
 }
 
-/*
- * SENDER_PENDING and SENDER_PENDING_GONE.  The manager has finished with the
- * data once it has answered a heartbeat sent after it.
- */
-static const char *sender_pending(TcpBackendPrivate *priv, RdmaBackendDev *dev,
-                                  int w1, int w2, enum sender_scenario scenario)
+/* How many requests or buffers wait on each of SENDER_QPN's queues */
+static void sender_queued(TcpBackendPrivate *priv, guint *sends, guint *recvs,
+                          guint *pending)
 {
-    RdmaBackendQP qp;
-    struct ibv_sge sge;
+    TcpQP *tqp;
 
-    sender_qp_add(priv, dev);
+    qemu_mutex_lock(&priv->lock);
+    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(SENDER_QPN));
+    *sends = tqp ? g_queue_get_length(tqp->send_queue) : 0;
+    *recvs = tqp ? g_queue_get_length(tqp->recv_queue) : 0;
+    *pending = tqp ? g_queue_get_length(tqp->pending_data) : 0;
+    qemu_mutex_unlock(&priv->lock);
+}
+
+/*
+ * Have worker 1's data, naming node 2 as its sender, wait for a receive on
+ * SENDER_QPN.  The manager has finished with the data once it has answered a
+ * heartbeat sent after it.
+ */
+static const char *sender_buffer(TcpBackendPrivate *priv, int w1)
+{
+    guint sends, recvs, pending;
+
+    sender_qp_add(priv, 0);
     if (!send_data(w1, 2))
         return "could not send the data";
     if (!worker_settled(w1, 1))
         return "the data wasn't taken";
+    sender_queued(priv, &sends, &recvs, &pending);
+    return pending == 1 ? NULL : "the data isn't waiting for a receive";
+}
+
+/* SENDER_PENDING and SENDER_PENDING_GONE */
+static const char *sender_pending(TcpBackendPrivate *priv, int w1, int w2,
+                                  enum sender_scenario scenario)
+{
+    RdmaBackendQP qp;
+    struct ibv_sge sge;
+    const char *why = sender_buffer(priv, w1);
+
+    if (why)
+        return why;
     if (scenario == SENDER_PENDING_GONE && !retire_node_conn(priv, 1))
         return "worker 1's connection wasn't in the table";
     count_type(w2, TCP_MSG_COMPLETION);
@@ -4335,7 +4439,7 @@ static const char *sender_pending(TcpBackendPrivate *priv, RdmaBackendDev *dev,
     sge.addr = SENDER_MR_START;
     sge.length = SENDER_LEN;
     sge.lkey = SENDER_MR_RKEY;
-    tcp_post_recv(dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
+    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
 
     for (uint32_t i = 0; i < SENDER_LEN; i++)
         if (g_sender_mem[i] != SENDER_BYTE)
@@ -4352,8 +4456,62 @@ static const char *sender_pending(TcpBackendPrivate *priv, RdmaBackendDev *dev,
                : "the completion didn't come back to worker 1";
 }
 
-static const char *sender_run(TcpBackendPrivate *priv, RdmaBackendDev *dev,
-                              int w1, int w2, enum sender_scenario scenario)
+/*
+ * SENDER_TEARDOWN_KEPT and SENDER_TEARDOWN_RETIRED.  The row keeps a
+ * reference to worker 1's connection in g_sender_held, which must be the
+ * only one left once tcp_fini() has freed the waiting data.
+ */
+static const char *sender_teardown_pending(TcpBackendPrivate *priv, int w1,
+                                           enum sender_scenario scenario)
+{
+    const char *why = sender_buffer(priv, w1);
+
+    if (why)
+        return why;
+    g_sender_held = tcp_connection_lookup(priv, 1);
+    if (!g_sender_held)
+        return "worker 1 has no connection";
+    if (scenario == SENDER_TEARDOWN_RETIRED && !retire_node_conn(priv, 1))
+        return "worker 1's connection wasn't in the table";
+    return NULL;
+}
+
+/*
+ * SENDER_TEARDOWN_QUEUED.  A receive with no data waiting stays queued, and
+ * a request to worker 1, which never answers, waits on the send queue for
+ * its completion.  Each maps its one entry through the DMA region.  With no
+ * completion context the request's opcode is 0, PVRDMA_WR_RDMA_WRITE, so it
+ * goes out as an RDMA write.
+ */
+static const char *sender_teardown_queued(TcpBackendPrivate *priv, int w1)
+{
+    RdmaBackendQP qp;
+    struct ibv_sge sge;
+    guint sends, recvs, pending;
+
+    atomic_store(&g_mr, &g_sender_dma_mr);
+    sender_qp_add(priv, 1);
+    memset(&qp, 0, sizeof(qp));
+    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
+    memset(&sge, 0, sizeof(sge));
+    sge.addr = SENDER_DMA_ADDR;
+    sge.length = SENDER_LEN;
+    sge.lkey = SENDER_DMA_KEY;
+
+    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
+    tcp_post_send(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0,
+                  0, NULL);
+    if (!wait_for_type(w1, TCP_MSG_RDMA_WRITE, 2000))
+        return "the write didn't reach worker 1";
+    sender_queued(priv, &sends, &recvs, &pending);
+    if (sends != 1 || recvs != 1)
+        return "the write and the receive aren't both queued";
+    return atomic_load(&g_dma_maps) == 2 ? NULL
+                                         : "the requests weren't both mapped";
+}
+
+static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
+                              enum sender_scenario scenario)
 {
     switch (scenario) {
     case SENDER_HEARTBEAT:
@@ -4365,7 +4523,12 @@ static const char *sender_run(TcpBackendPrivate *priv, RdmaBackendDev *dev,
         return sender_rdma(w1, w2, scenario);
     case SENDER_PENDING:
     case SENDER_PENDING_GONE:
-        return sender_pending(priv, dev, w1, w2, scenario);
+        return sender_pending(priv, w1, w2, scenario);
+    case SENDER_TEARDOWN_KEPT:
+    case SENDER_TEARDOWN_RETIRED:
+        return sender_teardown_pending(priv, w1, scenario);
+    case SENDER_TEARDOWN_QUEUED:
+        return sender_teardown_queued(priv, w1);
     default:
         return "unknown scenario";
     }
@@ -4390,7 +4553,11 @@ static int run_sender_case(const struct sender_case *c)
     g_sender_mr.start = SENDER_MR_START;
     g_sender_mr.length = sizeof(g_sender_mem);
     g_sender_mr.rkey = SENDER_MR_RKEY;
+    memset(&g_sender_dma_mr, 0, sizeof(g_sender_dma_mr));
+    g_sender_dma_mr.rkey = SENDER_DMA_KEY;
     atomic_store(&g_mr, &g_sender_mr);
+    dma_reset();
+    g_sender_held = NULL;
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
     /* No backend threads exist yet, so nothing reads the environment */
@@ -4413,7 +4580,7 @@ static int run_sender_case(const struct sender_case *c)
     else if ((w2 = worker_register(priv)) < 0 || !wait_for_registered(priv, 2))
         why = "worker 2 did not register";
     else
-        why = sender_run(priv, &dev, w1, w2, c->scenario);
+        why = sender_run(priv, w1, w2, c->scenario);
 
     tcp_fini(&dev);
     alarm(0);
@@ -4421,6 +4588,15 @@ static int run_sender_case(const struct sender_case *c)
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
                  atomic_load(&g_exits) != atomic_load(&g_creates)))
         why = "a thread wasn't joined exactly once";
+    if (!why && !dma_unmapped_once())
+        why = "a DMA mapping wasn't unmapped exactly once";
+    if (g_sender_held) {
+        if (!why && atomic_load(&g_sender_held->refcount) != 1)
+            why = "teardown left a reference to worker 1's connection";
+        /* Frees it; LeakSanitizer reports it, and the data, otherwise */
+        tcp_connection_unref(g_sender_held);
+        g_sender_held = NULL;
+    }
 
     ok = !why;
     printf("%s sender %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
