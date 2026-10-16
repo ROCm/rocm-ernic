@@ -239,6 +239,99 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 `rocm-ernic:<version>`, so a local `docker load` of one overwrites the others
 — push per-arch tags or a manifest list to keep them side by side.
 
+## Using the emulated NIC from another flake
+
+`nixosModules.ernic-guest` adds the emulated ionic NIC to any `qemu-vm.nix`
+guest, and `packages.ernic-run` starts the server around the VM launcher:
+
+```
+# guest configuration
+modules = [
+  "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+  rocm-ernic.nixosModules.ernic-guest
+  { virtualisation.ernic.enable = true; virtualisation.cores = 4; }
+];
+
+# host: start the server, export ERNIC_SOCKET, run the VM, stop the server
+ernic-run --backend loopback -- ./result/bin/run-<host>-vm
+```
+
+The module sets shared memfd guest RAM, q35 with a `pcie-root-port` (`rp0`)
+so QMP `device_del`/`device_add ernic0` can hot-unplug and replug the NIC, and
+the JSON-form `vfio-user-pci` device. It asserts at least 4 vCPUs and a guest
+kernel of 6.18 or newer. Its `ernic-rdma-up` service opens the ionic netdev
+*before* loading `ionic_rdma`. Loaded first, `ionic_rdma` takes every spare
+interrupt for EQs, and `ip link set up` then fails with
+`qcq alloc of rx0 failed -28`.
+
+```
+nix run .#run-ionic-guest-test              # KVM if usable, else TCG
+nix run .#run-ionic-guest-test -- --accel=tcg
+```
+
+This boots a guest on the loopback backend and checks `lspci 1dd8:1002`,
+`rdma link` ACTIVE and `ibv_devinfo` PORT_ACTIVE, with the serial log kept in a
+mktemp evidence directory. It uses the stock nixpkgs QEMU and kernel and needs
+no root, `/dev/vfio` or RDMA hardware.
+
+## Trying the emulated NIC interactively
+
+```
+nix run github:ROCm/rocm-ernic#ionic-vm
+nix run .#ionic-vm -- --ssh-port 2222       # then: ssh -p 2222 root@127.0.0.1
+nix run .#ionic-vm -- --accel=tcg --backend loopback
+```
+
+`ionic-vm` starts the server and boots a NixOS guest (nixpkgs
+`linuxPackages_latest`, 4 vCPUs, 4 GiB) to an autologin root shell on the
+serial console, with `ionic`/`ionic_rdma` bound and the RDMA port ACTIVE. The
+login message lists things to try (`rdma link`, `ibv_devinfo -v`,
+`ethtool -i`, `lspci -nn -d 1dd8:`). Quit with `Ctrl-a x` or `poweroff`.
+
+The guest root is a tmpfs, so each run starts clean. The server log and socket
+live in a mktemp run directory printed at start. `--ssh-port` forwards the
+guest's sshd to `127.0.0.1:PORT` only and hands the host user's
+`~/.ssh/*.pub` keys to the guest through the qemu-vm.nix shared directory;
+root login is key-only. Like `run-ionic-guest-test`, it needs no root,
+`/dev/vfio` or RDMA hardware, and uses KVM when it is usable.
+
+## Two guests with RDMA between them
+
+```
+nix run github:ROCm/rocm-ernic#ionic-vm-pair
+nix run .#ionic-vm-pair -- --ssh-port 2222  # node 1 on 2222, node 2 on 2223
+nix run .#run-ionic-pair-test               # automated: RC ping-pong both ways
+```
+
+`ionic-vm-pair` boots two NixOS guests (`ernic-node1`, `ernic-node2`), each
+with its own emulated NIC. Node 1's server is the TCP backend's manager
+(`tcp:manager:listen:PORT`) and node 2's a worker connecting to it on
+127.0.0.1, so RDMA between the guests goes through the two servers. Node 1's
+console is on the terminal; node 2's goes to `serial-2.log` in the run
+directory. `ernic-pair-pingpong [ITERS]` runs `ibv_rc_pingpong` with the
+peer as server (over ssh) and this node as client, and `ssh ernic-node2`
+gives a root shell on the other guest. Quitting node 1 stops both.
+
+How the pieces fit, without root, a TAP or RDMA hardware:
+
+- The servers use distinct MACs (`72:6f:63:6d:00:01`/`:02`), and each
+  advertises its guest's default RoCE GID, the link-local address derived
+  from that MAC, in `ERNIC_TCP_GUEST_GIDS`. The backend maps a destination
+  GID to a mesh node with it.
+- The emulated NIC has no Ethernet path without a host TAP. verbs tools
+  exchange QPN and GID over TCP, so each guest gets a second virtio NIC
+  (`pair0`, 10.77.0.1/2) on an unprivileged `-netdev dgram` unix-socket pair.
+- For a RoCE v2 GID, the guest kernel resolves the destination MAC through
+  the neighbour table on the ionic netdev, even for a link-local GID, so
+  `ernic-pair-neigh` pins the peer's GID to its known MAC.
+- The guests reach each other with a per-run ssh key; `--ssh-port` adds
+  the host user's `~/.ssh/*.pub` and forwards both guests to 127.0.0.1.
+
+`ernic-run` gained `--mac` for this, and stops a server that ignores
+SIGTERM for 10s with SIGKILL: today a TCP-backend server that a peer has
+connected to does not exit on SIGTERM (its accept thread stays blocked in
+`accept()` while `tcp_fini()` joins it), so quitting takes about 20s.
+
 ## Module map
 
 | Path | Purpose |
@@ -249,6 +342,11 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 | `nix/packages.nix` | dependency / tool sets |
 | `nix/derivation.nix` | CMake build of rocm-ernic |
 | `nix/cross.nix` | cross-compile the server for a target arch (crossSystem pkgs) |
+| `nix/guest-module.nix` | `nixosModules.ernic-guest`: emulated NIC for a qemu-vm.nix guest |
+| `nix/ernic-run.nix` | `ernic-run`: start the server around a command, export `ERNIC_SOCKET` |
+| `nix/ionic-guest-test.nix` | `run-ionic-guest-test`: guest reaches PORT_ACTIVE on the in-tree drivers |
+| `nix/ionic-vm.nix` | `ionic-vm`: interactive guest with the emulated NIC, root shell, optional ssh forward |
+| `nix/ionic-pair.nix` | `ionic-vm-pair` and `run-ionic-pair-test`: two guests joined by the TCP backend, RDMA between them |
 | `nix/oci.nix` | OCI image (minimal/debug variants) via dockerTools.streamLayeredImage |
 | `nix/microvms/` | per-arch run layer: TCG microvm + loopback self-test + lifecycle driver (VM arches), qemu-user smoke (armv7l/ppc64le) |
 | `nix/devshell.nix`, `nix/shell-functions/` | dev shell + helpers |
