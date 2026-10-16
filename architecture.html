@@ -373,30 +373,53 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#high-level-overview">High-Level Overview</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components">Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-rocm-ernic-server-c">Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-bridge-rocm-ernic-compat-c">Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-third-party-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qemu-compatibility-layer-src-qemu-compat">QEMU Compatibility Layer (<code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-backends-src-rdma">RDMA Backends (<code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#network-services-src-net">Network Services (<code class="docutils literal notranslate"><span class="pre">src/net/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ionic-emulation-src-ionic-c">ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-short-version">The Short Version</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-in-brief">RDMA in Brief</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-a-pci-device-is-emulated-in-userspace">How a PCI Device Is Emulated in Userspace</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-the-guest-sees">The Device the Guest Sees</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#inside-the-server">Inside the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ionic-front-end">The ionic Front End</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-core">The Device Core</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-main-loop">The Main Loop</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pci-bars">PCI BARs</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loopback">Loopback</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tcp-ip">TCP/IP</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#userspace-data-path">Userspace Data Path</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bringing-the-device-up">Bringing the Device Up</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device-commands-over-bar-0">Device Commands over BAR 0</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ethernet-admin-queue">The Ethernet Admin Queue</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-bootstrap">RDMA Bootstrap</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#interrupts">Interrupts</a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-verbs">RDMA / Verbs</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of">NVMe-oF</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#none">None</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tap-ethernet-only">TAP (Ethernet only)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-control-path-the-rdma-admin-queue">The Control Path: the RDMA Admin Queue</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-data-path">The Data Path</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-memory-three-levels-down">Guest Memory, Three Levels Down</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rings-and-the-color-bit">Rings and the Color Bit</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#executing-a-send-queue">Executing a Send Queue</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#example-an-rdma-write-between-two-qps-in-one-vm">Example: an RDMA WRITE Between Two QPs in One VM</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#receive-queues-and-cq-doorbells">Receive Queues and CQ Doorbells</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#datagrams-ud-and-gsi">Datagrams (UD and GSI)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP Mesh</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#topology">Topology</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#which-server-owns-a-gid">Which Server Owns a GID?</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ionic-wire-protocol">The ionic Wire Protocol</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-remote-request-step-by-step">A Remote Request, Step by Step</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ethernet-side">The Ethernet Side</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-targets-nvme-of-and-s3">In-Process Targets: NVMe-oF and S3</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-over-fabrics">NVMe over Fabrics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma">S3 over RDMA</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#threads">Threads</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trust-boundaries">Trust Boundaries</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-not-emulated">What Is Not Emulated</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-to-look-in-the-source">Where to Look in the Source</a></li>
 </ul>
             </nav>
         </div>
@@ -410,214 +433,1251 @@
                   
   <section id="architecture">
 <h1>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h1>
-<p>rocm-ernic emulates a complete PCIe RDMA device in userspace
-using the VFIO-User protocol. A kernel driver inside the guest
-VM communicates with the emulated device, providing standard
-InfiniBand verbs to applications. That driver is the upstream
-Linux <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> pair, with the patches in
-<code class="docutils literal notranslate"><span class="pre">patches/</span></code> applied. See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>.</p>
-<section id="high-level-overview">
-<h2>High-Level Overview<a class="headerlink" href="#high-level-overview" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌──────────────────────────────────────────────┐
-│          Virtual Machine (Guest)             │
-│  ┌────────────────────────────────────┐      │
-│  │  Linux ionic + ionic_rdma Drivers  │      │
-│  └─────────────┬──────────────────────┘      │
-│                │ PCI Interface               │
-└────────────────┼─────────────────────────────┘
-                 │ VFIO-User Protocol
-┌────────────────┼─────────────────────────────┐
-│                ▼                             │
-│  ┌──────────────────────────────────────┐    │
-│  │    rocm_ernic Server                 │    │
-│  │  ┌───────────────────────┐           │    │
-│  │  │  RDMA Device Logic    │           │    │
-│  │  │  (adapted from QEMU)  │           │    │
-│  │  └──────────┬────────────┘           │    │
-│  │    ┌────────┴────────┬──────┐        │    │
-│  │    ▼                 ▼      ▼        │    │
-│  │  ┌──────┐  ┌──────────┐  ┌──────┐   │    │
-│  │  │Loop- │  │ TCP/IP   │  │RDMA/ │   │    │
-│  │  │back  │  │ Backend  │  │Verbs │   │    │
-│  │  └──────┘  └────┬─────┘  └──┬───┘   │    │
-│  └─────────────────┼───────────┼────────┘    │
-│                    │           │             │
-│         ┌──────────┘           │             │
-│         ▼                      ▼             │
-│  ┌──────────────┐    ┌──────────────┐        │
-│  │Another       │    │  libibverbs  │        │
-│  │rocm_ernic    │    └──────┬───────┘        │
-│  │Server        │           ▼                │
-│  └──────────────┘    ┌──────────────┐        │
-│                      │ InfiniBand   │        │
-│                      │ Hardware     │        │
-│                      └──────────────┘        │
-└──────────────────────────────────────────────┘
+<p>This page explains how rocm-ernic makes a virtual machine
+believe it has an RDMA network card. It covers the emulated
+device and the code that implements it. Building, testing,
+packaging, and deployment are covered in <a class="reference internal" href="building.html"><span class="doc">Building and Installing</span></a>,
+<a class="reference internal" href="testing.html"><span class="doc">Testing</span></a>, and <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>.</p>
+<p>The audience is someone comfortable with operating systems,
+PCI devices, and C, but not necessarily with RDMA. <a class="reference internal" href="#rdma-in-brief">RDMA in
+brief</a> covers the vocabulary used in the rest of the page.</p>
+<nav class="contents local" id="on-this-page">
+<p class="topic-title">On this page</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#the-short-version" id="id1">The Short Version</a></p></li>
+<li><p><a class="reference internal" href="#rdma-in-brief" id="id2">RDMA in Brief</a></p></li>
+<li><p><a class="reference internal" href="#how-a-pci-device-is-emulated-in-userspace" id="id3">How a PCI Device Is Emulated in Userspace</a></p></li>
+<li><p><a class="reference internal" href="#the-device-the-guest-sees" id="id4">The Device the Guest Sees</a></p></li>
+<li><p><a class="reference internal" href="#inside-the-server" id="id5">Inside the Server</a></p></li>
+<li><p><a class="reference internal" href="#bringing-the-device-up" id="id6">Bringing the Device Up</a></p></li>
+<li><p><a class="reference internal" href="#the-control-path-the-rdma-admin-queue" id="id7">The Control Path: the RDMA Admin Queue</a></p></li>
+<li><p><a class="reference internal" href="#the-data-path" id="id8">The Data Path</a></p></li>
+<li><p><a class="reference internal" href="#more-than-one-vm-the-tcp-mesh" id="id9">More Than One VM: the TCP Mesh</a></p></li>
+<li><p><a class="reference internal" href="#the-ethernet-side" id="id10">The Ethernet Side</a></p></li>
+<li><p><a class="reference internal" href="#in-process-targets-nvme-of-and-s3" id="id11">In-Process Targets: NVMe-oF and S3</a></p></li>
+<li><p><a class="reference internal" href="#backends" id="id12">Backends</a></p></li>
+<li><p><a class="reference internal" href="#threads" id="id13">Threads</a></p></li>
+<li><p><a class="reference internal" href="#trust-boundaries" id="id14">Trust Boundaries</a></p></li>
+<li><p><a class="reference internal" href="#what-is-not-emulated" id="id15">What Is Not Emulated</a></p></li>
+<li><p><a class="reference internal" href="#where-to-look-in-the-source" id="id16">Where to Look in the Source</a></p></li>
+</ul>
+</nav>
+<section id="the-short-version">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">The Short Version</a><a class="headerlink" href="#the-short-version" title="Link to this heading">#</a></h2>
+<p>rocm-ernic is a userspace process (the <em>server</em>) that emulates
+a PCIe RDMA NIC. QEMU connects to it over a UNIX socket using
+the <a class="reference external" href="https://github.com/nutanix/libvfio-user">vfio-user</a>
+protocol, and plugs the emulated device into a guest VM as if
+it were real hardware.</p>
+<p>The device the server pretends to be is an <strong>AMD Pensando
+ionic</strong> NIC. That choice means the guest runs the stock Linux
+<code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> drivers and the stock rdma-core
+<code class="docutils literal notranslate"><span class="pre">ionic</span></code> provider; only one small driver patch is needed (see
+<a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>). Applications in the guest use ordinary
+<code class="docutils literal notranslate"><span class="pre">libibverbs</span></code>.</p>
+<p>There is no RDMA hardware anywhere. When the guest asks the
+“NIC” to move data, the server reads the request out of guest
+memory, copies the bytes itself, and writes a completion back
+into guest memory. When both ends of a transfer are in the
+same VM, that is a <code class="docutils literal notranslate"><span class="pre">memcpy</span></code> from one part of the guest’s RAM
+to another. When the other end is in a different VM (and so is
+served by a different server process), the servers forward the
+request to each other over ordinary TCP.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>┌──────────────────────── Guest VM ────────────────────────┐
+│  application  ──►  libibverbs + libionic (rdma-core)     │
+│                         │ control        │ data path     │
+│                         ▼                │ (kernel       │
+│                ionic_rdma.ko / ionic.ko  │  bypass)      │
+│                         │                │               │
+│         rings, buffers in guest RAM ◄────┘               │
+└─────────────────────────┬────────────────────────────────┘
+                          │ PCI config, BAR reads/writes,
+                          │ guest RAM shared by file descriptor,
+             QEMU         │ MSI-X interrupts
+                          │ vfio-user protocol over a UNIX socket
+┌─────────────────────────▼──────── rocm-ernic server ─────┐
+│  libvfio-user                                            │
+│  ionic device front end (registers, queues, data path)   │
+│  resource bookkeeping + backend (none/loopback/tcp/...)  │
+│  optional in-process NVMe-oF controller or S3 store      │
+└─────────────────────────┬────────────────────────────────┘
+                          │ TCP (tcp backend only)
+                          ▼
+             other rocm-ernic servers, one per VM
 </pre></div>
 </div>
 </section>
-<section id="components">
-<h2>Components<a class="headerlink" href="#components" title="Link to this heading">#</a></h2>
-<section id="server-rocm-ernic-server-c">
-<h3>Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)<a class="headerlink" href="#server-rocm-ernic-server-c" title="Link to this heading">#</a></h3>
-<p>The main entry point. It creates the libvfio-user context,
-sets up the PCI BARs, registers
-MSI-X vectors, and enters the server loop waiting for a QEMU
-client to connect.</p>
+<section id="rdma-in-brief">
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">RDMA in Brief</a><a class="headerlink" href="#rdma-in-brief" title="Link to this heading">#</a></h2>
+<p>RDMA (remote direct memory access) lets a program move data
+between its memory and another machine’s memory without either
+kernel copying the data, and often without either CPU touching
+it. The NIC does the work. The programming interface is called
+<strong>verbs</strong> (<code class="docutils literal notranslate"><span class="pre">libibverbs</span></code>).</p>
+<p>The pieces that matter for this page:</p>
+<dl class="simple">
+<dt>Queue pair (QP)</dt><dd><p>The endpoint of a connection, roughly the RDMA equivalent of
+a socket. A QP has a <strong>send queue (SQ)</strong> and a <strong>receive
+queue (RQ)</strong>. Each is a ring buffer in host memory that the
+application fills with <strong>work queue entries (WQEs)</strong>, one per
+request.</p>
+</dd>
+<dt>Doorbell</dt><dd><p>After writing WQEs into a ring, software writes the new
+producer index to a device register so the NIC knows to look.
+That register write is the doorbell.</p>
+</dd>
+<dt>Completion queue (CQ)</dt><dd><p>Another ring, written by the NIC. When the NIC finishes a
+work request it writes a <strong>completion queue entry (CQE)</strong>.
+Software polls the CQ to find out what finished and whether
+it succeeded.</p>
+</dd>
+<dt>Event queue (EQ) and interrupts</dt><dd><p>Software can <em>arm</em> a CQ to ask for an interrupt when the next
+CQE arrives. The ionic device reports that through an event
+queue: it writes an <strong>event queue entry (EQE)</strong> naming the
+CQ, then raises the MSI-X interrupt assigned to that EQ.</p>
+</dd>
+<dt>Memory region (MR)</dt><dd><p>Before the NIC may touch a buffer, the application
+<em>registers</em> it. Registration pins the pages and gives the NIC
+a translation from the application’s virtual addresses to
+physical pages. It returns two keys: the <strong>lkey</strong>, used in
+the application’s own WQEs to name local memory, and the
+<strong>rkey</strong>, given to the remote side so it can name this memory
+in RDMA READ and WRITE requests.</p>
+</dd>
+<dt>Scatter/gather element (SGE)</dt><dd><p>A WQE names its buffers as a list of <code class="docutils literal notranslate"><span class="pre">(address,</span> <span class="pre">length,</span>
+<span class="pre">lkey)</span></code> triples.</p>
+</dd>
+<dt>Operations</dt><dd><p><em>SEND</em> delivers a message into the next buffer the remote
+side has posted on its RQ (two-sided: the receiver
+participates). <em>RDMA WRITE</em> and <em>RDMA READ</em> access remote
+memory directly, named by rkey and address (one-sided: the
+remote CPU is not involved). <em>Atomics</em> (compare-and-swap,
+fetch-and-add) operate on 8 bytes of remote memory. Variants
+<em>with immediate</em> also carry 32 bits of data that show up in
+the receiver’s CQE.</p>
+</dd>
+<dt>Transport types</dt><dd><p><em>RC</em> (reliable connected) is a reliable, ordered, one-to-one
+connection. <em>UC</em> (unreliable connected) is one-to-one without
+delivery guarantees. <em>UD</em> (unreliable datagram) is
+connectionless: each send names its destination with an
+<strong>address handle (AH)</strong> and a remote QP number, and receivers
+check a <strong>Q_Key</strong>. Received UD messages are prefixed by a
+40-byte <strong>global route header (GRH)</strong>.</p>
+</dd>
+<dt>GSI / QP1</dt><dd><p>A special UD QP used by the kernel for connection management
+(CM) messages, called <strong>MADs</strong> (management datagrams).
+<code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>, and therefore things like
+<code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code>, set up RC connections by exchanging
+MADs on QP1.</p>
+</dd>
+<dt>RoCE and GIDs</dt><dd><p>RDMA over Converged Ethernet runs RDMA over Ethernet and
+UDP/IP. Endpoints are named by a 128-bit <strong>GID</strong>, which for
+RoCE is an IPv6 address or an IPv4 address in
+<code class="docutils literal notranslate"><span class="pre">::ffff:a.b.c.d</span></code> form.</p>
+</dd>
+<dt>Protection domain (PD)</dt><dd><p>A grouping that keeps one consumer’s QPs from using another
+consumer’s MRs.</p>
+</dd>
+<dt>Shared receive queue (SRQ)</dt><dd><p>A receive ring several QPs draw from.</p>
+</dd>
+<dt>Fast registration</dt><dd><p>A WQE (<em>REG_MR</em>) that binds pages and a fresh key to a
+pre-allocated MR without a system call, and <em>LOCAL_INV</em> to
+unbind it. The Linux <code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> initiator uses this for
+every I/O.</p>
+</dd>
+</dl>
+<p>Two properties of RDMA shape the whole emulator:</p>
+<ol class="arabic simple">
+<li><p><strong>The data path bypasses the kernel.</strong> After setup, a user
+process writes WQEs into rings in its own memory and writes
+doorbells into a device page mapped into its address space.
+It polls CQs the same way. The guest kernel is not involved
+in moving data, so neither is anything that could be
+intercepted in it. The emulator has to work at the level of
+rings, doorbells, and memory.</p></li>
+<li><p><strong>The device reads and writes host memory on its own.</strong>
+Every ring and every buffer lives in guest RAM, and the
+device is expected to DMA into it. The emulator has to be
+able to reach guest memory directly.</p></li>
+</ol>
 </section>
-<section id="compatibility-bridge-rocm-ernic-compat-c">
-<h3>Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)<a class="headerlink" href="#compatibility-bridge-rocm-ernic-compat-c" title="Link to this heading">#</a></h3>
-<p>An isolation layer between the QEMU-derived RDMA device logic
-and the libvfio-user transport. The bridge exposes a clean
-C API (<code class="docutils literal notranslate"><span class="pre">pvrdma_device_create</span></code>, <code class="docutils literal notranslate"><span class="pre">pvrdma_regs_write</span></code>, etc.)
-so that the server never includes QEMU headers directly.</p>
+<section id="how-a-pci-device-is-emulated-in-userspace">
+<h2><a class="toc-backref" href="#id3" role="doc-backlink">How a PCI Device Is Emulated in Userspace</a><a class="headerlink" href="#how-a-pci-device-is-emulated-in-userspace" title="Link to this heading">#</a></h2>
+<p><a class="reference external" href="https://github.com/nutanix/libvfio-user/blob/master/docs/vfio-user.rst">vfio-user</a>
+is a protocol for implementing a PCI device in a separate
+process. QEMU is the client and rocm-ernic is the server; the
+server uses the libvfio-user library. What the protocol gives
+the server:</p>
+<ul class="simple">
+<li><p><strong>PCI configuration space.</strong> The server declares the vendor
+and device IDs, class code, and capabilities (MSI-X here).
+libvfio-user answers config space accesses.</p></li>
+<li><p><strong>BARs.</strong> The server declares memory regions and a callback
+for each. When the guest reads or writes a BAR, QEMU traps
+the access and sends it over the socket, and libvfio-user
+calls the server’s callback with the offset, size, and data.
+rocm-ernic doesn’t let QEMU map any of its BARs directly, so
+<strong>every register access and every doorbell is a message on
+the socket.</strong></p></li>
+<li><p><strong>Guest memory.</strong> QEMU passes the server file descriptors for
+the guest’s RAM, which libvfio-user maps into the server’s
+address space. To “DMA”, the server asks libvfio-user to
+translate a guest physical address (<code class="docutils literal notranslate"><span class="pre">vfu_addr_to_sgl()</span></code>,
+<code class="docutils literal notranslate"><span class="pre">vfu_sgl_get()</span></code>) and gets back an ordinary host pointer. A
+DMA read or write is then just <code class="docutils literal notranslate"><span class="pre">memcpy</span></code>. The ionic front end
+also marks the pages it writes as dirty
+(<code class="docutils literal notranslate"><span class="pre">vfu_sgl_mark_dirty()</span></code>), which is what live migration
+would need.</p></li>
+<li><p><strong>Interrupts.</strong> <code class="docutils literal notranslate"><span class="pre">vfu_irq_trigger()</span></code> signals an eventfd that
+QEMU turns into an MSI-X interrupt in the guest.</p></li>
+<li><p><strong>Resets.</strong> libvfio-user tells the server when the guest
+resets the device or the client disconnects.</p></li>
+</ul>
+<p>The libvfio-user context isn’t thread-safe, so in rocm-ernic
+<strong>only the main thread may touch guest memory or the
+context.</strong> That rule shapes how the multi-VM code is built (see
+<a class="reference internal" href="#threads">Threads</a>).</p>
 </section>
-<section id="rdma-device-logic-third-party-qemu">
-<h3>RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>)<a class="headerlink" href="#rdma-device-logic-third-party-qemu" title="Link to this heading">#</a></h3>
-<p>Vendored from the QEMU PVRDMA device implementation. This code
-handles the command ring, doorbell processing, queue-pair
-management, and completion-queue posting. It is intentionally
-kept close to the upstream QEMU source to simplify future
-synchronization.</p>
-</section>
-<section id="qemu-compatibility-layer-src-qemu-compat">
-<h3>QEMU Compatibility Layer (<code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code>)<a class="headerlink" href="#qemu-compatibility-layer-src-qemu-compat" title="Link to this heading">#</a></h3>
-<p>The QEMU headers and functions the vendored code expects
-(<code class="docutils literal notranslate"><span class="pre">qemu/thread.h</span></code>, <code class="docutils literal notranslate"><span class="pre">hw/pci/pci.h</span></code>, error reporting, and so
-on), implemented for a standalone process rather than taken
-from QEMU.</p>
-</section>
-<section id="rdma-backends-src-rdma">
-<h3>RDMA Backends (<code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>)<a class="headerlink" href="#rdma-backends-src-rdma" title="Link to this heading">#</a></h3>
-<p>The backend vtable and its none, loopback and TCP mesh
-implementations, described under <a class="reference internal" href="#backends">Backends</a> below.</p>
-</section>
-<section id="network-services-src-net">
-<h3>Network Services (<code class="docutils literal notranslate"><span class="pre">src/net/</span></code>)<a class="headerlink" href="#network-services-src-net" title="Link to this heading">#</a></h3>
-<p>The RDMA CM wire protocol.</p>
-</section>
-<section id="ionic-emulation-src-ionic-c">
-<h3>ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)<a class="headerlink" href="#ionic-emulation-src-ionic-c" title="Link to this heading">#</a></h3>
-<p>The device front end. It implements the
-register and queue protocol of the AMD
-Pensando ionic NIC so the guest can run the upstream Linux
-<code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> drivers. It provides the device
-command interface and the Ethernet LIF
-(<code class="docutils literal notranslate"><span class="pre">ionic_eth_emu.c</span></code>), a TAP host backend
-(<code class="docutils literal notranslate"><span class="pre">ionic_eth_net.c</span></code>), the admin queue (<code class="docutils literal notranslate"><span class="pre">ionic_adminq.c</span></code>),
-and the RDMA device commands (<code class="docutils literal notranslate"><span class="pre">ionic_rdma_devcmd.c</span></code>). The
-RDMA operations themselves are handed to the backends below.
-See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>.</p>
-</section>
-</section>
-<section id="pci-bars">
-<h2>PCI BARs<a class="headerlink" href="#pci-bars" title="Link to this heading">#</a></h2>
+<section id="the-device-the-guest-sees">
+<h2><a class="toc-backref" href="#id4" role="doc-backlink">The Device the Guest Sees</a><a class="headerlink" href="#the-device-the-guest-sees" title="Link to this heading">#</a></h2>
+<p>The server presents one PCIe function:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Vendor : device</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1dd8:1002</span></code> (Pensando, upstream ionic PF)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Subsystem</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1dd8:5400</span></code> (identifies the emulated function)</p></td>
+</tr>
+<tr class="row-even"><td><p>Class</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">02:00:00</span></code>, Ethernet controller</p></td>
+</tr>
+<tr class="row-odd"><td><p>Interrupts</p></td>
+<td><p>32 MSI-X vectors, plus INTx</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The upstream <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> binds to that ID. The device has two
+BARs:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 10.0%" />
-<col style="width: 25.0%" />
-<col style="width: 65.0%" />
+<col style="width: 15.0%" />
+<col style="width: 75.0%" />
 </colgroup>
 <thead>
 <tr class="row-odd"><th class="head"><p>BAR</p></th>
 <th class="head"><p>Size</p></th>
-<th class="head"><p>Purpose</p></th>
+<th class="head"><p>Contents</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>BAR 0</p></td>
-<td><p>64 KB</p></td>
-<td><p>32 KB device register window (device info, device
-command, interrupt control) plus the MSI-X table and
-Pending Bit Array above it</p></td>
+<td><p>64 KiB</p></td>
+<td><p>32 KiB ionic register window, then the MSI-X table and
+PBA</p></td>
 </tr>
 <tr class="row-odd"><td><p>BAR 2</p></td>
-<td><p>4 MB</p></td>
-<td><p>Doorbell pages; the offset within a page encodes the
-queue type, the page index the process ID</p></td>
+<td><p>4 MiB</p></td>
+<td><p>Doorbell pages, 4 KiB each</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The BAR 0 register window is laid out exactly as the driver’s
+<code class="docutils literal notranslate"><span class="pre">ionic_dev_setup()</span></code> expects:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>0x0000  dev_info_regs   signature "DEVI", firmware status,
+                        heartbeat, version
+0x0800  dev_cmd_regs    device-command doorbell, done,
+                        64-byte command, 16-byte completion,
+                        1912-byte data window
+0x1000  intr_status
+0x2000  intr_ctrl       32 bytes per vector: mask, credits,
+                        mask-on-assert
+0x8000  MSI-X table     (above the window, so the driver
+                        never sees it)
+0xa000  MSI-X PBA
+</pre></div>
+</div>
+<p>Within a doorbell page, the byte offset selects a <strong>queue
+type</strong> (eight bytes per type) and the written 64-bit value
+carries the queue id, a producer index, and a “ring” field that
+distinguishes “new work” from “arm this CQ”:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>bits 15:0   p_index   producer index (or CQ consumer index)
+bits 23:16  ring      0 = work, 1 = arm CQ,
+                      2 = arm CQ for solicited events
+bits 47:24  qid
+</pre></div>
+</div>
+<p>The kernel uses doorbell page 0; each user process gets its own
+page so it can ring doorbells without a system call. The server
+decodes only the offset within the page, so every page behaves
+the same.</p>
+<p>An ionic NIC is an Ethernet NIC first. The driver brings up an
+Ethernet <em>logical interface</em> (LIF), and only then creates an
+auxiliary device that <code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code> binds to. So the
+emulator implements both halves:</p>
+<ul class="simple">
+<li><p><strong>Ethernet</strong> queue types 0 to 3: the Ethernet admin queue,
+notify queue, receive queues, and transmit queues.</p></li>
+<li><p><strong>RDMA</strong> queue types 5 to 9: the RDMA admin queue (AQ), SQ,
+RQ, CQ, and EQ. Shared receive queues ring the RQ doorbell
+type with ids above the QP id range.</p></li>
+</ul>
+</section>
+<section id="inside-the-server">
+<h2><a class="toc-backref" href="#id5" role="doc-backlink">Inside the Server</a><a class="headerlink" href="#inside-the-server" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>               rocm_ernic_server.c
+     main(), BAR/IRQ/PCI setup, the main loop
+                        │
+┌───────────────────────┼─────────────────────────────┐
+│ ionic front end       │                             │
+│                       ▼                             │
+│  ionic_eth_emu.c ─── BAR 0 registers, device        │
+│    │    │            commands, Ethernet queues,     │
+│    │    │            interrupt controller, BAR 2    │
+│    │    │            doorbell decode                │
+│    │    └──► ionic_eth_net.c   host TAP interface   │
+│    ▼                                                │
+│  ionic_rdma_devcmd.c ─ RDMA bootstrap: EQs and the  │
+│    │                   RDMA admin queues            │
+│    ▼                                                │
+│  ionic_adminq.c ──── control path: create/modify/   │
+│    │                 destroy CQ, QP, MR, AH, SRQ    │
+│    ▼                                                │
+│  ionic_datapath.c ── data path: SQ/RQ/CQ rings, MR  │
+│                      table, data copies, CQEs, the  │
+│                      inter-server wire protocol     │
+└──────┬───────────────────────────┬──────────────────┘
+       │ ionic_rm_*, ionic_mesh_*  │ attach
+       ▼                           ▼
+rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
+(bridge; only file that      in-process targets
+ sees QEMU types)
+       │
+       ▼
+third-party/qemu/hw/rdma   resource manager (rdma_rm)
+src/rdma/                  backend vtable: none,
+                           loopback, tcp mesh
+src/qemu-compat/           the QEMU APIs the vendored
+                           code expects
+</pre></div>
+</div>
+<section id="the-ionic-front-end">
+<h3>The ionic Front End<a class="headerlink" href="#the-ionic-front-end" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code> files are the device the guest actually
+talks to. They own the register file, decode doorbells, and
+read and write every ring and buffer in guest memory. Each file
+is described in a later section.</p>
+</section>
+<section id="the-device-core">
+<h3>The Device Core<a class="headerlink" href="#the-device-core" title="Link to this heading">#</a></h3>
+<p>The device core is <code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>, and <code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>.</p>
+<p>rocm-ernic began as an emulator of the VMware paravirtual RDMA
+device (PVRDMA), using the device model from QEMU’s
+<code class="docutils literal notranslate"><span class="pre">hw/rdma/</span></code>. That guest-facing personality has been removed
+and replaced by the ionic front end, but two pieces of the QEMU
+code are still underneath it, which is why many names
+(<code class="docutils literal notranslate"><span class="pre">pvrdma_handle</span></code>, <code class="docutils literal notranslate"><span class="pre">PVRDMADev</span></code>, the <code class="docutils literal notranslate"><span class="pre">pvrdma_*</span></code> statistics)
+still say “pvrdma”:</p>
+<ul class="simple">
+<li><p><strong>rdma_rm</strong>, the resource manager: handle tables for PDs,
+CQs, QPs, MRs, and SRQs, and each QP’s current state (RESET,
+INIT, RTR, RTS, …).</p></li>
+<li><p><strong>rdma_backend</strong>, which forwards resource operations to a
+pluggable <strong>backend</strong> through the vtable in
+<code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_ops.h</span></code>.</p></li>
+</ul>
+<p>The ionic admin queue reaches these through the <code class="docutils literal notranslate"><span class="pre">ionic_rm_*()</span></code>
+wrappers in <code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>, which is the only file that
+includes the QEMU headers. Today the core’s jobs in the ionic
+world are:</p>
+<ol class="arabic simple">
+<li><p>Bookkeeping and limits for each object the guest creates.</p></li>
+<li><p>Recording each QP’s state and passing the INIT, RTR, and RTS
+transitions to the backend. The core doesn’t check that a
+transition is legal: it records whatever state the guest
+asks for. The one check that matters is the TCP backend’s at
+RTR, which fails the transition when no node owns a connected
+QP’s destination GID (see <a class="reference internal" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP
+Mesh</a>).</p></li>
+<li><p>Carrying the TCP mesh, through the <code class="docutils literal notranslate"><span class="pre">ionic_mesh_*()</span></code>
+wrappers.</p></li>
+<li><p>Statistics: counters, and the stats file written about once
+a second (<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>, consumed by <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>;
+see <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>).</p></li>
+</ol>
+<p>The core does <strong>not</strong> move data for the ionic device. The
+backends’ <code class="docutils literal notranslate"><span class="pre">post_send</span></code> and <code class="docutils literal notranslate"><span class="pre">post_recv</span></code> entry points, and the
+vendored completion code in <code class="docutils literal notranslate"><span class="pre">pvrdma_qp_ops.c</span></code>, belonged to the
+PVRDMA data path; nothing in the ionic path calls them. All data
+movement happens in <code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>.</p>
+</section>
+<section id="the-main-loop">
+<h3>The Main Loop<a class="headerlink" href="#the-main-loop" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code> builds the device, then waits for
+QEMU to connect. Once QEMU has connected, it loops:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">vfu_run_ctx()</span></code>: handle pending vfio-user messages. BAR
+accesses arrive here as callbacks, and <strong>BAR 2 doorbells for
+send queues are executed inside the callback</strong> (see
+<a class="reference internal" href="#the-data-path">The Data Path</a>).</p></li>
+<li><p>Run any GLib idle callbacks and deliver deferred interrupts.</p></li>
+<li><p>Move received Ethernet frames from the TAP, or from frames
+other threads queued, into the guest’s receive ring.</p></li>
+<li><p>Process new entries on the RDMA admin queues.</p></li>
+<li><p>Apply messages that arrived from other servers over the mesh,
+and time out requests that never got an answer.</p></li>
+<li><p>If none of that found work, sleep 100 µs.</p></li>
+</ol>
+<p>The server is a polling design. Latency is bounded by the loop
+period, and an idle server still wakes up as often as 10,000
+times a second.</p>
+</section>
+</section>
+<section id="bringing-the-device-up">
+<h2><a class="toc-backref" href="#id6" role="doc-backlink">Bringing the Device Up</a><a class="headerlink" href="#bringing-the-device-up" title="Link to this heading">#</a></h2>
+<p>Getting from “PCI device present” to “<code class="docutils literal notranslate"><span class="pre">ibv_devices</span></code> lists an
+RDMA device” is a conversation between the driver and the
+emulated firmware. Almost all of the emulator’s work here is
+returning exactly the bytes the driver expects in exactly the
+places it looks.</p>
+<section id="device-commands-over-bar-0">
+<h3>Device Commands over BAR 0<a class="headerlink" href="#device-commands-over-bar-0" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> reads the <code class="docutils literal notranslate"><span class="pre">DEVI</span></code> signature and the “firmware
+running” bit from <code class="docutils literal notranslate"><span class="pre">dev_info_regs</span></code>. From then on it issues
+<strong>device commands</strong>: it writes a 64-byte command into
+<code class="docutils literal notranslate"><span class="pre">dev_cmd_regs</span></code>, writes 1 to the command doorbell, and polls
+the <code class="docutils literal notranslate"><span class="pre">done</span></code> register. <code class="docutils literal notranslate"><span class="pre">ionic_eth_emu.c</span></code> runs each command
+synchronously inside the BAR write, fills in the completion and
+the data window, and sets <code class="docutils literal notranslate"><span class="pre">done</span></code>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 80.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Command</p></th>
+<th class="head"><p>What the emulator does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>IDENTIFY</p></td>
+<td><p>Reports one port, one LIF, 32 interrupts, 32 EQs</p></td>
+</tr>
+<tr class="row-odd"><td><p>LIF_IDENTIFY</p></td>
+<td><p>Reports Ethernet and RDMA capability, queue counts, the
+MAC, and the RDMA section: queue type numbers; QP, CQ,
+and SRQ counts; MR and AH limits; and the page table
+size, which sets the guest’s maximum MR size (4 TiB)</p></td>
+</tr>
+<tr class="row-even"><td><p>PORT_INIT</p></td>
+<td><p>Writes a port-info block saying “100 Gb/s copper QSFP,
+link up”, so <code class="docutils literal notranslate"><span class="pre">ethtool</span></code> reports a speed</p></td>
+</tr>
+<tr class="row-odd"><td><p>LIF_INIT</p></td>
+<td><p>Writes “link up” into the LIF status block, so the netdev
+gets a carrier and the RDMA port goes active</p></td>
+</tr>
+<tr class="row-even"><td><p>Q_INIT</p></td>
+<td><p>Records where an Ethernet queue’s descriptor and
+completion rings are in guest memory, and its interrupt
+vector</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q_IDENTIFY</p></td>
+<td><p>Reports descriptor sizes; advertises no offloads</p></td>
+</tr>
+<tr class="row-even"><td><p>others</p></td>
+<td><p>Succeed with a zeroed completion</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 </section>
-<section id="backends">
-<h2>Backends<a class="headerlink" href="#backends" title="Link to this heading">#</a></h2>
-<section id="loopback">
-<h3>Loopback<a class="headerlink" href="#loopback" title="Link to this heading">#</a></h3>
-<p>In-memory emulation with no external dependencies. Send and
-receive operations complete immediately within the same
-process. Ideal for driver development and CI testing.</p>
+<section id="the-ethernet-admin-queue">
+<h3>The Ethernet Admin Queue<a class="headerlink" href="#the-ethernet-admin-queue" title="Link to this heading">#</a></h3>
+<p>Once its admin queue is set up, <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> stops using BAR 0
+and posts commands as 64-byte descriptors in a ring in guest
+memory, rings a doorbell, and waits for an interrupt. The
+emulator reads each descriptor by DMA, runs it, DMAs a 16-byte
+completion with the expected <em>color</em> bit (see <a class="reference internal" href="#rings-and-the-color-bit">Rings and the
+Color Bit</a>), and raises the queue’s MSI-X vector.</p>
 </section>
-<section id="tcp-ip">
-<h3>TCP/IP<a class="headerlink" href="#tcp-ip" title="Link to this heading">#</a></h3>
-<p>Connects two or more rocm-ernic server instances over TCP
-in a manager/worker mesh.  The protocol serializes RDMA work
-requests, data payloads, and completions across the network.
-Instance 1 acts as the mesh manager; instances 2..N connect
-as workers.</p>
-<p>The TCP backend also forwards raw Ethernet frames between
-nodes, enabling IP connectivity (ping, ARP) over the
-emulated NIC.  Frames that the server’s Ethernet handler
-does not process locally (ARP for non-server IPs, ICMP,
-arbitrary IP traffic) are broadcast to all mesh peers via
-<code class="docutils literal notranslate"><span class="pre">TCP_MSG_ETH_FRAME</span></code> messages.  The manager acts as a hub,
-re-broadcasting frames from one worker to all others.</p>
-<section id="userspace-data-path">
-<h4>Userspace Data Path<a class="headerlink" href="#userspace-data-path" title="Link to this heading">#</a></h4>
-<p>On kernels 6.14 and later, the write-based uverbs handlers
-for <code class="docutils literal notranslate"><span class="pre">POST_SEND</span></code>, <code class="docutils literal notranslate"><span class="pre">POST_RECV</span></code>, and <code class="docutils literal notranslate"><span class="pre">POLL_CQ</span></code> are no
-longer available.  The rdma-core provider implements these
-operations as direct reads and writes to shared-memory ring
-buffers:</p>
+<section id="rdma-bootstrap">
+<h3>RDMA Bootstrap<a class="headerlink" href="#rdma-bootstrap" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code> then sends four RDMA commands, opcodes 50 to
+53, over the Ethernet admin queue. <code class="docutils literal notranslate"><span class="pre">ionic_rdma_devcmd.c</span></code>
+handles them:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 10.0%" />
+<col style="width: 30.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Opcode</p></th>
+<th class="head"><p>Command</p></th>
+<th class="head"><p>Emulator state</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>50</p></td>
+<td><p>RDMA_RESET_LIF</p></td>
+<td><p>Forget all EQs and admin queues</p></td>
+</tr>
+<tr class="row-odd"><td><p>51</p></td>
+<td><p>RDMA_CREATE_EQ</p></td>
+<td><p>Record an event queue ring and its MSI-X vector (at
+least four are created)</p></td>
+</tr>
+<tr class="row-even"><td><p>52</p></td>
+<td><p>RDMA_CREATE_CQ</p></td>
+<td><p>Record the completion ring for the next admin queue</p></td>
+</tr>
+<tr class="row-odd"><td><p>53</p></td>
+<td><p>RDMA_CREATE_ADMINQ</p></td>
+<td><p>Pair the admin queue with that CQ and start servicing it
+in <code class="docutils literal notranslate"><span class="pre">ionic_adminq.c</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The driver then registers its IB device, and the guest can open
+it with <code class="docutils literal notranslate"><span class="pre">libibverbs</span></code>.</p>
+</section>
+<section id="interrupts">
+<h3>Interrupts<a class="headerlink" href="#interrupts" title="Link to this heading">#</a></h3>
+<p>The emulator keeps a shadow of the per-vector interrupt
+controller in BAR 0: a mask, and a <em>mask-on-assert</em> flag that
+makes the vector mask itself when it fires (so the driver’s
+NAPI poll runs without a second interrupt). An interrupt raised
+while its vector is masked is latched and delivered when the
+driver unmasks it, which it does by writing the mask register
+or by returning “credits” with the unmask bit set.</p>
+</section>
+</section>
+<section id="the-control-path-the-rdma-admin-queue">
+<h2><a class="toc-backref" href="#id7" role="doc-backlink">The Control Path: the RDMA Admin Queue</a><a class="headerlink" href="#the-control-path-the-rdma-admin-queue" title="Link to this heading">#</a></h2>
+<p>Everything a verbs application does that is not on the fast
+path (<code class="docutils literal notranslate"><span class="pre">ibv_create_cq</span></code>, <code class="docutils literal notranslate"><span class="pre">ibv_create_qp</span></code>, <code class="docutils literal notranslate"><span class="pre">ibv_reg_mr</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ibv_modify_qp</span></code>, …) becomes a system call into
+<code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code>, which posts a command on an RDMA admin
+queue. <code class="docutils literal notranslate"><span class="pre">src/ionic_adminq.c</span></code> services those queues.</p>
+<p>The AQ doorbell only records the new producer index. The main
+loop later reads each new WQE (64 bytes, or several 64-byte
+strides for long commands), runs it, writes a 32-byte admin
+CQE, and then posts an EQE and raises the EQ’s interrupt. The
+driver drains admin CQs only from its EQ handler, so without
+the EQE the command would time out.</p>
+<p>Most commands do two things: create the object in the <a class="reference internal" href="#the-device-core">device
+core</a>, and tell the data path where the
+guest put the object’s memory.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 80.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Command</p></th>
+<th class="head"><p>Effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CREATE_CQ</p></td>
+<td><p>Allocate a CQ in <code class="docutils literal notranslate"><span class="pre">rdma_rm</span></code>; register the CQ ring and
+its EQ with the data path</p></td>
+</tr>
+<tr class="row-odd"><td><p>CREATE_QP</p></td>
+<td><p>Allocate a QP; register its SQ and RQ rings (or bind it
+to an SRQ) and its CQs with the data path</p></td>
+</tr>
+<tr class="row-even"><td><p>CREATE_MR</p></td>
+<td><p>Allocate an MR; register its address range and page
+table with the data path under its key</p></td>
+</tr>
+<tr class="row-odd"><td><p>CREATE_AH</p></td>
+<td><p>Parse the address handle’s packet header template for
+the destination GID; register it with the data path</p></td>
+</tr>
+<tr class="row-even"><td><p>MODIFY_QP</p></td>
+<td><p>Record the QP’s new state. At RTR, record the peer QP
+and which server it lives on; for UD, record the Q_Key</p></td>
+</tr>
+<tr class="row-odd"><td><p>QUERY_QP</p></td>
+<td><p>DMA the QP’s state, PSNs, and access flags into the
+buffers the driver supplied</p></td>
+</tr>
+<tr class="row-even"><td><p>CREATE_SRQ</p></td>
+<td><p>Allocate an SRQ id (the device assigns it) and register
+its ring</p></td>
+</tr>
+<tr class="row-odd"><td><p>MODIFY_SRQ, QUERY_SRQ</p></td>
+<td><p>Set or read the low-watermark limit</p></td>
+</tr>
+<tr class="row-even"><td><p>DESTROY_*</p></td>
+<td><p>Undo the above</p></td>
+</tr>
+<tr class="row-odd"><td><p>statistics, DCQCN, debug, QUERY_AH</p></td>
+<td><p>Succeed without doing anything</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A few details worth knowing:</p>
 <ul class="simple">
-<li><p><strong>post_send / post_recv</strong>: write WQE headers and SGEs
-into the mmap’d QP ring buffer, advance the producer
-tail index, and ring the UAR doorbell (a BAR2 write
-trapped by libvfio-user).</p></li>
-<li><p><strong>poll_cq</strong>: read CQE entries from the mmap’d CQ buffer
-using the shared ring state (producer/consumer atomics
-in the CQ header page).</p></li>
+<li><p><strong>Two id spaces.</strong> The driver names objects by its own ids,
+and <code class="docutils literal notranslate"><span class="pre">rdma_rm</span></code> hands out its own handles. The admin queue
+keeps tables mapping one to the other. The data path is
+indexed by the driver’s ids.</p></li>
+<li><p><strong>One PD.</strong> The ionic driver allocates protection domains
+itself and never tells the device, so the emulator creates a
+single PD and uses it for everything.</p></li>
+<li><p><strong>The destination is in a packet header.</strong> The driver never
+gives the device a destination GID as a field. Instead,
+CREATE_AH and the RTR transition of MODIFY_QP point at a
+prebuilt Ethernet/IP/UDP header template (what real hardware
+would put on the wire). The emulator parses the IPv4 or IPv6
+addresses out of it. That is how it learns which GID the
+guest is talking to and, with the TCP mesh, which server owns
+that GID.</p></li>
+<li><p><strong>QP type numbering.</strong> ionic numbers QP types differently
+from the IB core and folds GSI into UD; the GSI QP is
+recognized by its reserved id 1.</p></li>
 </ul>
-<p>The QP and CQ buffers are allocated by the provider via
-<code class="docutils literal notranslate"><span class="pre">mmap(MAP_PRIVATE</span> <span class="pre">|</span> <span class="pre">MAP_ANONYMOUS)</span></code> and pinned by the
-kernel driver via <code class="docutils literal notranslate"><span class="pre">ib_umem_get</span></code>.  The server accesses the
-same physical pages through DMA mapping
-(<code class="docutils literal notranslate"><span class="pre">rdma_pci_dma_map</span></code>).  Ring state synchronization uses
-<code class="docutils literal notranslate"><span class="pre">_Atomic</span> <span class="pre">uint32_t</span></code> on the provider side and
-<code class="docutils literal notranslate"><span class="pre">qatomic_read/set</span></code> on the server side, both backed by
-the same shared page.</p>
+</section>
+<section id="the-data-path">
+<h2><a class="toc-backref" href="#id8" role="doc-backlink">The Data Path</a><a class="headerlink" href="#the-data-path" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code> is the heart of the emulator: it does
+what a NIC’s hardware data path would do.</p>
+<section id="guest-memory-three-levels-down">
+<h3>Guest Memory, Three Levels Down<a class="headerlink" href="#guest-memory-three-levels-down" title="Link to this heading">#</a></h3>
+<p>A WQE names memory as <code class="docutils literal notranslate"><span class="pre">(lkey,</span> <span class="pre">virtual</span> <span class="pre">address,</span> <span class="pre">length)</span></code> in
+the address space of whatever process posted it. Turning that
+into bytes the server can touch takes three translations:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>(lkey, va, len)   from an SGE in a WQE
+      │  MR table: lkey → MR (va range, page table)
+      │  bounds check: [va, va+len) must lie inside the MR
+      ▼
+guest physical page(s)   from the MR's page table
+      │                  (read once, at registration)
+      │  libvfio-user: vfu_addr_to_sgl() / vfu_sgl_get()
+      ▼
+host virtual address in the server   → memcpy
+</pre></div>
+</div>
+<p>The page table a driver provides for an MR, CQ, or QP ring is
+either a single DMA address or the guest address of an array of
+page addresses; the data path reads and caches it when the
+object is registered. Runs of physically adjacent pages are
+merged so a large transfer isn’t split at every 4 KiB. Key 0 is
+the driver’s reserved DMA key: the address is already a guest
+bus address. The kernel uses it for its own buffers.</p>
+<p>Because one server serves exactly one guest, the MR table holds
+every key that guest has created, <strong>lkeys and rkeys alike</strong>. An
+RDMA WRITE to another QP in the same VM resolves its rkey in the
+same table as its own lkeys.</p>
+</section>
+<section id="rings-and-the-color-bit">
+<h3>Rings and the Color Bit<a class="headerlink" href="#rings-and-the-color-bit" title="Link to this heading">#</a></h3>
+<p>All ionic rings are power-of-two sized and indexed modulo their
+depth. The CQs, EQs, and Ethernet completion rings use a
+<em>color</em> bit instead of a shared producer index: each entry has a
+bit that the device sets to the current color, and the color
+flips each time the producer wraps. The guest knows an entry is
+new when its color matches what it expects. The emulator keeps
+the color per ring. For the RDMA data path’s CQs, it writes the
+word that holds the color bit after the rest of the entry, so
+the guest never sees a half-written CQE. Admin queue and
+Ethernet completions are each written in a single copy, with no
+such ordering.</p>
+</section>
+<section id="executing-a-send-queue">
+<h3>Executing a Send Queue<a class="headerlink" href="#executing-a-send-queue" title="Link to this heading">#</a></h3>
+<p>A send-queue doorbell is handled <strong>synchronously in the BAR 2
+write callback</strong>. The emulator walks the SQ from its consumer
+index up to the doorbell’s producer index and executes each
+WQE:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Operation</p></th>
+<th class="head"><p>Local behavior</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SEND, SEND_IMM, SEND_INV</p></td>
+<td><p>Take the next WQE posted on the destination QP’s RQ (or
+its SRQ), copy the payload into the buffers that WQE
+names, and post a receive CQE on the destination’s CQ</p></td>
+</tr>
+<tr class="row-odd"><td><p>RDMA_WRITE</p></td>
+<td><p>Copy from the local SGEs to <code class="docutils literal notranslate"><span class="pre">(rkey,</span> <span class="pre">remote</span> <span class="pre">va)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>RDMA_WRITE_IMM</p></td>
+<td><p>As RDMA_WRITE, then consume a receive on the destination
+QP and post a CQE carrying the immediate value</p></td>
+</tr>
+<tr class="row-odd"><td><p>RDMA_READ</p></td>
+<td><p>Copy from <code class="docutils literal notranslate"><span class="pre">(rkey,</span> <span class="pre">remote</span> <span class="pre">va)</span></code> into the local SGEs</p></td>
+</tr>
+<tr class="row-even"><td><p>ATOMIC_CS, ATOMIC_FA</p></td>
+<td><p>Read 8 bytes at the rkey address, write the new value,
+return the old one to the local SGE</p></td>
+</tr>
+<tr class="row-odd"><td><p>REG_MR (fast registration)</p></td>
+<td><p>Bind a new key and page table to an MR, dropping the
+previous key for that MR</p></td>
+</tr>
+<tr class="row-even"><td><p>LOCAL_INV</p></td>
+<td><p>Unbind a key</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Inline sends (payload carried in the WQE itself) are handled by
+treating the WQE’s own payload area as the source buffer.</p>
+<p>Copies between two guest buffers go through a 4 KiB bounce
+buffer on the server’s stack, one contiguous run at a time.</p>
+<p>Each WQE then gets a send completion on the SQ’s CQ. RC and UC
+requests complete with a running <em>message sequence number</em>
+(MSN); everything else completes by SQ index. The emulator
+posts a send completion for <strong>every</strong> WQE, signaled or not,
+because the driver will not advance past an entry that has no
+completion; whether the application sees a work completion is
+up to the driver.</p>
+<p>Failures are reported the way hardware would: a receive buffer
+that is too small gives a length error, an SGE outside the MR
+its key names gives a protection error, a bad rkey gives a
+remote access error, and so on, with the error bit set in the
+CQE.</p>
+<section id="example-an-rdma-write-between-two-qps-in-one-vm">
+<h4>Example: an RDMA WRITE Between Two QPs in One VM<a class="headerlink" href="#example-an-rdma-write-between-two-qps-in-one-vm" title="Link to this heading">#</a></h4>
+<ol class="arabic simple">
+<li><p>The application calls <code class="docutils literal notranslate"><span class="pre">ibv_post_send()</span></code>. The rdma-core
+provider writes the WQE into the SQ ring (in the
+application’s memory) and writes the new producer index to
+its doorbell page in BAR 2. The kernel is not involved.</p></li>
+<li><p>QEMU traps the write and sends it to the server.
+libvfio-user calls <code class="docutils literal notranslate"><span class="pre">bar2_access()</span></code>, which hands it to
+<code class="docutils literal notranslate"><span class="pre">ionic_eth_emu_bar2_access()</span></code>. That decodes queue type 6
+(SQ) and calls <code class="docutils literal notranslate"><span class="pre">ionic_datapath_doorbell()</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">process_sq_wqe()</span></code> reads the WQE from guest memory, parses
+the SGEs, resolves the local lkeys and the remote rkey in the
+MR table, and copies the bytes page by page from the source
+buffer to the target buffer.</p></li>
+<li><p>It writes a send CQE into the SQ’s CQ ring.</p></li>
+<li><p>If the application armed the CQ, the emulator writes an EQE
+naming the CQ into the CQ’s event queue and raises that EQ’s
+MSI-X vector.</p></li>
+<li><p>The application’s <code class="docutils literal notranslate"><span class="pre">ibv_poll_cq()</span></code> finds the CQE by its
+color bit.</p></li>
+</ol>
 </section>
 </section>
-<section id="rdma-verbs">
-<h3>RDMA / Verbs<a class="headerlink" href="#rdma-verbs" title="Link to this heading">#</a></h3>
-<p>Forwards operations to a real InfiniBand HCA via libibverbs.
-Requires an RDMA-capable NIC on the host (for example,
-<code class="docutils literal notranslate"><span class="pre">mlx5_0</span></code>).</p>
+<section id="receive-queues-and-cq-doorbells">
+<h3>Receive Queues and CQ Doorbells<a class="headerlink" href="#receive-queues-and-cq-doorbells" title="Link to this heading">#</a></h3>
+<p>RQ doorbells only advance the ring’s producer index: posting a
+receive does nothing until a SEND arrives for it. CQ doorbells
+either report the guest’s consumer index (ring 0) or arm the CQ
+(ring 1 or 2). Arming behaves like a level, not an edge: if
+completions are already waiting when the CQ is armed, the event
+fires at once.</p>
 </section>
-<section id="nvme-of">
-<h3>NVMe-oF<a class="headerlink" href="#nvme-of" title="Link to this heading">#</a></h3>
-<p>Not a transport but a peer: an NVMe over Fabrics target
-running inside the server, answering IB CM and NVMe command
-capsules from the guest. It hooks into <code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>
-rather than this vtable, because that is the path the guest
-<code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver actually drives. One VM and one server
-instance are then a complete fabric. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+<section id="datagrams-ud-and-gsi">
+<h3>Datagrams (UD and GSI)<a class="headerlink" href="#datagrams-ud-and-gsi" title="Link to this heading">#</a></h3>
+<p>A UD send names its destination per WQE: an AH id and a
+destination QP number. The emulator delivers by QP number, and
+uses the AH only to decide which server the destination lives
+on and to fill in the GRH. An AH whose destination GID no server
+owns is treated as local, so sends through it are delivered by
+QP number within the same VM.</p>
+<p>When the destination is in the same VM, the emulator enforces
+the datagram rules before delivering: the destination must
+itself be a UD or GSI QP, and if it has a Q_Key, the sender’s
+must match. A datagram that crosses the mesh is not checked
+(see <a class="reference internal" href="#trust-boundaries">Trust Boundaries</a>).</p>
+<p>The received message starts with a 40-byte GRH carrying the
+source and destination GIDs, as the verbs API requires, and the
+CQE carries a source MAC address synthesized from the sending
+QP.</p>
 </section>
-<section id="none">
-<h3>None<a class="headerlink" href="#none" title="Link to this heading">#</a></h3>
-<p>Minimal stubs that accept but do not process work requests.
-Suitable for PCI enumeration and basic driver bring-up tests.</p>
 </section>
-<section id="tap-ethernet-only">
-<h3>TAP (Ethernet only)<a class="headerlink" href="#tap-ethernet-only" title="Link to this heading">#</a></h3>
-<p>Not an RDMA backend: <code class="docutils literal notranslate"><span class="pre">--tap</span></code> binds the
-emulated Ethernet LIF to a host TAP interface, so guest
-frames land on a real host netdev and the host stack handles
-ARP, ICMP, DHCP, and TCP with no protocol emulation in the
-server. The TAP fd is non-blocking and drained from the
-server’s existing poll loop, because only the thread owning
-the vfio-user context may DMA into guest memory.</p>
+<section id="more-than-one-vm-the-tcp-mesh">
+<h2><a class="toc-backref" href="#id9" role="doc-backlink">More Than One VM: the TCP Mesh</a><a class="headerlink" href="#more-than-one-vm-the-tcp-mesh" title="Link to this heading">#</a></h2>
+<p>Each server serves one VM. For QPs in different VMs to talk,
+the <code class="docutils literal notranslate"><span class="pre">tcp</span></code> backend (<code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_tcp.c</span></code>) connects
+the servers into a mesh, and the data path sends requests
+across it.</p>
+<section id="topology">
+<h3>Topology<a class="headerlink" href="#topology" title="Link to this heading">#</a></h3>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>      ┌────────────────────┐
+      │ manager (node 0)   │   tcp:manager:listen:5000
+      └──┬──────────────┬──┘
+         │              │      workers register with the
+┌────────┴──┐       ┌───┴───────┐  manager, which assigns
+│ worker 1  │───────│ worker 2  │  node ids and broadcasts
+└───────────┘       └───────────┘  the topology
+    tcp:worker:&lt;manager&gt;:5000
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>The manager is node 0. Workers connect to it, register, and
+get node ids 1, 2, and so on, in the order they arrive.</p></li>
+<li><p>The manager broadcasts the topology; workers connect directly
+to each other (the lower id connects to the higher). A message
+for a node with no direct connection is relayed by the
+manager.</p></li>
+<li><p>The manager sends heartbeats, notices dead nodes, and
+reconnects them.</p></li>
+<li><p>The protocol carries a magic number and a version, checked at
+registration and handshake.</p></li>
+</ul>
 </section>
+<section id="which-server-owns-a-gid">
+<h3>Which Server Owns a GID?<a class="headerlink" href="#which-server-owns-a-gid" title="Link to this heading">#</a></h3>
+<p>The guest kernel picks its own RoCE GIDs (normally the IPv6
+link-local address derived from the MAC, or an IPv4 address on
+the interface), and the emulator can’t infer the node from a
+GID. Instead, each server is <strong>told</strong> its guest’s GIDs in
+<code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_GUEST_GIDS</span></code> (the launcher derives them). Each node
+advertises its GIDs, the manager fans the advertisements out,
+and every node keeps an exact <code class="docutils literal notranslate"><span class="pre">GID</span> <span class="pre">→</span> <span class="pre">node</span> <span class="pre">id</span></code> table.</p>
+<p>The admin queue consults that table when a QP reaches RTR and
+when an AH is created. The two differ when no node owns the
+destination GID:</p>
+<ul class="simple">
+<li><p>For a connected (RC or UC) QP, MODIFY_QP fails. Picking a
+default node instead would deliver writes into the wrong VM’s
+memory.</p></li>
+<li><p>CREATE_AH succeeds, and the AH is treated as local (see
+<a class="reference internal" href="#datagrams-ud-and-gsi">Datagrams (UD and GSI)</a>). Creating an AH does not reject an
+unknown destination.</p></li>
+</ul>
+</section>
+<section id="the-ionic-wire-protocol">
+<h3>The ionic Wire Protocol<a class="headerlink" href="#the-ionic-wire-protocol" title="Link to this heading">#</a></h3>
+<p>The mesh transports messages of type <code class="docutils literal notranslate"><span class="pre">TCP_MSG_IONIC</span></code> without
+looking inside them. Their contents belong to
+<code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>: a fixed header (<code class="docutils literal notranslate"><span class="pre">struct</span>
+<span class="pre">ionic_wire_hdr</span></code>: operation, source and destination QP, request
+id, rkey, remote address, length, immediate, status, atomic
+operands) followed by a payload of up to 16 MiB.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 20.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Request</p></th>
+<th class="head"><p>Reply</p></th>
+<th class="head"><p>Responder does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SEND, SEND_IMM, SEND_INV</p></td>
+<td><p>ACK</p></td>
+<td><p>Deliver into the destination QP’s next posted receive</p></td>
+</tr>
+<tr class="row-odd"><td><p>WRITE, WRITE_IMM</p></td>
+<td><p>ACK</p></td>
+<td><p>Copy the payload to <code class="docutils literal notranslate"><span class="pre">(rkey,</span> <span class="pre">va)</span></code> in its guest; for
+_IMM, also consume a receive</p></td>
+</tr>
+<tr class="row-even"><td><p>READ_REQ</p></td>
+<td><p>READ_RESP</p></td>
+<td><p>Read <code class="docutils literal notranslate"><span class="pre">(rkey,</span> <span class="pre">va)</span></code> from its guest and send it back</p></td>
+</tr>
+<tr class="row-odd"><td><p>ATOMIC_REQ</p></td>
+<td><p>ATOMIC_RESP</p></td>
+<td><p>Perform the atomic on its guest’s memory and return the
+old value</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Note that <strong>rkeys are resolved by the responder</strong>, against its
+own MR table. An rkey only means something to the server that
+issued it, just as with real hardware.</p>
+</section>
+<section id="a-remote-request-step-by-step">
+<h3>A Remote Request, Step by Step<a class="headerlink" href="#a-remote-request-step-by-step" title="Link to this heading">#</a></h3>
+<p>When the data path executes a WQE on a connected (RC or UC) QP
+whose peer is on another node:</p>
+<ol class="arabic simple">
+<li><p>It gathers the payload (for SEND and WRITE) out of guest
+memory, builds the wire header, and sends the message to the
+peer’s server.</p></li>
+<li><p>It records the request in a <strong>pending table</strong> and does not
+post a completion yet. The completion must wait for the
+peer, both so the reported latency includes the network and
+because READ and atomic results haven’t arrived.</p></li>
+<li><p>On the peer, a receive thread gets the message. It may not
+touch guest memory, so it only queues a copy. The peer’s main
+loop applies it to its guest and sends the reply.</p></li>
+<li><p>Back on the requester, the reply is likewise queued and
+applied by the main loop. For READ and atomics, the returned
+data is scattered into the local SGEs. Then the send
+completion is posted.</p></li>
+</ol>
+<p>Datagrams are different. A UD or GSI send to another node is
+sent the same way, with its GRH already attached, but its send
+completion is posted at once, as for a local datagram, and the
+peer’s ACK only clears the pending entry. A UD send completion
+therefore doesn’t mean the peer received the message.</p>
+<p>Reliability and ordering come from TCP, so the emulator has no
+packet sequence numbers, retransmission, or ACK/NAK protocol of
+its own. Two parts of RoCE’s error handling are imitated:</p>
+<ul class="simple">
+<li><p><strong>Receiver not ready.</strong> If a SEND arrives before the guest has
+posted a receive, the message stays queued and is retried on
+later passes for up to 5 seconds, then fails with an
+RNR-retry-exceeded status. Later messages for the same QP wait
+behind it, so SENDs aren’t reordered.</p></li>
+<li><p><strong>Lost peer.</strong> A request whose reply never arrives completes
+with a retry-exceeded error after 30 seconds, so a peer that
+dies after accepting a request doesn’t wedge the guest’s send
+queue. This covers missing replies, not blocked sends.
+Requests and replies are sent synchronously from the main
+thread, and a send to a peer that is still connected but has
+stopped reading waits until the peer reads or the server
+shuts down. While it waits, the main thread does nothing
+else, timeouts included, so the whole device stalls.</p></li>
+</ul>
+</section>
+</section>
+<section id="the-ethernet-side">
+<h2><a class="toc-backref" href="#id10" role="doc-backlink">The Ethernet Side</a><a class="headerlink" href="#the-ethernet-side" title="Link to this heading">#</a></h2>
+<p>The Ethernet half of the device exists because the ionic driver
+requires it, and because RDMA consumers need IP. <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>
+resolves IP addresses to GIDs over the netdev, and many tools
+exchange connection details over TCP before starting RDMA.
+<strong>RDMA traffic itself never goes over the emulated Ethernet</strong>;
+it goes through the data path described above.</p>
+<ul class="simple">
+<li><p>Transmit: on a TX doorbell, the emulator gathers each frame
+(head descriptor plus scatter/gather elements) out of guest
+memory and writes it to the host <strong>TAP</strong> interface named by
+<code class="docutils literal notranslate"><span class="pre">--tap</span></code> (<code class="docutils literal notranslate"><span class="pre">src/ionic_eth_net.c</span></code>). Without a TAP, frames
+are completed and discarded.</p></li>
+<li><p>Receive: the main loop reads frames from the TAP and DMAs each
+into the next buffer the guest posted on receive queue 0, then
+raises the queue’s interrupt.</p></li>
+<li><p>No checksum, TSO, or scatter-gather offloads are advertised,
+so the guest always sends simple linear frames.</p></li>
+<li><p>Before a transmitted frame goes to the TAP, an in-process
+endpoint can claim it (the S3 target uses this; see below).
+Threads that may not do DMA can queue frames for the main loop
+to deliver.</p></li>
+</ul>
+<p>To give several guests a shared segment, each server gets its
+own TAP and the TAPs are joined in a host bridge (see
+<a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>). The mesh does not carry Ethernet.</p>
+</section>
+<section id="in-process-targets-nvme-of-and-s3">
+<h2><a class="toc-backref" href="#id11" role="doc-backlink">In-Process Targets: NVMe-oF and S3</a><a class="headerlink" href="#in-process-targets-nvme-of-and-s3" title="Link to this heading">#</a></h2>
+<p>Two backends put the <em>other end</em> of the RDMA conversation
+inside the server, so one VM and one server make a complete
+fabric. Both are written against a pair of DMA callbacks
+(<code class="docutils literal notranslate"><span class="pre">from_host</span></code>, <code class="docutils literal notranslate"><span class="pre">to_host</span></code>) that take an rkey and an address,
+and neither touches guest memory or the network directly. In
+the server, the data path supplies callbacks that resolve the
+rkey in the guest’s MR table, which is the emulator’s
+equivalent of the target posting RDMA READ and WRITE against
+the initiator’s keys. The same code runs in unit tests with a
+byte array standing in for guest memory.</p>
+<section id="nvme-over-fabrics">
+<h3>NVMe over Fabrics<a class="headerlink" href="#nvme-over-fabrics" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">--backend</span> <span class="pre">nvmeof</span></code> runs an NVMe-oF controller in the server.</p>
+<ul class="simple">
+<li><p><strong>Connection setup.</strong> <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> uses
+<code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>, which sends IB CM MADs on the guest’s GSI QP.
+When the GSI QP sends, the data path offers the MAD to
+<code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, which answers REQ with REP, accepts RTU,
+handles DREQ, and binds the guest’s QP to a controller queue.
+The controller’s side of each connection gets a QP number in
+a reserved range (<code class="docutils literal notranslate"><span class="pre">0xc0xxxx</span></code>) that can’t collide with the
+guest’s QPs. Replies go back into the guest’s GSI receive
+queue with a GRH, as from a real peer.</p></li>
+<li><p><strong>I/O.</strong> A SEND on a bound QP is an NVMe command capsule. The
+data path hands it to <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code>, which executes
+it synchronously against a RAM- or file-backed namespace. It
+moves data through the keyed SGL in the command (the guest’s
+rkey, usually from a fast registration just before), and the
+response capsule is delivered into the guest’s next posted
+receive.</p></li>
+</ul>
+<p>The guest needs a static neighbor entry for the target address,
+because nothing answers ARP for it. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+</section>
+<section id="s3-over-rdma">
+<h3>S3 over RDMA<a class="headerlink" href="#s3-over-rdma" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">--backend</span> <span class="pre">s3</span></code> runs an object store whose control plane is
+HTTP and whose data plane is RDMA, compatible with the protocol
+hipObject and NVIDIA cuObject speak.</p>
+<ul class="simple">
+<li><p><strong>Control plane on the emulated wire.</strong> <code class="docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code> is a
+minimal ARP, ICMP echo, and TCP implementation (handshake,
+in-order data, cumulative ACKs, one retransmit timer, FIN; no
+congestion control or reassembly, since the link is
+lossless). It claims the guest’s transmitted frames addressed
+to the store’s IP and injects its replies into the guest’s
+receive ring. To the guest, the store is just a host on its
+segment; no TAP is needed. <code class="docutils literal notranslate"><span class="pre">src/s3_http.c</span></code> parses the HTTP
+requests.</p></li>
+<li><p><strong>Data plane by rkey.</strong> A request carries an
+<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-token</span></code> header (<code class="docutils literal notranslate"><span class="pre">src/s3_token.c</span></code>) naming a
+registered guest buffer: rkey, address, and length.
+<code class="docutils literal notranslate"><span class="pre">src/s3_target.c</span></code> moves the object directly into or out of
+that buffer through the DMA callbacks, and answers with
+<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-reply</span></code>. Requests without a token carry the
+payload in the HTTP body.</p></li>
+</ul>
+<p>See <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>.</p>
+</section>
+</section>
+<section id="backends">
+<h2><a class="toc-backref" href="#id12" role="doc-backlink">Backends</a><a class="headerlink" href="#backends" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">--backend</span></code> picks one entry in the backend registry
+(<code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_core.c</span></code>). With the ionic front end
+doing all data movement, the choice mostly decides whether the
+mesh exists and whether a target is attached.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 85.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Backend</p></th>
+<th class="head"><p>What it means for the guest</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">loopback</span></code> (default)</p></td>
+<td><p>Single VM. Every peer QP is in the same guest. Resources
+are tracked in memory. The <code class="docutils literal notranslate"><span class="pre">mode=</span></code> and <code class="docutils literal notranslate"><span class="pre">md5</span></code> options
+apply to the old PVRDMA data path and don’t affect the
+ionic data path.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code></p></td>
+<td><p>Multi-VM. The mesh described in <a class="reference internal" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the
+TCP Mesh</a>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nvmeof</span></code></p></td>
+<td><p>Single VM with an NVMe-oF controller in the server.
+Resource handling is the loopback backend’s.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">s3</span></code></p></td>
+<td><p>Single VM with an S3 store in the server. Resource
+handling is the loopback backend’s.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
+<td><p>Stub resource operations; meant for PCI enumeration and
+driver bring-up.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">verbs</span></code></p></td>
+<td><p>Accepted on the command line and documented as
+forwarding to a real HCA, but <strong>not implemented</strong>: the
+registry entry is empty, so the server fails to start.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="threads">
+<h2><a class="toc-backref" href="#id13" role="doc-backlink">Threads</a><a class="headerlink" href="#threads" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 20.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Thread</p></th>
+<th class="head"><p>Exists when</p></th>
+<th class="head"><p>Does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>main</p></td>
+<td><p>always</p></td>
+<td><p>vfio-user, every register access, every guest-memory
+access, every interrupt</p></td>
+</tr>
+<tr class="row-odd"><td><p>accept</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code></p></td>
+<td><p>Accepts incoming mesh connections</p></td>
+</tr>
+<tr class="row-even"><td><p>receive (one per connection)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code></p></td>
+<td><p>Reads mesh messages and queues them for the main thread</p></td>
+</tr>
+<tr class="row-odd"><td><p>health check</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> manager</p></td>
+<td><p>Heartbeats, dead-node detection, reconnects</p></td>
+</tr>
+<tr class="row-even"><td><p>peer connect</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> worker</p></td>
+<td><p>Connects to peers as the topology changes</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The rule is that <strong>only the main thread touches guest memory</strong>.
+Every other thread hands work to it through a locked queue: the
+data path’s inbound message queue, or the Ethernet emulator’s
+frame inbox. The vendored QEMU code’s own completion thread is
+never started.</p>
+<p>Shared state between threads uses mutexes or C11 atomics. The
+thread-safety section of <code class="docutils literal notranslate"><span class="pre">AGENTS.md</span></code>, in the repository root,
+has the rules.</p>
+</section>
+<section id="trust-boundaries">
+<h2><a class="toc-backref" href="#id14" role="doc-backlink">Trust Boundaries</a><a class="headerlink" href="#trust-boundaries" title="Link to this heading">#</a></h2>
+<p>The server is the boundary between a guest and the host, so
+everything that comes from a guest (register writes, doorbells,
+admin commands, ring contents, keys, addresses, lengths) or from
+another server is untrusted. The main defenses in the device
+model:</p>
+<ul class="simple">
+<li><p>A memory access through a non-zero key is bounds-checked
+against the MR it names. Key 0 is the driver’s reserved DMA
+key: its address is used as a guest physical address with no
+MR lookup, and the device doesn’t check which QP, or which
+guest process, used it. The only limit on a key-0 access is
+vfio-user’s: it can reach only guest RAM that QEMU shared with
+the server.</p></li>
+<li><p>A peer server may name memory only by rkey. Key 0, which
+locally means “the address is already a bus address”, is
+refused when a peer sends it with a non-zero length.</p></li>
+<li><p>A page table is checked against the length of the region it
+describes, so it can’t have more entries than that region
+needs. This is a geometry check, not a memory limit: the
+region’s length also comes from the guest and nothing caps it,
+so a large enough CREATE_MR or fast registration still makes
+the server allocate a large page table. The ring
+geometry of SRQs and of the data path’s CQ rings is bounded
+before it is used in shifts. Not every command checks its ring
+geometry yet, so this is not a guarantee for all queue
+creation.</p></li>
+<li><p>Datagram delivery within one VM checks that the destination
+is a UD or GSI QP, so a datagram can’t land in an RC or UC
+QP, and that the Q_Key in the WQE matches the destination’s.
+These checks catch a datagram sent to the wrong QP; they don’t
+authenticate the sender. The Q_Key comes from the WQE, which
+the sending process writes, and the device doesn’t restrict
+privileged Q_Keys. QP1’s key is the well-known <code class="docutils literal notranslate"><span class="pre">0x80010000</span></code>,
+so any process that writes it can deliver a MAD to QP1.
+Datagrams between servers aren’t checked at all: the wire
+header carries neither the transport type nor the Q_Key, and
+an inbound SEND is delivered to whichever QP it names.</p></li>
+<li><p>A connected QP whose destination resolves to no known node
+fails MODIFY_QP instead of going to a default node. An AH with
+such a destination is still created, and treated as local.</p></li>
+</ul>
+</section>
+<section id="what-is-not-emulated">
+<h2><a class="toc-backref" href="#id15" role="doc-backlink">What Is Not Emulated</a><a class="headerlink" href="#what-is-not-emulated" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>No RoCE packets.</strong> Nothing builds or parses RoCE frames, and
+there is no packet sequence number, ACK/NAK, retransmission,
+or congestion control. The header templates the driver
+supplies are read only for their addresses.</p></li>
+<li><p><strong>No asynchronous events.</strong> The only path to the driver is a
+CQ completion through an EQ, so events such as “SRQ limit
+reached” are never raised. The limit can be set, but nobody is
+told when it is reached.</p></li>
+<li><p><strong>QP state isn’t enforced.</strong> The data path doesn’t consult it:
+a QP executes the WQEs posted to it in any state, and moving a
+QP to ERROR doesn’t flush its outstanding work requests with
+flush-error completions.</p></li>
+<li><p><strong>One outstanding RDMA READ or atomic per QP</strong> is what
+QUERY_QP reports.</p></li>
+<li><p><strong>Ethernet offloads</strong> (checksum, TSO, scatter-gather) are not
+offered.</p></li>
+<li><p><strong>Statistics admin commands</strong> succeed but return nothing.</p></li>
+<li><p><strong>The verbs backend</strong> has no implementation (see
+<a class="reference internal" href="#backends">Backends</a>).</p></li>
+<li><p><strong>Performance</strong> is that of a software device: every doorbell
+is a socket message, every byte is copied by the server’s CPU,
+and the main loop polls.</p></li>
+</ul>
+</section>
+<section id="where-to-look-in-the-source">
+<h2><a class="toc-backref" href="#id16" role="doc-backlink">Where to Look in the Source</a><a class="headerlink" href="#where-to-look-in-the-source" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 40.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Role</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code></p></td>
+<td><p>Startup, PCI identity, BARs, MSI-X, main loop</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
+<td><p>BAR layout constants and the top-level device struct</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_emu.c</span></code></p></td>
+<td><p>Registers, device commands, LIF, Ethernet queues,
+interrupt controller, doorbell decode</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_net.c</span></code></p></td>
+<td><p>Host TAP interface</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_rdma_devcmd.c</span></code></p></td>
+<td><p>RDMA bootstrap (EQs, admin queues), EQE posting</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_adminq.c</span></code></p></td>
+<td><p>RDMA control path</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code></p></td>
+<td><p>RDMA data path and inter-server wire protocol</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<td><p>Bridge to the QEMU-derived core; guest-memory mapping for
+it; mesh wrappers; shared limits</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">third-party/qemu/hw/rdma/</span></code></p></td>
+<td><p>Vendored resource manager and backend dispatch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
+<td><p>Backend registry; none, loopback, and TCP mesh backends</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/pvrdma_stats.c</span></code></p></td>
+<td><p>Statistics file</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
+<td><p>Stand-ins for the QEMU APIs the vendored code calls</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code></p></td>
+<td><p>In-process NVMe-oF CM responder and controller</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_http.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_token.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/s3_target.c</span></code></p></td>
+<td><p>In-process S3 store</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 </section>
 </section>
 
@@ -668,30 +1728,53 @@ the vfio-user context may DMA into guest memory.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#high-level-overview">High-Level Overview</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components">Components</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#server-rocm-ernic-server-c">Server (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-bridge-rocm-ernic-compat-c">Compatibility Bridge (<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-device-logic-third-party-qemu">RDMA Device Logic (<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qemu-compatibility-layer-src-qemu-compat">QEMU Compatibility Layer (<code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-backends-src-rdma">RDMA Backends (<code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#network-services-src-net">Network Services (<code class="docutils literal notranslate"><span class="pre">src/net/</span></code>)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ionic-emulation-src-ionic-c">ionic Emulation (<code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code>)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-short-version">The Short Version</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-in-brief">RDMA in Brief</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-a-pci-device-is-emulated-in-userspace">How a PCI Device Is Emulated in Userspace</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-the-guest-sees">The Device the Guest Sees</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#inside-the-server">Inside the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ionic-front-end">The ionic Front End</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-core">The Device Core</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-main-loop">The Main Loop</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pci-bars">PCI BARs</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loopback">Loopback</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tcp-ip">TCP/IP</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#userspace-data-path">Userspace Data Path</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bringing-the-device-up">Bringing the Device Up</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device-commands-over-bar-0">Device Commands over BAR 0</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ethernet-admin-queue">The Ethernet Admin Queue</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-bootstrap">RDMA Bootstrap</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#interrupts">Interrupts</a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-verbs">RDMA / Verbs</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of">NVMe-oF</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#none">None</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tap-ethernet-only">TAP (Ethernet only)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-control-path-the-rdma-admin-queue">The Control Path: the RDMA Admin Queue</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-data-path">The Data Path</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-memory-three-levels-down">Guest Memory, Three Levels Down</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rings-and-the-color-bit">Rings and the Color Bit</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#executing-a-send-queue">Executing a Send Queue</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#example-an-rdma-write-between-two-qps-in-one-vm">Example: an RDMA WRITE Between Two QPs in One VM</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#receive-queues-and-cq-doorbells">Receive Queues and CQ Doorbells</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#datagrams-ud-and-gsi">Datagrams (UD and GSI)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP Mesh</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#topology">Topology</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#which-server-owns-a-gid">Which Server Owns a GID?</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ionic-wire-protocol">The ionic Wire Protocol</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a-remote-request-step-by-step">A Remote Request, Step by Step</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ethernet-side">The Ethernet Side</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-targets-nvme-of-and-s3">In-Process Targets: NVMe-oF and S3</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-over-fabrics">NVMe over Fabrics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma">S3 over RDMA</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#threads">Threads</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trust-boundaries">Trust Boundaries</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-not-emulated">What Is Not Emulated</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-to-look-in-the-source">Where to Look in the Source</a></li>
 </ul>
   </nav></div>
 
