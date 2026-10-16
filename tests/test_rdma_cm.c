@@ -20,7 +20,6 @@
 #include <errno.h>
 #include <unistd.h>
 #include <infiniband/verbs.h>
-#include <stdint.h>
 
 #include "ernic_device.h"
 

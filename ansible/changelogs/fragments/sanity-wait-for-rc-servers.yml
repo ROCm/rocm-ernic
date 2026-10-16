@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``sanity-tests.yml`` waits for the ``ib_send_bw`` and
+    ``ibv_rc_pingpong`` servers on the first guest to exit before it reads
+    their logs and starts the next test.  All three servers listen on port
+    18515, so a server still finishing when its client returned made the
+    next one fail with ``Couldn't listen to port 18515``, and its own log,
+    written at exit, read as empty.

@@ -279,17 +279,20 @@ static int run_case(const struct testcase *tc)
 
     memset(&priv, 0, sizeof(priv));
     priv.is_manager = true;
-    priv.local_node_id = 1;
+    atomic_store(&priv.local_node_id, 1);
     priv.mesh_nodes = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&priv.mesh_table_lock);
     qemu_mutex_init(&priv.conn_table_lock);
+    qemu_mutex_init(&priv.topology_broadcast_lock);
 
     /* One "worker" on the near end of the socketpair */
     memset(&conn, 0, sizeof(conn));
     conn.node_id = 42;
     conn.sockfd = sv[0];
-    conn.is_connected = true;
+    /* The fixture's own reference: a lookup's ref and unref can't free it */
+    atomic_init(&conn.refcount, 1);
+    atomic_store(&conn.is_connected, true);
     conn.priv = &priv;
     qemu_mutex_init(&conn.lock);
     g_hash_table_insert(priv.connections, GUINT_TO_POINTER(42u), &conn);
@@ -372,6 +375,7 @@ out:
     close(sv[0]);
     close(sv[1]);
     qemu_mutex_destroy(&conn.lock);
+    qemu_mutex_destroy(&priv.topology_broadcast_lock);
     qemu_mutex_destroy(&priv.conn_table_lock);
     qemu_mutex_destroy(&priv.mesh_table_lock);
     g_hash_table_destroy(priv.connections);

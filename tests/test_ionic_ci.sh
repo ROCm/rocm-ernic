@@ -130,7 +130,11 @@ echo ""
 echo "Test 8: --tap attaches when the interface exists"
 TAP_IF="${ERNIC_TEST_TAP:-}"
 if [ -z "$TAP_IF" ] || [ ! -d "/sys/class/net/$TAP_IF" ]; then
-    echo -e "${YELLOW}⚠ skipped: set ERNIC_TEST_TAP to a tap owned by $USER${NC}"
+    # ${USER:-} rather than $USER: this script runs under `set -u`, and the
+    # container docker/Dockerfile.build exists to run the suite in has no USER
+    # in its environment -- so an unguarded expansion here aborts the whole
+    # test from inside a message that only explains a skip.
+    echo -e "${YELLOW}⚠ skipped: set ERNIC_TEST_TAP to a tap owned by ${USER:-this user}${NC}"
 else
     rm -f "$SOCKET" "$LOG"
     "$SERVER_BIN" --backend loopback --socket "$SOCKET" \

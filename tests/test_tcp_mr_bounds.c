@@ -52,7 +52,6 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -573,7 +572,7 @@ static int recv_fixture_start(struct recv_fixture *f)
     f->backend_dev.rdma_dev_res = &f->dev_res;
     f->backend_dev.backend_private = &f->priv;
     f->priv.backend_dev = &f->backend_dev;
-    f->priv.local_node_id = TEST_LOCAL_NODE;
+    atomic_store(&f->priv.local_node_id, TEST_LOCAL_NODE);
     f->priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&f->priv.conn_table_lock);
     qemu_mutex_init(&f->priv.lock);
@@ -582,7 +581,9 @@ static int recv_fixture_start(struct recv_fixture *f)
     memset(&f->conn, 0, sizeof(f->conn));
     f->conn.node_id = TEST_PEER_NODE;
     f->conn.sockfd = f->sv[0];
-    f->conn.is_connected = true;
+    /* The fixture's own reference: a lookup's ref and unref can't free it */
+    atomic_init(&f->conn.refcount, 1);
+    atomic_store(&f->conn.is_connected, true);
     atomic_store(&f->conn.recv_thread_running, true);
     f->conn.priv = &f->priv;
     qemu_mutex_init(&f->conn.lock);
@@ -919,7 +920,7 @@ static void run_loopback_write(uint32_t rkey, uint64_t raddr,
     backend_dev.backend_private = &priv;
     backend_dev.dev = (PCIDevice *)dev;
     priv.backend_dev = &backend_dev;
-    priv.local_node_id = TEST_LOCAL_NODE;
+    atomic_store(&priv.local_node_id, TEST_LOCAL_NODE);
     priv.qps = g_hash_table_new(g_direct_hash, g_direct_equal);
     qemu_mutex_init(&priv.lock);
 

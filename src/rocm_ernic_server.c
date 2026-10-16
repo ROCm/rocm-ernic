@@ -22,12 +22,11 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <limits.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <syslog.h>
 #include <getopt.h>
-#include <assert.h>
 #include <time.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -41,6 +40,8 @@
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "ionic_eth_emu.h"
+#include "ionic_rdma_devcmd.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #include "rocm-ernic-warnings.h"
@@ -81,6 +82,31 @@ static void signal_handler(int signo)
                 /* Signal will cause vfu_run_ctx() to return with EINTR */
             }
         }
+    }
+}
+
+/**
+ * Did vfu_attach_ctx() fail because of the client rather than the server?
+ *
+ * libvfio-user accepts the connection and then negotiates the protocol
+ * version.  If the peer hangs up (ENOMSG, ECONNRESET, EPIPE), gives up
+ * before the accept completes (ECONNABORTED), or sends something that is
+ * not a valid version message (EINVAL, EPROTO), it closes the accepted
+ * socket and leaves the context ready to attach again.  One bad client
+ * must not take the server down with it.
+ */
+static bool attach_error_is_peer(int errnum)
+{
+    switch (errnum) {
+    case ENOMSG:
+    case ECONNRESET:
+    case EPIPE:
+    case ECONNABORTED:
+    case EINVAL:
+    case EPROTO:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -340,6 +366,24 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
 }
 
 /**
+ * Tear down the ionic emulation layer built by ionic_device_init().
+ *
+ * The datapath goes first: it unregisters its mesh receive callback from
+ * the pvrdma backend, and both it and the rdma devcmd hold pointers into
+ * the eth emulator.  Safe to call on a partly built or already torn-down
+ * device; every pointer is cleared.
+ */
+static void ionic_device_fini(rocm_ernic_dev_t *dev)
+{
+    ionic_datapath_destroy(dev->ionic_dp);
+    dev->ionic_dp = NULL;
+    ionic_rdma_devcmd_destroy(dev->ionic_rdma);
+    dev->ionic_rdma = NULL;
+    ionic_eth_emu_destroy(dev->ionic_emu);
+    dev->ionic_emu = NULL;
+}
+
+/**
  * Initialize ionic emulation layer.
  */
 static int ionic_device_init(rocm_ernic_dev_t *dev)
@@ -364,8 +408,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     dev->ionic_rdma = ionic_rdma_devcmd_create(dev->vfu_ctx);
     if (!dev->ionic_rdma) {
-        ionic_eth_emu_destroy(dev->ionic_emu);
-        dev->ionic_emu = NULL;
+        ionic_device_fini(dev);
         fprintf(stderr, "ionic_device_init: failed to create rdma devcmd\n");
         return -1;
     }
@@ -376,10 +419,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     dev->ionic_dp = ionic_datapath_create(dev->vfu_ctx, dev->ionic_emu);
     if (!dev->ionic_dp) {
-        ionic_rdma_devcmd_destroy(dev->ionic_rdma);
-        ionic_eth_emu_destroy(dev->ionic_emu);
-        dev->ionic_emu = NULL;
-        dev->ionic_rdma = NULL;
+        ionic_device_fini(dev);
         fprintf(stderr, "ionic_device_init: failed to create datapath\n");
         return -1;
     }
@@ -389,18 +429,17 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         char err[256] = "";
         const char *opts = strchr(dev->backend_type_str, ':');
 
+        bool attached;
+
         nvmeof_target_cfg_defaults(&cfg);
-        if (!nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                     sizeof(err)) ||
-            !ionic_datapath_attach_nvmeof(dev->ionic_dp, &cfg, err,
-                                          sizeof(err))) {
+        attached =
+            nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                    sizeof(err)) &&
+            ionic_datapath_attach_nvmeof(dev->ionic_dp, &cfg, err, sizeof(err));
+        free(cfg.file); /* the target keeps its own copy */
+        if (!attached) {
             fprintf(stderr, "nvmeof backend: %s\n", err);
-            ionic_datapath_destroy(dev->ionic_dp);
-            ionic_rdma_devcmd_destroy(dev->ionic_rdma);
-            ionic_eth_emu_destroy(dev->ionic_emu);
-            dev->ionic_dp = NULL;
-            dev->ionic_emu = NULL;
-            dev->ionic_rdma = NULL;
+            ionic_device_fini(dev);
             return -1;
         }
     }
@@ -415,12 +454,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
                                  sizeof(err)) ||
             !ionic_datapath_attach_s3(dev->ionic_dp, &cfg, err, sizeof(err))) {
             fprintf(stderr, "s3 backend: %s\n", err);
-            ionic_datapath_destroy(dev->ionic_dp);
-            ionic_rdma_devcmd_destroy(dev->ionic_rdma);
-            ionic_eth_emu_destroy(dev->ionic_emu);
-            dev->ionic_dp = NULL;
-            dev->ionic_emu = NULL;
-            dev->ionic_rdma = NULL;
+            ionic_device_fini(dev);
             return -1;
         }
     }
@@ -800,7 +834,8 @@ static const char *get_backend_type_base(const char *backend_str)
  * @device: Output parameter for device name (caller must free)
  * @ethdev: Output parameter for ethdev name (caller must free)
  * @port: Output parameter for port number
- * @return: 0 on success, -1 on error
+ * @return: 0 on success; -1 on error, with *device and *ethdev freed and
+ *          set to NULL
  */
 static int parse_verbs_options(const char *backend_str, char **device,
                                char **ethdev, uint8_t *port)
@@ -831,8 +866,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
             if (!*device) {
                 *device = strdup(token);
                 if (!*device) {
-                    free(options_copy);
-                    return -1;
+                    goto fail;
                 }
             }
         } else {
@@ -846,8 +880,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
                 }
                 *device = strdup(value);
                 if (!*device) {
-                    free(options_copy);
-                    return -1;
+                    goto fail;
                 }
             } else if (!strcmp(key, "ethdev")) {
                 if (*ethdev) {
@@ -855,10 +888,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
                 }
                 *ethdev = strdup(value);
                 if (!*ethdev) {
-                    free(options_copy);
-                    free(*device);
-                    *device = NULL;
-                    return -1;
+                    goto fail;
                 }
             } else if (!strcmp(key, "port")) {
                 int port_val = atoi(value);
@@ -867,12 +897,7 @@ static int parse_verbs_options(const char *backend_str, char **device,
                             "Error: Invalid port number '%s' (must be "
                             "1-255)\n",
                             value);
-                    free(options_copy);
-                    free(*device);
-                    free(*ethdev);
-                    *device = NULL;
-                    *ethdev = NULL;
-                    return -1;
+                    goto fail;
                 }
                 *port = (uint8_t)port_val;
             } else {
@@ -885,6 +910,15 @@ static int parse_verbs_options(const char *backend_str, char **device,
 
     free(options_copy);
     return 0;
+
+fail:
+    /* Hand back nothing, so the caller has nothing to free. */
+    free(options_copy);
+    free(*device);
+    free(*ethdev);
+    *device = NULL;
+    *ethdev = NULL;
+    return -1;
 }
 
 /**
@@ -959,9 +993,13 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
         char err[256] = "";
         const char *opts = strchr(dev->backend_type_str, ':');
 
+        bool parsed;
+
         nvmeof_target_cfg_defaults(&cfg);
-        if (!nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                     sizeof(err))) {
+        parsed = nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                         sizeof(err));
+        free(cfg.file); /* only checking the options here */
+        if (!parsed) {
             fprintf(stderr, "Error: nvmeof backend: %s\n", err);
             fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
                             "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
@@ -1319,6 +1357,12 @@ int main(int argc, char *argv[])
             } else if (errno == EINTR) {
                 /* Interrupted by signal, check shutdown flag */
                 continue;
+            } else if (attach_error_is_peer(errno)) {
+                ernic_startup_report("rocm-ernic: client dropped during "
+                                     "negotiation (%s); waiting for the next "
+                                     "client",
+                                     strerror(errno));
+                continue;
             }
             vfu_log(vfu_ctx, LOG_ERR,
                     "vfu_attach_ctx() failed with errno=%d: %s", errno,
@@ -1446,15 +1490,22 @@ int main(int argc, char *argv[])
     set_signal_handler(SIGINT, SIG_IGN);
     set_signal_handler(SIGTERM, SIG_IGN);
 
-    /* Cleanup */
-    vfu_destroy_ctx(vfu_ctx);
-    g_vfu_ctx = NULL;
+    /* Cleanup: the ionic layer first, while the ctx it was built on and
+     * the pvrdma backend it registered with are both still alive. */
+    ionic_device_fini(dev);
 
-    /* Destroy PVRDMA device */
+    /*
+     * Then the PVRDMA device, before the ctx: its backend's teardown puts
+     * back the guest memory mapped for work requests still queued, and
+     * pci_dma_unmap() does that through the ctx each mapping was made with.
+     */
     if (dev->pvrdma_handle) {
         pvrdma_device_destroy(dev->pvrdma_handle);
         dev->pvrdma_handle = NULL;
     }
+
+    vfu_destroy_ctx(vfu_ctx);
+    g_vfu_ctx = NULL;
 
 
     free(dev->stats_file_path);

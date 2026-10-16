@@ -30,8 +30,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "rocm-ernic-warnings.h"
-
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
 

@@ -1,0 +1,1757 @@
+/*
+ * test_ionic_harness.c — the ionic device end to end, in-process
+ *
+ * Every other ionic test reaches into one translation unit and stubs the
+ * rest. These link the whole device -- the Ethernet emulator, the RDMA
+ * devcmds, the admin queue, the data path, the compat bridge, the resource
+ * manager and the loopback and TCP backends -- and drive it the way ionic.ko
+ * and ionic_rdma.ko do, through the model in ionic_harness.c. Only
+ * libvfio-user is replaced, by fake_vfu.c, so nothing needs a VM or RDMA
+ * hardware, only the TCP backend opens a socket, on loopback, and the whole
+ * stack runs under every sanitizer CI builds.
+ *
+ * With no argument every group runs; with one, only the group it names.
+ *
+ * Copyright (C) Advanced Micro Devices, Inc.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the LICENSE_GPL.md file in the top-level directory.
+ */
+
+#include <arpa/inet.h>
+#include <endian.h>
+#include <errno.h>
+#include <infiniband/verbs.h>
+#include <netinet/in.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "fake_vfu.h"
+#include "ionic_eth_emu.h"
+#include "ionic_harness.h"
+#include "nvmeof.h"
+#include "nvmeof_cm.h"
+#include "rdma_backend_ops.h"
+#include "rdma_rm.h"
+#include "rocm_ernic_compat.h"
+#include "rocm_ernic_internal.h"
+#include "vmw/pvrdma.h"
+
+static int failures;
+
+static bool check(const char *test, bool cond, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+
+static bool check(const char *test, bool cond, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (cond)
+        return true;
+    printf("FAIL %-12s: ", test);
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf("\n");
+    failures++;
+    return false;
+}
+
+/* ---- Helpers ----------------------------------------------------------- */
+
+static uint32_t get_le32(const uint8_t *p)
+{
+    uint32_t v;
+
+    memcpy(&v, p, 4);
+    return le32toh(v);
+}
+
+static uint16_t get_le16(const uint8_t *p)
+{
+    uint16_t v;
+
+    memcpy(&v, p, 2);
+    return le16toh(v);
+}
+
+static uint16_t get_be16(const uint8_t *p)
+{
+    uint16_t v;
+
+    memcpy(&v, p, 2);
+    return be16toh(v);
+}
+
+static uint32_t get_be32(const uint8_t *p)
+{
+    uint32_t v;
+
+    memcpy(&v, p, 4);
+    return be32toh(v);
+}
+
+static void put_le16(uint8_t *p, uint16_t v)
+{
+    v = htole16(v);
+    memcpy(p, &v, 2);
+}
+
+static void put_le32(uint8_t *p, uint32_t v)
+{
+    v = htole32(v);
+    memcpy(p, &v, 4);
+}
+
+static void put_le64(uint8_t *p, uint64_t v)
+{
+    v = htole64(v);
+    memcpy(p, &v, 8);
+}
+
+static void put_be16(uint8_t *p, uint16_t v)
+{
+    v = htobe16(v);
+    memcpy(p, &v, 2);
+}
+
+static void put_be32(uint8_t *p, uint32_t v)
+{
+    v = htobe32(v);
+    memcpy(p, &v, 4);
+}
+
+static void put_be64(uint8_t *p, uint64_t v)
+{
+    v = htobe64(v);
+    memcpy(p, &v, 8);
+}
+
+/* A byte pattern that differs from row to row and from byte to byte. */
+static void fill(uint8_t *buf, size_t len, uint8_t seed)
+{
+    for (size_t i = 0; i < len; i++)
+        buf[i] = (uint8_t)(seed + i * 7 + (i >> 8));
+}
+
+/* Whether @cq has no completion waiting. */
+static bool cq_empty(struct ih *h, struct ih_cq *cq)
+{
+    struct ih_cqe e;
+
+    return !ih_cq_poll(h, cq, &e);
+}
+
+/* Drain the EQ, counting the events for @cq_id. */
+static unsigned eq_count(struct ih *h, uint32_t cq_id)
+{
+    unsigned n = 0;
+    uint32_t id;
+
+    while (ih_eq_next(h, &id))
+        n += id == cq_id;
+    return n;
+}
+
+static bool setup(const char *test, struct ih *h, const char *backend)
+{
+    if (!check(test, ih_create(h, backend), "device for '%s' not created",
+               backend))
+        return false;
+    if (!check(test, ih_bringup(h), "bring-up failed")) {
+        ih_destroy(h);
+        return false;
+    }
+    return true;
+}
+
+static void teardown(const char *test, struct ih *h)
+{
+    check(test, ih_destroy(h), "teardown left guest memory mapped");
+}
+
+/* ---- Bring-up: devcmds, the Ethernet admin queue and interrupts --------- */
+
+/* Byte offsets into the devcmd data window after the identify commands */
+#define DEVID_NLIFS          0x08u
+#define DEVID_NINTRS         0x0cu
+#define DEVID_COAL_DIV       0x18u
+#define LIFID_MAC            0x0a0u
+#define LIFID_RDMA           392u
+#define LIFID_RDMA_ADMIN_OPS 2u
+
+static void test_devcmds(void)
+{
+    const char *T = "devcmds";
+    struct ih h;
+    uint8_t cmd[64], comp[16], data[1912];
+
+    if (!check(T, ih_create(&h, "loopback"), "device not created"))
+        return;
+
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_IDENTIFY;
+    check(T, ih_devcmd(&h, cmd, comp, data, 512) == 0, "IDENTIFY failed");
+    check(T, get_le32(data + DEVID_NLIFS) == 1, "nlifs is %u",
+          get_le32(data + DEVID_NLIFS));
+    check(T, get_le32(data + DEVID_NINTRS) == IONIC_MSIX_MAX_VECTORS,
+          "nintrs is %u", get_le32(data + DEVID_NINTRS));
+    check(T, get_le32(data + DEVID_COAL_DIV) != 0,
+          "intr_coal_div is 0, which ethtool divides by");
+
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_LIF_IDENTIFY;
+    check(T, ih_devcmd(&h, cmd, comp, data, sizeof(data)) == 0,
+          "LIF_IDENTIFY failed");
+    check(T, (data[0] & 3u) == 3u, "LIF capabilities lack ETH or RDMA");
+    static const uint8_t default_mac[6] = {0x02, 0xa0, 0xd1, 0, 0, 1};
+    check(T, memcmp(data + LIFID_MAC, default_mac, 6) == 0,
+          "LIF identity does not carry the default MAC");
+
+    /* The RDMA qtypes, read where ionic_rdma.ko reads them */
+    const uint8_t *rdma = data + LIFID_RDMA;
+    static const struct {
+        uint32_t off;
+        uint8_t qtype;
+    } qtypes[] = {
+        {32, IH_QTYPE_AQ}, {44, IH_QTYPE_SQ}, {56, IH_QTYPE_RQ},
+        {68, IH_QTYPE_CQ}, {80, 9},           {96, 10},
+    };
+    for (size_t i = 0; i < sizeof(qtypes) / sizeof(qtypes[0]); i++)
+        check(T, rdma[qtypes[i].off] == qtypes[i].qtype,
+              "qtype at rdma+%u is %u, expected %u", qtypes[i].off,
+              rdma[qtypes[i].off], qtypes[i].qtype);
+    check(T, get_le32(rdma + 100) == IONIC_EMU_SRQ_COUNT, "srq qid_count is %u",
+          get_le32(rdma + 100));
+    check(T, rdma[113] & 2u, "SRQ qid allocation not advertised");
+    check(T, rdma[LIFID_RDMA_ADMIN_OPS] > IH_ADMIN_DESTROY_SRQ,
+          "admin_opcodes %u refuses the SRQ commands",
+          rdma[LIFID_RDMA_ADMIN_OPS]);
+
+    /* Q_IDENTIFY for the Tx queue reports its scatter/gather layout */
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_Q_IDENTIFY;
+    cmd[3] = IH_QTYPE_ETH_TXQ;
+    check(T, ih_devcmd(&h, cmd, comp, data, 64) == 0, "Q_IDENTIFY failed");
+    check(T, data[16] == 16 && data[20] == 128,
+          "Tx descriptor sizes are %u and %u", data[16], data[20]);
+
+    /* Commands with nothing to configure all succeed */
+    static const uint8_t trivial[] = {IH_CMD_NOP,
+                                      2 /* INIT */,
+                                      4 /* GETATTR */,
+                                      5 /* SETATTR */,
+                                      IH_CMD_LIF_RESET,
+                                      IH_CMD_Q_CONTROL,
+                                      12 /* PORT_RESET */};
+    for (size_t i = 0; i < sizeof(trivial); i++) {
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = trivial[i];
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 0, "devcmd %u failed",
+              trivial[i]);
+    }
+
+    /* LIF_SETATTR and LIF_GETATTR of the station MAC, as devcmds */
+    static const uint8_t mac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_LIF_SETATTR;
+    cmd[1] = IH_LIF_ATTR_MAC;
+    memcpy(cmd + 4, mac, 6);
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 0, "LIF_SETATTR failed");
+    cmd[0] = IH_CMD_LIF_GETATTR;
+    memset(cmd + 4, 0, 6);
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 0, "LIF_GETATTR failed");
+    check(T, memcmp(comp + 4, mac, 6) == 0,
+          "LIF_GETATTR MAC is not the one set");
+
+    /* An opcode the device doesn't know is refused, not ignored */
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 99;
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 2,
+          "unknown devcmd status is not EOPCODE");
+
+    /* The RDMA devcmds also arrive through the BAR0 window, and
+     * CREATE_ADMINQ with no CREATE_CQ ahead of it is refused */
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_RDMA_RESET;
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 0, "RDMA_RESET_LIF failed");
+    cmd[0] = IH_CMD_RDMA_ADMINQ;
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 1,
+          "CREATE_ADMINQ with no admin CQ was accepted");
+
+    /* Accesses past the register window fail rather than touch memory */
+    char b[8];
+    check(T,
+          ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, 8, 0x8000 - 4, false) <
+              0,
+          "BAR0 read past the register window succeeded");
+    check(T,
+          ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, IONIC_BAR2_DB_SIZE,
+                                    true) < 0,
+          "BAR2 write past the doorbell window succeeded");
+    check(T, ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, 0, false) == 8,
+          "BAR2 read failed");
+
+    teardown(T, &h);
+}
+
+static void test_bringup(void)
+{
+    const char *T = "bringup";
+    struct ih h;
+    uint8_t buf[64], cmd[64], comp[16];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    /* PORT_INIT published the port as an up 100G copper link */
+    fake_vfu_read(h.vfu, h.port_info, buf, 64);
+    check(T, get_le32(buf + 0) == 100000, "port config speed is %u",
+          get_le32(buf + 0));
+    fake_vfu_read(h.vfu, h.port_info + 256, buf, 64);
+    check(T, get_le32(buf + 4) == 100000 && buf[8] == 1,
+          "port status is speed %u state %u", get_le32(buf + 4), buf[8]);
+    check(T, buf[60] == 1 && buf[61] == 1,
+          "no copper transceiver in the port status");
+
+    /* LIF_INIT published the link as up */
+    fake_vfu_read(h.vfu, h.lif_info + 256, buf, 16);
+    check(T, buf[10] == 1 && get_le32(buf + 12) == 100000,
+          "LIF status is link %u speed %u", buf[10], get_le32(buf + 12));
+
+    /* Every Ethernet admin command raised the adminq's vector */
+    unsigned irqs = fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR);
+    check(T, irqs == 4, "%u adminq interrupts for 4 commands", irqs);
+
+    /* The station MAC round-trips through the Ethernet admin queue */
+    static const uint8_t mac[6] = {0x02, 0x66, 0x77, 0x88, 0x99, 0xaa};
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_LIF_SETATTR;
+    cmd[1] = IH_LIF_ATTR_MAC;
+    memcpy(cmd + 4, mac, 6);
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "adminq LIF_SETATTR failed");
+    cmd[0] = IH_CMD_LIF_GETATTR;
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "adminq LIF_GETATTR failed");
+    check(T, memcmp(comp + 4, mac, 6) == 0,
+          "adminq LIF_GETATTR MAC is not the one set");
+
+    /* Commands with no emulator state, such as RX_MODE_SET, succeed */
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 31;
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "adminq opcode 31 failed");
+
+    /* An assertion on a masked vector is latched and replayed on unmask */
+    irqs = fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR);
+    ih_intr_mask(&h, IH_ETH_ADMINQ_INTR, true);
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "adminq NOP failed");
+    check(T, fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR) == irqs,
+          "a masked vector fired");
+    ih_intr_mask(&h, IH_ETH_ADMINQ_INTR, false);
+    check(T, fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR) == irqs + 1,
+          "unmasking did not replay the latched interrupt");
+
+    /* With mask-on-assert the vector masks itself as it fires, and NAPI's
+     * credit return with the unmask bit re-arms it */
+    const uint32_t intr = 0x2000u + IH_ETH_ADMINQ_INTR * 32u;
+    ih_bar0_write32(&h, intr + 12, 1);
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "adminq NOP failed");
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "adminq NOP failed");
+    check(T, fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR) == irqs + 2,
+          "mask-on-assert did not mask the vector");
+    ih_bar0_write32(&h, intr + 8, 0x10000u);
+    check(T, fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR) == irqs + 3,
+          "the credit unmask did not replay the latched interrupt");
+    ih_bar0_write32(&h, intr + 12, 0);
+
+    teardown(T, &h);
+}
+
+/* ---- RDMA admin commands that must be refused -------------------------- */
+
+struct bad_admin {
+    const char *what;
+    uint8_t op;
+    uint16_t len;
+    void (*build)(uint8_t *body);
+    int want; /* completion status */
+};
+
+static void build_none(uint8_t *body)
+{
+    (void)body;
+}
+
+static void build_qp_unknown_cq(uint8_t *body)
+{
+    put_le32(body + 8, 4000);
+    put_le32(body + 32, 4001);
+    put_le32(body + 40, 0xffffffffu);
+    put_le32(body + 56, 3);
+}
+
+static void build_qp_unknown_srq(uint8_t *body)
+{
+    /* CQ 1 exists in this group */
+    put_le32(body + 8, 1);
+    put_le32(body + 32, 1);
+    put_le32(body + 40, IONIC_SRQ_QID_BASE + 7);
+    put_le32(body + 56, 3);
+}
+
+static void build_unknown_id(uint8_t *body)
+{
+    /* MR, QP and SRQ ids, all at offset 0 or in id_ver */
+    put_le32(body + 0, 0x00777777u);
+    put_le32(body + 28, 0x00777777u);
+    put_le32(body + 56, 0x00777777u);
+}
+
+static void build_srq_too_deep(uint8_t *body)
+{
+    body[26] = 20;
+    body[27] = 7;
+}
+
+static void build_srq_no_resp(uint8_t *body)
+{
+    body[26] = 4;
+    body[27] = 7;
+}
+
+static const struct bad_admin bad_admins[] = {
+    {"unknown opcode", 77, 0, build_none, 1},
+    {"short CREATE_CQ", IH_ADMIN_CREATE_CQ, 10, build_none, 1},
+    {"short CREATE_QP", IH_ADMIN_CREATE_QP, 60, build_none, 1},
+    {"CREATE_QP on unknown CQs", IH_ADMIN_CREATE_QP, 64, build_qp_unknown_cq,
+     1},
+    {"CREATE_QP on an unknown SRQ", IH_ADMIN_CREATE_QP, 64,
+     build_qp_unknown_srq, 1},
+    {"DESTROY_MR of an unknown MR", IH_ADMIN_DESTROY_MR, 4, build_unknown_id,
+     1},
+    {"MODIFY_QP of an unknown QP", IH_ADMIN_MODIFY_QP, 60, build_unknown_id, 1},
+    {"QUERY_QP of an unknown QP", IH_ADMIN_QUERY_QP, 34, build_unknown_id, 1},
+    {"short CREATE_AH", IH_ADMIN_CREATE_AH, 8, build_none, 1},
+    {"short DESTROY_AH", IH_ADMIN_DESTROY_AH, 2, build_none, 1},
+    {"short CREATE_SRQ", IH_ADMIN_CREATE_SRQ, 20, build_none, 1},
+    {"CREATE_SRQ deeper than advertised", IH_ADMIN_CREATE_SRQ, 42,
+     build_srq_too_deep, 1},
+    {"CREATE_SRQ with no response buffer", IH_ADMIN_CREATE_SRQ, 42,
+     build_srq_no_resp, 1},
+    {"short MODIFY_SRQ", IH_ADMIN_MODIFY_SRQ, 4, build_none, 1},
+    {"MODIFY_SRQ of an unknown SRQ", IH_ADMIN_MODIFY_SRQ, 6, build_unknown_id,
+     1},
+    {"short QUERY_SRQ", IH_ADMIN_QUERY_SRQ, 2, build_none, 1},
+    {"QUERY_SRQ of an unknown SRQ", IH_ADMIN_QUERY_SRQ, 4, build_unknown_id, 1},
+    {"short DESTROY_SRQ", IH_ADMIN_DESTROY_SRQ, 2, build_none, 1},
+    /* Harmless, so not refused */
+    {"DESTROY_SRQ of an unknown SRQ", IH_ADMIN_DESTROY_SRQ, 4, build_unknown_id,
+     0},
+    {"DESTROY_CQ of an unknown CQ", IH_ADMIN_DESTROY_CQ, 4, build_unknown_id,
+     0},
+    {"DESTROY_QP of an unknown QP", IH_ADMIN_DESTROY_QP, 4, build_unknown_id,
+     0},
+    {"NOOP", IH_ADMIN_NOOP, 0, build_none, 0},
+    {"STATS_HDRS", IH_ADMIN_STATS_HDRS, 0, build_none, 0},
+    {"QUERY_AH", IH_ADMIN_QUERY_AH, 0, build_none, 0},
+};
+
+static void test_admin_errors(void)
+{
+    const char *T = "admin";
+    struct ih h;
+    struct ih_cq cq;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+    if (!check(T, ih_cq_create(&h, &cq, 1, 4), "CREATE_CQ failed")) {
+        teardown(T, &h);
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(bad_admins) / sizeof(bad_admins[0]); i++) {
+        const struct bad_admin *c = &bad_admins[i];
+        uint8_t body[128] = {0};
+
+        c->build(body);
+        int rc = ih_admin(&h, c->op, body, c->len, NULL);
+        check(T, rc == c->want, "%s: status %d, expected %d", c->what, rc,
+              c->want);
+    }
+
+    /* A WQE the device can't read stays queued and runs on the next poll,
+     * rather than being skipped */
+    uint8_t body[4] = {0};
+    put_le32(body, 9999);
+    int slot = ih_admin_post(&h, IH_ADMIN_DESTROY_CQ, body, 4);
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    ih_poll(&h);
+    check(T,
+          ih_admin_complete(&h, IH_ADMIN_DESTROY_CQ, slot, NULL) ==
+              IH_ADMIN_PENDING,
+          "an admin WQE the device could not read completed");
+    ih_poll(&h);
+    check(T, ih_admin_complete(&h, IH_ADMIN_DESTROY_CQ, slot, NULL) == 0,
+          "an admin WQE that hit a failed DMA was not retried");
+
+    check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
+/* ---- Connected QPs on the loopback backend ----------------------------- */
+
+#define RC_CQ_A 1
+#define RC_CQ_B 2
+#define RC_QP_A 10
+#define RC_QP_B 11
+#define MR_A    0x01000001u
+#define MR_B    0x02000002u
+#define VA_A    UINT64_C(0x00007f0000000100)
+#define VA_B    UINT64_C(0x00007f1000000000)
+#define MR_LEN  (3 * IH_PAGE_SIZE)
+
+struct rc {
+    struct ih h;
+    struct ih_cq cqa, cqb;
+    struct ih_qp a, b;
+    struct ih_mr mra, mrb;
+    uint32_t msn_a; /* the MSN A's next send completion carries */
+};
+
+static bool rc_setup(const char *test, struct rc *r)
+{
+    memset(r, 0, sizeof(*r));
+    if (!setup(test, &r->h, "loopback"))
+        return false;
+
+    bool ok =
+        ih_cq_create(&r->h, &r->cqa, RC_CQ_A, 6) &&
+        ih_cq_create(&r->h, &r->cqb, RC_CQ_B, 6) &&
+        ih_qp_create(&r->h, &r->a, RC_QP_A, IH_QPT_RC, &r->cqa, &r->cqa,
+                     NULL) &&
+        ih_qp_create(&r->h, &r->b, RC_QP_B, IH_QPT_RC, &r->cqb, &r->cqb,
+                     NULL) &&
+        ih_qp_connect(&r->h, &r->a, &r->b) &&
+        ih_mr_create(&r->h, &r->mra, MR_A, VA_A, MR_LEN, IH_ACCESS_ALL, true) &&
+        ih_mr_create(&r->h, &r->mrb, MR_B, VA_B, MR_LEN, IH_ACCESS_ALL, false);
+    if (!check(test, ok, "RC setup failed")) {
+        ih_mr_free(&r->mra);
+        ih_mr_free(&r->mrb);
+        teardown(test, &r->h);
+        return false;
+    }
+    r->msn_a = 1;
+    return true;
+}
+
+static void rc_teardown(const char *test, struct rc *r)
+{
+    check(test, ih_qp_destroy(&r->h, &r->a) == 0, "DESTROY_QP A failed");
+    check(test, ih_qp_destroy(&r->h, &r->b) == 0, "DESTROY_QP B failed");
+    check(test, ih_mr_destroy(&r->h, &r->mra) == 0, "DESTROY_MR A failed");
+    check(test, ih_mr_destroy(&r->h, &r->mrb) == 0, "DESTROY_MR B failed");
+    check(test, ih_cq_destroy(&r->h, &r->cqa) == 0, "DESTROY_CQ A failed");
+    check(test, ih_cq_destroy(&r->h, &r->cqb) == 0, "DESTROY_CQ B failed");
+    teardown(test, &r->h);
+}
+
+/* Split [va, va + len) into @n SGEs of near-equal size. */
+static uint8_t split_sges(struct ih_sge *sge, uint8_t n, uint64_t va,
+                          uint32_t len, uint32_t lkey)
+{
+    uint32_t done = 0;
+
+    for (uint8_t i = 0; i < n; i++) {
+        uint32_t part = i + 1 == n ? len - done : len / n;
+
+        sge[i] = (struct ih_sge){.va = va + done, .len = part, .lkey = lkey};
+        done += part;
+    }
+    return n;
+}
+
+/* A's send completion, with the status it should carry */
+static void expect_send(const char *test, const char *what, struct rc *r,
+                        uint32_t status)
+{
+    struct ih_cqe e;
+
+    if (!check(test, ih_cq_poll(&r->h, &r->cqa, &e), "%s: no send completion",
+               what))
+        return;
+    check(test, e.type == IH_CQE_TYPE_SEND_MSN && e.qid == RC_QP_A,
+          "%s: send completion type %u qid %u", what, e.type, e.qid);
+    check(test, e.msn == r->msn_a, "%s: MSN %u, expected %u", what, e.msn,
+          r->msn_a);
+    check(test,
+          e.error == (status != 0) && (!e.error || e.status_len == status),
+          "%s: send status %u (error %d), expected %u", what, e.status_len,
+          e.error, status);
+    r->msn_a++;
+}
+
+struct rc_case {
+    const char *what;
+    uint8_t op;
+    uint32_t len;
+    uint8_t nsrc;      /* SGEs on the sending side */
+    uint8_t ndst;      /* SGEs in the receive */
+    uint32_t recv_cap; /* bytes the receive can take; 0 means @len */
+    bool inline_data;
+    bool bad_rkey;
+    uint32_t send_status;
+    uint32_t recv_status; /* 0, or the error the receive completes with */
+};
+
+static const struct rc_case rc_cases[] = {
+    {"SEND", IH_OP_SEND, 100, 1, 1, 0, false, false, 0, 0},
+    {"SEND_IMM", IH_OP_SEND_IMM, 64, 1, 1, 0, false, false, 0, 0},
+    {"SEND_INV", IH_OP_SEND_INV, 32, 1, 1, 0, false, false, 0, 0},
+    {"SEND across pages", IH_OP_SEND, 6000, 3, 2, 0, false, false, 0, 0},
+    {"SEND of 0 bytes", IH_OP_SEND, 0, 0, 1, 16, false, false, 0, 0},
+    {"inline SEND", IH_OP_SEND, 90, 0, 1, 0, true, false, 0, 0},
+    {"SEND too big for the receive", IH_OP_SEND, 200, 1, 1, 100, false, false,
+     0, IH_STS_LOCAL_LEN_ERR},
+    {"RDMA_WRITE", IH_OP_RDMA_WRITE, 5000, 2, 0, 0, false, false, 0, 0},
+    {"RDMA_WRITE_IMM", IH_OP_RDMA_WRITE_IMM, 300, 1, 0, 0, false, false, 0, 0},
+    {"RDMA_READ", IH_OP_RDMA_READ, 4500, 3, 0, 0, false, false, 0, 0},
+    {"RDMA_WRITE with a bad rkey", IH_OP_RDMA_WRITE, 64, 1, 0, 0, false, true,
+     IH_STS_REMOTE_ACC_ERR, 0},
+    {"RDMA_READ with a bad rkey", IH_OP_RDMA_READ, 64, 1, 0, 0, false, true,
+     IH_STS_REMOTE_ACC_ERR, 0},
+    {"unsupported opcode", 12, 16, 1, 0, 0, false, false, IH_STS_LOCAL_QP_OPER,
+     0},
+};
+
+/* Where in each MR a row's data goes: off page boundaries on purpose */
+#define SRC_OFF 0x0f0u
+#define DST_OFF 0x123u
+
+static void run_rc_case(const char *test, struct rc *r, const struct rc_case *c,
+                        uint8_t seed)
+{
+    struct ih *h = &r->h;
+    uint8_t want[8192], got[8192];
+    struct ih_sge src[6], dst[6];
+    const uint32_t imm_be = htobe32(0xc0ffee00u + seed);
+    bool is_send = c->op == IH_OP_SEND || c->op == IH_OP_SEND_IMM ||
+                   c->op == IH_OP_SEND_INV;
+    bool is_read = c->op == IH_OP_RDMA_READ;
+    bool takes_recv = is_send || c->op == IH_OP_RDMA_WRITE_IMM;
+    uint32_t cap = c->recv_cap ? c->recv_cap : c->len;
+
+    /* The data moves from @from to @to; a READ moves it from B to A. */
+    const struct ih_mr *from = is_read ? &r->mrb : &r->mra;
+    const struct ih_mr *to = is_read ? &r->mra : &r->mrb;
+    uint64_t from_va = from->va + (is_read ? DST_OFF : SRC_OFF);
+    uint64_t to_va = to->va + (is_read ? SRC_OFF : DST_OFF);
+
+    fill(want, c->len, seed);
+    memset(got, 0, sizeof(got));
+    ih_mr_write(h, from, from_va, want, c->len);
+    ih_mr_write(h, to, to_va, got, cap > c->len ? cap : c->len);
+
+    uint64_t recv_id = 0;
+    if (takes_recv)
+        recv_id = ih_post_recv(h, &r->b, dst,
+                               split_sges(dst, c->ndst, to_va, cap, MR_B));
+
+    struct ih_send s = {
+        .op = c->op,
+        .flags = IH_WQE_SIGNALLED,
+        .imm_be = imm_be,
+        .key = 0x0a0b0c0du,
+        .remote_va = is_read ? from_va : to_va,
+        .rkey = c->bad_rkey ? 0x7e000099u : MR_B,
+        .length = c->len,
+        .sge = src,
+    };
+    s.nsge = split_sges(src, c->nsrc, is_read ? to_va : from_va, c->len, MR_A);
+    if (c->inline_data) {
+        s.flags |= IH_WQE_INLINE;
+        s.inline_data = want;
+        s.inline_len = c->len;
+    }
+    ih_post_send(h, &r->a, &s);
+
+    expect_send(test, c->what, r, c->send_status);
+
+    struct ih_cqe e;
+    if (takes_recv) {
+        if (check(test, ih_cq_poll(h, &r->cqb, &e), "%s: no receive completion",
+                  c->what)) {
+            uint8_t op = c->op == IH_OP_SEND_IMM         ? IH_RECV_OP_SEND_IMM
+                         : c->op == IH_OP_SEND_INV       ? IH_RECV_OP_SEND_INV
+                         : c->op == IH_OP_RDMA_WRITE_IMM ? IH_RECV_OP_RDMA_IMM
+                                                         : IH_RECV_OP_SEND;
+            check(test, e.type == IH_CQE_TYPE_RECV && e.qid == RC_QP_B,
+                  "%s: receive completion type %u qid %u", c->what, e.type,
+                  e.qid);
+            check(test, e.wqe_id == recv_id, "%s: receive wqe_id %lu, not %lu",
+                  c->what, (unsigned long)e.wqe_id, (unsigned long)recv_id);
+            check(test, e.recv_op == op && e.src_qpn == RC_QP_A,
+                  "%s: receive op %u from QP %u", c->what, e.recv_op,
+                  e.src_qpn);
+            check(test, !e.has_smac, "%s: RC receive carries a source MAC",
+                  c->what);
+            if (c->recv_status)
+                check(test, e.error && e.status_len == c->recv_status,
+                      "%s: receive status %u (error %d), expected %u", c->what,
+                      e.status_len, e.error, c->recv_status);
+            else
+                check(test, !e.error && e.status_len == c->len,
+                      "%s: receive length %u (error %d), expected %u", c->what,
+                      e.status_len, e.error, c->len);
+            if (op == IH_RECV_OP_SEND_IMM || op == IH_RECV_OP_RDMA_IMM)
+                check(test, e.imm_be == imm_be, "%s: immediate data lost",
+                      c->what);
+        }
+    }
+    check(test, cq_empty(h, &r->cqb), "%s: an extra completion on B", c->what);
+    check(test, fake_vfu_mapped(h->vfu) == 0,
+          "%s: guest memory left mapped after the transfer", c->what);
+
+    if (c->send_status || c->recv_status)
+        return;
+    ih_mr_read(h, to, to_va, got, c->len);
+    check(test, memcmp(got, want, c->len) == 0, "%s: data did not arrive",
+          c->what);
+}
+
+static void test_rc(void)
+{
+    const char *T = "rc";
+    struct rc r;
+    struct ih *h = &r.h;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    /* QUERY_QP writes the state into the side buffers the driver reads */
+    uint8_t body[34] = {0};
+    const uint64_t sq_buf = h->scratch + 1024, rq_buf = h->scratch + 1088;
+    put_le64(body + 8, sq_buf);
+    put_le64(body + 16, rq_buf);
+    put_le32(body + 28, RC_QP_A);
+    check(T, ih_admin(h, IH_ADMIN_QUERY_QP, body, sizeof(body), NULL) == 0,
+          "QUERY_QP failed");
+    uint8_t rqb[12];
+    fake_vfu_read(h->vfu, rq_buf, rqb, sizeof(rqb));
+    check(T, rqb[0] >> 4 == IH_QPS_RTS, "QUERY_QP state %u, not RTS",
+          (unsigned)(rqb[0] >> 4));
+
+    for (size_t i = 0; i < sizeof(rc_cases) / sizeof(rc_cases[0]); i++)
+        run_rc_case(T, &r, &rc_cases[i], (uint8_t)(i * 17 + 3));
+
+    /* Unsignalled work still completes: the driver retires its SQ by it */
+    uint8_t one = 0x5a;
+    struct ih_sge s1 = {.va = VA_A, .len = 1, .lkey = MR_A};
+    ih_mr_write(h, &r.mra, VA_A, &one, 1);
+    struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                        .remote_va = VA_B,
+                        .rkey = MR_B,
+                        .sge = &s1,
+                        .nsge = 1};
+    ih_post_send(h, &r.a, &w);
+    expect_send(T, "unsignalled RDMA_WRITE", &r, 0);
+
+    /* A SEND with nothing posted is dropped; the sender still completes */
+    struct ih_send s = {.op = IH_OP_SEND, .sge = &s1, .nsge = 1};
+    ih_post_send(h, &r.a, &s);
+    expect_send(T, "SEND with no receive", &r, 0);
+    check(T, cq_empty(h, &r.cqb), "a SEND with no receive completed one");
+
+    /* Bus addresses (lkey 0) across a guest DMA region boundary take more
+     * than one scatter/gather entry on both sides */
+    uint8_t want[3000], got[3000];
+    uint64_t sbus = fake_vfu_alloc_straddling(h->vfu, sizeof(want), 1000);
+    uint64_t dbus = fake_vfu_alloc_straddling(h->vfu, sizeof(got), 2000);
+    fill(want, sizeof(want), 0x42);
+    fake_vfu_write(h->vfu, sbus, want, sizeof(want));
+    struct ih_sge ds = {.va = dbus, .len = sizeof(got), .lkey = 0};
+    struct ih_sge ss = {.va = sbus, .len = sizeof(want), .lkey = 0};
+    ih_post_recv(h, &r.b, &ds, 1);
+    s = (struct ih_send){.op = IH_OP_SEND, .sge = &ss, .nsge = 1};
+    ih_post_send(h, &r.a, &s);
+    expect_send(T, "SEND across a DMA region", &r, 0);
+    struct ih_cqe e;
+    check(T, ih_cq_poll(h, &r.cqb, &e) && !e.error, "no receive completion");
+    fake_vfu_read(h->vfu, dbus, got, sizeof(got));
+    check(T, memcmp(got, want, sizeof(got)) == 0,
+          "data across a DMA region did not arrive");
+
+    /* Wrap the send queue and both CQs a few times over */
+    for (unsigned i = 0; i < 70; i++) {
+        uint8_t v = (uint8_t)i, back = 0;
+        ih_mr_write(h, &r.mra, VA_A + 8, &v, 1);
+        struct ih_sge one_byte = {.va = VA_A + 8, .len = 1, .lkey = MR_A};
+        struct ih_sge into = {.va = VA_B + 8, .len = 1, .lkey = MR_B};
+        ih_post_recv(h, &r.b, &into, 1);
+        s = (struct ih_send){.op = IH_OP_SEND, .sge = &one_byte, .nsge = 1};
+        ih_post_send(h, &r.a, &s);
+        expect_send(T, "SEND while wrapping", &r, 0);
+        if (!check(T, ih_cq_poll(h, &r.cqb, &e) && !e.error,
+                   "receive %u did not complete", i))
+            break;
+        ih_mr_read(h, &r.mrb, VA_B + 8, &back, 1);
+        if (!check(T, back == v, "receive %u carried %u", i, back))
+            break;
+    }
+
+    rc_teardown(T, &r);
+}
+
+/* ---- Atomics and fast registration ------------------------------------- */
+
+static void atomic(const char *test, struct rc *r, uint8_t op, uint64_t add,
+                   uint64_t compare, uint32_t rkey, uint64_t remote_va,
+                   uint32_t status, uint64_t want_old, uint64_t want_new)
+{
+    struct ih *h = &r->h;
+    const uint64_t target = VA_B + 0x800, result = VA_A + 0x900;
+    uint64_t v = 0;
+
+    ih_mr_write(h, &r->mra, result, &v, 8);
+    struct ih_sge sge = {.va = result, .len = 8, .lkey = MR_A};
+    struct ih_send s = {.op = op,
+                        .flags = IH_WQE_SIGNALLED,
+                        .remote_va = remote_va ? remote_va : target,
+                        .rkey = rkey,
+                        .swap_add = add,
+                        .compare = compare,
+                        .sge = &sge,
+                        .nsge = 1};
+    ih_post_send(h, &r->a, &s);
+    expect_send(test, op == IH_OP_ATOMIC_CS ? "ATOMIC_CS" : "ATOMIC_FA", r,
+                status);
+    if (status)
+        return;
+
+    ih_mr_read(h, &r->mra, result, &v, 8);
+    check(test, v == want_old, "atomic returned %lu, expected %lu",
+          (unsigned long)v, (unsigned long)want_old);
+    ih_mr_read(h, &r->mrb, target, &v, 8);
+    check(test, v == want_new, "atomic left %lu, expected %lu",
+          (unsigned long)v, (unsigned long)want_new);
+}
+
+static void test_atomic_and_reg_mr(void)
+{
+    const char *T = "atomic";
+    struct rc r;
+    struct ih *h = &r.h;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    uint64_t v = 100;
+    ih_mr_write(h, &r.mrb, VA_B + 0x800, &v, 8);
+    atomic(T, &r, IH_OP_ATOMIC_FA, 5, 0, MR_B, 0, 0, 100, 105);
+    atomic(T, &r, IH_OP_ATOMIC_CS, 7, 105, MR_B, 0, 0, 105, 7);
+    atomic(T, &r, IH_OP_ATOMIC_CS, 9, 999, MR_B, 0, 0, 7, 7);
+    atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, 0x7e000099u, 0, IH_STS_REMOTE_ACC_ERR,
+           0, 0);
+    atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_B, VA_B + MR_LEN - 4,
+           IH_STS_REMOTE_ACC_ERR, 0, 0);
+
+    /*
+     * Fast registration, as nvme-rdma does ahead of every command:
+     * CREATE_MR leaves the MR unbound, a REG_MR work request binds it under
+     * a rotated key, and LOCAL_INV unbinds it again.
+     */
+    struct ih_mr fr;
+    const uint32_t fr_id = 0x00000003u, fr_key = 0x04000000u | fr_id;
+    uint8_t body[45] = {0};
+    put_le32(body + 20, 0x03000000u | fr_id);
+    put_le16(body + 40, IH_ACCESS_ALL);
+    check(T, ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
+          "CREATE_MR of an unbound MR failed");
+    if (!check(T,
+               ih_mr_alloc(h, &fr, fr_key, UINT64_C(0x7f3000000200),
+                           2 * IH_PAGE_SIZE, true),
+               "MR pages not allocated")) {
+        rc_teardown(T, &r);
+        return;
+    }
+
+    struct ih_send reg = {.op = IH_OP_REG_MR, .key = fr_key, .mr = &fr};
+    uint64_t id = ih_post_send(h, &r.a, &reg);
+    struct ih_cqe e;
+    check(T,
+          ih_cq_poll(h, &r.cqa, &e) && e.type == IH_CQE_TYPE_SEND_NPG &&
+              e.wqe_id == id,
+          "REG_MR did not complete by its SQ index");
+
+    uint8_t want[256], got[256];
+    fill(want, sizeof(want), 9);
+    ih_mr_write(h, &r.mra, VA_A, want, sizeof(want));
+    struct ih_sge sge = {.va = VA_A, .len = sizeof(want), .lkey = MR_A};
+    struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                        .flags = IH_WQE_SIGNALLED,
+                        .remote_va = fr.va + 4000,
+                        .rkey = fr_key,
+                        .sge = &sge,
+                        .nsge = 1};
+    ih_post_send(h, &r.a, &w);
+    expect_send(T, "RDMA_WRITE into a fast-registered MR", &r, 0);
+    ih_mr_read(h, &fr, fr.va + 4000, got, sizeof(got));
+    check(T, memcmp(want, got, sizeof(got)) == 0,
+          "RDMA_WRITE through the new key did not land");
+
+    struct ih_send inv = {.op = IH_OP_LOCAL_INV, .key = fr_key};
+    id = ih_post_send(h, &r.a, &inv);
+    check(T,
+          ih_cq_poll(h, &r.cqa, &e) && e.type == IH_CQE_TYPE_SEND_NPG &&
+              e.wqe_id == id,
+          "LOCAL_INV did not complete by its SQ index");
+    ih_post_send(h, &r.a, &w);
+    expect_send(T, "RDMA_WRITE through an invalidated key", &r,
+                IH_STS_REMOTE_ACC_ERR);
+
+    ih_mr_free(&fr);
+    put_le32(body, 0x03000000u | fr_id);
+    check(T, ih_admin(h, IH_ADMIN_DESTROY_MR, body, 4, NULL) == 0,
+          "DESTROY_MR of the fast-registered MR failed");
+
+    rc_teardown(T, &r);
+}
+
+/* ---- CQ arming and events ---------------------------------------------- */
+
+static void test_cq_events(void)
+{
+    const char *T = "cq-events";
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_cqe e;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    uint8_t byte = 1;
+    ih_mr_write(h, &r.mra, VA_A, &byte, 1);
+    struct ih_sge src = {.va = VA_A, .len = 1, .lkey = MR_A};
+    struct ih_sge dst = {.va = VA_B, .len = 1, .lkey = MR_B};
+    struct ih_send s = {.op = IH_OP_SEND, .sge = &src, .nsge = 1};
+    unsigned irqs = fake_vfu_irq_count(h->vfu, IH_EQ_INTR);
+
+    /* Unarmed: a completion raises no event */
+    ih_post_recv(h, &r.b, &dst, 1);
+    ih_post_send(h, &r.a, &s);
+    check(T, eq_count(h, RC_CQ_B) == 0, "an unarmed CQ raised an event");
+
+    /* Arming a CQ that still holds a completion fires at once */
+    ih_cq_arm(h, &r.cqb);
+    check(T, eq_count(h, RC_CQ_B) == 1, "arming over a waiting CQE was silent");
+    check(T, fake_vfu_irq_count(h->vfu, IH_EQ_INTR) > irqs,
+          "the event raised no interrupt");
+    ih_cq_poll(h, &r.cqb, &e);
+    ih_cq_poll(h, &r.cqa, &e);
+
+    /* Armed and empty: the next completion fires once, then disarms */
+    ih_cq_arm(h, &r.cqb);
+    check(T, eq_count(h, RC_CQ_B) == 0, "arming an empty CQ fired");
+    ih_post_recv(h, &r.b, &dst, 1);
+    ih_post_send(h, &r.a, &s);
+    check(T, eq_count(h, RC_CQ_B) == 1, "an armed CQ raised no event");
+    ih_cq_poll(h, &r.cqb, &e);
+    ih_cq_poll(h, &r.cqa, &e);
+    ih_post_recv(h, &r.b, &dst, 1);
+    ih_post_send(h, &r.a, &s);
+    check(T, eq_count(h, RC_CQ_B) == 0, "a fired CQ stayed armed");
+    ih_cq_poll(h, &r.cqb, &e);
+    ih_cq_poll(h, &r.cqa, &e);
+
+    /* Doorbells for queues that don't exist are ignored */
+    ih_doorbell(h, IH_QTYPE_CQ, 4000, 1, 0);
+    ih_doorbell(h, IH_QTYPE_SQ, 4000, 0, 1);
+    ih_doorbell(h, IH_QTYPE_RQ, 4000, 0, 1);
+    ih_doorbell(h, IH_QTYPE_RQ, IONIC_SRQ_QID_BASE + 3, 0, 1);
+    ih_doorbell(h, 4, 0, 0, 1);
+    ih_doorbell(h, 12, 0, 0, 1);
+    check(T, cq_empty(h, &r.cqa) && cq_empty(h, &r.cqb),
+          "a stray doorbell produced a completion");
+
+    /* The statistics file reflects the traffic */
+    char dir[] = "/tmp/ernic-harness-XXXXXX";
+    if (check(T, mkdtemp(dir) != NULL, "mkdtemp: %s", strerror(errno))) {
+        char path[sizeof(dir) + 16];
+        snprintf(path, sizeof(path), "%s/stats", dir);
+
+        pvrdma_handle_t ph = h->dev->pvrdma_handle;
+        pvrdma_set_stats_file(ph, path);
+        pvrdma_set_stats_instance_info(ph, "/tmp/harness.sock", "loopback");
+        pvrdma_set_stats_pci_ids(ph, 0x1dd8, 0x1002);
+        pvrdma_set_stats_connection_state(ph, "connected");
+        pvrdma_inc_stats_reset_count(ph);
+        pvrdma_write_stats(ph);
+
+        FILE *fp = fopen(path, "r");
+        char text[16384] = "";
+        if (check(T, fp != NULL, "no stats file")) {
+            size_t n = fread(text, 1, sizeof(text) - 1, fp);
+            text[n] = '\0';
+            fclose(fp);
+        }
+        check(T, strstr(text, "SEND") != NULL && strstr(text, "connected"),
+              "the stats file is missing the traffic");
+        unlink(path);
+        rmdir(dir);
+    }
+
+    rc_teardown(T, &r);
+}
+
+/* ---- Unreliable datagrams ---------------------------------------------- */
+
+#define UD_QKEY 0x11111111u
+#define UD_AH   5u
+#define UD_SIP  0x0a000001u
+#define UD_DIP  0x0a000002u
+
+static void test_ud(void)
+{
+    const char *T = "ud";
+    struct ih h;
+    struct ih_cq cqc, cqd;
+    struct ih_qp c, d, rcq;
+    struct ih_mr mr = {0};
+    struct ih_cqe e;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    bool ok = ih_cq_create(&h, &cqc, 3, 5) && ih_cq_create(&h, &cqd, 4, 5) &&
+              ih_qp_create(&h, &c, 20, IH_QPT_UD, &cqc, &cqc, NULL) &&
+              ih_qp_create(&h, &d, 21, IH_QPT_UD, &cqd, &cqd, NULL) &&
+              ih_qp_create(&h, &rcq, 22, IH_QPT_RC, &cqd, &cqd, NULL) &&
+              ih_mr_create(&h, &mr, 0x06000006u, UINT64_C(0x7f4000000000),
+                           2 * IH_PAGE_SIZE, IH_ACCESS_ALL, false);
+    for (uint32_t qp = 20; ok && qp <= 21; qp++)
+        ok = ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_QKEY, IH_QPS_INIT,
+                          UD_QKEY, NULL, 0) == 0 &&
+             ih_qp_modify(&h, qp, IH_QP_STATE, IH_QPS_RTR, 0, NULL, 0) == 0 &&
+             ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
+                          NULL, 0) == 0;
+    ok = ok && ih_ah_create(&h, UD_AH, UD_SIP, UD_DIP) == 0;
+    if (!check(T, ok, "UD setup failed")) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    const uint64_t src_va = mr.va, dst_va = mr.va + 1024;
+    uint8_t want[64], got[IH_GRH_SIZE + 64];
+    fill(want, sizeof(want), 0x77);
+    ih_mr_write(&h, &mr, src_va, want, sizeof(want));
+    struct ih_sge src = {.va = src_va, .len = sizeof(want), .lkey = mr.lkey};
+    struct ih_sge dst = {.va = dst_va, .len = sizeof(got), .lkey = mr.lkey};
+    struct ih_send s = {.op = IH_OP_SEND,
+                        .flags = IH_WQE_SIGNALLED,
+                        .ah_id = UD_AH,
+                        .dest_qpn = 21,
+                        .qkey = UD_QKEY,
+                        .sge = &src,
+                        .nsge = 1};
+
+    /* A datagram arrives behind a GRH built from the address handle */
+    uint64_t recv_id = ih_post_recv(&h, &d, &dst, 1);
+    uint64_t send_id = ih_post_send(&h, &c, &s);
+    check(T,
+          ih_cq_poll(&h, &cqc, &e) && e.type == IH_CQE_TYPE_SEND_NPG &&
+              e.wqe_id == send_id,
+          "UD send did not complete by its SQ index");
+    if (check(T, ih_cq_poll(&h, &cqd, &e), "no UD receive completion")) {
+        check(T, !e.error && e.status_len == sizeof(got),
+              "UD receive length %u, expected %zu", e.status_len, sizeof(got));
+        check(T, e.wqe_id == recv_id && e.src_qpn == 20,
+              "UD receive is for the wrong WQE or sender");
+        check(T, e.has_smac, "UD receive carries no source MAC");
+        ih_mr_read(&h, &mr, dst_va, got, sizeof(got));
+        static const uint8_t v4[12] = {0, 0, 0, 0, 0,    0,
+                                       0, 0, 0, 0, 0xff, 0xff};
+        check(T, got[0] == 0x60 && get_be16(got + 4) == sizeof(want),
+              "GRH version or payload length is wrong");
+        check(T,
+              memcmp(got + 8, v4, 12) == 0 && get_be32(got + 20) == UD_SIP &&
+                  memcmp(got + 24, v4, 12) == 0 && get_be32(got + 36) == UD_DIP,
+              "GRH addresses do not come from the address handle");
+        check(T, memcmp(got + IH_GRH_SIZE, want, sizeof(want)) == 0,
+              "UD payload is not behind the GRH");
+    }
+
+    /* The wrong Q_Key, and a connected destination, are refused even with a
+     * receive posted at each; the send still completes. D and the RC QP
+     * share a CQ, so either delivery would show up on it. */
+    struct ih_sge rc_dst = {
+        .va = dst_va + 512, .len = sizeof(got), .lkey = mr.lkey};
+    ih_post_recv(&h, &d, &dst, 1);
+    ih_post_recv(&h, &rcq, &rc_dst, 1);
+    s.qkey = 0x22222222u;
+    ih_post_send(&h, &c, &s);
+    s.qkey = UD_QKEY;
+    s.dest_qpn = 22;
+    ih_post_send(&h, &c, &s);
+    check(T, ih_cq_poll(&h, &cqc, &e) && ih_cq_poll(&h, &cqc, &e),
+          "refused UD sends did not complete");
+    check(T, cq_empty(&h, &cqd), "a refused datagram was delivered");
+
+    /* Unsignalled, and naming an AH that was never created: delivered all
+     * the same, since the peer is local */
+    s.dest_qpn = 21;
+    s.flags = 0;
+    s.ah_id = 9;
+    ih_post_send(&h, &c, &s);
+    check(T, ih_cq_poll(&h, &cqc, &e), "unsignalled UD send did not complete");
+    check(T, ih_cq_poll(&h, &cqd, &e) && !e.error,
+          "a datagram with an unknown AH was not delivered");
+
+    /* A RoCE header carrying IPv6, behind a VLAN tag */
+    uint8_t hdr[80] = {0};
+    hdr[12] = 0x81;
+    hdr[16] = 0x86;
+    hdr[17] = 0xdd;
+    memset(hdr + 18 + 8, 0x20, 16);
+    memset(hdr + 18 + 24, 0x30, 16);
+    fake_vfu_write(h.vfu, h.scratch, hdr, sizeof(hdr));
+    uint8_t body[24] = {0};
+    put_le64(body, h.scratch);
+    put_le32(body + 8, 18 + 40);
+    put_le32(body + 16, 6);
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL) == 0,
+          "CREATE_AH from an IPv6 header failed");
+    /* And one the device can't parse, which is still not fatal */
+    hdr[16] = 0x12;
+    fake_vfu_write(h.vfu, h.scratch, hdr, sizeof(hdr));
+    put_le32(body + 16, 7);
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL) == 0,
+          "CREATE_AH from an unparsable header failed");
+
+    for (uint32_t ah = 5; ah <= 7; ah++) {
+        put_le32(body, ah);
+        check(T, ih_admin(&h, IH_ADMIN_DESTROY_AH, body, 4, NULL) == 0,
+              "DESTROY_AH %u failed", ah);
+    }
+
+    check(T,
+          ih_qp_destroy(&h, &c) == 0 && ih_qp_destroy(&h, &d) == 0 &&
+              ih_qp_destroy(&h, &rcq) == 0,
+          "DESTROY_QP failed");
+    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
+    check(T, ih_cq_destroy(&h, &cqc) == 0 && ih_cq_destroy(&h, &cqd) == 0,
+          "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
+/* ---- Shared receive queues --------------------------------------------- */
+
+static void test_srq(void)
+{
+    const char *T = "srq";
+    struct ih h;
+    struct ih_cq cqf, cqg;
+    struct ih_qp f, g;
+    struct ih_srq srq;
+    struct ih_mr mr = {0};
+    struct ih_cqe e;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    int rc = ih_srq_create(&h, &srq, 4);
+    if (!check(T, rc == 0, "CREATE_SRQ: %d", rc)) {
+        teardown(T, &h);
+        return;
+    }
+    check(T,
+          srq.id >= IONIC_SRQ_QID_BASE &&
+              srq.id < IONIC_SRQ_QID_BASE + IONIC_EMU_SRQ_COUNT,
+          "SRQ id %#x is outside the SRQ range", srq.id);
+
+    bool ok = ih_cq_create(&h, &cqf, 5, 5) && ih_cq_create(&h, &cqg, 6, 5) &&
+              ih_qp_create(&h, &f, 30, IH_QPT_RC, &cqf, &cqf, &srq) &&
+              ih_qp_create(&h, &g, 31, IH_QPT_RC, &cqg, &cqg, NULL) &&
+              ih_qp_connect(&h, &f, &g) &&
+              ih_mr_create(&h, &mr, 0x07000007u, UINT64_C(0x7f5000000000),
+                           IH_PAGE_SIZE, IH_ACCESS_ALL, false);
+    if (!check(T, ok, "SRQ setup failed")) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    /* G's sends land in F's receives, which come out of the SRQ */
+    uint64_t ids[2];
+    for (unsigned i = 0; i < 2; i++) {
+        struct ih_sge dst = {
+            .va = mr.va + 512 + 64 * i, .len = 64, .lkey = mr.lkey};
+        ids[i] = ih_post_srq_recv(&h, &srq, &dst, 1);
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        uint8_t v[16], got[16];
+        fill(v, sizeof(v), (uint8_t)(i + 1));
+        ih_mr_write(&h, &mr, mr.va, v, sizeof(v));
+        struct ih_sge src = {.va = mr.va, .len = sizeof(v), .lkey = mr.lkey};
+        struct ih_send s = {.op = IH_OP_SEND, .sge = &src, .nsge = 1};
+        ih_post_send(&h, &g, &s);
+        check(T, ih_cq_poll(&h, &cqg, &e) && !e.error,
+              "send %u did not complete", i);
+        if (check(T, ih_cq_poll(&h, &cqf, &e), "SRQ receive %u missing", i)) {
+            check(T, !e.error && e.qid == 30 && e.wqe_id == ids[i],
+                  "SRQ receive %u completed for QP %u WQE %lu", i, e.qid,
+                  (unsigned long)e.wqe_id);
+            ih_mr_read(&h, &mr, mr.va + 512 + 64 * i, got, sizeof(got));
+            check(T, memcmp(got, v, sizeof(v)) == 0,
+                  "SRQ receive %u carried the wrong data", i);
+        }
+    }
+
+    /* MODIFY_SRQ with a limit and with none, then QUERY_SRQ */
+    uint8_t body[8] = {0};
+    put_le32(body, srq.id);
+    put_le16(body + 4, 4);
+    check(T, ih_admin(&h, IH_ADMIN_MODIFY_SRQ, body, 6, NULL) == 0,
+          "MODIFY_SRQ to 4 failed");
+    put_le16(body + 4, 0);
+    check(T, ih_admin(&h, IH_ADMIN_MODIFY_SRQ, body, 6, NULL) == 0,
+          "MODIFY_SRQ to 0 failed");
+    check(T, ih_admin(&h, IH_ADMIN_QUERY_SRQ, body, 4, NULL) == 0,
+          "QUERY_SRQ failed");
+
+    check(T, ih_qp_destroy(&h, &f) == 0 && ih_qp_destroy(&h, &g) == 0,
+          "DESTROY_QP failed");
+    check(T, ih_srq_destroy(&h, &srq) == 0, "DESTROY_SRQ failed");
+
+    /* A doorbell for the destroyed SRQ is ignored */
+    ih_doorbell(&h, IH_QTYPE_RQ, srq.id, 0, 1);
+
+    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
+    check(T, ih_cq_destroy(&h, &cqf) == 0 && ih_cq_destroy(&h, &cqg) == 0,
+          "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
+/* ---- Ethernet Tx and Rx ------------------------------------------------- */
+
+#define TX_INTR 2
+#define RX_INTR 3
+
+struct tx_seen {
+    unsigned frames;
+    size_t len;
+    uint8_t frame[256];
+};
+
+static bool tx_filter(void *ctx, const void *frame, size_t len)
+{
+    struct tx_seen *t = ctx;
+
+    t->frames++;
+    t->len = len;
+    memcpy(t->frame, frame, len < sizeof(t->frame) ? len : sizeof(t->frame));
+    return true;
+}
+
+static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
+                   uint8_t depth_log2, uint64_t ring, uint64_t cq, uint64_t sg)
+{
+    uint8_t cmd[64] = {0}, comp[16];
+
+    cmd[0] = IH_CMD_Q_INIT;
+    cmd[4] = qtype;
+    put_le16(cmd + 14, intr);
+    cmd[19] = depth_log2;
+    put_le64(cmd + 20, ring);
+    put_le64(cmd + 28, cq);
+    put_le64(cmd + 36, sg);
+    return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
+}
+
+static void test_eth(void)
+{
+    const char *T = "eth";
+    struct ih h;
+    struct tx_seen seen;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txsg = fake_vfu_alloc(h.vfu, 8 * 8 * 16, 64);
+    const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t bufs = fake_vfu_alloc(h.vfu, 8 * 2048, 4096);
+    check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg),
+          "Q_INIT of the Tx queue failed");
+    check(T, q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0),
+          "Q_INIT of the Rx queue failed");
+    ih_intr_mask(&h, TX_INTR, false);
+    ih_intr_mask(&h, RX_INTR, false);
+
+    memset(&seen, 0, sizeof(seen));
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, tx_filter, &seen);
+
+    /* One frame in the descriptor, one split over two SG elements */
+    uint8_t frame[200];
+    fill(frame, sizeof(frame), 0x31);
+    fake_vfu_write(h.vfu, bufs, frame, sizeof(frame));
+
+    uint8_t desc[16] = {0};
+    put_le64(desc, bufs << 12);
+    put_le16(desc + 8, 120);
+    fake_vfu_write(h.vfu, txr, desc, sizeof(desc));
+
+    put_le64(desc, (bufs << 12) | 2u << 8);
+    put_le16(desc + 8, sizeof(frame));
+    fake_vfu_write(h.vfu, txr + 16, desc, sizeof(desc));
+    uint8_t sg[2 * 16] = {0};
+    put_le64(sg, bufs + 50);
+    put_le16(sg + 8, 100);
+    put_le64(sg + 16, bufs + 150);
+    put_le16(sg + 24, 50);
+    fake_vfu_write(h.vfu, txsg + 1 * 8 * 16, sg, sizeof(sg));
+
+    ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 2);
+    check(T, seen.frames == 2, "the Tx filter saw %u frames", seen.frames);
+    check(T,
+          seen.len == sizeof(frame) &&
+              memcmp(seen.frame, frame, sizeof(frame)) == 0,
+          "the scatter/gather frame was not reassembled");
+    uint8_t comp[16];
+    fake_vfu_read(h.vfu, txc + 16, comp, sizeof(comp));
+    check(T, (comp[15] & 0x80u) && comp[2] == 1,
+          "no completion for the second Tx descriptor");
+    check(T, fake_vfu_irq_count(h.vfu, TX_INTR) == 1,
+          "Tx completions raised %u interrupts",
+          fake_vfu_irq_count(h.vfu, TX_INTR));
+
+    /* Frames handed in off-thread land in the guest's Rx buffers */
+    for (unsigned i = 0; i < 2; i++) {
+        memset(desc, 0, sizeof(desc));
+        put_le16(desc + 6, i == 0 ? 2048 : 64);
+        put_le64(desc + 8, bufs + 2048 * (i + 1));
+        fake_vfu_write(h.vfu, rxr + 16 * i, desc, sizeof(desc));
+    }
+    ih_doorbell(&h, IH_QTYPE_ETH_RXQ, 0, 0, 2);
+
+    check(T,
+          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame,
+                                       sizeof(frame)) == 0,
+          "queueing an Rx frame failed");
+    check(T,
+          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, NULL, 10) == -EINVAL,
+          "a NULL Rx frame was accepted");
+    check(T,
+          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame, 0) == -EINVAL,
+          "an empty Rx frame was accepted");
+    ih_poll(&h);
+
+    uint8_t got[200];
+    fake_vfu_read(h.vfu, bufs + 2048, got, sizeof(got));
+    check(T, memcmp(got, frame, sizeof(frame)) == 0, "the Rx frame is wrong");
+    fake_vfu_read(h.vfu, rxc, comp, sizeof(comp));
+    check(T, (comp[15] & 0x80u) && get_le16(comp + 12) == sizeof(frame),
+          "the Rx completion does not carry the frame length");
+    check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1, "Rx raised %u interrupts",
+          fake_vfu_irq_count(h.vfu, RX_INTR));
+
+    /* A frame too big for the next buffer waits rather than being cut, and
+     * is freed with the device */
+    check(T,
+          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame,
+                                       sizeof(frame)) == 0,
+          "queueing an Rx frame failed");
+    ih_poll(&h);
+    check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1,
+          "a frame that does not fit was delivered");
+
+    /* Tx without a filter is a sink, and a doorbell for a queue that was
+     * never initialized is ignored */
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, NULL, NULL);
+    ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 3);
+    check(T, seen.frames == 2, "Tx with no filter reached the filter");
+    ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 3, 0, 1);
+    ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 99, 0, 1);
+
+    teardown(T, &h);
+}
+
+/* ---- NVMe-oF over the GSI QP ------------------------------------------- */
+
+#define NV_TRADDR  0xc0a8c801u /* 192.168.200.1 */
+#define NV_PORT    4420u
+#define NV_NQN     "nvmet-harness"
+#define NV_BACKEND "nvmeof:size=1M,ip=192.168.200.1,port=4420,nqn=" NV_NQN
+
+#define NV_GSI_CQ 1
+#define NV_RC_CQ  2
+#define NV_RC_QP  0x42u
+#define NV_MR     0x08000008u
+#define NV_VA     UINT64_C(0x7f6000000000)
+
+/* Where things live in the MR */
+#define NV_MAD_OFF     0x0000u
+#define NV_GSI_RX_OFF  0x0200u
+#define NV_CAP_OFF     0x0400u
+#define NV_RC_RX_OFF   0x0480u
+#define NV_CONNECT_OFF 0x0800u
+#define NV_IDENT_OFF   0x1000u
+
+/* A CM MAD as test_nvmeof_cm.c builds it */
+static void mad_hdr(uint8_t *m, uint16_t attr, uint64_t tid)
+{
+    memset(m, 0, IB_MAD_SIZE);
+    m[0] = 1;
+    m[1] = 0x07; /* CM class */
+    m[2] = 2;
+    m[3] = 3; /* SEND */
+    put_be64(m + 8, tid);
+    put_be16(m + 16, attr);
+}
+
+static void build_req(uint8_t *m)
+{
+    mad_hdr(m, 0x0010, 0x1234567800000001ull);
+    put_be32(m + 24, 0xabcd0001u);
+    put_be64(m + 32, ((uint64_t)0x0106 << 16) | NV_PORT);
+    put_be64(m + 40, 0x0002c9030012abcdull);
+    put_be32(m + 56, (NV_RC_QP << 8) | 4);
+    put_be32(m + 60, 4);
+    put_be32(m + 64, 20u << 3);
+    put_be32(m + 68, 0x123456u << 8);
+    memset(m + 80, 0x11, 16); /* primary local GID: the guest */
+    memset(m + 96, 0x22, 16); /* primary remote GID: the target */
+
+    uint8_t *priv = m + 164;
+    priv[1] = 4 << 4;
+    put_be16(priv + 2, NV_PORT);
+    put_be32(priv + 4 + 12, 0xc0a8c814u);
+    put_be32(priv + 20 + 12, NV_TRADDR);
+    put_le16(priv + 36 + 4, 32); /* hrqsize */
+    put_le16(priv + 36 + 6, 31); /* hsqsize */
+}
+
+/* Send a MAD on the GSI QP and return the reply delivered back to it. */
+static bool gsi_exchange(const char *test, struct ih *h, struct ih_qp *gsi,
+                         struct ih_cq *cq, const struct ih_mr *mr,
+                         const uint8_t *mad, bool want_reply, uint8_t *reply)
+{
+    struct ih_cqe e;
+    struct ih_sge rx = {.va = mr->va + NV_GSI_RX_OFF,
+                        .len = IH_GRH_SIZE + IB_MAD_SIZE,
+                        .lkey = mr->lkey};
+    struct ih_sge tx = {
+        .va = mr->va + NV_MAD_OFF, .len = IB_MAD_SIZE, .lkey = mr->lkey};
+    struct ih_send s = {.op = IH_OP_SEND,
+                        .flags = IH_WQE_SIGNALLED,
+                        .dest_qpn = 1,
+                        .qkey = 0x80010000u,
+                        .sge = &tx,
+                        .nsge = 1};
+
+    ih_mr_write(h, mr, tx.va, mad, IB_MAD_SIZE);
+    if (want_reply)
+        ih_post_recv(h, gsi, &rx, 1);
+    ih_post_send(h, gsi, &s);
+
+    bool sent = false, got = false;
+    while (ih_cq_poll(h, cq, &e)) {
+        if (e.type == IH_CQE_TYPE_SEND_NPG) {
+            sent = true;
+        } else if (e.type == IH_CQE_TYPE_RECV) {
+            got = check(test, !e.error && e.status_len == rx.len,
+                        "GSI reply length %u", e.status_len);
+        }
+    }
+    check(test, sent, "the GSI send did not complete");
+    if (!want_reply)
+        return check(test, !got, "a MAD that needs no reply got one");
+    if (!check(test, got, "no GSI reply"))
+        return false;
+    uint8_t buf[IH_GRH_SIZE + IB_MAD_SIZE];
+    ih_mr_read(h, mr, rx.va, buf, sizeof(buf));
+    check(test, buf[0] == 0x60, "the GSI reply has no GRH");
+    memcpy(reply, buf + IH_GRH_SIZE, IB_MAD_SIZE);
+    return true;
+}
+
+/* Send a command capsule on the RC QP; returns the NVMe status word. */
+static int nvme_exchange(const char *test, struct ih *h, struct ih_qp *qp,
+                         struct ih_cq *cq, const struct ih_mr *mr,
+                         const uint8_t *capsule)
+{
+    struct ih_cqe e;
+    struct ih_sge rx = {
+        .va = mr->va + NV_RC_RX_OFF, .len = 64, .lkey = mr->lkey};
+    struct ih_sge tx = {
+        .va = mr->va + NV_CAP_OFF, .len = NVME_SQE_SIZE, .lkey = mr->lkey};
+    struct ih_send s = {
+        .op = IH_OP_SEND, .flags = IH_WQE_SIGNALLED, .sge = &tx, .nsge = 1};
+
+    ih_mr_write(h, mr, tx.va, capsule, NVME_SQE_SIZE);
+    ih_post_recv(h, qp, &rx, 1);
+    ih_post_send(h, qp, &s);
+
+    int status = -1;
+    while (ih_cq_poll(h, cq, &e)) {
+        if (e.type == IH_CQE_TYPE_RECV &&
+            check(test, !e.error && e.status_len == NVME_CQE_SIZE,
+                  "response capsule length %u", e.status_len)) {
+            uint8_t rsp[NVME_CQE_SIZE];
+            ih_mr_read(h, mr, rx.va, rsp, sizeof(rsp));
+            status = nvme_get_le16(rsp + NVME_CQE_STATUS_OFF) >> 1;
+        }
+    }
+    return status;
+}
+
+static void capsule_init(uint8_t *c, uint8_t opcode, uint16_t cid,
+                         uint64_t addr, uint32_t len, uint32_t key)
+{
+    memset(c, 0, NVME_SQE_SIZE);
+    c[NVME_SQE_OPCODE_OFF] = opcode;
+    nvme_put_le16(c + NVME_SQE_CID_OFF, cid);
+
+    /* A keyed SGL data block descriptor */
+    uint8_t *d = c + NVME_SQE_DPTR_OFF;
+    nvme_put_le64(d, addr);
+    d[8] = (uint8_t)len;
+    d[9] = (uint8_t)(len >> 8);
+    d[10] = (uint8_t)(len >> 16);
+    nvme_put_le32(d + 11, key);
+    d[15] = NVME_SGL_TYPE_KEYED_DATA << 4;
+}
+
+static void test_nvmeof(void)
+{
+    const char *T = "nvmeof";
+    struct ih h;
+    struct ih_cq gcq, rcq;
+    struct ih_qp gsi, rc;
+    struct ih_mr mr = {0};
+    uint8_t mad[IB_MAD_SIZE], reply[IB_MAD_SIZE];
+
+    if (!setup(T, &h, NV_BACKEND))
+        return;
+
+    /* The driver creates QP 1 as UD, and that id is what makes it GSI */
+    bool ok = ih_cq_create(&h, &gcq, NV_GSI_CQ, 5) &&
+              ih_cq_create(&h, &rcq, NV_RC_CQ, 5) &&
+              ih_qp_create(&h, &gsi, 1, IH_QPT_UD, &gcq, &gcq, NULL) &&
+              ih_qp_create(&h, &rc, NV_RC_QP, IH_QPT_RC, &rcq, &rcq, NULL) &&
+              ih_mr_create(&h, &mr, NV_MR, NV_VA, 2 * IH_PAGE_SIZE,
+                           IH_ACCESS_ALL, false);
+    if (!check(T, ok, "NVMe-oF setup failed")) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    /* REQ draws a REP that names the controller's QP */
+    build_req(mad);
+    if (!gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply)) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+    check(T, get_be16(reply + 16) == 0x0013, "the REQ drew attribute %#x",
+          get_be16(reply + 16));
+    uint32_t local_comm = get_be32(reply + 24);
+    uint32_t target_qpn = get_be32(reply + 36) >> 8;
+    check(T, nvmeof_cm_is_target_qpn(target_qpn),
+          "REP offers QPN %#x, outside the controller range", target_qpn);
+
+    /* RTU completes the handshake and draws nothing */
+    mad_hdr(mad, 0x0014, 0x1234567800000001ull);
+    put_be32(mad + 24, 0xabcd0001u);
+    put_be32(mad + 28, local_comm);
+    gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, false, reply);
+
+    /* Point the RC QP at the controller and connect the admin queue */
+    uint8_t hdr[64];
+    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a8c814u, NV_TRADDR);
+    ok =
+        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0 &&
+        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN,
+                     IH_QPS_RTR, target_qpn, hdr, (uint32_t)hdr_len) == 0 &&
+        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0;
+    check(T, ok, "moving the RC QP to RTS failed");
+
+    uint8_t data[NVMEOF_CONNECT_DATA_SIZE] = {0};
+    memcpy(data + NVMEOF_CONNECT_HOSTID_OFF, "0123456789abcdef", 16);
+    nvme_put_le16(data + NVMEOF_CONNECT_CNTLID_OFF, 0xffff);
+    snprintf((char *)data + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", NV_NQN);
+    snprintf((char *)data + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s",
+             "nqn.2014-08.org.nvmexpress:uuid:harness");
+    ih_mr_write(&h, &mr, mr.va + NV_CONNECT_OFF, data, sizeof(data));
+
+    uint8_t cap[NVME_SQE_SIZE];
+    capsule_init(cap, NVME_ADMIN_FABRICS, 1, mr.va + NV_CONNECT_OFF,
+                 sizeof(data), NV_MR);
+    cap[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
+    nvme_put_le16(cap + NVMEOF_CONNECT_QID_OFF, 0);
+    nvme_put_le16(cap + NVMEOF_CONNECT_SQSIZE_OFF, 31);
+    int sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
+    check(T, sts == 0, "Connect status %#x", (unsigned)sts);
+
+    /* Identify Controller writes through the keyed SGL into the MR */
+    capsule_init(cap, NVME_ADMIN_IDENTIFY, 2, mr.va + NV_IDENT_OFF,
+                 NVME_IDENTIFY_SIZE, NV_MR);
+    nvme_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
+    check(T, sts == 0, "Identify status %#x", (unsigned)sts);
+    char subnqn[32] = "";
+    ih_mr_read(&h, &mr, mr.va + NV_IDENT_OFF + 768, subnqn, sizeof(subnqn) - 1);
+    check(T, strcmp(subnqn, NV_NQN) == 0, "Identify subnqn is '%s'", subnqn);
+
+    /* DREQ draws a DREP */
+    mad_hdr(mad, 0x0015, 0x1234567800000002ull);
+    put_be32(mad + 24, 0xabcd0001u);
+    put_be32(mad + 28, local_comm);
+    put_be32(mad + 32, target_qpn << 8);
+    if (gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply))
+        check(T, get_be16(reply + 16) == 0x0016, "the DREQ drew attribute %#x",
+              get_be16(reply + 16));
+
+    check(T, ih_qp_destroy(&h, &rc) == 0 && ih_qp_destroy(&h, &gsi) == 0,
+          "DESTROY_QP failed");
+    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
+    check(T, ih_cq_destroy(&h, &gcq) == 0 && ih_cq_destroy(&h, &rcq) == 0,
+          "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
+/* ---- Teardown ---------------------------------------------------------- */
+
+/*
+ * A backend's teardown puts back the guest memory it mapped for work
+ * requests still queued, and pci_dma_unmap() does that through the context
+ * each mapping was made with, so the device has to go before the context:
+ * ih_destroy() does it in that order, as the server does.  The TCP backend
+ * keeps a receive queued until data comes for it, so one posted with
+ * nothing to fill it is still mapped at teardown, and fake_vfu_destroy()
+ * reports it if teardown doesn't put it back.  Nothing in the device posts
+ * to this backend's queues, so the receive goes in through its ops table.
+ */
+
+/* A TCP port on loopback that nothing was listening on a moment ago. */
+static uint16_t free_tcp_port(void)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    uint16_t port = 0;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0)
+        return 0;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+        getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+        port = ntohs(addr.sin_port);
+    close(fd);
+    return port;
+}
+
+static void test_teardown(void)
+{
+    static const char T[] = "teardown";
+    char backend[64];
+    struct ih h;
+    uint32_t pd = 0, cq = 0, qpn = 0, mr = 0;
+    uint16_t port = free_tcp_port();
+
+    if (!check(T, port != 0, "no free TCP port"))
+        return;
+    snprintf(backend, sizeof(backend), "tcp:manager:listen:%u", (unsigned)port);
+    if (!check(T, ih_create(&h, backend), "device for '%s' not created",
+               backend))
+        return;
+
+    PVRDMADev *pvrdma = (PVRDMADev *)h.dev->pvrdma_handle;
+    bool made =
+        check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
+        check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
+        check(T,
+              ionic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
+                  0,
+              "no QP") &&
+        check(T,
+              ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
+              "no DMA memory region");
+
+    if (made) {
+        RdmaRmQP *qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
+        struct ibv_sge sge = {
+            .addr = fake_vfu_alloc(h.vfu, 64, 64),
+            .length = 64,
+            .lkey = mr,
+        };
+
+        if (check(T, qp != NULL, "QP %u isn't in the resource manager", qpn)) {
+            rdma_backend_ops_tcp.post_recv(&pvrdma->backend_dev,
+                                           &qp->backend_qp, IBV_QPT_RC, &sge, 1,
+                                           NULL);
+            check(T, fake_vfu_mapped(h.vfu) == 1,
+                  "the receive has %zu entries mapped, not 1",
+                  fake_vfu_mapped(h.vfu));
+        }
+    }
+
+    /* Fails, and says so, if the mapping is left */
+    teardown(T, &h);
+}
+
+/* ---- Driver ------------------------------------------------------------ */
+
+static const struct {
+    const char *name;
+    void (*run)(void);
+} groups[] = {
+    {"devcmds", test_devcmds},
+    {"bringup", test_bringup},
+    {"admin", test_admin_errors},
+    {"rc", test_rc},
+    {"atomic", test_atomic_and_reg_mr},
+    {"cq-events", test_cq_events},
+    {"ud", test_ud},
+    {"srq", test_srq},
+    {"eth", test_eth},
+    {"nvmeof", test_nvmeof},
+    {"teardown", test_teardown},
+};
+
+int main(int argc, char **argv)
+{
+    bool ran = false;
+
+    if (argc > 2) {
+        fprintf(stderr, "usage: %s [group]\n", argv[0]);
+        return 2;
+    }
+    for (size_t i = 0; i < sizeof(groups) / sizeof(groups[0]); i++) {
+        if (argc == 2 && strcmp(argv[1], groups[i].name) != 0)
+            continue;
+        groups[i].run();
+        ran = true;
+    }
+    if (!ran) {
+        fprintf(stderr, "%s: no test group '%s'\n", argv[0], argv[1]);
+        return 2;
+    }
+
+    if (failures) {
+        printf("%d failure(s)\n", failures);
+        return 1;
+    }
+    printf("all ionic harness tests passed\n");
+    return 0;
+}

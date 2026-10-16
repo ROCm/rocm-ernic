@@ -186,6 +186,21 @@
       ansible.builtin.debug:
         var: ib_send_bw_result.stdout_lines
 
+    # The server can still be finishing when the client returns.  Until it
+    # exits it holds port 18515, where the ibv_rc_pingpong server listens
+    # next, and its log, which is written at exit, is empty.
+    - name: Wait for the ib_send_bw server unit to finish
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p SubState --value ib-send-bw-server'
+      register: ib_send_bw_substate
+      until: ib_send_bw_substate.stdout | trim != 'running'
+      retries: 12
+      delay: 5
+      changed_when: false
+      failed_when: false
+
     - name: Collect ib_send_bw server log
       ansible.builtin.shell:
         cmd: >-
@@ -231,6 +246,19 @@
       ansible.builtin.debug:
         var: ibv_rc_pingpong_result.stdout_lines
 
+    # As for ib_send_bw: the UD mesh server listens on port 18515 next
+    - name: Wait for the ibv_rc_pingpong server unit to finish
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p SubState --value ibv-rc-pingpong-server'
+      register: ibv_rc_pingpong_substate
+      until: ibv_rc_pingpong_substate.stdout | trim != 'running'
+      retries: 12
+      delay: 5
+      changed_when: false
+      failed_when: false
+
     - name: Collect ibv_rc_pingpong server log
       ansible.builtin.shell:
         cmd: >-
@@ -242,6 +270,148 @@
     - name: Display ibv_rc_pingpong server output
       ansible.builtin.debug:
         var: ibv_rc_pingpong_server_log.stdout_lines
+
+    # ─────────────────────────────────────────────────
+    # UD across the mesh (test_ud_mesh)
+    # ─────────────────────────────────────────────────
+    #
+    # The only test in the tree that crosses the mesh wire with a datagram.
+    # ib_send_bw and ibv_rc_pingpong above are RC, and every UD test in
+    # tests/ puts both endpoints on one node, where a self-GID resolves to
+    # the local node and tcp_post_send() takes its local-delivery shortcut.
+    # This addresses the AH with the PEER's GID, which is what selects
+    # tcp_resolve_node_from_gid()'s remote path.
+    #
+    # Unlike the perftest pair, the assertions live in the SERVER: it is the
+    # side that sees byte_len, the GRH offset and src_qp. Its exit status is
+    # collected explicitly below rather than inferred from the client's.
+    #
+    # There is deliberately no SRQ equivalent here. The TCP backend carries
+    # SRQ geometry and nothing else -- see the comment on TcpSRQ in
+    # src/rdma/rdma_backend_tcp.c -- because shared receives are served from
+    # ionic_datapath.c's rings, which do not vary with the backend. An SRQ
+    # test on this lane would re-cover what the loopback lane already covers,
+    # and would need the DKMS driver and the SRQ provider built in both
+    # guests to do it.
+    - name: "UD mesh test: detect RDMA device on VM2"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ vm2_ssh }} 'sh -s'
+          < {{ ernic_project_root }}/scripts/find-rdma-device.sh
+      register: rdma_dev_detect_vm2
+      changed_when: false
+      failed_when: false
+
+    # Detected per guest rather than reusing rdma_dev: that was detected on
+    # VM1, and the two guests are separate devices whose names need not agree.
+    - name: "UD mesh test: assert an RDMA device was detected on VM2"
+      ansible.builtin.assert:
+        that:
+          - rdma_dev_detect_vm2.stdout | trim | length > 0
+        fail_msg: >-
+          No RDMA device matching PCI 0x1dd8:0x1002 subsystem 0x1dd8:0x5400
+          found on VM2, so the driver did not bind or the port never came up.
+
+    - name: "UD mesh test: set VM2 RDMA device name"
+      ansible.builtin.set_fact:
+        rdma_dev_vm2: "{{ rdma_dev_detect_vm2.stdout | trim }}"
+
+    - name: "UD mesh test: copy the test sources to both guests"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          set -o pipefail;
+          {{ item }} 'mkdir -p /tmp/ud-mesh' &&
+          tar -C {{ ernic_project_root }}/tests -cf -
+          test_ud_mesh.c ernic_device.h |
+          {{ item }} 'tar -C /tmp/ud-mesh -xf -'
+      loop:
+        - "{{ vm1_ssh }}"
+        - "{{ vm2_ssh }}"
+      loop_control:
+        label: "{{ 'vm1' if item == vm1_ssh else 'vm2' }}"
+      changed_when: true
+
+    - name: "UD mesh test: build the test in both guests"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ item }} 'cd /tmp/ud-mesh &&
+          gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o test_ud_mesh test_ud_mesh.c
+          $(pkg-config --cflags --libs libibverbs)'
+      loop:
+        - "{{ vm1_ssh }}"
+        - "{{ vm2_ssh }}"
+      loop_control:
+        label: "{{ 'vm1' if item == vm1_ssh else 'vm2' }}"
+      changed_when: true
+
+    - name: "UD mesh test: start the server on VM1"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'sudo systemctl stop ud-mesh-server 2>/dev/null;
+          sudo systemctl reset-failed ud-mesh-server 2>/dev/null;
+          sudo systemd-run --unit=ud-mesh-server
+          bash -c "/tmp/ud-mesh/test_ud_mesh --server {{ rdma_dev }}
+          >/tmp/ud_mesh_server.log 2>&1";
+          sleep 1'
+      changed_when: true
+
+    - name: "UD mesh test: wait for the server to listen"
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: "UD mesh test: run the client from VM2"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm2_ssh }} 'timeout 60
+          /tmp/ud-mesh/test_ud_mesh --client {{ vm1_ip }} {{ rdma_dev_vm2 }}
+          2>&1'
+      register: ud_mesh_client
+      changed_when: false
+      failed_when: false
+
+    - name: Display UD mesh client output
+      ansible.builtin.debug:
+        var: ud_mesh_client.stdout_lines
+
+    # The server holds the assertions, so its exit status is the result.
+    # systemd keeps it after the unit finishes; wait for the unit to leave
+    # 'running' first, or ExecMainStatus is still 0 from a live process.
+    - name: "UD mesh test: wait for the server unit to finish"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p SubState --value ud-mesh-server'
+      register: ud_mesh_substate
+      until: ud_mesh_substate.stdout | trim != 'running'
+      retries: 12
+      delay: 5
+      changed_when: false
+      failed_when: false
+
+    - name: "UD mesh test: collect the server exit status"
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p ExecMainStatus --value ud-mesh-server'
+      register: ud_mesh_server_status
+      changed_when: false
+      failed_when: false
+
+    - name: Collect UD mesh server log
+      ansible.builtin.shell:
+        cmd: >-
+          {{ vm1_ssh }} 'cat /tmp/ud_mesh_server.log'
+      register: ud_mesh_server_log
+      changed_when: false
+      failed_when: false
+
+    - name: Display UD mesh server output
+      ansible.builtin.debug:
+        var: ud_mesh_server_log.stdout_lines
 
     # ─────────────────────────────────────────────────
     # Summary
@@ -260,6 +430,13 @@
         pp_pass: >-
           {{ ibv_rc_pingpong_result.rc == 0
              and ibv_rc_pingpong_result.stdout | length > 0 }}
+        # Exit 0 exactly. 77 means "no usable device", which the loopback
+        # lane tolerates in its smoke step but which is a failure here: a
+        # device was asserted present on both guests a few tasks ago, so a
+        # skip at this point is the bug, not a reason to pass.
+        ud_mesh_pass: >-
+          {{ ud_mesh_client.rc == 0
+             and ud_mesh_server_status.stdout | trim == '0' }}
 
     - name: Sanity test summary
       ansible.builtin.debug:
@@ -269,6 +446,7 @@
           - "tcp:             {{ 'PASS' if tcp_pass else 'FAIL' }}"
           - "ib_send_bw:      {{ 'PASS' if bw_pass else 'FAIL' }}"
           - "ibv_rc_pingpong: {{ 'PASS' if pp_pass else 'FAIL' }}"
+          - "ud_mesh:         {{ 'PASS' if ud_mesh_pass else 'FAIL' }}"
 
     # The RDMA results were computed into bw_pass/pp_pass and printed
     # in the summary above, but were left out of this assert, so a run
@@ -284,8 +462,10 @@
           - "'ERNIC_OK' in tcp_result.stdout"
           - bw_pass | bool
           - pp_pass | bool
+          - ud_mesh_pass | bool
         fail_msg: >-
           Sanity tests failed (ping={{ ping_pass }},
           tcp={{ tcp_pass }}, ib_send_bw={{ bw_pass }},
-          ibv_rc_pingpong={{ pp_pass }}). Check the output
+          ibv_rc_pingpong={{ pp_pass }},
+          ud_mesh={{ ud_mesh_pass }}). Check the output
           above for details.

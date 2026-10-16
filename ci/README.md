@@ -10,6 +10,10 @@ only build and unit-test. Everything that needs KVM, a
 provisioned guest image or two guests talking RDMA to
 each other runs here instead.
 
+The exception is `iwyu/`, which holds the scripts that
+the GitHub-hosted IWYU workflow
+(`.github/workflows/iwyu.yml`) runs.
+
 ## Design
 
 Everything runs **unprivileged**. There is no `sudo`, no

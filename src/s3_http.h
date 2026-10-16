@@ -20,7 +20,6 @@
 #ifndef S3_HTTP_H
 #define S3_HTTP_H
 
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

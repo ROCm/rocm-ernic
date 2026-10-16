@@ -59,6 +59,29 @@
   launcher picks per instance, which is what selects `nvmeof` for that lane.
 * CI job `ionic-patches` verifies that every patch in `patches/` still applies
   to the pinned `IONIC_KERNEL_REF`.
+* `-DERNIC_USE_CODE_COVERAGE=ON` (Clang only) builds with LLVM source-based
+  coverage, and the `ernic-coverage` target reports the line coverage of
+  `src/` after `ctest`. The Build and Test workflow has a coverage leg that
+  fails below a floor, and on `develop` publishes the figure for the README's
+  Coverage badge.
+* `ernic-test-ionic-harness` (CTest `ionic-harness-*`) runs the whole ionic
+  device in-process, with a fake libvfio-user over heap memory, and drives it
+  the way the guest drivers do: bring-up, the RDMA admin queue, RC and UD
+  transfers, atomics, fast registration, SRQs, CQ events, Ethernet Tx and Rx,
+  and the NVMe-oF connect over GSI. It needs no VM or RDMA device, so the data
+  path is now tested in every CI build leg, sanitizers included. It raises
+  the line coverage of `src/` from about 51% to about 67%, and the coverage
+  leg's floor goes from 45% to 60%.
+* `-DERNIC_USE_IWYU=ON` runs include-what-you-use on rocm-ernic's own sources
+  as they compile, which prints suggestions for `#include` lines to add or
+  remove. The suggestions don't fail the build. It needs CMake 3.27 or later
+  and is best built with the clang that IWYU is built on. The new IWYU
+  workflow runs it on every change to the C sources and lists the
+  suggestions, failing only if IWYU itself fails.
+* rocm-ernic can be built as part of another CMake project with
+  `add_subdirectory()`. When it is, it leaves the build type to the parent
+  project instead of defaulting it to `Debug`. The CTest `cmake-subproject`
+  test builds the server this way.
 
 ### Changed
 
@@ -87,6 +110,12 @@
   `ernic_vms_total` is now `ernic_vms`. They count what exists right now, not
   a running total. The shipped dashboard is updated; hand-written dashboards,
   alerts and recording rules referring to the old names must be changed.
+* The tests are only built when `BUILD_TESTING` is on, which it is by
+  default. `-DBUILD_TESTING=OFF` builds just the server.
+* The CMake cache variables that hold the git SHA built into the server are
+  now `ERNIC_GIT_SHA_FULL` and `ERNIC_GIT_SHA_SHORT`, rather than
+  `GIT_SHA_FULL` and `GIT_SHA_SHORT`, so they can't collide with a parent
+  project's.
 
 ### Removed
 
@@ -102,6 +131,14 @@
 
 ### Fixed
 
+* Shutting down a `loopback`, `nvmeof` or `s3` server that a guest had
+  connected to locked a mutex and wrote past the end of the backend's state
+  on the heap: the data path cleared its mesh receive callback through the
+  TCP backend whatever the backend was. The TCP backend's ionic entry points
+  now do nothing on another backend. Found by `ionic-harness-*`.
+* Shutdown leaked the queues and mutex of every CQ and QP the loopback
+  backend held, and the deferred-completion queue set up when the device was
+  realized.
 * The driver pack recorded a hardcoded `v7.2.4` as the ionic baseline
   regardless of `IONIC_KERNEL_REF`, so bumping the cmake pin left guests
   fetching the old sources while the patches shipped beside them came from the
@@ -216,6 +253,176 @@
   16 * 2^40 bytes and drive a walk of four billion iterations. Widening the product
   above narrowed the mismatch case but left the count unbounded, so this
   completes that fix rather than replacing it.
+* A server on the TCP backend no longer hangs on SIGTERM. Its accept thread
+  stayed blocked in `accept()` until a peer happened to connect, and a
+  manager's health-check thread slept out the whole
+  `ERNIC_TCP_HEALTH_INTERVAL` before it noticed the shutdown; shutdown now
+  wakes both. A worker that fails to register with its manager also stops its
+  accept thread before freeing the state that thread uses, and its 5-second
+  registration timeout is now measured on the monotonic clock, so a change to
+  the system time no longer shortens or stretches it.
+  `tests/test_tcp_thread_stop.c` (CTest `tcp-thread-stop-unit`) covers both
+  threads, and `server-lifecycle` checks that a manager exits promptly.
+  `tcp-mesh-ci` no longer SIGKILLs its nodes: a node still running 30 seconds
+  after SIGTERM, or one that exits with a non-zero status, fails the test.
+* A TCP mesh node no longer frees its backend at shutdown while receive
+  threads are still using it. A manager freed its table of mesh nodes while
+  those threads could still read it, which ThreadSanitizer reported, and never
+  stopped or freed the connection of a peer that connected but didn't
+  register, such as one it refused for running an older protocol version,
+  which LeakSanitizer reported. The backend now stops every one of its threads
+  before it frees any of its state. A thread waiting for the rest of a message
+  now also gives up when it is stopped, so a peer that sends a message header
+  and withholds the payload can no longer hold up shutdown, whether it does so
+  to a receive thread or to a worker's accept thread during the handshake. Nor
+  can a peer that stops reading. A thread sending to it -- a receive thread
+  replying, a broadcast to every node, the health check's heartbeat -- waits
+  for room in the socket while holding locks that shutdown needs, and other
+  threads can wait on those locks in turn. Once shutdown begins, such a send
+  now gives up instead of waiting, and stopping a receive thread also shuts its
+  socket down. Sends now use `MSG_NOSIGNAL`, so a failed send to a peer that
+  has gone returns an error instead of raising a SIGPIPE that could kill the
+  server. `tcp-thread-stop-unit` covers all three, and runs a manager's whole
+  shutdown with a worker that has stopped reading.
+* A TCP mesh node that can't start one of its threads, because the process is
+  out of threads or memory, no longer tries to join that thread at shutdown,
+  which could crash the server. A connection whose receive thread can't be
+  started is closed instead of kept, and a node whose accept or health-check
+  thread can't be started fails to initialize. `tcp-thread-stop-unit` covers
+  it.
+* A TCP mesh manager whose reconnect to an unresponsive node fails no longer
+  stops that node's old connection a second time on the next attempt. It
+  joined the old receive thread again, which is undefined behavior and could
+  crash the manager or hang its health check. The old connection's socket is
+  also now shut down before its thread is joined, so a send the thread is
+  blocked in can't stall the reconnect, and closed under the connection's
+  lock, so a thread sending on that connection can't send on the descriptor
+  after it has been reused for another connection. `tcp-thread-stop-unit`
+  covers the failed reconnect.
+* A TCP mesh worker no longer crashes on a malformed handshake from a host
+  that connects to its listen port. A handshake with no payload crashed it
+  with a NULL pointer dereference, and one too short to hold a node id and
+  protocol version was read past its end; both are now refused. So is a
+  message of another type followed by a second connection that hangs up or
+  sends nothing, which freed the first message's payload a second time. A
+  worker also no longer takes up to 5 seconds to shut down while a peer that
+  has connected sends nothing. `tcp-thread-stop-unit` covers each case.
+* A TCP mesh manager no longer registers a connection a second time when a
+  peer sends a second registration on it. The connection was given a second
+  node id and kept under both, so shutdown freed it twice, and a reconnect
+  that replaced one of the two could free it while the other was still in
+  use. Any host that could reach the manager's port could crash it this way.
+  A registration on a connection that has already registered is now ignored.
+  `tcp-thread-stop-unit` covers it.
+* A TCP mesh manager no longer deadlocks when a node it has declared dead
+  sends a heartbeat while the manager reconnects to it. The health check held
+  the mesh table's lock throughout, and the reconnect waits for the old
+  connection's receive thread, which needed that lock to record the
+  heartbeat; the manager then stopped registering nodes, and hung on SIGTERM.
+  The health check now holds the lock only to decide what to do, so
+  registrations and heartbeats no longer wait for a reconnect, or for a
+  heartbeat sent to a node that has stopped reading, and a node registering
+  while the health check reports a dead node can no longer cut its pass
+  short. A node that answers while the manager is reconnecting to it keeps
+  its connection. The reconnects in each health-check pass now give up on
+  nodes that don't answer after one health-check interval
+  (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default) between them, rather
+  than when the kernel gives up on each, about two minutes later. No
+  heartbeats go out while they wait, so several unreachable nodes could
+  otherwise get the nodes that were still answering, or had just
+  registered, declared dead. Nodes that a pass runs out of time for go first
+  in the next one, in the order they were put off, so nodes that never answer
+  can't keep the others from being reconnected. SIGTERM no longer waits for a reconnect either.
+  `tcp-thread-stop-unit` covers each case.
+* A TCP mesh worker's RDMA traffic no longer stalls while it connects to the
+  peers the manager tells it about. It held the connection table's lock,
+  which the data path takes to find a peer's connection, across each
+  connect, so a peer that didn't answer stalled the worker until the kernel
+  gave up on the connect, about two minutes later, and SIGTERM waited as
+  long. The connects also ran on the thread that answers the manager's
+  heartbeats, so the manager could declare the worker dead meanwhile. A
+  worker now connects to its peers on a thread of its own, without the lock,
+  and SIGTERM no longer waits for a connect. Each connect gives up after one
+  health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default),
+  and every peer is tried in turn, so one that doesn't answer can't keep the
+  worker from connecting to the others. A peer the worker couldn't connect
+  to was left unconnected until the mesh changed; it is now tried again
+  every interval or so. A worker also no longer tries to connect to peers
+  the manager reports dead, including one reported dead while the worker is
+  connecting to it or to another peer. `tcp-thread-stop-unit` covers each
+  case.
+* A TCP mesh node no longer drops a connection when a message header arrives
+  in parts. A header that had partly arrived was given up on and the part
+  read was lost, so the next read started in the middle of the header, failed
+  the protocol magic check, and closed the connection. A header can straddle
+  a TCP segment boundary anywhere in a busy connection, so this could happen
+  under load on a real network. A node now waits for the rest of the header,
+  as it already did for the rest of a payload. A worker's listen port gives a
+  connecting peer 5 seconds to send all of its handshake, including the rest
+  of one it has started, so a peer that sends part of one and stops holds up
+  the peers behind it no longer than one that sends nothing.
+  `tcp-thread-stop-unit` covers messages split at several points.
+* A TCP mesh manager now closes the connections it is done with. A peer that
+  connected and hung up without registering -- a port scan, a load
+  balancer's health check, a node refused for running an older protocol
+  version -- left its socket open in `CLOSE_WAIT`, and a thread behind it,
+  until the manager shut down, and a peer that connected and sent nothing
+  kept them indefinitely. A registered node that went away left its socket
+  open until the manager reconnected to it, which might be never. Enough of
+  these ran the manager out of file descriptors. The manager now closes a
+  connection whose peer has hung up or been refused when the next peer
+  connects, or within a health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`,
+  5 seconds by default), and closes one that hasn't registered within 5
+  seconds of connecting. At most 64 connections wait to register at once;
+  any more are closed as they arrive. A peer that sends anything but a
+  registration before it has registered is now disconnected: the manager
+  used to act on such messages, including relaying traffic to other nodes,
+  and a relay to a node that had stopped reading could then hold up
+  closing the connection. A registered node that hangs up is
+  reported dead to the rest of the mesh within a health-check interval,
+  rather than after three. A node that runs out of file descriptors also no
+  longer retries accepting a connection in a tight loop that logged an error
+  each time, which could fill the disk; it now waits 100 ms between
+  attempts. `tcp-thread-stop-unit` covers each case.
+* A TCP mesh node no longer trusts the sender a message names in its header,
+  which the sender writes. A manager credited a heartbeat to the node the
+  heartbeat named, so any registered node could keep another, dead, node
+  alive, or bring it back; it now credits the node whose connection the
+  heartbeat came on. Every node sent its answer to an RDMA write or read, or
+  to a send, to the node the request named, so a peer could have the
+  completion, or the memory it asked to read, delivered to another node; the
+  answer now goes back on the connection the request came on.
+  `tcp-thread-stop-unit` covers each case.
+* A TCP mesh node that the manager has declared dead and that answers a
+  heartbeat again is now reported alive to the rest of the mesh at once. The
+  other nodes used to keep treating it as dead, and not connect to it, until
+  a node joined, died, or was reconnected. Topology updates sent at about the
+  same time can also no longer reach the nodes out of order, which could
+  leave them with an older picture of the mesh than the manager's.
+  `tcp-thread-stop-unit` covers the revival.
+* A TCP mesh manager that reconnects to a node that has stopped answering no
+  longer frees the node's old connection while another thread is still
+  using it, sending on it or relaying through it. Connections are now
+  reference counted, and the last thread to finish with one frees it. The
+  connection of a node that hangs up, or that the manager reconnects to, is
+  also taken out of the manager's connection table, instead of staying there
+  closed until shutdown.
+* Data that reaches a TCP mesh node before the guest has posted a receive for
+  it is now completed on the connection it came on, once the receive is
+  posted. The completion used to go to whichever connection the node named
+  as the data's sender had by then, so a peer could have it delivered to
+  another node. If that connection has closed meanwhile, no completion is
+  sent. `tcp-thread-stop-unit` covers both fixes.
+* The server no longer exits when a client disconnects or sends something
+  other than a version message during vfio-user negotiation. A port probe or a
+  client that crashed while connecting used to take the server down; it now
+  logs `client dropped during negotiation` and waits for the next client.
+  Other attach errors are still fatal.
+* The server frees the emulated ionic device at shutdown, and no longer leaks
+  the parsed path of an `nvmeof` backend's `file=` namespace. LeakSanitizer
+  and valgrind reported both. `tests/test_server_lifecycle.c` (CTest
+  `server-lifecycle`) starts the real server and checks that misbehaving
+  clients and SIGTERM/SIGINT end in a clean shutdown with no sanitizer report.
 
 ### Limitations
 
@@ -237,3 +444,20 @@
   `tcp_mr_range_ok()`, the loopback one by skipping regions without a mapping during
   translation -- but the registration itself is unchanged, and neither
   `cmd->start` nor `cmd->length` is validated before it.
+* While the TCP backend is running, a mesh node that stops reading can stall
+  the node sending to it. A send waits for room in the socket for as long as
+  it takes, and a broadcast to every node does that while holding the
+  connection table's lock, which the data path needs too. Only shutdown makes
+  such a send give up.
+* The TCP backend still looks up mesh nodes' hostnames with a lookup that
+  can't be interrupted or given a deadline. A worker advertises its
+  `gethostname()`, which its peers and the manager's health check look up
+  before each connect, so a slow DNS server can make SIGTERM wait for the
+  resolver to give up, which its configured timeouts and retries bound. A
+  hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
+  wait.
+* A TCP mesh worker keeps its connection to another worker after that worker
+  hangs up, with the socket open in `CLOSE_WAIT`, until it shuts down. The
+  two workers then stay disconnected, because each refuses or skips a new
+  connection to the other as a duplicate of the dead one, until the worker
+  holding it restarts.
