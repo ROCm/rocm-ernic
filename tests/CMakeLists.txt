@@ -4,9 +4,6 @@
 
 # Tests build configuration
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(CMOCKA cmocka)
-
 # -- test_pci_client (no extra dependencies) ---------------------
 add_executable(test_pci_client
     test_pci_client.c
