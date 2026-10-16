@@ -632,9 +632,7 @@ read-modify-writes on an `int`, written when the device logic was
 single-threaded. Their only remaining callers are in the vendored QEMU
 code in `third-party/qemu/hw/rdma/`, which is safe only because that
 code's completion thread (started by `rdma_backend_start()`) is never
-started. [docs/architecture.rst](docs/architecture.rst) describes ring
-state as synchronized with `qatomic_read()` and `qatomic_set()` on the
-server side; that's out of date.
+started.
 
 Use `<stdatomic.h>` for anything shared between threads. Don't start the
 vendored completion thread without first making these real atomics.
