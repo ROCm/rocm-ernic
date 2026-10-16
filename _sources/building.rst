@@ -88,6 +88,10 @@ Build Options
      - ``OFF``
      - Run include-what-you-use while compiling; advisory
        (see :ref:`iwyu`)
+   * - ``ERNIC_USE_CLANG_TIDY``
+     - ``OFF``
+     - Run clang-tidy while compiling; every finding is an
+       error. Clang only (see :ref:`clang-tidy`)
    * - ``ERNIC_BUILD_DOCS``
      - ``OFF``
      - Build Sphinx + Breathe + Doxygen documentation
@@ -209,6 +213,33 @@ names the wrong header. CI's IWYU workflow lists the files with
 suggestions on the run's summary page, and fails only if IWYU
 itself fails. ``AGENTS.md`` describes how to run that check
 locally and which suggestions to ignore.
+
+.. _clang-tidy:
+
+clang-tidy
+----------
+
+``ERNIC_USE_CLANG_TIDY`` runs `clang-tidy
+<https://clang.llvm.org/extra/clang-tidy/>`__ on the server's
+and the tests' sources as they compile, with the checks in
+``.clang-tidy``. Every finding is an error, so it fails the
+build. The vendored sources in ``third-party/`` and their
+headers are skipped. It needs CMake 3.27 or later, clang-tidy 19
+or later, and Clang as the C compiler, since clang-tidy rejects
+the options that the build uses with GCC. Use the clang of the
+same version as clang-tidy:
+
+.. code-block:: bash
+
+   cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
+     -DERNIC_USE_CLANG_TIDY=ON \
+     -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
+   cmake --build build-tidy -- -k 0
+
+``-k 0`` keeps building after a file fails, so one build
+reports every finding. CI's clang-tidy workflow builds Debug
+and Release with clang-tidy 23 and lists the findings by check
+on the run's summary page.
 
 Guest ionic Modules
 -------------------

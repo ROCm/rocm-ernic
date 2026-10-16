@@ -380,6 +380,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#include-what-you-use">include-what-you-use</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clang-tidy">clang-tidy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-ionic-modules">Guest ionic Modules</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-documentation">Building Documentation</a></li>
 </ul>
@@ -484,37 +485,42 @@ is never broken by a new warning; CI turns it on
 <td><p>Run include-what-you-use while compiling; advisory
 (see <a class="reference internal" href="#iwyu"><span class="std std-ref">include-what-you-use</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
+<td><p>Run clang-tidy while compiling; every finding is an
+error. Clang only (see <a class="reference internal" href="#clang-tidy"><span class="std std-ref">clang-tidy</span></a>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build Sphinx + Breathe + Doxygen documentation</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Configure only documentation targets (no library
 dependencies required)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable the DKMS targets that build the patched
 upstream ionic guest modules (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code></p></td>
 <td><p>Linux kernel tag or SHA the ionic sources are fetched
 from; must be <code class="docutils literal notranslate"><span class="pre">v6.18</span></code> or newer</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
 <td><p>kernel.org stable</p></td>
 <td><p>Linux kernel git repository the ionic sources are
 fetched from</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Also install the systemd units, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, the
 launcher, and the Prometheus exporter
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
 </tr>
@@ -595,6 +601,27 @@ names the wrong header. CI’s IWYU workflow lists the files with
 suggestions on the run’s summary page, and fails only if IWYU
 itself fails. <code class="docutils literal notranslate"><span class="pre">AGENTS.md</span></code> describes how to run that check
 locally and which suggestions to ignore.</p>
+</section>
+<section id="clang-tidy">
+<span id="id3"></span><h2>clang-tidy<a class="headerlink" href="#clang-tidy" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code> runs <a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a> on the server’s
+and the tests’ sources as they compile, with the checks in
+<code class="docutils literal notranslate"><span class="pre">.clang-tidy</span></code>. Every finding is an error, so it fails the
+build. The vendored sources in <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> and their
+headers are skipped. It needs CMake 3.27 or later, clang-tidy 19
+or later, and Clang as the C compiler, since clang-tidy rejects
+the options that the build uses with GCC. Use the clang of the
+same version as clang-tidy:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build-tidy<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang-23<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_USE_CLANG_TIDY<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_CLANG_TIDY_EXE<span class="o">=</span>/usr/bin/clang-tidy-23
+cmake<span class="w"> </span>--build<span class="w"> </span>build-tidy<span class="w"> </span>--<span class="w"> </span>-k<span class="w"> </span><span class="m">0</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">-k</span> <span class="pre">0</span></code> keeps building after a file fails, so one build
+reports every finding. CI’s clang-tidy workflow builds Debug
+and Release with clang-tidy 23 and lists the findings by check
+on the run’s summary page.</p>
 </section>
 <section id="guest-ionic-modules">
 <h2>Guest ionic Modules<a class="headerlink" href="#guest-ionic-modules" title="Link to this heading">#</a></h2>
@@ -684,6 +711,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#include-what-you-use">include-what-you-use</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clang-tidy">clang-tidy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-ionic-modules">Guest ionic Modules</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-documentation">Building Documentation</a></li>
 </ul>
