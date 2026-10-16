@@ -309,6 +309,36 @@ them and where their configuration files are picked up.
   pass with undefined behavior in its output. See [Tests](#tests) for the
   TSan `setarch` wrapper and the ASan timeouts, and
   [Thread safety](#thread-safety) for the TSan build flags.
+- **clang-tidy clean**: building with `-DERNIC_USE_CLANG_TIDY=ON` runs
+  clang-tidy on every file as it compiles, with the checks in
+  [`.clang-tidy`](.clang-tidy), and must report nothing; every finding is
+  an error. It needs CMake 3.27 or later, clang-tidy 19 or later, and
+  Clang as the C compiler (configuring fails with GCC, whose options
+  clang-tidy rejects). Use the clang of the same version as clang-tidy,
+  in a separate build directory, and build Release as well as Debug,
+  since `NDEBUG` and `_FORTIFY_SOURCE` change what the analyzer sees:
+
+  ```bash
+  cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
+    -DERNIC_USE_CLANG_TIDY=ON -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
+  cmake --build build-tidy -- -k 0
+  ```
+
+  `-k 0` keeps going after a file fails, so one build reports every
+  finding. The vendored sources in `third-party/` and their headers are
+  skipped.
+
+  `.clang-tidy` turns on whole groups of checks, leaving out the groups
+  for other platforms and code bases (listed there with the reason), and
+  then turns off, marked `TODO`, the checks the current code doesn't pass
+  yet. Don't add a check to that list to silence a new finding; fix the
+  code. When you fix the code for a `TODO` check, delete its line and the
+  lines for its aliases (listed after it), so it stays on. Suppress a
+  finding only when it's unavoidable, with `// NOLINTNEXTLINE(check-name)`
+  naming the one check, and a comment saying why.
+
+  CI: [clang-tidy.yml](.github/workflows/clang-tidy.yml), with upstream
+  clang-tidy 23, in Debug and Release.
 - **include-what-you-use (IWYU)** (`apt install iwyu`; needs CMake 3.27 or
   later): it prints the `#include` lines it suggests adding or removing for
   each file as the build compiles it. IWYU parses with its own clang, which
@@ -371,7 +401,9 @@ them and where their configuration files are picked up.
   PR when it has the `run-static` label
   ([static-analysis.yml](.github/workflows/static-analysis.yml)). It's
   informational and never fails, but read its findings for the files you
-  touched.
+  touched. Its clang-tidy run uses its own set of checks, not
+  `.clang-tidy`, and includes the vendored code, so it doesn't replace the
+  clang-tidy check above.
 
 ### Shell
 

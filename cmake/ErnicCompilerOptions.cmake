@@ -16,6 +16,9 @@ include(ErnicGNUCompilerOptions)
 include(ErnicSanitizers)
 include(ErnicCoverage)
 include(ErnicIWYU)
+include(ErnicClangTidy)
+
+set(ERNIC_VENDORED_DIR "${PROJECT_SOURCE_DIR}/third-party")
 
 # Linker hardening, following the OpenSSF Compiler Options Hardening Guide
 # for C and C++. Some distributions' compilers pass some of these by
@@ -119,4 +122,29 @@ function(ernic_set_compiler_flags target)
     endif()
 
     ernic_set_iwyu(${target})
+    ernic_set_clang_tidy(${target})
+
+    if(ERNIC_USE_IWYU OR ERNIC_USE_CLANG_TIDY)
+        ernic_skip_linting_vendored_sources(${target})
+    endif()
+endfunction()
+
+# Keep the linters (IWYU and clang-tidy) off a target's vendored sources
+# under third-party/, which aren't ours to fix
+#
+# Source file properties belong to a directory, so call this from the
+# directory that creates the target.
+function(ernic_skip_linting_vendored_sources target)
+    get_target_property(sources ${target} SOURCES)
+    get_target_property(source_dir ${target} SOURCE_DIR)
+    foreach(source IN LISTS sources)
+        cmake_path(ABSOLUTE_PATH source BASE_DIRECTORY "${source_dir}"
+          OUTPUT_VARIABLE path)
+        cmake_path(IS_PREFIX ERNIC_VENDORED_DIR "${path}" NORMALIZE
+          vendored)
+        if(vendored)
+            set_source_files_properties(${source} PROPERTIES
+              SKIP_LINTING ON)
+        endif()
+    endforeach()
 endfunction()
