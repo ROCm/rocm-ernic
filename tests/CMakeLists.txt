@@ -958,7 +958,8 @@ add_test(
 set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # TCP GID -> node resolution unit test: exact 16-byte matching, no-match
-# failure, and the zero-filled advertisement tail.
+# failure, the zero-filled advertisement tail, and the mesh entry points
+# leaving a non-TCP backend's private block alone.
 add_test(
     NAME tcp-gid-resolve-unit
     COMMAND $<TARGET_FILE:test_tcp_gid_resolve>
