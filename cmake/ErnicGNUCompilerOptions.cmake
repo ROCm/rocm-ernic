@@ -10,6 +10,8 @@
 #
 # https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 
+include_guard(GLOBAL)
+
 include(CheckCCompilerFlag)
 include(ErnicFortifySource)
 

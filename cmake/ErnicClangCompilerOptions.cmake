@@ -11,6 +11,8 @@
 #
 # https://clang.llvm.org/docs/DiagnosticsReference.html
 
+include_guard(GLOBAL)
+
 include(CheckCCompilerFlag)
 include(CheckCSourceCompiles)
 include(CMakePushCheckState)

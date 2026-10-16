@@ -6,6 +6,8 @@
 #
 # Adapted from hipObject HIPOBJFortifySource.cmake.
 
+include_guard(GLOBAL)
+
 # Check whether a string of compiler flags optimizes with -O2, -O3, or -Os
 #
 # The last -O option on the command line wins, so only that one is checked.

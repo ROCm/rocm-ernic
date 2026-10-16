@@ -7,6 +7,8 @@
 # Follows the pattern from hipFile AISCompilerOptions.cmake and
 # rocm-xio XIOCompilerOptions.cmake, adapted for C-only builds.
 
+include_guard(GLOBAL)
+
 include(ErnicClangCompilerOptions)
 include(ErnicGNUCompilerOptions)
 include(ErnicSanitizers)

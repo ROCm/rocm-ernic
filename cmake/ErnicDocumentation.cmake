@@ -9,6 +9,8 @@
 # A Python venv is created automatically in the build tree
 # and populated from requirements.txt.
 
+include_guard(GLOBAL)
+
 option(ERNIC_BUILD_DOCS
   "Build documentation with Sphinx + Breathe + Doxygen"
   OFF)
