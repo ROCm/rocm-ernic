@@ -4,10 +4,11 @@
  * Every other ionic test reaches into one translation unit and stubs the
  * rest. These link the whole device -- the Ethernet emulator, the RDMA
  * devcmds, the admin queue, the data path, the compat bridge, the resource
- * manager and the loopback backend -- and drive it the way ionic.ko and
- * ionic_rdma.ko do, through the model in ionic_harness.c. Only libvfio-user
- * is replaced, by fake_vfu.c, so nothing needs a VM, a socket or RDMA
- * hardware, and the whole stack runs under every sanitizer CI builds.
+ * manager and the loopback and TCP backends -- and drive it the way ionic.ko
+ * and ionic_rdma.ko do, through the model in ionic_harness.c. Only
+ * libvfio-user is replaced, by fake_vfu.c, so nothing needs a VM or RDMA
+ * hardware, only the TCP backend opens a socket, on loopback, and the whole
+ * stack runs under every sanitizer CI builds.
  *
  * With no argument every group runs; with one, only the group it names.
  *
@@ -18,14 +19,18 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
+#include <infiniband/verbs.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "fake_vfu.h"
@@ -33,8 +38,11 @@
 #include "ionic_harness.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
+#include "rdma_backend_ops.h"
+#include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
+#include "vmw/pvrdma.h"
 
 static int failures;
 
@@ -1620,6 +1628,88 @@ static void test_nvmeof(void)
     teardown(T, &h);
 }
 
+/* ---- Teardown ---------------------------------------------------------- */
+
+/*
+ * A backend's teardown puts back the guest memory it mapped for work
+ * requests still queued, and pci_dma_unmap() does that through the context
+ * each mapping was made with, so the device has to go before the context:
+ * ih_destroy() does it in that order, as the server does.  The TCP backend
+ * keeps a receive queued until data comes for it, so one posted with
+ * nothing to fill it is still mapped at teardown, and fake_vfu_destroy()
+ * reports it if teardown doesn't put it back.  Nothing in the device posts
+ * to this backend's queues, so the receive goes in through its ops table.
+ */
+
+/* A TCP port on loopback that nothing was listening on a moment ago. */
+static uint16_t free_tcp_port(void)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    uint16_t port = 0;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0)
+        return 0;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+        getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+        port = ntohs(addr.sin_port);
+    close(fd);
+    return port;
+}
+
+static void test_teardown(void)
+{
+    static const char T[] = "teardown";
+    char backend[64];
+    struct ih h;
+    uint32_t pd = 0, cq = 0, qpn = 0, mr = 0;
+    uint16_t port = free_tcp_port();
+
+    if (!check(T, port != 0, "no free TCP port"))
+        return;
+    snprintf(backend, sizeof(backend), "tcp:manager:listen:%u", (unsigned)port);
+    if (!check(T, ih_create(&h, backend), "device for '%s' not created",
+               backend))
+        return;
+
+    PVRDMADev *pvrdma = (PVRDMADev *)h.dev->pvrdma_handle;
+    bool made =
+        check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
+        check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
+        check(T,
+              ionic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
+                  0,
+              "no QP") &&
+        check(T,
+              ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
+              "no DMA memory region");
+
+    if (made) {
+        RdmaRmQP *qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
+        struct ibv_sge sge = {
+            .addr = fake_vfu_alloc(h.vfu, 64, 64),
+            .length = 64,
+            .lkey = mr,
+        };
+
+        if (check(T, qp != NULL, "QP %u isn't in the resource manager", qpn)) {
+            rdma_backend_ops_tcp.post_recv(&pvrdma->backend_dev,
+                                           &qp->backend_qp, IBV_QPT_RC, &sge, 1,
+                                           NULL);
+            check(T, fake_vfu_mapped(h.vfu) == 1,
+                  "the receive has %zu entries mapped, not 1",
+                  fake_vfu_mapped(h.vfu));
+        }
+    }
+
+    /* Fails, and says so, if the mapping is left */
+    teardown(T, &h);
+}
+
 /* ---- Driver ------------------------------------------------------------ */
 
 static const struct {
@@ -1636,6 +1726,7 @@ static const struct {
     {"srq", test_srq},
     {"eth", test_eth},
     {"nvmeof", test_nvmeof},
+    {"teardown", test_teardown},
 };
 
 int main(int argc, char **argv)

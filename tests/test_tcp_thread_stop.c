@@ -80,8 +80,16 @@
  * The node a message's header names as its sender is whatever the sender
  * wrote.  The sender rows name another node in a heartbeat and in data-path
  * requests, and check that the heartbeat is credited, and the answer sent,
- * by connection instead.  They also check that a dead node that answers a
- * heartbeat again is reported alive to the rest of the mesh.
+ * by connection instead, and that data that waits for a receive is completed
+ * on the connection it came on.  They also check that a dead node that
+ * answers a heartbeat again is reported alive to the rest of the mesh.
+ *
+ * A connection is reference counted.  A thread that looked one up used to
+ * get a bare pointer, and the health check's reconnect freed the old
+ * connection while the thread could still be using it.  The lifetime rows
+ * reconnect while the test holds a reference to the old connection, and
+ * while another thread is blocked sending on it, and have a pending
+ * connection register while teardown stops its receive thread.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -113,6 +121,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -149,22 +158,64 @@ void info_report(const char *fmt, ...)
 {
     (void)fmt;
 }
+
+/*
+ * DMA mappings, which only a work request through a DMA memory region makes
+ * (see the sender rows): each pci_dma_map() hands out the next slot, and
+ * pci_dma_unmap() counts the unmaps of each.  The rows map only from the
+ * test's own thread, but a receive thread may unmap.
+ */
+#define DMA_SLOTS    4
+#define DMA_SLOT_LEN 64u
+
+static uint8_t g_dma_mem[DMA_SLOTS][DMA_SLOT_LEN];
+static atomic_int g_dma_maps;
+static atomic_int g_dma_unmaps[DMA_SLOTS];
+static atomic_int g_dma_stray_unmaps; /* of an address that isn't a slot */
+
+static void dma_reset(void)
+{
+    atomic_store(&g_dma_maps, 0);
+    for (int i = 0; i < DMA_SLOTS; i++)
+        atomic_store(&g_dma_unmaps[i], 0);
+    atomic_store(&g_dma_stray_unmaps, 0);
+}
+
+/* Whether every mapping handed out has been unmapped once, and only once. */
+static bool dma_unmapped_once(void)
+{
+    for (int i = 0; i < atomic_load(&g_dma_maps); i++)
+        if (atomic_load(&g_dma_unmaps[i]) != 1)
+            return false;
+    return atomic_load(&g_dma_stray_unmaps) == 0;
+}
+
 void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
 {
+    int slot = atomic_load(&g_dma_maps);
+
     (void)dev;
     (void)addr;
-    (void)len;
     (void)dir;
-    return NULL;
+    if (slot >= DMA_SLOTS || *len > DMA_SLOT_LEN)
+        return NULL;
+    atomic_store(&g_dma_maps, slot + 1);
+    return g_dma_mem[slot];
 }
 void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
                    uint64_t access_len)
 {
     (void)dev;
-    (void)buffer;
     (void)len;
     (void)dir;
     (void)access_len;
+    for (int i = 0; i < DMA_SLOTS; i++) {
+        if (buffer == g_dma_mem[i]) {
+            atomic_fetch_add(&g_dma_unmaps[i], 1);
+            return;
+        }
+    }
+    atomic_fetch_add(&g_dma_stray_unmaps, 1);
 }
 int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
 {
@@ -514,6 +565,8 @@ static int run_health_case(const struct health_case *c)
     qemu_mutex_init(&priv->mesh_table_lock);
     /* Each pass reaps the pending connections, of which there are none */
     priv->pending_conns = g_ptr_array_new();
+    priv->connections = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     qemu_mutex_init(&priv->conn_table_lock);
 
     if (c->peer) {
@@ -529,7 +582,7 @@ static int run_health_case(const struct health_case *c)
         conn = tcp_connection_new(1, "peer", 0);
         conn->sockfd = sv[0];
         atomic_store(&conn->is_connected, true);
-        node->conn = conn;
+        g_hash_table_insert(priv->connections, GUINT_TO_POINTER(1), conn);
         node->is_alive = true;
         node->last_heartbeat = time(NULL);
         g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1), node);
@@ -571,7 +624,7 @@ static int run_health_case(const struct health_case *c)
 
 out:
     g_hash_table_destroy(priv->mesh_nodes);
-    tcp_connection_free(conn);
+    g_hash_table_destroy(priv->connections);
     if (sv[1] >= 0)
         close(sv[1]);
     g_ptr_array_free(priv->pending_conns, TRUE);
@@ -803,12 +856,12 @@ static int run_recv_case(const struct recv_case *c)
                    started, (int)flags_clear, took);
     }
 
-    /* tcp_connection_free() would join a thread still flagged running. */
+    /* Freeing would join a thread still flagged running, and complain. */
     if (!ok)
         tcp_stop_recv_threads(priv);
     g_hash_table_destroy(priv->connections);
     tcp_free_pending_conns(priv);
-    tcp_connection_free(priv->manager_conn);
+    tcp_connection_unref(priv->manager_conn);
     for (int i = 0; i < n; i++)
         if (peers[i] >= 0)
             close(peers[i]);
@@ -973,7 +1026,7 @@ static bool wait_for_registered(TcpBackendPrivate *priv, guint n)
 static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
 {
     static const uint8_t fill[4096];
-    TcpConnection *conn = tcp_get_connection(priv, node_id);
+    TcpConnection *conn = tcp_connection_lookup(priv, node_id);
     bool full;
 
     if (!conn)
@@ -983,6 +1036,7 @@ static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
         ;
     full = errno == EAGAIN;
     qemu_mutex_unlock(&conn->lock);
+    tcp_connection_unref(conn);
     return full;
 }
 
@@ -1048,12 +1102,13 @@ static int run_fini_case(const struct fini_case *c)
         goto stop;
     }
     if (c->block == BLOCK_HEARTBEAT) {
-        TcpConnection *conn = tcp_get_connection(priv, 1);
+        TcpConnection *conn = tcp_connection_lookup(priv, 1);
 
         if (!conn)
             why = "worker 1's connection is gone";
         else if (!held_elsewhere(&conn->lock))
             why = "the health check never blocked on worker 1";
+        tcp_connection_unref(conn);
         goto stop;
     }
 
@@ -1494,8 +1549,10 @@ static int run_hs_case(const struct hs_case *c)
 /*
  * A manager whose nodes 1 to nodes have stopped answering.  For node i + 1:
  * node[i] is its mesh entry, at port on loopback, old[i] its old connection,
- * with the receive thread running, and peer[i] the node's end of it.  A row
- * can add a connection for no node, whose far end is stray_peer.
+ * with the receive thread running, and peer[i] the node's end of it.  The
+ * fixture holds a reference to each old[i], so a row can still look at one
+ * once the health check has released it.  A row can add a connection for no
+ * node, whose far end is stray_peer.
  */
 struct rc_fixture {
     TcpBackendPrivate *priv;
@@ -1545,11 +1602,10 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
         if (!fx->old[i])
             return "could not set up an old connection";
         g_hash_table_insert(priv->connections, GUINT_TO_POINTER(id),
-                            fx->old[i]);
+                            tcp_connection_ref(fx->old[i]));
         fx->node[i] = mesh_node_info_new(id, "127.0.0.1", port);
         if (!fx->node[i])
             return "could not create a mesh node";
-        fx->node[i]->conn = fx->old[i];
         fx->node[i]->is_alive = false; /* already reported dead: no broadcast */
         g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(id),
                             fx->node[i]);
@@ -1586,9 +1642,11 @@ static void rc_teardown(struct rc_fixture *fx)
     g_hash_table_destroy(priv->mesh_nodes);
     g_hash_table_destroy(priv->connections);
     tcp_free_pending_conns(priv);
-    for (uint32_t i = 0; i < RC_MAX_NODES; i++)
+    for (uint32_t i = 0; i < RC_MAX_NODES; i++) {
+        tcp_connection_unref(fx->old[i]);
         if (fx->peer[i] >= 0)
             close(fx->peer[i]);
+    }
     if (fx->stray_peer >= 0)
         close(fx->stray_peer);
     tcp_bufpool_destroy(&priv->recv_pool);
@@ -1604,8 +1662,8 @@ static void rc_teardown(struct rc_fixture *fx)
  * The health check reconnects to a node that has stopped answering: it
  * retires the node's old connection, joining its receive thread, and opens a
  * new one.  When the new connection's receive thread can't be created, the
- * retired connection must not be left on the node, or the next attempt would
- * join its thread a second time.
+ * retired connection must not be left in the connections table, or the next
+ * attempt would join its thread a second time.
  *
  * The node is made to look 4 s dead, so the thread's first pass, on a 1 s
  * interval, attempts a reconnect; attempts back off to whole powers of two
@@ -1640,7 +1698,7 @@ static int run_reconnect_case(void)
         why = "could not open a listening socket";
 
     if (!why) {
-        TcpConnection *on_node, *in_table, *old = fx.old[0];
+        TcpConnection *in_table, *old = fx.old[0];
         int fd;
 
         atomic_store(&g_creates_left, 1); /* the health thread; no more */
@@ -1650,10 +1708,7 @@ static int run_reconnect_case(void)
              i++)
             sleep_ms(10);
 
-        /* node->conn is cleared before the new receive thread is started */
-        qemu_mutex_lock(&fx.priv->mesh_table_lock);
-        on_node = fx.node[0]->conn;
-        qemu_mutex_unlock(&fx.priv->mesh_table_lock);
+        /* Taken out of the table before the new receive thread is started */
         qemu_mutex_lock(&fx.priv->conn_table_lock);
         in_table =
             g_hash_table_lookup(fx.priv->connections, GUINT_TO_POINTER(1));
@@ -1664,10 +1719,8 @@ static int run_reconnect_case(void)
 
         if (atomic_load(&g_create_failures) == 0)
             why = "no reconnect was attempted";
-        else if (on_node)
-            why = "the node still points at its retired connection";
-        else if (in_table != old)
-            why = "the retired connection left the connections table";
+        else if (in_table)
+            why = "the node still has a connection in the table";
         else if (fd != -1 || atomic_load(&old->recv_thread_running))
             why = "the old connection wasn't retired";
         else if (atomic_load(&g_joins) != 1)
@@ -1968,7 +2021,7 @@ static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
 static const char *rc_heartbeat(struct rc_fixture *fx, int lfd, int *filler,
                                 int *fresh)
 {
-    TcpConnection *on_node, *in_table, *stray;
+    TcpConnection *in_table, *stray;
     bool alive;
 
     stray = recv_conn_new(fx->priv, RC_STRAY_ID, true, &fx->stray_peer);
@@ -1997,20 +2050,16 @@ static const char *rc_heartbeat(struct rc_fixture *fx, int lfd, int *filler,
         return "the reconnect wasn't broadcast";
 
     qemu_mutex_lock(&fx->priv->mesh_table_lock);
-    on_node = fx->node[0]->conn;
     alive = fx->node[0]->is_alive;
     qemu_mutex_unlock(&fx->priv->mesh_table_lock);
     qemu_mutex_lock(&fx->priv->conn_table_lock);
     in_table = g_hash_table_lookup(fx->priv->connections, GUINT_TO_POINTER(1));
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
-    /* The new connection replaced the old one, which freed it */
-    fx->old[0] = NULL;
 
     if (atomic_load(&fx->priv->tcp_stats.reconnect_successes) != 1)
         return "the reconnect didn't succeed";
-    if (!on_node || on_node != in_table || !alive)
-        return "the node and the connections table don't both have the new "
-               "connection";
+    if (!in_table || in_table == fx->old[0] || !alive)
+        return "the node isn't alive with a new connection in the table";
     if (atomic_load(&g_joins) != 1)
         return "the old receive thread wasn't joined exactly once";
     return NULL;
@@ -2025,16 +2074,17 @@ static const char *rc_untouched(struct rc_fixture *fx)
     if (atomic_load(&fx->priv->tcp_stats.reconnect_attempts) != 0)
         return "a connect succeeded";
     for (uint32_t i = 0; i < fx->nodes; i++) {
-        TcpConnection *on_node;
+        TcpConnection *in_table;
         int fd;
 
-        qemu_mutex_lock(&fx->priv->mesh_table_lock);
-        on_node = fx->node[i]->conn;
-        qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+        qemu_mutex_lock(&fx->priv->conn_table_lock);
+        in_table =
+            g_hash_table_lookup(fx->priv->connections, GUINT_TO_POINTER(i + 1));
+        qemu_mutex_unlock(&fx->priv->conn_table_lock);
         qemu_mutex_lock(&fx->old[i]->lock);
         fd = fx->old[i]->sockfd;
         qemu_mutex_unlock(&fx->old[i]->lock);
-        if (on_node != fx->old[i] || fd < 0 ||
+        if (in_table != fx->old[i] || fd < 0 ||
             !atomic_load(&fx->old[i]->recv_thread_running))
             return "an old connection was retired";
     }
@@ -2148,7 +2198,7 @@ static int rc_second_answers(struct rc_fixture *fx, MeshNodeInfo **second)
 static const char *rc_starves(struct rc_fixture *fx, MeshNodeInfo *second,
                               int lfd, int *fresh)
 {
-    TcpConnection *on_node, *in_table;
+    TcpConnection *in_table, *old = NULL;
 
     *fresh = accept_within(lfd);
     if (*fresh < 0)
@@ -2159,23 +2209,18 @@ static const char *rc_starves(struct rc_fixture *fx, MeshNodeInfo *second,
     if (!recv_type(*fresh, TCP_MSG_MESH_TOPOLOGY, 5000))
         return "the reconnect wasn't broadcast";
 
-    qemu_mutex_lock(&fx->priv->mesh_table_lock);
-    on_node = second->conn;
-    qemu_mutex_unlock(&fx->priv->mesh_table_lock);
     qemu_mutex_lock(&fx->priv->conn_table_lock);
     in_table = g_hash_table_lookup(fx->priv->connections,
                                    GUINT_TO_POINTER(second->node_id));
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
-    /* The new connection replaced the old one, which freed it */
     for (uint32_t i = 0; i < fx->nodes; i++)
         if (fx->node[i] == second)
-            fx->old[i] = NULL;
+            old = fx->old[i];
 
     if (atomic_load(&fx->priv->tcp_stats.reconnect_successes) != 1)
         return "the second node's reconnect didn't succeed";
-    if (!on_node || on_node != in_table)
-        return "the node and the connections table don't both have the new "
-               "connection";
+    if (!in_table || in_table == old)
+        return "the second node has no new connection in the table";
     return NULL;
 }
 
@@ -2320,8 +2365,8 @@ static int run_queue_case(void)
                atomic_load(&fx.priv->tcp_stats.reconnect_successes) == 0) {
             g_array_set_size(items, 0);
             for (uint32_t i = 0; i < fx.nodes; i++) {
-                TcpHealthCheckItem item = {fx.node[i], fx.node[i]->conn, true,
-                                           false};
+                /* The fixture's reference stands in for the scan's */
+                TcpHealthCheckItem item = {fx.node[i], fx.old[i], true, false};
 
                 g_array_append_val(items, item);
             }
@@ -2339,10 +2384,8 @@ static int run_queue_case(void)
         else if ((fresh = accept_within(answering)) < 0 ||
                  !recv_type(fresh, TCP_MSG_HANDSHAKE, 5000))
             why = "the third node's new connection sent no handshake";
-        else if (fx.node[2]->conn == NULL)
+        else if (!tcp_has_connection(fx.priv, 3))
             why = "the third node has no connection";
-        else
-            fx.old[2] = NULL; /* replaced, which freed it */
     }
 
     ok = !why;
@@ -2459,6 +2502,15 @@ static int run_reg_case(const struct reg_case *c)
     }
     priv = dev.backend_private;
     nodes_before = mesh_node_count(priv);
+    /*
+     * The health check's first pass comes at once.  One that came after the
+     * receive thread has seen the end of the stream would retire the
+     * connection, as one whose node hung up, and take it out of the table.
+     * Stopping the thread now makes that pass come first; the exits counted
+     * from here on are the receive thread's.
+     */
+    tcp_stop_health_check_thread(priv);
+    atomic_store(&g_exits, 0);
 
     fd = worker_attach(priv, &conn);
     if (fd < 0) {
@@ -2667,7 +2719,7 @@ static double tp_teardown(struct tp_fixture *fx)
     took = now_s() - start;
     g_hash_table_destroy(priv->connections);
     tcp_free_pending_conns(priv);
-    tcp_connection_free(priv->manager_conn);
+    tcp_connection_unref(priv->manager_conn);
     if (fx->mgr >= 0)
         close(fx->mgr);
     tcp_bufpool_destroy(&priv->recv_pool);
@@ -3528,7 +3580,8 @@ static const struct reap_case reap_cases[] = {
      REAP_NO_FDS, "3600"},
     {"negative", "a registered worker that hangs up",
      "the next health-check pass closes its connection, joins its thread, "
-     "and reports it dead to the other workers",
+     "takes it out of the connections table, and reports it dead to the "
+     "other workers",
      REAP_HANGUP, "1"},
 };
 
@@ -3886,7 +3939,8 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
 {
     TcpConnection *conn;
     MeshNodeInfo *node;
-    bool on_node, alive;
+    const char *why = NULL;
+    bool alive;
     double start;
     int w1 = reap_keep(k, worker_register(priv));
     int w2, fd;
@@ -3899,35 +3953,36 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
             close(w2);
         return "worker 2 did not register";
     }
-    conn = tcp_get_connection(priv, 2);
+    /* A reference, so the connection can be looked at once it's released */
+    conn = tcp_connection_lookup(priv, 2);
     if (!conn)
         return "worker 2 isn't node 2";
 
     close(w2);
     start = now_s();
     if (!reported(w1, 2, false, 5000))
-        return "worker 1 wasn't told worker 2 is dead";
-    if (now_s() - start >= 2.5)
-        return "worker 2 was only declared dead once it went silent";
+        why = "worker 1 wasn't told worker 2 is dead";
+    else if (now_s() - start >= 2.5)
+        why = "worker 2 was only declared dead once it went silent";
 
     qemu_mutex_lock(&priv->mesh_table_lock);
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(2));
-    on_node = node && node->conn;
     alive = node && node->is_alive;
     qemu_mutex_unlock(&priv->mesh_table_lock);
     qemu_mutex_lock(&conn->lock);
     fd = conn->sockfd;
     qemu_mutex_unlock(&conn->lock);
 
-    if (!node || on_node || alive)
-        return "node 2 is still alive, or still has its connection";
-    if (fd != -1 || atomic_load(&conn->recv_thread_running))
-        return "worker 2's connection wasn't closed";
-    if (atomic_load(&g_joins) != 1)
-        return "worker 2's receive thread wasn't joined once";
-    return tcp_get_connection(priv, 2) == conn
-               ? NULL
-               : "worker 2's connection left the connections table";
+    if (!why && (!node || alive))
+        why = "node 2 is gone, or still alive";
+    else if (!why && tcp_has_connection(priv, 2))
+        why = "worker 2's connection is still in the connections table";
+    else if (!why && (fd != -1 || atomic_load(&conn->recv_thread_running)))
+        why = "worker 2's connection wasn't closed";
+    else if (!why && atomic_load(&g_joins) != 1)
+        why = "worker 2's receive thread wasn't joined once";
+    tcp_connection_unref(conn);
+    return why;
 }
 
 static const char *reap_run(TcpBackendPrivate *priv, uint16_t port,
@@ -4024,6 +4079,19 @@ static int run_reap_case(const struct reap_case *c)
  * connection it came on, and an answer goes back on the connection the
  * request came on.
  *
+ * Data that arrives before a receive is posted waits for one, and its
+ * completion goes out when the receive is posted, from another thread.  That
+ * one went to whichever connection the node the data named had by then.  It
+ * now goes back on the connection the data came on, which the waiting data
+ * holds a reference to: the pending rows check it reaches worker 1, and that
+ * nothing is sent, and nothing is used after it is freed, if worker 1's
+ * connection is retired while the data waits.  Teardown frees what is still
+ * queued on a QP: the teardown rows leave data waiting, with worker 1's
+ * connection in the table or retired, and check that teardown drops the
+ * data's reference; and leave an RDMA write waiting for its completion and
+ * a receive waiting for data, both mapped through a DMA memory region, and
+ * check that teardown unmaps each mapping once.
+ *
  * A node the manager had declared dead that answered a heartbeat again
  * stayed dead to the rest of the mesh until its topology next changed.  The
  * manager now reports it alive.
@@ -4038,6 +4106,11 @@ enum sender_scenario {
     SENDER_REVIVES,   /* node 2, declared dead, answers a heartbeat */
     SENDER_WRITE,     /* worker 1's RDMA write names node 2 as its sender */
     SENDER_READ,      /* worker 1's RDMA read names node 2 as its sender */
+    SENDER_PENDING,   /* worker 1's data, naming node 2, waits for a receive */
+    SENDER_PENDING_GONE,  /* and worker 1's connection is retired meanwhile */
+    SENDER_TEARDOWN_KEPT, /* data waits, never received, at teardown */
+    SENDER_TEARDOWN_RETIRED, /* and worker 1's connection is retired first */
+    SENDER_TEARDOWN_QUEUED,  /* a write and a receive still queued */
 };
 
 struct sender_case {
@@ -4057,6 +4130,34 @@ static const struct sender_case sender_cases[] = {
      SENDER_WRITE},
     {"negative", "worker 1 asks to read memory, naming node 2 as its sender",
      "the memory goes to worker 1, not worker 2", SENDER_READ},
+    {"negative",
+     "worker 1 sends data naming node 2 as its sender, before a receive is "
+     "posted",
+     "once one is, the data lands and the completion goes to worker 1, not "
+     "worker 2",
+     SENDER_PENDING},
+    {"corner",
+     "worker 1 sends data before a receive is posted, and its connection is "
+     "retired before one is",
+     "the data lands, no completion is sent, and the connection is freed",
+     SENDER_PENDING_GONE},
+    {"corner",
+     "worker 1 sends data before a receive is posted, and none is before "
+     "teardown",
+     "teardown frees the data and drops its reference to worker 1's "
+     "connection, as well as the table's",
+     SENDER_TEARDOWN_KEPT},
+    {"corner",
+     "worker 1 sends data before a receive is posted, its connection is "
+     "retired, and no receive is posted before teardown",
+     "teardown frees the data and drops the connection's last reference but "
+     "the test's",
+     SENDER_TEARDOWN_RETIRED},
+    {"corner",
+     "an RDMA write waits for worker 1's completion, and a receive for data, "
+     "both mapped through a DMA memory region, at teardown",
+     "teardown unmaps each mapping once and frees both requests",
+     SENDER_TEARDOWN_QUEUED},
 };
 
 /* The memory region the RDMA rows write and read, at g_mr while they run */
@@ -4065,8 +4166,16 @@ static const struct sender_case sender_cases[] = {
 #define SENDER_LEN      8u
 #define SENDER_BYTE     0xab /* what the write writes */
 
+#define SENDER_QPN      12u    /* the QP the requests are addressed to */
+#define SENDER_DMA_KEY  0xd3au /* a DMA memory region's key */
+#define SENDER_DMA_ADDR UINT64_C(0x20000)
+
 static uint8_t g_sender_mem[SENDER_LEN];
 static RdmaRmMR g_sender_mr;
+static RdmaRmMR g_sender_dma_mr; /* starts at 0 with no length: DMA */
+static TcpCQ g_sender_cq;        /* the QP these rows add has to have one */
+/* A reference a teardown row keeps to worker 1's connection past tcp_fini() */
+static TcpConnection *g_sender_held;
 
 /* Set node id's liveness and the time of its last heartbeat. */
 static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
@@ -4119,7 +4228,7 @@ static bool send_rdma(int fd, TcpMsgType type, uint32_t src)
     hdr.seq = htonl(1);
     hdr.src_node_id = htonl(src);
     hdr.src_qpn = htonl(11);
-    hdr.dst_qpn = htonl(12);
+    hdr.dst_qpn = htonl(SENDER_QPN);
     memset(&op, 0, sizeof(op));
     op.remote_addr = SENDER_MR_START;
     op.rkey = SENDER_MR_RKEY;
@@ -4216,6 +4325,191 @@ static const char *sender_rdma(int w1, int w2, enum sender_scenario scenario)
     return NULL;
 }
 
+/* Send SENDER_LEN bytes of SENDER_BYTE as data for SENDER_QPN from node src */
+static bool send_data(int fd, uint32_t src)
+{
+    TcpMsgHeader hdr;
+    uint8_t buf[sizeof(hdr) + SENDER_LEN];
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr.msg_type = htonl(TCP_MSG_DATA);
+    hdr.msg_len = htonl(SENDER_LEN);
+    hdr.seq = htonl(1);
+    hdr.src_node_id = htonl(src);
+    hdr.src_qpn = htonl(11);
+    hdr.dst_qpn = htonl(SENDER_QPN);
+    memset(buf, SENDER_BYTE, sizeof(buf));
+    memcpy(buf, &hdr, sizeof(hdr));
+    return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
+}
+
+/*
+ * Add SENDER_QPN to the manager's QPs, connected to node remote, as
+ * tcp_create_qp() and an RTR would.
+ */
+static void sender_qp_add(TcpBackendPrivate *priv, uint32_t remote)
+{
+    TcpQP *tqp = g_new0(TcpQP, 1);
+
+    tqp->qpn = SENDER_QPN;
+    tqp->backend_dev = priv->backend_dev;
+    tqp->remote_node_id = remote;
+    tqp->scq = &g_sender_cq;
+    tqp->rcq = &g_sender_cq;
+    tqp->send_queue = g_queue_new();
+    tqp->recv_queue = g_queue_new();
+    tqp->pending_data = g_queue_new();
+    qemu_mutex_init(&tqp->lock);
+    qemu_mutex_lock(&priv->lock);
+    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(SENDER_QPN), tqp);
+    qemu_mutex_unlock(&priv->lock);
+}
+
+/*
+ * Take node id's connection out of the table and retire it, as the health
+ * check does with one that has hung up.
+ */
+static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
+{
+    TcpConnection *conn;
+    bool taken = false;
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(id));
+    if (conn)
+        taken = tcp_conn_table_take(priv, id, conn);
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    if (taken) {
+        tcp_retire_conn(conn);
+        tcp_connection_unref(conn);
+    }
+    return taken;
+}
+
+/* How many requests or buffers wait on each of SENDER_QPN's queues */
+static void sender_queued(TcpBackendPrivate *priv, guint *sends, guint *recvs,
+                          guint *pending)
+{
+    TcpQP *tqp;
+
+    qemu_mutex_lock(&priv->lock);
+    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(SENDER_QPN));
+    *sends = tqp ? g_queue_get_length(tqp->send_queue) : 0;
+    *recvs = tqp ? g_queue_get_length(tqp->recv_queue) : 0;
+    *pending = tqp ? g_queue_get_length(tqp->pending_data) : 0;
+    qemu_mutex_unlock(&priv->lock);
+}
+
+/*
+ * Have worker 1's data, naming node 2 as its sender, wait for a receive on
+ * SENDER_QPN.  The manager has finished with the data once it has answered a
+ * heartbeat sent after it.
+ */
+static const char *sender_buffer(TcpBackendPrivate *priv, int w1)
+{
+    guint sends, recvs, pending;
+
+    sender_qp_add(priv, 0);
+    if (!send_data(w1, 2))
+        return "could not send the data";
+    if (!worker_settled(w1, 1))
+        return "the data wasn't taken";
+    sender_queued(priv, &sends, &recvs, &pending);
+    return pending == 1 ? NULL : "the data isn't waiting for a receive";
+}
+
+/* SENDER_PENDING and SENDER_PENDING_GONE */
+static const char *sender_pending(TcpBackendPrivate *priv, int w1, int w2,
+                                  enum sender_scenario scenario)
+{
+    RdmaBackendQP qp;
+    struct ibv_sge sge;
+    const char *why = sender_buffer(priv, w1);
+
+    if (why)
+        return why;
+    if (scenario == SENDER_PENDING_GONE && !retire_node_conn(priv, 1))
+        return "worker 1's connection wasn't in the table";
+    count_type(w2, TCP_MSG_COMPLETION);
+
+    memset(&qp, 0, sizeof(qp));
+    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
+    memset(&sge, 0, sizeof(sge));
+    sge.addr = SENDER_MR_START;
+    sge.length = SENDER_LEN;
+    sge.lkey = SENDER_MR_RKEY;
+    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
+
+    for (uint32_t i = 0; i < SENDER_LEN; i++)
+        if (g_sender_mem[i] != SENDER_BYTE)
+            return "the data didn't land";
+    if (count_type(w2, TCP_MSG_COMPLETION) != 0)
+        return "the completion went to worker 2";
+    /* Sent before tcp_post_recv() returned, if at all */
+    if (scenario == SENDER_PENDING_GONE)
+        return count_type(w1, TCP_MSG_COMPLETION) == 0
+                   ? NULL
+                   : "a completion went out on a retired connection";
+    return wait_for_type(w1, TCP_MSG_COMPLETION, 2000)
+               ? NULL
+               : "the completion didn't come back to worker 1";
+}
+
+/*
+ * SENDER_TEARDOWN_KEPT and SENDER_TEARDOWN_RETIRED.  The row keeps a
+ * reference to worker 1's connection in g_sender_held, which must be the
+ * only one left once tcp_fini() has freed the waiting data.
+ */
+static const char *sender_teardown_pending(TcpBackendPrivate *priv, int w1,
+                                           enum sender_scenario scenario)
+{
+    const char *why = sender_buffer(priv, w1);
+
+    if (why)
+        return why;
+    g_sender_held = tcp_connection_lookup(priv, 1);
+    if (!g_sender_held)
+        return "worker 1 has no connection";
+    if (scenario == SENDER_TEARDOWN_RETIRED && !retire_node_conn(priv, 1))
+        return "worker 1's connection wasn't in the table";
+    return NULL;
+}
+
+/*
+ * SENDER_TEARDOWN_QUEUED.  A receive with no data waiting stays queued, and
+ * a request to worker 1, which never answers, waits on the send queue for
+ * its completion.  Each maps its one entry through the DMA region.  With no
+ * completion context the request's opcode is 0, PVRDMA_WR_RDMA_WRITE, so it
+ * goes out as an RDMA write.
+ */
+static const char *sender_teardown_queued(TcpBackendPrivate *priv, int w1)
+{
+    RdmaBackendQP qp;
+    struct ibv_sge sge;
+    guint sends, recvs, pending;
+
+    atomic_store(&g_mr, &g_sender_dma_mr);
+    sender_qp_add(priv, 1);
+    memset(&qp, 0, sizeof(qp));
+    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
+    memset(&sge, 0, sizeof(sge));
+    sge.addr = SENDER_DMA_ADDR;
+    sge.length = SENDER_LEN;
+    sge.lkey = SENDER_DMA_KEY;
+
+    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
+    tcp_post_send(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0,
+                  0, NULL);
+    if (!wait_for_type(w1, TCP_MSG_RDMA_WRITE, 2000))
+        return "the write didn't reach worker 1";
+    sender_queued(priv, &sends, &recvs, &pending);
+    if (sends != 1 || recvs != 1)
+        return "the write and the receive aren't both queued";
+    return atomic_load(&g_dma_maps) == 2 ? NULL
+                                         : "the requests weren't both mapped";
+}
+
 static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
                               enum sender_scenario scenario)
 {
@@ -4227,6 +4521,14 @@ static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
     case SENDER_WRITE:
     case SENDER_READ:
         return sender_rdma(w1, w2, scenario);
+    case SENDER_PENDING:
+    case SENDER_PENDING_GONE:
+        return sender_pending(priv, w1, w2, scenario);
+    case SENDER_TEARDOWN_KEPT:
+    case SENDER_TEARDOWN_RETIRED:
+        return sender_teardown_pending(priv, w1, scenario);
+    case SENDER_TEARDOWN_QUEUED:
+        return sender_teardown_queued(priv, w1);
     default:
         return "unknown scenario";
     }
@@ -4251,7 +4553,11 @@ static int run_sender_case(const struct sender_case *c)
     g_sender_mr.start = SENDER_MR_START;
     g_sender_mr.length = sizeof(g_sender_mem);
     g_sender_mr.rkey = SENDER_MR_RKEY;
+    memset(&g_sender_dma_mr, 0, sizeof(g_sender_dma_mr));
+    g_sender_dma_mr.rkey = SENDER_DMA_KEY;
     atomic_store(&g_mr, &g_sender_mr);
+    dma_reset();
+    g_sender_held = NULL;
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
     /* No backend threads exist yet, so nothing reads the environment */
@@ -4282,6 +4588,15 @@ static int run_sender_case(const struct sender_case *c)
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
                  atomic_load(&g_exits) != atomic_load(&g_creates)))
         why = "a thread wasn't joined exactly once";
+    if (!why && !dma_unmapped_once())
+        why = "a DMA mapping wasn't unmapped exactly once";
+    if (g_sender_held) {
+        if (!why && atomic_load(&g_sender_held->refcount) != 1)
+            why = "teardown left a reference to worker 1's connection";
+        /* Frees it; LeakSanitizer reports it, and the data, otherwise */
+        tcp_connection_unref(g_sender_held);
+        g_sender_held = NULL;
+    }
 
     ok = !why;
     printf("%s sender %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
@@ -4294,6 +4609,309 @@ static int run_sender_case(const struct sender_case *c)
         close(w1);
     if (w2 >= 0)
         close(w2);
+    return ok ? 0 : 1;
+}
+
+/* ---- Connection lifetime ---------------------------------------------- */
+
+/*
+ * A lookup used to return a bare pointer to a connection, and the health
+ * check's reconnect freed the node's old connection by replacing it in the
+ * table, so a thread that had looked it up went on to use freed memory.
+ * Connections are reference counted now: a lookup returns a reference, the
+ * table holds one, and a reconnect takes the old connection out of the table,
+ * retires it, and drops the table's, leaving it to the last holder to free.
+ *
+ * The reconnect rows run tcp_health_check_reconnect() on node 1 of an
+ * rc_fixture, at a listener that answers, while the test holds a reference
+ * to the old connection, or while another thread is blocked sending on it.
+ * The registration row has a pending connection register while teardown is
+ * stopping its receive thread.
+ */
+
+enum lt_scenario {
+    LT_HELD,   /* the test holds the old connection across the reconnect */
+    LT_SENDER, /* another thread is blocked sending on it */
+    LT_REGISTER_VS_STOP, /* a registration lands while the stop runs */
+};
+
+struct lt_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum lt_scenario scenario;
+};
+
+static const struct lt_case lt_cases[] = {
+    {"positive",
+     "a reconnect replaces a connection the test holds a reference to",
+     "the old connection is retired and out of the table, and stays readable "
+     "until the reference is dropped",
+     LT_HELD},
+    {"negative",
+     "a reconnect replaces a connection another thread is blocked sending on",
+     "the send fails with -EIO, nothing hangs, and the new connection is in "
+     "the table",
+     LT_SENDER},
+    {"corner",
+     "a pending connection registers while teardown stops its receive thread",
+     "it ends up in the connections table, not the pending list, and its "
+     "thread is joined once",
+     LT_REGISTER_VS_STOP},
+};
+
+/* What the blocked sender of LT_SENDER sends with, and gets back */
+struct lt_sender {
+    RdmaBackendDev dev;
+    pthread_t tid;
+    atomic_int rc;
+};
+
+static void *lt_send(void *opaque)
+{
+    static const uint8_t hdr[16];
+    struct lt_sender *sender = opaque;
+
+    atomic_store(&sender->rc, tcp_backend_send_ionic_v(&sender->dev, 1, hdr,
+                                                       sizeof(hdr), NULL, 0));
+    return NULL;
+}
+
+/*
+ * Reconnect to node 1 of fx, at lfd, and check the node has a new
+ * connection, other than old, in the table, which sent its handshake.
+ * *fresh gets the listener's end of it, for the caller to close.
+ */
+static const char *lt_reconnect(struct rc_fixture *fx, TcpConnection *old,
+                                int lfd, int *fresh)
+{
+    TcpHealthCheckItem item = {fx->node[0], NULL, true, false};
+    TcpConnection *in_table;
+    bool reconnected;
+
+    /* The scan's reference, released at the end of the pass */
+    item.conn = tcp_connection_lookup(fx->priv, 1);
+    fx->node[0]->last_heartbeat = time(NULL) - 4 * LONG_INTERVAL_S;
+    /* The connect gives up when this is cleared; no thread is started */
+    atomic_store(&fx->priv->health_check_running, true);
+    reconnected =
+        tcp_health_check_reconnect(fx->priv, &item, tcp_monotonic_ms() + 5000);
+    atomic_store(&fx->priv->health_check_running, false);
+    tcp_connection_unref(item.conn);
+
+    if (!reconnected)
+        return "the reconnect failed";
+    *fresh = accept_within(lfd);
+    if (*fresh < 0 || !recv_type(*fresh, TCP_MSG_HANDSHAKE, 5000))
+        return "the new connection sent no handshake";
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    in_table = g_hash_table_lookup(fx->priv->connections, GUINT_TO_POINTER(1));
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
+    return in_table && in_table != old ? NULL
+                                       : "the node has no new connection";
+}
+
+/* Whether conn is retired: closed, marked down, and its thread stopped. */
+static bool lt_retired(TcpConnection *conn)
+{
+    int fd;
+
+    qemu_mutex_lock(&conn->lock);
+    fd = conn->sockfd;
+    qemu_mutex_unlock(&conn->lock);
+    return fd == -1 && !atomic_load(&conn->is_connected) &&
+           !atomic_load(&conn->recv_thread_running);
+}
+
+/*
+ * LT_HELD and LT_SENDER.  The fixture's reference to the old connection is
+ * dropped first, so that the table's and the test's are the only ones, and
+ * a reconnect that freed the connection would leave the test reading freed
+ * memory, which ASan reports.
+ */
+static const char *lt_reconnect_run(enum lt_scenario scenario)
+{
+    struct rc_fixture fx;
+    struct sockaddr_in addr;
+    struct lt_sender sender;
+    socklen_t len = sizeof(addr);
+    TcpConnection *held = NULL;
+    const char *why;
+    int lfd = listen_loopback(), fresh = -1;
+    bool setup = false, sending = false;
+
+    memset(&sender, 0, sizeof(sender));
+    atomic_init(&sender.rc, 1);
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+        why = "could not open a listening socket";
+    } else {
+        why = rc_setup(&fx, ntohs(addr.sin_port), 1, LONG_INTERVAL_S);
+        setup = true;
+    }
+
+    if (!why) {
+        held = tcp_connection_lookup(fx.priv, 1);
+        tcp_connection_unref(fx.old[0]);
+        fx.old[0] = NULL;
+        if (!held)
+            why = "node 1 has no connection";
+    }
+    if (!why && scenario == LT_SENDER) {
+        sender.dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+        sender.dev.backend_private = fx.priv;
+        /*
+         * Node 1 has stopped reading, so the send waits for room, holding
+         * the connection's lock, and nothing else ever has it.
+         */
+        if (!fill_conn(fx.priv, 1))
+            why = "could not fill node 1's socket";
+        else if (pthread_create(&sender.tid, NULL, lt_send, &sender) != 0)
+            why = "could not start the sender";
+        else
+            sending = true;
+        if (sending && !held_elsewhere(&held->lock))
+            why = "the sender never blocked on node 1";
+    }
+    if (!why)
+        why = lt_reconnect(&fx, held, lfd, &fresh);
+    if (sending) {
+        pthread_join(sender.tid, NULL);
+        if (!why && atomic_load(&sender.rc) != -EIO)
+            why = "the blocked send didn't fail with -EIO";
+    }
+    if (!why && !lt_retired(held))
+        why = "the old connection wasn't retired";
+    if (!why && atomic_load(&g_joins) != 1)
+        why = "the old receive thread wasn't joined exactly once";
+
+    tcp_connection_unref(held);
+    if (setup)
+        rc_teardown(&fx);
+    if (fresh >= 0)
+        close(fresh);
+    if (lfd >= 0)
+        close(lfd);
+    return why;
+}
+
+/* Wait up to 5 s for the manager to have read everything sent on conn. */
+static bool lt_consumed(TcpConnection *conn)
+{
+    for (int i = 0; i < 500; i++) {
+        int unread = -1;
+
+        if (ioctl(conn->sockfd, FIONREAD, &unread) == 0 && unread == 0)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+static void *lt_stop(void *opaque)
+{
+    tcp_stop_recv_threads(opaque);
+    return NULL;
+}
+
+/*
+ * LT_REGISTER_VS_STOP.  The test holds mesh_table_lock, which registration
+ * needs, while the receive thread reads a REGISTER_NODE: once the message is
+ * read, the thread handles it whatever its stop flag says.  The stop then
+ * runs, on another thread, and claims the receive thread while the connection
+ * is still pending; only then is the lock let go, and the registration moves
+ * the connection while the stop waits to join its thread.  The health-check
+ * and accept threads are stopped first, as teardown stops them.
+ */
+static const char *lt_register_vs_stop(void)
+{
+    RdmaBackendDev dev;
+    TcpBackendPrivate *priv;
+    TcpConnection *conn = NULL, *in_table;
+    char config[64];
+    const char *why = NULL;
+    pthread_t stopper;
+    uint16_t port = free_port();
+    guint pending;
+    int fd = -1, joins;
+
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
+    if (port == 0 || tcp_init(&dev, config) != 0)
+        return "could not start a manager";
+    priv = dev.backend_private;
+    tcp_stop_health_check_thread(priv);
+    tcp_stop_accept_thread(priv);
+
+    fd = worker_attach(priv, &conn);
+    if (fd < 0) {
+        why = "could not attach the worker";
+        goto out;
+    }
+    joins = atomic_load(&g_joins);
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    if (!send_register(fd, "127.0.0.1", UINT32_MAX) || !lt_consumed(conn)) {
+        qemu_mutex_unlock(&priv->mesh_table_lock);
+        why = "the registration wasn't read";
+        goto out;
+    }
+    if (pthread_create(&stopper, NULL, lt_stop, priv) != 0) {
+        qemu_mutex_unlock(&priv->mesh_table_lock);
+        why = "could not start the stop";
+        goto out;
+    }
+    for (int i = 0; i < 500 && atomic_load(&conn->recv_thread_running); i++)
+        sleep_ms(10);
+    if (atomic_load(&conn->recv_thread_running))
+        why = "the stop never claimed the receive thread";
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    pthread_join(stopper, NULL);
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
+    pending = priv->pending_conns->len;
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    if (!why && in_table != conn)
+        why = "the connection isn't in the connections table";
+    else if (!why && pending != 0)
+        why = "the connection is still on the pending list";
+    else if (!why && atomic_load(&g_joins) - joins != 1)
+        why = "the receive thread wasn't joined exactly once";
+
+out:
+    /* Joins nothing more; ASan reports it if the connection is freed twice */
+    tcp_fini(&dev);
+    if (fd >= 0)
+        close(fd);
+    return why;
+}
+
+static int run_lt_case(const struct lt_case *c)
+{
+    const char *why;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    why = c->scenario == LT_REGISTER_VS_STOP ? lt_register_vs_stop()
+                                             : lt_reconnect_run(c->scenario);
+    alarm(0);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s lifetime %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
+               atomic_load(&g_creates), atomic_load(&g_joins),
+               atomic_load(&g_exits));
+    fflush(stdout);
     return ok ? 0 : 1;
 }
 
@@ -4331,6 +4949,8 @@ int main(void)
         failures += run_reap_case(&reap_cases[i]);
     for (size_t i = 0; i < sizeof(sender_cases) / sizeof(sender_cases[0]); i++)
         failures += run_sender_case(&sender_cases[i]);
+    for (size_t i = 0; i < sizeof(lt_cases) / sizeof(lt_cases[0]); i++)
+        failures += run_lt_case(&lt_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

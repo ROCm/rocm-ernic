@@ -581,6 +581,8 @@ static int recv_fixture_start(struct recv_fixture *f)
     memset(&f->conn, 0, sizeof(f->conn));
     f->conn.node_id = TEST_PEER_NODE;
     f->conn.sockfd = f->sv[0];
+    /* The fixture's own reference: a lookup's ref and unref can't free it */
+    atomic_init(&f->conn.refcount, 1);
     atomic_store(&f->conn.is_connected, true);
     atomic_store(&f->conn.recv_thread_running, true);
     f->conn.priv = &f->priv;
