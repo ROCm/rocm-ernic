@@ -524,35 +524,6 @@ target_link_directories(test_tcp_gid_resolve PRIVATE
 target_link_libraries(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP backend ionic hooks unit test. Compile the backend separately and
-# stub its externals; check that the hooks
-# leave a non-TCP backend's private block alone.
-add_executable(test_tcp_ionic_hooks test_tcp_ionic_hooks.c
-    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c)
-target_include_directories(test_tcp_ionic_hooks PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/shared
-)
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The backend source remains warning-checked.
-target_include_directories(test_tcp_ionic_hooks SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${VFIO_USER_INCLUDE_DIRS}
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_tcp_ionic_hooks PRIVATE
-    _GNU_SOURCE ERNIC_TCP_IONIC_TEST)
-target_compile_options(test_tcp_ionic_hooks PRIVATE
-    ${ERNIC_UNIT_TEST_SAN})
-target_link_options(test_tcp_ionic_hooks PRIVATE ${ERNIC_UNIT_TEST_SAN_LINK})
-target_link_directories(test_tcp_ionic_hooks PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_tcp_ionic_hooks PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
-
 # TCP memory-region bounds test. Like the mesh-topology test it #includes the
 # TCP backend translation unit to reach its static helpers and stubs the
 # backend's externals; the wire-driven cases run the real receive thread over
@@ -767,7 +738,6 @@ set(ERNIC_TEST_TARGETS
     test_ionic_rq_wrap
     test_tcp_mesh_topology
     test_tcp_gid_resolve
-    test_tcp_ionic_hooks
     test_tcp_mr_bounds
     ernic-test-tcp-thread-stop
     test_rdma_res_tbl
@@ -988,20 +958,13 @@ add_test(
 set_tests_properties(tcp-mesh-topology-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # TCP GID -> node resolution unit test: exact 16-byte matching, no-match
-# failure, and the zero-filled advertisement tail.
+# failure, the zero-filled advertisement tail, and the mesh entry points
+# leaving a non-TCP backend's private block alone.
 add_test(
     NAME tcp-gid-resolve-unit
     COMMAND $<TARGET_FILE:test_tcp_gid_resolve>
 )
 set_tests_properties(tcp-gid-resolve-unit PROPERTIES TIMEOUT 30)
-
-# TCP backend ionic hooks unit test: the receive-callback and send hooks
-# check the backend type before touching backend_private.
-add_test(
-    NAME tcp-ionic-hooks-unit
-    COMMAND $<TARGET_FILE:test_tcp_ionic_hooks>
-)
-set_tests_properties(tcp-ionic-hooks-unit PROPERTIES TIMEOUT 30)
 
 # TCP memory-region bounds unit test: asserts that remote addresses whose
 # addr+len wraps 64 bits are rejected rather than resolving to a host pointer

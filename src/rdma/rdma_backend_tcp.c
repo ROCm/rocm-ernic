@@ -13,10 +13,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#ifdef ERNIC_TCP_IONIC_TEST
-#include "tcp_ionic_test.h"
-#endif
-
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
@@ -6178,26 +6174,3 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
 
     return rc < 0 ? -EIO : 0;
 }
-
-#ifdef ERNIC_TCP_IONIC_TEST
-TcpBackendPrivate *tcp_ionic_test_new(void)
-{
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
-
-    qemu_mutex_init(&priv->lock);
-    priv->local_node_id = 1;
-    return priv;
-}
-
-bool tcp_ionic_test_matches(TcpBackendPrivate *priv, tcp_ionic_recv_fn fn,
-                            void *opaque)
-{
-    return priv->ionic_recv_fn == fn && priv->ionic_recv_opaque == opaque;
-}
-
-void tcp_ionic_test_free(TcpBackendPrivate *priv)
-{
-    qemu_mutex_destroy(&priv->lock);
-    g_free(priv);
-}
-#endif
