@@ -235,7 +235,10 @@ security takes priority over speed and convenience.
   its size, so padding added by a later edit fails the build.
 - **Keep the hardening flags.** Don't remove or weaken `_FORTIFY_SOURCE`
   ([`ErnicFortifySource.cmake`](cmake/ErnicFortifySource.cmake)),
-  `-fstack-protector-strong`, or `-fstack-clash-protection`, and ask before
+  `-fstack-protector-strong`, `-fstack-clash-protection`, or the linker
+  hardening in `ernic_set_linker_flags()`
+  ([`ErnicCompilerOptions.cmake`](cmake/ErnicCompilerOptions.cmake)): PIE,
+  full RELRO, and a non-executable stack. Ask before
   changing any compile or link options (see
   [Project direction](#project-direction)).
 - **Fix security scan findings.** CodeQL
