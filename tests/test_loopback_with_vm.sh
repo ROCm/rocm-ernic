@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Loopback backend testing with VM from Docker image
 # This script runs loopback backend tests using a VM extracted from a Docker image

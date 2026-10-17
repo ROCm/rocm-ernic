@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Test multiple loopback backend configurations.
 # Uses TEST_BIN for client test (default: test_rdma_cm). CI may set

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Comprehensive loopback backend testing for CI
 # Tests multiple loopback configurations by verifying server startup
