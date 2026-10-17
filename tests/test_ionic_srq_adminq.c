@@ -125,7 +125,6 @@ static uint32_t g_access;
 static uint32_t g_rq_psn;
 static uint32_t g_sq_psn;
 static int g_query_rc;
-static uint32_t g_queried_qpn;
 
 int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
@@ -133,7 +132,7 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint32_t *sq_psn)
 {
     (void)handle;
-    g_queried_qpn = qpn;
+    (void)qpn;
     if (g_query_rc)
         return g_query_rc;
     if (state)
@@ -303,18 +302,12 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
     (void)dp;
     (void)lkey;
 }
-/* What MODIFY_QP handed the datapath as this QP's Q_Key. */
-static uint32_t g_qkey_qp_id;
-static uint32_t g_qkey;
-static uint32_t g_qkey_calls;
-
 void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t qkey)
 {
     (void)dp;
-    g_qkey_qp_id = qp_id;
-    g_qkey = qkey;
-    g_qkey_calls++;
+    (void)qp_id;
+    (void)qkey;
 }
 
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
@@ -471,9 +464,6 @@ static void ctx_reset(void)
     g_modify_calls = 0;
     g_bind_calls = 0;
     g_qp_alloc_calls = 0;
-    g_qkey_calls = 0;
-    g_qkey = 0;
-    g_qkey_qp_id = 0;
     g_bound_srq_id = 0;
     g_registered_srq_id = 0;
     g_unregistered_srq_id = 0;
