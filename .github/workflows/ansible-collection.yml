@@ -88,8 +88,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Pinned because new releases add rules, and with --strict a
+      # new rule would fail every PR that touches ansible/ until
+      # someone fixes the findings. Bump it deliberately, in a
+      # change that fixes whatever the new version reports.
       - name: Install ansible-lint
-        run: python3 -m pip install ansible-lint
+        run: python3 -m pip install ansible-lint==26.10.1
 
       # galaxy.ansible.com returns 504 often enough to redden a PR
       # that changed nothing it touches, and only a repo admin can
@@ -108,9 +112,12 @@ jobs:
           echo "::error::galaxy install failed after 3 attempts"
           exit 1
 
+      # --strict fails on warnings as well as errors. A rule that
+      # can't be met belongs in skip_list in .ansible-lint, with
+      # the reason, not on its warn_list.
       - name: Run ansible-lint
         working-directory: ansible
-        run: ansible-lint
+        run: ansible-lint --strict
 
   build:
     name: Build collection artifact

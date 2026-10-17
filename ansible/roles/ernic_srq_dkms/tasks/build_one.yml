@@ -64,7 +64,7 @@
 # for the verb implementation rather than the string "srq": IONIC_QPT_SRQ and
 # the IB_USER_VERBS_CMD_*_SRQ command bits are present in the protocol header
 # even in trees with no SRQ support, so a bare grep matches both.
-- name: "Confirm {{ ernic_srq_src.ref[:12] }} actually carries SRQ support"
+- name: "Confirm the ref carries SRQ support ({{ ernic_srq_src.ref[:12] }})"
   become: true
   when: not (ernic_srq_dkms_fetch_on_controller | bool)
   ansible.builtin.command:
@@ -75,7 +75,7 @@
   changed_when: false
   failed_when: false
 
-- name: "Fail when {{ ernic_srq_src.ref[:12] }} has no SRQ support"
+- name: "Fail when the ref has no SRQ support ({{ ernic_srq_src.ref[:12] }})"
   when:
     - not (ernic_srq_dkms_fetch_on_controller | bool)
     - ernic_srq_dkms_require_srq | bool
