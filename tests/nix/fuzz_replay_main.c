@@ -79,7 +79,7 @@ static void run_one(const uint8_t *data, size_t size)
 
 static int replay_file(const char *path)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen(path, "rbe");
 
     if (!f) {
         fprintf(stderr, "fuzz-replay: cannot open %s\n", path);

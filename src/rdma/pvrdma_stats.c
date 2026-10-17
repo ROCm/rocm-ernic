@@ -12,9 +12,11 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <glib.h>
 
 #include "vmw/pvrdma.h"
@@ -46,6 +48,7 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     GHashTableIter iter;
     gpointer key, value;
     FILE *fp;
+    int fd;
     const char *opcode_names[] = {"RDMA_WRITE",
                                   "RDMA_WRITE_WITH_IMM",
                                   "SEND",
@@ -74,10 +77,24 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
         return;
     }
 
-    fp = fopen(dev->stats.stats_file, "w");
+    /* open() rather than fopen(), which would create the file with mode 0666
+     * less the umask.  With _FORTIFY_SOURCE, glibc 2.40 and later give Clang
+     * an open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
+    fd = open(dev->stats.stats_file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+              0644);
+    /* NOLINTEND(android-cloexec-open) */
+    if (fd < 0) {
+        rdma_error_report("Failed to open stats file %s: %s",
+                          dev->stats.stats_file, strerror(errno));
+        return;
+    }
+    fp = fdopen(fd, "w");
     if (!fp) {
         rdma_error_report("Failed to open stats file %s: %s",
                           dev->stats.stats_file, strerror(errno));
+        close(fd);
         return;
     }
 

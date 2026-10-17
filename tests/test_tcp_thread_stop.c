@@ -3864,7 +3864,7 @@ static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
     for (int attempt = 0; attempt < 5 && fd < 0; attempt++) {
         setrlimit(RLIMIT_NOFILE, &old);
         /* Every descriptor below the lowest free one is open */
-        lowest = open("/dev/null", O_RDONLY);
+        lowest = open("/dev/null", O_RDONLY | O_CLOEXEC);
         if (lowest < 0)
             return "could not open /dev/null";
         low = old;

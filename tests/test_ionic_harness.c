@@ -992,7 +992,7 @@ static void test_cq_events(void)
         pvrdma_inc_stats_reset_count(ph);
         pvrdma_write_stats(ph);
 
-        FILE *fp = fopen(path, "r");
+        FILE *fp = fopen(path, "re");
         char text[16384] = "";
         if (check(T, fp != NULL, "no stats file")) {
             size_t n = fread(text, 1, sizeof(text) - 1, fp);

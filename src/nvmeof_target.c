@@ -355,7 +355,12 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
             set_err(err, errlen, "out of memory");
             goto fail;
         }
+        /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+         * open(path, flags, mode) overload, and android-cloexec-open looks
+         * for O_CLOEXEC in its mode */
+        /* NOLINTBEGIN(android-cloexec-open) */
         t->ns_fd = open(t->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        /* NOLINTEND(android-cloexec-open) */
         if (t->ns_fd < 0) {
             set_err(err, errlen, "cannot open %s: %s", t->cfg.file,
                     strerror(errno));

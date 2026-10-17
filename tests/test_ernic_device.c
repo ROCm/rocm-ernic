@@ -42,8 +42,14 @@ static int write_attr(const char *attribute, unsigned int value)
     if (length < 0 || (size_t)length >= sizeof(path))
         return 0;
 
-    /* open() rather than fopen() so the fixture never depends on umask. */
-    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    /* open() rather than fopen() so the fixture never depends on umask.
+     * With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
+    fd =
+        open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    /* NOLINTEND(android-cloexec-open) */
     if (fd < 0)
         return 0;
     file = fdopen(fd, "w");

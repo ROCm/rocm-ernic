@@ -56,9 +56,6 @@ Checks:
   # and delete the check's line here, or move it to a "Not wanted"
   # section with a reason. The count is the number of places clang-tidy
   # 23 reports in the Debug and Release builds together.
-  - -android-cloexec-fopen  # TODO(5)
-  - -android-cloexec-open  # TODO(8)
-  - -android-cloexec-pipe  # TODO(3)
   - -bugprone-assignment-in-if-condition  # TODO(8)
   - -bugprone-branch-clone  # TODO(1)
   - -bugprone-easily-swappable-parameters  # TODO(252)
