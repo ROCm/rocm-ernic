@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts
+# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts, and
+# actionlint, which runs ShellCheck on the workflows' run: blocks
 name: rocm-ernic - ShellCheck
 
 on:
@@ -12,7 +13,8 @@ on:
       - '**.sh'
       - '**.sh.in'
       - 'service/**'
-      - '.github/workflows/shellcheck.yml'
+      - '.github/workflows/**'
+      - '.github/actionlint.yaml'
   workflow_dispatch:
 
 permissions:
@@ -46,3 +48,29 @@ jobs:
           version: v0.11.0
           ignore_paths: third-party
           additional_files: .sh.in
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # actionlint runs the first shellcheck on PATH, so install the same
+      # ShellCheck as the job above rather than use the runner's older one.
+      # Both are pinned because new releases add checks.
+      - name: Install actionlint and ShellCheck
+        run: python3 -m pip install actionlint-py==1.7.12.25 shellcheck-py==0.11.0.1
+
+      # Reads .github/actionlint.yaml for the self-hosted runner labels.
+      - name: Run actionlint
+        run: |
+          shellcheck --version
+          actionlint -shellcheck "$(command -v shellcheck)"

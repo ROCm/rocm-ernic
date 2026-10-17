@@ -442,22 +442,26 @@ bash scripts must be shellcheck-clean.
   `# shellcheck disable=SCnnnn` and a comment saying why. The known case is
   a cleanup function run only by `trap` in a script that ends in `exit`:
   ShellCheck 0.11 then reports it as never invoked (SC2329).
-- **The shell in workflow `run:` blocks must be clean too**, and the
-  ShellCheck workflow doesn't look at it. Check it with
-  [actionlint](https://github.com/rhysd/actionlint)
-  (`pip install actionlint-py`), which runs shellcheck on each `run:`
-  block:
+- **[actionlint](https://github.com/rhysd/actionlint)** over the
+  workflows (`pip install actionlint-py`). It also runs ShellCheck on each
+  `run:` block, with every check on, so the shell there must be as clean
+  as in a script:
 
   ```bash
-  actionlint -ignore 'label ".+" is unknown'
+  actionlint
   ```
 
-  The `-ignore` drops the reports about the self-hosted runners' custom
-  labels. The existing workflows aren't clean yet, so check the blocks you
-  add or change. actionlint doesn't read the composite actions in
-  `.github/actions/`, and neither tool sees the bodies of heredocs, such
-  as the scripts the system tests run inside guest VMs; hold those to the
-  same standard by hand. Nothing in CI runs actionlint.
+  It reads its configuration from
+  [`.github/actionlint.yaml`](.github/actionlint.yaml): the self-hosted
+  runners' labels, and an ignore for the `$/` form of `uses:`, which
+  actionlint doesn't support yet. It checks every `run:` block as bash,
+  but GitHub runs a step with no `shell:` in a job with a `container:`
+  under `sh`, so keep those blocks POSIX or give the step `shell: bash`.
+  actionlint doesn't
+  read the composite actions in `.github/actions/`, and neither tool sees
+  the bodies of heredocs, such as the scripts the system tests run inside
+  guest VMs; hold those to the same standard by hand. CI: the actionlint
+  job in [shellcheck.yml](.github/workflows/shellcheck.yml).
 
 ### CMake
 

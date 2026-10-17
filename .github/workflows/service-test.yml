@@ -201,7 +201,7 @@ jobs:
 
         echo ""
         echo "=== ionic driver files ==="
-        ls "${PREFIX}/share/rocm-ernic/patches/" | head -20
+        ls "${PREFIX}/share/rocm-ernic/patches/"
         if ls "${PREFIX}/share/rocm-ernic/patches/"*.patch \
           > /dev/null 2>&1; then
           echo "OK: ionic driver patches installed"
@@ -238,6 +238,9 @@ jobs:
     - name: Test MAC generation
       run: |
         echo "=== Testing MAC generation ==="
+        # This and the next step source single functions cut out of the
+        # launcher, which the ShellCheck workflow checks as a whole.
+        # shellcheck source=/dev/null
         source <(sed -n '/^gen_mac_deterministic()/,/^}/p' \
           service/rocm-ernic-launcher)
 
@@ -284,8 +287,10 @@ jobs:
     - name: Test guest GID derivation
       run: |
         echo "=== Testing guest RoCE GID derivation ==="
+        # shellcheck source=/dev/null
         source <(sed -n '/^gen_linklocal_from_mac()/,/^}/p' \
           service/rocm-ernic-launcher)
+        # shellcheck source=/dev/null
         source <(sed -n '/^get_gids_for_instance()/,/^}/p' \
           service/rocm-ernic-launcher)
 
