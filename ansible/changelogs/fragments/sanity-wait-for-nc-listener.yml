@@ -1,0 +1,14 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``sanity-tests.yml`` waits for the netcat listener on the first guest
+    to be listening on port 9999 before the second guest connects, instead
+    of sleeping for a second.  ``systemd-run`` returns once the unit has
+    started, which can be before ``nc`` is listening, so a loaded host
+    could fail the TCP test with a refused connection.  When the TCP test
+    fails, the play now shows the client's exit status and error output
+    and the listener unit's status, which it previously discarded.
