@@ -127,7 +127,7 @@ static int listen_ephemeral(uint16_t *port)
 /* Read the whole log (bounded) into a NUL-terminated heap buffer. */
 static char *read_log(const char *path)
 {
-    FILE *f = fopen(path, "r");
+    FILE *f = fopen(path, "re");
     char *buf;
     size_t n;
 
@@ -475,7 +475,13 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
     pid_t pid = fork();
 
     if (pid == 0) {
-        int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        /* dup2() clears close-on-exec on the copies, so the server still
+         * inherits stdout and stderr.  With _FORTIFY_SOURCE, glibc 2.40 and
+         * later give Clang an open(path, flags, mode) overload, and
+         * android-cloexec-open looks for O_CLOEXEC in its mode */
+        /* NOLINTBEGIN(android-cloexec-open) */
+        int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        /* NOLINTEND(android-cloexec-open) */
 
         if (fd < 0)
             _exit(126);

@@ -26,6 +26,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <poll.h>
@@ -198,7 +199,7 @@ static void test_poll_sub_millisecond(void)
     int64_t elapsed;
     int rc;
 
-    if (pipe(fds) != 0) {
+    if (pipe2(fds, O_CLOEXEC) != 0) {
         fail("pipe failed", 0, 0);
         return;
     }
@@ -230,7 +231,7 @@ static void test_poll_negative_waits(void)
     int fds[2];
     int rc;
 
-    if (pipe(fds) != 0) {
+    if (pipe2(fds, O_CLOEXEC) != 0) {
         fail("pipe failed", 0, 0);
         return;
     }
@@ -277,7 +278,7 @@ static void test_poll_huge_timeouts(void)
     int fds[2];
     int rc;
 
-    if (pipe(fds) != 0) {
+    if (pipe2(fds, O_CLOEXEC) != 0) {
         fail("pipe failed", 0, 0);
         return;
     }

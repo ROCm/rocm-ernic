@@ -1174,7 +1174,14 @@ int main(int argc, char *argv[])
 
     /* Redirect stdout and stderr to log file if requested */
     if (log_file_path) {
-        int fd = open(log_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        /* dup2() clears close-on-exec on the copies, so stdout and stderr
+         * are still inherited.  With _FORTIFY_SOURCE, glibc 2.40 and later
+         * give Clang an open(path, flags, mode) overload, and
+         * android-cloexec-open looks for O_CLOEXEC in its mode */
+        /* NOLINTBEGIN(android-cloexec-open) */
+        int fd =
+            open(log_file_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        /* NOLINTEND(android-cloexec-open) */
         if (fd < 0) {
             err(EXIT_FAILURE, "Failed to open log file: %s", log_file_path);
         }

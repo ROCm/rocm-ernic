@@ -61,7 +61,7 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
                  suffix) >= (int)sizeof(path))
         return 0;
 
-    attr = fopen(path, "r");
+    attr = fopen(path, "re");
     if (!attr)
         return 0;
     fields = fscanf(attr, "%x", value);

@@ -167,6 +167,9 @@
   field exactly, so their lines came out as `NAME: 4` and were dropped by the
   parser. The exporter also no longer attributes a device-level key that
   appears after the per-QP block to the last QP it saw.
+* The `--stats-file` file is created with mode `0644`, less the umask, like the
+  `--log-file` file. It was created with `0666`, so under a permissive umask
+  any local user could rewrite the counters `ernic-exporter` reports.
 
 * MSI-X assertions raised while a vector is masked are latched and replayed
   when the driver unmasks, instead of being dropped. Every vector comes out of
