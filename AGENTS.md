@@ -522,7 +522,9 @@ as `tomllib`, `except*`, or `typing.Self` (all 3.11).
   `ansible/`. [ansible-collection.yml](.github/workflows/ansible-collection.yml)
   has the exact commands, including installing the collection's
   requirements first. CI runs them when something under `ansible/`
-  changes.
+  changes. ansible-lint runs with `--strict`, so a warning fails it too,
+  and its version is pinned in the workflow; lint with that version, since
+  older ones report problems that it doesn't and miss ones that it does.
 
 ## Vendored code
 

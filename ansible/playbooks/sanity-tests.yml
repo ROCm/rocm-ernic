@@ -82,7 +82,7 @@
     # TCP/IP sanity test (ping)
     # ─────────────────────────────────────────────────
     - name: "TCP/IP test: ping VM2 from VM1"
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }}
           'ping -c 5 -W 5 {{ vm2_ip }}'
@@ -95,7 +95,7 @@
         var: ping_v1_to_v2.stdout_lines
 
     - name: "TCP/IP test: ping VM1 from VM2"
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm2_ssh }}
           'ping -c 5 -W 5 {{ vm1_ip }}'
@@ -158,7 +158,7 @@
       ignore_errors: true
 
     - name: "TCP test: connect from VM2 and read"
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm2_ssh }}
           'timeout 30
@@ -255,7 +255,7 @@
       failed_when: false
 
     - name: Collect ib_send_bw server log
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }} 'cat /tmp/ib_send_bw_server.log'
       register: ib_send_bw_server_log
@@ -313,7 +313,7 @@
       failed_when: false
 
     - name: Collect ibv_rc_pingpong server log
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }} 'cat /tmp/ibv_rc_pingpong_server.log'
       register: ibv_rc_pingpong_server_log
@@ -434,7 +434,7 @@
     # systemd keeps it after the unit finishes; wait for the unit to leave
     # 'running' first, or ExecMainStatus is still 0 from a live process.
     - name: "UD mesh test: wait for the server unit to finish"
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }}
           'systemctl show -p SubState --value ud-mesh-server'
@@ -446,7 +446,7 @@
       failed_when: false
 
     - name: "UD mesh test: collect the server exit status"
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }}
           'systemctl show -p ExecMainStatus --value ud-mesh-server'
@@ -455,7 +455,7 @@
       failed_when: false
 
     - name: Collect UD mesh server log
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }} 'cat /tmp/ud_mesh_server.log'
       register: ud_mesh_server_log

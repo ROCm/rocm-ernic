@@ -83,11 +83,15 @@
 # unarchive with a controller-side src, rather than synchronize: rsync need
 # not be installed in a guest, and the port-forwarded ssh these guests use
 # suits it poorly.
+#
+# ansible-lint takes any tar for an extraction and suggests unarchive, which
+# can't create an archive. community.general.archive can, but has no creates
+# and builds the archive in Python, which is far slower over a kernel tree.
 - name: "Archive the patched tree on the controller
     ({{ ernic_srq_src.ref[:12] }})"
   delegate_to: localhost
   become: false
-  ansible.builtin.command:
+  ansible.builtin.command: # noqa: command-instead-of-module
     cmd: >-
       tar -C {{ ernic_srq_ctl_dir | dirname }}
       --exclude=.git

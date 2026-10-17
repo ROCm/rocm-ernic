@@ -7,5 +7,5 @@
 # at startup, and daemon-reload does not re-read it.
 - name: Re-execute systemd
   become: true
-  ansible.builtin.command: systemctl daemon-reexec
-  changed_when: true
+  ansible.builtin.systemd_service:
+    daemon_reexec: true

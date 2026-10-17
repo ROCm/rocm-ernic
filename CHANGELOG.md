@@ -149,6 +149,10 @@
   from another sanitizer build, or the static one. It defaults to what the
   compiler does on its own, `ON` with GCC and `OFF` with Clang. With Clang
   and `ON`, the programs get an RPATH to the runtime's directory.
+* The Ansible Collection workflow runs ansible-lint 26.10.1 with `--strict`,
+  so an ansible-lint warning now fails CI as well as an error. A rule the
+  code can't meet goes in `skip_list` in `ansible/.ansible-lint`, with the
+  reason.
 
 ### Removed
 
