@@ -51,7 +51,7 @@ declare -a BAD_CONFIGS=(
 declare -a PASSED=()
 declare -a FAILED=()
 
-# shellcheck disable=SC2317  # Called via trap
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
     local pid="${SERVER_PID:-}"
     if [ -n "$pid" ]; then

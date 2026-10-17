@@ -23,9 +23,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
 PKG_NAME="ionic-ernic"
 SOURCE_DIR=""
 KERNEL_REF=""

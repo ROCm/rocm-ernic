@@ -30,6 +30,7 @@ declare -a CONFIGS=(
 )
 
 # Cleanup function
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
     local pid="${SERVER_PID:-}"
     if [ -n "$pid" ]; then

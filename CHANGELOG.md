@@ -153,6 +153,11 @@
   so an ansible-lint warning now fails CI as well as an error. A rule the
   code can't meet goes in `skip_list` in `ansible/.ansible-lint`, with the
   reason.
+* The ShellCheck workflow and the service test's ShellCheck step no longer
+  exclude any checks, so findings such as an unquoted variable expansion
+  (SC2086), an unused variable (SC2034), or a `cd` without `|| exit` (SC2164)
+  now fail CI. Suppress one only on the command it's about, with a comment
+  saying why.
 
 ### Removed
 

@@ -37,13 +37,11 @@ jobs:
       # new scripts are picked up without editing this file. *.sh.in
       # templates match neither rule and are added explicitly.
       #
-      # The ShellCheck version is pinned because new releases add and split
-      # checks: 0.11.0 moved "function only invoked via trap" out of SC2317
-      # into the new SC2329, which is why both are excluded below.
+      # Every check is on. The ShellCheck version is pinned because new
+      # releases add and split checks: 0.11.0 moved "function only invoked
+      # via trap" out of SC2317 into the new SC2329.
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
-        env:
-          SHELLCHECK_OPTS: -e SC2024,SC2034,SC2086,SC2154,SC2164,SC2181,SC2317,SC2329
         with:
           version: v0.11.0
           ignore_paths: third-party

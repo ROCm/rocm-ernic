@@ -15,6 +15,7 @@ SOCKET_PATH="/tmp/vfio-user-rocm-ernic-test-$$.sock"
 SERVER_LOG="/tmp/vfio-user-rocm-ernic-server-$$.log"
 
 # Cleanup function
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
     local exit_code=$?
     
@@ -24,15 +25,15 @@ cleanup() {
     # Kill server if running
     if [ -n "$SERVER_PID" ]; then
         echo "Stopping server (PID $SERVER_PID)..."
-        kill $SERVER_PID 2>/dev/null || true
-        wait $SERVER_PID 2>/dev/null || true
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
     fi
     
     # Remove socket and log
     rm -f "$SOCKET_PATH" "$SERVER_LOG"
     
     echo "Cleanup complete"
-    exit $exit_code
+    exit "$exit_code"
 }
 
 # Set up cleanup trap
