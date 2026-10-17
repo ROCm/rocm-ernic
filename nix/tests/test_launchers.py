@@ -139,6 +139,129 @@ class LauncherTests(unittest.TestCase):
                     self.assert_reaped(root)
                     self.assertFalse(list(root.glob("ernic-run-*")))
 
+    def test_server_options(self):
+        """Forward values verbatim and retain repeat order and the CMD boundary."""
+        cases = [
+            (
+                "positive: every server option",
+                [
+                    "--backend",
+                    "loopback",
+                    "--mac",
+                    "72:6f:63:6d:00:01",
+                    "--stats-file",
+                    "stats file.json",
+                    "--log-file",
+                    "log file.txt",
+                    "--tap",
+                    "tap0",
+                    "--nic-profile",
+                    "profile.ini",
+                    "--inject",
+                    "stats=fail:1/2",
+                    "--stats-interval-ms",
+                    "0",
+                    "--eth-queues",
+                    "64",
+                ],
+                [],
+                "ok",
+                0,
+            ),
+            (
+                "corner: repeated layered options",
+                [
+                    "--nic-profile",
+                    "first.ini",
+                    "--inject",
+                    "first rule",
+                    "--nic-profile",
+                    "second.ini",
+                    "--inject",
+                    "second rule",
+                ],
+                [],
+                "ok",
+                0,
+            ),
+            (
+                "corner: shell metacharacters are data",
+                [
+                    "--stats-file",
+                    "a * ? [x] $HOME `echo x` ; file",
+                    "--nic-profile",
+                    'quote" and back\\slash',
+                ],
+                ["--inject", "command-only", "*", ""],
+                "ok",
+                0,
+            ),
+            ("boundary: empty option value", ["--stats-file", ""], [], "ok", 0),
+            (
+                "negative: server rejects option",
+                ["--nic-profile", "unsupported.ini"],
+                [],
+                "early",
+                1,
+            ),
+        ]
+        for description, options, command_args, server, expected in cases:
+            with self.subTest(description=description, expected=expected):
+                with tempfile.TemporaryDirectory() as scratch:
+                    root = Path(scratch)
+                    socket = str(root / "socket path")
+                    argv = self.argv()
+                    argv[1:1] = ["--socket", socket, *options]
+                    result = subprocess.run(
+                        [*argv, *command_args],
+                        env=self.env(root, server),
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    self.assertEqual(
+                        json.loads((root / "server.json").read_text()),
+                        ["--socket", socket, *options],
+                    )
+                    if server == "early":
+                        self.assertFalse((root / "command.pid").exists())
+                    else:
+                        self.assertEqual(
+                            json.loads((root / "command.json").read_text()),
+                            command_args,
+                        )
+                        self.assertEqual((root / "socket.txt").read_text(), socket)
+                    self.assert_reaped(root)
+                    self.assertFalse(Path(socket).exists())
+
+    def test_missing_option_values(self):
+        """Missing values fail before starting a server or creating a directory."""
+        for option in [
+            "--socket",
+            "--backend",
+            "--mac",
+            "--stats-file",
+            "--log-file",
+            "--tap",
+            "--nic-profile",
+            "--inject",
+            "--stats-interval-ms",
+            "--eth-queues",
+        ]:
+            with self.subTest(description=option, expected=2):
+                with tempfile.TemporaryDirectory() as scratch:
+                    root = Path(scratch)
+                    result = subprocess.run(
+                        [os.environ["ERNIC_TEST_RUNNER"], option],
+                        env=self.env(root),
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertFalse(list(root.iterdir()))
+
     def test_device_json(self):
         """Generated argv must preserve runtime path characters in JSON."""
         options = json.loads(

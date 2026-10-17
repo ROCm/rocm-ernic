@@ -375,3 +375,8 @@ console input, and bounded cleanup of both guests after TERM or peer exit.
 `--ssh-port` accepts decimal values from 1 through 65534; its second port
 is always the normalized value plus one. Both guest process groups have
 bounded cleanup, and the test launcher fails promptly if either guest fails.
+
+The launcher check also verifies exact server-option argv, repeated profile
+and fault ordering, literal whitespace/globs/quotes, empty values, command
+arguments after `--`, missing values, and server rejection before command
+startup. Expected return codes and descriptions are recorded in each row.
