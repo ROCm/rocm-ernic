@@ -366,3 +366,12 @@ The launcher preserves command exit codes, stops a waiting command when
 its server dies, and gives owned process groups ten seconds to stop before
 using KILL. Caller-owned paths are preserved on rejected startup; temporary
 socket directories created by the launcher are removed when empty.
+
+`nix build .#checks.x86_64-linux.pair-launchers --no-link -L` checks the
+paired-guest supervisor with controlled VM processes. Its tables cover
+positive, negative, boundary and corner cases, with descriptions and
+expected outcomes: decimal ports (including leading zeros), guest failure,
+console input, and bounded cleanup of both guests after TERM or peer exit.
+`--ssh-port` accepts decimal values from 1 through 65534; its second port
+is always the normalized value plus one. Both guest process groups have
+bounded cleanup, and the test launcher fails promptly if either guest fails.
