@@ -158,6 +158,10 @@
   (SC2086), an unused variable (SC2034), or a `cd` without `|| exit` (SC2164)
   now fail CI. Suppress one only on the command it's about, with a comment
   saying why.
+* The ShellCheck workflow also runs actionlint 1.7.12 over the workflows,
+  which checks the shell in their `run:` blocks with ShellCheck 0.11.0 and
+  every check on. The self-hosted runner labels it needs are in the new
+  `.github/actionlint.yaml`.
 
 ### Removed
 

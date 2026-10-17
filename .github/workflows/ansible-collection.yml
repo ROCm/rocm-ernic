@@ -256,4 +256,4 @@ jobs:
         run: >-
           ansible-galaxy collection publish
           --api-key "${{ secrets.GALAXY_API_KEY }}"
-          *.tar.gz
+          ./*.tar.gz

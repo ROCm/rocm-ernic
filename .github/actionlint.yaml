@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# actionlint configuration (https://github.com/rhysd/actionlint).
+
+self-hosted-runner:
+  # The custom labels ci/runner/register-runner.sh gives the self-hosted
+  # runners, which actionlint would otherwise report as unknown.
+  labels:
+    - rocm-ernic
+    - kvm

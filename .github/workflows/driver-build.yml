@@ -120,7 +120,7 @@ jobs:
         # catches a patch that applied as an empty commit, or a series whose
         # order was changed by a renumbering.
         PATCHES="${{ matrix.patches }}"
-        want=$(ls "$PATCHES"/*.patch 2>/dev/null | wc -l)
+        want=$(find "$PATCHES" -maxdepth 1 -name '*.patch' | wc -l)
         if [ "$want" -eq 0 ]; then
           echo "::error::no patches found in $PATCHES"
           exit 1
@@ -136,7 +136,7 @@ jobs:
 
         git -C "$SRC" log --format=%s "HEAD~${want}..HEAD" > /tmp/applied-subjects
         rc=0
-        for p in $(ls "$PATCHES"/*.patch | sort); do
+        for p in "$PATCHES"/*.patch; do
           # Unwrap a folded Subject: header, then strip the [PATCH nn/nn] tag
           # that git-format-patch puts there and git-am strips on the way in.
           # The trailing-space strip is not cosmetic: unfolding consumes the
@@ -206,6 +206,7 @@ jobs:
 
         # The base is recorded in the README rather than a separate pin file:
         # one SHA, in the document that explains why it is that SHA.
+        # shellcheck disable=SC2016  # the backticks are literal Markdown
         BASE=$(sed -n 's/^## The base: `\([0-9a-f]\{40\}\)`.*/\1/p' \
                "$PATCHES/README.md" | head -1)
         if [ -z "$BASE" ]; then
@@ -245,7 +246,7 @@ jobs:
           https://github.com/linux-rdma/rdma-core.git /tmp/rdma-core
         git -C /tmp/rdma-core checkout -q "$BASE"
 
-        for p in $(ls "$PATCHES"/*.patch | sort); do
+        for p in "$PATCHES"/*.patch; do
           echo "  applying: $p"
           git -C /tmp/rdma-core am --whitespace=fix "$(pwd)/$p" || {
             echo "::error file=$p::does not apply to $BASE -- has #1799 been"
