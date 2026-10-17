@@ -20,6 +20,13 @@ include(ErnicClangTidy)
 
 set(ERNIC_VENDORED_DIR "${PROJECT_SOURCE_DIR}/third-party")
 
+# Off by default so a downstream or distro build is never broken by a
+# warning from a compiler version we have not seen. CI's build jobs turn
+# it on, so new warnings still fail the build there.
+option(ERNIC_WERROR
+  "Treat compiler warnings as errors for project code"
+  OFF)
+
 # Linker hardening, following the OpenSSF Compiler Options Hardening Guide
 # for C and C++. Some distributions' compilers pass some of these by
 # default (Ubuntu's GCC passes all but --no-copy-dt-needed-entries, which
@@ -88,7 +95,8 @@ endfunction()
 
 # Apply compiler warning and hardening flags to ``target``
 # based on the compiler (GCC or Clang) used for each source,
-# along with the linker hardening flags.
+# along with the linker hardening flags, and -Werror if
+# ERNIC_WERROR is on.
 function(ernic_set_compiler_flags target)
     get_target_property(sources ${target} SOURCES)
     foreach(source IN LISTS sources)
@@ -112,6 +120,10 @@ function(ernic_set_compiler_flags target)
         target_compile_options(${target} PRIVATE
           $<$<COMPILE_LANG_AND_ID:${language},${compiler_id}>:${compiler_flags}>)
     endforeach()
+
+    if(ERNIC_WERROR)
+        target_compile_options(${target} PRIVATE -Werror)
+    endif()
 
     ernic_set_linker_flags(${target})
 
