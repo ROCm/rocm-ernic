@@ -415,6 +415,13 @@ them and where their configuration files are picked up.
 
 bash scripts must be shellcheck-clean.
 
+- **Start a script that runs from the source tree with
+  `#!/usr/bin/env bash`**, so it finds bash on systems without
+  `/bin/bash`, such as NixOS. That covers the tests, `ci/`, and most of
+  `scripts/`. A script that is installed onto a host or guest and may run
+  as root (`service/`, the driver pack's `setup-ionic-dkms.sh` and
+  `fetch-ionic-sources.sh`, and the Ansible collection's `files/`) keeps
+  `#!/bin/bash`, so it doesn't depend on `PATH`.
 - **ShellCheck 0.11.0** over every `*.sh`, `*.sh.in`, and extension-less
   executable with a shell shebang, outside `third-party/`, with every check
   on:

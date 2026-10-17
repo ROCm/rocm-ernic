@@ -173,6 +173,11 @@
 
 ### Fixed
 
+* The test scripts, the self-hosted CI scripts in `ci/`, and the developer
+  scripts in `scripts/` find bash through `PATH` (`#!/usr/bin/env bash`)
+  instead of requiring `/bin/bash`, so `ctest` and the scripts run on systems
+  without it, such as NixOS. The installed service and driver-pack scripts
+  still use `/bin/bash`.
 * Shutting down a `loopback`, `nvmeof` or `s3` server that a guest had
   connected to locked a mutex and wrote past the end of the backend's state
   on the heap: the data path cleared its mesh receive callback through the
