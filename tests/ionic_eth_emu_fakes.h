@@ -44,6 +44,9 @@ static uint8_t g_mem[GUEST_MEM_SIZE];
 /* DMA writes seen since the test last cleared it. */
 static unsigned int g_nwrites;
 
+/* Count mapping attempts independently of successful guest writes. */
+static unsigned int g_write_attempts;
+
 /* Refuse this many of the next DMA write mappings, as an unmapped GPA would. */
 static unsigned int g_fail_writes;
 
@@ -74,7 +77,8 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
     uint64_t addr = (uint64_t)(uintptr_t)dma_addr;
 
     (void)vfu_ctx;
-    (void)prot;
+    if (prot & PROT_WRITE)
+        g_write_attempts++;
     /* Written so a dma_addr near UINT64_MAX can't wrap past the check. */
     if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE || len > GUEST_MEM_SIZE - addr)
         return -1;

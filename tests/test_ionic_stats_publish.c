@@ -87,6 +87,7 @@ static struct ionic_eth_emu *new_emu(uint32_t interval_ms)
 
     memset(g_mem, POISON, sizeof(g_mem));
     g_nwrites = 0;
+    g_write_attempts = 0;
     g_fail_writes = 0;
     g_nwarnings = 0;
     g_net_send_rc = 0;
@@ -425,44 +426,133 @@ static void reserved_zero(char *got, size_t len)
 static void address_boundaries(void)
 {
     static const struct {
+        const char *category;
         const char *description;
+        const char *expected;
         uint64_t base;
+        unsigned int attempts;
         unsigned int writes;
     } cases[] = {
-        {"exact guest-memory end",
-         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES, 1},
-        {"one byte beyond guest memory",
+        {"positive", "ordinary registered address",
+         "one mapping and exact block write", LIF_PA, 1, 1},
+        {"positive", "unaligned address", "unaligned DMA is supported",
+         LIF_PA + 1, 1, 1},
+        {"negative", "zero means unregistered", "no mapping or guest write", 0,
+         0, 0},
+        {"boundary", "smallest nonzero address",
+         "one mapping and exact block write", 1, 1, 1},
+        {"boundary", "block ends one byte before guest-memory end",
+         "one trailing byte preserved",
+         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES - 1,
+         1, 1},
+        {"boundary", "block ends exactly at guest-memory end",
+         "last byte written; prefix preserved",
+         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES, 1,
+         1},
+        {"negative", "one byte beyond guest memory",
+         "mapping rejected; all guest bytes preserved",
          GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES + 1,
+         1, 0},
+        {"boundary", "last representable complete block",
+         "valid arithmetic; unmapped range rejected",
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - (IONIC_LIF_STATS_BYTES - 1), 1,
          0},
-        {"offset wraps to guest address zero",
-         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF + 1, 0},
-        {"block end wraps",
-         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES + 2, 0},
+        {"boundary", "block end overflows by one byte",
+         "reject before DMA; all guest bytes preserved",
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - (IONIC_LIF_STATS_BYTES - 1) +
+             1,
+         0, 0},
+        {"boundary", "offset reaches UINT64_MAX",
+         "block cannot fit; reject before DMA",
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF, 0, 0},
+        {"corner", "offset wraps to guest address zero",
+         "reject before DMA; address zero untouched",
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF + 1, 0, 0},
+        {"corner", "maximum base address",
+         "reject before DMA; all guest bytes preserved", UINT64_MAX, 0, 0},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         struct ionic_eth_emu *emu = new_emu(10);
         bool ok;
 
-        /* Set the registered address directly to isolate stats DMA from
-         * LIF_INIT's separate status write. No test-only production hook. */
+        /* Isolate stats DMA from LIF_INIT's separately tested status DMA. */
         emu->lif_info_pa = cases[i].base;
         emu->stats_publish_now = true;
         emu->stats.lif[IONIC_LIF_TX_UCAST_PACKETS] = 7;
         ionic_eth_emu_publish_stats(emu, 100);
-        ok = g_nwrites == cases[i].writes;
+        ok = g_write_attempts == cases[i].attempts &&
+             g_nwrites == cases[i].writes;
+        if (!cases[i].writes) {
+            ok = ok && poisoned(0, sizeof(g_mem)) == sizeof(g_mem);
+        } else {
+            uint64_t start = cases[i].base + IONIC_LIF_INFO_STATS_OFF;
+            size_t end = (size_t)start + IONIC_LIF_STATS_BYTES;
+
+            ok = ok &&
+                 guest_qword(cases[i].base, IONIC_LIF_TX_UCAST_PACKETS) == 7 &&
+                 poisoned(0, (size_t)start) == start &&
+                 poisoned(end, sizeof(g_mem) - end) == sizeof(g_mem) - end;
+        }
+        /* A second tick retries failures without corrupting counters. */
+        ionic_eth_emu_publish_stats(emu, 110);
+        ok = ok && g_write_attempts == 2 * cases[i].attempts &&
+             g_nwrites == 2 * cases[i].writes;
+        lif_init(emu, LIF_PA);
+        g_write_attempts = 0;
+        ionic_eth_emu_publish_stats(emu, 120);
+        ok = ok && g_write_attempts == 1 && g_nwrites == 1 &&
+             guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS) == 7;
+        printf("%s %s: %s; expected: %s; retry and re-registration retain 7 "
+               "packets\n",
+               ok ? "ok" : "FAIL", cases[i].category, cases[i].description,
+               cases[i].expected);
+        if (!ok)
+            failures++;
+        ionic_eth_emu_destroy(emu);
+    }
+}
+
+static void lif_status_address_boundaries(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint64_t base;
+        unsigned int attempts;
+        unsigned int writes;
+    } cases[] = {
+        {"positive", "normal LIF_INIT", "one status block written", LIF_PA, 1,
+         1},
+        {"negative", "zero LIF_INIT address", "no DMA", 0, 0, 0},
+        {"boundary", "status ends exactly at guest-memory end",
+         "one status block written",
+         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATUS_OFF - 64, 1, 1},
+        {"negative", "status ends one byte past guest memory",
+         "mapping fails; guest memory unchanged",
+         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATUS_OFF - 63, 1, 0},
+        {"boundary", "status ends at UINT64_MAX",
+         "valid arithmetic; unmapped range rejected",
+         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - 63, 1, 0},
+        {"boundary", "status end overflows by one", "reject before DMA",
+         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - 62, 0, 0},
+        {"corner", "status offset wraps to zero",
+         "reject before DMA; address zero untouched",
+         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF + 1, 0, 0},
+        {"corner", "maximum base address", "reject before DMA", UINT64_MAX, 0,
+         0},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct ionic_eth_emu *emu = new_emu(10);
+        bool ok;
+
+        devcmd(emu, IONIC_CMD_LIF_INIT, cases[i].base);
+        ok = g_write_attempts == cases[i].attempts &&
+             g_nwrites == cases[i].writes;
         if (!cases[i].writes)
             ok = ok && poisoned(0, sizeof(g_mem)) == sizeof(g_mem);
-        else
-            ok = ok &&
-                 guest_qword(cases[i].base, IONIC_LIF_TX_UCAST_PACKETS) == 7;
-        /* Re-register a good address; a failed publication loses no totals. */
-        lif_init(emu, LIF_PA);
-        ionic_eth_emu_publish_stats(emu, 110);
-        ok = ok && g_nwrites == 1 &&
-             guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS) == 7;
-        printf("%s boundary: %s; expected: %u writes, failed DMA leaves memory "
-               "unchanged, retry publishes 7 packets\n",
-               ok ? "ok" : "FAIL", cases[i].description, cases[i].writes);
+        printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
+               cases[i].category, cases[i].description, cases[i].expected);
         if (!ok)
             failures++;
         ionic_eth_emu_destroy(emu);
@@ -866,6 +956,7 @@ static const struct publish_case stats_file_cases[] = {
 int main(void)
 {
     address_boundaries();
+    lif_status_address_boundaries();
     run_cases(publish_cases, sizeof(publish_cases) / sizeof(publish_cases[0]));
     run_cases(datapath_cases,
               sizeof(datapath_cases) / sizeof(datapath_cases[0]));
