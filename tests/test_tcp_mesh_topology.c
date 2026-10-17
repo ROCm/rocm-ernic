@@ -36,8 +36,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "rocm-ernic-warnings.h"
-
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
 
@@ -161,31 +159,18 @@ static int read_exact(int fd, void *buf, size_t len)
 #define POISON_STACK_SZ (1024 * 1024)
 
 /*
- * ASan's use-after-return detection relocates large frames off the real
- * stack into freshly-zeroed heap "fake stacks", which would hide the poison
- * and make this test vacuously pass. Turn it off for this binary; the
- * address/leak checks the project cares about here are unaffected.
- *
- * The runtime looks this hook up by name, so the reserved identifier is
- * unavoidable.
- */
-ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
-const char *__asan_default_options(void);
-const char *__asan_default_options(void)
-{
-    return "detect_stack_use_after_return=0";
-}
-ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
-
-/*
  * Address of a local in the broadcast thread's frame, recorded so the caller
  * can prove the payload really landed on the stack we poisoned.
  *
- * __asan_default_options() above is only a *default*: an ASAN_OPTIONS in the
- * environment overrides it, ASan moves the ~17 KB frame to a freshly-zeroed
- * fake stack, and the tail then reads as zero no matter what the code under
- * test does -- the test would pass vacuously. Checking where the frame landed
- * turns that silent hole into a loud failure.
+ * ASan's use-after-return detection relocates large frames off the real
+ * stack into freshly-zeroed heap "fake stacks", which would hide the poison
+ * and make this test vacuously pass. tests/CMakeLists.txt turns it off for
+ * this binary with ERNIC_ASAN_EXTRA_OPTIONS (see
+ * cmake/sanitizer-default-options.c), but that is only a *default*: an
+ * ASAN_OPTIONS in the environment overrides it, ASan moves the ~17 KB frame
+ * to a fake stack, and the tail then reads as zero no matter what the code
+ * under test does. Checking where the frame landed turns that silent hole
+ * into a loud failure.
  */
 static uintptr_t broadcast_frame;
 

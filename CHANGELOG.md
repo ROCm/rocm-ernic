@@ -128,6 +128,27 @@
   RELRO (`-z relro -z now`), a non-executable stack (`-z noexecstack`), and
   `--as-needed --no-copy-dt-needed-entries`. Ubuntu's GCC already did all of
   this by default, but other toolchains, such as upstream Clang, didn't.
+* `ERNIC_USE_SANITIZERS` now builds with every sanitizer except
+  ThreadSanitizer that the compiler supports and that can be combined with
+  AddressSanitizer: AddressSanitizer (including LeakSanitizer),
+  UndefinedBehaviorSanitizer, and the `float-divide-by-zero` check, plus
+  `bounds-strict`, `float-cast-overflow`, `pointer-compare`, and
+  `pointer-subtract` with GCC, or `implicit-conversion`, `local-bounds`, and
+  `nullability` with Clang. The unit tests, which are built with
+  sanitizers in every build except a ThreadSanitizer one, get the same set.
+  Configuring fails if the C compiler isn't GCC or Clang, or can't build a
+  program with the sanitizers.
+* Every sanitizer report is now fatal, so `UBSAN_OPTIONS=halt_on_error=1` and
+  `TSAN_OPTIONS=halt_on_error=1` are no longer needed. The programs that
+  rocm-ernic builds set some sanitizer run-time options themselves, such as
+  the one that turns on GCC's `pointer-compare` and `pointer-subtract`
+  checks, which the `ASAN_OPTIONS`, `UBSAN_OPTIONS`, and `TSAN_OPTIONS`
+  environment variables override.
+* The new `ERNIC_SANITIZER_SHARED_RUNTIME` option selects whether sanitizer
+  builds link the shared sanitizer runtime, so that they can load libraries
+  from another sanitizer build, or the static one. It defaults to what the
+  compiler does on its own, `ON` with GCC and `OFF` with Clang. With Clang
+  and `ON`, the programs get an RPATH to the runtime's directory.
 
 ### Removed
 

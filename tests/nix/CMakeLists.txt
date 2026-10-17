@@ -20,14 +20,6 @@
 
 set(ERNIC_FUZZ_DIR ${PROJECT_SOURCE_DIR}/nix/analysis/fuzz)
 
-# Mirrors ERNIC_PARSER_TEST_SAN in the parent: ASan + UBSan unless the
-# project is already built with TSan, which is incompatible.
-set(ERNIC_FUZZ_REPLAY_SAN "")
-if(NOT ERNIC_USE_THREAD_SANITIZER)
-    set(ERNIC_FUZZ_REPLAY_SAN
-        -fsanitize=address,undefined -fno-omit-frame-pointer)
-endif()
-
 # ernic_add_fuzz_replay(<harness> [extra ported sources...])
 #
 # Builds fuzz_replay_<harness> from nix/analysis/fuzz/fuzz_<harness>.c plus
@@ -58,8 +50,8 @@ function(ernic_add_fuzz_replay harness)
         ${GLIB2_INCLUDE_DIRS}
     )
     target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
-    target_compile_options(${target} PRIVATE ${ERNIC_FUZZ_REPLAY_SAN})
-    target_link_options(${target} PRIVATE ${ERNIC_FUZZ_REPLAY_SAN})
+    # Built with the sanitizers like the unit tests in the parent
+    ernic_add_unit_test_sanitizers(${target})
     target_link_directories(${target} PRIVATE ${GLIB2_LIBRARY_DIRS})
     target_link_libraries(${target} PRIVATE ${GLIB2_LIBRARIES})
 
