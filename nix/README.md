@@ -353,3 +353,25 @@ connected to does not exit on SIGTERM (its accept thread stays blocked in
 | `nix/compat-cflags.nix` | gcc-15 C99-error downgrade (build + shell) |
 | `nix/analysis/` | static + dynamic + fuzz analysis modules |
 | `nix/analysis/triage/` | finding prioritiser (Python) |
+
+### Launcher regression checks
+
+`nix build .#checks.x86_64-linux.launchers --no-link -L` exercises the
+packaged `ernic-run` with controlled servers and commands, including
+failed startup, server death, command failures, ignored TERM, interrupted
+launchers, and interactive input. It also checks guest module assertion
+boundaries and JSON encoding of runtime socket paths. No VM is required.
+
+The launcher preserves command exit codes, stops a waiting command when
+its server dies, and gives owned process groups ten seconds to stop before
+using KILL. Caller-owned paths are preserved on rejected startup; temporary
+socket directories created by the launcher are removed when empty.
+
+`nix build .#checks.x86_64-linux.pair-launchers --no-link -L` checks the
+paired-guest supervisor with controlled VM processes. Its tables cover
+positive, negative, boundary and corner cases, with descriptions and
+expected outcomes: decimal ports (including leading zeros), guest failure,
+console input, and bounded cleanup of both guests after TERM or peer exit.
+`--ssh-port` accepts decimal values from 1 through 65534; its second port
+is always the normalized value plus one. Both guest process groups have
+bounded cleanup, and the test launcher fails promptly if either guest fails.

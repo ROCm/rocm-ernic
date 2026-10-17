@@ -229,6 +229,9 @@
         # nix/ionic-guest-test.nix and nix/ionic-vm.nix.
         // guestPackages;
 
+        checks.pair-launchers = import ./nix/pair-launcher-tests.nix { inherit pkgs; };
+        checks.launchers = import ./nix/launcher-tests.nix { inherit pkgs; };
+
         devShells.default = devshell;
       })
     // {

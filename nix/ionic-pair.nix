@@ -173,13 +173,6 @@ let
     '';
   };
 
-  # Start one VM in the background with its own TMPDIR and SHARED_DIR,
-  # its console going to OUT.
-  vmStart = i: vm: out: ''
-    mkdir -p "$ERNIC_PAIR_DIR/node${i}/shared"
-    env TMPDIR="$ERNIC_PAIR_DIR/node${i}" SHARED_DIR="$ERNIC_PAIR_DIR/node${i}/shared" \
-      ${vm}/bin/run-ernic-node${i}-vm ${out} &
-  '';
 
   ############################################################ test
 
@@ -242,19 +235,11 @@ let
     };
   };
 
-  testVms = pkgs.writeShellApplication {
-    name = "ernic-pair-test-vms";
-    runtimeInputs = with pkgs; [ coreutils ];
-    text = ''
-      ${vmStart "1" (testVm "1") ''> "$ERNIC_PAIR_DIR/serial-1.log" 2>&1''}
-      vm1=$!
-      ${vmStart "2" (testVm "2") ''> "$ERNIC_PAIR_DIR/serial-2.log" 2>&1''}
-      vm2=$!
-      rc=0
-      wait "$vm1" || rc=$?
-      wait "$vm2" || rc=$?
-      exit "$rc"
-    '';
+  testVms = import ./pair-vms.nix {
+    inherit pkgs;
+    vm1 = "${testVm "1"}/bin/run-ernic-node1-vm";
+    vm2 = "${testVm "2"}/bin/run-ernic-node2-vm";
+    waitBoth = true;
   };
 
   run-ionic-pair-test = pkgs.writeShellApplication {
@@ -386,32 +371,16 @@ let
   # Node 2 in the background (console to serial-2.log), node 1 on this
   # terminal; when node 1 stops, node 2 is stopped too. $1 is the
   # optional ssh base port.
-  pairVms = pkgs.writeShellApplication {
-    name = "ernic-pair-vms";
-    runtimeInputs = with pkgs; [ coreutils ];
-    text = ''
-      ssh_port=''${1:-}
-      net() {
-        if [ -n "$ssh_port" ]; then
-          echo "hostfwd=tcp:127.0.0.1:$(( ssh_port + $1 - 1 ))-:22"
-        fi
-      }
-      env TMPDIR="$ERNIC_PAIR_DIR/node2" SHARED_DIR="$ERNIC_PAIR_DIR/node2/shared" QEMU_NET_OPTS="$(net 2)" \
-        ${vmNode "2"}/bin/run-ernic-node2-vm < /dev/null > "$ERNIC_PAIR_DIR/serial-2.log" 2>&1 &
-      vm2=$!
-      rc=0
-      env TMPDIR="$ERNIC_PAIR_DIR/node1" SHARED_DIR="$ERNIC_PAIR_DIR/node1/shared" QEMU_NET_OPTS="$(net 1)" \
-        ${vmNode "1"}/bin/run-ernic-node1-vm || rc=$?
-      kill -TERM "$vm2" 2>/dev/null || true
-      wait "$vm2" 2>/dev/null || true
-      exit "$rc"
-    '';
+  pairVms = import ./pair-vms.nix {
+    inherit pkgs;
+    vm1 = "${vmNode "1"}/bin/run-ernic-node1-vm";
+    vm2 = "${vmNode "2"}/bin/run-ernic-node2-vm";
   };
 
   ionic-vm-pair = pkgs.writeShellApplication {
     name = "ionic-vm-pair";
     runtimeInputs = with pkgs; [ coreutils openssh ];
-    text = ''
+    text = builtins.readFile ./pair-port.sh + ''
       usage() {
         echo 'usage: ionic-vm-pair [--accel=auto|kvm|tcg] [--ssh-port PORT]  (node 1 on PORT, node 2 on PORT+1)' >&2
         exit 2
@@ -423,17 +392,11 @@ let
           --accel=auto) accel='-machine accel=kvm:tcg'; shift ;;
           --accel=kvm) accel='-machine accel=kvm'; shift ;;
           --accel=tcg) accel='-machine accel=tcg'; shift ;;
-          --ssh-port) [ "$#" -ge 2 ] || usage; ssh_port=$2; shift 2 ;;
+          --ssh-port) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; ssh_port=$2; shift 2 ;;
           *) usage ;;
         esac
       done
-      case "$ssh_port" in
-        "") ;;
-        *[!0-9]*) echo "ionic-vm-pair: --ssh-port needs a number, got '$ssh_port'" >&2; exit 2 ;;
-        *) if [ "$ssh_port" -lt 1 ] || [ "$ssh_port" -gt 65534 ]; then
-             echo "ionic-vm-pair: --ssh-port $ssh_port is out of range (1-65534)" >&2; exit 2
-           fi ;;
-      esac
+      if [ -n "$ssh_port" ]; then ssh_port=$(normalize_pair_port "$ssh_port"); fi
 
       ERNIC_PAIR_DIR=$(mktemp -d -t ernic-vm-pair-XXXXXX)
       export ERNIC_PAIR_DIR
