@@ -422,6 +422,53 @@ static void reserved_zero(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
+static void address_boundaries(void)
+{
+    static const struct {
+        const char *description;
+        uint64_t base;
+        unsigned int writes;
+    } cases[] = {
+        {"exact guest-memory end",
+         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES, 1},
+        {"one byte beyond guest memory",
+         GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES + 1,
+         0},
+        {"offset wraps to guest address zero",
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF + 1, 0},
+        {"block end wraps",
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES + 2, 0},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct ionic_eth_emu *emu = new_emu(10);
+        bool ok;
+
+        /* Set the registered address directly to isolate stats DMA from
+         * LIF_INIT's separate status write. No test-only production hook. */
+        emu->lif_info_pa = cases[i].base;
+        emu->stats_publish_now = true;
+        emu->stats.lif[IONIC_LIF_TX_UCAST_PACKETS] = 7;
+        ionic_eth_emu_publish_stats(emu, 100);
+        ok = g_nwrites == cases[i].writes;
+        if (!cases[i].writes)
+            ok = ok && poisoned(0, sizeof(g_mem)) == sizeof(g_mem);
+        else
+            ok = ok &&
+                 guest_qword(cases[i].base, IONIC_LIF_TX_UCAST_PACKETS) == 7;
+        /* Re-register a good address; a failed publication loses no totals. */
+        lif_init(emu, LIF_PA);
+        ionic_eth_emu_publish_stats(emu, 110);
+        ok = ok && g_nwrites == 1 &&
+             guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS) == 7;
+        printf("%s boundary: %s; expected: %u writes, failed DMA leaves memory "
+               "unchanged, retry publishes 7 packets\n",
+               ok ? "ok" : "FAIL", cases[i].description, cases[i].writes);
+        if (!ok)
+            failures++;
+        ionic_eth_emu_destroy(emu);
+    }
+}
+
 static const struct publish_case publish_cases[] = {
     {"positive", "LIF_INIT(pa), then publish",
      "writes 1, block poisoned 0, before 320, after 64", lif_init_then_publish},
@@ -818,6 +865,7 @@ static const struct publish_case stats_file_cases[] = {
 
 int main(void)
 {
+    address_boundaries();
     run_cases(publish_cases, sizeof(publish_cases) / sizeof(publish_cases[0]));
     run_cases(datapath_cases,
               sizeof(datapath_cases) / sizeof(datapath_cases[0]));

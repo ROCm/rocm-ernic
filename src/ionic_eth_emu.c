@@ -457,6 +457,7 @@ void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
 {
     uint8_t block[IONIC_LIF_STATS_BYTES];
     uint64_t pa;
+    bool address_valid;
 
     if (!emu || !emu->lif_info_pa)
         return;
@@ -468,8 +469,12 @@ void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
 
     /* fill() writes all of @block, so no stack bytes reach the guest. */
     ionic_emu_stats_fill(&emu->stats, block);
-    pa = emu->lif_info_pa + IONIC_LIF_INFO_STATS_OFF;
-    if (eth_dma_rw(emu->vfu_ctx, pa, block, sizeof(block), true) < 0) {
+    address_valid = emu->lif_info_pa <=
+                    UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - (sizeof(block) - 1);
+    pa = address_valid ? emu->lif_info_pa + IONIC_LIF_INFO_STATS_OFF
+                       : emu->lif_info_pa;
+    if (!address_valid ||
+        eth_dma_rw(emu->vfu_ctx, pa, block, sizeof(block), true) < 0) {
         if (!emu->stats_write_failed)
             vfu_log(emu->vfu_ctx, LOG_WARNING,
                     "ionic_eth_emu: LIF stats write to %#lx failed; retrying "

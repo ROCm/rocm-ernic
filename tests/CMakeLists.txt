@@ -300,6 +300,7 @@ target_include_directories(test_ionic_emu_stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 target_compile_definitions(test_ionic_emu_stats PRIVATE _GNU_SOURCE)
+target_link_libraries(test_ionic_emu_stats PRIVATE pthread)
 
 # ionic NIC identity test. It links the eth emulator, calls its devcmd
 # handlers through ionic_eth_emu_priv.h, checks the compat profile against

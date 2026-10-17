@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include "ionic_emu_stats.h"
 
@@ -635,8 +637,91 @@ static void test_layout(void)
         (uint64_t)(ionic_emu_lif_stat_name(IONIC_LIF_STATS_QWORDS) != NULL));
 }
 
+struct producer {
+    struct ionic_emu_stats *stats;
+    atomic_bool *start;
+    atomic_uint *done;
+    const uint8_t *frame;
+    unsigned int count;
+};
+
+static void *produce_drops(void *opaque)
+{
+    struct producer *p = opaque;
+
+    while (!atomic_load(p->start))
+        sched_yield();
+    for (unsigned int i = 0; i < p->count; i++)
+        ionic_emu_stats_rx_inbox_full(p->stats, p->frame, 64);
+    atomic_fetch_add(p->done, 1);
+    return NULL;
+}
+
+static void test_concurrent_fold(void)
+{
+    static const struct {
+        const char *description;
+        unsigned int count;
+    } cases[] = {{"boundary: zero events", 0},
+                 {"boundary: one event per class", 1},
+                 {"corner: three producers race the folder", 20000}};
+    static const unsigned int indices[] = {IONIC_LIF_RX_UCAST_DROP_BYTES,
+                                           IONIC_LIF_RX_MCAST_DROP_BYTES,
+                                           IONIC_LIF_RX_BCAST_DROP_BYTES};
+    uint8_t frames[3][64] = {{0}};
+
+    memcpy(frames[0], mac_ucast, 6);
+    memcpy(frames[1], mac_mcast, 6);
+    memcpy(frames[2], mac_bcast, 6);
+    for (size_t row = 0; row < sizeof(cases) / sizeof(cases[0]); row++) {
+        struct ionic_emu_stats st;
+        atomic_bool start = false;
+        atomic_uint done = 0;
+        struct producer args[3];
+        pthread_t threads[3];
+        unsigned int created = 0;
+
+        ionic_emu_stats_reset(&st);
+        for (unsigned int c = 0; c < 3; c++) {
+            args[c] = (struct producer){&st, &start, &done, frames[c],
+                                        cases[row].count};
+            if (pthread_create(&threads[c], NULL, produce_drops, &args[c]) != 0)
+                break;
+            created++;
+        }
+        atomic_store(&start, true);
+        while (atomic_load(&done) < created) {
+            ionic_emu_stats_fold(&st);
+            sched_yield();
+        }
+        for (unsigned int c = 0; c < created; c++) {
+            void *result = NULL;
+
+            if (pthread_join(threads[c], &result) != 0 || result != NULL)
+                failures++;
+        }
+        check_u64("positive", cases[row].description, "all producers started",
+                  3, created);
+        ionic_emu_stats_fold(&st);
+        ionic_emu_stats_fold(&st);
+        for (unsigned int c = 0; c < 3; c++) {
+            check_u64("corner", cases[row].description,
+                      "exact byte total after final fold",
+                      (uint64_t)cases[row].count * 64, st.lif[indices[c]]);
+            check_u64("corner", cases[row].description,
+                      "exact packet total, never counted twice",
+                      cases[row].count, st.lif[indices[c] + 1]);
+            check_u64("corner", cases[row].description, "pending bytes empty",
+                      0, atomic_load(&st.inbox_drop_bytes[c]));
+            check_u64("corner", cases[row].description, "pending packets empty",
+                      0, atomic_load(&st.inbox_drop_packets[c]));
+        }
+    }
+}
+
 int main(void)
 {
+    test_concurrent_fold();
     test_classify();
     test_counting();
     test_fill();
