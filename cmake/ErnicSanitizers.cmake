@@ -108,6 +108,26 @@ function(ernic_add_unit_test_sanitizers target)
       "${compile_options}" "${link_options}")
 endfunction()
 
+# Build ``target`` without AddressSanitizer's use-after-return
+# instrumentation, so that its functions' frames are always on the real
+# stack. The run-time option detect_stack_use_after_return can't do this
+# reliably: the ASAN_OPTIONS environment variable overrides it, and
+# Ubuntu's Clang 18 shared runtime ignores a program's default options.
+# Does nothing when ThreadSanitizer is on, since AddressSanitizer is off
+# then.
+function(ernic_disable_asan_use_after_return target)
+    if(ERNIC_USE_THREAD_SANITIZER)
+        return()
+    endif()
+    if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(${target} PRIVATE
+          -fsanitize-address-use-after-return=never)
+    else()
+        target_compile_options(${target} PRIVATE
+          --param=asan-use-after-return=0)
+    endif()
+endfunction()
+
 # Find the directory that holds a sanitizer's shared runtime library, and
 # store it in out_var if programs have to be told where it is (an RPATH).
 # out_var is empty if the dynamic linker already searches the directory.

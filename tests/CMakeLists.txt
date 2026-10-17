@@ -442,12 +442,12 @@ target_include_directories(test_tcp_mesh_topology SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-# ASan's use-after-return detection moves the broadcast's frame off the
-# poisoned stack the test gives it, so the test turns the detection off
 target_compile_definitions(test_tcp_mesh_topology PRIVATE
-    _GNU_SOURCE
-    ERNIC_ASAN_EXTRA_OPTIONS=":detect_stack_use_after_return=0")
+    _GNU_SOURCE)
 ernic_add_unit_test_sanitizers(test_tcp_mesh_topology)
+# ASan's use-after-return detection would move the broadcast's frame off
+# the poisoned stack the test gives it
+ernic_disable_asan_use_after_return(test_tcp_mesh_topology)
 target_link_directories(test_tcp_mesh_topology PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_tcp_mesh_topology PRIVATE

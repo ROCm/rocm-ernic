@@ -164,13 +164,10 @@ static int read_exact(int fd, void *buf, size_t len)
  *
  * ASan's use-after-return detection relocates large frames off the real
  * stack into freshly-zeroed heap "fake stacks", which would hide the poison
- * and make this test vacuously pass. tests/CMakeLists.txt turns it off for
- * this binary with ERNIC_ASAN_EXTRA_OPTIONS (see
- * cmake/sanitizer-default-options.c), but that is only a *default*: an
- * ASAN_OPTIONS in the environment overrides it, ASan moves the ~17 KB frame
- * to a fake stack, and the tail then reads as zero no matter what the code
- * under test does. Checking where the frame landed turns that silent hole
- * into a loud failure.
+ * and make this test vacuously pass: the ~17 KB frame's tail would read as
+ * zero no matter what the code under test does. tests/CMakeLists.txt builds
+ * this binary without that instrumentation. Checking where the frame landed
+ * keeps a build that has it anyway from passing silently.
  */
 static uintptr_t broadcast_frame;
 

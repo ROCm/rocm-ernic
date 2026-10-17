@@ -11,19 +11,11 @@
  * ASAN_OPTIONS, UBSAN_OPTIONS, and TSAN_OPTIONS environment variables are
  * applied after these, so they can override them.
  *
- * A program that needs other AddressSanitizer defaults can define
- * ERNIC_ASAN_EXTRA_OPTIONS as a string of options that starts with ':'.
- * They're applied after the ones below, so they can override them.
- *
  * The runtimes choose these functions' names, which are reserved
  * identifiers.
  */
 
 #include "rocm-ernic-warnings.h"
-
-#ifndef ERNIC_ASAN_EXTRA_OPTIONS
-#define ERNIC_ASAN_EXTRA_OPTIONS ""
-#endif
 
 /* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
@@ -42,7 +34,7 @@ const char *__asan_default_options(void)
 {
     return "detect_invalid_pointer_pairs=2:"
            "detect_stack_use_after_return=1:"
-           "strict_string_checks=1" ERNIC_ASAN_EXTRA_OPTIONS;
+           "strict_string_checks=1";
 }
 
 /* UndefinedBehaviorSanitizer
