@@ -530,25 +530,31 @@ launcher, and the Prometheus exporter
 </section>
 <section id="warnings-as-errors">
 <span id="werror-policy"></span><h2>Warnings as Errors<a class="headerlink" href="#warnings-as-errors" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code> adds <code class="docutils literal notranslate"><span class="pre">-Werror</span></code> to the project’s own
-sources and to the test targets. The vendored QEMU sources
-under <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> are compiled with <code class="docutils literal notranslate"><span class="pre">-w</span></code> regardless,
-so the flag only governs code this project maintains.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code> adds <code class="docutils literal notranslate"><span class="pre">-Werror</span></code> to every target that
+<code class="docutils literal notranslate"><span class="pre">ernic_set_compiler_flags()</span></code> sets up: the server, the test
+programs, and the fuzz harness replay programs. The vendored
+QEMU sources under <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> are compiled with <code class="docutils literal notranslate"><span class="pre">-w</span></code>
+regardless, so the flag only governs code this project
+maintains.</p>
 <p>It defaults to <code class="docutils literal notranslate"><span class="pre">OFF</span></code> so that a packager or downstream
 consumer building with a compiler version we have not tested
 is never blocked by a newly-introduced warning. That
-tolerance is not extended to our own CI: every lane that
-compiles the project configures with <code class="docutils literal notranslate"><span class="pre">-DERNIC_WERROR=ON</span></code>,
-so a new warning fails the build before it can merge.</p>
+tolerance is not extended to our own CI: the jobs that build
+the project to test or release it configure with
+<code class="docutils literal notranslate"><span class="pre">-DERNIC_WERROR=ON</span></code>, so a new warning fails the build
+before it can merge.</p>
 <p>Developers should build with it on, matching CI:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DERNIC_WERROR<span class="o">=</span>ON
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">nix</span></code> static-analysis, dynamic-analysis, and fuzz
-builds are the one exception; they configure with it off
-because gcc 15 and current clang emit warnings on the
-QEMU-ported headers that these builds cannot suppress.
-Those lanes are informational and do not gate merges.</p>
+<p>Some CI builds leave it off. The CodeQL, clang-tidy, and
+include-what-you-use jobs build the project only to analyze
+it, and leave checking for warnings to the Build and Test
+workflow. The <code class="docutils literal notranslate"><span class="pre">nix</span></code> static-analysis, dynamic-analysis, and
+fuzz builds leave it off because gcc 15 and current clang
+emit warnings on the QEMU-ported headers that these builds
+cannot suppress. Those lanes are informational and do not
+gate merges.</p>
 </section>
 <section id="code-coverage">
 <span id="id1"></span><h2>Code Coverage<a class="headerlink" href="#code-coverage" title="Link to this heading">#</a></h2>

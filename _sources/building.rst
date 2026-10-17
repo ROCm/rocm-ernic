@@ -125,17 +125,20 @@ Build Options
 Warnings as Errors
 ------------------
 
-``ERNIC_WERROR`` adds ``-Werror`` to the project's own
-sources and to the test targets. The vendored QEMU sources
-under ``third-party/`` are compiled with ``-w`` regardless,
-so the flag only governs code this project maintains.
+``ERNIC_WERROR`` adds ``-Werror`` to every target that
+``ernic_set_compiler_flags()`` sets up: the server, the test
+programs, and the fuzz harness replay programs. The vendored
+QEMU sources under ``third-party/`` are compiled with ``-w``
+regardless, so the flag only governs code this project
+maintains.
 
 It defaults to ``OFF`` so that a packager or downstream
 consumer building with a compiler version we have not tested
 is never blocked by a newly-introduced warning. That
-tolerance is not extended to our own CI: every lane that
-compiles the project configures with ``-DERNIC_WERROR=ON``,
-so a new warning fails the build before it can merge.
+tolerance is not extended to our own CI: the jobs that build
+the project to test or release it configure with
+``-DERNIC_WERROR=ON``, so a new warning fails the build
+before it can merge.
 
 Developers should build with it on, matching CI:
 
@@ -143,11 +146,14 @@ Developers should build with it on, matching CI:
 
    cmake -B build -G Ninja -DERNIC_WERROR=ON
 
-The ``nix`` static-analysis, dynamic-analysis, and fuzz
-builds are the one exception; they configure with it off
-because gcc 15 and current clang emit warnings on the
-QEMU-ported headers that these builds cannot suppress.
-Those lanes are informational and do not gate merges.
+Some CI builds leave it off. The CodeQL, clang-tidy, and
+include-what-you-use jobs build the project only to analyze
+it, and leave checking for warnings to the Build and Test
+workflow. The ``nix`` static-analysis, dynamic-analysis, and
+fuzz builds leave it off because gcc 15 and current clang
+emit warnings on the QEMU-ported headers that these builds
+cannot suppress. Those lanes are informational and do not
+gate merges.
 
 .. _code-coverage:
 
