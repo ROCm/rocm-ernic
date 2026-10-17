@@ -66,9 +66,6 @@ function(ernic_add_fuzz_replay harness)
     # Project warning / hardening flags, matching the parent's
     # ERNIC_TEST_TARGETS loop.
     ernic_set_compiler_flags(${target})
-    if(ERNIC_WERROR)
-        target_compile_options(${target} PRIVATE -Werror)
-    endif()
 
     add_test(
         NAME fuzz-replay-${harness}

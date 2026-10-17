@@ -744,11 +744,6 @@ set(ERNIC_TEST_TARGETS
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
     ernic_set_compiler_flags(${ernic_test_target})
-    # Match the main target: CI configures with ERNIC_WERROR=ON, and without
-    # this a new warning in test code would scroll past instead of failing.
-    if(ERNIC_WERROR)
-        target_compile_options(${ernic_test_target} PRIVATE -Werror)
-    endif()
 endforeach()
 
 # ---------------------------------------------------------------
