@@ -44,8 +44,8 @@ declare -a CONFIGS=(
 )
 
 # Cleanup function
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
-    # shellcheck disable=SC2317
     local pid="${SERVER_PID:-}"
     local qemu_pid="${QEMU_PID:-}"
     
@@ -146,7 +146,7 @@ test_config() {
     
     # Wait for socket
     local socket_ready=0
-    for i in {1..10}; do
+    for _ in {1..10}; do
         if [ -S "$socket_path" ]; then
             chmod 666 "$socket_path" 2>/dev/null || true
             socket_ready=1
@@ -171,17 +171,17 @@ test_config() {
         -m 2G \
         -nographic \
         -drive file="$VM_DISK_PATH",format=qcow2,if=virtio \
-        -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
+        -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \
         -device "{\"driver\":\"vfio-user-pci\",\"socket\":{\"type\":\"unix\",\"path\":\"$socket_path\"}}" \
-        -serial mon:stdio > /tmp/qemu-${config//[:\/=]/_}.log 2>&1 &
+        -serial mon:stdio > "/tmp/qemu-${config//[:\/=]/_}.log" 2>&1 &
     
     QEMU_PID=$!
     
     # Wait for SSH
     echo "Waiting for VM SSH..."
     local ssh_ready=0
-    for i in {1..60}; do
+    for _ in {1..60}; do
         if sshpass -p "$VM_PASSWORD" \
            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 \
            -p "$SSH_PORT" "${VM_USER}@localhost" 'echo Ready' 2>/dev/null; then

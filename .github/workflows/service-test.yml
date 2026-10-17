@@ -74,8 +74,6 @@ jobs:
     - name: Shellcheck service scripts
       run: |
         shellcheck \
-          -e SC2086,SC2154,SC2024,SC2034 \
-          -e SC2164,SC2181,SC2317 \
           service/rocm-ernic-launcher \
           service/rocm-ernic-driver-pack \
           service/vm-driver-install.sh.in

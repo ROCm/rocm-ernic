@@ -50,9 +50,9 @@ function cleanup() {
     # Stop server if running
     if [ -f /tmp/rocm-ernic-server.pid ]; then
         PID=$(cat /tmp/rocm-ernic-server.pid)
-        if ps -p $PID > /dev/null 2>&1; then
+        if ps -p "$PID" > /dev/null 2>&1; then
             log_info "Stopping rocm-ernic server (PID: $PID)..."
-            sudo kill $PID || true
+            sudo kill "$PID" || true
             sleep 1
         fi
         rm -f /tmp/rocm-ernic-server.pid
@@ -107,24 +107,27 @@ IB_DEVICE=$(ibv_devices 2>/dev/null | tail -n +3 | grep -v "^$" | head -1 | awk 
 if [ -n "$IB_DEVICE" ] && [ "$IB_DEVICE" != "device" ] && [ "$IB_DEVICE" != "------" ]; then
     log_info "✓ Found IB device: $IB_DEVICE"
     log_warn "Verbs backend not fully implemented yet, using loopback"
-    BACKEND_ARGS="--backend loopback"
-    # Future: BACKEND_ARGS="--backend verbs:${IB_DEVICE}"
+    BACKEND_ARGS=(--backend loopback)
+    # Future: BACKEND_ARGS=(--backend "verbs:${IB_DEVICE}")
 else
     log_info "No IB devices found, using loopback backend"
-    BACKEND_ARGS="--backend loopback"
+    BACKEND_ARGS=(--backend loopback)
 fi
 
 # Start rocm-ernic server
 log_info "Starting rocm-ernic server..."
 log_info "Socket: $SOCKET_PATH"
-log_info "Backend: $BACKEND_ARGS"
+log_info "Backend: ${BACKEND_ARGS[*]}"
 log_info "Log: $SERVER_LOG"
 
-sudo rm -f ${SOCKET_PATH}
-sudo ${PROJECT_ROOT}/build/rocm-ernic \
-    --socket ${SOCKET_PATH} \
-    ${BACKEND_ARGS} \
-    > ${SERVER_LOG} 2>&1 &
+sudo rm -f "${SOCKET_PATH}"
+# The log is opened as the invoking user on purpose, so it can be read
+# without sudo. Piping through 'sudo tee' instead would make $! tee's PID.
+# shellcheck disable=SC2024
+sudo "${PROJECT_ROOT}/build/rocm-ernic" \
+    --socket "${SOCKET_PATH}" \
+    "${BACKEND_ARGS[@]}" \
+    > "${SERVER_LOG}" 2>&1 &
 
 SERVER_PID=$!
 echo $SERVER_PID > /tmp/rocm-ernic-server.pid
@@ -215,7 +218,7 @@ fi
 
 # Copy driver source to VM
 log_info "Copying driver source to VM..."
-scp -o StrictHostKeyChecking=no -P 2222 -r ${PROJECT_ROOT}/driver stebates@localhost:/tmp/ || {
+scp -o StrictHostKeyChecking=no -P 2222 -r "${PROJECT_ROOT}/driver" stebates@localhost:/tmp/ || {
     log_error "Failed to copy driver to VM"
     exit 1
 }
@@ -224,7 +227,7 @@ log_info "✓ Driver source copied"
 # The device lookup below runs in the guest, so the helper has to go
 # there too rather than being sourced from the repo.
 scp -o StrictHostKeyChecking=no -P 2222 \
-    ${PROJECT_ROOT}/scripts/find-rdma-device.sh stebates@localhost:/tmp/ || {
+    "${PROJECT_ROOT}/scripts/find-rdma-device.sh" stebates@localhost:/tmp/ || {
     log_error "Failed to copy find-rdma-device.sh to VM"
     exit 1
 }

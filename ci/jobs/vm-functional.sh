@@ -65,7 +65,6 @@ ci_ansible() {
 }
 
 _ci_ansible_run() {
-    # shellcheck disable=SC2086
     ansible-playbook ci-site.yml \
         -e "ernic_project_root=${PROJECT_ROOT}" \
         -e "ernic_build_dir=${CI_BUILD_DIR}" \
@@ -80,7 +79,7 @@ _ci_ansible_run() {
         "$@" </dev/null
 }
 
-cd "${ANSIBLE_DIR}"
+cd "${ANSIBLE_DIR}" || die "cannot cd to ${ANSIBLE_DIR}"
 
 group_start "Guest setup (driver + rdma-core)"
 run_check vm-functional "guest-setup" \

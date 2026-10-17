@@ -416,11 +416,10 @@ them and where their configuration files are picked up.
 bash scripts must be shellcheck-clean.
 
 - **ShellCheck 0.11.0** over every `*.sh`, `*.sh.in`, and extension-less
-  executable with a shell shebang, outside `third-party/`, with the checks
-  CI excludes:
+  executable with a shell shebang, outside `third-party/`, with every check
+  on:
 
   ```bash
-  export SHELLCHECK_OPTS='-e SC2024,SC2034,SC2086,SC2154,SC2164,SC2181,SC2317,SC2329'
   git ls-files -- ':!:third-party/' | while IFS= read -r f; do
     if [[ "$f" == *.sh || "$f" == *.sh.in ]]; then
       echo "$f"
@@ -432,11 +431,15 @@ bash scripts must be shellcheck-clean.
   ```
 
   CI: [shellcheck.yml](.github/workflows/shellcheck.yml).
+- **Suppress a ShellCheck finding only on the one command**, with
+  `# shellcheck disable=SCnnnn` and a comment saying why. The known case is
+  a cleanup function run only by `trap` in a script that ends in `exit`:
+  ShellCheck 0.11 then reports it as never invoked (SC2329).
 - **The shell in workflow `run:` blocks must be clean too**, and the
   ShellCheck workflow doesn't look at it. Check it with
   [actionlint](https://github.com/rhysd/actionlint)
   (`pip install actionlint-py`), which runs shellcheck on each `run:`
-  block, with the same `SHELLCHECK_OPTS` exported:
+  block:
 
   ```bash
   actionlint -ignore 'label ".+" is unknown'

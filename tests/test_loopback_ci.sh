@@ -37,8 +37,8 @@ declare -a FAILED_CONFIGS=()
 declare -a SKIPPED_CONFIGS=()
 
 # Cleanup function (called via trap)
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
-    # shellcheck disable=SC2317  # Function is called via trap
     local pid="${SERVER_PID:-}"
     if [ -n "$pid" ]; then
         kill "$pid" 2>/dev/null || true
@@ -91,7 +91,7 @@ test_config() {
     
     # Wait for socket
     local socket_ready=0
-    for i in {1..10}; do
+    for _ in {1..10}; do
         if [ -S "$socket_path" ]; then
             chmod 666 "$socket_path" 2>/dev/null || true
             socket_ready=1
