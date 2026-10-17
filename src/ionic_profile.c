@@ -513,7 +513,8 @@ static char *read_file(const char *path, size_t *len, char *err, size_t err_len)
     struct stat st;
     char *buf = NULL;
     size_t got = 0;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    /* A FIFO must not block before descriptor-based file-type validation. */
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
 
     if (fd < 0) {
         set_err(err, err_len, "cannot open NIC profile '%s': %s", path,

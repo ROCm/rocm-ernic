@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -357,21 +358,26 @@ static void run_text_case(const struct text_case *c)
     struct ionic_profile p;
     char err[512] = "";
     const char *failed_at = NULL;
+    bool unchanged = true;
     bool ok;
 
     ionic_profile_defaults(&p);
     for (int i = 0; i < MAX_LAYERS && c->layers[i]; i++) {
+        unsigned char before[sizeof(p)];
         char source[16];
         size_t len = strlen(c->layers[i]);
 
+        memcpy(before, &p, sizeof(p));
         snprintf(source, sizeof(source), "layer%d", i + 1);
         if (ionic_profile_apply_text(&p, source, c->layers[i], len, err,
                                      sizeof(err)) != 0) {
+            unchanged = memcmp(before, &p, sizeof(p)) == 0;
             failed_at = c->layers[i];
             break;
         }
     }
-    ok = (c->want_err ? failed_at && strstr(err, c->want_err) : !failed_at) &&
+    ok = unchanged &&
+         (c->want_err ? failed_at && strstr(err, c->want_err) : !failed_at) &&
          profile_is(&p, &c->want) && strcmp(p.chain, "compat") == 0;
 
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
@@ -630,28 +636,76 @@ static void check_nul_byte(void)
            "error naming the line; nothing changes");
 }
 
-/* A file larger than IONIC_PROFILE_FILE_MAX is refused, not read. */
-static void check_file_too_large(void)
+/* Exact file boundaries and a FIFO with no writer exercise the real loader. */
+static void check_file_boundaries(void)
 {
-    struct ionic_profile p;
-    char err[512] = "", path[512];
-    FILE *f;
-    bool ok = false;
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        size_t size;
+        bool fifo;
+        bool accepted;
+    } cases[] = {
+        {"positive", "one-byte comment file", "accepted; only chain changes", 1,
+         false, true},
+        {"boundary", "one byte below 1 MiB", "accepted; only chain changes",
+         IONIC_PROFILE_FILE_MAX - 1, false, true},
+        {"boundary", "exactly 1 MiB", "accepted; only chain changes",
+         IONIC_PROFILE_FILE_MAX, false, true},
+        {"boundary", "one byte above 1 MiB",
+         "size error; all profile bytes unchanged", IONIC_PROFILE_FILE_MAX + 1,
+         false, false},
+        {"negative", "FIFO with no writer",
+         "prompt file-type error; all profile bytes unchanged", 0, true, false},
+    };
+    char path[512];
 
-    snprintf(path, sizeof(path), "%s/big.ini", g_tmpdir);
-    f = fopen(path, "w");
-    if (f) {
-        static const char pad[] = "# padding padding padding padding\n";
+    snprintf(path, sizeof(path), "%s/boundary.ini", g_tmpdir);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct ionic_profile p;
+        unsigned char before[sizeof(p)];
+        char err[512] = "";
+        bool ready = false, ok = false;
 
-        for (size_t n = 0; n <= IONIC_PROFILE_FILE_MAX; n += sizeof(pad) - 1)
-            fputs(pad, f);
-        fclose(f);
+        if (cases[i].fifo) {
+            ready = mkfifo(path, 0600) == 0;
+        } else {
+            char *data = malloc(cases[i].size);
+            FILE *f = fopen(path, "wb");
+
+            if (data && f) {
+                memset(data, 'x', cases[i].size);
+                data[0] = '#';
+                ready = fwrite(data, 1, cases[i].size, f) == cases[i].size;
+            }
+            if (f && fclose(f) != 0)
+                ready = false;
+            free(data);
+        }
         ionic_profile_defaults(&p);
-        ok = ionic_profile_apply(&p, path, err, sizeof(err)) != 0 &&
-             strstr(err, "is larger than 1048576 bytes");
+        memcpy(before, &p, sizeof(p));
+        if (ready) {
+            int rc;
+
+            /* A regression to blocking open fails the test, never hangs CI. */
+            alarm(5);
+            rc = ionic_profile_apply(&p, path, err, sizeof(err));
+            alarm(0);
+            if (cases[i].accepted) {
+                ok = rc == 0 && strstr(p.chain, path) != NULL;
+                memcpy(p.chain, before + offsetof(struct ionic_profile, chain),
+                       sizeof(p.chain));
+                ok = ok && memcmp(before, &p, sizeof(p)) == 0;
+            } else {
+                ok = rc != 0 && memcmp(before, &p, sizeof(p)) == 0 &&
+                     strstr(err, cases[i].fifo ? "not a regular file"
+                                               : "larger than 1048576 bytes");
+            }
+        }
+        report(ok, cases[i].category, cases[i].description, cases[i].expected);
+        unlink(path);
     }
-    report(ok, "boundary", "a profile file over 1 MiB",
-           "refused with its size limit, not read");
 }
 
 int main(void)
@@ -676,7 +730,7 @@ int main(void)
     check_hash();
     check_chain_limit();
     check_nul_byte();
-    check_file_too_large();
+    check_file_boundaries();
 
     {
         char path[512];
