@@ -21,7 +21,8 @@ foreach(var IN ITEMS
         CMAKE_C_COMPILER
         ERNIC_WERROR
         ERNIC_USE_SANITIZERS
-        ERNIC_USE_THREAD_SANITIZER)
+        ERNIC_USE_THREAD_SANITIZER
+        ERNIC_SANITIZER_SHARED_RUNTIME)
     string(APPEND ERNIC_SUBPROJECT_CACHE_ENTRIES
         "set(${var} \"${${var}}\" CACHE STRING \"\")\n")
 endforeach()

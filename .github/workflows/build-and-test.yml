@@ -49,7 +49,8 @@ jobs:
         os: [ubuntu-24.04]
         compiler: [gcc, clang]
         # `asan` builds with -DERNIC_USE_SANITIZERS=ON, which turns on
-        # ASan + LSan + UBSan together; `tsan` builds with
+        # ASan, LSan, UBSan, and the compiler's other checks that can be
+        # combined with them; `tsan` builds with
         # -DERNIC_USE_THREAD_SANITIZER=ON. The two are mutually exclusive
         # (cmake/ErnicSanitizers.cmake makes that a hard error), hence one
         # leg each rather than a combined build.
@@ -85,22 +86,14 @@ jobs:
             build_type: Debug
             coverage: 'on'
 
-    # UBSan's default is to print a diagnostic and keep going with a zero
-    # exit status, so without halt_on_error the asan legs would report
-    # success over real undefined behaviour. ASan and LSan already exit
-    # non-zero on a finding; detect_leaks is spelled out rather than left
-    # to the platform default.
-    #
-    # TSan already fails the run on a race (exitcode defaults to 66), so
-    # halt_on_error only changes *when* it stops -- at the first race rather
-    # than after the test finishes. Set for a faster, less noisy failure,
-    # not because the leg would otherwise pass over a race.
-    #
-    # Each is ignored by the legs with no matching runtime to read it.
+    # The sanitizer builds make every report fatal: ASan, LSan, and UBSan
+    # with -fno-sanitize-recover=all, and TSan with halt_on_error=1, which
+    # each program sets along with the sanitizers' other default options
+    # (cmake/sanitizer-default-options.c). This adds to those defaults.
+    # detect_leaks is spelled out rather than left to the platform default.
+    # The tsan legs ignore it.
     env:
       ASAN_OPTIONS: detect_leaks=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-      TSAN_OPTIONS: halt_on_error=1
 
     steps:
       - name: Check out code

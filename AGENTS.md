@@ -92,9 +92,12 @@ Notes:
   wrong. Multi-VM and real-hardware testing is described in
   [docs/testing.rst](docs/testing.rst) and run by the `system-tests`,
   `nvmeof-lane`, `s3-lane`, and `self-hosted-ci` workflows.
-- The unit tests (`*-unit`) are always built with ASan, LSan, and UBSan
-  unless the project is built with TSan (`ERNIC_UNIT_TEST_SAN` in
-  `tests/CMakeLists.txt`), so a plain Debug build already sanitizes them.
+- The unit tests (`*-unit`) are always built with the sanitizers that
+  `ERNIC_USE_SANITIZERS` turns on, unless the project is built with TSan,
+  so a plain Debug build already sanitizes them. To build a new unit test
+  with them, call `ernic_add_unit_test_sanitizers()`
+  ([`ErnicSanitizers.cmake`](cmake/ErnicSanitizers.cmake)) on it rather
+  than giving it `-fsanitize` flags of its own.
 - **Run a TSan build's tests under `setarch "$(uname -m)" -R`**, as CI
   does. Without it, nearly every test aborts before `main()` with
   `FATAL: ThreadSanitizer: unexpected memory mapping`. That is address
@@ -293,21 +296,24 @@ them and where their configuration files are picked up.
   wrap the smallest region you can. If you remove a suppression, check
   whether its macros are used elsewhere, so you don't leave orphaned
   macros behind.
-- **Sanitizer-clean**: the tests must run without a report from ASan,
-  LSan, UBSan, or TSan. Use one build directory for
-  `-DERNIC_USE_SANITIZERS=ON` (ASan, LSan, and UBSan together) and another
-  for `-DERNIC_USE_THREAD_SANITIZER=ON`, and run `ctest` in each with the
+- **Sanitizer-clean**: the tests must run without a report from any
+  sanitizer. Use one build directory for `-DERNIC_USE_SANITIZERS=ON`
+  (ASan, LSan, UBSan, and the compiler's other checks that can be combined
+  with them; see [`ErnicSanitizers.cmake`](cmake/ErnicSanitizers.cmake))
+  and another for `-DERNIC_USE_THREAD_SANITIZER=ON`, with GCC and with
+  Clang, which have different checks, and run `ctest` in each with the
   options CI uses:
 
   ```bash
   export ASAN_OPTIONS=detect_leaks=1
-  export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-  export TSAN_OPTIONS=halt_on_error=1
   ```
 
-  UBSan otherwise prints its report and exits successfully, so a test can
-  pass with undefined behavior in its output. See [Tests](#tests) for the
-  TSan `setarch` wrapper and the ASan timeouts, and
+  Every report is fatal, so a test with one fails. Each program sets the
+  sanitizers' default run-time options, including TSan's `halt_on_error=1`,
+  in [`sanitizer-default-options.c`](cmake/sanitizer-default-options.c),
+  and the `*SAN_OPTIONS` variables override them. Don't add sanitizer flags
+  anywhere but `ErnicSanitizers.cmake`. See [Tests](#tests) for the TSan
+  `setarch` wrapper and the ASan timeouts, and
   [Thread safety](#thread-safety) for the TSan build flags.
 - **clang-tidy clean**: building with `-DERNIC_USE_CLANG_TIDY=ON` runs
   clang-tidy on every file as it compiles, with the checks in
