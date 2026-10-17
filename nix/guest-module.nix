@@ -32,6 +32,9 @@
 
 let
   cfg = config.virtualisation.ernic;
+  # Preserve documented shell variable expansion while quoting literal path
+  # characters. jq performs JSON escaping after the shell expands the path.
+  socketExpr = builtins.replaceStrings [ "\\" "\"" "`" ] [ "\\\\" "\\\"" "\\`" ] cfg.socket;
 
   rdmaUp = pkgs.writeShellApplication {
     name = "ernic-rdma-up";
@@ -99,10 +102,10 @@ in
     virtualisation.qemu.options = [
       "-machine q35"
       "-device pcie-root-port,id=${cfg.rootPort},chassis=1,slot=1"
-      # vfio-user-pci takes its SocketAddress only in JSON form. The option
-      # lands unquoted in the launcher script, so the JSON is single-quoted
-      # and the socket path double-quoted to expand at launch.
-      "-device '{\"driver\":\"vfio-user-pci\",\"id\":\"${cfg.deviceId}\",\"bus\":\"${cfg.rootPort}\",\"socket\":{\"type\":\"unix\",\"path\":\"'\"${cfg.socket}\"'\"}}'"
+      # A single JSON argv element, including runtime paths with quotes or
+      # backslashes; shell quoting alone does not make a JSON string safe.
+      "-device \"$(${pkgs.jq}/bin/jq -cn --arg path \"${socketExpr}\" --arg id ${lib.escapeShellArg cfg.deviceId} --arg bus ${lib.escapeShellArg cfg.rootPort} '{driver: \"vfio-user-pci\", id: $id, bus: $bus, socket: {type: \"unix\", path: $path}}')\""
+
     ];
 
     boot.kernelModules = [ "ionic" "ib_uverbs" ];
