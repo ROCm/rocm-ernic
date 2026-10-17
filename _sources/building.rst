@@ -76,10 +76,16 @@ Build Options
        (see :ref:`werror-policy`)
    * - ``ERNIC_USE_SANITIZERS``
      - ``OFF``
-     - Enable ASAN / LSAN / UBSAN
+     - Build with ASan, LSan, UBSan, and the compiler's other
+       checks that can be combined with them
+       (see :ref:`sanitizers`)
    * - ``ERNIC_USE_THREAD_SANITIZER``
      - ``OFF``
-     - Enable TSAN (mutually exclusive with above)
+     - Build with TSan (mutually exclusive with above)
+   * - ``ERNIC_SANITIZER_SHARED_RUNTIME``
+     - ``ON`` (GCC), ``OFF`` (Clang)
+     - Link the shared sanitizer runtime instead of the
+       static one
    * - ``ERNIC_USE_CODE_COVERAGE``
      - ``OFF``
      - Build with LLVM source-based code coverage; Clang only
@@ -154,6 +160,80 @@ fuzz builds leave it off because gcc 15 and current clang
 emit warnings on the QEMU-ported headers that these builds
 cannot suppress. Those lanes are informational and do not
 gate merges.
+
+.. _sanitizers:
+
+Sanitizers
+----------
+
+``ERNIC_USE_SANITIZERS`` builds the server and the test programs
+with every sanitizer except ThreadSanitizer that the compiler
+supports and that can be combined with AddressSanitizer:
+
+- With GCC and Clang: AddressSanitizer (including
+  LeakSanitizer), UndefinedBehaviorSanitizer, and the
+  ``float-divide-by-zero`` check.
+- With GCC: the ``bounds-strict``, ``float-cast-overflow``,
+  ``pointer-compare``, and ``pointer-subtract`` checks.
+- With Clang: the ``implicit-conversion``, ``local-bounds``,
+  and ``nullability`` checks.
+
+Clang doesn't get ``pointer-compare`` and ``pointer-subtract``,
+since in optimized code they report comparisons and subtractions
+that the optimizer added.
+
+``ERNIC_USE_THREAD_SANITIZER`` builds them with
+ThreadSanitizer. ThreadSanitizer can't be combined with
+AddressSanitizer, so only one of these two options can be on.
+Use a separate build directory for each.
+
+The unit tests are built with the first set even when neither
+option is on, so every build checks them, except a
+ThreadSanitizer build.
+
+Both options need GCC or Clang. Configuring checks that the
+compiler can build a program with the sanitizers, and fails if,
+for example, the sanitizer runtimes aren't installed:
+
+.. code-block:: bash
+
+   cmake -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang \
+     -DERNIC_USE_SANITIZERS=ON
+   cmake --build build-asan
+   ctest --test-dir build-asan
+
+The sanitizers instrument everything rocm-ernic compiles,
+including the vendored QEMU sources. Libraries that come from
+the system, such as libvfio-user, GLib, and libibverbs, are not
+instrumented.
+
+Every sanitizer report is fatal, so a test with a report fails.
+Each program sets some of the sanitizers' run-time options, such
+as the one that turns on GCC's ``pointer-compare`` and
+``pointer-subtract`` checks, and the one that makes
+ThreadSanitizer stop at its first report (see
+``cmake/sanitizer-default-options.c``). The ``ASAN_OPTIONS``,
+``UBSAN_OPTIONS``, and ``TSAN_OPTIONS`` environment variables
+override them.
+
+``ERNIC_SANITIZER_SHARED_RUNTIME`` links programs with the
+shared library version of the sanitizer runtime. Libraries from
+another build that also uses the shared runtime, such as a
+sanitizer build of libvfio-user, can then be used in the same
+program. If the runtime isn't in a directory that the dynamic
+linker searches, as with Clang's, the programs get an RPATH to
+it. When the option is ``OFF``, programs link the static
+runtime. It defaults to what the compiler does on its own:
+``ON`` with GCC and ``OFF`` with Clang. Ubuntu's Clang 18
+ignores the programs' default run-time options when they use
+its shared runtime.
+
+If ThreadSanitizer stops a program at startup with an
+"unexpected memory mapping" error, the kernel's address space
+layout randomization uses more bits than ThreadSanitizer
+supports. Run the program under ``setarch "$(uname -m)" -R``,
+as CI does, or reduce the randomization with
+``sudo sysctl vm.mmap_rnd_bits=28``.
 
 .. _code-coverage:
 

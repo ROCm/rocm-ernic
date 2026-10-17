@@ -378,6 +378,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sanitizers">Sanitizers</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#include-what-you-use">include-what-you-use</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clang-tidy">clang-tidy</a></li>
@@ -469,58 +470,65 @@ is never broken by a new warning; CI turns it on
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_SANITIZERS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
-<td><p>Enable ASAN / LSAN / UBSAN</p></td>
+<td><p>Build with ASan, LSan, UBSan, and the compiler’s other
+checks that can be combined with them
+(see <a class="reference internal" href="#sanitizers"><span class="std std-ref">Sanitizers</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_THREAD_SANITIZER</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
-<td><p>Enable TSAN (mutually exclusive with above)</p></td>
+<td><p>Build with TSan (mutually exclusive with above)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_SANITIZER_SHARED_RUNTIME</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ON</span></code> (GCC), <code class="docutils literal notranslate"><span class="pre">OFF</span></code> (Clang)</p></td>
+<td><p>Link the shared sanitizer runtime instead of the
+static one</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build with LLVM source-based code coverage; Clang only
 (see <a class="reference internal" href="#code-coverage"><span class="std std-ref">Code Coverage</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_IWYU</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_IWYU</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Run include-what-you-use while compiling; advisory
 (see <a class="reference internal" href="#iwyu"><span class="std std-ref">include-what-you-use</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Run clang-tidy while compiling; every finding is an
 error. Clang only (see <a class="reference internal" href="#clang-tidy"><span class="std std-ref">clang-tidy</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_DOCS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Build Sphinx + Breathe + Doxygen documentation</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Configure only documentation targets (no library
 dependencies required)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Enable the DKMS targets that build the patched
 upstream ionic guest modules (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code></p></td>
 <td><p>Linux kernel tag or SHA the ionic sources are fetched
 from; must be <code class="docutils literal notranslate"><span class="pre">v6.18</span></code> or newer</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REPO</span></code></p></td>
 <td><p>kernel.org stable</p></td>
 <td><p>Linux kernel git repository the ionic sources are
 fetched from</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
 <td><p>Also install the systemd units, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, the
 launcher, and the Prometheus exporter
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
 </tr>
@@ -556,8 +564,71 @@ emit warnings on the QEMU-ported headers that these builds
 cannot suppress. Those lanes are informational and do not
 gate merges.</p>
 </section>
+<section id="sanitizers">
+<span id="id1"></span><h2>Sanitizers<a class="headerlink" href="#sanitizers" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_SANITIZERS</span></code> builds the server and the test programs
+with every sanitizer except ThreadSanitizer that the compiler
+supports and that can be combined with AddressSanitizer:</p>
+<ul class="simple">
+<li><p>With GCC and Clang: AddressSanitizer (including
+LeakSanitizer), UndefinedBehaviorSanitizer, and the
+<code class="docutils literal notranslate"><span class="pre">float-divide-by-zero</span></code> check.</p></li>
+<li><p>With GCC: the <code class="docutils literal notranslate"><span class="pre">bounds-strict</span></code>, <code class="docutils literal notranslate"><span class="pre">float-cast-overflow</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pointer-compare</span></code>, and <code class="docutils literal notranslate"><span class="pre">pointer-subtract</span></code> checks.</p></li>
+<li><p>With Clang: the <code class="docutils literal notranslate"><span class="pre">implicit-conversion</span></code>, <code class="docutils literal notranslate"><span class="pre">local-bounds</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">nullability</span></code> checks.</p></li>
+</ul>
+<p>Clang doesn’t get <code class="docutils literal notranslate"><span class="pre">pointer-compare</span></code> and <code class="docutils literal notranslate"><span class="pre">pointer-subtract</span></code>,
+since in optimized code they report comparisons and subtractions
+that the optimizer added.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_THREAD_SANITIZER</span></code> builds them with
+ThreadSanitizer. ThreadSanitizer can’t be combined with
+AddressSanitizer, so only one of these two options can be on.
+Use a separate build directory for each.</p>
+<p>The unit tests are built with the first set even when neither
+option is on, so every build checks them, except a
+ThreadSanitizer build.</p>
+<p>Both options need GCC or Clang. Configuring checks that the
+compiler can build a program with the sanitizers, and fails if,
+for example, the sanitizer runtimes aren’t installed:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build-asan<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_USE_SANITIZERS<span class="o">=</span>ON
+cmake<span class="w"> </span>--build<span class="w"> </span>build-asan
+ctest<span class="w"> </span>--test-dir<span class="w"> </span>build-asan
+</pre></div>
+</div>
+<p>The sanitizers instrument everything rocm-ernic compiles,
+including the vendored QEMU sources. Libraries that come from
+the system, such as libvfio-user, GLib, and libibverbs, are not
+instrumented.</p>
+<p>Every sanitizer report is fatal, so a test with a report fails.
+Each program sets some of the sanitizers’ run-time options, such
+as the one that turns on GCC’s <code class="docutils literal notranslate"><span class="pre">pointer-compare</span></code> and
+<code class="docutils literal notranslate"><span class="pre">pointer-subtract</span></code> checks, and the one that makes
+ThreadSanitizer stop at its first report (see
+<code class="docutils literal notranslate"><span class="pre">cmake/sanitizer-default-options.c</span></code>). The <code class="docutils literal notranslate"><span class="pre">ASAN_OPTIONS</span></code>,
+<code class="docutils literal notranslate"><span class="pre">UBSAN_OPTIONS</span></code>, and <code class="docutils literal notranslate"><span class="pre">TSAN_OPTIONS</span></code> environment variables
+override them.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_SANITIZER_SHARED_RUNTIME</span></code> links programs with the
+shared library version of the sanitizer runtime. Libraries from
+another build that also uses the shared runtime, such as a
+sanitizer build of libvfio-user, can then be used in the same
+program. If the runtime isn’t in a directory that the dynamic
+linker searches, as with Clang’s, the programs get an RPATH to
+it. When the option is <code class="docutils literal notranslate"><span class="pre">OFF</span></code>, programs link the static
+runtime. It defaults to what the compiler does on its own:
+<code class="docutils literal notranslate"><span class="pre">ON</span></code> with GCC and <code class="docutils literal notranslate"><span class="pre">OFF</span></code> with Clang. Ubuntu’s Clang 18
+ignores the programs’ default run-time options when they use
+its shared runtime.</p>
+<p>If ThreadSanitizer stops a program at startup with an
+“unexpected memory mapping” error, the kernel’s address space
+layout randomization uses more bits than ThreadSanitizer
+supports. Run the program under <code class="docutils literal notranslate"><span class="pre">setarch</span> <span class="pre">&quot;$(uname</span> <span class="pre">-m)&quot;</span> <span class="pre">-R</span></code>,
+as CI does, or reduce the randomization with
+<code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">sysctl</span> <span class="pre">vm.mmap_rnd_bits=28</span></code>.</p>
+</section>
 <section id="code-coverage">
-<span id="id1"></span><h2>Code Coverage<a class="headerlink" href="#code-coverage" title="Link to this heading">#</a></h2>
+<span id="id2"></span><h2>Code Coverage<a class="headerlink" href="#code-coverage" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code> instruments the server and the
 test programs with LLVM source-based coverage. It needs Clang,
 and the <code class="docutils literal notranslate"><span class="pre">llvm-profdata</span></code> and <code class="docutils literal notranslate"><span class="pre">llvm-cov</span></code> of the same LLVM
@@ -609,7 +680,7 @@ itself fails. <code class="docutils literal notranslate"><span class="pre">AGENT
 locally and which suggestions to ignore.</p>
 </section>
 <section id="clang-tidy">
-<span id="id3"></span><h2>clang-tidy<a class="headerlink" href="#clang-tidy" title="Link to this heading">#</a></h2>
+<span id="id4"></span><h2>clang-tidy<a class="headerlink" href="#clang-tidy" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code> runs <a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a> on the server’s
 and the tests’ sources as they compile, with the checks in
 <code class="docutils literal notranslate"><span class="pre">.clang-tidy</span></code>. Every finding is an error, so it fails the
@@ -715,6 +786,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sanitizers">Sanitizers</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-coverage">Code Coverage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#include-what-you-use">include-what-you-use</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clang-tidy">clang-tidy</a></li>
