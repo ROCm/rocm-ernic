@@ -229,7 +229,7 @@ jobs:
         set -e
         ldconfig
         HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(compgen -G '/usr/local/lib/x86_64-linux-gnu/libvfio-user.so*' | head -1)
+        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
         if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
           echo "✗ libvfio-user missing from the container image"
           echo "  header: $HDR"

@@ -41,7 +41,9 @@
 name: rocm-ernic - CI Command
 
 on:
-  issue_comment:
+  # zizmor reports every issue_comment trigger as dangerous; the SECURITY
+  # notes above are why this one is acceptable.
+  issue_comment:  # zizmor: ignore[dangerous-triggers]
     types: [created]
 
 permissions:

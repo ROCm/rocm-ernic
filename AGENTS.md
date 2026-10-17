@@ -451,8 +451,13 @@ bash scripts must be shellcheck-clean.
   actionlint
   ```
 
-  It reads the self-hosted runners' labels from
-  [`.github/actionlint.yaml`](.github/actionlint.yaml). actionlint doesn't
+  It reads its configuration from
+  [`.github/actionlint.yaml`](.github/actionlint.yaml): the self-hosted
+  runners' labels, and an ignore for the `$/` form of `uses:`, which
+  actionlint doesn't support yet. It checks every `run:` block as bash,
+  but GitHub runs a step with no `shell:` in a job with a `container:`
+  under `sh`, so keep those blocks POSIX or give the step `shell: bash`.
+  actionlint doesn't
   read the composite actions in `.github/actions/`, and neither tool sees
   the bodies of heredocs, such as the scripts the system tests run inside
   guest VMs; hold those to the same standard by hand. CI: the actionlint
