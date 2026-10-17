@@ -128,9 +128,34 @@
           'sudo systemctl stop nc-echo 2>/dev/null;
           sudo systemctl reset-failed nc-echo 2>/dev/null;
           sudo systemd-run --unit=nc-echo
-          bash -c "echo ERNIC_OK | nc -l -p 9999 -q 1";
-          sleep 1'
+          bash -c "echo ERNIC_OK | nc -l -p 9999 -q 1"'
       changed_when: true
+
+    # systemd-run returns once the unit has started, which can be before nc
+    # is listening, and a client that connects first is refused.  This reads
+    # the listener table rather than connecting, since nc -l serves one
+    # connection and a probe would use it up.  It also stops waiting if nc
+    # exits, so the client fails and the details below say why.
+    #
+    # Running out of retries marks a task failed whatever failed_when says,
+    # so ignore_errors is what lets a listener that never came up reach the
+    # client, the details, and the rest of the tests.  The final assert
+    # still fails the play on the TCP result.
+    - name: "TCP test: wait for the netcat listener on VM1"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl is-active nc-echo;
+          ss -Hltn "sport = :9999"'
+      register: nc_listen
+      until: >-
+        nc_listen.rc == 0
+        and (nc_listen.stdout_lines | length > 1
+             or nc_listen.stdout_lines[:1] != ['active'])
+      retries: 15
+      delay: 1
+      changed_when: false
+      ignore_errors: true
 
     - name: "TCP test: connect from VM2 and read"
       ansible.builtin.shell:
@@ -142,15 +167,43 @@
       changed_when: false
       failed_when: false
 
+    - name: Set TCP test result
+      ansible.builtin.set_fact:
+        tcp_pass: >-
+          {{ tcp_result.rc == 0
+             and 'ERNIC_OK' in tcp_result.stdout }}
+
     - name: Display TCP test result
       ansible.builtin.debug:
         msg: >-
           TCP connectivity:
           {{ 'PASS -- received: '
              + tcp_result.stdout
-             if tcp_result.rc == 0
-                and 'ERNIC_OK' in tcp_result.stdout
+             if tcp_pass | bool
              else 'FAIL' }}
+
+    # A listener that never came up and a connection that never arrived
+    # look alike from the client, so show the listener's side as well.
+    - name: "TCP test: collect the netcat listener's state on VM1"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'sudo systemctl status --no-pager --full nc-echo;
+          ss -Hltn "sport = :9999"'
+      register: nc_listener_state
+      changed_when: false
+      failed_when: false
+      when: not (tcp_pass | bool)
+
+    - name: Display TCP test failure details
+      ansible.builtin.debug:
+        msg:
+          - "client exit status: {{ tcp_result.rc }}"
+          - "client stdout: {{ tcp_result.stdout }}"
+          - "client stderr: {{ tcp_result.stderr }}"
+          - "listener on VM1:"
+          - "{{ nc_listener_state.stdout_lines }}"
+      when: not (tcp_pass | bool)
 
     # ─────────────────────────────────────────────────
     # RDMA bandwidth test (ib_send_bw)
@@ -421,9 +474,6 @@
         ping_pass: >-
           {{ ping_v1_to_v2.rc == 0
              and ping_v2_to_v1.rc == 0 }}
-        tcp_pass: >-
-          {{ tcp_result.rc == 0
-             and 'ERNIC_OK' in tcp_result.stdout }}
         bw_pass: >-
           {{ ib_send_bw_result.rc == 0
              and ib_send_bw_result.stdout | length > 0 }}
