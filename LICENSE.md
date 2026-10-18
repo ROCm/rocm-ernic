@@ -24,10 +24,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## Files with different licenses
 
 The MIT terms above cover the build system and the deployment and
-automation code: the `CMakeLists.txt` files, `cmake/`, `docs/`, `ansible/`,
-`ci/`, `.github/`, `prometheus/`, `udev/`, `scripts/`, and `service/`.
-They also cover the headers in `shared/`, which carry their own
-third-party notices where they were derived from other projects.
+automation code: the `CMakeLists.txt` files, `flake.nix`, `cmake/`,
+`docs/`, `ansible/`, `ci/`, `.github/`, `prometheus/`, `udev/`,
+`scripts/`, `service/`, `tools/`, and `nix/` apart from the fuzz harnesses
+below. They also cover the headers in `shared/`, which carry their own
+third-party notices where they were derived from other projects, and the
+READMEs in `patches/`.
 
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
@@ -39,7 +41,28 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
   under `third-party/qemu/include/standard-headers/` are instead
   dual `GPL-2.0` / `BSD-2-Clause`, as stated in each file's header comment.
 
+The patches under `patches/` modify code from other projects and are
+licensed under the terms of the files they modify:
+
+* `patches/srq/` and the patch at the top of `patches/` modify the Linux
+  ionic drivers. The RDMA driver in `drivers/infiniband/hw/ionic/` is
+  `GPL-2.0`, the uAPI header `include/uapi/rdma/ionic-abi.h` is
+  `GPL-2.0 WITH Linux-syscall-note`, and the Ethernet driver's
+  `drivers/net/ethernet/pensando/ionic/ionic_if.h` is
+  `(GPL-2.0 OR Linux-OpenIB) OR BSD-2-Clause`.
+
+* `patches/rdma-core/` modifies rdma-core's ionic provider in
+  `providers/ionic/`, which is `GPL-2.0 OR Linux-OpenIB`, and rdma-core's
+  copy of the uAPI header in `kernel-headers/rdma/ionic-abi.h`, which is
+  `GPL-2.0 WITH Linux-syscall-note`.
+
+`scripts/setup-ionic-dkms.sh` is MIT, but the `dkms.conf` it writes for
+the patched ionic drivers is `GPL-2.0`, like the drivers it builds. The
+`GPL-2.0` tag inside the script belongs to that generated file.
+
 The groupings above are a summary; the per-file notice is authoritative.
 Every `.c` and `.h` file carries an `SPDX-License-Identifier` tag. Some
 other files -- build fragments, dotfiles, documentation, data -- carry no
-notice at all and take the license of the directory they sit in.
+notice at all and take the license of the directory they sit in. The
+patches carry no notice of their own; the SPDX tag on each file they
+modify, in its own project, is authoritative for them.
