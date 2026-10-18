@@ -50,8 +50,6 @@ function(ernic_add_fuzz_replay harness)
         ${GLIB2_INCLUDE_DIRS}
     )
     target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
-    # Built with the sanitizers like the unit tests in the parent
-    ernic_add_unit_test_sanitizers(${target})
     target_link_directories(${target} PRIVATE ${GLIB2_LIBRARY_DIRS})
     target_link_libraries(${target} PRIVATE ${GLIB2_LIBRARIES})
 

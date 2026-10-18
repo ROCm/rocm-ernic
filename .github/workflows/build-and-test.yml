@@ -78,8 +78,7 @@ jobs:
         coverage: [ 'off' ]
         include:
           # One code coverage leg (LLVM source-based coverage, so Clang).
-          # Debug, so the report's lines match the source. The unit tests
-          # still build with their own ASan, as on every non-tsan leg.
+          # Debug, so the report's lines match the source.
           - os: ubuntu-24.04
             compiler: clang
             sanitizer: 'off'

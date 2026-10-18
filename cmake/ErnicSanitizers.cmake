@@ -14,10 +14,6 @@
 # ThreadSanitizer can't be combined with AddressSanitizer, so only one of
 # the options can be on. Both options work with GCC and with Clang.
 #
-# The unit tests are built with the first set (AddressSanitizer and the
-# rest) even when neither option is on, so that every build checks them.
-# They're built without it when ERNIC_USE_THREAD_SANITIZER is on.
-#
 # ERNIC_SANITIZER_SHARED_RUNTIME selects how programs get the sanitizer
 # runtime. When it's on, they link the runtime's shared library.
 # Libraries from another sanitizer build that uses the shared runtime,
@@ -54,10 +50,16 @@ option(ERNIC_SANITIZER_SHARED_RUNTIME
   "Link the shared sanitizer runtime instead of the static one"
   ${ernic_shared_runtime_default})
 
-# Add the sanitizer compile and link flags to ``target``, and, if it's a
-# program, the sanitizers' default run-time options (see
-# sanitizer-default-options.c). Does nothing if the flags are empty.
-function(ernic_apply_sanitizer_flags target compile_options link_options)
+# Add the compile and link flags for ERNIC_USE_SANITIZERS or
+# ERNIC_USE_THREAD_SANITIZER, whichever is on, to ``target``, and, if it's
+# a program, the sanitizers' default run-time options (see
+# sanitizer-default-options.c). Does nothing if neither is on.
+# ernic_set_compiler_flags() calls this for every target.
+function(ernic_add_sanitizers target)
+    get_property(compile_options GLOBAL
+      PROPERTY ERNIC_SANITIZER_COMPILE_OPTIONS)
+    get_property(link_options GLOBAL
+      PROPERTY ERNIC_SANITIZER_LINK_OPTIONS)
     if(NOT compile_options)
         return()
     endif()
@@ -79,44 +81,15 @@ function(ernic_apply_sanitizer_flags target compile_options link_options)
     endif()
 endfunction()
 
-# Apply the flags for ERNIC_USE_SANITIZERS or ERNIC_USE_THREAD_SANITIZER,
-# whichever is on, to ``target``. ernic_set_compiler_flags() calls this
-# for every target.
-function(ernic_add_sanitizers target)
-    get_property(compile_options GLOBAL
-      PROPERTY ERNIC_SANITIZER_COMPILE_OPTIONS)
-    get_property(link_options GLOBAL
-      PROPERTY ERNIC_SANITIZER_LINK_OPTIONS)
-    ernic_apply_sanitizer_flags(${target}
-      "${compile_options}" "${link_options}")
-endfunction()
-
-# Build the unit test ``target`` with AddressSanitizer and the other
-# sanitizers that ERNIC_USE_SANITIZERS enables, even when that option is
-# off. Does nothing when either option is on: ERNIC_USE_SANITIZERS
-# already applies the same flags, and ThreadSanitizer can't be combined
-# with them. The target must also be passed to ernic_set_compiler_flags().
-function(ernic_add_unit_test_sanitizers target)
-    if(ERNIC_USE_SANITIZERS OR ERNIC_USE_THREAD_SANITIZER)
-        return()
-    endif()
-    get_property(compile_options GLOBAL
-      PROPERTY ERNIC_UNIT_TEST_SANITIZER_COMPILE_OPTIONS)
-    get_property(link_options GLOBAL
-      PROPERTY ERNIC_UNIT_TEST_SANITIZER_LINK_OPTIONS)
-    ernic_apply_sanitizer_flags(${target}
-      "${compile_options}" "${link_options}")
-endfunction()
-
 # Build ``target`` without AddressSanitizer's use-after-return
 # instrumentation, so that its functions' frames are always on the real
 # stack. The run-time option detect_stack_use_after_return can't do this
 # reliably: the ASAN_OPTIONS environment variable overrides it, and
 # Ubuntu's Clang 18 shared runtime ignores a program's default options.
-# Does nothing when ThreadSanitizer is on, since AddressSanitizer is off
-# then.
+# Does nothing unless ERNIC_USE_SANITIZERS is on, since AddressSanitizer
+# is off otherwise.
 function(ernic_disable_asan_use_after_return target)
-    if(ERNIC_USE_THREAD_SANITIZER)
+    if(NOT ERNIC_USE_SANITIZERS)
         return()
     endif()
     if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -270,14 +243,7 @@ if(ERNIC_USE_THREAD_SANITIZER)
       "encounter errors concerning unexpected memory mappings.")
 endif()
 
-# BUILD_TESTING comes from include(CTest), which the top-level
-# CMakeLists.txt does before it includes this module
-set(ernic_asan_needed ${ERNIC_USE_SANITIZERS})
-if(BUILD_TESTING AND NOT ERNIC_USE_THREAD_SANITIZER)
-    set(ernic_asan_needed TRUE)
-endif()
-
-if(NOT (ernic_asan_needed OR ERNIC_USE_THREAD_SANITIZER))
+if(NOT (ERNIC_USE_SANITIZERS OR ERNIC_USE_THREAD_SANITIZER))
     return()
 endif()
 
@@ -287,7 +253,7 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang)$")
       "${CMAKE_C_COMPILER_ID}")
 endif()
 
-# The -fsanitize groups for ERNIC_USE_SANITIZERS and the unit tests
+# The -fsanitize groups for ERNIC_USE_SANITIZERS
 #
 # Both compilers get:
 #
@@ -347,33 +313,12 @@ else()
 endif()
 list(JOIN ernic_asan_checks "," ernic_asan_checks)
 
-set(ernic_sanitizer_compile_options)
-set(ernic_sanitizer_link_options)
-set(ernic_unit_test_sanitizer_compile_options)
-set(ernic_unit_test_sanitizer_link_options)
-if(ernic_asan_needed)
-    if(ERNIC_USE_SANITIZERS)
-        set(ernic_asan_reason "ERNIC_USE_SANITIZERS turns on")
-    else()
-        string(CONCAT ernic_asan_reason
-          "the unit tests always use (set BUILD_TESTING to OFF to not "
-          "build them)")
-    endif()
-    ernic_get_sanitizer_flags(ernic_asan_compile_options
-      ernic_asan_link_options ${ernic_asan_checks} asan
-      "${ernic_asan_reason}")
-    if(ERNIC_USE_SANITIZERS)
-        set(ernic_sanitizer_compile_options ${ernic_asan_compile_options})
-        set(ernic_sanitizer_link_options ${ernic_asan_link_options})
-        message(STATUS "Sanitizers: ${ernic_asan_checks}")
-    else()
-        set(ernic_unit_test_sanitizer_compile_options
-          ${ernic_asan_compile_options})
-        set(ernic_unit_test_sanitizer_link_options
-          ${ernic_asan_link_options})
-        message(STATUS "Unit test sanitizers: ${ernic_asan_checks}")
-    endif()
-elseif(ERNIC_USE_THREAD_SANITIZER)
+if(ERNIC_USE_SANITIZERS)
+    ernic_get_sanitizer_flags(ernic_sanitizer_compile_options
+      ernic_sanitizer_link_options ${ernic_asan_checks} asan
+      "ERNIC_USE_SANITIZERS turns on")
+    message(STATUS "Sanitizers: ${ernic_asan_checks}")
+else()
     ernic_get_sanitizer_flags(ernic_sanitizer_compile_options
       ernic_sanitizer_link_options thread tsan
       "ERNIC_USE_THREAD_SANITIZER turns on")
@@ -384,7 +329,3 @@ set_property(GLOBAL PROPERTY ERNIC_SANITIZER_COMPILE_OPTIONS
   ${ernic_sanitizer_compile_options})
 set_property(GLOBAL PROPERTY ERNIC_SANITIZER_LINK_OPTIONS
   ${ernic_sanitizer_link_options})
-set_property(GLOBAL PROPERTY ERNIC_UNIT_TEST_SANITIZER_COMPILE_OPTIONS
-  ${ernic_unit_test_sanitizer_compile_options})
-set_property(GLOBAL PROPERTY ERNIC_UNIT_TEST_SANITIZER_LINK_OPTIONS
-  ${ernic_unit_test_sanitizer_link_options})

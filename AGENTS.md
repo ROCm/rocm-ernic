@@ -92,12 +92,13 @@ Notes:
   wrong. Multi-VM and real-hardware testing is described in
   [docs/testing.rst](docs/testing.rst) and run by the `system-tests`,
   `nvmeof-lane`, `s3-lane`, and `self-hosted-ci` workflows.
-- The unit tests (`*-unit`) are always built with the sanitizers that
-  `ERNIC_USE_SANITIZERS` turns on, unless the project is built with TSan,
-  so a plain Debug build already sanitizes them. To build a new unit test
-  with them, call `ernic_add_unit_test_sanitizers()`
-  ([`ErnicSanitizers.cmake`](cmake/ErnicSanitizers.cmake)) on it rather
-  than giving it `-fsanitize` flags of its own.
+- A plain build sanitizes nothing, the unit tests (`*-unit`) included, so
+  also build with `ERNIC_USE_SANITIZERS` and with
+  `ERNIC_USE_THREAD_SANITIZER` (see
+  [Linters, warnings, and sanitizers](#linters-warnings-and-sanitizers-mandatory)).
+  Pass a new test to `ernic_set_compiler_flags()`, which adds the
+  sanitizers' flags to every target, rather than giving it `-fsanitize`
+  flags of its own.
 - **Run a TSan build's tests under `setarch "$(uname -m)" -R`**, as CI
   does. Without it, nearly every test aborts before `main()` with
   `FATAL: ThreadSanitizer: unexpected memory mapping`. That is address
