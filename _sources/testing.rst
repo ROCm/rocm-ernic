@@ -205,6 +205,27 @@ With verbose output on failure:
 
    ctest --test-dir build --output-on-failure
 
+To run the tests under valgrind's memcheck, as the Build and
+Test workflow's GCC Debug leg does, use a GCC build without the
+sanitizers and with valgrind installed before configuring. Leave
+out the tests that start the server or run a script, which
+valgrind would only check the script for:
+
+.. code-block:: bash
+
+   skip='pci-config-test|find-rdma-device-tuple|server-lifecycle'
+   skip+='|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
+   skip+='|cmake-subproject'
+   opts='--leak-check=full --track-origins=yes --num-callers=40'
+   opts+=' --error-exitcode=1'
+   ctest --test-dir build -T memcheck --output-on-failure \
+     --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
+     --overwrite "MemoryCheckCommandOptions=$opts" \
+     -E "^($skip)$"
+
+Each test's valgrind report is in
+``build/Testing/Temporary/MemoryChecker.<n>.log``.
+
 Multi-VM RDMA Testing
 ---------------------
 

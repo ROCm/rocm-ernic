@@ -597,6 +597,24 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>--output-on-failure
 </pre></div>
 </div>
+<p>To run the tests under valgrind’s memcheck, as the Build and
+Test workflow’s GCC Debug leg does, use a GCC build without the
+sanitizers and with valgrind installed before configuring. Leave
+out the tests that start the server or run a script, which
+valgrind would only check the script for:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|server-lifecycle'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject'</span>
+<span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
+<span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
+ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-T<span class="w"> </span>memcheck<span class="w"> </span>--output-on-failure<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--overwrite<span class="w"> </span><span class="s2">"MemoryCheckCommand=</span><span class="k">$(</span><span class="nb">command</span><span class="w"> </span>-v<span class="w"> </span>valgrind<span class="k">)</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--overwrite<span class="w"> </span><span class="s2">"MemoryCheckCommandOptions=</span><span class="nv">$opts</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-E<span class="w"> </span><span class="s2">"^(</span><span class="nv">$skip</span><span class="s2">)</span>$<span class="s2">"</span>
+</pre></div>
+</div>
+<p>Each test’s valgrind report is in
+<code class="docutils literal notranslate"><span class="pre">build/Testing/Temporary/MemoryChecker.&lt;n&gt;.log</span></code>.</p>
 </section>
 </section>
 <section id="multi-vm-rdma-testing">
