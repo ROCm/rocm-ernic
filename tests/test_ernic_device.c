@@ -10,8 +10,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -23,22 +25,29 @@
 
 #define DEVICE_NAME "rdma0"
 
+static const char *const attributes[] = {
+    "vendor",
+    "device",
+    "subsystem_vendor",
+    "subsystem_device",
+};
+
 static int make_dir(const char *path)
 {
     return mkdir(path, 0700) == 0 || errno == EEXIST;
 }
 
-static int write_attr(const char *attribute, unsigned int value)
+static int write_attr(const char *name, const char *attribute,
+                      unsigned int value)
 {
-    char path[512];
+    char path[PATH_MAX];
     FILE *file;
     int length;
     int fd;
     int result;
 
     length = snprintf(path, sizeof(path),
-                      ERNIC_SYSFS_INFINIBAND "/" DEVICE_NAME "/device/%s",
-                      attribute);
+                      ERNIC_SYSFS_INFINIBAND "/%s/device/%s", name, attribute);
     if (length < 0 || (size_t)length >= sizeof(path))
         return 0;
 
@@ -64,63 +73,107 @@ static int write_attr(const char *attribute, unsigned int value)
     return result;
 }
 
-static void remove_fixture(void)
+static void remove_device(const char *name)
 {
-    static const char *const attributes[] = {
-        "vendor",
-        "device",
-        "subsystem_vendor",
-        "subsystem_device",
-    };
-    char path[512];
+    char path[PATH_MAX];
     size_t i;
 
     for (i = 0; i < sizeof(attributes) / sizeof(attributes[0]); i++) {
-        if (snprintf(path, sizeof(path),
-                     ERNIC_SYSFS_INFINIBAND "/" DEVICE_NAME "/device/%s",
-                     attributes[i]) >= (int)sizeof(path))
+        if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/device/%s",
+                     name, attributes[i]) >= (int)sizeof(path))
             continue;
         (void)unlink(path);
     }
 
-    (void)snprintf(path, sizeof(path),
-                   ERNIC_SYSFS_INFINIBAND "/" DEVICE_NAME "/device");
-    (void)rmdir(path);
-    (void)snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/" DEVICE_NAME);
-    (void)rmdir(path);
-    (void)snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND);
-    (void)rmdir(path);
-    (void)snprintf(path, sizeof(path), ERNIC_TEST_FIXTURE_ROOT "/class");
-    (void)rmdir(path);
+    if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/device",
+                 name) < (int)sizeof(path))
+        (void)rmdir(path);
+    if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s", name) <
+        (int)sizeof(path))
+        (void)rmdir(path);
+}
+
+static void remove_fixture(void)
+{
+    remove_device(DEVICE_NAME);
+    (void)rmdir(ERNIC_SYSFS_INFINIBAND);
+    (void)rmdir(ERNIC_TEST_FIXTURE_ROOT "/class");
     (void)rmdir(ERNIC_TEST_FIXTURE_ROOT);
 }
 
-static int create_fixture(void)
+/* The class directories that every device's fixture sits under. */
+static int create_root(void)
 {
-    char path[512];
+    return make_dir(ERNIC_TEST_FIXTURE_ROOT) &&
+           make_dir(ERNIC_TEST_FIXTURE_ROOT "/class") &&
+           make_dir(ERNIC_SYSFS_INFINIBAND);
+}
+
+/* A device @name whose attributes are the emulated PCI tuple. */
+static int create_device(const char *name)
+{
+    char path[PATH_MAX];
     int length;
 
-    if (!make_dir(ERNIC_TEST_FIXTURE_ROOT))
-        return 0;
-    length = snprintf(path, sizeof(path), ERNIC_TEST_FIXTURE_ROOT "/class");
-    if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path))
-        return 0;
-    length = snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND);
+    length = snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s", name);
     if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path))
         return 0;
     length =
-        snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/" DEVICE_NAME);
-    if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path))
-        return 0;
-    length = snprintf(path, sizeof(path),
-                      ERNIC_SYSFS_INFINIBAND "/" DEVICE_NAME "/device");
+        snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/device", name);
     if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path))
         return 0;
 
-    return write_attr("vendor", ERNIC_PCI_VENDOR_ID) &&
-           write_attr("device", ERNIC_PCI_DEVICE_ID) &&
-           write_attr("subsystem_vendor", ERNIC_PCI_SUBSYSTEM_VENDOR_ID) &&
-           write_attr("subsystem_device", ERNIC_PCI_SUBSYSTEM_DEVICE_ID);
+    return write_attr(name, "vendor", ERNIC_PCI_VENDOR_ID) &&
+           write_attr(name, "device", ERNIC_PCI_DEVICE_ID) &&
+           write_attr(name, "subsystem_vendor",
+                      ERNIC_PCI_SUBSYSTEM_VENDOR_ID) &&
+           write_attr(name, "subsystem_device", ERNIC_PCI_SUBSYSTEM_DEVICE_ID);
+}
+
+/* Lengths of device name, each with the emulated tuple when it fits. */
+static const struct name_case {
+    const char *description;
+    size_t name_len;
+    int create; /* build a fixture device of this name */
+    int expected;
+} name_cases[] = {
+    {"one-character name", 1, 1, 1},
+    {"name longer than the old 192-byte path buffer", 200, 1, 1},
+    {"name at NAME_MAX", NAME_MAX, 1, 1},
+    {"name that cannot fit in PATH_MAX is rejected, not truncated", PATH_MAX, 0,
+     0},
+};
+
+static int run_name_cases(void)
+{
+    static char name[PATH_MAX + 1];
+    int failures = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(name_cases) / sizeof(name_cases[0]); i++) {
+        const struct name_case *c = &name_cases[i];
+        int got;
+
+        memset(name, 'n', c->name_len);
+        name[c->name_len] = '\0';
+        if (c->create && !create_device(name)) {
+            fprintf(stderr, "FAIL %s: could not create the fixture\n",
+                    c->description);
+            failures++;
+            remove_device(name);
+            continue;
+        }
+        got = ernic_device_tuple_matches(name);
+        if (got != c->expected) {
+            fprintf(stderr, "FAIL %s: matched %d, expected %d\n",
+                    c->description, got, c->expected);
+            failures++;
+        }
+        if (c->create)
+            remove_device(name);
+    }
+
+    return failures == 0;
 }
 
 int main(void)
@@ -128,7 +181,7 @@ int main(void)
     int result = EXIT_FAILURE;
 
     remove_fixture();
-    if (!create_fixture()) {
+    if (!create_root() || !create_device(DEVICE_NAME)) {
         fprintf(stderr, "Could not create RDMA-device sysfs fixture\n");
         goto cleanup;
     }
@@ -144,33 +197,40 @@ int main(void)
         goto cleanup;
     }
 
-    if (!write_attr("device", ERNIC_PCI_DEVICE_ID + 1) ||
+    if (!write_attr(DEVICE_NAME, "device", ERNIC_PCI_DEVICE_ID + 1) ||
         ernic_device_tuple_matches(DEVICE_NAME) ||
         ernic_device_matches(DEVICE_NAME, DEVICE_NAME)) {
         fprintf(stderr, "Wrong device ID was accepted\n");
         goto cleanup;
     }
-    if (!write_attr("device", ERNIC_PCI_DEVICE_ID) ||
-        !write_attr("subsystem_vendor", ERNIC_PCI_SUBSYSTEM_VENDOR_ID + 1) ||
+    if (!write_attr(DEVICE_NAME, "device", ERNIC_PCI_DEVICE_ID) ||
+        !write_attr(DEVICE_NAME, "subsystem_vendor",
+                    ERNIC_PCI_SUBSYSTEM_VENDOR_ID + 1) ||
         ernic_device_tuple_matches(DEVICE_NAME) ||
         ernic_device_matches(DEVICE_NAME, DEVICE_NAME)) {
         fprintf(stderr, "Wrong subsystem vendor ID was accepted\n");
         goto cleanup;
     }
-    if (!write_attr("subsystem_vendor", ERNIC_PCI_SUBSYSTEM_VENDOR_ID) ||
-        !write_attr("subsystem_device", ERNIC_PCI_SUBSYSTEM_DEVICE_ID + 1) ||
+    if (!write_attr(DEVICE_NAME, "subsystem_vendor",
+                    ERNIC_PCI_SUBSYSTEM_VENDOR_ID) ||
+        !write_attr(DEVICE_NAME, "subsystem_device",
+                    ERNIC_PCI_SUBSYSTEM_DEVICE_ID + 1) ||
         ernic_device_tuple_matches(DEVICE_NAME) ||
         ernic_device_matches(DEVICE_NAME, DEVICE_NAME)) {
         fprintf(stderr, "Wrong subsystem device ID was accepted\n");
         goto cleanup;
     }
-    if (!write_attr("subsystem_device", ERNIC_PCI_SUBSYSTEM_DEVICE_ID) ||
-        !write_attr("vendor", ERNIC_PCI_VENDOR_ID + 1) ||
+    if (!write_attr(DEVICE_NAME, "subsystem_device",
+                    ERNIC_PCI_SUBSYSTEM_DEVICE_ID) ||
+        !write_attr(DEVICE_NAME, "vendor", ERNIC_PCI_VENDOR_ID + 1) ||
         ernic_device_tuple_matches(DEVICE_NAME) ||
         ernic_device_matches(DEVICE_NAME, DEVICE_NAME)) {
         fprintf(stderr, "Wrong vendor ID was accepted\n");
         goto cleanup;
     }
+
+    if (!run_name_cases())
+        goto cleanup;
 
     result = EXIT_SUCCESS;
 
