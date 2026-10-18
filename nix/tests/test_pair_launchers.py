@@ -34,16 +34,23 @@ class PairTests(unittest.TestCase):
         ]
         for description, value, expected in cases:
             with self.subTest(description=description, expected=expected):
-                result = subprocess.run(
-                    [os.environ["ERNIC_TEST_PORT"], value],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
+                result = self.run_launcher([os.environ["ERNIC_TEST_PORT"], value])
                 self.assertEqual(result.returncode, 2 if expected is None else 0)
                 self.assertEqual(result.stdout.strip(), expected or "")
                 self.assertNotIn("value too great", result.stderr)
+
+    @staticmethod
+    def run_launcher(argv, env=None, stdin=None):
+        """Run one row's launcher with a deadline; the caller checks status."""
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            check=False,
+            env=env,
+            input=stdin,
+            text=True,
+            timeout=5,
+        )
 
     @staticmethod
     def environment(root, first, second):
@@ -79,14 +86,10 @@ class PairTests(unittest.TestCase):
             with self.subTest(description=description, expected=expected):
                 with tempfile.TemporaryDirectory() as scratch:
                     root = Path(scratch)
-                    result = subprocess.run(
+                    result = self.run_launcher(
                         [os.environ[f"ERNIC_TEST_{runner}"], "08"],
-                        env=self.environment(root, first, second),
-                        input="console input\n",
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                        check=False,
+                        self.environment(root, first, second),
+                        "console input\n",
                     )
                     self.assertEqual(result.returncode, expected, result.stderr)
                     self.assert_reaped(root)
