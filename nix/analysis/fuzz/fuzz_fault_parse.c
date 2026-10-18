@@ -22,8 +22,8 @@
  * LLVMFuzzerInitialize() first runs a table of seed specs -- positive,
  * negative, boundary and corner -- through the same checks plus whether
  * each should be accepted, so the oracle itself is tested on every run; a
- * failing seed aborts before any fuzzing starts.  With FUZZ_EMIT_SEEDS=<dir>
- * it also writes them there as a seed corpus.
+ * failing seed aborts before any fuzzing starts.  With FUZZ_EMIT_SEEDS=1
+ * it also writes them into the current directory as a seed corpus.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -32,12 +32,14 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ionic_fault.h"
 
@@ -238,25 +240,46 @@ static const struct seed seeds[] = {
      "stats_vals: sequence 1,0,1,0,1,0,1x2,0 effect fail", true},
 };
 
-static void emit_seed(const char *dir, size_t i, const char *spec)
+/* Seed names are generated locally; environment data never becomes a path. */
+static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
 {
-    char path[512];
-    size_t len = strlen(spec);
+    char path[32];
+    int fd;
     FILE *f;
+    bool ok;
 
-    snprintf(path, sizeof(path), "%s/seed-%02zu", dir, i);
-    f = fopen(path, "wb");
-    if (!f || fwrite(spec, 1, len, f) != len) {
-        fprintf(stderr, "fuzz_fault_parse: cannot write %s\n", path);
-        exit(EXIT_FAILURE);
+    snprintf(path, sizeof(path), "seed-%02zu", i);
+    /* Never overwrite an existing file or follow a planted symlink.  With
+     * _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
+    if (fd < 0) {
+        fprintf(stderr, "fuzz_fault_parse: cannot create %s\n", path);
+        return false;
     }
-    fclose(f);
+    f = fdopen(fd, "wb");
+    if (!f) {
+        close(fd);
+        fprintf(stderr, "fuzz_fault_parse: cannot open %s as a stream\n", path);
+        return false;
+    }
+    ok = fwrite(buf, 1, len, f) == len;
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok)
+        fprintf(stderr, "fuzz_fault_parse: cannot write %s\n", path);
+    return ok;
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-    const char *dir = getenv("FUZZ_EMIT_SEEDS");
+    const char *emit = getenv("FUZZ_EMIT_SEEDS");
+    bool emit_seeds = emit && strcmp(emit, "1") == 0;
     int failures = 0;
+    int unwritten = 0;
 
     (void)argc;
     (void)argv;
@@ -273,14 +296,20 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
                    why ? ": " : "", why ? why : "");
             failures++;
         }
-        if (dir)
-            emit_seed(dir, i, s->spec);
+        if (emit_seeds &&
+            !emit_seed(i, (const uint8_t *)s->spec, strlen(s->spec)))
+            unwritten++;
     }
     fflush(stdout);
-    if (failures) {
+    if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
-         * seed has to stop the run itself. */
-        fprintf(stderr, "fuzz_fault_parse: %d seed(s) failed\n", failures);
+         * seed, or a corpus that could not be written, has to stop the run
+         * itself.  abort() rather than exit(), which isn't thread safe. */
+        if (failures)
+            fprintf(stderr, "fuzz_fault_parse: %d seed(s) failed\n", failures);
+        if (unwritten)
+            fprintf(stderr, "fuzz_fault_parse: %d seed(s) not written\n",
+                    unwritten);
         abort();
     }
     return 0;

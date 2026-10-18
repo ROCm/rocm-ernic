@@ -135,3 +135,19 @@ ernic_add_fuzz_replay(fault_parse
 target_compile_definitions(fuzz_replay_fault_parse PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE
 )
+
+# Check private seed files and rejection of existing filesystem entries.
+add_test(
+    NAME fuzz-seed-files-fault_parse
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_fuzz_seed_files.sh
+        $<TARGET_FILE:fuzz_replay_fault_parse>
+)
+set_tests_properties(fuzz-seed-files-fault_parse PROPERTIES TIMEOUT 30)
+
+# Check private seed files and rejection of existing filesystem entries.
+add_test(
+    NAME fuzz-seed-files-ionic_stats
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_fuzz_seed_files.sh
+        $<TARGET_FILE:fuzz_replay_ionic_stats>
+)
+set_tests_properties(fuzz-seed-files-ionic_stats PROPERTIES TIMEOUT 30)
