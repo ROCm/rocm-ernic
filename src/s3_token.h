@@ -97,7 +97,8 @@ bool s3_reply_parse_peer(const char *reply, size_t len, struct s3_token *peer,
 
 /*
  * Format "<code>:<token-hex>".  @out must have room for
- * S3_TOKEN_HEX_LEN + 8 bytes; S3_REPLY_MAX is that size.
+ * S3_TOKEN_HEX_LEN + 8 bytes; S3_REPLY_MAX is that size.  A code outside
+ * 0-999 (what s3_reply_parse_code() accepts) is sent as 500.
  */
 #define S3_REPLY_MAX (S3_TOKEN_HEX_LEN + 8)
 void s3_reply_format(int http_code, const struct s3_token *peer, char *out);

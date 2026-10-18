@@ -1,38 +1,24 @@
+# Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+#
+# Dependabot version updates. See
+# https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
+
 version: 2
 updates:
-  # "/" covers .github/workflows; composite actions keep their own `uses:`
-  # pins, so .github/actions has to be listed separately to get bumped.
-  # Dependabot rejects a second github-actions entry that also covers "/",
-  # so every directory for this ecosystem belongs in this one entry.
-  - package-ecosystem: github-actions
-    directories:
-      - "/"
-      - "/.github/actions/*"
+  - package-ecosystem: "github-actions"
+    # "/" covers .github/workflows; composite actions keep their own `uses:`
+    # pins, so .github/actions has to be listed separately to get bumped.
+    directory: "/"
     schedule:
-      interval: daily
-    # Hold new releases back for a week before proposing them.
+      interval: "daily"
+      # Wait a week before adopting newly released action versions.
     cooldown:
       default-days: 7
-    commit-message:
-      prefix: "chore"
-      include: "scope"
+      exclude:
+        - "ROCm/rocm-security-gh*"
     groups:
+      rocm-security-gh:
+        patterns: ["ROCm/rocm-security-gh*"]
       github-actions:
-        patterns:
-          - "*"
-
-  # Current Python dependency manifests in this repo live at the top level
-  # and under prometheus/.
-  - package-ecosystem: pip
-    directories:
-      - "/"
-      - "/prometheus"
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
-    groups:
-      python:
-        patterns:
-          - "*"
+        patterns: ["*"]

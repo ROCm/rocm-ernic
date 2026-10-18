@@ -232,6 +232,20 @@
         checks.pair-launchers = import ./nix/pair-launcher-tests.nix { inherit pkgs; };
         checks.launchers = import ./nix/launcher-tests.nix { inherit pkgs; };
 
+        checks.analysis-runners = pkgs.runCommand "analysis-runner-tests" {
+          nativeBuildInputs = [ pkgs.python3 pkgs.jq ];
+        } ''
+          export ERNIC_TEST_EXERCISE=${import ./nix/analysis/run-loopback.nix {
+            inherit pkgs;
+            waitAttempts = 50;
+            pollSeconds = "0.02";
+            clientTimeout = "0.4s";
+            shutdownTimeout = "0.4s";
+          }}/bin/run-loopback-exercise
+          python3 ${./nix/analysis}/test_runners.py
+          touch "$out"
+        '';
+
         devShells.default = devshell;
       })
     // {

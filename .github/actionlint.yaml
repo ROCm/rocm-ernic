@@ -1,0 +1,22 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# actionlint configuration (https://github.com/rhysd/actionlint).
+
+self-hosted-runner:
+  # The custom labels ci/runner/register-runner.sh gives the self-hosted
+  # runners, which actionlint would otherwise report as unknown.
+  labels:
+    - rocm-ernic
+    - kvm
+
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      # actionlint 1.7.12, the latest release, doesn't know the $/
+      # self-repository form of uses: that the workflows use for in-repo
+      # actions and reusable workflows
+      # (https://github.com/rhysd/actionlint/issues/711).
+      - 'specifying action "\$/[^"]+" in invalid format'
+      - 'reusable workflow call "\$/[^"]+" at "uses" is not following'

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # hot-reload.sh
 #
@@ -116,8 +116,7 @@ wait_for_exit() {
 wait_for_socket() {
     local path=$1
     local timeout=${2:-15}
-    local i
-    for i in $(seq 1 $((timeout * 2))); do
+    for _ in $(seq 1 $((timeout * 2))); do
         if [ -S "$path" ]; then
             return 0
         fi

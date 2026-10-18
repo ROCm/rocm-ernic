@@ -9,6 +9,8 @@
 # A Python venv is created automatically in the build tree
 # and populated from requirements.txt.
 
+include_guard(GLOBAL)
+
 option(ERNIC_BUILD_DOCS
   "Build documentation with Sphinx + Breathe + Doxygen"
   OFF)
@@ -18,11 +20,11 @@ if(ERNIC_BUILD_DOCS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
     # ── Python venv with Sphinx + Breathe ──────────────
-    set(ERNIC_DOCS_VENV "${CMAKE_BINARY_DIR}/docs-venv")
+    set(ERNIC_DOCS_VENV "${PROJECT_BINARY_DIR}/docs-venv")
     set(ERNIC_DOCS_VENV_STAMP
       "${ERNIC_DOCS_VENV}/stamp")
     set(ERNIC_DOCS_REQUIREMENTS
-      "${CMAKE_SOURCE_DIR}/requirements.txt")
+      "${PROJECT_SOURCE_DIR}/requirements.txt")
 
     if(WIN32)
         set(ERNIC_VENV_BIN
@@ -55,39 +57,39 @@ if(ERNIC_BUILD_DOCS)
     )
 
     # ── Paths ──────────────────────────────────────────
-    set(ERNIC_DOC_PATH "${CMAKE_BINARY_DIR}/docs")
+    set(ERNIC_DOC_PATH "${PROJECT_BINARY_DIR}/docs")
     set(BREATHE_DOC_XML_DIR
       "${ERNIC_DOC_PATH}/xml")
 
     set(ERNIC_DOXYFILE_INPUT
-      "${CMAKE_SOURCE_DIR}/src/rocm_ernic_internal.h"
-      "${CMAKE_SOURCE_DIR}/src/rocm_ernic_compat.h"
-      "${CMAKE_SOURCE_DIR}/src/ionic_eth_emu.h"
-      "${CMAKE_SOURCE_DIR}/src/ionic_rdma_devcmd.h"
-      "${CMAKE_SOURCE_DIR}/src/ionic_adminq.h"
-      "${CMAKE_SOURCE_DIR}/src/ionic_datapath.h"
+      "${PROJECT_SOURCE_DIR}/src/rocm_ernic_internal.h"
+      "${PROJECT_SOURCE_DIR}/src/rocm_ernic_compat.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic_rdma_devcmd.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic_adminq.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic_datapath.h"
     )
     # Doxygen's INPUT is space-separated, not a CMake list
     list(JOIN ERNIC_DOXYFILE_INPUT " " ERNIC_DOXYFILE_INPUT)
     # Configure Doxyfile (substitutes @VARIABLES@)
     configure_file(
-      ${CMAKE_SOURCE_DIR}/docs/Doxyfile.in
-      ${CMAKE_BINARY_DIR}/Doxyfile
+      ${PROJECT_SOURCE_DIR}/docs/Doxyfile.in
+      ${PROJECT_BINARY_DIR}/Doxyfile
       @ONLY
     )
 
     # Configure conf.py (substitutes Breathe XML path)
     configure_file(
-      ${CMAKE_SOURCE_DIR}/docs/conf.py
-      ${CMAKE_BINARY_DIR}/docs-sphinx/conf.py
+      ${PROJECT_SOURCE_DIR}/docs/conf.py
+      ${PROJECT_BINARY_DIR}/docs-sphinx/conf.py
       @ONLY
     )
 
     # ── Doxygen target: source headers -> XML ──────────
     add_custom_target(doxygen
       COMMAND ${DOXYGEN_EXECUTABLE}
-        ${CMAKE_BINARY_DIR}/Doxyfile
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        ${PROJECT_BINARY_DIR}/Doxyfile
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
       COMMENT "Generating Doxygen XML"
       VERBATIM
     )
@@ -96,11 +98,11 @@ if(ERNIC_BUILD_DOCS)
     add_custom_target(sphinx-html
       COMMAND ${SPHINX_BUILD}
         -b html
-        -c ${CMAKE_BINARY_DIR}/docs-sphinx
-        ${CMAKE_SOURCE_DIR}/docs
+        -c ${PROJECT_BINARY_DIR}/docs-sphinx
+        ${PROJECT_SOURCE_DIR}/docs
         ${ERNIC_DOC_PATH}/html
       DEPENDS doxygen docs-venv
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
       COMMENT "Building Sphinx HTML documentation"
       VERBATIM
     )

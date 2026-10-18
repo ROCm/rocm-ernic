@@ -1,0 +1,11 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+trivial:
+  - >-
+    The collection's ``LICENSE`` no longer lists the repository's
+    GPL-licensed files, a list that had fallen out of date. It says the
+    collection is MIT and points to the repository's ``LICENSE.md`` for
+    the rest of rocm-ernic.

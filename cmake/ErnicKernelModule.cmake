@@ -15,6 +15,8 @@
 #
 # Included from the top-level CMakeLists.txt.
 
+include_guard(GLOBAL)
+
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
@@ -43,13 +45,13 @@ set(IONIC_KERNEL_REPO
 # ---------------------------------------------------------------------------
 
 set(IONIC_SOURCE_DIR
-    "${CMAKE_BINARY_DIR}/ionic-kernel-src")
+    "${PROJECT_BINARY_DIR}/ionic-kernel-src")
 set(IONIC_PATCHES_DIR
-    "${CMAKE_SOURCE_DIR}/patches")
+    "${PROJECT_SOURCE_DIR}/patches")
 set(IONIC_DKMS_SCRIPT
-    "${CMAKE_SOURCE_DIR}/scripts/setup-ionic-dkms.sh")
+    "${PROJECT_SOURCE_DIR}/scripts/setup-ionic-dkms.sh")
 set(IONIC_FETCH_SCRIPT
-    "${CMAKE_SOURCE_DIR}/scripts/fetch-ionic-sources.sh")
+    "${PROJECT_SOURCE_DIR}/scripts/fetch-ionic-sources.sh")
 
 # ---------------------------------------------------------------------------
 # Helper: fetch-and-patch target

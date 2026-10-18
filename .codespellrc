@@ -8,7 +8,12 @@ check-hidden = true
 # without carrying a patch, so don't let it fail CI.
 # ansible/.ansible is a local collection install, not ours and not in git;
 # CI never sees it, so skipping keeps a local run honest.
-skip = ./.git,./third-party,./.claude/settings.local.json,./ansible/.ansible
+# *.patch are verbatim upstream commits under patches/, vendored the same
+# way and for the same reason: correcting a typo in one would make it stop
+# matching the series it was exported from, and every later rebase would
+# have to carry the correction forward. The READMEs beside them are ours
+# and stay checked.
+skip = ./.git,./third-party,./.claude/settings.local.json,./ansible/.ansible,*.patch
 
 # AER is the NVMe Asynchronous Event Request, not a misspelling of "are".
 ignore-words-list = clen,VAs,TRIMed,AER

@@ -180,7 +180,7 @@ jobs:
 
       - name: Upload CTest results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ctest-${{ matrix.build_type }}
           path: /var/tmp/ernic-ci-work/results/ctest-junit.xml
@@ -228,7 +228,7 @@ jobs:
 
       - name: Upload VM logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vm-logs
           path: /var/tmp/ernic-ci-work/log/
@@ -269,7 +269,7 @@ jobs:
 
       - name: Upload VM logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vm-nvmeof-logs
           path: /var/tmp/ernic-ci-work/log/
@@ -308,7 +308,7 @@ jobs:
 
       - name: Upload VM logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vm-s3-logs
           path: /var/tmp/ernic-ci-work/log/
@@ -341,7 +341,7 @@ jobs:
 
       - name: Upload perf CSVs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-csv
           path: /var/tmp/ernic-ci-work/results/perf-csv/
@@ -352,7 +352,7 @@ jobs:
       # failure is just a wall of FAIL rows.
       - name: Upload server and VM logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-logs
           path: /var/tmp/ernic-ci-work/log/
@@ -432,7 +432,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-report
           path: |

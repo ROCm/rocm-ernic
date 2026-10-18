@@ -62,7 +62,12 @@ Build Options
      - Description
    * - ``CMAKE_BUILD_TYPE``
      - ``Debug``
-     - Build type (Debug, Release, RelWithDebInfo, etc.)
+     - Build type (Debug, Release, RelWithDebInfo, etc.).
+       When rocm-ernic is a subproject, the parent project's
+       build type is used instead
+   * - ``BUILD_TESTING``
+     - ``ON``
+     - Build the tests and register them with CTest
    * - ``ERNIC_WERROR``
      - ``OFF``
      - Treat compiler warnings as errors for project code.
@@ -71,10 +76,28 @@ Build Options
        (see :ref:`werror-policy`)
    * - ``ERNIC_USE_SANITIZERS``
      - ``OFF``
-     - Enable ASAN / LSAN / UBSAN
+     - Build with ASan, LSan, UBSan, and the compiler's other
+       checks that can be combined with them
+       (see :ref:`sanitizers`)
    * - ``ERNIC_USE_THREAD_SANITIZER``
      - ``OFF``
-     - Enable TSAN (mutually exclusive with above)
+     - Build with TSan (mutually exclusive with above)
+   * - ``ERNIC_SANITIZER_SHARED_RUNTIME``
+     - ``ON`` (GCC), ``OFF`` (Clang)
+     - Link the shared sanitizer runtime instead of the
+       static one
+   * - ``ERNIC_USE_CODE_COVERAGE``
+     - ``OFF``
+     - Build with LLVM source-based code coverage; Clang only
+       (see :ref:`code-coverage`)
+   * - ``ERNIC_USE_IWYU``
+     - ``OFF``
+     - Run include-what-you-use while compiling; advisory
+       (see :ref:`iwyu`)
+   * - ``ERNIC_USE_CLANG_TIDY``
+     - ``OFF``
+     - Run clang-tidy while compiling; every finding is an
+       error. Clang only (see :ref:`clang-tidy`)
    * - ``ERNIC_BUILD_DOCS``
      - ``OFF``
      - Build Sphinx + Breathe + Doxygen documentation
@@ -108,17 +131,20 @@ Build Options
 Warnings as Errors
 ------------------
 
-``ERNIC_WERROR`` adds ``-Werror`` to the project's own
-sources and to the test targets. The vendored QEMU sources
-under ``third-party/`` are compiled with ``-w`` regardless,
-so the flag only governs code this project maintains.
+``ERNIC_WERROR`` adds ``-Werror`` to every target that
+``ernic_set_compiler_flags()`` sets up: the server, the test
+programs, and the fuzz harness replay programs. The vendored
+QEMU sources under ``third-party/`` are compiled with ``-w``
+regardless, so the flag only governs code this project
+maintains.
 
 It defaults to ``OFF`` so that a packager or downstream
 consumer building with a compiler version we have not tested
 is never blocked by a newly-introduced warning. That
-tolerance is not extended to our own CI: every lane that
-compiles the project configures with ``-DERNIC_WERROR=ON``,
-so a new warning fails the build before it can merge.
+tolerance is not extended to our own CI: the jobs that build
+the project to test or release it configure with
+``-DERNIC_WERROR=ON``, so a new warning fails the build
+before it can merge.
 
 Developers should build with it on, matching CI:
 
@@ -126,11 +152,176 @@ Developers should build with it on, matching CI:
 
    cmake -B build -G Ninja -DERNIC_WERROR=ON
 
-The ``nix`` static-analysis, dynamic-analysis, and fuzz
-builds are the one exception; they configure with it off
-because gcc 15 and current clang emit warnings on the
-QEMU-ported headers that these builds cannot suppress.
-Those lanes are informational and do not gate merges.
+Some CI builds leave it off. The CodeQL, clang-tidy, and
+include-what-you-use jobs build the project only to analyze
+it, and leave checking for warnings to the Build and Test
+workflow. The ``nix`` static-analysis, dynamic-analysis, and
+fuzz builds leave it off because gcc 15 and current clang
+emit warnings on the QEMU-ported headers that these builds
+cannot suppress. Those lanes are informational and do not
+gate merges.
+
+.. _sanitizers:
+
+Sanitizers
+----------
+
+``ERNIC_USE_SANITIZERS`` builds the server and the test programs
+with every sanitizer except ThreadSanitizer that the compiler
+supports and that can be combined with AddressSanitizer:
+
+- With GCC and Clang: AddressSanitizer (including
+  LeakSanitizer), UndefinedBehaviorSanitizer, and the
+  ``float-divide-by-zero`` check.
+- With GCC: the ``bounds-strict``, ``float-cast-overflow``,
+  ``pointer-compare``, and ``pointer-subtract`` checks.
+- With Clang: the ``implicit-conversion``, ``local-bounds``,
+  and ``nullability`` checks.
+
+Clang doesn't get ``pointer-compare`` and ``pointer-subtract``,
+since in optimized code they report comparisons and subtractions
+that the optimizer added.
+
+``ERNIC_USE_THREAD_SANITIZER`` builds them with
+ThreadSanitizer. ThreadSanitizer can't be combined with
+AddressSanitizer, so only one of these two options can be on.
+Use a separate build directory for each.
+
+Both options need GCC or Clang. Configuring checks that the
+compiler can build a program with the sanitizers, and fails if,
+for example, the sanitizer runtimes aren't installed:
+
+.. code-block:: bash
+
+   cmake -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang \
+     -DERNIC_USE_SANITIZERS=ON
+   cmake --build build-asan
+   ctest --test-dir build-asan
+
+The sanitizers instrument everything rocm-ernic compiles,
+including the vendored QEMU sources. Libraries that come from
+the system, such as libvfio-user, GLib, and libibverbs, are not
+instrumented.
+
+Every sanitizer report is fatal, so a test with a report fails.
+Each program sets some of the sanitizers' run-time options, such
+as the one that turns on GCC's ``pointer-compare`` and
+``pointer-subtract`` checks, and the one that makes
+ThreadSanitizer stop at its first report (see
+``cmake/sanitizer-default-options.c``). The ``ASAN_OPTIONS``,
+``UBSAN_OPTIONS``, and ``TSAN_OPTIONS`` environment variables
+override them.
+
+``ERNIC_SANITIZER_SHARED_RUNTIME`` links programs with the
+shared library version of the sanitizer runtime. Libraries from
+another build that also uses the shared runtime, such as a
+sanitizer build of libvfio-user, can then be used in the same
+program. If the runtime isn't in a directory that the dynamic
+linker searches, as with Clang's, the programs get an RPATH to
+it. When the option is ``OFF``, programs link the static
+runtime. It defaults to what the compiler does on its own:
+``ON`` with GCC and ``OFF`` with Clang. Ubuntu's Clang 18
+ignores the programs' default run-time options when they use
+its shared runtime.
+
+If ThreadSanitizer stops a program at startup with an
+"unexpected memory mapping" error, the kernel's address space
+layout randomization uses more bits than ThreadSanitizer
+supports. Run the program under ``setarch "$(uname -m)" -R``,
+as CI does, or reduce the randomization with
+``sudo sysctl vm.mmap_rnd_bits=28``.
+
+.. _code-coverage:
+
+Code Coverage
+-------------
+
+``ERNIC_USE_CODE_COVERAGE`` instruments the server and the
+test programs with LLVM source-based coverage. It needs Clang,
+and the ``llvm-profdata`` and ``llvm-cov`` of the same LLVM
+version (on Ubuntu, the ``llvm-<version>`` package). Each
+instrumented program writes its profile to ``coverage/profraw``
+in the build directory however it is started, so the servers
+that the CTest scripts launch are counted too. The
+``ernic-coverage`` target merges the profiles and reports the
+coverage of ``src/``:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang \
+     -DERNIC_USE_CODE_COVERAGE=ON
+   cmake --build build
+   ctest --test-dir build
+   cmake --build build --target ernic-coverage
+
+The report goes in ``coverage/report.txt`` (a summary for each
+file) and ``coverage/lines.txt`` (the count for each line).
+The profiles accumulate across runs; delete
+``coverage/profraw`` to start over.
+
+CI's Build and Test workflow runs one coverage leg (Clang,
+Debug, no project-wide sanitizer). It puts the report on the
+run's summary page and fails if line coverage drops below the
+floor set in the workflow. On ``develop`` it also publishes the
+figure to the ``badges`` branch, which the README's Coverage
+badge reads.
+
+.. _iwyu:
+
+include-what-you-use
+--------------------
+
+``ERNIC_USE_IWYU`` runs `include-what-you-use
+<https://include-what-you-use.org/>`_ (IWYU) on the server's
+and the tests' sources as they compile, which prints the
+``#include`` lines it suggests adding or removing. The
+suggestions don't fail the build, and some are wrong. The
+vendored sources in ``third-party/`` are skipped. It needs
+CMake 3.27 or later.
+
+IWYU parses with its own clang, which rejects compiler options
+that it doesn't know, so build with the clang that IWYU is
+built on. ``include-what-you-use --version`` prints its
+version:
+
+.. code-block:: bash
+
+   cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
+     -DERNIC_USE_IWYU=ON
+   cmake --build build-iwyu
+
+The mapping files ``cmake/iwyu-*.imp`` correct IWYU where it
+names the wrong header. CI's IWYU workflow lists the files with
+suggestions on the run's summary page, and fails only if IWYU
+itself fails. ``AGENTS.md`` describes how to run that check
+locally and which suggestions to ignore.
+
+.. _clang-tidy:
+
+clang-tidy
+----------
+
+``ERNIC_USE_CLANG_TIDY`` runs `clang-tidy
+<https://clang.llvm.org/extra/clang-tidy/>`__ on the server's
+and the tests' sources as they compile, with the checks in
+``.clang-tidy``. Every finding is an error, so it fails the
+build. The vendored sources in ``third-party/`` and their
+headers are skipped. It needs CMake 3.27 or later, clang-tidy 19
+or later, and Clang as the C compiler, since clang-tidy rejects
+the options that the build uses with GCC. Use the clang of the
+same version as clang-tidy:
+
+.. code-block:: bash
+
+   cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
+     -DERNIC_USE_CLANG_TIDY=ON \
+     -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
+   cmake --build build-tidy -- -k 0
+
+``-k 0`` keeps building after a file fails, so one build
+reports every finding. CI's clang-tidy workflow builds Debug
+and Release with clang-tidy 23 and lists the findings by check
+on the run's summary page.
 
 Guest ionic Modules
 -------------------

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Test multiple loopback backend configurations.
 # Uses TEST_BIN for client test (default: test_rdma_cm). CI may set
@@ -30,6 +30,7 @@ declare -a CONFIGS=(
 )
 
 # Cleanup function
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
     local pid="${SERVER_PID:-}"
     if [ -n "$pid" ]; then

@@ -12,9 +12,7 @@
 #ifndef RDMA_CM_PROTO_H
 #define RDMA_CM_PROTO_H
 
-#include <stdint.h>
 #include <stddef.h>
-#include <stdbool.h>
 
 /* Process rdma_cm message from TCP payload
  * Returns: response size, or 0 if no response needed

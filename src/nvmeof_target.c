@@ -38,7 +38,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
@@ -356,7 +355,12 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
             set_err(err, errlen, "out of memory");
             goto fail;
         }
+        /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+         * open(path, flags, mode) overload, and android-cloexec-open looks
+         * for O_CLOEXEC in its mode */
+        /* NOLINTBEGIN(android-cloexec-open) */
         t->ns_fd = open(t->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        /* NOLINTEND(android-cloexec-open) */
         if (t->ns_fd < 0) {
             set_err(err, errlen, "cannot open %s: %s", t->cfg.file,
                     strerror(errno));
@@ -1289,7 +1293,7 @@ int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
      * Connect yet simply reports zero.
      */
     if (q->sqsize != 0) {
-        q->sq_head = (uint16_t)((q->sq_head + 1) % ((uint32_t)q->sqsize + 1));
+        q->sq_head = (uint16_t)((q->sq_head + 1u) % ((uint32_t)q->sqsize + 1u));
     }
 
     nvme_put_le16(out + NVME_CQE_SQHD_OFF, q->sq_head);

@@ -7,9 +7,11 @@
 # if it stopped evaluating -- it would simply rot until someone tried to
 # use it.
 #
-# This deliberately stops at evaluation plus the dev shell. Building the
-# analysis toolkit or the cross/OCI targets pulls a very large closure and
-# belongs in a scheduled job, not on every pull request.
+# This deliberately stops at evaluation plus the dev shell and the
+# analysis-runners check, which tests the analysis scripts against fakes
+# without building the server. Building the analysis toolkit or the
+# cross/OCI targets pulls a very large closure and belongs in a scheduled
+# job, not on every pull request.
 name: rocm-ernic - Nix Check
 
 on:
@@ -59,3 +61,8 @@ jobs:
 
       - name: Test packaged launchers and module assertions
         run: nix build .#checks.x86_64-linux.launchers .#checks.x86_64-linux.pair-launchers --no-link -L
+
+      # Runs nix/analysis/test_runners.py against a fake server and client;
+      # it does not build the server.
+      - name: Test the analysis runners
+        run: nix build .#checks.x86_64-linux.analysis-runners --no-link -L

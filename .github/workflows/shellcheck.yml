@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts
+# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts;
+# actionlint, which runs ShellCheck on the workflows' run: blocks; and
+# tools/check-embedded-shell.py, which runs it on the shell inside other
+# files (Ansible tasks, composite actions, heredocs).
 name: rocm-ernic - ShellCheck
 
 on:
@@ -12,7 +15,11 @@ on:
       - '**.sh'
       - '**.sh.in'
       - 'service/**'
-      - '.github/workflows/shellcheck.yml'
+      - '.github/workflows/**'
+      - '.github/actionlint.yaml'
+      - '.github/actions/**'
+      - 'ansible/**'
+      - 'tools/check-embedded-shell.py'
   workflow_dispatch:
 
 permissions:
@@ -37,14 +44,62 @@ jobs:
       # new scripts are picked up without editing this file. *.sh.in
       # templates match neither rule and are added explicitly.
       #
-      # The ShellCheck version is pinned because new releases add and split
-      # checks: 0.11.0 moved "function only invoked via trap" out of SC2317
-      # into the new SC2329, which is why both are excluded below.
+      # No default check is excluded; the optional ones that --enable turns
+      # on stay off. The ShellCheck version is pinned because new
+      # releases add and split checks: 0.11.0 moved "function only invoked
+      # via trap" out of SC2317 into the new SC2329.
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
-        env:
-          SHELLCHECK_OPTS: -e SC2024,SC2034,SC2086,SC2154,SC2164,SC2181,SC2317,SC2329
         with:
           version: v0.11.0
           ignore_paths: third-party
           additional_files: .sh.in
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # actionlint runs the first shellcheck on PATH, so install the same
+      # ShellCheck as the job above rather than use the runner's older one.
+      # Both are pinned because new releases add checks.
+      - name: Install actionlint and ShellCheck
+        run: python3 -m pip install actionlint-py==1.7.12.25 shellcheck-py==0.11.0.1
+
+      # Reads its configuration from .github/actionlint.yaml.
+      - name: Run actionlint
+        run: |
+          shellcheck --version
+          actionlint -shellcheck "$(command -v shellcheck)"
+
+  embedded:
+    name: Lint embedded shell
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The same ShellCheck as the jobs above, rather than the runner's.
+      - name: Install PyYAML and ShellCheck
+        run: python3 -m pip install pyyaml==6.0.3 shellcheck-py==0.11.0.1
+
+      - name: Check the shell in Ansible tasks, composite actions and heredocs
+        run: |
+          shellcheck --version
+          tools/check-embedded-shell.py

@@ -17,6 +17,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <arpa/inet.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

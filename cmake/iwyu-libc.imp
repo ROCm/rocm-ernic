@@ -1,0 +1,17 @@
+[
+  { "include": ["<bits/mman-map-flags-generic.h>", "private", "<sys/mman.h>", "public"] },
+  { "symbol": ["iovec", "private", "<sys/socket.h>", "public"] },
+  { "symbol": ["off_t", "private", "<fcntl.h>", "public"] },
+  { "symbol": ["off_t", "private", "<stdio.h>", "public"] },
+  { "symbol": ["off_t", "private", "<sys/mman.h>", "public"] },
+  { "symbol": ["off_t", "private", "<sys/stat.h>", "public"] },
+  { "symbol": ["off_t", "private", "<unistd.h>", "public"] },
+  { "symbol": ["ssize_t", "private", "<stdio.h>", "public"] },
+  { "symbol": ["ssize_t", "private", "<sys/socket.h>", "public"] },
+  { "symbol": ["ssize_t", "private", "<sys/uio.h>", "public"] },
+  { "symbol": ["ssize_t", "private", "<unistd.h>", "public"] },
+  { "symbol": ["htonl", "private", "<netinet/in.h>", "public"] },
+  { "symbol": ["htons", "private", "<netinet/in.h>", "public"] },
+  { "symbol": ["ntohl", "private", "<netinet/in.h>", "public"] },
+  { "symbol": ["ntohs", "private", "<netinet/in.h>", "public"] }
+]
