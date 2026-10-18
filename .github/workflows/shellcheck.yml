@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts, and
-# actionlint, which runs ShellCheck on the workflows' run: blocks
+# Run ShellCheck (https://www.shellcheck.net/) over the shell scripts;
+# actionlint, which runs ShellCheck on the workflows' run: blocks; and
+# tools/check-embedded-shell.py, which runs it on the shell inside other
+# files (Ansible tasks, composite actions, heredocs).
 name: rocm-ernic - ShellCheck
 
 on:
@@ -15,6 +17,9 @@ on:
       - 'service/**'
       - '.github/workflows/**'
       - '.github/actionlint.yaml'
+      - '.github/actions/**'
+      - 'ansible/**'
+      - 'tools/check-embedded-shell.py'
   workflow_dispatch:
 
 permissions:
@@ -69,8 +74,31 @@ jobs:
       - name: Install actionlint and ShellCheck
         run: python3 -m pip install actionlint-py==1.7.12.25 shellcheck-py==0.11.0.1
 
-      # Reads .github/actionlint.yaml for the self-hosted runner labels.
+      # Reads its configuration from .github/actionlint.yaml.
       - name: Run actionlint
         run: |
           shellcheck --version
           actionlint -shellcheck "$(command -v shellcheck)"
+
+  embedded:
+    name: Lint embedded shell
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The same ShellCheck as the jobs above, rather than the runner's.
+      - name: Install PyYAML and ShellCheck
+        run: python3 -m pip install pyyaml==6.0.3 shellcheck-py==0.11.0.1
+
+      - name: Check the shell in Ansible tasks, composite actions and heredocs
+        run: |
+          shellcheck --version
+          tools/check-embedded-shell.py

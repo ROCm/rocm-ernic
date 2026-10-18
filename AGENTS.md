@@ -454,14 +454,36 @@ bash scripts must be shellcheck-clean.
   It reads its configuration from
   [`.github/actionlint.yaml`](.github/actionlint.yaml): the self-hosted
   runners' labels, and an ignore for the `$/` form of `uses:`, which
-  actionlint doesn't support yet. It checks every `run:` block as bash,
-  but GitHub runs a step with no `shell:` in a job with a `container:`
-  under `sh`, so keep those blocks POSIX or give the step `shell: bash`.
-  actionlint doesn't
-  read the composite actions in `.github/actions/`, and neither tool sees
-  the bodies of heredocs, such as the scripts the system tests run inside
-  guest VMs; hold those to the same standard by hand. CI: the actionlint
-  job in [shellcheck.yml](.github/workflows/shellcheck.yml).
+  actionlint doesn't support yet. CI: the actionlint job in
+  [shellcheck.yml](.github/workflows/shellcheck.yml).
+- **[`tools/check-embedded-shell.py`](tools/check-embedded-shell.py)**
+  for the shell neither of those sees (needs PyYAML and ShellCheck 0.11.0):
+
+  ```bash
+  tools/check-embedded-shell.py
+  ```
+
+  It runs ShellCheck, with every check on except the few that can't apply
+  to an extracted snippet (listed in the script), on:
+  - the Ansible collection's `shell:` and `raw:` tasks, as `sh` unless
+    the task sets `executable`;
+  - the composite actions' `run:` steps;
+  - every heredoc that is a script, such as one fed to a guest with
+    `ssh ... 'bash -s' <<'EOF'`, in a script, workflow, composite action,
+    or Ansible task;
+  - workflow `run:` blocks that GitHub runs under `sh`, which actionlint
+    checks as bash. A step with no `shell:` in a job with a `container:`
+    runs under `sh`, so keep those blocks POSIX or give the step
+    `shell: bash`.
+
+  It reports each finding at the file and line it came from, and
+  `--list` prints what it found. To have it check the script a heredoc
+  feeds to a guest, make the command visibly run a shell (`'bash -s'`,
+  `bash`, or `ssh` with no remote command) and quote the delimiter
+  (`<<'EOF'`) unless the local shell has to expand something in it. A
+  command passed to `ssh` as a quoted string isn't checked, so prefer a
+  heredoc for anything longer than one command. CI: the embedded job in
+  [shellcheck.yml](.github/workflows/shellcheck.yml).
 
 ### CMake
 
@@ -483,7 +505,8 @@ as `tomllib`, `except*`, or `typing.Self` (all 3.11).
   with a python shebang, except `third-party/`, `nix/analysis/triage/`,
   and `.cmake-format.py`. pylint needs
   `prometheus/requirements-exporter.txt` installed to resolve
-  ernic-exporter's imports.
+  ernic-exporter's imports, and PyYAML for
+  `tools/check-embedded-shell.py`'s.
 
   ```bash
   git ls-files -- ':!:third-party/' ':!:nix/analysis/triage/' \

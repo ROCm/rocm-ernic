@@ -44,7 +44,7 @@
       ansible.builtin.shell:
         cmd: >-
           for i in $(seq 1 20); do
-            ernicctl vm-stop $i 2>/dev/null || true;
+            ernicctl vm-stop "$i" 2>/dev/null || true;
           done
       become: true
       changed_when: true

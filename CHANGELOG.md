@@ -162,6 +162,12 @@
   which checks the shell in their `run:` blocks with ShellCheck 0.11.0 and
   every check on. The self-hosted runner labels it needs are in the new
   `.github/actionlint.yaml`.
+* The new `tools/check-embedded-shell.py`, run by the ShellCheck workflow,
+  checks the shell that lives inside other files with ShellCheck: the
+  Ansible collection's `shell:` and `raw:` tasks, the composite actions'
+  `run:` steps, the scripts that heredocs feed to a shell (such as the ones
+  the system tests run in their guests), and the workflow `run:` blocks
+  that GitHub runs under `sh`. It needs PyYAML.
 
 ### Removed
 

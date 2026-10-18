@@ -661,13 +661,15 @@ jobs:
           HEADER_PKG="linux-headers-${KVER}"
         fi
 
-        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          if sudo apt-get -o DPkg::Lock::Timeout=300 update -qq; then
+            break
+          fi
+          echo "apt-get update retry $i/3"; sleep 5
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
+            ${HEADER_PKG:+"$HEADER_PKG"} dkms git build-essential cmake ninja-build \
             pciutils \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
@@ -806,7 +808,8 @@ jobs:
           "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -e
         cd /tmp/rdma-verify
-        cc -O2 -Wall -Wextra -o rdma_verify rdma_verify.c $(pkg-config --libs libibverbs)
+        read -ra IBV_FLAGS <<< "$(pkg-config --libs libibverbs)"
+        cc -O2 -Wall -Wextra -o rdma_verify rdma_verify.c "${IBV_FLAGS[@]}"
         # Bounded so a hang fails the step in seconds rather than
         # burning the job's 60-minute budget.
         timeout 120 ./rdma_verify "$RDMA_DEVICE"
@@ -835,9 +838,10 @@ jobs:
           "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         gcc -O2 -Wall -Wextra \
           -o test_write_imm test_write_imm.c \
-          $(pkg-config --cflags --libs libibverbs)
+          "${IBV_FLAGS[@]}"
         set +e
         timeout 30s ./test_write_imm
         exit $?
@@ -888,9 +892,10 @@ jobs:
           "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -e
         cd /tmp/srq-smoke
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         gcc -O2 -Wall -Wextra \
           -o test_srq test_srq.c \
-          $(pkg-config --cflags --libs libibverbs)
+          "${IBV_FLAGS[@]}"
         set +e
         timeout 30s ./test_srq
         exit $?
@@ -947,11 +952,12 @@ jobs:
         set -e
         T="$1"
         cd /tmp/guest-rdma-tests
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         # -D_GNU_SOURCE matches target_compile_definitions() in
         # tests/CMakeLists.txt; without it test_data_transfer picks up an
         # implicit declaration of usleep().
         gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o "$T" "$T.c" \
-          $(pkg-config --cflags --libs libibverbs)
+          "${IBV_FLAGS[@]}"
         set +e
         timeout 120s "./$T"
         exit $?
@@ -1306,8 +1312,9 @@ jobs:
         set -e
         T="$1"
         cd /tmp/srq-test
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         gcc -O2 -Wall -Wextra -o "$T" "$T.c" \
-          $(pkg-config --cflags --libs libibverbs)
+          "${IBV_FLAGS[@]}"
         set +e
         timeout 60s "./$T"
         exit $?
@@ -2354,13 +2361,15 @@ jobs:
           echo "No build tree for ${KVER}; asking apt for the headers"
           HEADER_PKG="linux-headers-${KVER}"
         fi
-        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          if sudo apt-get -o DPkg::Lock::Timeout=300 update -qq; then
+            break
+          fi
+          echo "apt-get update retry $i/3"; sleep 5
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
+            ${HEADER_PKG:+"$HEADER_PKG"} dkms git build-essential cmake ninja-build \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10

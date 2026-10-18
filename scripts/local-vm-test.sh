@@ -291,7 +291,7 @@ echo "=== Device Info ==="
 DEVICE_NAME=$(sh /tmp/find-rdma-device.sh) || DEVICE_NAME=""
 if [ -n "$DEVICE_NAME" ]; then
     echo "Found RDMA device: $DEVICE_NAME"
-    ibv_devinfo -d $DEVICE_NAME || true
+    ibv_devinfo -d "$DEVICE_NAME" || true
     echo ""
     echo "✓✓✓ SUCCESS: Driver loaded and RDMA device detected! ✓✓✓"
     exit 0
