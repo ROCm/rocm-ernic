@@ -20,6 +20,9 @@ fi
 SOCKET="/tmp/vfio-ionic-smoke-$$.sock"
 LOG="/tmp/vfio-ionic-smoke-$$.log"
 SERVER_PID=""
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
@@ -31,7 +34,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "=== ionic server smoke test ==="
-"$SERVER" --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
+"${SERVER_WRAPPER[@]}" "$SERVER" --backend loopback --socket "$SOCKET" \
+    > "$LOG" 2>&1 &
 SERVER_PID=$!
 
 # The server creates its socket before it sets up the device, so the socket

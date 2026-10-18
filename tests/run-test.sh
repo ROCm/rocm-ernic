@@ -13,6 +13,9 @@ TEST_CLIENT="$1"
 SERVER="$2"
 SOCKET_PATH="/tmp/vfio-user-rocm-ernic-test-$$.sock"
 SERVER_LOG="/tmp/vfio-user-rocm-ernic-server-$$.log"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 # Cleanup function
 # shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
@@ -68,7 +71,7 @@ echo ""
 
 # Start server in background
 echo "=== Starting Server ==="
-"$SERVER" --socket "$SOCKET_PATH" > "$SERVER_LOG" 2>&1 &
+"${SERVER_WRAPPER[@]}" "$SERVER" --socket "$SOCKET_PATH" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "Server started (PID $SERVER_PID)"
 

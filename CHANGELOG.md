@@ -94,7 +94,12 @@
   memory, including uninitialized bytes passed to a system call such as
   `send()`, that the sanitizers don't look for. A test fails on any
   valgrind error, or on a leak that's definitely or possibly lost. The
-  tests that start the server, or run a script or CMake, are left out.
+  tests that start the server, and `tests/test_loopback_ci.sh`, run with
+  the server itself under valgrind. The test scripts run it under the
+  command in the new `ERNIC_TEST_SERVER_WRAPPER` environment variable, if
+  that's set, and `test_server_lifecycle` runs under valgrind with
+  `--trace-children=yes`, which follows it into each server it starts.
+  The tests that only run a script or CMake are left out.
   `tcp-thread-stop-unit` skips its out-of-descriptors row under valgrind,
   which it detects with `<valgrind/valgrind.h>` when that's installed.
 

@@ -13,6 +13,9 @@ BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
 TEST_BIN="${TEST_BIN:-$BUILD_DIR/tests/test_data_transfer}"
 SOCKET_BASE="/tmp/test-loopback-ci-$$"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -83,7 +86,7 @@ test_config() {
     
     # Start server
     echo "Starting server..."
-    "$SERVER_BIN" \
+    "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
         --socket "$socket_path" \
         --backend "$config" \
         --verbose > "$server_log" 2>&1 &

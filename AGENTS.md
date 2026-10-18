@@ -254,6 +254,23 @@ security takes priority over speed and convenience.
   every PR. Do not introduce new alerts. Fix findings rather than
   dismissing them, and ask before dismissing one.
 
+### Patterns the security scanners report
+
+Mistakes that CodeQL or the PR security scan have reported here before.
+Avoid them in new code, tests included: the scanners analyze the tests
+like everything else. When a scanner reports something new, add the
+general pattern here.
+
+- **Running a program named by the environment or the command line.**
+  CodeQL's `cpp/uncontrolled-process-operation` reports a value from
+  `getenv()` or `argv` that reaches `exec*()`, `system()`, or `popen()`.
+  To run a program under a tool such as valgrind, run the C program
+  under the tool from outside (`valgrind --trace-children=yes` follows it
+  into the programs it starts) rather than having it read the tool's
+  command from a variable. `test_server_lifecycle.c` still runs the
+  server from `argv[1]`, which CodeQL reports; a fix would compile the
+  path in.
+
 ## Linters, warnings, and sanitizers (mandatory)
 
 **Every change must pass every check below that covers the files it
@@ -341,11 +358,36 @@ them and where their configuration files are picked up.
   valgrind would only check bash, CMake, or the program that starts the
   server. Valgrind writes its reports to
   `build/Testing/Temporary/MemoryChecker.*.log`, one log for each test,
-  not to ctest's output. It doesn't check data written into guest
-  memory, which is mapped into the process rather than sent with a system
-  call, so that still needs the `memset` rule in [Security](#security).
-  The server runs under valgrind in the Nix `analysis-valgrind` lane
-  (`nix/analysis/valgrind.nix`), which is informational.
+  not to ctest's output.
+
+  CI then runs the tests that start the server, and
+  `tests/test_loopback_ci.sh`, with the server itself under valgrind.
+  The test scripts run the server under the command in
+  `ERNIC_TEST_SERVER_WRAPPER`, split on whitespace; a new script that
+  starts the server must do the same. A C test must not read a command to
+  run from the environment (see
+  [Patterns the security scanners report](#patterns-the-security-scanners-report)),
+  so `test_server_lifecycle` runs under valgrind itself, with
+  `--trace-children=yes` to follow it into each server it starts. Not
+  every script checks how the server exited, so have valgrind write a log
+  for each process and check the logs afterwards. `grep` lists the ones
+  with a report:
+
+  ```bash
+  rm -rf build/valgrind-server
+  mkdir build/valgrind-server
+  opts="--log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
+  ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
+    ctest --test-dir build --output-on-failure \
+    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$'
+  valgrind --trace-children=yes $opts \
+    build/tests/test_server_lifecycle build/rocm-ernic
+  grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
+  ```
+
+  Valgrind doesn't check data written into guest memory, which is mapped
+  into the process rather than sent with a system call, so that still
+  needs the `memset` rule in [Security](#security).
 - **clang-tidy clean**: building with `-DERNIC_USE_CLANG_TIDY=ON` runs
   clang-tidy on every file as it compiles, with the checks in
   [`.clang-tidy`](.clang-tidy), and must report nothing; every finding is
