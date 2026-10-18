@@ -22,6 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -116,7 +119,7 @@ start_node() {
         backend="tcp:worker:127.0.0.1:$PORT"
     fi
 
-    ERNIC_TCP_GUEST_GIDS="$gids" "$SERVER_BIN" \
+    ERNIC_TCP_GUEST_GIDS="$gids" "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
         --socket "$RUN/$n.sock" \
         --backend "$backend" \
         --mac "$(printf '72:6f:63:6d:00:%02x' "$n")" \
@@ -310,7 +313,7 @@ FAKE_PID=$!
 PIDS+=("$FAKE_PID")
 sleep 1
 
-ERNIC_TCP_GUEST_GIDS="fe80::9" "$SERVER_BIN" \
+ERNIC_TCP_GUEST_GIDS="fe80::9" "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
     --socket "$RUN/w.sock" \
     --backend "tcp:worker:127.0.0.1:$FAKE_PORT" \
     --mac 72:6f:63:6d:00:09 \

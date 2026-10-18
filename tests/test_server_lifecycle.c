@@ -18,6 +18,9 @@
  *
  * Usage: test_server_lifecycle <server binary>
  *
+ * If ERNIC_TEST_SERVER_WRAPPER is set, each server runs under the command it
+ * holds, such as valgrind and its options.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -25,6 +28,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -427,7 +431,39 @@ static const struct lifecycle_case cases[] = {
      .want_shutdown = 1},
 };
 
-static const char *g_server;
+static char *g_server;
+
+/*
+ * A command to run the server under, such as valgrind and its options, from
+ * ERNIC_TEST_SERVER_WRAPPER.  It's split on whitespace, so no word of it can
+ * contain a space.
+ */
+static char *g_wrapper[32];
+static size_t g_wrapper_len;
+
+/* Split ERNIC_TEST_SERVER_WRAPPER into g_wrapper.  False if it doesn't fit. */
+static bool load_wrapper(void)
+{
+    const char *env = getenv("ERNIC_TEST_SERVER_WRAPPER");
+    char *p;
+
+    if (!env)
+        return true;
+    p = strdup(env);
+    if (!p)
+        return false;
+    for (;;) {
+        while (isspace((unsigned char)*p))
+            *p++ = '\0';
+        if (*p == '\0')
+            return true;
+        if (g_wrapper_len == sizeof(g_wrapper) / sizeof(g_wrapper[0]))
+            return false;
+        g_wrapper[g_wrapper_len++] = p;
+        while (*p != '\0' && !isspace((unsigned char)*p))
+            p++;
+    }
+}
 
 /*
  * The scratch directory.  It's always under /tmp, not $TMPDIR: the server's
@@ -469,8 +505,8 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
     return true;
 }
 
-static pid_t start_server(const struct lifecycle_case *c, const char *backend,
-                          const char *sock, const char *log)
+static pid_t start_server(const struct lifecycle_case *c, char *backend,
+                          char *sock, const char *log)
 {
     pid_t pid = fork();
 
@@ -490,8 +526,19 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         dup2(fd, STDOUT_FILENO);
         dup2(fd, STDERR_FILENO);
         close(fd);
-        execl(g_server, g_server, "--socket", sock, "--backend", backend,
-              (char *)NULL);
+
+        char *args[sizeof(g_wrapper) / sizeof(g_wrapper[0]) + 6];
+        size_t n = 0;
+
+        for (size_t i = 0; i < g_wrapper_len; i++)
+            args[n++] = g_wrapper[i];
+        args[n++] = g_server;
+        args[n++] = "--socket";
+        args[n++] = sock;
+        args[n++] = "--backend";
+        args[n++] = backend;
+        args[n] = NULL;
+        execvp(args[0], args);
         _exit(127);
     }
     return pid;
@@ -697,6 +744,10 @@ int main(int argc, char **argv)
     if (access(g_server, X_OK) != 0) {
         printf("SKIP: server not found: %s\n", g_server);
         return 77;
+    }
+    if (!load_wrapper()) {
+        fprintf(stderr, "ERNIC_TEST_SERVER_WRAPPER has too many words\n");
+        return 2;
     }
     if (!mkdtemp(g_dir)) {
         perror("mkdtemp");

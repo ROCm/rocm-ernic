@@ -341,11 +341,28 @@ them and where their configuration files are picked up.
   valgrind would only check bash, CMake, or the program that starts the
   server. Valgrind writes its reports to
   `build/Testing/Temporary/MemoryChecker.*.log`, one log for each test,
-  not to ctest's output. It doesn't check data written into guest
-  memory, which is mapped into the process rather than sent with a system
-  call, so that still needs the `memset` rule in [Security](#security).
-  The server runs under valgrind in the Nix `analysis-valgrind` lane
-  (`nix/analysis/valgrind.nix`), which is informational.
+  not to ctest's output.
+
+  CI then runs the tests that start the server, and
+  `tests/test_loopback_ci.sh`, with the server itself under valgrind.
+  The scripts and `test_server_lifecycle.c` run the server under the
+  command in `ERNIC_TEST_SERVER_WRAPPER`, split on whitespace; a new test
+  that starts the server must do the same. Not every script checks how
+  the server exited, so have valgrind write a log for each server process
+  and check the logs afterwards. `grep` lists the ones with a report:
+
+  ```bash
+  rm -rf build/valgrind-server
+  mkdir build/valgrind-server
+  ERNIC_TEST_SERVER_WRAPPER="valgrind --log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
+    ctest --test-dir build --output-on-failure \
+    -R '^(pci-config-test|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$'
+  grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
+  ```
+
+  Valgrind doesn't check data written into guest memory, which is mapped
+  into the process rather than sent with a system call, so that still
+  needs the `memset` rule in [Security](#security).
 - **clang-tidy clean**: building with `-DERNIC_USE_CLANG_TIDY=ON` runs
   clang-tidy on every file as it compiles, with the checks in
   [`.clang-tidy`](.clang-tidy), and must report nothing; every finding is

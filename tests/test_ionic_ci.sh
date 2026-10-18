@@ -46,6 +46,9 @@ SERVER_PID=""
 # can appear before the lines these tests check are logged. This line is
 # logged once setup is done.
 READY="waiting for client connection"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 cleanup() {
     if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -62,8 +65,8 @@ start_server() {
     wait "$SERVER_PID" 2>/dev/null || true
     rm -f "$SOCKET" "$LOG"
 
-    "$SERVER_BIN" --backend "$backend" --socket "$SOCKET" \
-        > "$LOG" 2>&1 &
+    "${SERVER_WRAPPER[@]}" "$SERVER_BIN" --backend "$backend" \
+        --socket "$SOCKET" > "$LOG" 2>&1 &
     SERVER_PID=$!
 
     local elapsed=0
@@ -142,8 +145,8 @@ if [ -z "$TAP_IF" ] || [ ! -d "/sys/class/net/$TAP_IF" ]; then
     echo -e "${YELLOW}⚠ skipped: set ERNIC_TEST_TAP to a tap owned by ${USER:-this user}${NC}"
 else
     rm -f "$SOCKET" "$LOG"
-    "$SERVER_BIN" --backend loopback --socket "$SOCKET" \
-        --tap "$TAP_IF" > "$LOG" 2>&1 &
+    "${SERVER_WRAPPER[@]}" "$SERVER_BIN" --backend loopback \
+        --socket "$SOCKET" --tap "$TAP_IF" > "$LOG" 2>&1 &
     SERVER_PID=$!
     elapsed=0
     while [ $elapsed -lt 10 ]; do
@@ -165,7 +168,8 @@ kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 rm -f "$SOCKET" "$LOG"
-"$SERVER_BIN" --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
+"${SERVER_WRAPPER[@]}" "$SERVER_BIN" --backend loopback --socket "$SOCKET" \
+    > "$LOG" 2>&1 &
 SERVER_PID=$!
 elapsed=0
 while [ $elapsed -lt 10 ]; do
@@ -196,8 +200,8 @@ SERVER_PID=""
 rm -f "$SOCKET" "$LOG"
 STATS="/tmp/vfio-ionic-ci-$$.stats"
 rm -f "$STATS"
-"$SERVER_BIN" --backend loopback --socket "$SOCKET" --stats-file "$STATS" \
-    > "$LOG" 2>&1 &
+"${SERVER_WRAPPER[@]}" "$SERVER_BIN" --backend loopback --socket "$SOCKET" \
+    --stats-file "$STATS" > "$LOG" 2>&1 &
 SERVER_PID=$!
 elapsed=0
 while [ $elapsed -lt 10 ]; do

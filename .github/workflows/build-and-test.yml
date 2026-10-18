@@ -316,9 +316,9 @@ jobs:
       #
       # The excluded tests run scripts or CMake, or start the server, so
       # valgrind would only check bash, CMake, or the program that starts
-      # the server. Valgrind writes its reports to a log for each test, not
-      # to ctest's output, so the logs of the tests with a report are
-      # printed here.
+      # the server. The next step runs the server under valgrind instead.
+      # Valgrind writes its reports to a log for each test, not to ctest's
+      # output, so the logs of the tests with a report are printed here.
       - name: Test with valgrind
         if: matrix.valgrind == 'on'
         run: |
@@ -335,6 +335,43 @@ jobs:
               cat "${log}"
             fi
           done
+          exit "${status}"
+
+      # Runs the tests that start the server, and the loopback
+      # configurations, with every server they start under valgrind's
+      # memcheck, through the command in ERNIC_TEST_SERVER_WRAPPER. The
+      # scripts don't all check how the server exited, so valgrind writes a
+      # log for each server process, and the step fails if any log lacks a
+      # clean summary, which includes a server that was killed before
+      # valgrind could write one.
+      - name: Test the server with valgrind
+        if: matrix.valgrind == 'on'
+        run: |
+          logs="${PWD}/build/valgrind-server"
+          mkdir -p "${logs}"
+          ERNIC_TEST_SERVER_WRAPPER="$(command -v valgrind) --log-file=${logs}/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
+          export ERNIC_TEST_SERVER_WRAPPER
+          status=0
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            -R '^(pci-config-test|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$' \
+            || status=$?
+          SERVER_BIN=build/rocm-ernic \
+          TEST_BIN=build/tests/test_data_transfer \
+          tests/test_loopback_ci.sh || status=$?
+          shopt -s nullglob
+          found=0
+          for log in "${logs}"/*.log; do
+            found=1
+            if ! grep -q 'ERROR SUMMARY: 0 errors' "${log}"; then
+              echo "::error::valgrind reported errors in ${log}"
+              cat "${log}"
+              status=1
+            fi
+          done
+          if [ "${found}" -eq 0 ]; then
+            echo "::error::no server ran under valgrind"
+            status=1
+          fi
           exit "${status}"
 
       - name: Test loopback backend configurations

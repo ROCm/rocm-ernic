@@ -17,6 +17,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
 WORK_DIR="$(mktemp -d "/tmp/test-s3-ci-$$-XXXXXX")"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -90,7 +93,7 @@ start_server() {
     local socket_path="$WORK_DIR/s${SERVER_SEQ}.sock"
 
     SERVER_LOG="$WORK_DIR/s${SERVER_SEQ}.log"
-    "$SERVER_BIN" \
+    "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
         --socket "$socket_path" \
         --backend "$config" \
         --log-level info >"$SERVER_LOG" 2>&1 &
@@ -150,7 +153,8 @@ test_rejected() {
     echo -e "${BLUE}Testing rejection: ${config}${NC}"
 
     local out
-    if out=$("$SERVER_BIN" --socket "$WORK_DIR/reject.sock" \
+    if out=$("${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
+                 --socket "$WORK_DIR/reject.sock" \
                  --backend "$config" 2>&1); then
         :
     fi
@@ -202,7 +206,7 @@ test_usage() {
     echo -e "${BLUE}Testing usage text${NC}"
 
     local out
-    out=$("$SERVER_BIN" --help 2>&1 || true)
+    out=$("${SERVER_WRAPPER[@]}" "$SERVER_BIN" --help 2>&1 || true)
     if ! grep -q "none|loopback|verbs|tcp|nvmeof|s3" <<<"$out"; then
         echo -e "${RED}✗ s3 missing from the backend list${NC}"
         FAILED+=("usage text")
