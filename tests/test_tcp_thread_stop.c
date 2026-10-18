@@ -111,13 +111,13 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,6 +126,10 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef ERNIC_HAVE_VALGRIND_H
+#include <valgrind/valgrind.h>
+#endif
 
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
@@ -3809,21 +3813,65 @@ static const char *reap_young(TcpBackendPrivate *priv, uint16_t port,
 }
 
 /*
+ * Make every peer waiting to register look as if it had just connected, so
+ * that none reaches TCP_REGISTER_TIMEOUT_MS before the next peer connects.
+ * Before it counts the peers waiting, the accept thread reaps those that
+ * have, so on a slow machine, such as under valgrind, one timing out would
+ * make room under the cap.  REAP_TIMEOUT checks the timeout.
+ */
+static void reap_renew(TcpBackendPrivate *priv)
+{
+    qemu_mutex_lock(&priv->conn_table_lock);
+    uint64_t now_ms = tcp_monotonic_ms();
+
+    for (guint i = 0; i < priv->pending_conns->len; i++) {
+        TcpConnection *conn = g_ptr_array_index(priv->pending_conns, i);
+
+        conn->accepted_ms = now_ms;
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+}
+
+/*
  * REAP_CAP: a peer past the cap is closed without a receive thread.  One of
  * those waiting hangs up, and the next peer takes its place.
  */
 static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
                             struct reap_fds *k)
 {
+    static char why[256];
     int base = atomic_load(&g_creates);
     int cap = (int)TCP_MAX_PENDING_CONNS;
     uint32_t first = k->n;
+    uint64_t start_ms = tcp_monotonic_ms();
+    guint waiting;
 
-    for (int i = 0; i < cap; i++)
+    for (int i = 0; i < cap; i++) {
+        reap_renew(priv);
         if (reap_keep(k, reap_connect(port, base + i + 1)) < 0)
             return "a peer under the cap wasn't given a receive thread";
-    if (!closed_within(reap_keep(k, connect_loopback(port)), 2000))
-        return "the peer past the cap was kept";
+    }
+    /*
+     * A peer's receive thread is created under conn_table_lock, which is
+     * held until the peer is on the list, so this counts the last peer too.
+     */
+    waiting = pending_count(priv);
+    if (waiting != TCP_MAX_PENDING_CONNS) {
+        snprintf(
+            why, sizeof(why),
+            "only %u of the %d peers under the cap are waiting, %d "
+            "receive thread(s) exited, and they took %" PRIu64 " ms to connect",
+            waiting, cap, atomic_load(&g_exits), tcp_monotonic_ms() - start_ms);
+        return why;
+    }
+    reap_renew(priv);
+    if (!closed_within(reap_keep(k, connect_loopback(port)), 2000)) {
+        snprintf(why, sizeof(why),
+                 "the peer past the cap was kept, with %u waiting and %d "
+                 "receive thread(s) exited",
+                 pending_count(priv), atomic_load(&g_exits));
+        return why;
+    }
     if (atomic_load(&g_creates) != base + cap)
         return "the peer past the cap was given a receive thread";
 
@@ -3831,6 +3879,7 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
     k->fd[first] = -1;
     if (!wait_for_exits(1))
         return "the thread didn't see its peer hang up";
+    reap_renew(priv);
     if (reap_keep(k, reap_connect(port, base + cap + 1)) < 0)
         return "the peer after one hung up wasn't let in";
     if (atomic_load(&g_joins) != 1)
@@ -4011,17 +4060,43 @@ static const char *reap_run(TcpBackendPrivate *priv, uint16_t port,
     }
 }
 
+/*
+ * Whether the test runs under valgrind.  Valgrind doesn't pass a change to
+ * RLIMIT_NOFILE to the kernel but enforces the limit itself, and not as the
+ * kernel does: an accept() already waiting when the limit is lowered gets a
+ * descriptor over it, and one that starts afterwards fails with EMFILE but
+ * takes the connection off the queue, so the retry finds nothing.  The
+ * REAP_NO_FDS row can't run under it.
+ */
+static bool under_valgrind(void)
+{
+#ifdef ERNIC_HAVE_VALGRIND_H
+    return RUNNING_ON_VALGRIND != 0;
+#else
+    return false;
+#endif
+}
+
 static int run_reap_case(const struct reap_case *c)
 {
     RdmaBackendDev dev;
     struct reap_fds k;
     char config[64];
     const char *why;
-    uint16_t port = free_port();
+    uint16_t port;
     int errors = -1;
     double start, took;
     bool ok;
 
+    if (c->scenario == REAP_NO_FDS && under_valgrind()) {
+        printf("skip reap %s: %s; valgrind enforces the descriptor limit "
+               "itself, so accept() can't be made to fail as it would\n",
+               c->category, c->description);
+        fflush(stdout);
+        return 0;
+    }
+
+    port = free_port();
     atomic_store(&g_creates, 0);
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);

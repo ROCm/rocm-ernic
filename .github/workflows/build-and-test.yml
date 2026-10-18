@@ -84,6 +84,21 @@ jobs:
             sanitizer: 'off'
             build_type: Debug
             coverage: 'on'
+          # The plain GCC Debug leg also runs the tests under valgrind's
+          # memcheck, which finds reads of uninitialized memory, including
+          # uninitialized bytes passed to a system call such as send(),
+          # that the sanitizers don't look for. Every other key matches
+          # that leg, so this adds valgrind to it rather than adding a leg.
+          # It can't be a sanitizer leg, since valgrind can't run a program
+          # built with ASan or TSan, or a Clang one, since Clang's
+          # -ftrivial-auto-var-init=pattern initializes every local
+          # variable, which hides the reads valgrind would report.
+          - os: ubuntu-24.04
+            compiler: gcc
+            sanitizer: 'off'
+            build_type: Debug
+            coverage: 'off'
+            valgrind: 'on'
 
     # The sanitizer builds make every report fatal: ASan, LSan, and UBSan
     # with -fno-sanitize-recover=all, and TSan with halt_on_error=1, which
@@ -125,6 +140,12 @@ jobs:
         run: |
           major=$(clang -dumpversion | cut -d. -f1)
           sudo apt-get install -y "llvm-${major}"
+
+      # Before the configure step, which looks for valgrind's header: a test
+      # uses it to skip a row that can't work under valgrind.
+      - name: Install valgrind
+        if: matrix.valgrind == 'on'
+        run: sudo apt-get install -y valgrind
 
       - name: Cache libvfio-user build
         id: cache-libvfio-user
@@ -285,6 +306,36 @@ jobs:
           $TEST_WRAP ctest --test-dir build --output-on-failure \
             -E '^ionic-ci$' \
             --output-junit build/Testing/ctest-junit.xml
+
+      # Runs the test programs under valgrind's memcheck. Valgrind makes a
+      # test fail if it finds an error, such as a read of uninitialized
+      # memory, uninitialized bytes passed to a system call, or a read of
+      # memory that isn't allocated, or a leak that's definitely or
+      # possibly lost. It doesn't report memory that's still reachable at
+      # exit.
+      #
+      # The excluded tests run scripts or CMake, or start the server, so
+      # valgrind would only check bash, CMake, or the program that starts
+      # the server. Valgrind writes its reports to a log for each test, not
+      # to ctest's output, so the logs of the tests with a report are
+      # printed here.
+      - name: Test with valgrind
+        if: matrix.valgrind == 'on'
+        run: |
+          status=0
+          ctest --test-dir build -T memcheck --output-on-failure --no-tests=error -j"$(nproc)" \
+            --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
+            --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
+            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|cmake-subproject)$' \
+            || status=$?
+          shopt -s nullglob
+          for log in build/Testing/Temporary/MemoryChecker.*.log; do
+            if ! grep -q 'ERROR SUMMARY: 0 errors' "${log}"; then
+              echo "::error::valgrind reported errors in ${log}"
+              cat "${log}"
+            fi
+          done
+          exit "${status}"
 
       - name: Test loopback backend configurations
         env:
