@@ -34,11 +34,14 @@ echo "=== ionic server smoke test ==="
 "$SERVER" --backend loopback --socket "$SOCKET" > "$LOG" 2>&1 &
 SERVER_PID=$!
 
-# Wait up to 5 seconds for the socket to appear
+# The server creates its socket before it sets up the device, so the socket
+# can appear before the banner is logged. Wait up to 5 seconds for the line
+# it logs once setup is done.
+READY="waiting for client connection"
 for i in $(seq 1 10); do
     sleep 0.5
-    if [ -S "$SOCKET" ]; then
-        echo "✓ socket appeared after ${i}×0.5s"
+    if grep -q "$READY" "$LOG"; then
+        echo "✓ server ready after ${i}×0.5s"
         break
     fi
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -48,6 +51,11 @@ for i in $(seq 1 10); do
     fi
 done
 
+if ! grep -q "$READY" "$LOG"; then
+    echo "✗ server never finished starting"
+    cat "$LOG"
+    exit 1
+fi
 if [ ! -S "$SOCKET" ]; then
     echo "✗ socket never appeared"
     cat "$LOG"

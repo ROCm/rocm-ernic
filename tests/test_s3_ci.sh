@@ -78,7 +78,10 @@ echo ""
 echo -e "${YELLOW}Note: the guest-side PUT/GET is covered by the VM system tests.${NC}"
 echo ""
 
-# Start a server, wait for its socket, and return its log path in SERVER_LOG.
+# Start a server, wait until it has finished starting, and return its log
+# path in SERVER_LOG. The server creates its socket before it sets up the
+# device and logs what the tests check, so wait for the line it logs once
+# setup is done rather than for the socket.
 start_server() {
     local config="$1"
     # A unix socket path is capped well below what these option strings run
@@ -94,7 +97,7 @@ start_server() {
     SERVER_PID=$!
 
     for _ in {1..20}; do
-        if [ -S "$socket_path" ]; then
+        if grep -q "waiting for client connection" "$SERVER_LOG"; then
             return 0
         fi
         if ! kill -0 "$SERVER_PID" 2>/dev/null; then

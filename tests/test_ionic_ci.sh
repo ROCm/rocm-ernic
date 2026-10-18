@@ -42,6 +42,10 @@ echo "================================================="
 SOCKET="/tmp/vfio-ionic-ci-$$.sock"
 LOG="/tmp/vfio-ionic-ci-$$.log"
 SERVER_PID=""
+# The server creates its socket before it sets up the device, so the socket
+# can appear before the lines these tests check are logged. This line is
+# logged once setup is done.
+READY="waiting for client connection"
 
 cleanup() {
     if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -65,7 +69,7 @@ start_server() {
     local elapsed=0
     while [ $elapsed -lt 10 ]; do
         sleep 0.5; elapsed=$((elapsed + 1))
-        [ -S "$SOCKET" ] && return 0
+        grep -q "$READY" "$LOG" && return 0
         kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; return 1; }
     done
     cat "$LOG"; return 1
@@ -75,6 +79,7 @@ start_server() {
 echo ""
 echo "Test 1: server starts (loopback backend)"
 start_server loopback || fail "server did not start"
+[ -S "$SOCKET" ] || fail "socket did not appear"
 pass "socket appeared"
 
 # --- Test 2: correct PCI identity ---
@@ -143,7 +148,7 @@ else
     elapsed=0
     while [ $elapsed -lt 10 ]; do
         sleep 0.5; elapsed=$((elapsed + 1))
-        [ -S "$SOCKET" ] && break
+        grep -q "$READY" "$LOG" && break
         kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
     done
     grep -q "Ethernet attached to TAP $TAP_IF" "$LOG" || {
@@ -165,7 +170,7 @@ SERVER_PID=$!
 elapsed=0
 while [ $elapsed -lt 10 ]; do
     sleep 0.5; elapsed=$((elapsed + 1))
-    [ -S "$SOCKET" ] && break
+    grep -q "$READY" "$LOG" && break
     kill -0 "$SERVER_PID" 2>/dev/null || { cat "$LOG"; fail "server died"; }
 done
 grep -q "VID:DID 0x1dd8:0x1002" "$LOG" || {
