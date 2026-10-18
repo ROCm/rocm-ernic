@@ -123,6 +123,17 @@
   `ERNIC_TEST_SERVER_WRAPPER`, so the valgrind leg covers them too, and
   `test_mesh_stress.py --size N` varies the mesh. They need python3, which
   the shell suites already needed. Documented in `docs/testing.rst`.
+* Nix outputs for running the emulated NIC under a NixOS guest:
+  `nixosModules.ernic-guest` (enable with `virtualisation.ernic.enable`)
+  gives a `qemu-vm.nix` guest shared memory, a q35 root port, vfio-user-pci
+  and the in-tree ionic drivers; `packages.<system>.ernic-run` starts the
+  server around a VM launcher, exports `ERNIC_SOCKET`, and stops the server
+  when the launcher exits, passing on its exit code. On x86_64 hosts,
+  `nix run .#ionic-vm` boots such a guest to a root shell
+  (`--ssh-port N` forwards ssh), and `nix run .#run-ionic-guest-test` checks
+  that the guest's RDMA port reaches `PORT_ACTIVE`. The Nix Check workflow
+  builds the new `launchers` check, which tests `ernic-run` and the module's
+  assertions without a VM. Documented in `nix/README.md`.
 
 ### Changed
 
