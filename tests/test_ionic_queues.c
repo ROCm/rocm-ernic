@@ -477,7 +477,7 @@ static uint32_t ref_hash(const struct flow *fl, enum ref_kind kind,
 }
 
 #define V4(a, b, c, d) {a, b, c, d}
-#define V6(last)       {0x20, 0x01, 0x0d, 0xb8, [15] = last}
+#define V6(last)       {0x20, 0x01, 0x0d, 0xb8, [15] = (last)}
 
 struct hash_case {
     const char *category;
