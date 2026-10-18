@@ -179,6 +179,24 @@ static const struct stats_case cases[] = {
      QP2_ID | VER1, STATS_BODY_LEN, 0, 0, false, 0, QP_STATS_COUNT * 8,
      CONTENT_QP2_VALS},
 
+    {"boundary", "device header block ends exactly at guest-memory end",
+     "192 bytes written; prefix untouched", HDRS, GUEST_MEM_SIZE - 192, 192, 0,
+     STATS_BODY_LEN, 0, 0, false, 0, 192, CONTENT_DEV_HDRS},
+    {"negative", "header block exceeds guest memory by one byte",
+     "rc 1; entire guest memory untouched", HDRS, GUEST_MEM_SIZE - 191, 192, 0,
+     STATS_BODY_LEN, 0, 0, false, 1, 0, CONTENT_NONE},
+    {"boundary", "device values end exactly at guest-memory end",
+     "40 bytes written; prefix untouched", VALS, GUEST_MEM_SIZE - 40, 40, 0,
+     STATS_BODY_LEN, 0, 0, false, 0, 40, CONTENT_DEV_VALS},
+    {"negative", "values exceed guest memory by one byte",
+     "rc 1; entire guest memory untouched", VALS, GUEST_MEM_SIZE - 39, 40, 0,
+     STATS_BODY_LEN, 0, 0, false, 1, 0, CONTENT_NONE},
+    {"corner", "header DMA address plus length overflows",
+     "rc 1; no wrapped write", HDRS, UINT64_MAX - 15, 192, 0, STATS_BODY_LEN, 0,
+     0, false, 1, 0, CONTENT_NONE},
+    {"corner", "value DMA at maximum address", "rc 1; no wrapped write", VALS,
+     UINT64_MAX, 40, 0, STATS_BODY_LEN, 0, 0, false, 1, 0, CONTENT_NONE},
+
     /* negative */
     {"negative", "QP values for an unmapped qp_id",
      "rc 1 and nothing written, not a page of zeros", QP_VALS, BUF_GPA,
@@ -300,6 +318,9 @@ static void run_case(const struct stats_case *c)
     written = bytes_written(c->dma);
     ok = rc == c->want_rc && written == c->want_written &&
          one_write_or_none(c) && content_matches(c);
+    for (size_t i = 0; i < sizeof(g_mem); i++)
+        if ((uint64_t)i < c->dma || (uint64_t)i - c->dma >= c->want_written)
+            ok = ok && g_mem[i] == POISON;
 
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
@@ -334,10 +355,93 @@ static void check_names(const char *table, const struct adminq_stat *stats,
         failures++;
 }
 
+/* Literal ABI names and bytes: never derive the oracle from dev_stats/qp_stats.
+ */
+static void check_golden_headers(void)
+{
+    static const char device[][28] = {
+        "commands", "total_bytes_sent", "total_bytes_received",
+        "total_bytes_rdma_read", "total_bytes_rdma_write"};
+    static const char qp[][28] = {"doorbell_send",   "doorbell_recv",
+                                  "wqes_processed",  "cqes_posted",
+                                  "bytes_sent",      "bytes_received",
+                                  "bytes_rdma_read", "bytes_rdma_write"};
+    static const struct {
+        const char *description;
+        uint8_t opcode;
+        const char (*names)[28];
+        size_t count;
+    } wire_cases[] = {{"device wire headers", HDRS, device, 5},
+                      {"QP wire headers", QP_HDRS, qp, 8}};
+    for (size_t row = 0; row < sizeof(wire_cases) / sizeof(wire_cases[0]);
+         row++) {
+        uint8_t body[64];
+        bool ok;
+
+        ctx_reset();
+        build_body(body, sizeof(body), BUF_GPA, 4096, 0);
+        ok = ionic_adminq_dispatch_wqe(&g_ctx, wire_cases[row].opcode, body,
+                                       17) == 0;
+        for (size_t i = 0; i <= wire_cases[row].count; i++) {
+            uint8_t expected[32] = {0};
+
+            if (i < wire_cases[row].count) {
+                expected[0] = 0x40; /* big-endian type LE64, offset below 256 */
+                expected[3] = (uint8_t)(i * 8);
+                memcpy(expected + 4, wire_cases[row].names[i], 28);
+            }
+            ok = ok && memcmp(g_mem + BUF_GPA + i * 32, expected, 32) == 0;
+        }
+        printf("%s positive: %s; expected: literal ABI names/type/offset, zero "
+               "padding and terminator\n",
+               ok ? "ok" : "FAIL", wire_cases[row].description);
+        if (!ok)
+            failures++;
+    }
+}
+
+static void check_alternating_qps(void)
+{
+    static const struct {
+        const char *description;
+        uint32_t id;
+        uint8_t rc;
+        uint64_t first;
+    } qp_cases[] = {{"positive: first QP", QP_ID, 0, 0x701},
+                    {"positive: second QP", QP2_ID, 0, 0x901},
+                    {"negative: missing QP", 100, 1, 0},
+                    {"corner: first QP again after failure", QP_ID, 0, 0x701},
+                    {"corner: second QP again", QP2_ID, 0, 0x901}};
+
+    ctx_reset();
+    for (size_t row = 0; row < sizeof(qp_cases) / sizeof(qp_cases[0]); row++) {
+        uint8_t body[64], before[64];
+        uint64_t first;
+        uint8_t rc;
+        bool ok;
+
+        memcpy(before, g_mem + BUF_GPA, sizeof(before));
+        build_body(body, sizeof(body), BUF_GPA, 64, qp_cases[row].id | VER1);
+        rc = ionic_adminq_dispatch_wqe(&g_ctx, QP_VALS, body, 17);
+        memcpy(&first, g_mem + BUF_GPA, 8);
+        ok = rc == qp_cases[row].rc &&
+             (rc ? memcmp(before, g_mem + BUF_GPA, sizeof(before)) == 0
+                 : le64toh(first) == qp_cases[row].first);
+        printf("%s %s; expected: rc %u, own first value %#llx or unchanged "
+               "buffer on failure\n",
+               ok ? "ok" : "FAIL", qp_cases[row].description, qp_cases[row].rc,
+               (unsigned long long)qp_cases[row].first);
+        if (!ok)
+            failures++;
+    }
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
+    check_golden_headers();
+    check_alternating_qps();
     check_names("device stat", dev_stats, DEV_STATS_COUNT);
     check_names("QP stat", qp_stats, QP_STATS_COUNT);
 
