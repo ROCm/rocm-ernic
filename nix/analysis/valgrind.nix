@@ -3,7 +3,10 @@
 # Memory-leak / memory-error detection with valgrind memcheck. A normal
 # (uninstrumented) Debug build of the server is run under valgrind on the
 # loopback backend, exercised with the PCI-config test client, then shut
-# down cleanly (SIGTERM) so memcheck emits its full leak summary.
+# down cleanly (SIGTERM) so memcheck emits its full leak summary. The
+# build never fails on a memcheck error, but it does fail when the exercise
+# itself was incomplete (see run-loopback.nix), since the leak summary is
+# then taken at an error exit.
 #
 # valgrind complements the sanitizers: it needs no ptrace for leak
 # detection (works where LSan may not) and catches uninitialised-value and
@@ -46,6 +49,7 @@ mkAnalysisDrv {
 
     export OUT_LOG="$NIX_BUILD_TOP/server.log"
     export CLIENT_LOG="$NIX_BUILD_TOP/client.log"
+    export EXERCISE_FILE="$NIX_BUILD_TOP/exercise.txt"
 
     ${driver}/bin/run-loopback-exercise \
       "$srcTop/build/rocm-ernic" \
@@ -76,8 +80,13 @@ mkAnalysisDrv {
 
     cp "$NIX_BUILD_TOP/server.log" $out/server.log 2>/dev/null || true
     cp "$NIX_BUILD_TOP/client.log" $out/client.log 2>/dev/null || true
+    exercise=$(cat "$NIX_BUILD_TOP/exercise.txt" 2>/dev/null ||
+      echo "exercise: incomplete (no outcome recorded)")
+    echo "$exercise" > $out/exercise.txt
 
     {
+      echo "$exercise"
+      echo ""
       echo "=== valgrind memcheck ==="
       echo ""
       echo "Server run under memcheck on the loopback backend, exercised"
@@ -89,5 +98,12 @@ mkAnalysisDrv {
       echo "Full log: report.txt"
     } > $out/summary.txt
     cat $out/summary.txt
+
+    # Without a clean shutdown valgrind's leak summary is taken at an
+    # error exit, with everything still reachable, so 0 would mislead.
+    if [ "$exercise" != "exercise: clean" ]; then
+      echo "valgrind: $exercise; the report above is not a real check" >&2
+      exit 1
+    fi
   '';
 }
