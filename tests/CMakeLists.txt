@@ -905,7 +905,10 @@ add_test(
     NAME tcp-thread-stop-unit
     COMMAND $<TARGET_FILE:ernic-test-tcp-thread-stop>
 )
-set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 60)
+# The test spends most of its time waiting on purpose: about 40 s, and over
+# 50 s under valgrind in CI. Each row's alarm() still turns a hang into a
+# named failure long before this.
+set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 120)
 
 # RDMA resource-table allocator unit test: asserts a full table refuses the
 # next allocation rather than handing back a handle one past the end.
