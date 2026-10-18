@@ -226,6 +226,33 @@ valgrind would only check the script for:
 Each test's valgrind report is in
 ``build/Testing/Temporary/MemoryChecker.<n>.log``.
 
+The test scripts that start the server run it under the command
+in ``ERNIC_TEST_SERVER_WRAPPER``, if that's set, as does
+``tests/test_loopback_ci.sh``. The command is split on
+whitespace, so no word of it can contain a space.
+``test_server_lifecycle`` doesn't read it; run that program under
+valgrind with ``--trace-children=yes``, which follows it into
+each server it starts. To run the server under valgrind, as the
+same leg does, have valgrind write a log for each process, since
+the scripts don't all check how the server exited. With ``opts``
+as above:
+
+.. code-block:: bash
+
+   srv='pci-config-test|ionic-server-smoke'
+   srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
+   logs="$PWD/build/valgrind-server"
+   rm -rf "$logs"
+   mkdir "$logs"
+   opts+=" --log-file=$logs/%p.log"
+   export ERNIC_TEST_SERVER_WRAPPER="valgrind $opts"
+   ctest --test-dir build --output-on-failure -R "^($srv)$"
+   valgrind --trace-children=yes $opts \
+     build/tests/test_server_lifecycle build/rocm-ernic
+   grep -L 'ERROR SUMMARY: 0 errors' "$logs"/*.log
+
+The last command lists the logs with a report.
+
 Multi-VM RDMA Testing
 ---------------------
 

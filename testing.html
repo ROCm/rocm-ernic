@@ -615,6 +615,30 @@ ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class=
 </div>
 <p>Each test’s valgrind report is in
 <code class="docutils literal notranslate"><span class="pre">build/Testing/Temporary/MemoryChecker.&lt;n&gt;.log</span></code>.</p>
+<p>The test scripts that start the server run it under the command
+in <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_SERVER_WRAPPER</span></code>, if that’s set, as does
+<code class="docutils literal notranslate"><span class="pre">tests/test_loopback_ci.sh</span></code>. The command is split on
+whitespace, so no word of it can contain a space.
+<code class="docutils literal notranslate"><span class="pre">test_server_lifecycle</span></code> doesn’t read it; run that program under
+valgrind with <code class="docutils literal notranslate"><span class="pre">--trace-children=yes</span></code>, which follows it into
+each server it starts. To run the server under valgrind, as the
+same leg does, have valgrind write a log for each process, since
+the scripts don’t all check how the server exited. With <code class="docutils literal notranslate"><span class="pre">opts</span></code>
+as above:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">srv</span><span class="o">=</span><span class="s1">'pci-config-test|ionic-server-smoke'</span>
+<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
+<span class="nv">logs</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/valgrind-server"</span>
+rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>
+mkdir<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>
+<span class="nv">opts</span><span class="o">+=</span><span class="s2">" --log-file=</span><span class="nv">$logs</span><span class="s2">/%p.log"</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_TEST_SERVER_WRAPPER</span><span class="o">=</span><span class="s2">"valgrind </span><span class="nv">$opts</span><span class="s2">"</span>
+ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>--output-on-failure<span class="w"> </span>-R<span class="w"> </span><span class="s2">"^(</span><span class="nv">$srv</span><span class="s2">)</span>$<span class="s2">"</span>
+valgrind<span class="w"> </span>--trace-children<span class="o">=</span>yes<span class="w"> </span><span class="nv">$opts</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>build/tests/test_server_lifecycle<span class="w"> </span>build/rocm-ernic
+grep<span class="w"> </span>-L<span class="w"> </span><span class="s1">'ERROR SUMMARY: 0 errors'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>/*.log
+</pre></div>
+</div>
+<p>The last command lists the logs with a report.</p>
 </section>
 </section>
 <section id="multi-vm-rdma-testing">
