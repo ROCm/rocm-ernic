@@ -353,9 +353,7 @@ How the pieces fit, without root, a TAP or RDMA hardware:
   the host user's `~/.ssh/*.pub` and forwards both guests to 127.0.0.1.
 
 `ernic-run` gained `--mac` for this, and stops a server that ignores
-SIGTERM for 10s with SIGKILL: today a TCP-backend server that a peer has
-connected to does not exit on SIGTERM (its accept thread stays blocked in
-`accept()` while `tcp_fini()` joins it), so quitting takes about 20s.
+SIGTERM for 10s with SIGKILL.
 
 ## Module map
 

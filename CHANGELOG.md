@@ -113,6 +113,14 @@
   that the guest's RDMA port reaches `PORT_ACTIVE`. The Nix Check workflow
   builds the new `launchers` check, which tests `ernic-run` and the module's
   assertions without a VM. Documented in `nix/README.md`.
+* `nix run .#ionic-vm-pair` (x86_64 hosts) boots two NixOS guests, each with
+  its own emulated ionic NIC, joined by the TCP backend so RDMA between them
+  goes through the two servers; `ernic-pair-pingpong` in a guest runs
+  `ibv_rc_pingpong` against the other, and `--ssh-port N` forwards ssh to
+  both (on N and N+1). `nix run .#run-ionic-pair-test` checks RDMA RC
+  ping-pong both ways. Neither needs root, a TAP or RDMA hardware.
+  `ernic-run` gains `--mac`. The Nix Check workflow builds the new
+  `pair-launchers` check. Documented in `nix/README.md`.
 
 ### Changed
 
