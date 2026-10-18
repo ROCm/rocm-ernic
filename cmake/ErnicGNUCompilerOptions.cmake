@@ -4,10 +4,16 @@
 
 # Warning flags for GNU gcc (C language)
 #
-# Adapted from hipFile AISGNUCompilerOptions.cmake and
-# rocm-xio XIOGNUCompilerOptions.cmake for a C-only project.
+# Adapted from hipObject HIPOBJGNUCompilerOptions.cmake for a C-only
+# project. hipObject's C++-only flags (-Weffc++, -Wold-style-cast,
+# -Wsuggest-override, -D_GLIBCXX_ASSERTIONS, etc.) are left out.
 #
 # https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
+
+include_guard(GLOBAL)
+
+include(CheckCCompilerFlag)
+include(ErnicFortifySource)
 
 # Populate ``outvar`` with GCC warning flags appropriate for
 # the given ``compiler_version``.
@@ -17,9 +23,17 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wall
         -Wextra
 
+        # Avoid non-standard C behavior
+        -pedantic
+
         # Stack protection
         -fstack-clash-protection
         -fstack-protector-strong
+
+        # Keep null pointer checks the optimizer could prove redundant, and
+        # don't assume that pointers to different types never alias
+        -fno-delete-null-pointer-checks
+        -fno-strict-aliasing
 
         # C-specific warnings
         -Wimplicit-function-declaration
@@ -34,7 +48,11 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Walloca
         -Walloc-zero
         -Warray-bounds=2
+        -Wattribute-alias=2
+        # Plain -Wcast-align only warns on targets that require aligned
+        # access, so it does nothing on x86-64. =strict warns everywhere.
         -Wcast-align
+        -Wcast-align=strict
         -Wcast-qual
         -Wconversion
         -Wdate-time
@@ -49,11 +67,15 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wformat-signedness
         -Wformat-truncation=2
         -Wformat-y2k
+        -Wimplicit-fallthrough=5
         -Winvalid-pch
         -Wlogical-op
+        -Wmissing-braces
         -Wmissing-declarations
+        -Wmissing-include-dirs
         -Wnormalized
         -Wnull-dereference
+        -Woverlength-strings
 
         # -Wpacked is deliberately left unset.  It fires when
         # __attribute__((packed)) does not change the layout, which is
@@ -76,7 +98,10 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wshadow
         -Wshadow-local
         -Wshift-overflow=2
+        # Warn about functions the stack protector doesn't cover
+        -Wstack-protector
         -Wstrict-overflow=4
+        -Wstringop-overflow=4
         -Wswitch-default
         -Wswitch-enum
         -Wtrampolines
@@ -85,34 +110,55 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wunknown-pragmas
         -Wunsafe-loop-optimizations
         -Wunused
+        -Wunused-const-variable=1
         -Wunused-macros
+        -Wvariadic-macros
         -Wvla
 
         # QEMU-ported code has many unused parameters
         -Wno-unused-parameter
     )
 
+    if(compiler_version VERSION_GREATER_EQUAL 10)
+        set(flags
+            -Warith-conversion
+            ${flags}
+        )
+    endif()
+
+    if(compiler_version VERSION_GREATER_EQUAL 11)
+        set(flags
+            # Zero the registers a function used when it returns, so their
+            # contents don't outlive the call or serve as ROP gadgets
+            -fzero-call-used-regs=used-gpr
+            ${flags}
+        )
+    endif()
+
     if(compiler_version VERSION_GREATER_EQUAL 12)
         set(flags
             -Wbidi-chars=any
             -Wtrivial-auto-var-init
+            -Wuse-after-free=3
             ${flags}
         )
 
-        string(JOIN " " MYCFLAGS ${CMAKE_C_FLAGS}
-          ${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}})
-        if(MYCFLAGS MATCHES "-O[2-3s]")
-            set(flags
-                -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
-                ${flags}
-            )
-        endif()
+        # Only use _FORTIFY_SOURCE if the optimization level is -O2, -O3,
+        # or -Os
+        ernic_get_fortify_flags(fortify_flags)
+        set(flags
+            ${fortify_flags}
+            ${flags}
+        )
     endif()
 
     if(compiler_version VERSION_GREATER_EQUAL 13)
         set(flags
+            # Strict flex arrays (helps ASAN, _FORTIFY_SOURCE, etc.)
             -fstrict-flex-arrays=3
             -Winvalid-utf8
+            # Needs -fstrict-flex-arrays
+            -Wstrict-flex-arrays
             ${flags}
         )
     endif()
@@ -135,12 +181,32 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
 
     if(compiler_version VERSION_GREATER_EQUAL 15)
         set(flags
+            # Zero the padding bits in every initializer of an automatic
+            # variable, so stale stack memory can't leak through padding
+            # (Clang has no equivalent)
+            -fzero-init-padding-bits=all
             -Wtrailing-whitespace
-            -Wleading-whitespace=tabs
+            # The kind names the only whitespace allowed, so =spaces flags
+            # tab indentation
+            -Wleading-whitespace=spaces
             # C++-only before GCC 15
             -Wzero-as-null-pointer-constant
             ${flags}
         )
+    endif()
+
+    if(compiler_version VERSION_GREATER_EQUAL 16)
+        set(flags
+            -Wkeyword-macro
+            ${flags}
+        )
+    endif()
+
+    # Control-flow protection (Intel CET) only exists on x86
+    check_c_compiler_flag(-fcf-protection=full
+      ERNIC_C_COMPILER_SUPPORTS_CF_PROTECTION)
+    if(ERNIC_C_COMPILER_SUPPORTS_CF_PROTECTION)
+        list(APPEND flags -fcf-protection=full)
     endif()
 
     set(${outvar} ${flags} PARENT_SCOPE)

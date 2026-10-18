@@ -7,13 +7,6 @@
 # CMake version according to latest ROCm platform requirements
 cmake_minimum_required(VERSION 3.21)
 
-# Set the default build type to Debug
-#
-# NOTE: This has to be done BEFORE the project is declared!
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type")
-endif()
-
 # Set the version in variables so we can use them in *.in files
 # and avoid version mismatch.
 set(ROCM_ERNIC_VERSION_MAJOR 0)
@@ -33,13 +26,27 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# Set the list of build types for ccmake/CMake GUI
-set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
-  "Debug" "Release" "RelWithDebInfo" "MinSizeRel" "None"
-)
+# Default to a Debug build. This has to come after project(), since
+# that's where CMake decides whether the generator is multi-config.
+# Multi-config generators (Ninja Multi-Config, Xcode, etc.) pick the
+# configuration at build time and don't use CMAKE_BUILD_TYPE. For
+# single-config generators, project() creates an empty cache entry, so
+# FORCE is needed to replace it. When rocm-ernic is a subproject, the
+# build type is the superproject's to choose.
+get_property(ERNIC_IS_MULTI_CONFIG GLOBAL
+  PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(PROJECT_IS_TOP_LEVEL AND NOT ERNIC_IS_MULTI_CONFIG)
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+    endif()
+    # Set the list of build types for ccmake/CMake GUI
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+      "Debug" "Release" "RelWithDebInfo" "MinSizeRel" "None"
+    )
+endif()
 
 # Add cmake/ to the module search path
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 # Docs-only mode: build documentation without requiring
 # libvfio-user, glib, or libibverbs.
@@ -234,25 +241,25 @@ endif()
 # src/rdma is searched directly because the vendored sources include
 # rdma_backend_ops.h and pvrdma_comp_ctx.h by bare name.
 target_include_directories(rocm-ernic PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/rdma
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
-    ${CMAKE_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 
 # The vendored header trees are SYSTEM includes so their warnings stay
 # quiet
 target_include_directories(rocm-ernic SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/include
-    ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 
 target_compile_definitions(rocm-ernic PRIVATE
-    GIT_SHA_FULL="${GIT_SHA_FULL}"
-    GIT_SHA_SHORT="${GIT_SHA_SHORT}"
+    GIT_SHA_FULL="${ERNIC_GIT_SHA_FULL}"
+    GIT_SHA_SHORT="${ERNIC_GIT_SHA_SHORT}"
     _GNU_SOURCE
 )
 
@@ -283,22 +290,14 @@ target_link_libraries(rocm-ernic PRIVATE
 
 ernic_set_compiler_flags(rocm-ernic)
 
-# Off by default so a downstream or distro build is never broken by a
-# warning from a compiler version we have not seen. CI passes
-# -DERNIC_WERROR=ON on every lane that compiles the project, so new
-# warnings still fail the build where it matters.
-option(ERNIC_WERROR
-  "Treat compiler warnings as errors for project code"
-  OFF)
-
-if(ERNIC_WERROR)
-    target_compile_options(rocm-ernic PRIVATE -Werror)
-endif()
-
 # ---------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------
-add_subdirectory(tests)
+# BUILD_TESTING comes from include(CTest) and defaults to ON. A
+# superproject can turn it off to skip building the tests.
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 # ---------------------------------------------------------------
 # Kernel module (DKMS)
@@ -323,7 +322,7 @@ include(ErnicDocumentation)
 message("")
 message("=== rocm-ernic Configuration ===")
 message("  Version      : ${PROJECT_VERSION}")
-message("  Git SHA      : ${GIT_SHA_SHORT}")
+message("  Git SHA      : ${ERNIC_GIT_SHA_SHORT}")
 message("  Build type   : ${CMAKE_BUILD_TYPE}")
 message("  C compiler   : ${CMAKE_C_COMPILER_ID} "
   "${CMAKE_C_COMPILER_VERSION}")
@@ -343,6 +342,11 @@ message("")
 message("  Sanitizers:")
 message("    ASAN/LSAN/UBSAN : ${ERNIC_USE_SANITIZERS}")
 message("    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
+message("    Shared runtime  : ${ERNIC_SANITIZER_SHARED_RUNTIME}")
+message("")
+message("  Code coverage    : ${ERNIC_USE_CODE_COVERAGE}")
+message("  IWYU             : ${ERNIC_USE_IWYU}")
+message("  clang-tidy       : ${ERNIC_USE_CLANG_TIDY}")
 message("")
 message("  Kernel module (DKMS):")
 message("    ERNIC_BUILD_KMOD : ${ERNIC_BUILD_KMOD}")

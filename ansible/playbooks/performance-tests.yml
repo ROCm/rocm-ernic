@@ -137,14 +137,14 @@
       changed_when: false
 
     - name: Free perftest port on VM1
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm1_ssh }} 'sudo /usr/local/bin/free-perftest-port'
       changed_when: false
       failed_when: false
 
     - name: Free perftest port on VM2
-      ansible.builtin.shell:
+      ansible.builtin.command:
         cmd: >-
           {{ vm2_ssh }} 'sudo /usr/local/bin/free-perftest-port'
       changed_when: false
@@ -216,7 +216,7 @@
     # ─────────────────────────────────────────────────
     # Bandwidth sweep
     # ─────────────────────────────────────────────────
-    - name: "BW sweep: {{ item.0.label }} @ {{ item.1 }} B"
+    - name: "BW sweep: {{ item.0.label ~ ' @ ' ~ item.1 ~ ' B' }}"
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: |
@@ -304,7 +304,7 @@
     # ─────────────────────────────────────────────────
     # Latency sweep
     # ─────────────────────────────────────────────────
-    - name: "Lat sweep: {{ item.0.label }} @ {{ item.1 }} B"
+    - name: "Lat sweep: {{ item.0.label ~ ' @ ' ~ item.1 ~ ' B' }}"
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: |
@@ -393,7 +393,7 @@
     # ─────────────────────────────────────────────────
     # Reliability tests (multiple runs at fixed size)
     # ─────────────────────────────────────────────────
-    - name: "Reliability: {{ item.0.label }} run {{ item.1 }}"
+    - name: "Reliability: {{ item.0.label ~ ' run ' ~ item.1 }}"
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: |

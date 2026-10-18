@@ -32,13 +32,6 @@ on:
         type: boolean
         default: false
 
-env:
-  # Pinned here rather than taken as an input: `env` is not available
-  # in a caller's `with:`, so passing it would mean a literal copy in
-  # every caller.  system-tests.yml and nvmeof-lane.yml keep their own
-  # copies; keep the three in step.
-  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
-
 jobs:
   system-test-s3:
     # Only the configuration, not the lane name: every caller's name is
@@ -74,6 +67,15 @@ jobs:
       with:
         persist-credentials: false
 
+    # The guest image pin, from the one file that holds it. Loading it into
+    # the job environment keeps $GUEST_ARTIFACT_TAG usable in later shell
+    # steps (diagnostics name the image they expected) without any lane
+    # carrying its own copy of the tag.
+    - name: Load the guest image pin
+      shell: bash
+      run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ci/guest-image.env
+        >> "$GITHUB_ENV"
+
     - name: Select QEMU accelerator and guest size
       shell: bash
       env:
@@ -81,12 +83,12 @@ jobs:
       run: |
         if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
           echo "✓ /dev/kvm present; using KVM acceleration"
-          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
-          echo "QEMU_CPU=host" >> $GITHUB_ENV
+          echo "QEMU_ACCEL=kvm" >> "$GITHUB_ENV"
+          echo "QEMU_CPU=host" >> "$GITHUB_ENV"
         else
           echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
-          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
-          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+          echo "QEMU_ACCEL=tcg" >> "$GITHUB_ENV"
+          echo "QEMU_CPU=qemu64" >> "$GITHUB_ENV"
         fi
 
         # Size the guests from the runner rather than pinning 2 vCPU / 1 GB;
@@ -105,8 +107,8 @@ jobs:
         [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
         [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
 
-        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
-        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "VM_VCPUS=$VM_VCPUS" >> "$GITHUB_ENV"
+        echo "VM_MEM_MB=$VM_MEM_MB" >> "$GITHUB_ENV"
         echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
         echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
 
@@ -199,12 +201,14 @@ jobs:
         echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
 
-        echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
-        echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
-        echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
-        echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
-        echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
+        {
+          echo "vm_user=$VM_USER"
+          echo "vm_disk=$VM_DISK"
+          echo "ssh_key=$SSH_KEY"
+          echo "ssh_key_private=$SSH_KEY_PRIVATE"
+          echo "ssh_key_public=$SSH_KEY_PUBLIC"
+          echo "kernel_release=$KERNEL_RELEASE"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Install dependencies
       run: |
@@ -225,7 +229,7 @@ jobs:
         set -e
         ldconfig
         HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(ls /usr/local/lib/x86_64-linux-gnu/libvfio-user.so* 2>/dev/null | head -1)
+        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
         if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
           echo "✗ libvfio-user missing from the container image"
           echo "  header: $HDR"
@@ -270,7 +274,7 @@ jobs:
           --verbose > /tmp/vfu_server.log 2>&1 &
 
         SERVER_PID=$!
-        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        echo "SERVER_PID=$SERVER_PID" >> "$GITHUB_ENV"
         echo "Server PID: $SERVER_PID"
 
         for i in {1..30}; do
@@ -312,11 +316,11 @@ jobs:
 
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
-          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem0 \
-          -cpu ${QEMU_CPU} \
-          -smp ${VM_VCPUS} \
-          -m ${VM_MEM_MB}M \
-          -object memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0" \
+          -cpu "${QEMU_CPU}" \
+          -smp "${VM_VCPUS}" \
+          -m "${VM_MEM_MB}M" \
+          -object "memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M" \
           -nographic \
           -drive file="$VM_DISK",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
@@ -327,8 +331,8 @@ jobs:
           -qmp unix:/tmp/qmp.sock,server=on,wait=off > /tmp/qemu.log 2>&1 &
 
         QEMU_PID=$!
-        echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
-        echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
+        echo "QEMU_PID=$QEMU_PID" >> "$GITHUB_ENV"
+        echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
         echo "✓ QEMU started (PID: $QEMU_PID)"
 
         echo "Monitoring QEMU for early failures..."
@@ -354,7 +358,6 @@ jobs:
         echo "=== Setting up SSH keys ==="
         SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
         SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
-        SSH_PORT="$SSH_PORT"
 
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
@@ -373,12 +376,22 @@ jobs:
         # Use the key where the fetch action left it rather than copying
         # it into ~/.ssh: a container job sets HOME to /github/home, but
         # OpenSSH builds its default identity path from getpwuid().
-        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
-        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
-        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
-        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
-        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
-        echo "✓ SSH_OPTS=$SSH_OPTS"
+        # The options go in a config file for ssh -F, so the later steps pass
+        # them as one quoted argument.  The paths are expanded here, since
+        # OpenSSH would resolve ~ with getpwuid() too.
+        SSH_CONFIG="$RUNNER_TEMP/ernic-ssh-config"
+        cat > "$SSH_CONFIG" <<EOF
+        Host *
+          IdentityFile "$SSH_KEY_PRIVATE"
+          IdentitiesOnly yes
+          BatchMode yes
+          StrictHostKeyChecking no
+          UserKnownHostsFile "$HOME/.ssh/known_hosts"
+        EOF
+        echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
+        echo "✓ SSH_CONFIG=$SSH_CONFIG:"
+        cat "$SSH_CONFIG"
 
     - name: Wait for VM SSH
       shell: bash
@@ -386,13 +399,12 @@ jobs:
         VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Waiting for VM SSH ==="
-        SSH_PORT="$SSH_PORT"
         VM_USER="${VM_INFO_USER}"
 
         for i in {1..60}; do
-          if ssh $SSH_OPTS -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
+          if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
-            echo "VM_USER=$VM_USER" >> $GITHUB_ENV
+            echo "VM_USER=$VM_USER" >> "$GITHUB_ENV"
             exit 0
           fi
           echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
@@ -400,7 +412,7 @@ jobs:
         done
 
         echo "✗ VM SSH timeout"
-        ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
+        ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
           -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
         "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
@@ -416,10 +428,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Verifying the emulated PCI function in the VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
 
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
         set -e
 
         echo "=== PCI devices ==="
@@ -478,9 +488,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Installing kernel headers, build tools and pciutils in VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         KVER=$(uname -r)
 
@@ -495,13 +503,15 @@ jobs:
           HEADER_PKG="linux-headers-${KVER}"
         fi
 
-        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          if sudo apt-get -o DPkg::Lock::Timeout=300 update -qq; then
+            break
+          fi
+          echo "apt-get update retry $i/3"; sleep 5
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
+            ${HEADER_PKG:+"$HEADER_PKG"} dkms git build-essential cmake ninja-build \
             pciutils \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
@@ -515,8 +525,6 @@ jobs:
       shell: bash
       run: |
         echo "=== Provisioning the guest via ernic_guest_setup ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
         ERNIC_RUN_DIR=/tmp/ernic-ci
         mkdir -p "$ERNIC_RUN_DIR"
 
@@ -564,8 +572,6 @@ jobs:
       shell: bash
       run: |
         echo "=== Verifying the RDMA device and the s3 endpoint ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
 
         if ! kill -0 "$SERVER_PID" 2>/dev/null; then
           echo "✗ ERNIC server (PID $SERVER_PID) is no longer running"
@@ -589,19 +595,19 @@ jobs:
 
         # Same device detection as every other lane: by the emulated PCI tuple,
         # never by name.  See scripts/find-rdma-device.sh.
-        DEVICE=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        DEVICE=$(ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           'sh -s' < scripts/find-rdma-device.sh | tr -d '\r') || true
 
         if [ -z "$DEVICE" ]; then
           echo "✗ RDMA device not found in the guest"
-          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
-          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
+          ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
             'lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
           exit 1
         fi
         echo "✓ RDMA device found: $DEVICE"
 
-        if ! ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        if ! ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
              "ibv_devinfo -d $DEVICE" | tee /dev/stderr | grep -q 'PORT_ACTIVE'; then
           echo "✗ $DEVICE never reached PORT_ACTIVE"
           exit 1
@@ -611,12 +617,12 @@ jobs:
         # print it: a missing v2 entry is the likeliest cause of a
         # registration that succeeds and a transfer that goes nowhere.
         echo "=== GID table ==="
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "ibv_devinfo -d $DEVICE -v | grep -A2 GID || true"
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "ip -4 -br addr show rocm-ernic0; ip route" || true
 
-        echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
+        echo "RDMA_DEVICE=$DEVICE" >> "$GITHUB_ENV"
         echo "✓ $DEVICE is PORT_ACTIVE and the object store is up"
 
     - name: S3-over-RDMA end-to-end tests (Ansible)
@@ -625,8 +631,6 @@ jobs:
         PUBLISH: ${{ inputs.publish }}
       run: |
         echo "=== S3 over RDMA against the in-process store ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
         ERNIC_RUN_DIR=/tmp/ernic-ci
 
         export ANSIBLE_HOST_KEY_CHECKING=false
@@ -691,7 +695,7 @@ jobs:
 
     - name: Upload test logs
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: s3-backend-test-logs
         path: |
@@ -704,7 +708,7 @@ jobs:
     # ── Publish (nightly only) ───────────────────────
     - name: Upload the S3 sweep
       if: inputs.publish && always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: s3-perf-csv
         path: ${{ env.S3_RESULTS }}/perf-csv/

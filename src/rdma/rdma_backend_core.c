@@ -16,6 +16,8 @@
 #include "rdma_backend_defs.h"
 #include <rdma_backend.h> /* declares rdma_backend_{init,fini}_with_ops */
 #include "rdma_utils.h"
+#include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 
 /**

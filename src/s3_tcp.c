@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 
 #include "net/net_headers.h"
 #include "s3_http.h"
+#include "s3_target.h"
 #include "s3_tcp.h"
 
 #define S3_TCP_MSS_DEFAULT 1460u

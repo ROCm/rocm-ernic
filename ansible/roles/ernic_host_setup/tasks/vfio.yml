@@ -30,9 +30,8 @@
         executable: /bin/bash
         cmd: >-
           set -o pipefail;
-          ls /sys/kernel/iommu_groups/ 2>/dev/null
-          | head -1 | grep -q .
-          && echo OK || echo MISSING
+          if [ -n "$(find /sys/kernel/iommu_groups/ -mindepth 1 -maxdepth 1
+          2>/dev/null | head -1)" ]; then echo OK; else echo MISSING; fi
       register: ernic_iommu_check
       changed_when: false
 

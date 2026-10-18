@@ -24,7 +24,9 @@
 
 #include "rdma_cm_proto.h"
 #include "rdma_utils.h"
-#include "net_headers.h"
+#include <arpa/inet.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 

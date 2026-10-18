@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
@@ -75,7 +75,7 @@ _ci_ansible_run() {
         "$@" </dev/null
 }
 
-cd "${ANSIBLE_DIR}"
+cd "${ANSIBLE_DIR}" || die "cannot cd to ${ANSIBLE_DIR}"
 
 # The perf job brings up its own VMs, and vm-down.sh deleted
 # the overlays the functional job left behind, so these guests

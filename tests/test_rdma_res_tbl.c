@@ -64,6 +64,16 @@
 #include "rocm-ernic-warnings.h"
 
 /*
+ * rdma_rm.c includes rdma_utils.h from its own directory, which is not a
+ * SYSTEM include path here, so the logging macros it defines would be checked
+ * as our code. Including it first through the SYSTEM path, as the main build
+ * does, keeps them vendored: under -pedantic, GCC 13 and older report a
+ * variadic macro called with no variadic arguments in a way that ignores
+ * diagnostic pragmas, so the macros below cannot silence it.
+ */
+#include "rdma_utils.h" // IWYU pragma: keep
+
+/*
  * Pull in the code under test (including its static functions). rdma_rm.c
  * is vendored, so the warnings it raises are silenced here rather than fixed;
  * the suppression covers only the #included code.

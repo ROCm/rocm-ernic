@@ -22,7 +22,14 @@ on:
       - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
       - 'patches/**'              # staged into the guest in ionic mode
       - 'udev/**'                 # driver_common installs these
-      - 'ci/lib/common.sh'        # carries a third copy of the guest tag
+      # Everything under ci/ drives these lanes: guest-image.env is the
+      # guest image pin itself, lib/common.sh reads it, and jobs/ is what
+      # the self-hosted lanes run. Listing the directory rather than the
+      # files is deliberate -- this entry used to name ci/lib/common.sh
+      # alone, "carries a third copy of the guest tag", and when the pin
+      # moved to ci/guest-image.env that comment stopped being true and a
+      # repin matched no path, so bumping the guest image ran no VM lane.
+      - 'ci/**'
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
       - '.github/workflows/s3-lane.yml'       # the s3 job's body
@@ -74,7 +81,6 @@ env:
   # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
   # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
   # the build inputs, so a rebuild from the same sources republishes it.
-  GUEST_ARTIFACT_TAG: 20260916.g2cc8e79-vm.resolute-ionic-qm.5d68689-qcow2
 
 jobs:
   system-test-loopback-vm:
@@ -93,6 +99,15 @@ jobs:
       with:
         persist-credentials: false
 
+    # The guest image pin, from the one file that holds it. Loading it into
+    # the job environment keeps $GUEST_ARTIFACT_TAG usable in later shell
+    # steps (diagnostics name the image they expected) without any lane
+    # carrying its own copy of the tag.
+    - name: Load the guest image pin
+      shell: bash
+      run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ci/guest-image.env
+        >> "$GITHUB_ENV"
+
     - name: Select QEMU accelerator and guest size
       shell: bash
       env:
@@ -100,12 +115,12 @@ jobs:
       run: |
         if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
           echo "✓ /dev/kvm present; using KVM acceleration"
-          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
-          echo "QEMU_CPU=host" >> $GITHUB_ENV
+          echo "QEMU_ACCEL=kvm" >> "$GITHUB_ENV"
+          echo "QEMU_CPU=host" >> "$GITHUB_ENV"
         else
           echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
-          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
-          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+          echo "QEMU_ACCEL=tcg" >> "$GITHUB_ENV"
+          echo "QEMU_CPU=qemu64" >> "$GITHUB_ENV"
         fi
 
         # Size the guests from the runner rather than pinning 2 vCPU / 1 GB.
@@ -135,8 +150,8 @@ jobs:
         [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
         [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
 
-        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
-        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "VM_VCPUS=$VM_VCPUS" >> "$GITHUB_ENV"
+        echo "VM_MEM_MB=$VM_MEM_MB" >> "$GITHUB_ENV"
         echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
         echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
 
@@ -237,12 +252,14 @@ jobs:
         echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
 
-        echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
-        echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
-        echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
-        echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
-        echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
+        {
+          echo "vm_user=$VM_USER"
+          echo "vm_disk=$VM_DISK"
+          echo "ssh_key=$SSH_KEY"
+          echo "ssh_key_private=$SSH_KEY_PRIVATE"
+          echo "ssh_key_public=$SSH_KEY_PUBLIC"
+          echo "kernel_release=$KERNEL_RELEASE"
+        } >> "$GITHUB_OUTPUT"
 
         # README.md line 9 hardcodes the guest kernel in a shields.io
         # badge, because shields.io has no way to read the image.  This
@@ -288,7 +305,7 @@ jobs:
         set -e
         ldconfig
         HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(ls /usr/local/lib/x86_64-linux-gnu/libvfio-user.so* 2>/dev/null | head -1)
+        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
         if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
           echo "✗ libvfio-user missing from the container image"
           echo "  header: $HDR"
@@ -326,7 +343,7 @@ jobs:
           --verbose > /tmp/vfu_server.log 2>&1 &
         
         SERVER_PID=$!
-        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        echo "SERVER_PID=$SERVER_PID" >> "$GITHUB_ENV"
         echo "Server PID: $SERVER_PID"
         
         # Wait for socket and verify server is running
@@ -385,11 +402,11 @@ jobs:
         # Start VM with vfio-user device
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
         qemu-system-x86_64 \
-          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem0 \
-          -cpu ${QEMU_CPU} \
-          -smp ${VM_VCPUS} \
-          -m ${VM_MEM_MB}M \
-          -object memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0" \
+          -cpu "${QEMU_CPU}" \
+          -smp "${VM_VCPUS}" \
+          -m "${VM_MEM_MB}M" \
+          -object "memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M" \
           -nographic \
           -drive file="$VM_DISK",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
@@ -400,8 +417,8 @@ jobs:
           -qmp unix:/tmp/qmp.sock,server=on,wait=off > /tmp/qemu.log 2>&1 &
 
         QEMU_PID=$!
-        echo "QEMU_PID=$QEMU_PID" >> $GITHUB_ENV
-        echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
+        echo "QEMU_PID=$QEMU_PID" >> "$GITHUB_ENV"
+        echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
         echo "✓ QEMU started (PID: $QEMU_PID)"
 
         # Early failure detection: check if QEMU dies within 5 seconds
@@ -426,13 +443,10 @@ jobs:
       env:
         VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
         VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
-        VM_INFO_SSH_KEY: ${{ steps.vm_info.outputs.ssh_key }}
       run: |
         echo "=== Setting up SSH keys ==="
         SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
         SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
-        SSH_KEY="${VM_INFO_SSH_KEY}"
-        SSH_PORT="$SSH_PORT"
         
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
@@ -475,12 +489,22 @@ jobs:
         # offered as well, so this stays legible if it ever breaks again;
         # BatchMode turns the password fallback into an immediate failure
         # with a usable message instead of a read_passphrase error.
-        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
-        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
-        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
-        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
-        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
-        echo "✓ SSH_OPTS=$SSH_OPTS"
+        # The options go in a config file for ssh -F, so the later steps pass
+        # them as one quoted argument.  The paths are expanded here, since
+        # OpenSSH would resolve ~ with getpwuid() too.
+        SSH_CONFIG="$RUNNER_TEMP/ernic-ssh-config"
+        cat > "$SSH_CONFIG" <<EOF
+        Host *
+          IdentityFile "$SSH_KEY_PRIVATE"
+          IdentitiesOnly yes
+          BatchMode yes
+          StrictHostKeyChecking no
+          UserKnownHostsFile "$HOME/.ssh/known_hosts"
+        EOF
+        echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
+        echo "✓ SSH_CONFIG=$SSH_CONFIG:"
+        cat "$SSH_CONFIG"
     
     - name: Wait for VM SSH
       shell: bash
@@ -488,16 +512,15 @@ jobs:
         VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Waiting for VM SSH ==="
-        SSH_PORT="$SSH_PORT"
         VM_USER="${VM_INFO_USER}"
         
         # Keep ssh's stderr rather than discarding it: "Connection
         # refused" and "Connection timed out" are different faults, and
         # the old 2>/dev/null hid which one this was for five runs.
         for i in {1..60}; do
-          if ssh $SSH_OPTS -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
+          if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
-            echo "VM_USER=$VM_USER" >> $GITHUB_ENV
+            echo "VM_USER=$VM_USER" >> "$GITHUB_ENV"
             exit 0
           fi
           echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
@@ -507,7 +530,7 @@ jobs:
         echo "✗ VM SSH timeout"
         echo ""
         echo "=== Final attempt, verbose ==="
-        ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
+        ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
           -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
         "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
@@ -523,8 +546,6 @@ jobs:
       shell: bash
       run: |
         echo "=== Verifying the emulated PCI function in the VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
 
         # This runs before ernic_guest_setup, so ionic_rdma is not
         # loaded yet and there is deliberately no verbs check here --
@@ -538,7 +559,7 @@ jobs:
         # device passed it exactly like a guest that did.  Assert it:
         # if the function is missing, nothing downstream can work and
         # the failure belongs here, where the cause is still visible.
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' << 'EOFVM'
         set -e
 
         echo "=== PCI devices ==="
@@ -616,9 +637,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Installing kernel headers, build tools and pciutils in VM ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
         set -e
         KVER=$(uname -r)
 
@@ -642,13 +661,15 @@ jobs:
           HEADER_PKG="linux-headers-${KVER}"
         fi
 
-        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          if sudo apt-get -o DPkg::Lock::Timeout=300 update -qq; then
+            break
+          fi
+          echo "apt-get update retry $i/3"; sleep 5
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
+            ${HEADER_PKG:+"$HEADER_PKG"} dkms git build-essential cmake ninja-build \
             pciutils \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
@@ -662,8 +683,6 @@ jobs:
       shell: bash
       run: |
         echo "=== Provisioning the guest via ernic_guest_setup ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
         ERNIC_RUN_DIR=/tmp/ernic-ci
         mkdir -p "$ERNIC_RUN_DIR"
 
@@ -705,8 +724,6 @@ jobs:
       shell: bash
       run: |
         echo "=== Verifying RDMA device via loopback:mode=preserve backend ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
 
         # The VM was launched against the server started in the
         # "Start rocm-ernic server" step (loopback:mode=preserve on
@@ -737,15 +754,15 @@ jobs:
         #
         # `|| true` so an absent device reaches the diagnostics below
         # instead of tripping errexit at the assignment.
-        DEVICE=$(ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        DEVICE=$(ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           'sh -s' < scripts/find-rdma-device.sh | tr -d '\r') || true
 
         if [ -z "$DEVICE" ]; then
           echo "✗ RDMA device not found in the guest"
           echo "=== ibv_devices ==="
-          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
+          ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
           echo "=== ionic modules ==="
-          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
             'lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
           exit 1
         fi
@@ -754,21 +771,19 @@ jobs:
         # A device that enumerates but never reaches PORT_ACTIVE
         # carries no traffic, and every test below would fail in a
         # less obvious way.  Gate on it here.
-        if ! ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        if ! ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
              "ibv_devinfo -d $DEVICE" | tee /dev/stderr | grep -q 'PORT_ACTIVE'; then
           echo "✗ $DEVICE never reached PORT_ACTIVE"
           exit 1
         fi
 
-        echo "RDMA_DEVICE=$DEVICE" >> $GITHUB_ENV
+        echo "RDMA_DEVICE=$DEVICE" >> "$GITHUB_ENV"
         echo "✓ Loopback backend VM test passed ($DEVICE, PORT_ACTIVE)"
 
     - name: RDMA payload verification (rdma_verify)
       shell: bash
       run: |
         echo "=== RDMA payload verification on $RDMA_DEVICE ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
 
         # perftest and the ibv_*_pingpong tools report completions,
         # not correctness: an emulator that posts CQEs without moving
@@ -780,19 +795,21 @@ jobs:
         # It is plain libibverbs, so unlike the rocm_ernic direct-verbs
         # smoke tests it replaced it runs on the ionic path rather than
         # skipping there.
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "mkdir -p /tmp/rdma-verify"
-        scp $SSH_OPTS -P "$SSH_PORT" \
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/rdma_verify.c \
           "${VM_USER}@localhost:/tmp/rdma-verify/"
 
         # 'bash -s' rather than a login shell: a login shell sources
         # ~/.bash_logout on exit, which runs clear_console; that fails
         # without a tty and its status would become the shell's.
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<EOFVM
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -e
         cd /tmp/rdma-verify
-        cc -O2 -Wall -Wextra -o rdma_verify rdma_verify.c \$(pkg-config --libs libibverbs)
+        read -ra IBV_FLAGS <<< "$(pkg-config --libs libibverbs)"
+        cc -O2 -Wall -Wextra -o rdma_verify rdma_verify.c "${IBV_FLAGS[@]}"
         # Bounded so a hang fails the step in seconds rather than
         # burning the job's 60-minute budget.
         timeout 120 ./rdma_verify "$RDMA_DEVICE"
@@ -803,11 +820,9 @@ jobs:
       shell: bash
       run: |
         echo "=== WRITE_WITH_IMM guest smoke (loopback responder delivery) ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh $SSH_OPTS -p "$SSH_PORT" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
-        scp $SSH_OPTS -P "$SSH_PORT" \
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_write_imm.c tests/ernic_device.h \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
 
@@ -819,13 +834,14 @@ jobs:
         # exits 1, not 77, if the device is missing -- so there is no
         # skip branch here and exit 77 is a failure like any other.
         set +e
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -e
         cd /tmp/write-imm-smoke
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         gcc -O2 -Wall -Wextra \
           -o test_write_imm test_write_imm.c \
-          $(pkg-config --cflags --libs libibverbs)
+          "${IBV_FLAGS[@]}"
         set +e
         timeout 30s ./test_write_imm
         exit $?
@@ -847,38 +863,101 @@ jobs:
         fi
         echo "✓ WRITE_WITH_IMM guest smoke passed"
 
-    # These two used to be registered with CTest, where they ran on a host
+    # SRQ, and the one step in this file where exit 77 is a legitimate pass.
+    #
+    # Every other guest test here asserts a device that is known present, so
+    # a skip means the test did not run and is treated as a failure. SRQ is
+    # different: the capability comes from the guest's ionic_rdma, and the
+    # series that adds it is in rdma/for-next, not in the guest image this
+    # lane pins. Until that image is rebuilt on a kernel carrying it, the
+    # device reports max_srq=0 and the test skips.
+    #
+    # It is registered now rather than later so that the day the guest image
+    # gains the driver this starts exercising the emulator's SRQ path with no
+    # workflow change -- and if the emulator side regresses in the meantime,
+    # the failure shows up the moment the image lands rather than during a
+    # bring-up.
+    - name: SRQ guest smoke (build and run test_srq)
+      shell: bash
+      run: |
+        echo "=== SRQ guest smoke on $RDMA_DEVICE ==="
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
+          "${VM_USER}@localhost" "mkdir -p /tmp/srq-smoke"
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
+          tests/test_srq.c tests/ernic_device.h \
+          "${VM_USER}@localhost:/tmp/srq-smoke/"
+
+        set +e
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
+        set -e
+        cd /tmp/srq-smoke
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
+        gcc -O2 -Wall -Wextra \
+          -o test_srq test_srq.c \
+          "${IBV_FLAGS[@]}"
+        set +e
+        timeout 30s ./test_srq
+        exit $?
+        EOFVM
+        SRQ_EXIT=$?
+        set -e
+
+        if [ "$SRQ_EXIT" -eq 77 ]; then
+          echo "○ SRQ smoke skipped: the guest driver reports max_srq=0."
+          echo "  Expected until $GUEST_ARTIFACT_TAG is rebuilt on a kernel"
+          echo "  carrying the ionic SRQ series (rdma/for-next). The"
+          echo "  emulator side is still covered by the unit tests, and the"
+          echo "  'Build the SRQ-capable ionic driver in the VM' step later"
+          echo "  in this job builds that driver itself rather than waiting"
+          echo "  for the image, so the functional test that follows it"
+          echo "  treats 77 as a failure where this step tolerates it."
+          exit 0
+        fi
+        if [ "$SRQ_EXIT" -ne 0 ]; then
+          echo "✗ SRQ guest smoke failed (exit $SRQ_EXIT)"
+          exit 1
+        fi
+        echo "✓ SRQ guest smoke passed"
+
+    # These used to be registered with CTest, where they ran on a host
     # with no RDMA device, returned 77 and were reported as passes.  They
     # are no longer registered; this is the only place they run, and here a
     # device is guaranteed, so exit 77 is a failure like any other.
-    - name: Guest RDMA tests (test_data_transfer, test_rdma_cm)
+    #
+    # The two UD tests run here rather than beside the SRQ steps below
+    # because UD needs nothing from the rebuilt driver: they exercise the
+    # emulator's datagram path against the guest's stock ionic, so they
+    # still run on a lane where the SRQ rebuild is skipped or fails.
+    - name: Guest RDMA tests (data transfer, rdma_cm, UD)
       shell: bash
       run: |
         echo "=== Guest RDMA tests on $RDMA_DEVICE ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
-        ssh $SSH_OPTS -p "$SSH_PORT" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/guest-rdma-tests"
-        scp $SSH_OPTS -P "$SSH_PORT" \
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_data_transfer.c tests/test_rdma_cm.c \
+          tests/test_ud_transfer.c tests/test_ud_sq_reclaim.c \
           tests/ernic_device.h \
           "${VM_USER}@localhost:/tmp/guest-rdma-tests/"
 
         FAILED=0
-        for T in test_data_transfer test_rdma_cm; do
+        for T in test_data_transfer test_rdma_cm \
+                 test_ud_transfer test_ud_sq_reclaim; do
           echo ""
           echo "--- $T ---"
           set +e
-          ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+          ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
             "RDMA_DEVICE='$RDMA_DEVICE' bash -s $T" <<'EOFVM'
         set -e
         T="$1"
         cd /tmp/guest-rdma-tests
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         # -D_GNU_SOURCE matches target_compile_definitions() in
         # tests/CMakeLists.txt; without it test_data_transfer picks up an
         # implicit declaration of usleep().
         gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o "$T" "$T.c" \
-          $(pkg-config --cflags --libs libibverbs)
+          "${IBV_FLAGS[@]}"
         set +e
         timeout 120s "./$T"
         exit $?
@@ -925,10 +1004,8 @@ jobs:
       shell: bash
       run: |
         echo "=== perftest sweep on $RDMA_DEVICE ==="
-        SSH_PORT="$SSH_PORT"
-        VM_USER="$VM_USER"
 
-        ssh $SSH_OPTS -p "$SSH_PORT" "${VM_USER}@localhost" \
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
         set -euo pipefail
         DEV="$RDMA_DEVICE"
@@ -1030,7 +1107,7 @@ jobs:
         cat /tmp/lat.csv
         EOFVM
 
-        scp $SSH_OPTS -P "$SSH_PORT" \
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           "${VM_USER}@localhost:/tmp/bw.csv" \
           "${VM_USER}@localhost:/tmp/lat.csv" .
 
@@ -1058,6 +1135,215 @@ jobs:
         fi
         echo "✓ Sweep complete, regression checks passed"
 
+    # ── SRQ against a driver that can actually do it ──────────────
+    #
+    # The "SRQ guest smoke" step earlier in this job tolerates exit 77,
+    # because the pinned guest image ships ionic built from
+    # IONIC_KERNEL_REF -- which predates the upstream SRQ series and
+    # reports max_srq=0.  That makes it a capability probe, not a test:
+    # it has never once exercised the emulator's SRQ adminq handlers.
+    #
+    # These two steps close that gap by rebuilding the guest driver from
+    # patches/srq first.  They run last on purpose: they swap the ionic
+    # modules out from under the guest, so anything after them would be
+    # testing a different driver than the one the lane booted.
+    #
+    # The sources are fetched and patched on the RUNNER, not in the
+    # guest, and then shipped in.  The runner is known to reach
+    # git.kernel.org -- the ionic Driver Patches workflow does exactly
+    # this -- whereas the guest's outbound path is user-mode NAT that
+    # nothing else in this lane depends on, and a network failure in
+    # there would read as a patch failure.  That split is what
+    # ernic_srq_dkms_fetch_on_controller expresses.
+    #
+    # This used to be ~120 lines of inline ssh that did the same work as
+    # the ernic_srq_dkms role while the role itself was skipped with
+    # --skip-tags srq-kernel -- two definitions of the SRQ kernel build,
+    # only one of them ever run.  The role is remote-capable now, so
+    # this drives it instead.
+    #
+    # --skip-tags srq-provider, not --tags srq-kernel: playbooks/
+    # vm-register.yml carries no tags at all, and --tags would skip it,
+    # leaving ernic_vms empty and the play reporting success having
+    # built nothing.
+    #
+    # These block.  patches/srq is rebased onto v7.2.4 -- the ref
+    # IONIC_KERNEL_REF pins and the kernel the guest image runs -- so
+    # there is no version mismatch to tolerate: the series applies with
+    # git am and builds as a DKMS package on 7.2.4-070204-generic,
+    # verified on a live guest.  A failure here is a real regression.
+    - name: Build the SRQ-capable ionic driver in the VM
+      id: srq_build
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
+
+        cd ansible
+        # The ref is not named here.  It comes from the role defaults,
+        # which is the single source for "which kernel carries SRQ"; a
+        # copy here would let this lane keep testing the old one after a
+        # bump.  Same for the patches directory, passed only because the
+        # default is playbook_dir-relative and so depends on which
+        # playbook was named on the command line.
+        ansible-playbook playbooks/vm-register.yml \
+                         playbooks/srq-dkms-build.yml \
+          --skip-tags srq-provider \
+          -e srq_dkms_hosts=ernic_vms \
+          -e ernic_run_dir=/tmp/ernic-ci \
+          -e ernic_srq_dkms_patches_dir="$PROJECT_ROOT/patches/srq" \
+          -e ernic_srq_dkms_scripts_dir="$PROJECT_ROOT/scripts" \
+          -e ernic_srq_dkms_fetch_on_controller=true \
+          -e ernic_srq_dkms_install=true \
+          -e ernic_srq_dkms_reload=true \
+          -e ernic_srq_dkms_rdma_dev="$RDMA_DEVICE"
+
+        # Every step below gates on this.  The role asserts the loaded
+        # module came from updates/extra/dkms and that the port returned
+        # to ACTIVE, so reaching here means the driver really was
+        # replaced -- not merely that ansible-playbook exited 0.
+        echo "srq_driver=installed" >> "$GITHUB_OUTPUT"
+        echo "✓ SRQ-capable ionic driver installed and loaded"
+
+    # The step above installs the kernel half, which is what makes the
+    # device advertise max_srq.  This is the userspace half, and without
+    # it the pair is the contradiction patches/rdma-core/README.md
+    # describes: the driver reports max_srq=256 and ibv_create_srq()
+    # returns EOPNOTSUPP, because libibverbs dispatches into the guest's
+    # stock ionic provider, which has no create_srq op.  SRQ is in no
+    # rdma-core release and not in master either -- it is
+    # linux-rdma/rdma-core#1799 -- so there is no package to install.
+    #
+    # Driven through the ernic_srq_provider role rather than a second
+    # copy of its steps: the role pins the rdma-core base, checks that
+    # pin against patches/rdma-core/README.md, and asserts the built
+    # provider actually carries the verbs before and after the build.  A
+    # hand-rolled copy here would be a third place to bump.
+    #
+    # vm-register.yml runs first and untagged, in the same invocation, so
+    # the ernic_vms group it builds by add_host is still in memory when
+    # the second playbook targets it.  --skip-tags srq-kernel drops the
+    # DKMS half, which the step above has already done.
+    - name: Install the SRQ-capable rdma-core provider in the VM
+      id: srq_provider
+      if: steps.srq_build.outputs.srq_driver == 'installed'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "=== Building the SRQ-capable rdma-core provider ==="
+
+        export ANSIBLE_HOST_KEY_CHECKING=false
+        export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
+        export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
+
+        cd ansible
+        # The patch directory is passed rather than left to the role
+        # default, which is playbook_dir-relative and so depends on which
+        # playbook was named on the command line.
+        ansible-playbook playbooks/vm-register.yml \
+                         playbooks/srq-dkms-build.yml \
+          --skip-tags srq-kernel \
+          -e srq_dkms_hosts=ernic_vms \
+          -e ernic_run_dir=/tmp/ernic-ci \
+          -e ernic_srq_provider_patches_dir="$PROJECT_ROOT/patches/rdma-core"
+
+        echo "srq_provider=installed" >> "$GITHUB_OUTPUT"
+        echo "✓ SRQ-capable rdma-core provider installed"
+
+    # Which libibverbs the test will compile and link against.  The
+    # provider role installs to /usr/local, and both pkg-config and ld.so
+    # search there before /usr -- but if that ever stops being true the
+    # symptom is the EOPNOTSUPP this lane exists to catch, reported
+    # against a provider that does have the verbs.  Name the library here
+    # so that failure is one line of log rather than an afternoon.
+    - name: Show which libibverbs the guest resolves
+      if: steps.srq_provider.outputs.srq_provider == 'installed'
+      shell: bash
+      run: |
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'bash -s' <<'EOFVM'
+        echo "pkg-config libdir: $(pkg-config --variable=libdir libibverbs)"
+        echo "pkg-config version: $(pkg-config --modversion libibverbs)"
+        ldconfig -p | grep -E 'libibverbs\.so' || true
+        ls -1 /usr/local/lib/libibverbs/ 2>/dev/null || true
+        EOFVM
+
+    - name: SRQ functional test against the rebuilt driver
+      if: steps.srq_build.outputs.srq_driver == 'installed'
+      shell: bash
+      run: |
+        echo "=== SRQ functional test on $RDMA_DEVICE ==="
+
+        # max_srq is the single number the whole SRQ effort exists to
+        # move off zero: UCX's rc_verbs transport declines a device
+        # reporting max_srq=0, leaving ud_verbs, which has no one-sided
+        # RDMA -- which is why NIXL and LMCache P2P fell back to TCP.
+        MAXSRQ=$(ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+          'ibv_devinfo -v 2>/dev/null | grep -iE "^[[:space:]]*max_srq:"' \
+          | head -1 | tr -dc '0-9')
+        echo "max_srq=${MAXSRQ:-<none>}"
+        if [ -z "$MAXSRQ" ] || [ "$MAXSRQ" -eq 0 ]; then
+          echo "✗ the rebuilt driver still reports max_srq=0"
+          exit 1
+        fi
+
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "mkdir -p /tmp/srq-test"
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
+          tests/test_srq.c tests/test_srq_transfer.c tests/ernic_device.h \
+          "${VM_USER}@localhost:/tmp/srq-test/"
+
+        # test_srq first, then test_srq_transfer: the first says the verbs
+        # are accepted, the second says bytes actually cross the SRQ.  Only
+        # the second fails when the emulator drops the SRQ doorbell, which
+        # is the defect this whole series exists to fix -- so a green
+        # test_srq alone is not evidence of anything.
+        FAILED=0
+        for T in test_srq test_srq_transfer; do
+          echo ""
+          echo "--- $T ---"
+          set +e
+          ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+            "RDMA_DEVICE='$RDMA_DEVICE' bash -s $T" <<'EOFVM'
+        set -e
+        T="$1"
+        cd /tmp/srq-test
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
+        gcc -O2 -Wall -Wextra -o "$T" "$T.c" \
+          "${IBV_FLAGS[@]}"
+        set +e
+        timeout 60s "./$T"
+        exit $?
+        EOFVM
+          RC=$?
+          set -e
+
+          # 77 is the test's "this device cannot do SRQ" skip.  The smoke
+          # step earlier tolerates it; here it means the rebuild above
+          # silently did nothing, so it is a failure like any other.
+          if [ "$RC" -eq 77 ]; then
+            echo "✗ $T skipped (max_srq=0) after installing the SRQ driver"
+            FAILED=1
+          elif [ "$RC" -ne 0 ]; then
+            echo "✗ $T failed (exit $RC)"
+            FAILED=1
+          else
+            echo "✓ $T passed"
+          fi
+        done
+
+        if [ "$FAILED" -ne 0 ]; then
+          echo ""
+          echo "✗ SRQ functional tests failed against the rebuilt driver"
+          exit 1
+        fi
+        echo ""
+        echo "✓ SRQ functional tests passed against the rebuilt driver"
+
     - name: Show logs
       if: always()
       run: |
@@ -1075,7 +1361,7 @@ jobs:
 
     - name: Upload test logs
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: loopback-backend-test-logs
         path: |
@@ -1200,6 +1486,15 @@ jobs:
       with:
         persist-credentials: false
 
+    # The guest image pin, from the one file that holds it. Loading it into
+    # the job environment keeps $GUEST_ARTIFACT_TAG usable in later shell
+    # steps (diagnostics name the image they expected) without any lane
+    # carrying its own copy of the tag.
+    - name: Load the guest image pin
+      shell: bash
+      run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ci/guest-image.env
+        >> "$GITHUB_ENV"
+
     - name: Select QEMU accelerator and guest size
       shell: bash
       env:
@@ -1207,12 +1502,12 @@ jobs:
       run: |
         if [ -c /dev/kvm ] && qemu-system-x86_64 -accel help 2>/dev/null | grep -qw kvm; then
           echo "✓ /dev/kvm present; using KVM acceleration"
-          echo "QEMU_ACCEL=kvm" >> $GITHUB_ENV
-          echo "QEMU_CPU=host" >> $GITHUB_ENV
+          echo "QEMU_ACCEL=kvm" >> "$GITHUB_ENV"
+          echo "QEMU_CPU=host" >> "$GITHUB_ENV"
         else
           echo "⚠ /dev/kvm unavailable; falling back to TCG (guests will be slow)"
-          echo "QEMU_ACCEL=tcg" >> $GITHUB_ENV
-          echo "QEMU_CPU=qemu64" >> $GITHUB_ENV
+          echo "QEMU_ACCEL=tcg" >> "$GITHUB_ENV"
+          echo "QEMU_CPU=qemu64" >> "$GITHUB_ENV"
         fi
 
         # See the loopback job; VMS is 2 here, so each guest gets half.
@@ -1233,8 +1528,8 @@ jobs:
         [ "$VM_MEM_MB" -gt 8192 ] && VM_MEM_MB=8192
         [ "$VM_MEM_MB" -lt 1024 ] && VM_MEM_MB=1024
 
-        echo "VM_VCPUS=$VM_VCPUS" >> $GITHUB_ENV
-        echo "VM_MEM_MB=$VM_MEM_MB" >> $GITHUB_ENV
+        echo "VM_VCPUS=$VM_VCPUS" >> "$GITHUB_ENV"
+        echo "VM_MEM_MB=$VM_MEM_MB" >> "$GITHUB_ENV"
         echo "runner: ${HOST_CPUS} vCPU, ${HOST_MEM_MB} MB"
         echo "guests: ${VMS} x ${VM_VCPUS} vCPU, ${VM_MEM_MB} MB"
 
@@ -1271,7 +1566,7 @@ jobs:
         set -e
         ldconfig
         HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(ls /usr/local/lib/x86_64-linux-gnu/libvfio-user.so* 2>/dev/null | head -1)
+        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
         if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
           echo "✗ libvfio-user missing from the container image"
           ls -la /usr/local/lib/x86_64-linux-gnu/ /usr/local/include/ || true
@@ -1383,12 +1678,14 @@ jobs:
         echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
 
-        echo "vm_user=$VM_USER" >> $GITHUB_OUTPUT
-        echo "vm_disk=$VM_DISK" >> $GITHUB_OUTPUT
-        echo "ssh_key=$SSH_KEY" >> $GITHUB_OUTPUT
-        echo "ssh_key_private=$SSH_KEY_PRIVATE" >> $GITHUB_OUTPUT
-        echo "ssh_key_public=$SSH_KEY_PUBLIC" >> $GITHUB_OUTPUT
-        echo "kernel_release=$KERNEL_RELEASE" >> $GITHUB_OUTPUT
+        {
+          echo "vm_user=$VM_USER"
+          echo "vm_disk=$VM_DISK"
+          echo "ssh_key=$SSH_KEY"
+          echo "ssh_key_private=$SSH_KEY_PRIVATE"
+          echo "ssh_key_public=$SSH_KEY_PUBLIC"
+          echo "kernel_release=$KERNEL_RELEASE"
+        } >> "$GITHUB_OUTPUT"
     - name: Create the per-VM disk overlays
       id: copy_vm_disk
       shell: bash
@@ -1415,8 +1712,8 @@ jobs:
           qemu-img info "$DISK"
         done
 
-        echo "vm_disk_1=$VM_DISK_1" >> $GITHUB_OUTPUT
-        echo "vm_disk_2=$VM_DISK_2" >> $GITHUB_OUTPUT
+        echo "vm_disk_1=$VM_DISK_1" >> "$GITHUB_OUTPUT"
+        echo "vm_disk_2=$VM_DISK_2" >> "$GITHUB_OUTPUT"
         echo "✓ overlays created over $BASE"
     
     - name: Setup SSH keys
@@ -1424,12 +1721,10 @@ jobs:
       env:
         VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
         VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
-        VM_INFO_SSH_KEY: ${{ steps.vm_info.outputs.ssh_key }}
       run: |
         echo "=== Setting up SSH keys ==="
         SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
         SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
-        SSH_KEY="${VM_INFO_SSH_KEY}"
         
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
@@ -1463,12 +1758,22 @@ jobs:
         # job) but OpenSSH builds its defaults from getpwuid(), so the key
         # is used where it lies rather than copied somewhere ssh will
         # never look for it.
-        SSH_OPTS="-i $SSH_KEY_PRIVATE -o IdentitiesOnly=yes"
-        SSH_OPTS="$SSH_OPTS -o BatchMode=yes -o StrictHostKeyChecking=no"
-        SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
-        echo "SSH_OPTS=$SSH_OPTS" >> $GITHUB_ENV
-        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> $GITHUB_ENV
-        echo "✓ SSH_OPTS=$SSH_OPTS"
+        # The options go in a config file for ssh -F, so the later steps pass
+        # them as one quoted argument.  The paths are expanded here, since
+        # OpenSSH would resolve ~ with getpwuid() too.
+        SSH_CONFIG="$RUNNER_TEMP/ernic-ssh-config"
+        cat > "$SSH_CONFIG" <<EOF
+        Host *
+          IdentityFile "$SSH_KEY_PRIVATE"
+          IdentitiesOnly yes
+          BatchMode yes
+          StrictHostKeyChecking no
+          UserKnownHostsFile "$HOME/.ssh/known_hosts"
+        EOF
+        echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
+        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
+        echo "✓ SSH_CONFIG=$SSH_CONFIG:"
+        cat "$SSH_CONFIG"
 
         # The sanity play builds bare `ssh -p <port> user@localhost`
         # command lines with no -i, so it can only work if the key is
@@ -1589,7 +1894,7 @@ jobs:
           --verbose > /tmp/server1.log 2>&1 &
         
         SERVER1_PID=$!
-        echo "SERVER1_PID=$SERVER1_PID" >> $GITHUB_ENV
+        echo "SERVER1_PID=$SERVER1_PID" >> "$GITHUB_ENV"
         echo "Server 1 PID: $SERVER1_PID"
         
         # Wait for socket and verify server is running
@@ -1698,7 +2003,7 @@ jobs:
           --verbose > /tmp/server2.log 2>&1 &
         
         SERVER2_PID=$!
-        echo "SERVER2_PID=$SERVER2_PID" >> $GITHUB_ENV
+        echo "SERVER2_PID=$SERVER2_PID" >> "$GITHUB_ENV"
         echo "Server 2 PID: $SERVER2_PID"
         
         # Wait for socket and verify server is running
@@ -1758,11 +2063,11 @@ jobs:
         tail -30 /tmp/server2.log || true
 
         # Verify both servers are still running
-        if ! ps -p $SERVER1_PID > /dev/null; then
+        if ! ps -p "$SERVER1_PID" > /dev/null; then
           echo "✗ Server 1 (manager) has stopped"
           exit 1
         fi
-        if ! ps -p $SERVER2_PID > /dev/null; then
+        if ! ps -p "$SERVER2_PID" > /dev/null; then
           echo "✗ Server 2 (worker) has stopped"
           exit 1
         fi
@@ -1833,13 +2138,13 @@ jobs:
         echo "=== Verifying server sockets are ready ==="
         
         # Verify both servers are still running
-        if ! ps -p $SERVER1_PID > /dev/null; then
+        if ! ps -p "$SERVER1_PID" > /dev/null; then
           echo "✗ Server 1 (manager) has stopped"
           echo "Server 1 log:"
           tail -50 /tmp/server1.log || true
           exit 1
         fi
-        if ! ps -p $SERVER2_PID > /dev/null; then
+        if ! ps -p "$SERVER2_PID" > /dev/null; then
           echo "✗ Server 2 (worker) has stopped"
           echo "Server 2 log:"
           tail -50 /tmp/server2.log || true
@@ -1850,7 +2155,7 @@ jobs:
         # Wait for server 1 to be ready (device realized)
         echo "Waiting for server 1 to be ready..."
         SERVER1_READY=0
-        for i in $(seq 1 30); do
+        for _ in $(seq 1 30); do
           if grep -q "Socket permissions set\|Device realized, waiting for client connection" /tmp/server1.log; then
             echo "✓ Server 1 ready"
             SERVER1_READY=1
@@ -1868,7 +2173,7 @@ jobs:
         # Wait for server 2 to be ready (device realized)
         echo "Waiting for server 2 to be ready..."
         SERVER2_READY=0
-        for i in $(seq 1 30); do
+        for _ in $(seq 1 30); do
           if grep -q "Socket permissions set\|Device realized, waiting for client connection" /tmp/server2.log; then
             echo "✓ Server 2 ready"
             SERVER2_READY=1
@@ -1905,11 +2210,11 @@ jobs:
         SSH_PORT_1=2222
         
         qemu-system-x86_64 \
-          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem1 \
-          -cpu ${QEMU_CPU} \
-          -smp ${VM_VCPUS} \
-          -m ${VM_MEM_MB}M \
-          -object memory-backend-memfd,id=mem1,share=on,size=${VM_MEM_MB}M \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem1" \
+          -cpu "${QEMU_CPU}" \
+          -smp "${VM_VCPUS}" \
+          -m "${VM_MEM_MB}M" \
+          -object "memory-backend-memfd,id=mem1,share=on,size=${VM_MEM_MB}M" \
           -nographic \
           -drive file="$VM_DISK_1",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
@@ -1920,7 +2225,7 @@ jobs:
           -qmp unix:/tmp/qmp-vm1.sock,server=on,wait=off > /tmp/qemu-vm1.log 2>&1 &
 
         QEMU_VM1_PID=$!
-        echo "QEMU_VM1_PID=$QEMU_VM1_PID" >> $GITHUB_ENV
+        echo "QEMU_VM1_PID=$QEMU_VM1_PID" >> "$GITHUB_ENV"
         echo "✓ VM 1 started (PID: $QEMU_VM1_PID)"
         
         # Early failure detection: check if QEMU dies within 5 seconds
@@ -1950,11 +2255,11 @@ jobs:
         SSH_PORT_2=2223
         
         qemu-system-x86_64 \
-          -machine q35,accel=${QEMU_ACCEL},memory-backend=mem2 \
-          -cpu ${QEMU_CPU} \
-          -smp ${VM_VCPUS} \
-          -m ${VM_MEM_MB}M \
-          -object memory-backend-memfd,id=mem2,share=on,size=${VM_MEM_MB}M \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem2" \
+          -cpu "${QEMU_CPU}" \
+          -smp "${VM_VCPUS}" \
+          -m "${VM_MEM_MB}M" \
+          -object "memory-backend-memfd,id=mem2,share=on,size=${VM_MEM_MB}M" \
           -nographic \
           -drive file="$VM_DISK_2",format=qcow2,if=virtio \
           -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
@@ -1965,7 +2270,7 @@ jobs:
           -qmp unix:/tmp/qmp-vm2.sock,server=on,wait=off > /tmp/qemu-vm2.log 2>&1 &
 
         QEMU_VM2_PID=$!
-        echo "QEMU_VM2_PID=$QEMU_VM2_PID" >> $GITHUB_ENV
+        echo "QEMU_VM2_PID=$QEMU_VM2_PID" >> "$GITHUB_ENV"
         echo "✓ VM 2 started (PID: $QEMU_VM2_PID)"
         
         # Early failure detection: check if QEMU dies within 5 seconds
@@ -2001,7 +2306,7 @@ jobs:
           local i
 
           for i in {1..60}; do
-            if ssh $SSH_OPTS -o ConnectTimeout=5 \
+            if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 \
                  -p "$port" "${VM_USER}@localhost" "echo ${label} Ready" \
                  2>/tmp/ssh-attempt.err; then
               echo "✓ ${label} is accessible via SSH"
@@ -2014,7 +2319,7 @@ jobs:
           echo "✗ ${label} boot timeout"
           echo ""
           echo "=== ${label}: final attempt, verbose ==="
-          ssh -vvv $SSH_OPTS -o ConnectTimeout=5 \
+          ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
             -p "$port" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
 
           "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
@@ -2056,13 +2361,15 @@ jobs:
           echo "No build tree for ${KVER}; asking apt for the headers"
           HEADER_PKG="linux-headers-${KVER}"
         fi
-        APT_LOCK_WAIT="-o DPkg::Lock::Timeout=300"
         for i in 1 2 3; do
-          sudo apt-get $APT_LOCK_WAIT update -qq && break || { echo "apt-get update retry $i/3"; sleep 5; }
+          if sudo apt-get -o DPkg::Lock::Timeout=300 update -qq; then
+            break
+          fi
+          echo "apt-get update retry $i/3"; sleep 5
         done
         for i in 1 2 3 4 5; do
-          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_LOCK_WAIT install -y -qq \
-            ${HEADER_PKG} dkms git build-essential cmake ninja-build \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq \
+            ${HEADER_PKG:+"$HEADER_PKG"} dkms git build-essential cmake ninja-build \
             pkg-config libnl-3-dev libnl-route-3-dev libudev-dev && break
           [ "$i" -eq 5 ] && { echo "apt-get install failed after 5 attempts"; exit 1; }
           echo "apt-get install retry $i/5"; sleep 10
@@ -2072,9 +2379,9 @@ jobs:
 
         _packages_vm() {
           local PORT="$1"
-          scp $SSH_OPTS -P "$PORT" /tmp/vm-packages.sh \
+          scp -F "$SSH_CONFIG" -P "$PORT" /tmp/vm-packages.sh \
             "${VM_USER}@localhost:/tmp/vm-packages.sh"
-          ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-packages.sh
+          ssh -F "$SSH_CONFIG" -p "$PORT" "${VM_USER}@localhost" bash /tmp/vm-packages.sh
         }
 
         _packages_vm 2222 > /tmp/packages-vm1.log 2>&1 &
@@ -2157,7 +2464,7 @@ jobs:
         # enumerates but never trains carries no traffic, and the sanity
         # play below would then fail with a far less obvious error.
         _guest_dev() {
-          ssh $SSH_OPTS -p "$1" "${VM_USER}@localhost" \
+          ssh -F "$SSH_CONFIG" -p "$1" "${VM_USER}@localhost" \
             'sh -s' < scripts/find-rdma-device.sh | tr -d '\r'
         }
 
@@ -2170,13 +2477,13 @@ jobs:
           DEV=$(_guest_dev "$PORT") || true
           if [ -z "$DEV" ]; then
             echo "✗ ${LABEL}: no RDMA device found"
-            ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" \
+            ssh -F "$SSH_CONFIG" -p "$PORT" "${VM_USER}@localhost" \
               'ibv_devices; lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
             FAILED=$((FAILED + 1))
             continue
           fi
 
-          if ! ssh $SSH_OPTS -p "$PORT" "${VM_USER}@localhost" \
+          if ! ssh -F "$SSH_CONFIG" -p "$PORT" "${VM_USER}@localhost" \
                "ibv_devinfo -d $DEV" | tee /dev/stderr | grep -q 'PORT_ACTIVE'; then
             echo "✗ ${LABEL}: $DEV never reached PORT_ACTIVE"
             FAILED=$((FAILED + 1))
@@ -2264,7 +2571,7 @@ jobs:
 
     - name: Upload the perf sweep
       if: always() && github.event_name != 'pull_request'
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: two-vms-perf-csv
         path: /tmp/ernic-ci-results/perf-csv/
@@ -2295,12 +2602,12 @@ jobs:
         echo "=== Cleaning up ==="
 
         # Stop VMs
-        [ ! -z "$QEMU_VM1_PID" ] && kill $QEMU_VM1_PID 2>/dev/null || true
-        [ ! -z "$QEMU_VM2_PID" ] && kill $QEMU_VM2_PID 2>/dev/null || true
+        [ ! -z "$QEMU_VM1_PID" ] && kill "$QEMU_VM1_PID" 2>/dev/null || true
+        [ ! -z "$QEMU_VM2_PID" ] && kill "$QEMU_VM2_PID" 2>/dev/null || true
 
         # Stop servers
-        [ ! -z "$SERVER1_PID" ] && kill $SERVER1_PID 2>/dev/null || true
-        [ ! -z "$SERVER2_PID" ] && kill $SERVER2_PID 2>/dev/null || true
+        [ ! -z "$SERVER1_PID" ] && kill "$SERVER1_PID" 2>/dev/null || true
+        [ ! -z "$SERVER2_PID" ] && kill "$SERVER2_PID" 2>/dev/null || true
 
         sleep 2
 
@@ -2312,7 +2619,7 @@ jobs:
   
     - name: Upload test logs
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: two-vms-test-logs
         path: |

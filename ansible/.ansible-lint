@@ -10,12 +10,12 @@ exclude_paths:
   # next release run.
   - changelogs/changelog.yaml
 
-warn_list:
-  - command-instead-of-module
-  - command-instead-of-shell
-  - name[template]
-  - schema[meta]  # Ubuntu resolute not yet in schema
+# CI runs with --strict, so a rule left on the warn list fails it
+# anyway. A rule that can't be met goes here, with the reason.
+skip_list:
   # The ernic_* prefix predates the split into roles and is used
-  # by the test playbooks and ci/jobs/*.sh; keeping it beats
-  # renaming every consumer to ernic_guest_setup_*.
+  # by the test playbooks and ci/jobs/*.sh, and some variables,
+  # such as ernic_source_dir, are shared by two roles on purpose;
+  # keeping it beats renaming every consumer to
+  # ernic_guest_setup_*.
   - var-naming[no-role-prefix]

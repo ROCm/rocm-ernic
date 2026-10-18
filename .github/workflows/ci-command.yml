@@ -41,7 +41,9 @@
 name: rocm-ernic - CI Command
 
 on:
-  issue_comment:
+  # zizmor reports every issue_comment trigger as dangerous; the SECURITY
+  # notes above are why this one is acceptable.
+  issue_comment:  # zizmor: ignore[dangerous-triggers]
     types: [created]
 
 permissions:
@@ -138,17 +140,19 @@ jobs:
               echo "Unrecognised argument \`${UNKNOWN}\`."
               echo
             fi
-            echo "**Self-hosted CI**"
-            echo
-            echo '| Command | Runs |'
-            echo '|---|---|'
-            echo '| `/run-ci` | build + loopback + 2-VM RDMA functional |'
-            echo '| `/run-ci build` | build + ctest + loopback only |'
-            echo '| `/run-ci functional` | same as bare `/run-ci` |'
-            echo '| `/run-ci full` | functional + performance sweeps |'
-            echo '| `/run-ci full tcg` | run VMs under emulation (no valid perf) |'
-            echo
-            echo 'Requires write access. Fork pull requests are eligible: the run tests the fork'"'"'s code but always uses this repository'"'"'s workflow definition.'
+            cat <<'EOF'
+          **Self-hosted CI**
+
+          | Command | Runs |
+          |---|---|
+          | `/run-ci` | build + loopback + 2-VM RDMA functional |
+          | `/run-ci build` | build + ctest + loopback only |
+          | `/run-ci functional` | same as bare `/run-ci` |
+          | `/run-ci full` | functional + performance sweeps |
+          | `/run-ci full tcg` | run VMs under emulation (no valid perf) |
+
+          Requires write access. Fork pull requests are eligible: the run tests the fork's code but always uses this repository's workflow definition.
+          EOF
           } > body.md
           gh api -X POST \
             "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \

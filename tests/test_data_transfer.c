@@ -17,7 +17,6 @@
 #include <errno.h>
 #include <threads.h>
 #include <inttypes.h>
-#include <stdint.h>
 #include <time.h>
 #include <infiniband/verbs.h>
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Comprehensive loopback backend testing for CI
 # Tests multiple loopback configurations by verifying server startup
@@ -13,6 +13,9 @@ BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
 TEST_BIN="${TEST_BIN:-$BUILD_DIR/tests/test_data_transfer}"
 SOCKET_BASE="/tmp/test-loopback-ci-$$"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,8 +40,8 @@ declare -a FAILED_CONFIGS=()
 declare -a SKIPPED_CONFIGS=()
 
 # Cleanup function (called via trap)
+# shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
-    # shellcheck disable=SC2317  # Function is called via trap
     local pid="${SERVER_PID:-}"
     if [ -n "$pid" ]; then
         kill "$pid" 2>/dev/null || true
@@ -83,7 +86,7 @@ test_config() {
     
     # Start server
     echo "Starting server..."
-    "$SERVER_BIN" \
+    "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
         --socket "$socket_path" \
         --backend "$config" \
         --verbose > "$server_log" 2>&1 &
@@ -91,7 +94,7 @@ test_config() {
     
     # Wait for socket
     local socket_ready=0
-    for i in {1..10}; do
+    for _ in {1..10}; do
         if [ -S "$socket_path" ]; then
             chmod 666 "$socket_path" 2>/dev/null || true
             socket_ready=1
