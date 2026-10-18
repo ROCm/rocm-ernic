@@ -20,7 +20,8 @@
  * negative, boundary and corner -- through the same checks plus the kind
  * of hash each should produce (L3 or L2), so the oracle itself is tested
  * on every run; a failing seed aborts before any fuzzing starts.  With
- * FUZZ_EMIT_SEEDS=<dir> it also writes them there as a seed corpus.
+ * FUZZ_EMIT_SEEDS=1 it also writes them into the current directory as a seed
+ * corpus.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -29,12 +30,14 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ionic_emu_stats.h"
 #include "ionic_eth_steer.h"
@@ -232,25 +235,41 @@ static const struct seed seeds[] = {
     {"boundary", "0 bytes", "the empty hash", s_v4, 0, KIND_L2},
 };
 
-static void emit_seed(const char *dir, size_t i, const struct seed *s)
+/* Seed names are generated locally; environment data never becomes a path. */
+static void emit_seed(size_t i, const uint8_t *buf, size_t len)
 {
-    char path[4096];
+    char path[32];
+    int fd;
     FILE *f;
+    bool ok;
 
-    if (snprintf(path, sizeof(path), "%s/seed-%02zu", dir, i) >=
-        (int)sizeof(path))
-        return;
-    f = fopen(path, "wb");
-    if (!f)
-        return;
-    if (s->len)
-        fwrite(s->frame, 1, s->len, f);
-    fclose(f);
+    snprintf(path, sizeof(path), "seed-%02zu", i);
+    /* Never overwrite an existing file or follow a planted symlink. */
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "fuzz_eth_classify: cannot create %s\n", path);
+        exit(EXIT_FAILURE);
+    }
+    f = fdopen(fd, "wb");
+    if (!f) {
+        close(fd);
+        fprintf(stderr, "fuzz_eth_classify: cannot open %s as a stream\n",
+                path);
+        exit(EXIT_FAILURE);
+    }
+    ok = fwrite(buf, 1, len, f) == len;
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok) {
+        fprintf(stderr, "fuzz_eth_classify: cannot write %s\n", path);
+        exit(EXIT_FAILURE);
+    }
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-    const char *dir = getenv("FUZZ_EMIT_SEEDS");
+    const char *emit = getenv("FUZZ_EMIT_SEEDS");
+    bool emit_seeds = emit && strcmp(emit, "1") == 0;
     int failures = 0;
 
     (void)argc;
@@ -270,8 +289,8 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
                 printf("     %s\n", why);
             failures++;
         }
-        if (dir)
-            emit_seed(dir, i, s);
+        if (emit_seeds)
+            emit_seed(i, s->frame, s->len);
     }
     if (failures) {
         fprintf(stderr, "fuzz_eth_classify: %d seed(s) failed\n", failures);
