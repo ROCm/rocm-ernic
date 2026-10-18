@@ -633,8 +633,7 @@ mkdir<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</sp
 <span class="nv">opts</span><span class="o">+=</span><span class="s2">" --log-file=</span><span class="nv">$logs</span><span class="s2">/%p.log"</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_TEST_SERVER_WRAPPER</span><span class="o">=</span><span class="s2">"valgrind </span><span class="nv">$opts</span><span class="s2">"</span>
 ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>--output-on-failure<span class="w"> </span>-R<span class="w"> </span><span class="s2">"^(</span><span class="nv">$srv</span><span class="s2">)</span>$<span class="s2">"</span>
-valgrind<span class="w"> </span>--trace-children<span class="o">=</span>yes<span class="w"> </span><span class="nv">$opts</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>build/tests/test_server_lifecycle<span class="w"> </span>build/rocm-ernic
+valgrind<span class="w"> </span>--trace-children<span class="o">=</span>yes<span class="w"> </span><span class="nv">$opts</span><span class="w"> </span>build/tests/test_server_lifecycle
 grep<span class="w"> </span>-L<span class="w"> </span><span class="s1">'ERROR SUMMARY: 0 errors'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>/*.log
 </pre></div>
 </div>
