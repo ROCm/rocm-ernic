@@ -1021,6 +1021,56 @@ static void fault_tx_filter(char *got, size_t len)
     ionic_fault_set_free(set);
 }
 
+static void tx_fault_preconditions(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint64_t address;
+        uint16_t length;
+        bool bad_ring;
+        bool valid;
+    } rows[] = {
+        {"negative", "zero payload length",
+         "no event before complete frame exists", TX_BUF, 0, false, true},
+        {"negative", "unmapped payload", "no event on payload DMA failure",
+         GUEST_MEM_SIZE, 64, false, true},
+        {"boundary", "unmapped descriptor",
+         "no event on descriptor DMA failure", TX_BUF, 64, true, true},
+        {"corner", "uninitialized TX queue",
+         "no event before queue registration", TX_BUF, 64, false, false},
+    };
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_eth_emu *emu = new_emu(1000);
+        struct ionic_fault_set *set =
+            attach_fault(emu, "eth_tx: after 1 effect drop");
+        const struct ionic_fault *fault =
+            site_fault(set, IONIC_FAULT_SITE_ETH_TX);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][0];
+        bool ok;
+
+        setup_txq(emu);
+        q->valid = rows[row].valid;
+        if (rows[row].bad_ring)
+            q->ring_base = GUEST_MEM_SIZE;
+        tx_one(emu, rows[row].address, rows[row].length);
+        ok = fault->eligible == 0 && fault->fired == 0;
+        q->ring_base = TX_RING;
+        q->valid = true;
+        tx_frame(emu, mac_ucast, 64);
+        ok = ok && fault->eligible == 1 && fault->fired == 1 &&
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS) == 1;
+        printf("%s %s: %s; expected: %s; next valid frame fires event 1\n",
+               ok ? "ok" : "FAIL", rows[row].category, rows[row].description,
+               rows[row].expected);
+        if (!ok)
+            failures++;
+        ionic_eth_emu_destroy(emu);
+        ionic_fault_set_free(set);
+    }
+}
+
 static const struct publish_case fault_cases[] = {
     {"positive", "eth_rx every 1 drop, a buffer posted",
      "rx_ucast 0, rx_ucast_drop 0, rx_queue_empty 0, head 0, fired 1 (lost "
@@ -1240,6 +1290,7 @@ static const struct publish_case stats_file_cases[] = {
 
 int main(void)
 {
+    tx_fault_preconditions();
     address_boundaries();
     lif_status_address_boundaries();
     run_cases(publish_cases, sizeof(publish_cases) / sizeof(publish_cases[0]));
