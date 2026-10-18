@@ -72,11 +72,6 @@ foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
 endforeach()
 
 # -- Unit tests --------------------------------------------------
-# ernic_add_unit_test_sanitizers() builds them with the sanitizers that
-# ERNIC_USE_SANITIZERS turns on (unless the project is built with
-# ThreadSanitizer, which is incompatible), so a NULL deref, leak, or
-# out-of-bounds read fails the test even when the rest of the project is
-# built without sanitizers. See cmake/ErnicSanitizers.cmake.
 
 # Vendored QEMU sources that tests compile as separate translation units.
 # Suppressing warnings per-source rather than per-target keeps the vendored
@@ -120,7 +115,6 @@ target_include_directories(test_rdma_backend_query_port SYSTEM PRIVATE
 )
 target_compile_definitions(test_rdma_backend_query_port PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_rdma_backend_query_port)
 target_link_directories(test_rdma_backend_query_port PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_rdma_backend_query_port PRIVATE
@@ -153,19 +147,15 @@ target_compile_definitions(test_ernic_device PRIVATE
 target_include_directories(test_ernic_device PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-ernic_add_unit_test_sanitizers(test_ernic_device)
 
 # net_headers.h checksum helpers are header-only and self-contained.
 add_executable(test_net_checksum test_net_checksum.c)
 target_include_directories(test_net_checksum PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
-ernic_add_unit_test_sanitizers(test_net_checksum)
 
 # -- Parser unit tests -------------------------------------------
-# These link the wire parsers in src/net directly and, like the other unit
-# tests, are built with the sanitizers, so an out-of-bounds read fails the
-# test even when the rest of the project is built without sanitizers.
+# These link the wire parsers in src/net directly.
 add_executable(test_rdma_cm_proto
     test_rdma_cm_proto.c
     ${PROJECT_SOURCE_DIR}/src/net/rdma_cm_proto.c
@@ -181,7 +171,6 @@ target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_rdma_cm_proto)
 target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
 
@@ -190,7 +179,6 @@ add_executable(test_parse_int test_parse_int.c)
 target_include_directories(test_parse_int PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
-ernic_add_unit_test_sanitizers(test_parse_int)
 
 # NVMe-oF controller test. The controller core takes its DMA through a
 # callback pair, so the test links the real translation unit and stands a
@@ -206,7 +194,6 @@ target_include_directories(test_nvmeof_target SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
 )
 target_compile_definitions(test_nvmeof_target PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_nvmeof_target)
 
 # IB CM responder test. Feeds it the CM MADs a guest running rdma_cm
 # emits and dissects the replies; no MAD ever reaches a wire.
@@ -222,7 +209,6 @@ target_include_directories(test_nvmeof_cm SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
 )
 target_compile_definitions(test_nvmeof_cm PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_nvmeof_cm)
 
 # S3-over-RDMA token codec test. The encoding is a wire contract shared
 # with hipObject, so this links nothing but the codec itself.
@@ -232,7 +218,6 @@ add_executable(test_s3_token
 )
 target_include_directories(test_s3_token PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_token PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_s3_token)
 
 # S3 control-plane HTTP subset test: buffers in, buffers out, no socket.
 add_executable(test_s3_http
@@ -241,7 +226,6 @@ add_executable(test_s3_http
 )
 target_include_directories(test_s3_http PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_http PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_s3_http)
 
 # S3 object store test. Like the NVMe-oF one, the target takes its DMA
 # through a callback pair, so a byte array stands in for guest memory and
@@ -254,7 +238,6 @@ add_executable(test_s3_target
 )
 target_include_directories(test_s3_target PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_target PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_s3_target)
 
 # In-band TCP endpoint test. It drives the endpoint with hand-built
 # Ethernet frames and dissects what comes back, so the ARP exchange, the
@@ -269,7 +252,6 @@ add_executable(test_s3_tcp
 )
 target_include_directories(test_s3_tcp PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_s3_tcp)
 
 # Loopback SGE-copy test. It #includes the loopback translation unit to
 # reach its static helpers and stubs the DMA layer with an identity
@@ -290,7 +272,6 @@ target_include_directories(test_loopback_sge_copy SYSTEM PRIVATE
 )
 target_compile_definitions(test_loopback_sge_copy PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_loopback_sge_copy)
 target_link_directories(test_loopback_sge_copy PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_loopback_sge_copy PRIVATE
@@ -313,7 +294,6 @@ target_include_directories(test_ionic_intr_pending SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_ionic_intr_pending)
 
 # ionic PORT_INIT port-info test. It #includes the eth emulator translation
 # unit and backs the DMA entry points with a plain buffer, so the structure
@@ -333,14 +313,12 @@ target_include_directories(test_ionic_port_info SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_port_info PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_ionic_port_info)
 
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
 # shutdown. Needs no symbols from the server, so it is a plain program.
 add_executable(test_server_lifecycle test_server_lifecycle.c)
 target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_server_lifecycle)
 
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
@@ -356,7 +334,6 @@ target_include_directories(test_ionic_query_qp SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_query_qp PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_ionic_query_qp)
 
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
 # dispatch_wqe() against the same fake guest memory, so the response buffer
@@ -374,7 +351,6 @@ target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_srq_adminq PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_ionic_srq_adminq)
 
 # ionic CQ arm-semantics test. It #includes the datapath translation unit to
 # reach the private CQ state and counts the event callback in-process, so no
@@ -392,7 +368,6 @@ target_include_directories(test_ionic_cq_arm SYSTEM PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_ionic_cq_arm PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_ionic_cq_arm)
 # libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
 # the real library is cheaper than stubbing its ABI. Everything the datapath
 # needs from the rest of this project is stubbed in the test itself.
@@ -414,7 +389,6 @@ target_include_directories(test_ionic_rq_wrap SYSTEM PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_compile_definitions(test_ionic_rq_wrap PRIVATE _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_ionic_rq_wrap)
 # libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
 # the real library is cheaper than stubbing its ABI. Everything the datapath
 # needs from the rest of this project is stubbed in the test itself.
@@ -444,7 +418,6 @@ target_include_directories(test_tcp_mesh_topology SYSTEM PRIVATE
 )
 target_compile_definitions(test_tcp_mesh_topology PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_tcp_mesh_topology)
 # ASan's use-after-return detection would move the broadcast's frame off
 # the poisoned stack the test gives it
 ernic_disable_asan_use_after_return(test_tcp_mesh_topology)
@@ -475,7 +448,6 @@ target_include_directories(test_tcp_gid_resolve SYSTEM PRIVATE
 )
 target_compile_definitions(test_tcp_gid_resolve PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_tcp_gid_resolve)
 target_link_directories(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_tcp_gid_resolve PRIVATE
@@ -503,7 +475,6 @@ target_include_directories(test_tcp_mr_bounds SYSTEM PRIVATE
 )
 target_compile_definitions(test_tcp_mr_bounds PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_tcp_mr_bounds)
 target_link_directories(test_tcp_mr_bounds PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_tcp_mr_bounds PRIVATE
@@ -531,7 +502,6 @@ target_include_directories(ernic-test-tcp-thread-stop SYSTEM PRIVATE
 )
 target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(ernic-test-tcp-thread-stop)
 target_link_directories(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
@@ -569,7 +539,6 @@ target_include_directories(test_rdma_res_tbl SYSTEM PRIVATE
 )
 target_compile_definitions(test_rdma_res_tbl PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_rdma_res_tbl)
 target_link_directories(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_rdma_res_tbl PRIVATE
@@ -592,7 +561,6 @@ target_include_directories(test_qemu_stubs SYSTEM PRIVATE
 )
 target_compile_definitions(test_qemu_stubs PRIVATE
     _GNU_SOURCE)
-ernic_add_unit_test_sanitizers(test_qemu_stubs)
 target_link_directories(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_qemu_stubs PRIVATE
@@ -646,7 +614,6 @@ target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
 target_compile_definitions(ernic-test-ionic-harness PRIVATE _GNU_SOURCE)
 target_compile_options(ernic-test-ionic-harness PRIVATE
     ${GLIB2_CFLAGS_OTHER})
-ernic_add_unit_test_sanitizers(ernic-test-ionic-harness)
 # No libvfio-user: fake_vfu.c defines the entry points the device calls.
 target_link_directories(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
@@ -749,21 +716,21 @@ add_test(
 )
 set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# TCP/UDP checksum helper unit test (table-driven, ASan-instrumented)
+# TCP/UDP checksum helper unit test (table-driven)
 add_test(
     NAME net-checksum-unit
     COMMAND $<TARGET_FILE:test_net_checksum>
 )
 set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# rdma_cm protocol parser unit test (table-driven, ASan-instrumented)
+# rdma_cm protocol parser unit test (table-driven)
 add_test(
     NAME rdma-cm-proto-unit
     COMMAND $<TARGET_FILE:test_rdma_cm_proto>
 )
 set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
 
-# Strict integer parser unit test (table-driven, ASan-instrumented)
+# Strict integer parser unit test (table-driven)
 add_test(
     NAME parse-int-unit
     COMMAND $<TARGET_FILE:test_parse_int>
@@ -939,7 +906,7 @@ add_test(
 )
 set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# QEMU utility stubs unit test (bitmap, qemu_poll_ns; ASan-instrumented)
+# QEMU utility stubs unit test (bitmap, qemu_poll_ns)
 add_test(
     NAME qemu-stubs-unit
     COMMAND $<TARGET_FILE:test_qemu_stubs>

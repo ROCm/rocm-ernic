@@ -134,10 +134,14 @@
   UndefinedBehaviorSanitizer, and the `float-divide-by-zero` check, plus
   `bounds-strict`, `float-cast-overflow`, `pointer-compare`, and
   `pointer-subtract` with GCC, or `implicit-conversion`, `local-bounds`, and
-  `nullability` with Clang. The unit tests, which are built with
-  sanitizers in every build except a ThreadSanitizer one, get the same set.
-  Configuring fails if the C compiler isn't GCC or Clang, or can't build a
-  program with the sanitizers.
+  `nullability` with Clang. Configuring fails if the C compiler isn't GCC or
+  Clang, or can't build a program with the sanitizers.
+* The unit tests are no longer built with AddressSanitizer and the other
+  `ERNIC_USE_SANITIZERS` sanitizers in every build. Like the server, they're
+  only built with sanitizers when `ERNIC_USE_SANITIZERS` or
+  `ERNIC_USE_THREAD_SANITIZER` is on, so configuring with the tests no longer
+  needs the compiler's sanitizer runtimes. Build with those options to run
+  the tests under the sanitizers, as CI does.
 * Every sanitizer report is now fatal, so `UBSAN_OPTIONS=halt_on_error=1` and
   `TSAN_OPTIONS=halt_on_error=1` are no longer needed. The programs that
   rocm-ernic builds set some sanitizer run-time options themselves, such as
