@@ -273,7 +273,8 @@ valgrind would only check the script for:
 
    skip='pci-config-test|find-rdma-device-tuple|server-lifecycle'
    skip+='|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
-   skip+='|ionic-stats-interval-cli|cmake-subproject'
+   skip+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
+   skip+='|cmake-subproject'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
    ctest --test-dir build -T memcheck --output-on-failure \
@@ -299,7 +300,7 @@ as above:
 
    srv='pci-config-test|ionic-server-smoke'
    srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
-   srv+='|ionic-stats-interval-cli'
+   srv+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    logs="$PWD/build/valgrind-server"
    rm -rf "$logs"
    mkdir "$logs"

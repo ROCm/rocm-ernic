@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # --eth-queues: range checks, and the rule that the flag beats every
 # --nic-profile layer, whichever order they are given in.  Each row runs
@@ -21,6 +21,9 @@ if [ ! -x "$SERVER" ]; then
     echo "SKIP: server not found: $SERVER"
     exit 77
 fi
+# Run the server under ERNIC_TEST_SERVER_WRAPPER (e.g. valgrind), split on
+# whitespace, if it's set.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
@@ -61,7 +64,7 @@ for row in "${ROWS[@]}"; do
         fi
     done
 
-    out=$("$SERVER" "${args[@]}" --print-profile 2> "$WORK/err")
+    out=$("${SERVER_WRAPPER[@]}" "$SERVER" "${args[@]}" --print-profile 2> "$WORK/err")
     rc=$?
     if [ "$rc" -ne 0 ]; then
         got="rejected"
