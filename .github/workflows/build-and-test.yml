@@ -339,22 +339,30 @@ jobs:
 
       # Runs the tests that start the server, and the loopback
       # configurations, with every server they start under valgrind's
-      # memcheck, through the command in ERNIC_TEST_SERVER_WRAPPER. The
-      # scripts don't all check how the server exited, so valgrind writes a
-      # log for each server process, and the step fails if any log lacks a
-      # clean summary, which includes a server that was killed before
-      # valgrind could write one.
+      # memcheck. The test scripts run the server under the command in
+      # ERNIC_TEST_SERVER_WRAPPER. test_server_lifecycle runs under
+      # valgrind itself, with --trace-children=yes to follow it into each
+      # server it starts, since a C program that runs a command from the
+      # environment is what CodeQL's cpp/uncontrolled-process-operation
+      # reports. The scripts don't all check how the server exited, so
+      # valgrind writes a log for each process, and the step fails if any
+      # log lacks a clean summary, which includes a server that was killed
+      # before valgrind could write one.
       - name: Test the server with valgrind
         if: matrix.valgrind == 'on'
         run: |
           logs="${PWD}/build/valgrind-server"
           mkdir -p "${logs}"
-          ERNIC_TEST_SERVER_WRAPPER="$(command -v valgrind) --log-file=${logs}/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
+          valgrind="$(command -v valgrind)"
+          opts=(--log-file="${logs}/%p.log" --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1)
+          ERNIC_TEST_SERVER_WRAPPER="${valgrind} ${opts[*]}"
           export ERNIC_TEST_SERVER_WRAPPER
           status=0
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^(pci-config-test|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$' \
+            -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$' \
             || status=$?
+          "${valgrind}" --trace-children=yes "${opts[@]}" \
+            build/tests/test_server_lifecycle build/rocm-ernic || status=$?
           SERVER_BIN=build/rocm-ernic \
           TEST_BIN=build/tests/test_data_transfer \
           tests/test_loopback_ci.sh || status=$?
