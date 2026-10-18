@@ -14,6 +14,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -395,6 +396,20 @@ static void run_text_case(const struct text_case *c)
 
 static char g_tmpdir[256];
 
+/* Private, exclusive files even with a permissive caller umask. */
+static FILE *scratch_open(const char *path)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    FILE *f;
+
+    if (fd < 0)
+        return NULL;
+    f = fdopen(fd, "wb");
+    if (!f)
+        close(fd);
+    return f;
+}
+
 /* Write @text to @name in the scratch directory; returns its path. */
 static const char *scratch_file(const char *name, const char *text)
 {
@@ -402,12 +417,15 @@ static const char *scratch_file(const char *name, const char *text)
     FILE *f;
 
     snprintf(path, sizeof(path), "%s/%s", g_tmpdir, name);
-    f = fopen(path, "w");
+    f = scratch_open(path);
     if (!f || fputs(text, f) < 0) {
         printf("FAIL setup: cannot write %s\n", path);
         exit(1);
     }
-    fclose(f);
+    if (fclose(f) != 0) {
+        printf("FAIL setup: cannot close %s\n", path);
+        exit(1);
+    }
     return path;
 }
 
@@ -672,7 +690,7 @@ static void check_file_boundaries(void)
             ready = mkfifo(path, 0600) == 0;
         } else {
             char *data = malloc(cases[i].size);
-            FILE *f = fopen(path, "wb");
+            FILE *f = scratch_open(path);
 
             if (data && f) {
                 memset(data, 'x', cases[i].size);

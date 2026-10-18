@@ -88,7 +88,7 @@ printed form must read back to the same values and hash. Its
 `LLVMFuzzerInitialize()` first runs a table of seed profiles (positive,
 negative, boundary and corner rows, each with a description and expected
 outcome) through the same checks, and aborts if any row fails, so the
-oracle is tested on every run. With `FUZZ_EMIT_SEEDS=<dir>` it writes the
+oracle is tested on every run. With `FUZZ_EMIT_SEEDS=1` it writes into the current directory the
 seeds out as a corpus; the Nix build does that for every harness marked
 `seeds = true`.
 
