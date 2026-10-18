@@ -463,6 +463,93 @@ static void run_fault_case(const struct fault_case *c)
     }
 }
 
+/* Each row gets a fresh 'after 2' rule, a probe, then an eligible command. */
+static void check_fault_eligibility(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint8_t op;
+        uint16_t body_len;
+        uint64_t dma;
+        uint32_t length;
+        int snapshot_rc;
+        uint8_t rc;
+        uint64_t eligible;
+    } eligible_cases[] = {
+        {"positive", "ordinary device values",
+         "advances once; next command fires", VALS, 17, BUF_GPA, 40, 0, 0, 1},
+        {"negative", "body missing type byte", "EINVAL; pattern unchanged",
+         VALS, 16, BUF_GPA, 40, 0, IONIC_RC_EINVAL, 0},
+        {"negative", "empty body", "EINVAL; pattern unchanged", VALS, 0,
+         BUF_GPA, 40, 0, IONIC_RC_EINVAL, 0},
+        {"negative", "null DMA address", "BAD_ADDR; pattern unchanged", VALS,
+         17, 0, 40, 0, IONIC_RC_BAD_ADDR, 0},
+        {"boundary", "zero advertised length",
+         "ENOSPC after hook; advances once", VALS, 17, BUF_GPA, 0, 0,
+         IONIC_RC_ENOSPC, 1},
+        {"boundary", "one byte short of value",
+         "ENOSPC after hook; advances once", VALS, 17, BUF_GPA, 7, 0,
+         IONIC_RC_ENOSPC, 1},
+        {"boundary", "one exact value", "one value written; advances once",
+         VALS, 17, BUF_GPA, 8, 0, 0, 1},
+        {"corner", "snapshot fails after hook", "EIO; advances once", VALS, 17,
+         BUF_GPA, 40, -22, IONIC_RC_EIO, 1},
+        {"corner", "DMA mapping fails after hook", "EIO; advances once", VALS,
+         17, UINT64_MAX, 40, 0, IONIC_RC_EIO, 1},
+        {"negative", "device headers", "headers succeed; pattern unchanged",
+         HDRS, 17, BUF_GPA, 32, 0, 0, 0},
+        {"negative", "QP headers", "headers succeed; pattern unchanged",
+         QP_HDRS, 17, BUF_GPA, 32, 0, 0, 0},
+        {"negative", "QP values", "QP values succeed; pattern unchanged",
+         QP_VALS, 17, BUF_GPA, 64, 0, 0, 0},
+    };
+    for (size_t row = 0;
+         row < sizeof(eligible_cases) / sizeof(eligible_cases[0]); row++) {
+        struct ionic_fault_set *set = ionic_fault_set_new();
+        struct ionic_fault *fault;
+        uint8_t body[64];
+        char err[128];
+        bool ok =
+            set && ionic_fault_set_add(set, "stats_vals: after 2 effect fail",
+                                       err, sizeof(err)) == 0;
+
+        ctx_reset();
+        g_ctx.faults = set;
+        fault = ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS);
+        if (ok && fault) {
+            uint8_t rc;
+
+            build_body(body, sizeof(body), eligible_cases[row].dma,
+                       eligible_cases[row].length, QP_ID | VER1);
+            g_dev_rc = eligible_cases[row].snapshot_rc;
+            rc = ionic_adminq_dispatch_wqe(&g_ctx, eligible_cases[row].op, body,
+                                           eligible_cases[row].body_len);
+            ok = rc == eligible_cases[row].rc &&
+                 fault->eligible == eligible_cases[row].eligible &&
+                 fault->fired == 0;
+            g_dev_rc = 0;
+            build_body(body, sizeof(body), BUF_GPA, 40, 0);
+            rc = ionic_adminq_dispatch_wqe(&g_ctx, VALS, body, 17);
+            ok = ok &&
+                 rc == (eligible_cases[row].eligible ? IONIC_RC_EIO
+                                                     : IONIC_RC_SUCCESS) &&
+                 fault->eligible == eligible_cases[row].eligible + 1 &&
+                 fault->fired == eligible_cases[row].eligible;
+        } else {
+            ok = false;
+        }
+        g_ctx.faults = NULL;
+        ionic_fault_set_free(set);
+        printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
+               eligible_cases[row].category, eligible_cases[row].description,
+               eligible_cases[row].expected);
+        if (!ok)
+            failures++;
+    }
+}
+
 /* ---- Completion encoding ---------------------------------------------- */
 
 #define CQE_GPA 512u
@@ -635,6 +722,7 @@ int main(void)
         run_fault_case(&fault_cases[i]);
     for (size_t i = 0; i < sizeof(cqe_cases) / sizeof(cqe_cases[0]); i++)
         run_cqe_case(&cqe_cases[i]);
+    check_fault_eligibility();
     check_golden_headers();
     check_alternating_qps();
     check_names("device stat", dev_stats, DEV_STATS_COUNT);

@@ -298,6 +298,14 @@ static const struct fault_case cases[] = {
      "returns the full length; nothing written", CHECK_TRUNCATE,
      SITE "every 1 effect fail", .buf_len = 0},
 
+    {"negative", "bad effect after allocating maximum sequence",
+     "error and no owned sequence", CHECK_ERROR,
+     SITE "sequence 1x65536 effect explode", .want_err = "unknown effect"},
+    {"negative", "bad status after allocating sequence",
+     "error and no owned sequence", CHECK_ERROR,
+     SITE "sequence 1,0,1 effect fail status nope",
+     .want_err = "unknown status"},
+
     /* corner */
     {"corner", "no faults configured",
      "the site pointer is NULL; the hook never fires", CHECK_NO_FAULT,
@@ -618,8 +626,68 @@ static void run_case(const struct fault_case *c)
     }
 }
 
+static void check_format_boundaries(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        int capacity; /* -2: needed-1, -1: needed, 0: needed+1; else literal */
+    } format_cases[] = {
+        {"boundary", "one-byte buffer", "NUL only; canary preserved", 1},
+        {"negative", "two bytes short including NUL",
+         "truncated prefix and NUL; canary preserved", -2},
+        {"boundary", "one byte short including NUL",
+         "truncated prefix and NUL; canary preserved", -1},
+        {"positive", "exact fit including NUL",
+         "full canonical text and NUL; canary preserved", 0},
+        {"corner", "oversized buffer", "full text; bytes beyond NUL untouched",
+         256},
+    };
+    struct ionic_fault fault;
+    char err[128], full[256];
+    int needed;
+
+    if (ionic_fault_parse(SITE "sequence 1,0,1 effect fail status eio", &fault,
+                          err, sizeof(err)) != 0) {
+        failures++;
+        return;
+    }
+    needed = ionic_fault_format(&fault, full, sizeof(full));
+    if (needed <= 1 || (size_t)needed >= sizeof(full)) {
+        failures++;
+        ionic_fault_clear(&fault);
+        return;
+    }
+    for (size_t row = 0; row < sizeof(format_cases) / sizeof(format_cases[0]);
+         row++) {
+        char out[257];
+        size_t capacity =
+            format_cases[row].capacity <= 0
+                ? (size_t)(needed + format_cases[row].capacity + 1)
+                : (size_t)format_cases[row].capacity;
+        size_t written =
+            capacity - 1 < (size_t)needed ? capacity - 1 : (size_t)needed;
+        bool ok;
+
+        memset(out, 'Z', sizeof(out));
+        ok = ionic_fault_format(&fault, out, capacity) == needed &&
+             memcmp(out, full, written) == 0 && out[written] == '\0';
+        for (size_t j = written + 1; j < sizeof(out); j++)
+            ok = ok && out[j] == 'Z';
+        printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
+               format_cases[row].category, format_cases[row].description,
+               format_cases[row].expected);
+        if (!ok)
+            failures++;
+    }
+    ionic_fault_clear(&fault);
+    ionic_fault_clear(&fault);
+}
+
 int main(void)
 {
+    check_format_boundaries();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
 
