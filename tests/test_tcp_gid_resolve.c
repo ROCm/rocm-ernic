@@ -13,6 +13,10 @@
  * caller can fail. These cases pin both halves: distinct GIDs must resolve
  * distinctly, and an unknown GID must not resolve at all.
  *
+ * Resolution is one of the entry points the ionic data path calls through
+ * the device whatever its backend, so the last cases check that all of them
+ * refuse a backend that isn't TCP.
+ *
  * The static functions are reached by #including the translation unit;
  * resolution needs only the GID table, so the rest of the backend's
  * externals are stubbed out.
@@ -24,13 +28,12 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
+#include <inttypes.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "rocm-ernic-warnings.h"
 
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
@@ -512,6 +515,226 @@ static void test_empty_advertisement_withdraws(void)
     priv_free(priv);
 }
 
+/* ---- Entry points on every backend ------------------------------------- */
+
+/*
+ * The ionic data path calls these through the device whatever its backend,
+ * and each reads backend_private as a TcpBackendPrivate. On any other
+ * backend that block is the other backend's own state, so each must check
+ * the backend type before touching it. Without the check, shutting down a
+ * loopback server that a guest had used locked a mutex past the end of the
+ * loopback state and wrote the receive callback after it.
+ */
+enum hook {
+    HOOK_LOCAL_NODE,
+    HOOK_NODE_FROM_GID,
+    HOOK_SET_CB,
+    HOOK_CLEAR_CB,
+    HOOK_SEND,
+};
+
+/* refused is what a hook returns when it leaves the block alone. The
+ * callback rows return nothing, so only the poison check catches them. */
+struct hook_case {
+    enum hook hook;
+    const char *name;
+    int64_t refused;
+};
+
+static const struct hook_case hook_cases[] = {
+    {HOOK_LOCAL_NODE, "tcp_backend_local_node_id()", UINT32_MAX},
+    {HOOK_NODE_FROM_GID, "tcp_backend_node_from_gid()", UINT32_MAX},
+    {HOOK_SET_CB, "tcp_backend_set_ionic_recv_cb(fn)", 0},
+    {HOOK_CLEAR_CB, "tcp_backend_set_ionic_recv_cb(NULL)", 0},
+    {HOOK_SEND, "tcp_backend_send_ionic_v()", -EINVAL},
+};
+
+struct backend_case {
+    RdmaBackendType type;
+    const char *name;
+};
+
+static const struct backend_case other_backends[] = {
+    {RDMA_BACKEND_TYPE_NONE, "none"},
+    {RDMA_BACKEND_TYPE_LOOPBACK, "loopback"},
+    {RDMA_BACKEND_TYPE_VERBS, "verbs"},
+    {RDMA_BACKEND_TYPE_NVMEOF, "nvmeof"},
+    {RDMA_BACKEND_TYPE_S3, "s3"},
+};
+
+#define MESH_PEER   2u   /* the node the hooks address and the GID's owner */
+#define POISON_BYTE 0xA5 /* fills another backend's private block */
+
+static void recv_fn(void *opaque, uint32_t src_node, const void *buf,
+                    size_t len)
+{
+    (void)opaque;
+    (void)src_node;
+    (void)buf;
+    (void)len;
+}
+
+/* The TCP backend keeps this pointer, so it has to outlive the call. */
+static int recv_opaque;
+
+/* Call @hook on @dev and return its result, or 0 for the callback rows. */
+static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
+{
+    static const uint8_t hdr[8] = {1};
+    union ibv_gid gid;
+
+    switch (hook) {
+    case HOOK_LOCAL_NODE:
+        return tcp_backend_local_node_id(dev);
+    case HOOK_NODE_FROM_GID:
+        gid_v4(gid.raw, 11);
+        return tcp_backend_node_from_gid(dev, &gid);
+    case HOOK_SET_CB:
+        tcp_backend_set_ionic_recv_cb(dev, recv_fn, &recv_opaque);
+        return 0;
+    case HOOK_CLEAR_CB:
+        tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+        return 0;
+    case HOOK_SEND:
+        return tcp_backend_send_ionic_v(dev, MESH_PEER, hdr, sizeof(hdr), NULL,
+                                        0);
+    default:
+        abort(); /* every row names one of the cases above */
+    }
+}
+
+/*
+ * The other backend's block is as large as a TcpBackendPrivate and full of
+ * poison, so an entry point that skips the check reads poison and changes
+ * bytes compared here. With a smaller block it would write past the end,
+ * where only ASan might notice, and only if the write landed in a redzone.
+ */
+static void test_hooks_refuse_other_backends(void)
+{
+    const size_t n_backends =
+        sizeof(other_backends) / sizeof(other_backends[0]);
+    const size_t n_hooks = sizeof(hook_cases) / sizeof(hook_cases[0]);
+
+    printf("  mesh entry points leave other backends' state alone\n");
+
+    for (size_t b = 0; b < n_backends; b++) {
+        for (size_t h = 0; h < n_hooks; h++) {
+            const struct backend_case *bc = &other_backends[b];
+            const struct hook_case *hc = &hook_cases[h];
+            uint8_t *block = g_malloc(sizeof(TcpBackendPrivate));
+            RdmaBackendDev dev;
+            int64_t got;
+            size_t i;
+
+            memset(block, POISON_BYTE, sizeof(TcpBackendPrivate));
+            memset(&dev, 0, sizeof(dev));
+            dev.backend_type = bc->type;
+            dev.backend_private = block;
+
+            got = call_hook(&dev, hc->hook);
+            CHECK(got == hc->refused,
+                  "%s on the %s backend returned %" PRId64
+                  ", expected %" PRId64,
+                  hc->name, bc->name, got, hc->refused);
+
+            for (i = 0; i < sizeof(TcpBackendPrivate); i++) {
+                if (block[i] != POISON_BYTE) {
+                    break;
+                }
+            }
+            CHECK(i == sizeof(TcpBackendPrivate),
+                  "%s changed byte %zu of the %s backend's state", hc->name, i,
+                  bc->name);
+
+            g_free(block);
+        }
+    }
+}
+
+/* No device, or a TCP device whose private block is gone, is refused too. */
+static void test_hooks_refuse_missing_backend(void)
+{
+    const size_t n_hooks = sizeof(hook_cases) / sizeof(hook_cases[0]);
+    RdmaBackendDev dev;
+    int64_t got;
+
+    printf("  mesh entry points refuse a missing backend\n");
+
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+
+    for (size_t h = 0; h < n_hooks; h++) {
+        const struct hook_case *hc = &hook_cases[h];
+
+        got = call_hook(NULL, hc->hook);
+        CHECK(got == hc->refused,
+              "%s with no device returned %" PRId64 ", expected %" PRId64,
+              hc->name, got, hc->refused);
+
+        got = call_hook(&dev, hc->hook);
+        CHECK(got == hc->refused,
+              "%s with no private block returned %" PRId64
+              ", expected %" PRId64,
+              hc->name, got, hc->refused);
+    }
+}
+
+/*
+ * On the TCP backend every entry point gets past the type check. The send
+ * fails for want of a connection, which only the code after the check can
+ * report; a refused backend would get -EINVAL.
+ */
+static void test_hooks_on_tcp(void)
+{
+    static const uint8_t hdr[8] = {1};
+    TcpBackendPrivate *priv = priv_new();
+    RdmaBackendDev dev;
+    union ibv_gid gid;
+    uint8_t raw[16];
+    uint32_t node;
+    int rc;
+
+    printf("  mesh entry points work on the TCP backend\n");
+
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_private = priv;
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+
+    qemu_mutex_init(&priv->lock);
+    qemu_mutex_init(&priv->conn_table_lock);
+    priv->connections = g_hash_table_new(g_direct_hash, g_direct_equal);
+    atomic_store(&priv->local_node_id, 1);
+    gid_v4(raw, 11);
+    tcp_gid_claims_set(priv, MESH_PEER, (const uint8_t(*)[16]) & raw, 1);
+    memcpy(gid.raw, raw, 16);
+
+    node = tcp_backend_local_node_id(&dev);
+    CHECK(node == 1, "local node id is %u, expected 1", node);
+
+    node = tcp_backend_node_from_gid(&dev, &gid);
+    CHECK(node == MESH_PEER, "GID resolved to node %u, expected %u", node,
+          MESH_PEER);
+
+    tcp_backend_set_ionic_recv_cb(&dev, recv_fn, &recv_opaque);
+    CHECK(priv->ionic_recv_fn == recv_fn &&
+              priv->ionic_recv_opaque == &recv_opaque,
+          "receive callback not stored");
+
+    tcp_backend_set_ionic_recv_cb(&dev, NULL, NULL);
+    CHECK(!priv->ionic_recv_fn && !priv->ionic_recv_opaque,
+          "receive callback not cleared");
+
+    rc = tcp_backend_send_ionic_v(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0);
+    CHECK(rc == -ENOTCONN,
+          "send to an unconnected node returned %d, expected -ENOTCONN", rc);
+
+    g_hash_table_destroy(priv->connections);
+    priv->connections = NULL;
+    qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->lock);
+    priv_free(priv);
+}
+
 int main(void)
 {
     printf("tcp GID resolution unit tests\n");
@@ -526,6 +749,9 @@ int main(void)
     test_ud_rtr_needs_no_destination();
     test_contested_gid_stays_contested();
     test_empty_advertisement_withdraws();
+    test_hooks_refuse_other_backends();
+    test_hooks_refuse_missing_backend();
+    test_hooks_on_tcp();
 
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);

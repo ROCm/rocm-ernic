@@ -30,7 +30,7 @@ fi
 
 kill -9 "$PID" 2>/dev/null
 
-for i in $(seq 1 "$MAX_WAIT"); do
+for _ in $(seq 1 "$MAX_WAIT"); do
     ss -tlnp 2>/dev/null | grep -q ":${PORT} " || exit 0
     sleep 1
 done

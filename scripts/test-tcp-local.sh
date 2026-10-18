@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Test script for running multiple TCP servers locally
 
@@ -47,7 +47,7 @@ check_port() {
     
     # Try different methods to find the process using the port
     if command -v lsof >/dev/null 2>&1; then
-        pid=$(lsof -ti:$port 2>/dev/null || true)
+        pid=$(lsof -ti:"$port" 2>/dev/null || true)
     elif command -v ss >/dev/null 2>&1; then
         pid=$(ss -ltnp "sport = :$port" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)
     elif command -v netstat >/dev/null 2>&1; then
@@ -56,12 +56,16 @@ check_port() {
     
     if [ -n "$pid" ]; then
         echo -e "${YELLOW}Port $port is in use by PID $pid, killing...${NC}"
-        kill $pid 2>/dev/null || true
+        # lsof prints one PID per line, and more than one process can
+        # hold the port.
+        local -a pids
+        mapfile -t pids <<<"$pid"
+        kill "${pids[@]}" 2>/dev/null || true
         sleep 1
         # Check again
         pid=""
         if command -v lsof >/dev/null 2>&1; then
-            pid=$(lsof -ti:$port 2>/dev/null || true)
+            pid=$(lsof -ti:"$port" 2>/dev/null || true)
         elif command -v ss >/dev/null 2>&1; then
             pid=$(ss -ltnp "sport = :$port" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)
         elif command -v netstat >/dev/null 2>&1; then
@@ -106,7 +110,7 @@ for i in {1..10}; do
         echo -e "${GREEN}✓ Manager started (PID: $SERVER1_PID)${NC}"
         break
     fi
-    if [ $i -eq 10 ]; then
+    if [ "$i" -eq 10 ]; then
         echo -e "${RED}✗ Manager failed to start${NC}"
         cat /tmp/tcp-test-server1.log
         exit 1
@@ -121,7 +125,7 @@ for i in {1..30}; do
         echo -e "${GREEN}✓ Manager ready${NC}"
         break
     fi
-    if [ $i -eq 30 ]; then
+    if [ "$i" -eq 30 ]; then
         echo -e "${RED}✗ Manager not ready after 30 seconds${NC}"
         tail -30 /tmp/tcp-test-server1.log
         exit 1
@@ -147,7 +151,7 @@ for i in {1..10}; do
         echo -e "${GREEN}✓ Worker 1 started (PID: $SERVER2_PID)${NC}"
         break
     fi
-    if [ $i -eq 10 ]; then
+    if [ "$i" -eq 10 ]; then
         echo -e "${RED}✗ Worker 1 failed to start${NC}"
         cat /tmp/tcp-test-server2.log
         exit 1
@@ -162,7 +166,7 @@ for i in {1..30}; do
         echo -e "${GREEN}✓ Worker 1 registered${NC}"
         break
     fi
-    if [ $i -eq 30 ]; then
+    if [ "$i" -eq 30 ]; then
         echo -e "${RED}✗ Worker 1 registration timeout${NC}"
         tail -50 /tmp/tcp-test-server2.log
         exit 1
@@ -188,7 +192,7 @@ for i in {1..10}; do
         echo -e "${GREEN}✓ Worker 2 started (PID: $SERVER3_PID)${NC}"
         break
     fi
-    if [ $i -eq 10 ]; then
+    if [ "$i" -eq 10 ]; then
         echo -e "${RED}✗ Worker 2 failed to start${NC}"
         cat /tmp/tcp-test-server3.log
         exit 1
@@ -203,7 +207,7 @@ for i in {1..30}; do
         echo -e "${GREEN}✓ Worker 2 registered${NC}"
         break
     fi
-    if [ $i -eq 30 ]; then
+    if [ "$i" -eq 30 ]; then
         echo -e "${RED}✗ Worker 2 registration timeout${NC}"
         tail -50 /tmp/tcp-test-server3.log
         exit 1

@@ -1,0 +1,16 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+trivial:
+  - >-
+    The shell in the collection's ``shell:`` tasks is now checked with
+    ShellCheck by the repository's ``tools/check-embedded-shell.py``, and
+    the tasks it flagged are fixed without changing what they do.
+    ``sanity-tests.yml`` builds the UD mesh test from a script fed to the
+    guest's ``bash -s``, so the checker can see it, and it and
+    ``s3-tests.yml`` pass ``pkg-config``'s flags to the compiler as an
+    array.  ``ernic_host_setup`` quotes the instance number it passes to
+    ``ernicctl vm-stop`` and checks ``/sys/kernel/iommu_groups/`` with
+    ``find`` rather than parsing ``ls``.

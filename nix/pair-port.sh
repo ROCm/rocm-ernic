@@ -1,5 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
+# shellcheck shell=bash
+# Sourced into a writeShellApplication; not run on its own.
 # Normalize digit strings before arithmetic; never evaluate unbounded input.
 normalize_pair_port() {
   local port="$1"

@@ -18,15 +18,7 @@
 # nix/analysis/fuzz.nix: a harness added there but not here is once again
 # only compiled by the opt-in workflow.
 
-set(ERNIC_FUZZ_DIR ${CMAKE_SOURCE_DIR}/nix/analysis/fuzz)
-
-# Mirrors ERNIC_PARSER_TEST_SAN in the parent: ASan + UBSan unless the
-# project is already built with TSan, which is incompatible.
-set(ERNIC_FUZZ_REPLAY_SAN "")
-if(NOT ERNIC_USE_THREAD_SANITIZER)
-    set(ERNIC_FUZZ_REPLAY_SAN
-        -fsanitize=address,undefined -fno-omit-frame-pointer)
-endif()
+set(ERNIC_FUZZ_DIR ${PROJECT_SOURCE_DIR}/nix/analysis/fuzz)
 
 # ernic_add_fuzz_replay(<harness> [extra ported sources...])
 #
@@ -48,27 +40,22 @@ function(ernic_add_fuzz_replay harness)
     # include the src/net headers by bare name.
     target_include_directories(${target} PRIVATE
         ${ERNIC_FUZZ_DIR}
-        ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/src/net
-        ${CMAKE_SOURCE_DIR}/src/qemu-compat/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/net
+        ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     )
     # Vendored header trees are SYSTEM includes so their warnings stay quiet.
     target_include_directories(${target} SYSTEM PRIVATE
-        ${CMAKE_SOURCE_DIR}/third-party/qemu/hw/rdma
+        ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
         ${GLIB2_INCLUDE_DIRS}
     )
     target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
-    target_compile_options(${target} PRIVATE ${ERNIC_FUZZ_REPLAY_SAN})
-    target_link_options(${target} PRIVATE ${ERNIC_FUZZ_REPLAY_SAN})
     target_link_directories(${target} PRIVATE ${GLIB2_LIBRARY_DIRS})
     target_link_libraries(${target} PRIVATE ${GLIB2_LIBRARIES})
 
     # Project warning / hardening flags, matching the parent's
     # ERNIC_TEST_TARGETS loop.
     ernic_set_compiler_flags(${target})
-    if(ERNIC_WERROR)
-        target_compile_options(${target} PRIVATE -Werror)
-    endif()
 
     add_test(
         NAME fuzz-replay-${harness}
@@ -78,8 +65,8 @@ function(ernic_add_fuzz_replay harness)
 endfunction()
 
 ernic_add_fuzz_replay(rdma_cm_proto
-    ${CMAKE_SOURCE_DIR}/src/net/rdma_cm_proto.c
-    ${CMAKE_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/net/rdma_cm_proto.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 
 # net_headers.h is header-only, so this harness links no extra sources.

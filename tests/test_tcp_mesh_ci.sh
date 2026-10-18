@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # CI test for TCP mesh registration: GID advertisement and the protocol
@@ -22,6 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
+# A command to run the server under, such as valgrind and its options. It's
+# split on whitespace, so no word of it can contain a space.
+read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -39,7 +42,8 @@ command -v python3 >/dev/null 2>&1 || skip "python3 not available"
 
 RUN="/tmp/ernic-mesh-ci-$$"
 mkdir -p "$RUN"
-PIDS=()
+PIDS=()      # everything started in the background
+NODE_PIDS=() # the mesh nodes started by start_node, which must exit 0
 
 # An ephemeral port, so concurrent ctest jobs and a developer's own mesh do
 # not collide on a fixed one.
@@ -49,31 +53,56 @@ s.bind(("127.0.0.1", 0))
 print(s.getsockname()[1])
 s.close()')"
 
-# A mesh node does not reliably exit on SIGTERM: tcp_fini() can block
-# joining a thread that never returns, leaving the process alive with its
-# backend half torn down. A plain `kill` followed by an unbounded `wait`
-# therefore hangs the whole job rather than failing it, so give each node a
-# short grace period and then SIGKILL it.
+# Every mesh node must exit promptly on SIGTERM, and with status 0. A node
+# still running after the grace period has hung in teardown, which fails
+# the suite; it is SIGKILLed only so the job doesn't leave it behind. A
+# non-zero status from a node fails the suite too: that is how a sanitizer
+# report from a server process shows up here.
 cleanup() {
-    local p
+    local rc=$? p status waited=0
+    local alive=()
     for p in ${PIDS+"${PIDS[@]}"}; do
         kill "$p" 2>/dev/null || true
     done
-    local waited=0
-    while [ $waited -lt 6 ]; do
-        local alive=0
+    # Generous, for sanitizer builds; the loop ends as soon as all are gone.
+    while [ $waited -lt 60 ]; do
+        alive=()
         for p in ${PIDS+"${PIDS[@]}"}; do
-            kill -0 "$p" 2>/dev/null && alive=1
+            if kill -0 "$p" 2>/dev/null; then
+                alive+=("$p")
+            fi
         done
-        [ "$alive" -eq 0 ] && break
+        [ ${#alive[@]} -eq 0 ] && break
         sleep 0.5; waited=$((waited + 1))
     done
-    for p in ${PIDS+"${PIDS[@]}"}; do
-        kill -9 "$p" 2>/dev/null || true
+    if [ ${#alive[@]} -gt 0 ]; then
+        echo -e "${RED}✗ still running 30 s after SIGTERM: ${alive[*]}${NC}"
+        for p in "${alive[@]}"; do
+            kill -9 "$p" 2>/dev/null || true
+        done
+        rc=1
+    fi
+    for p in ${NODE_PIDS+"${NODE_PIDS[@]}"}; do
+        status=0
+        wait "$p" 2>/dev/null || status=$?
+        if [ "$status" -ne 0 ]; then
+            echo -e "${RED}✗ node $p exited with status $status${NC}"
+            rc=1
+        fi
     done
+    if [ "$rc" -ne 0 ]; then
+        for p in "$RUN"/*.log; do
+            [ -f "$p" ] || continue
+            echo "--- $p (last 20 lines) ---"
+            tail -n 20 "$p"
+        done
+    fi
     rm -rf "$RUN"
+    exit "$rc"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# An interrupted run is a failed one; the exit runs cleanup() above.
+trap 'exit 1' INT TERM
 
 echo "================================================="
 echo "  rocm-ernic TCP mesh registration CI tests"
@@ -90,13 +119,14 @@ start_node() {
         backend="tcp:worker:127.0.0.1:$PORT"
     fi
 
-    ERNIC_TCP_GUEST_GIDS="$gids" "$SERVER_BIN" \
+    ERNIC_TCP_GUEST_GIDS="$gids" "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
         --socket "$RUN/$n.sock" \
         --backend "$backend" \
         --mac "$(printf '72:6f:63:6d:00:%02x' "$n")" \
         --log-level info \
         --log-file "$RUN/$n.log" &
     PIDS+=("$!")
+    NODE_PIDS+=("$!")
 
     # Budgets here are upper bounds, not delays: every loop exits as soon
     # as its condition holds, so a generous one costs nothing on a fast
@@ -283,7 +313,7 @@ FAKE_PID=$!
 PIDS+=("$FAKE_PID")
 sleep 1
 
-ERNIC_TCP_GUEST_GIDS="fe80::9" "$SERVER_BIN" \
+ERNIC_TCP_GUEST_GIDS="fe80::9" "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
     --socket "$RUN/w.sock" \
     --backend "tcp:worker:127.0.0.1:$FAKE_PORT" \
     --mac 72:6f:63:6d:00:09 \
@@ -297,7 +327,6 @@ wait_for "manager speaks v0" "$RUN/w.log" || {
 }
 grep -q "Registered with manager" "$RUN/w.log" \
     && fail "worker reported success against a pre-v4 manager"
-# Left to cleanup(), which knows a node may need SIGKILL.
 pass "pre-v4 manager refused, with the reason logged"
 
 echo ""

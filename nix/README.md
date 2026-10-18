@@ -83,6 +83,16 @@ multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and the
 vendored `third-party/qemu/hw/rdma/` (the untrusted-input paths) are
 treated as security-sensitive.
 
+`analysis-semgrep` first runs `semgrep --test` on each rule fixture in
+`nix/analysis/semgrep-tests/`, where a `// ruleid:` comment marks a line
+the rule must report, a `// ok:` comment one it must not, and a
+`// todoruleid:` comment one it should report but can't yet. It fails if a
+fixture fails, if a rule doesn't parse, or if the scan fails, scans
+nothing, or produces malformed JSON. semgrep's partial-parsing warnings,
+for source it could only partly parse, don't fail it. Findings in that
+source may be missing, though, so `coverage.txt`, the top of `report.txt`,
+and the aggregate targets' `summary.txt` report the warnings.
+
 ## Dynamic analysis
 
 Build-and-exercise on the loopback backend (no RDMA hardware):
@@ -94,8 +104,23 @@ nix build .#analysis-valgrind    # memcheck (independent leak detector)
 cat result/summary.txt
 ```
 
-Each starts the server, runs the PCI-config test client, then shuts the
-server down cleanly so leak checkers report at exit.
+Each starts the server, runs the PCI-config test client, waits for the
+server to handle its connection, then shuts the server down cleanly so
+leak checkers report at exit. The first line of `summary.txt` says whether
+that exercise completed: `exercise: clean`, or
+`exercise: incomplete (<reason>)` if the server never started listening,
+the client failed, the server never handled the connection, or the server
+didn't shut down cleanly. An incomplete exercise fails the build, since
+the leak checkers never saw a clean exit; sanitizer and valgrind findings
+don't. Neither does an incomplete exercise that reported a sanitizer
+finding: the first ASan or UBSan error stops the server, so such a run
+can't finish, but its report is real.
+
+`nix build .#checks.x86_64-linux.analysis-runners` tests the exercise
+driver against a fake server and client that fail in each of those ways,
+and the semgrep report check against malformed and incomplete scans. It
+builds no part of rocm-ernic, so the Nix Check workflow runs it on every
+change under `nix/`.
 
 ## Fuzzing
 
@@ -328,9 +353,7 @@ How the pieces fit, without root, a TAP or RDMA hardware:
   the host user's `~/.ssh/*.pub` and forwards both guests to 127.0.0.1.
 
 `ernic-run` gained `--mac` for this, and stops a server that ignores
-SIGTERM for 10s with SIGKILL: today a TCP-backend server that a peer has
-connected to does not exit on SIGTERM (its accept thread stays blocked in
-`accept()` while `tcp_fini()` joins it), so quitting takes about 20s.
+SIGTERM for 10s with SIGKILL.
 
 ## Module map
 

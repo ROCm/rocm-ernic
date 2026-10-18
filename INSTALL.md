@@ -73,10 +73,12 @@ cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$HOME/.local"
 
 | Option | Default | Purpose |
 |--------|---------|---------|
-| CMAKE\_BUILD\_TYPE | Debug | Build type (Debug, Release, etc.) |
+| CMAKE\_BUILD\_TYPE | Debug | Build type (Debug, Release, etc.); a parent project's when rocm-ernic is a subproject |
+| BUILD\_TESTING | ON | Build the tests and register them with CTest |
 | ERNIC\_WERROR | OFF | Treat compiler warnings as errors for project code (CI sets this ON) |
-| ERNIC\_USE\_SANITIZERS | OFF | Enable ASAN / LSAN / UBSAN |
-| ERNIC\_USE\_THREAD\_SANITIZER | OFF | Enable TSAN (incompatible with above) |
+| ERNIC\_USE\_SANITIZERS | OFF | Build with ASan, LSan, UBSan, and the compiler's other checks that can be combined with them |
+| ERNIC\_USE\_THREAD\_SANITIZER | OFF | Build with TSan (incompatible with above) |
+| ERNIC\_SANITIZER\_SHARED\_RUNTIME | ON (GCC), OFF (Clang) | Link the shared sanitizer runtime instead of the static one |
 | ERNIC\_BUILD\_DOCS | OFF | Build Sphinx + Breathe + Doxygen documentation |
 | ERNIC\_DOCS\_ONLY | OFF | Docs-only build (no library dependencies required) |
 | ERNIC\_BUILD\_KMOD | OFF | DKMS targets for the patched upstream ionic guest modules |

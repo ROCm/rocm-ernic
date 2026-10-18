@@ -36,7 +36,6 @@
 #include "s3_target.h"
 #include "s3_tcp.h"
 #include "s3_token.h"
-#include "rocm-ernic-warnings.h"
 
 #define TARGET_IP   0xc0a8c801u /* 192.168.200.1 */
 #define TARGET_PORT 9000
@@ -48,25 +47,6 @@
 #define FLAG_RST 0x04
 #define FLAG_PSH 0x08
 #define FLAG_ACK 0x10
-
-/*
- * UBSan recovers by default: a runtime error prints and the run still
- * exits 0.  Some of what this file drives -- a zero-length memmove off a
- * NULL send buffer -- has no wrong output to assert on, so the report has
- * to be the failure.  Like __asan_default_options in
- * test_tcp_mesh_topology.c this is only a default, and a UBSAN_OPTIONS in
- * the environment overrides it.
- *
- * The runtime looks this hook up by name, so the reserved identifier is
- * unavoidable.
- */
-ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
-const char *__ubsan_default_options(void);
-const char *__ubsan_default_options(void)
-{
-    return "halt_on_error=1";
-}
-ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 static const uint8_t GUEST_MAC[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 static const uint8_t BCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
