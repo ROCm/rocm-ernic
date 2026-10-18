@@ -488,13 +488,17 @@
   the exercise, so its leak checks never ran. The first line of
   `summary.txt` is now `exercise: clean` or
   `exercise: incomplete (<reason>)`, and an incomplete exercise fails the
-  build: a server socket that never appeared, a client that failed or timed
-  out, or a server that didn't shut down cleanly. Sanitizer and valgrind
+  build: a server that never started listening, a client that failed or
+  timed out, a server that never handled the client's connection, or one
+  that didn't shut down cleanly. Sanitizer and valgrind
   findings still don't fail it, including a sanitizer finding that stopped
   the server before the exercise finished.
 * The `malloc-no-null-check` and `goto-usage` rules of the Nix
   `analysis-semgrep` target never parsed, so semgrep skipped them on every
   run. Both run now, so every `goto` is reported, at `INFO`.
+  `malloc-no-null-check` follows the pointer's data flow, so a NULL check
+  covers only the allocation it tests, and recognizes checks that return,
+  `goto`, `exit()` or `abort()`.
   `analysis-semgrep` tests its rules against the fixtures in
   `nix/analysis/semgrep-tests/` and fails if one doesn't pass, if a rule
   doesn't parse, or if the scan fails, and reports source that semgrep

@@ -43,15 +43,28 @@ setsid $SERVER_WRAPPER "$server" --socket "$sock" --backend loopback --verbose \
   > "$OUT_LOG" 2>&1 &
 spid=$!
 
-# Wait for the socket, but stop early if the server has already exited.
+# Poll the server log for an extended regex until it turns up, the server
+# exits, or @WAIT_ATTEMPTS@ polls have passed. The last check comes after
+# the loop, so a line logged just before the server exited still counts.
+wait_for_log() {
+  for _ in $(seq 1 @WAIT_ATTEMPTS@); do
+    grep -qE -- "$1" "$OUT_LOG" && return 0
+    kill -0 "$spid" 2>/dev/null || break
+    sleep @POLL_SECONDS@
+  done
+  grep -qE -- "$1" "$OUT_LOG"
+}
+
+# The socket appears at bind(), a moment before listen(), and a client that
+# connects in between is refused. The server logs that it is waiting for a
+# client only once it is listening.
 ready=0
-for _ in $(seq 1 @STARTUP_ATTEMPTS@); do
-  if [ -S "$sock" ]; then ready=1; break; fi
-  kill -0 "$spid" 2>/dev/null || break
-  sleep @POLL_SECONDS@
-done
+if wait_for_log 'waiting for client connection' && [ -S "$sock" ]; then
+  ready=1
+fi
 
 client_rc=0
+handled=0
 if [ "$ready" = 1 ]; then
   setsid timeout --kill-after=1s @CLIENT_TIMEOUT@ "$client" --socket "$sock" \
     > "$CLIENT_LOG" 2>&1 &
@@ -60,8 +73,17 @@ if [ "$ready" = 1 ]; then
   # A successful command must not leave background descendants behind.
   kill -KILL -- "-$cpid" 2>/dev/null || true
   cpid=""
+  # The client can finish before the server, which polls for a connection
+  # every 100 ms, has taken it. A SIGTERM then would end the server without
+  # handling the connection at all, so wait for it to log the outcome of
+  # the attach first.
+  attach_re='Client connected!|client dropped during negotiation'
+  attach_re+='|vfu_attach_ctx\(\) failed'
+  if [ "$client_rc" = 0 ] && wait_for_log "$attach_re"; then
+    handled=1
+  fi
 else
-  echo 'run-loopback: server socket never appeared' >> "$CLIENT_LOG"
+  echo 'run-loopback: the server never started listening' >> "$CLIENT_LOG"
 fi
 
 # Graceful shutdown, so the leak checkers run at a clean exit. `wait` has
@@ -78,9 +100,11 @@ server_rc=0
 wait "$spid" 2>/dev/null || server_rc=$?
 
 # A failed attach comes first: the server exits with an error on it, and the
-# client then fails too, so either status alone would hide the cause.
+# client then fails too, so either status alone would hide the cause. A
+# connection the server never handled comes last, since a server that
+# failed or hung while handling it may not have logged anything.
 if [ "$ready" != 1 ]; then
-  outcome='incomplete (the server socket never appeared)'
+  outcome='incomplete (the server never started listening)'
 elif grep -q 'vfu_attach_ctx() failed' "$OUT_LOG"; then
   outcome='incomplete (the server exited on a failed client attach)'
 elif [ "$client_rc" != 0 ]; then
@@ -91,6 +115,8 @@ elif [ "$server_rc" != 0 ]; then
   outcome="incomplete (server failed with status $server_rc)"
 elif ! grep -q 'Shutdown complete' "$OUT_LOG"; then
   outcome='incomplete (the server never logged a clean shutdown)'
+elif [ "$handled" != 1 ]; then
+  outcome='incomplete (the server never handled the client connection)'
 else
   outcome='clean'
 fi

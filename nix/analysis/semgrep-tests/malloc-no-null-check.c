@@ -8,7 +8,8 @@
  *
  * Run by nix/analysis/semgrep.nix as `semgrep --test`: a `ruleid:` comment
  * says the next line must be reported, an `ok:` comment says it must not.
- * Each case is labelled with its category and the outcome it expects.
+ * Each case is labelled with its category and the outcome it expects. A
+ * `todoruleid:` comment marks a line the rule should report but can't yet.
  * semgrep --test checks every rule against this file, so the gotos in the
  * goto guards carry goto-usage annotations too.
  */
@@ -179,6 +180,36 @@ void guard_on_other_pointer(const int *q)
     free(p);
 }
 
+/* corner: a second allocation replaces a checked one -> reported */
+void reallocated_after_guard(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (!p)
+        return;
+    free(p);
+    p = malloc(sizeof(*p));
+    // ruleid: malloc-no-null-check
+    *p = 11;
+    free(p);
+}
+
+/* negative: each of two allocations is checked -> not reported */
+void each_allocation_guarded(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (!p)
+        return;
+    free(p);
+    p = malloc(sizeof(*p));
+    if (p == NULL)
+        return;
+    // ok: malloc-no-null-check
+    *p = 12;
+    free(p);
+}
+
 /* boundary: the use comes one line before the check -> reported */
 int used_before_check(void)
 {
@@ -202,6 +233,35 @@ void used_inside_guard(void)
         *p = 4;
         free(p);
     }
+}
+
+/*
+ * corner: the use is in the else branch of if (p), where p is NULL ->
+ * should be reported, but isn't: the rule can't tell the branches apart
+ */
+void used_in_else_branch(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p) {
+        free(p);
+    } else {
+        // todoruleid: malloc-no-null-check
+        *p = 13;
+    }
+}
+
+/* negative: the size read through another pointer is not a use -> not
+ * reported */
+int size_from_struct(const struct item *it)
+{
+    // ok: malloc-no-null-check
+    int *p = malloc(it->field > 0 ? (size_t)it->field : 1);
+
+    if (p == NULL)
+        return -1;
+    free(p);
+    return 0;
 }
 
 /* corner: calloc is outside the rule's scope -> not reported */

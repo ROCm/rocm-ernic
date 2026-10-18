@@ -85,7 +85,8 @@ treated as security-sensitive.
 
 `analysis-semgrep` first runs `semgrep --test` on each rule fixture in
 `nix/analysis/semgrep-tests/`, where a `// ruleid:` comment marks a line
-the rule must report and a `// ok:` comment one it must not. It fails if a
+the rule must report, a `// ok:` comment one it must not, and a
+`// todoruleid:` comment one it should report but can't yet. It fails if a
 fixture fails, if a rule doesn't parse, or if the scan fails, scans
 nothing, or produces malformed JSON. semgrep's partial-parsing warnings,
 for source it could only partly parse, don't fail it. Findings in that
@@ -103,15 +104,17 @@ nix build .#analysis-valgrind    # memcheck (independent leak detector)
 cat result/summary.txt
 ```
 
-Each starts the server, runs the PCI-config test client, then shuts the
-server down cleanly so leak checkers report at exit. The first line of
-`summary.txt` says whether that exercise completed: `exercise: clean`, or
-`exercise: incomplete (<reason>)` if the socket never appeared, the client
-failed, or the server didn't shut down cleanly. An incomplete exercise
-fails the build, since the leak checkers never saw a clean exit; sanitizer
-and valgrind findings don't. Neither does an incomplete exercise that
-reported a sanitizer finding: the first ASan or UBSan error stops the
-server, so such a run can't finish, but its report is real.
+Each starts the server, runs the PCI-config test client, waits for the
+server to handle its connection, then shuts the server down cleanly so
+leak checkers report at exit. The first line of `summary.txt` says whether
+that exercise completed: `exercise: clean`, or
+`exercise: incomplete (<reason>)` if the server never started listening,
+the client failed, the server never handled the connection, or the server
+didn't shut down cleanly. An incomplete exercise fails the build, since
+the leak checkers never saw a clean exit; sanitizer and valgrind findings
+don't. Neither does an incomplete exercise that reported a sanitizer
+finding: the first ASan or UBSan error stops the server, so such a run
+can't finish, but its report is real.
 
 `nix build .#checks.x86_64-linux.analysis-runners` tests the exercise
 driver against a fake server and client that fail in each of those ways,

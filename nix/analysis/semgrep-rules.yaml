@@ -54,85 +54,63 @@ rules:
     message: memcpy with sizeof(pointer) likely copies only pointer size, not data
     languages: [c, cpp]
     severity: WARNING
-  # A use (*p, p->f, p[i]) that follows p = malloc(...) without first
-  # passing a NULL guard or entering a non-NULL branch. A guard is
-  # `if (!p)` or `if (p == NULL)` whose body, braced or not, ends in
-  # return, goto, exit() or abort(). A check that falls through doesn't
-  # count.
+  # A use (*p, p->f, p[i]) of the pointer malloc() returned, unless a NULL
+  # guard or a non-NULL branch has checked it first. The rule follows the
+  # pointer's data flow (taint mode), so a guard covers only the allocation
+  # it checks: assigning p another malloc() result needs a guard of its own.
   # Fixtures: semgrep-tests/malloc-no-null-check.c
   - id: malloc-no-null-check
-    patterns:
-      - pattern-either:
-          - pattern-inside: |
-              $PTR = malloc(...);
-              ...
-          - pattern-inside: |
-              $T *$PTR = malloc(...);
-              ...
-      - pattern-not-inside: |
-          if ($PTR) { ... }
-      - pattern-not-inside: |
-          if ($PTR != NULL) { ... }
-      # Each guard is spelled out unbraced and braced, since `{ ... X; }`
-      # doesn't match an unbraced body. Matching the condition with a
-      # metavariable-pattern instead would be shorter, but its $PTR isn't
-      # tied to the malloc's, so a guard on any pointer would count.
-      - pattern-not-inside:
-          pattern-either:
-            - pattern: |
-                if (!$PTR) return ...;
-                ...
-            - pattern: |
-                if (!$PTR) { ... return ...; }
-                ...
-            - pattern: |
-                if ($PTR == NULL) return ...;
-                ...
-            - pattern: |
-                if ($PTR == NULL) { ... return ...; }
-                ...
-            - pattern: |
-                if (!$PTR) goto $LABEL;
-                ...
-            - pattern: |
-                if (!$PTR) { ... goto $LABEL; }
-                ...
-            - pattern: |
-                if ($PTR == NULL) goto $LABEL;
-                ...
-            - pattern: |
-                if ($PTR == NULL) { ... goto $LABEL; }
-                ...
-            - pattern: |
-                if (!$PTR) exit(...);
-                ...
-            - pattern: |
-                if (!$PTR) { ... exit(...); }
-                ...
-            - pattern: |
-                if ($PTR == NULL) exit(...);
-                ...
-            - pattern: |
-                if ($PTR == NULL) { ... exit(...); }
-                ...
-            - pattern: |
-                if (!$PTR) abort();
-                ...
-            - pattern: |
-                if (!$PTR) { ... abort(); }
-                ...
-            - pattern: |
-                if ($PTR == NULL) abort();
-                ...
-            - pattern: |
-                if ($PTR == NULL) { ... abort(); }
-                ...
-      # sizeof(*p) in the malloc call itself is not a use.
-      - pattern-not-inside: sizeof(...)
-      - pattern-either:
-          - pattern: "*$PTR"
-          - pattern: $PTR->$F
-          - pattern: $PTR[$I]
+    mode: taint
+    pattern-sources:
+      # exact: only the call's result is tainted. Otherwise its arguments
+      # are too, and u->size in malloc(u->size) would be reported.
+      - exact: true
+        pattern: malloc(...)
+    pattern-sanitizers:
+      # A guard: `if (!p)` or `if (p == NULL)` whose body, braced or not,
+      # ends in return, goto, exit() or abort(). It clears p from there on
+      # (by-side-effect). Each body is listed unbraced and braced, since
+      # `{ ... X; }` doesn't match an unbraced body.
+      - by-side-effect: true
+        patterns:
+          - pattern-either:
+              - pattern: if ($COND) return ...;
+              - pattern: if ($COND) { ... return ...; }
+              - pattern: if ($COND) goto $LABEL;
+              - pattern: if ($COND) { ... goto $LABEL; }
+              - pattern: if ($COND) exit(...);
+              - pattern: if ($COND) { ... exit(...); }
+              - pattern: if ($COND) abort();
+              - pattern: if ($COND) { ... abort(); }
+          - metavariable-pattern:
+              metavariable: $COND
+              pattern-either:
+                - pattern: "!$PTR"
+                - pattern: $PTR == NULL
+          - focus-metavariable: $PTR
+      # A use inside `if (p)` or `if (p != NULL)`. $PTR is limited to a
+      # variable or member access: `if ($PTR)` also matches `if (!p)` with
+      # $PTR bound to `!p`, and clearing that expression keeps the guard
+      # above from clearing the p inside it. Unlike a guard, this clears p
+      # only inside the branch, and the else branch too, which semgrep
+      # can't tell apart from it.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: if ($PTR) { ... }
+              - pattern-inside: if ($PTR != NULL) { ... }
+          - pattern: $PTR
+          - metavariable-regex:
+              metavariable: $PTR
+              regex: ^\w+(\s*(->|\.)\s*\w+)*$
+    pattern-sinks:
+      - patterns:
+          # sizeof(*p) doesn't dereference p.
+          - pattern-not-inside: sizeof(...)
+          - pattern-either:
+              - pattern: "*$PTR"
+              - pattern: $PTR->$F
+              - pattern: $PTR[$I]
+          - focus-metavariable: $PTR
     message: malloc() result used without NULL check
     languages: [c]
     severity: WARNING

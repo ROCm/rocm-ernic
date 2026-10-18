@@ -197,7 +197,7 @@
         } ''
           export ERNIC_TEST_EXERCISE=${import ./nix/analysis/run-loopback.nix {
             inherit pkgs;
-            startupAttempts = 20;
+            waitAttempts = 50;
             pollSeconds = "0.02";
             clientTimeout = "0.4s";
             shutdownTimeout = "0.4s";

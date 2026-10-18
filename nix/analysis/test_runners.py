@@ -25,16 +25,25 @@ import unittest
 
 HERE = Path(__file__).resolve().parent
 
-# Stands in for the server. SERVER_MODE selects how it misbehaves:
-#   ok         binds the socket and logs "Shutdown complete" on SIGTERM
-#   early      exits with status 9 before binding the socket
-#   no-socket  never binds the socket
-#   attach     waits for the client to connect, then logs the failed client
-#              attach message and exits with status 1, as the real server's
-#              err() call does
-#   hang       ignores SIGTERM
-#   bad-exit   logs "Shutdown complete" but exits with status 9
-#   no-marker  exits on SIGTERM without logging "Shutdown complete"
+# Stands in for the server. Like the real one, it logs that it is waiting
+# for a client once it is listening, and logs the outcome of the attach once
+# it has taken a connection. SERVER_MODE selects how it misbehaves:
+#   ok           takes the client and logs "Shutdown complete" on SIGTERM
+#   early        exits with status 9 before binding the socket
+#   no-socket    never binds the socket
+#   slow-listen  waits between bind() and listen(), where a client that
+#                connects as soon as the socket appears is refused
+#   slow-attach  waits before taking the client, as the real server does
+#                for up to 100 ms between polls
+#   ignore       never takes the client
+#   attach       takes the client, then logs the failed client attach
+#                message and exits with status 1, as the real server's err()
+#                call does
+#   hang         ignores SIGTERM
+#   bad-exit     logs "Shutdown complete" but exits with status 9
+#   no-marker    exits on SIGTERM without logging "Shutdown complete"
+# The waits are longer than the driver's polls but well inside its deadline,
+# so they only matter to a driver that doesn't wait for the server.
 FAKE_SERVER = """\
 import os
 import signal
@@ -57,19 +66,26 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == "hang" else stop)
 sock = socket.socket(socket.AF_UNIX)
 if mode != "no-socket":
     sock.bind(sys.argv[sys.argv.index("--socket") + 1])
-if mode == "attach":
+    if mode == "slow-listen":
+        time.sleep(0.2)
     sock.listen()
-    sock.accept()
-    print("vfu_attach_ctx() failed", flush=True)
-    sys.exit(1)
+    print("waiting for client connection...", flush=True)
+    if mode == "slow-attach":
+        time.sleep(0.2)
+    if mode != "ignore":
+        sock.accept()
+        if mode == "attach":
+            print("vfu_attach_ctx() failed", flush=True)
+            sys.exit(1)
+        print("client dropped during negotiation", flush=True)
 while True:
     time.sleep(0.01)
 """
 
-# Stands in for the client. It connects to the socket if the server is
-# listening, which only the attach server does. CLIENT_MODE is ok (exits
-# with status 0), fail (exits with status 7), or hang (outlives the
-# driver's client timeout).
+# Stands in for the client. Like test_pci_client, it connects and hangs up,
+# and fails with status 1 if it can't connect. CLIENT_MODE is ok (exits with
+# status 0), fail (exits with status 7), or hang (outlives the driver's
+# client timeout).
 FAKE_CLIENT = """\
 import os
 import socket
@@ -79,7 +95,7 @@ import time
 try:
     socket.socket(socket.AF_UNIX).connect(sys.argv[sys.argv.index("--socket") + 1])
 except OSError:
-    pass
+    sys.exit(1)
 if os.environ["CLIENT_MODE"] == "hang":
     time.sleep(60)
 sys.exit(7 if os.environ["CLIENT_MODE"] == "fail" else 0)
@@ -96,7 +112,7 @@ def make_driver(root):
     if driver is None:
         script = (HERE / "run-loopback.sh").read_text()
         for key, value in [
-            ("STARTUP_ATTEMPTS", "20"),
+            ("WAIT_ATTEMPTS", "50"),
             ("POLL_SECONDS", ".02"),
             ("CLIENT_TIMEOUT", ".4s"),
             ("SHUTDOWN_TIMEOUT", ".4s"),
@@ -116,7 +132,8 @@ class RunnerTests(unittest.TestCase):
         """All lifecycle failures must survive the report-file interface."""
         # (category, description, CLIENT_MODE, SERVER_MODE, text expected in
         # exercise.txt). CLIENT_MODE "missing" passes a client that doesn't
-        # exist.
+        # exist. A clean run must also have handled the client before it
+        # shut down.
         cases = [
             ("positive", "successful client and shutdown", "ok", "ok", "clean"),
             (
@@ -138,14 +155,35 @@ class RunnerTests(unittest.TestCase):
                 "server exits before readiness",
                 "ok",
                 "early",
-                "socket never appeared",
+                "never started listening",
             ),
             (
                 "boundary",
                 "readiness deadline",
                 "ok",
                 "no-socket",
-                "socket never appeared",
+                "never started listening",
+            ),
+            (
+                "boundary",
+                "socket bound before the server listens",
+                "ok",
+                "slow-listen",
+                "clean",
+            ),
+            (
+                "boundary",
+                "client handled after the client exits",
+                "ok",
+                "slow-attach",
+                "clean",
+            ),
+            (
+                "negative",
+                "client never handled",
+                "ok",
+                "ignore",
+                "never handled the client connection",
             ),
             (
                 "boundary",
@@ -190,13 +228,6 @@ class RunnerTests(unittest.TestCase):
                 with self.subTest(
                     category=category, description=description, expected=expected
                 ):
-                    env = dict(
-                        os.environ,
-                        TMPDIR=scratch,
-                        CLIENT_MODE=client_mode,
-                        SERVER_MODE=server_mode,
-                        SERVER_WRAPPER="",
-                    )
                     result = subprocess.run(
                         [
                             driver,
@@ -207,7 +238,13 @@ class RunnerTests(unittest.TestCase):
                                 else str(client)
                             ),
                         ],
-                        env=env,
+                        env=dict(
+                            os.environ,
+                            TMPDIR=scratch,
+                            CLIENT_MODE=client_mode,
+                            SERVER_MODE=server_mode,
+                            SERVER_WRAPPER="",
+                        ),
                         capture_output=True,
                         text=True,
                         timeout=5,
@@ -215,10 +252,17 @@ class RunnerTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     outcome = (root / "exercise.txt").read_text().strip()
-                    self.assertIn(expected, outcome, (root / "server.log").read_text())
+                    log = (root / "server.log").read_text()
+                    self.assertIn(expected, outcome, log)
                     self.assertEqual(
                         outcome.startswith("exercise: clean"), expected == "clean"
                     )
+                    if expected == "clean":
+                        self.assertIn(
+                            "client dropped during negotiation",
+                            log.split("Shutdown complete")[0],
+                            log,
+                        )
                     self.assertFalse(list(root.glob("ernic-*.sock")))
 
     def test_scan_report(self):
