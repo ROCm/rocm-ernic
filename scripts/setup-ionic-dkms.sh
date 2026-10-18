@@ -132,6 +132,8 @@ ionic_rdma-y := $(patsubst $(src)/rdma/%.c,rdma/%.o,\
                   $(wildcard $(src)/rdma/*.c))
 EOF
 
+# The SPDX tag below is the generated dkms.conf's, which is GPL-2.0 like the
+# drivers it builds. This script itself is MIT.
 sudo tee "${DKMS_TREE_DIR}/dkms.conf" > /dev/null <<EOF
 # DKMS configuration for ionic-ernic
 # Upstream ionic driver + rocm-ernic AMD device ID patch.

@@ -614,15 +614,20 @@ new file, and do not "update" a year on an existing one.
 Two forms are in use, split by license:
 
 - MIT-licensed files — the build system and the deployment and automation
-  code (`CMakeLists.txt`, `cmake/`, `docs/`, `ansible/`, `ci/`, `.github/`,
-  `prometheus/`, `udev/`, `scripts/`, `service/`), plus the headers in
-  `shared/` — use the full line above, matching `LICENSE.md`.
+  code (`CMakeLists.txt`, `flake.nix`, `cmake/`, `docs/`, `ansible/`,
+  `ci/`, `.github/`, `prometheus/`, `udev/`, `scripts/`, `service/`,
+  `tools/`, and `nix/` apart from `nix/analysis/fuzz/`), plus the headers
+  in `shared/` — use the full line above, matching `LICENSE.md`.
 - GPL-licensed files — everything under `src/` and `tests/`, and the fuzz
   harnesses in `nix/analysis/fuzz/` — use
   `Copyright (C) Advanced Micro Devices, Inc.` — capital `(C)`, no
   "All rights reserved" — and keep the QEMU GPL boilerplate that follows it.
 
 Third-party copyright lines are left exactly as they arrived, years included.
+
+The patches under `patches/` modify the Linux ionic drivers and rdma-core,
+and take the licenses of the files they modify (see `LICENSE.md`). Don't add
+a copyright line or license notice to a patch.
 
 ## Changelog
 
