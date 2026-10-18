@@ -531,18 +531,15 @@ int ionic_fault_format(const struct ionic_fault *f, char *buf, size_t len)
         break;
     }
 
-    switch (f->effect) {
-    case IONIC_FAULT_EFFECT_FAIL:
+    if (f->effect == IONIC_FAULT_EFFECT_FAIL) {
         st = status_name(f->status);
         if (st)
             out_add(buf, len, &pos, " effect fail status %s", st);
         else
             out_add(buf, len, &pos, " effect fail status %u",
                     (unsigned int)f->status);
-        break;
-    default:
+    } else {
         out_add(buf, len, &pos, " effect unknown");
-        break;
     }
 
     return pos > INT_MAX ? -1 : (int)pos;
