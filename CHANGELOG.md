@@ -141,6 +141,15 @@
   `stats_type`, and the STATS_HDRS, STATS_VALS, QP_STATS_HDRS and
   QP_STATS_VALS admin commands are implemented; before, the driver created no
   counters at all.
+* `--nic-profile NAME|PATH` (repeatable, later layers win per key) chooses
+  what the emulated ionic NIC looks like to the guest: its identity (ASIC
+  type and revision, firmware version) and link (speed, transceiver, maximum
+  MTU). Profiles are ini files; `compat` (the default, byte-identical to the
+  device before profiles) and `small-vm` are built in, and their sources are
+  in `profiles/`. `--print-profile` prints the resolved profile and exits, and
+  the startup log and stats file name the profile chain and its hash. An
+  unknown key or out-of-range value is an error naming the file, line and
+  key. Documented in `docs/ionic.rst`.
 
 ### Changed
 
