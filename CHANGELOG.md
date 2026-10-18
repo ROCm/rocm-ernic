@@ -89,6 +89,14 @@
   `add_subdirectory()`. When it is, it leaves the build type to the parent
   project instead of defaulting it to `Debug`. The CTest `cmake-subproject`
   test builds the server this way.
+* The Build and Test workflow's GCC Debug leg without sanitizers also runs
+  the tests under valgrind's memcheck, which finds reads of uninitialized
+  memory, including uninitialized bytes passed to a system call such as
+  `send()`, that the sanitizers don't look for. A test fails on any
+  valgrind error, or on a leak that's definitely or possibly lost. The
+  tests that start the server, or run a script or CMake, are left out.
+  `tcp-thread-stop-unit` skips its out-of-descriptors row under valgrind,
+  which it detects with `<valgrind/valgrind.h>` when that's installed.
 
 ### Changed
 

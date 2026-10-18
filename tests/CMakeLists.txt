@@ -502,6 +502,15 @@ target_include_directories(ernic-test-tcp-thread-stop SYSTEM PRIVATE
 )
 target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
     _GNU_SOURCE)
+# The test skips a row that can't work under valgrind, which it detects
+# with RUNNING_ON_VALGRIND from valgrind's header. Without the header, the
+# row always runs.
+include(CheckIncludeFile)
+check_include_file(valgrind/valgrind.h ERNIC_HAVE_VALGRIND_H)
+if(ERNIC_HAVE_VALGRIND_H)
+    target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
+        ERNIC_HAVE_VALGRIND_H)
+endif()
 target_link_directories(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE

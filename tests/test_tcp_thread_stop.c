@@ -127,6 +127,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef ERNIC_HAVE_VALGRIND_H
+#include <valgrind/valgrind.h>
+#endif
+
 /* Pull in the code under test (including its static functions) */
 #include "rdma/rdma_backend_tcp.c"
 
@@ -4011,17 +4015,43 @@ static const char *reap_run(TcpBackendPrivate *priv, uint16_t port,
     }
 }
 
+/*
+ * Whether the test runs under valgrind.  Valgrind doesn't pass a change to
+ * RLIMIT_NOFILE to the kernel but enforces the limit itself, and not as the
+ * kernel does: an accept() already waiting when the limit is lowered gets a
+ * descriptor over it, and one that starts afterwards fails with EMFILE but
+ * takes the connection off the queue, so the retry finds nothing.  The
+ * REAP_NO_FDS row can't run under it.
+ */
+static bool under_valgrind(void)
+{
+#ifdef ERNIC_HAVE_VALGRIND_H
+    return RUNNING_ON_VALGRIND != 0;
+#else
+    return false;
+#endif
+}
+
 static int run_reap_case(const struct reap_case *c)
 {
     RdmaBackendDev dev;
     struct reap_fds k;
     char config[64];
     const char *why;
-    uint16_t port = free_port();
+    uint16_t port;
     int errors = -1;
     double start, took;
     bool ok;
 
+    if (c->scenario == REAP_NO_FDS && under_valgrind()) {
+        printf("skip reap %s: %s; valgrind enforces the descriptor limit "
+               "itself, so accept() can't be made to fail as it would\n",
+               c->category, c->description);
+        fflush(stdout);
+        return 0;
+    }
+
+    port = free_port();
     atomic_store(&g_creates, 0);
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);

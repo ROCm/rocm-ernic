@@ -73,7 +73,9 @@ Notes:
   [Project direction](#project-direction)). Without it, warnings don't
   fail the build, so either turn it on or read the build output.
 - CI builds every combination of GCC and Clang, Debug and Release, and no
-  sanitizer, ASan, and TSan, plus one Clang coverage build. Release is not
+  sanitizer, ASan, and TSan, plus one Clang coverage build. The GCC Debug
+  build without sanitizers also runs the tests under
+  [valgrind](#linters-warnings-and-sanitizers-mandatory). Release is not
   just Debug at a higher optimization level: it's the only configuration
   with GCC's dataflow warnings (which need the optimizer), with
   `_FORTIFY_SOURCE=3`, and with `NDEBUG`. Build it as well as Debug.
@@ -316,6 +318,34 @@ them and where their configuration files are picked up.
   anywhere but `ErnicSanitizers.cmake`. See [Tests](#tests) for the TSan
   `setarch` wrapper and the ASan timeouts, and
   [Thread safety](#thread-safety) for the TSan build flags.
+- **Valgrind-clean**: the tests must also run without a report from
+  valgrind's memcheck, which finds reads of uninitialized memory,
+  including uninitialized bytes passed to a system call such as `send()`
+  or `write()`, that the sanitizers don't look for. Run it in a plain GCC
+  build without the sanitizers, since valgrind can't run a program built
+  with them. Not Clang: its `-ftrivial-auto-var-init=pattern` initializes
+  every local variable, which hides those reads. Install valgrind before
+  configuring, so `tests/CMakeLists.txt` finds `<valgrind/valgrind.h>`.
+  `tcp-thread-stop-unit` uses it to skip the one row valgrind breaks: it
+  lowers `RLIMIT_NOFILE`, which valgrind emulates rather than passing to
+  the kernel. CI runs this in its GCC Debug leg:
+
+  ```bash
+  ctest --test-dir build -T memcheck --output-on-failure \
+    --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
+    --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
+    -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|cmake-subproject)$'
+  ```
+
+  The excluded tests run scripts or CMake, or start the server, so
+  valgrind would only check bash, CMake, or the program that starts the
+  server. Valgrind writes its reports to
+  `build/Testing/Temporary/MemoryChecker.*.log`, one log for each test,
+  not to ctest's output. It doesn't check data written into guest
+  memory, which is mapped into the process rather than sent with a system
+  call, so that still needs the `memset` rule in [Security](#security).
+  The server runs under valgrind in the Nix `analysis-valgrind` lane
+  (`nix/analysis/valgrind.nix`), which is informational.
 - **clang-tidy clean**: building with `-DERNIC_USE_CLANG_TIDY=ON` runs
   clang-tidy on every file as it compiles, with the checks in
   [`.clang-tidy`](.clang-tidy), and must report nothing; every finding is
