@@ -187,10 +187,6 @@ ThreadSanitizer. ThreadSanitizer can't be combined with
 AddressSanitizer, so only one of these two options can be on.
 Use a separate build directory for each.
 
-The unit tests are built with the first set even when neither
-option is on, so every build checks them, except a
-ThreadSanitizer build.
-
 Both options need GCC or Clang. Configuring checks that the
 compiler can build a program with the sanitizers, and fails if,
 for example, the sanitizer runtimes aren't installed:
