@@ -267,9 +267,10 @@ general pattern here.
   To run a program under a tool such as valgrind, run the C program
   under the tool from outside (`valgrind --trace-children=yes` follows it
   into the programs it starts) rather than having it read the tool's
-  command from a variable. `test_server_lifecycle.c` still runs the
-  server from `argv[1]`, which CodeQL reports; a fix would compile the
-  path in.
+  command from a variable. To run a program the build makes, compile its
+  path in with a definition from `$<TARGET_FILE:...>`, as
+  `test_server_lifecycle.c` does with `ERNIC_SERVER_PATH`, rather than
+  passing the path on the command line.
 
 ## Linters, warnings, and sanitizers (mandatory)
 
@@ -380,8 +381,7 @@ them and where their configuration files are picked up.
   ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
     ctest --test-dir build --output-on-failure \
     -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$'
-  valgrind --trace-children=yes $opts \
-    build/tests/test_server_lifecycle build/rocm-ernic
+  valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
   grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
   ```
 

@@ -316,9 +316,14 @@ target_compile_definitions(test_ionic_port_info PRIVATE
 
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
-# shutdown. Needs no symbols from the server, so it is a plain program.
+# shutdown. Needs no symbols from the server, so it is a plain program. The
+# server's path is compiled in rather than passed on the command line: a
+# program that runs whatever its arguments name is what CodeQL's
+# cpp/uncontrolled-process-operation reports.
 add_executable(test_server_lifecycle test_server_lifecycle.c)
-target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE)
+target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE
+    "ERNIC_SERVER_PATH=\"$<TARGET_FILE:rocm-ernic>\"")
+add_dependencies(test_server_lifecycle rocm-ernic)
 
 # ionic QUERY_QP test. It #includes the admin queue translation unit to reach
 # dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
@@ -827,7 +832,7 @@ set_tests_properties(ionic-port-info-unit PROPERTIES TIMEOUT 30)
 # check. One server per row, each on its own socket.
 add_test(
     NAME server-lifecycle
-    COMMAND $<TARGET_FILE:test_server_lifecycle> $<TARGET_FILE:rocm-ernic>
+    COMMAND $<TARGET_FILE:test_server_lifecycle>
 )
 set_tests_properties(server-lifecycle PROPERTIES
     TIMEOUT 300
