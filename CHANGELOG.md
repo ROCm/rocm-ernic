@@ -515,7 +515,8 @@
   run. Both run now, so every `goto` is reported, at `INFO`.
   `malloc-no-null-check` follows the pointer's data flow, so a NULL check
   covers only the allocation it tests, and recognizes checks that return,
-  `goto`, `exit()` or `abort()`.
+  `goto`, `exit()` or `abort()`. Inside an `if (p)` branch that assigns
+  `p` a new value, the `if` no longer counts as a check.
   `analysis-semgrep` tests its rules against the fixtures in
   `nix/analysis/semgrep-tests/` and fails if one doesn't pass, if a rule
   doesn't parse, or if the scan fails, and reports source that semgrep
