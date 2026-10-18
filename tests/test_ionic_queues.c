@@ -1073,6 +1073,136 @@ static void check_delivery(void)
     ionic_eth_emu_destroy(emu);
 }
 
+/* Literal values pin the contract independently of ref_hash() above. */
+static void check_hash_goldens(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        struct flow flow;
+        size_t truncate;
+        uint32_t hash;
+    } cases[] = {
+        {"positive", "fixed IPv4 TCP tuple", "0xab8b421d", FL_TCP4(), 0,
+         0xab8b421du},
+        {"positive", "fixed IPv6 UDP tuple", "0x4517655f", FL_UDP6(), 0,
+         0x4517655fu},
+        {"corner", "VLAN preserves IPv4 tuple", "0xab8b421d",
+         FL_TCP4(.tags = {0x8100}), 0, 0xab8b421du},
+        {"corner", "fragment excludes ports", "0x2b767992",
+         FL_TCP4(.frag = 0x2000), 0, 0x2b767992u},
+        {"negative", "invalid IPv4 version falls back to MACs", "0x4babd2e8",
+         FL_TCP4(.version = 6), 0, 0x4babd2e8u},
+        {"boundary", "exactly twelve MAC bytes", "0x4babd2e8", FL_TCP4(), 12,
+         0x4babd2e8u},
+        {"boundary", "eleven bytes cannot hold MACs", "0x811c9dc5", FL_TCP4(),
+         11, 0x811c9dc5u},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint8_t frame[128];
+        size_t l3, l4;
+        size_t len = build_flow(frame, &cases[i].flow, &l3, &l4);
+
+        if (cases[i].truncate)
+            len = cases[i].truncate;
+        report(ionic_eth_flow_hash(frame, len) == cases[i].hash,
+               cases[i].category, cases[i].description, cases[i].expected);
+    }
+}
+
+static void check_ring_wrap(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        unsigned int packets;
+    } cases[] = {
+        {"positive", "one completion", "index 1, initial color retained", 1},
+        {"boundary", "exactly one ring", "indices zero, color toggled", 4},
+        {"corner", "two wraps plus one", "index 1, original color restored", 9},
+    };
+    for (size_t row = 0; row < sizeof(cases) / sizeof(cases[0]); row++) {
+        struct ionic_eth_emu *emu = rx_emu(2, 0);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][1];
+        uint8_t frame[128];
+        uint32_t seed = 101;
+        size_t len = frame_for(frame, emu, 1, &seed);
+        bool ok = true;
+
+        for (unsigned int slot = 1; slot < 4; slot++)
+            memcpy(g_mem + RXQ_RING(1) + slot * ETH_DESC_SIZE,
+                   g_mem + RXQ_RING(1), ETH_DESC_SIZE);
+        for (unsigned int n = 0; n < cases[row].packets; n++) {
+            unsigned int slot = n % 4;
+            uint8_t *comp = g_mem + RXQ_CQ(1) + slot * ETH_COMP_SIZE;
+            uint16_t index, bytes;
+
+            q->prod = (uint16_t)((q->head + 1) % 4);
+            tap_frame(emu, frame, len);
+            memcpy(&index, comp + 2, 2);
+            memcpy(&bytes, comp + 12, 2);
+            ok = ok && le16toh(index) == slot && le16toh(bytes) == len &&
+                 !!(comp[15] & ADMIN_COMP_COLOR_MASK) == ((n / 4) % 2 == 0) &&
+                 q->head == (n + 1) % 4 && q->cq_index == (n + 1) % 4 &&
+                 memcmp(g_mem + RXQ_BUF(1), frame, len) == 0;
+        }
+        ok = ok && !cq_posted(0) && emu->eth_q[IONIC_QTYPE_RXQ][0].head == 0 &&
+             q->cq_color == ((cases[row].packets / 4) % 2 == 0);
+        report(ok, cases[row].category, cases[row].description,
+               cases[row].expected);
+        ionic_eth_emu_destroy(emu);
+    }
+}
+
+static void check_held_frame_transition(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint32_t target;
+        bool pause_all;
+    } cases[] = {
+        {"positive", "buffer arrives on original queue",
+         "one delivery to queue 3, no drop", 3, false},
+        {"corner", "original queue disabled while frame held",
+         "re-steer once to sole active queue 2", 2, false},
+        {"negative", "all queues disabled while frame held",
+         "retain frame without DMA, deliver once after enable", 3, true},
+    };
+    for (size_t row = 0; row < sizeof(cases) / sizeof(cases[0]); row++) {
+        struct ionic_eth_emu *emu = rx_emu(4, 0);
+        uint8_t frame[128];
+        uint32_t seed = 111;
+        size_t len = frame_for(frame, emu, 3, &seed);
+        bool ok;
+
+        ionic_eth_emu_queue_rx_frame(emu, frame, len);
+        ionic_eth_emu_poll_rx(emu);
+        ok = emu->inbox_count == 1 && g_nwrites == 0;
+        for (uint32_t q = 0; q < 4; q++)
+            q_control(emu, IONIC_QTYPE_RXQ, q, IONIC_Q_DISABLE);
+        if (cases[row].pause_all) {
+            ionic_eth_emu_poll_rx(emu);
+            ok = ok && emu->inbox_count == 1 && g_nwrites == 0;
+        }
+        q_control(emu, IONIC_QTYPE_RXQ, cases[row].target, IONIC_Q_ENABLE);
+        emu->eth_q[IONIC_QTYPE_RXQ][cases[row].target].prod = 1;
+        ionic_eth_emu_poll_rx(emu);
+        ionic_eth_emu_poll_rx(emu);
+        ok = ok && emu->inbox_count == 0 && g_nwrites == 2 &&
+             memcmp(g_mem + RXQ_BUF(cases[row].target), frame, len) == 0 &&
+             ionic_eth_emu_get_stats(emu)->lif[IONIC_LIF_RX_QUEUE_EMPTY] == 0;
+        for (uint32_t q = 0; q < 4; q++)
+            ok = ok && cq_posted(q) == (q == cases[row].target);
+        report(ok, cases[row].category, cases[row].description,
+               cases[row].expected);
+        ionic_eth_emu_destroy(emu);
+    }
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(shape_cases) / sizeof(shape_cases[0]); i++)
@@ -1089,6 +1219,9 @@ int main(void)
         run_active_case(&active_cases[i]);
     check_q_control_devcmd();
     check_delivery();
+    check_hash_goldens();
+    check_ring_wrap();
+    check_held_frame_transition();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
