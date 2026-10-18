@@ -444,6 +444,30 @@ def split_words(text: str) -> list[str]:
     return out
 
 
+# Where one command ends and the next starts. A & is a separator unless it
+# belongs to a redirection such as 2>&1, <&3 or &>file.
+COMMAND_SEPARATOR = re.compile(r"\$\(|&&|\|\||[;|(]|(?<![<>])&(?!>)")
+
+# A redirection word: its operator, and its target unless that is the next
+# word.
+REDIRECTION = re.compile(r"(?:\d+|&)?(?:>>?|<)&?")
+
+
+def without_redirections(words: list[str]) -> list[str]:
+    """The words of a command, without its redirections."""
+    out, skip_target = [], False
+    for word in words:
+        if skip_target:
+            skip_target = False
+            continue
+        match = REDIRECTION.match(word)
+        if match:
+            skip_target = match.end() == len(word)
+            continue
+        out.append(word)
+    return out
+
+
 def ssh_runs_login_shell(words: list[str]) -> bool:
     """Whether an ssh command names a host and no remote command."""
     if "ssh" not in words:
@@ -459,14 +483,18 @@ def ssh_runs_login_shell(words: list[str]) -> bool:
 def heredoc_shell(command: str, body: str) -> str | None:
     """bash or sh if the command runs the heredoc as a script, else None."""
     # Only the last simple command reads the heredoc.
-    words = split_words(re.split(r"\$\(|&&|\|\||[;|&(]", command)[-1])
+    raw = split_words(COMMAND_SEPARATOR.split(command)[-1])
+    for i, word in enumerate(raw):
+        written = word.endswith(".sh") and (
+            word.startswith(">") or (i > 0 and raw[i - 1] in (">", ">>", "tee"))
+        )
+        if written:
+            return "sh" if re.match(r"#!\s*\S*/sh\b", body) else "bash"
+    words = without_redirections(raw)
     for word in words:
         name = word.rsplit("/", 1)[-1]
         if name in ("bash", "sh"):
             return name
-    for i, word in enumerate(words):
-        if word.endswith(".sh") and i > 0 and words[i - 1] in (">", ">>", "tee"):
-            return "sh" if re.match(r"#!\s*\S*/sh\b", body) else "bash"
     if ssh_runs_login_shell(words):
         # The guests' login shell.
         return "bash"
@@ -516,8 +544,10 @@ class HeredocScanner:
     """Finds heredocs the way the shell does.
 
     A << is a heredoc only outside quotes, comments and arithmetic, so
-    ``'<<EOF'``, ``# <<EOF`` and ``$((1 << n))`` aren't. Its body starts on
-    the line after the operator, and a line can have more than one.
+    ``'<<EOF'``, ``# <<EOF`` and ``$((1 << n))`` aren't, but one in a
+    command substitution is, even inside double quotes:
+    ``out="$(ssh h 'bash -s' <<'EOF'``. Its body starts on the line after
+    the operator, and a line can have more than one.
     """
 
     def __init__(self, text: str) -> None:
@@ -529,28 +559,18 @@ class HeredocScanner:
         self.pos = 0
         self.pending: list[tuple[int, str, bool, str]] = []
         self.found: list[Heredoc] = []
+        # What pos is inside, innermost last: 0 for double quotes, or the
+        # parenthesis depth of a $( ) command substitution.
+        self.nest: list[int] = []
 
     def scan(self) -> list[Heredoc]:
         """Return the heredocs in the text, not counting nested ones."""
         text = self.text
         while self.pos < len(text):
-            if self.skip_literal():
-                continue
-            ch = text[self.pos]
-            if ch == "\\":
-                self.pos += 2
-            elif ch == "#" and self.at_word_start():
-                end = text.find("\n", self.pos)
-                self.pos = len(text) if end < 0 else end
-            elif text.startswith("<<<", self.pos):
-                self.pos += 3
-            elif text.startswith("<<", self.pos):
-                self.operator()
-            elif ch == "\n":
-                self.pos += 1
-                self.read_bodies()
-            else:
-                self.pos += 1
+            if self.nest and self.nest[-1] == 0:
+                self.step_double_quoted()
+            elif not self.skip_literal() and not self.step_nesting():
+                self.step_code()
         if self.pending:
             line = self.line_of(self.pending[0][0])
             raise CheckError(
@@ -558,15 +578,71 @@ class HeredocScanner:
             )
         return self.found
 
+    def step_code(self) -> None:
+        """Move past one token of code outside double quotes."""
+        text = self.text
+        ch = text[self.pos]
+        if ch == "\\":
+            self.pos += 2
+        elif ch == "#" and self.at_word_start():
+            end = text.find("\n", self.pos)
+            self.pos = len(text) if end < 0 else end
+        elif text.startswith("<<<", self.pos):
+            self.pos += 3
+        elif text.startswith("<<", self.pos):
+            self.operator()
+        elif ch == "\n":
+            self.pos += 1
+            self.read_bodies()
+        else:
+            self.pos += 1
+
+    def step_double_quoted(self) -> None:
+        """Move past one character inside double quotes.
+
+        Only a command substitution can hold a heredoc there.
+        """
+        text, pos = self.text, self.pos
+        if text[pos] == "\\":
+            self.pos += 2
+        elif text[pos] == '"':
+            self.nest.pop()
+            self.pos += 1
+        elif text.startswith("$((", pos):
+            self.skip_arithmetic(pos + 3)
+        elif text.startswith("$(", pos):
+            self.nest.append(1)
+            self.pos += 2
+        else:
+            self.pos += 1
+
+    def step_nesting(self) -> bool:
+        """Enter or leave double quotes or $( ), if pos does."""
+        text, pos = self.text, self.pos
+        in_substitution = bool(self.nest)
+        if text[pos] == '"':
+            self.nest.append(0)
+        elif text.startswith("$(", pos):
+            self.nest.append(1)
+            self.pos += 1
+        elif text[pos] == "(" and in_substitution:
+            self.nest[-1] += 1
+        elif text[pos] == ")" and in_substitution:
+            self.nest[-1] -= 1
+            if not self.nest[-1]:
+                self.nest.pop()
+        else:
+            return False
+        self.pos += 1
+        return True
+
     def skip_literal(self) -> bool:
-        """Move past a quoted string or arithmetic at pos, if one starts there."""
+        """Move past a single-quoted string or arithmetic at pos, if one starts."""
         text, pos = self.text, self.pos
         if text[pos] == "'":
             self.skip_quoted("'", pos + 1, escapes=False)
         elif text.startswith("$'", pos):
             self.skip_quoted("'", pos + 2, escapes=True)
-        elif text[pos] == '"':
-            self.skip_quoted('"', pos + 1, escapes=True)
         elif text.startswith("$((", pos):
             self.skip_arithmetic(pos + 3)
         elif text.startswith("((", pos) and self.at_word_start():
