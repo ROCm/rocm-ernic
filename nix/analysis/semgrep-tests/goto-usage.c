@@ -1,15 +1,14 @@
+/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 /*
  * semgrep rule test for goto-usage (nix/analysis/semgrep-rules.yaml).
  *
  * Run by nix/analysis/semgrep.nix as `semgrep --test`: a `ruleid:` comment
  * says the next line must be reported, an `ok:` comment says it must not.
  * Each case is labelled with its category and the outcome it expects.
- *
- * Copyright (C) Advanced Micro Devices, Inc.
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the LICENSE_GPL.md file in the top-level directory.
  */
 
 /* positive: a goto to a cleanup label -> reported */

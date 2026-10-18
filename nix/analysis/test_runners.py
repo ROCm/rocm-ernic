@@ -1,7 +1,18 @@
-"""Table-driven regression tests for the analysis outcome contract.
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
 
-Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT
+"""Table-driven tests for the outcomes the analysis runners report.
+
+test_exercise runs run-loopback-exercise (run-loopback.sh) against a fake
+server and client and checks the outcome it records in exercise.txt.
+test_scan_report feeds semgrep-report.jq made-up semgrep output and checks
+that it fails on anything but a complete, well-formed scan.
+
+The analysis-runners check in flake.nix runs this with ERNIC_TEST_EXERCISE
+set to the packaged driver. Without it, the tests build the driver from
+run-loopback.sh themselves, so they also run outside Nix, given bash, jq,
+and the GNU coreutils and util-linux commands the driver uses.
 """
 
 import json
@@ -13,28 +24,62 @@ import tempfile
 import unittest
 
 HERE = Path(__file__).resolve().parent
-FAKE_SERVER = """#!/usr/bin/env python3
-import os, signal, socket, sys, time
-mode = os.environ['SERVER_MODE']
-if mode == 'early': sys.exit(9)
-s = socket.socket(socket.AF_UNIX)
+
+# Stands in for the server. SERVER_MODE selects how it misbehaves:
+#   ok         binds the socket and logs "Shutdown complete" on SIGTERM
+#   early      exits with status 9 before binding the socket
+#   no-socket  never binds the socket
+#   attach     logs the failed client attach message the driver looks for
+#   hang       ignores SIGTERM
+#   bad-exit   logs "Shutdown complete" but exits with status 9
+#   no-marker  exits on SIGTERM without logging "Shutdown complete"
+FAKE_SERVER = """\
+import os
+import signal
+import socket
+import sys
+import time
+
+mode = os.environ["SERVER_MODE"]
+if mode == "early":
+    sys.exit(9)
+
+
 def stop(*_):
-    if mode != 'no-marker': print('Shutdown complete', flush=True)
-    sys.exit(9 if mode == 'bad-exit' else 0)
-signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == 'hang' else stop)
-if mode != 'no-socket': s.bind(sys.argv[sys.argv.index('--socket') + 1])
-if mode == 'attach': print('vfu_attach_ctx() failed', flush=True)
-while True: time.sleep(.01)
+    if mode != "no-marker":
+        print("Shutdown complete", flush=True)
+    sys.exit(9 if mode == "bad-exit" else 0)
+
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == "hang" else stop)
+sock = socket.socket(socket.AF_UNIX)
+if mode != "no-socket":
+    sock.bind(sys.argv[sys.argv.index("--socket") + 1])
+if mode == "attach":
+    print("vfu_attach_ctx() failed", flush=True)
+while True:
+    time.sleep(0.01)
 """
-FAKE_CLIENT = """#!/usr/bin/env python3
-import os, sys, time
-if os.environ['CLIENT_MODE'] == 'hang': time.sleep(60)
-sys.exit(7 if os.environ['CLIENT_MODE'] == 'fail' else 0)
+
+# Stands in for the client. CLIENT_MODE is ok (exits with status 0), fail
+# (exits with status 7), or hang (outlives the driver's client timeout).
+FAKE_CLIENT = """\
+import os
+import sys
+import time
+
+if os.environ["CLIENT_MODE"] == "hang":
+    time.sleep(60)
+sys.exit(7 if os.environ["CLIENT_MODE"] == "fail" else 0)
 """
 
 
 def make_driver(root):
-    """Use the Nix package, or substitute the same source for local iteration."""
+    """Return the packaged driver, or build one in root from run-loopback.sh.
+
+    The built one gets the short deadlines that flake.nix gives the packaged
+    one, and the shebang and `set -u` that writeShellApplication adds.
+    """
     driver = os.environ.get("ERNIC_TEST_EXERCISE")
     if driver is None:
         script = (HERE / "run-loopback.sh").read_text()
@@ -57,6 +102,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_exercise(self):
         """All lifecycle failures must survive the report-file interface."""
+        # (category, description, CLIENT_MODE, SERVER_MODE, text expected in
+        # exercise.txt). CLIENT_MODE "missing" passes a client that doesn't
+        # exist.
         cases = [
             ("positive", "successful client and shutdown", "ok", "ok", "clean"),
             (
@@ -114,12 +162,8 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             server, client = root / "server", root / "client"
-            server.write_text(
-                FAKE_SERVER.replace("#!/usr/bin/env python3", f"#!{sys.executable}")
-            )
-            client.write_text(
-                FAKE_CLIENT.replace("#!/usr/bin/env python3", f"#!{sys.executable}")
-            )
+            server.write_text(f"#!{sys.executable}\n{FAKE_SERVER}")
+            client.write_text(f"#!{sys.executable}\n{FAKE_CLIENT}")
             server.chmod(0o700)
             client.chmod(0o700)
             driver = make_driver(root)
@@ -161,6 +205,8 @@ class RunnerTests(unittest.TestCase):
     def test_scan_report(self):
         """Empty and failed scans must not masquerade as zero findings."""
         valid = {"results": [], "errors": [], "paths": {"scanned": ["src/a.c"]}}
+        # (category, description, semgrep's output, the finding count
+        # expected, or None if semgrep-report.jq must fail)
         cases = [
             ("positive", "valid empty scan", json.dumps(valid), "0"),
             (

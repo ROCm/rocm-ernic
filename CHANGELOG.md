@@ -483,6 +483,23 @@
   and valgrind reported both. `tests/test_server_lifecycle.c` (CTest
   `server-lifecycle`) starts the real server and checks that misbehaving
   clients and SIGTERM/SIGINT end in a clean shutdown with no sanitizer report.
+* The Nix `analysis-sanitizers`, `analysis-tsan`, and `analysis-valgrind`
+  targets no longer report a clean run when the server never got through
+  the exercise, so its leak checks never ran. The first line of
+  `summary.txt` is now `exercise: clean` or
+  `exercise: incomplete (<reason>)`, and an incomplete exercise fails the
+  build: a server socket that never appeared, a client that failed or timed
+  out, or a server that didn't shut down cleanly. Sanitizer and valgrind
+  findings still don't fail it.
+* The `malloc-no-null-check` and `goto-usage` rules of the Nix
+  `analysis-semgrep` target never parsed, so semgrep skipped them on every
+  run. Both run now, so every `goto` is reported, at `INFO`.
+  `analysis-semgrep` tests its rules against the fixtures in
+  `nix/analysis/semgrep-tests/` and fails if one doesn't pass, if a rule
+  doesn't parse, or if the scan fails, and reports source that semgrep
+  could only partly parse. The Nix Check workflow builds the new
+  `analysis-runners` check, which tests these targets' scripts against a
+  fake server, client and scan.
 
 ### Limitations
 

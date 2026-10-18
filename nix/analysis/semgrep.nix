@@ -8,8 +8,8 @@
 # Before scanning, each rule fixture in semgrep-tests/ is run with
 # `semgrep --test` (a `ruleid:` line must be reported, an `ok:` line must
 # not), and a rule that fails to parse fails the build: semgrep otherwise
-# skips such a rule with only an entry in the JSON "errors" list, which is
-# how two rules went unnoticed doing nothing.
+# skips such a rule with only an entry in the JSON "errors" list, so the
+# rule would silently find nothing.
 { pkgs, mkSourceReport }:
 
 let
@@ -60,8 +60,9 @@ let
           exit 1
         }
 
-      # Validate structure and engine errors before counting findings. Keep
-      # diagnostics out of JSON, and derive the text view from this same scan.
+      # Validate the structure and the engine errors before counting the
+      # findings. semgrep's stderr goes to scan-errors.txt so report.json is
+      # only JSON, and report.txt is derived from it rather than a second scan.
       jq -esr -f ${./semgrep-report.jq} "$output_dir/report.json" \
         > "$output_dir/count.txt"
       warnings=$(jq '.errors | length' "$output_dir/report.json")

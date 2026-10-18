@@ -1,5 +1,11 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
 # SPDX-License-Identifier: MIT
+#
+# Validates semgrep's --json output (read with jq -s, so the input is an
+# array of the documents it printed) and prints the number of findings.
+# Fails on anything but one well-formed scan of at least one file whose
+# only errors are partial-parsing warnings.
 if length != 1 then error("semgrep: expected one JSON document") else .[0] end |
 if type != "object" then error("semgrep: expected an object")
 elif (.results | type) != "array" then error("semgrep: missing results")

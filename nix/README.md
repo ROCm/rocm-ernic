@@ -83,6 +83,15 @@ multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and the
 vendored `third-party/qemu/hw/rdma/` (the untrusted-input paths) are
 treated as security-sensitive.
 
+`analysis-semgrep` first runs `semgrep --test` on each rule fixture in
+`nix/analysis/semgrep-tests/`, where a `// ruleid:` comment marks a line
+the rule must report and a `// ok:` comment one it must not. It fails if a
+fixture fails, if a rule doesn't parse, or if the scan fails, scans
+nothing, or produces malformed JSON. semgrep's partial-parsing warnings,
+for source it could only partly parse, don't fail it. Findings in that
+source may be missing, though, so `coverage.txt`, the top of `report.txt`,
+and the aggregate targets' `summary.txt` report the warnings.
+
 ## Dynamic analysis
 
 Build-and-exercise on the loopback backend (no RDMA hardware):
@@ -95,7 +104,18 @@ cat result/summary.txt
 ```
 
 Each starts the server, runs the PCI-config test client, then shuts the
-server down cleanly so leak checkers report at exit.
+server down cleanly so leak checkers report at exit. The first line of
+`summary.txt` says whether that exercise completed: `exercise: clean`, or
+`exercise: incomplete (<reason>)` if the socket never appeared, the client
+failed, or the server didn't shut down cleanly. An incomplete exercise
+fails the build, since the leak checkers never saw a clean exit; sanitizer
+and valgrind findings don't.
+
+`nix build .#checks.x86_64-linux.analysis-runners` tests the exercise
+driver against a fake server and client that fail in each of those ways,
+and the semgrep report check against malformed and incomplete scans. It
+builds no part of rocm-ernic, so the Nix Check workflow runs it on every
+change under `nix/`.
 
 ## Fuzzing
 
@@ -255,16 +275,3 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 | `nix/compat-cflags.nix` | gcc-15 C99-error downgrade (build + shell) |
 | `nix/analysis/` | static + dynamic + fuzz analysis modules |
 | `nix/analysis/triage/` | finding prioritiser (Python) |
-
-### Analysis runner regression checks
-
-`nix build .#checks.x86_64-linux.analysis-runners --no-link -L` tests the
-packaged exercise driver with successful, failed, missing, and hung clients
-and servers. A failed client or timed-out shutdown records an incomplete
-exercise, even when the server printed a clean shutdown marker.
-
-The Semgrep report rejects failed executions, invalid JSON, missing scan
-results, and engine errors. Known source partial-parsing warnings remain
-visible in `coverage.txt`, `report.txt`, and aggregate summaries; their finding
-counts describe incomplete coverage, not a clean scan. Rule fixtures verify
-that merely observing a malloc result does not guard a later dereference.

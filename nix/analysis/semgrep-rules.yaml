@@ -55,7 +55,8 @@ rules:
     languages: [c, cpp]
     severity: WARNING
   # A use (*p, p->f, p[i]) that follows p = malloc(...) without first
-  # passing a NULL-return guard or entering a non-NULL branch. Fixtures: semgrep-tests/malloc-no-null-check.c
+  # passing a NULL-return guard or entering a non-NULL branch.
+  # Fixtures: semgrep-tests/malloc-no-null-check.c
   - id: malloc-no-null-check
     patterns:
       - pattern-either:

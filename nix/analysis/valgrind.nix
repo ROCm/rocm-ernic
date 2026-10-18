@@ -3,7 +3,10 @@
 # Memory-leak / memory-error detection with valgrind memcheck. A normal
 # (uninstrumented) Debug build of the server is run under valgrind on the
 # loopback backend, exercised with the PCI-config test client, then shut
-# down cleanly (SIGTERM) so memcheck emits its full leak summary.
+# down cleanly (SIGTERM) so memcheck emits its full leak summary. The
+# build never fails on a memcheck error, but it does fail when the exercise
+# itself was incomplete (see run-loopback.nix), since the leak summary is
+# then taken at an error exit.
 #
 # valgrind complements the sanitizers: it needs no ptrace for leak
 # detection (works where LSan may not) and catches uninitialised-value and
