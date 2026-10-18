@@ -44,7 +44,8 @@ jobs:
       # new scripts are picked up without editing this file. *.sh.in
       # templates match neither rule and are added explicitly.
       #
-      # Every check is on. The ShellCheck version is pinned because new
+      # No default check is excluded; the optional ones that --enable turns
+      # on stay off. The ShellCheck version is pinned because new
       # releases add and split checks: 0.11.0 moved "function only invoked
       # via trap" out of SC2317 into the new SC2329.
       - name: Run ShellCheck

@@ -36,6 +36,7 @@ or a heredoc with no end).
 from __future__ import annotations
 
 import argparse
+import bisect
 import dataclasses
 import json
 import os
@@ -399,7 +400,13 @@ def from_ansible() -> list[Snippet]:
 # Heredocs
 # --------------------------------------------------------------------------
 
-HEREDOC = re.compile(r"(?<![<\d])<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+# The word after <<: anything but blanks and operators, with quoted parts.
+HEREDOC_WORD = re.compile(
+    r"""(-?)[ \t]*((?:[^\s;&|<>()'"\\]|'[^'\n]*'|"[^"\n]*"|\\.)+)"""
+)
+
+# A # after one of these, or at the start of the text, starts a comment.
+WORD_BREAKS = " \t\n;&|()"
 
 # ssh options that take an argument (ssh(1)).
 SSH_OPTS_WITH_ARG = set("BbcDEeFIiJLlmOoPpQRSWw")
@@ -505,42 +512,139 @@ def command_before(lines: list[str], line: int, column: int) -> str:
     return command
 
 
-def find_heredocs(text: str) -> list[Heredoc]:
-    """The heredocs in a piece of shell, not counting nested ones."""
-    found = []
-    lines = text.split("\n")
-    i = 0
-    while i < len(lines):
-        start = i
-        matches = (
-            [] if lines[i].lstrip().startswith("#") else HEREDOC.finditer(lines[i])
-        )
-        for match in matches:
-            dash, quote, delim = match.groups()
-            end = i + 1
+class HeredocScanner:
+    """Finds heredocs the way the shell does.
+
+    A << is a heredoc only outside quotes, comments and arithmetic, so
+    ``'<<EOF'``, ``# <<EOF`` and ``$((1 << n))`` aren't. Its body starts on
+    the line after the operator, and a line can have more than one.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.lines = text.split("\n")
+        self.starts = [0]
+        for line in self.lines[:-1]:
+            self.starts.append(self.starts[-1] + len(line) + 1)
+        self.pos = 0
+        self.pending: list[tuple[int, str, bool, str]] = []
+        self.found: list[Heredoc] = []
+
+    def scan(self) -> list[Heredoc]:
+        """Return the heredocs in the text, not counting nested ones."""
+        text = self.text
+        while self.pos < len(text):
+            if self.skip_literal():
+                continue
+            ch = text[self.pos]
+            if ch == "\\":
+                self.pos += 2
+            elif ch == "#" and self.at_word_start():
+                end = text.find("\n", self.pos)
+                self.pos = len(text) if end < 0 else end
+            elif text.startswith("<<<", self.pos):
+                self.pos += 3
+            elif text.startswith("<<", self.pos):
+                self.operator()
+            elif ch == "\n":
+                self.pos += 1
+                self.read_bodies()
+            else:
+                self.pos += 1
+        if self.pending:
+            line = self.line_of(self.pending[0][0])
+            raise CheckError(
+                f"no end to the heredoc <<{self.pending[0][1]} on line {line + 1}"
+            )
+        return self.found
+
+    def skip_literal(self) -> bool:
+        """Move past a quoted string or arithmetic at pos, if one starts there."""
+        text, pos = self.text, self.pos
+        if text[pos] == "'":
+            self.skip_quoted("'", pos + 1, escapes=False)
+        elif text.startswith("$'", pos):
+            self.skip_quoted("'", pos + 2, escapes=True)
+        elif text[pos] == '"':
+            self.skip_quoted('"', pos + 1, escapes=True)
+        elif text.startswith("$((", pos):
+            self.skip_arithmetic(pos + 3)
+        elif text.startswith("((", pos) and self.at_word_start():
+            self.skip_arithmetic(pos + 2)
+        else:
+            return False
+        return True
+
+    def at_word_start(self) -> bool:
+        """Whether the character at pos starts a word."""
+        return self.pos == 0 or self.text[self.pos - 1] in WORD_BREAKS
+
+    def line_of(self, pos: int) -> int:
+        """The 0-based line that pos is on."""
+        return bisect.bisect_right(self.starts, pos) - 1
+
+    def skip_quoted(self, quote: str, pos: int, escapes: bool) -> None:
+        """Move past a quoted string whose text starts at pos."""
+        while pos < len(self.text) and self.text[pos] != quote:
+            pos += 2 if escapes and self.text[pos] == "\\" else 1
+        self.pos = pos + 1
+
+    def skip_arithmetic(self, pos: int) -> None:
+        """Move past $(( )) or (( )), whose text starts at pos."""
+        depth = 2
+        while pos < len(self.text) and depth:
+            depth += {"(": 1, ")": -1}.get(self.text[pos], 0)
+            pos += 1
+        self.pos = pos
+
+    def operator(self) -> None:
+        """Note the heredoc whose << is at pos; its body comes later."""
+        match = HEREDOC_WORD.match(self.text, self.pos + 2)
+        if not match:
+            self.pos += 2
+            return
+        dash, word = match.groups()
+        delim = re.sub(r"\\(.)|['\"]", r"\1", word)
+        self.pending.append((self.pos, delim, any(c in word for c in "'\"\\"), dash))
+        self.pos = match.end()
+
+    def read_bodies(self) -> None:
+        """Read the bodies of the heredocs on the line that just ended."""
+        line = self.line_of(self.pos)
+        for op_pos, delim, quoted, dash in self.pending:
+            end = line
             while (
-                end < len(lines)
-                and (lines[end].lstrip("\t") if dash else lines[end]) != delim
+                end < len(self.lines)
+                and (self.lines[end].lstrip("\t") if dash else self.lines[end]) != delim
             ):
                 end += 1
-            if end == len(lines):
-                raise CheckError(f"no end to the heredoc <<{delim} on line {start + 1}")
-            body = lines[i + 1 : end]
-            found.append(
+            if end == len(self.lines):
+                raise CheckError(
+                    f"no end to the heredoc <<{delim} "
+                    f"on line {self.line_of(op_pos) + 1}"
+                )
+            op_line = self.line_of(op_pos)
+            column = op_pos - self.starts[op_line]
+            body = self.lines[line:end]
+            self.found.append(
                 Heredoc(
-                    start,
-                    match.start(),
+                    op_line,
+                    column,
                     delim,
-                    bool(quote),
-                    command_before(lines, start, match.start()),
-                    i + 1,
+                    quoted,
+                    command_before(self.lines, op_line, column),
+                    line,
                     "\n".join(b.lstrip("\t") if dash else b for b in body) + "\n",
                 )
             )
-            # A second heredoc on the same line starts after this one.
-            i = end
-        i += 1
-    return found
+            line = end + 1
+        self.pending = []
+        self.pos = self.starts[line] if line < len(self.lines) else len(self.text)
+
+
+def find_heredocs(text: str) -> list[Heredoc]:
+    """The heredocs in a piece of shell, not counting nested ones."""
+    return HeredocScanner(text).scan()
 
 
 def offset_locator(parent: Locator, offset: int) -> Locator:

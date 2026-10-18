@@ -423,8 +423,9 @@ bash scripts must be shellcheck-clean.
   `fetch-ionic-sources.sh`, and the Ansible collection's `files/`) keeps
   `#!/bin/bash`, so it doesn't depend on `PATH`.
 - **ShellCheck 0.11.0** over every `*.sh`, `*.sh.in`, and extension-less
-  executable with a shell shebang, outside `third-party/`, with every check
-  on:
+  executable with a shell shebang, outside `third-party/`, with every
+  default check on. The optional checks (`shellcheck --list-optional`)
+  stay off.
 
   ```bash
   git ls-files -- ':!:third-party/' | while IFS= read -r f; do
@@ -444,8 +445,8 @@ bash scripts must be shellcheck-clean.
   ShellCheck 0.11 then reports it as never invoked (SC2329).
 - **[actionlint](https://github.com/rhysd/actionlint)** over the
   workflows (`pip install actionlint-py`). It also runs ShellCheck on each
-  `run:` block, with every check on, so the shell there must be as clean
-  as in a script:
+  `run:` block, with every default check on, so the shell there must be as
+  clean as in a script:
 
   ```bash
   actionlint
@@ -463,8 +464,8 @@ bash scripts must be shellcheck-clean.
   tools/check-embedded-shell.py
   ```
 
-  It runs ShellCheck, with every check on except the few that can't apply
-  to an extracted snippet (listed in the script), on:
+  It runs ShellCheck, with every default check on except the few that
+  can't apply to an extracted snippet (listed in the script), on:
   - the Ansible collection's `shell:` and `raw:` tasks, as `sh` unless
     the task sets `executable`;
   - the composite actions' `run:` steps;
