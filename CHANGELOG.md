@@ -187,6 +187,12 @@
   flow hash of the IPv4 or IPv6 5-tuple (VLAN and QinQ aware); before, only
   Rx queue 0 received. The `compat` profile still offers 4 queues and 32
   vectors.
+* `--inject 'SITE: PATTERN effect EFFECT [status S]'` (repeatable) injects
+  faults into the emulated ionic NIC, with tc netem's grammar and the
+  deterministic patterns `every N`, `after N [count M]`, `burst N every M`
+  and `sequence "..."`. The first site is `stats_vals`, which makes the
+  guest's `hw_counters` reads fail on demand (`effect fail`). A malformed
+  fault stops the server at startup with an error naming the bad token.
 
 ### Changed
 
@@ -838,6 +844,10 @@
   a sign in it, such as `bytes=--64`, which was read as a huge suffix and
   returned the whole object, is now answered with `416`, as other malformed
   ranges are. `partNumber` is read as decimal; `0x10` used to be part 16.
+* An ionic admin command that fails now carries its status code as the whole
+  `status_length` of the completion, as the driver reads it, so the guest's
+  log shows `opcode 5 error 3` instead of `error 50331648`. Each statistics
+  error has its own status code. The errno the guest sees doesn't change.
 
 ### Limitations
 
