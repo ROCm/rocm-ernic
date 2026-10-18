@@ -247,8 +247,7 @@ as above:
    opts+=" --log-file=$logs/%p.log"
    export ERNIC_TEST_SERVER_WRAPPER="valgrind $opts"
    ctest --test-dir build --output-on-failure -R "^($srv)$"
-   valgrind --trace-children=yes $opts \
-     build/tests/test_server_lifecycle build/rocm-ernic
+   valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
    grep -L 'ERROR SUMMARY: 0 errors' "$logs"/*.log
 
 The last command lists the logs with a report.

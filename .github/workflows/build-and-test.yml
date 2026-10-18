@@ -362,7 +362,7 @@ jobs:
             -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$' \
             || status=$?
           "${valgrind}" --trace-children=yes "${opts[@]}" \
-            build/tests/test_server_lifecycle build/rocm-ernic || status=$?
+            build/tests/test_server_lifecycle || status=$?
           SERVER_BIN=build/rocm-ernic \
           TEST_BIN=build/tests/test_data_transfer \
           tests/test_loopback_ci.sh || status=$?

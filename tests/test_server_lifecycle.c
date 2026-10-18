@@ -16,7 +16,10 @@
  *     rather than waiting out a blocking accept() or the health-check
  *     interval.
  *
- * Usage: test_server_lifecycle <server binary>
+ * Usage: test_server_lifecycle
+ *
+ * The server it runs is the one built with it, whose path the build compiles
+ * in as ERNIC_SERVER_PATH.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -427,7 +430,11 @@ static const struct lifecycle_case cases[] = {
      .want_shutdown = 1},
 };
 
-static const char *g_server;
+#ifndef ERNIC_SERVER_PATH
+#error "ERNIC_SERVER_PATH must be the path of the server binary"
+#endif
+
+static const char *const g_server = ERNIC_SERVER_PATH;
 
 /*
  * The scratch directory.  It's always under /tmp, not $TMPDIR: the server's
@@ -689,11 +696,10 @@ int main(int argc, char **argv)
 {
     int failures = 0;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <server binary>\n", argv[0]);
+    if (argc != 1) {
+        fprintf(stderr, "usage: %s\n", argv[0]);
         return 2;
     }
-    g_server = argv[1];
     if (access(g_server, X_OK) != 0) {
         printf("SKIP: server not found: %s\n", g_server);
         return 77;
