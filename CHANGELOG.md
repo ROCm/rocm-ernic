@@ -121,6 +121,12 @@
   ping-pong both ways. Neither needs root, a TAP or RDMA hardware.
   `ernic-run` gains `--mac`. The Nix Check workflow builds the new
   `pair-launchers` check. Documented in `nix/README.md`.
+* `ernic-run` passes `--tap`, `--nic-profile`, `--inject`,
+  `--stats-interval-ms` and `--eth-queues` through to the server, as it
+  already did `--backend`, `--mac`, `--stats-file` and `--log-file`.
+  `--nic-profile` and `--inject` may repeat, and keep their order. A server
+  built without one of these options rejects it at startup, and the command
+  isn't run.
 
 ### Changed
 
