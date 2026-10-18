@@ -96,7 +96,6 @@ test_config() {
     local socket_ready=0
     for _ in {1..10}; do
         if [ -S "$socket_path" ]; then
-            chmod 666 "$socket_path" 2>/dev/null || true
             socket_ready=1
             break
         fi

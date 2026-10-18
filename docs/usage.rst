@@ -34,6 +34,17 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0
 
+The server makes the socket mode ``0660``, so only its own
+user and group, and root, can connect. Whoever connects drives
+the device as the guest's QEMU. Run QEMU as the same user as
+the server, or to let it run as another user, change the
+socket's group to one that user belongs to once the server has
+started:
+
+.. code-block:: bash
+
+   sudo chgrp kvm /tmp/vfio-user-rocm-ernic.sock
+
 The Emulated Device
 -------------------
 

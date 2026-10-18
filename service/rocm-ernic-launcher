@@ -258,7 +258,6 @@ start_instance() {
         return 1
     fi
 
-    chmod 666 "${sock}" 2>/dev/null || true
     manifest_add_instance \
         "${id}" "${role}" "${pid}" "${mac}" "${sock}" "${gids}"
     log_info "Started instance ${id}" \

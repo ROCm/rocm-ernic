@@ -1302,17 +1302,20 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "vfu_realize_ctx() failed");
     }
 
-    /* Set socket permissions to allow non-root QEMU to connect */
-    if (chmod(socket_path, 0666) < 0) {
+    /* Connecting to a UNIX socket needs write permission on it, and whoever
+     * connects drives the device as the guest's QEMU, so limit it to the
+     * owner and group whatever the umask. A QEMU running as another user can
+     * be let in by changing the socket's group to one it belongs to. */
+    if (chmod(socket_path, 0660) < 0) {
         fprintf(stderr,
                 "rocm-ernic: WARNING: Failed to set socket permissions: %s\n",
                 strerror(errno));
         fprintf(stderr,
-                "rocm-ernic: You may need to manually run: sudo chmod 666 %s\n",
+                "rocm-ernic: You may need to manually run: chmod 660 %s\n",
                 socket_path);
     } else {
-        ernic_startup_report("rocm-ernic: ✓ Socket permissions set to 0666 "
-                             "(rw-rw-rw-) for %s",
+        ernic_startup_report("rocm-ernic: ✓ Socket permissions set to 0660 "
+                             "(rw-rw----) for %s",
                              socket_path);
     }
 

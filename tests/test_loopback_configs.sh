@@ -97,9 +97,6 @@ for config in "${CONFIGS[@]}"; do
         continue
     fi
 
-    # Make socket accessible
-    chmod 666 "$SOCKET_PATH" 2>/dev/null || true
-
     echo "✓ Server started (PID: $SERVER_PID)"
 
     # Wait a bit for server to fully initialize
