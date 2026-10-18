@@ -325,7 +325,7 @@ jobs:
           ctest --test-dir build -T memcheck --output-on-failure --no-tests=error -j"$(nproc)" \
             --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
             --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|cmake-subproject|ernic-vfu-client|ernic-ionic-driver|ernic-mesh-stress)$' \
+            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|cmake-subproject|ernic-vfu-client|ernic-ionic-driver|ernic-mesh-stress)$' \
             || status=$?
           shopt -s nullglob
           for log in build/Testing/Temporary/MemoryChecker.*.log; do
@@ -363,7 +363,7 @@ jobs:
           export ERNIC_TEST_SERVER_WRAPPER
           status=0
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver)$' \
+            -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ionic-stats-interval-cli)$' \
             || status=$?
           "${valgrind}" --trace-children=yes "${opts[@]}" \
             build/tests/test_server_lifecycle || status=$?
