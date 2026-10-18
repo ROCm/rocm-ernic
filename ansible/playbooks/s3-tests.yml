@@ -165,9 +165,9 @@
       ansible.builtin.shell:
         executable: /bin/bash
         chdir: "{{ ernic_s3_dir }}"
-        cmd: >-
-          cc -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c
-          $(pkg-config --libs libibverbs)
+        cmd: |
+          read -ra ibverbs <<< "$(pkg-config --libs libibverbs)"
+          cc -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c "${ibverbs[@]}"
       register: ernic_s3_build
       changed_when: true
 

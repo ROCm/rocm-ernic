@@ -24,6 +24,7 @@
 - name: Read the base SHA recorded in the series README
   ansible.builtin.shell: |
     set -o pipefail
+    # shellcheck disable=SC2016  # the backticks are literal Markdown
     sed -n 's/^## The base: `\([0-9a-f]\{40\}\)`.*/\1/p' \
       "{{ ernic_srq_provider_readme }}" | head -1
   args:

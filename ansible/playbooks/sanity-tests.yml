@@ -389,10 +389,14 @@
     - name: "UD mesh test: build the test in both guests"
       ansible.builtin.shell:
         executable: /bin/bash
-        cmd: >-
-          {{ item }} 'cd /tmp/ud-mesh &&
-          gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o test_ud_mesh test_ud_mesh.c
-          $(pkg-config --cflags --libs libibverbs)'
+        cmd: |
+          {{ item }} 'bash -s' <<'EOF'
+          set -e
+          cd /tmp/ud-mesh
+          read -ra ibverbs <<< "$(pkg-config --cflags --libs libibverbs)"
+          gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o test_ud_mesh test_ud_mesh.c \
+            "${ibverbs[@]}"
+          EOF
       loop:
         - "{{ vm1_ssh }}"
         - "{{ vm2_ssh }}"
