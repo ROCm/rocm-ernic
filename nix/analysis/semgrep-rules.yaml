@@ -55,7 +55,10 @@ rules:
     languages: [c, cpp]
     severity: WARNING
   # A use (*p, p->f, p[i]) that follows p = malloc(...) without first
-  # passing a NULL-return guard or entering a non-NULL branch.
+  # passing a NULL guard or entering a non-NULL branch. A guard is
+  # `if (!p)` or `if (p == NULL)` whose body, braced or not, ends in
+  # return, goto, exit() or abort(). A check that falls through doesn't
+  # count.
   # Fixtures: semgrep-tests/malloc-no-null-check.c
   - id: malloc-no-null-check
     patterns:
@@ -70,12 +73,60 @@ rules:
           if ($PTR) { ... }
       - pattern-not-inside: |
           if ($PTR != NULL) { ... }
-      - pattern-not-inside: |
-          if (!$PTR) { return ...; }
-          ...
-      - pattern-not-inside: |
-          if ($PTR == NULL) { return ...; }
-          ...
+      # Each guard is spelled out unbraced and braced, since `{ ... X; }`
+      # doesn't match an unbraced body. Matching the condition with a
+      # metavariable-pattern instead would be shorter, but its $PTR isn't
+      # tied to the malloc's, so a guard on any pointer would count.
+      - pattern-not-inside:
+          pattern-either:
+            - pattern: |
+                if (!$PTR) return ...;
+                ...
+            - pattern: |
+                if (!$PTR) { ... return ...; }
+                ...
+            - pattern: |
+                if ($PTR == NULL) return ...;
+                ...
+            - pattern: |
+                if ($PTR == NULL) { ... return ...; }
+                ...
+            - pattern: |
+                if (!$PTR) goto $LABEL;
+                ...
+            - pattern: |
+                if (!$PTR) { ... goto $LABEL; }
+                ...
+            - pattern: |
+                if ($PTR == NULL) goto $LABEL;
+                ...
+            - pattern: |
+                if ($PTR == NULL) { ... goto $LABEL; }
+                ...
+            - pattern: |
+                if (!$PTR) exit(...);
+                ...
+            - pattern: |
+                if (!$PTR) { ... exit(...); }
+                ...
+            - pattern: |
+                if ($PTR == NULL) exit(...);
+                ...
+            - pattern: |
+                if ($PTR == NULL) { ... exit(...); }
+                ...
+            - pattern: |
+                if (!$PTR) abort();
+                ...
+            - pattern: |
+                if (!$PTR) { ... abort(); }
+                ...
+            - pattern: |
+                if ($PTR == NULL) abort();
+                ...
+            - pattern: |
+                if ($PTR == NULL) { ... abort(); }
+                ...
       # sizeof(*p) in the malloc call itself is not a use.
       - pattern-not-inside: sizeof(...)
       - pattern-either:

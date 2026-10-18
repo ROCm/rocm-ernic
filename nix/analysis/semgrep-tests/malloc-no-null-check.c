@@ -9,6 +9,8 @@
  * Run by nix/analysis/semgrep.nix as `semgrep --test`: a `ruleid:` comment
  * says the next line must be reported, an `ok:` comment says it must not.
  * Each case is labelled with its category and the outcome it expects.
+ * semgrep --test checks every rule against this file, so the gotos in the
+ * goto guards carry goto-usage annotations too.
  */
 
 #include <stdlib.h>
@@ -16,6 +18,8 @@
 struct item {
     int field;
 };
+
+void report_oom(void);
 
 /* positive: assigned, then dereferenced with no check -> reported */
 void assign_then_deref(void)
@@ -61,6 +65,118 @@ int guarded_by_null_compare(void)
     *p = 2;
     free(p);
     return 0;
+}
+
+/* negative: a guard that logs, then returns -> not reported */
+int guarded_by_block(void)
+{
+    struct item *it = malloc(sizeof(*it));
+
+    if (it == NULL) {
+        report_oom();
+        return -1;
+    }
+    // ok: malloc-no-null-check
+    it->field = 3;
+    free(it);
+    return 0;
+}
+
+/* negative: a guard with a bare return -> not reported */
+void guarded_by_bare_return(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (!p)
+        return;
+    // ok: malloc-no-null-check
+    *p = 4;
+    free(p);
+}
+
+/* negative: a guard that jumps to a cleanup label -> not reported */
+int guarded_by_goto(void)
+{
+    int *p = malloc(sizeof(*p));
+    int ret = -1;
+
+    if (!p)
+        // ruleid: goto-usage
+        goto out;
+    // ok: malloc-no-null-check
+    *p = 5;
+    ret = 0;
+    free(p);
+out:
+    return ret;
+}
+
+/* negative: a braced p == NULL guard that logs, then jumps -> not reported */
+int guarded_by_block_goto(void)
+{
+    int *p = malloc(sizeof(*p));
+    int ret = -1;
+
+    if (p == NULL) {
+        report_oom();
+        // ruleid: goto-usage
+        goto out;
+    }
+    // ok: malloc-no-null-check
+    p[0] = 6;
+    ret = 0;
+    free(p);
+out:
+    return ret;
+}
+
+/* negative: a guard that ends the process -> not reported */
+void guarded_by_exit(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (!p)
+        exit(EXIT_FAILURE);
+    // ok: malloc-no-null-check
+    *p = 7;
+    free(p);
+}
+
+/* negative: a guard that aborts -> not reported */
+void guarded_by_abort(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p == NULL)
+        abort();
+    // ok: malloc-no-null-check
+    *p = 8;
+    free(p);
+}
+
+/* corner: a NULL check that only logs and falls through -> reported */
+void logged_but_not_guarded(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (!p) {
+        report_oom();
+    }
+    // ruleid: malloc-no-null-check
+    *p = 9;
+    free(p);
+}
+
+/* corner: the guard tests a different pointer -> reported */
+void guard_on_other_pointer(const int *q)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (!q)
+        return;
+    // ruleid: malloc-no-null-check
+    *p = 10;
+    free(p);
 }
 
 /* boundary: the use comes one line before the check -> reported */

@@ -77,16 +77,18 @@ fi
 server_rc=0
 wait "$spid" 2>/dev/null || server_rc=$?
 
+# A failed attach comes first: the server exits with an error on it, and the
+# client then fails too, so either status alone would hide the cause.
 if [ "$ready" != 1 ]; then
   outcome='incomplete (the server socket never appeared)'
+elif grep -q 'vfu_attach_ctx() failed' "$OUT_LOG"; then
+  outcome='incomplete (the server exited on a failed client attach)'
 elif [ "$client_rc" != 0 ]; then
   outcome="incomplete (client failed with status $client_rc)"
 elif [ "$shutdown_rc" != 0 ]; then
   outcome='incomplete (server shutdown timed out)'
 elif [ "$server_rc" != 0 ]; then
   outcome="incomplete (server failed with status $server_rc)"
-elif grep -q 'vfu_attach_ctx() failed' "$OUT_LOG"; then
-  outcome='incomplete (the server exited on a failed client attach)'
 elif ! grep -q 'Shutdown complete' "$OUT_LOG"; then
   outcome='incomplete (the server never logged a clean shutdown)'
 else

@@ -109,7 +109,9 @@ server down cleanly so leak checkers report at exit. The first line of
 `exercise: incomplete (<reason>)` if the socket never appeared, the client
 failed, or the server didn't shut down cleanly. An incomplete exercise
 fails the build, since the leak checkers never saw a clean exit; sanitizer
-and valgrind findings don't.
+and valgrind findings don't. Neither does an incomplete exercise that
+reported a sanitizer finding: the first ASan or UBSan error stops the
+server, so such a run can't finish, but its report is real.
 
 `nix build .#checks.x86_64-linux.analysis-runners` tests the exercise
 driver against a fake server and client that fail in each of those ways,

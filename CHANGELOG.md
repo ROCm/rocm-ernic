@@ -490,7 +490,8 @@
   `exercise: incomplete (<reason>)`, and an incomplete exercise fails the
   build: a server socket that never appeared, a client that failed or timed
   out, or a server that didn't shut down cleanly. Sanitizer and valgrind
-  findings still don't fail it.
+  findings still don't fail it, including a sanitizer finding that stopped
+  the server before the exercise finished.
 * The `malloc-no-null-check` and `goto-usage` rules of the Nix
   `analysis-semgrep` target never parsed, so semgrep skipped them on every
   run. Both run now, so every `goto` is reported, at `INFO`.

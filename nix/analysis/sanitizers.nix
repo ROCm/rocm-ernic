@@ -8,8 +8,9 @@
 #
 # The build never fails on a violation — it captures whatever the
 # sanitizer runtime reports and records a count. It does fail when the
-# exercise itself was incomplete (see run-loopback.nix): then the
-# sanitizers never saw a clean exit, and an empty report proves nothing.
+# exercise itself was incomplete (see run-loopback.nix) and nothing was
+# reported: then the sanitizers never saw a clean exit, and an empty
+# report proves nothing.
 #
 # Note on LSan: the leak check runs via ptrace at process exit. Some
 # sandboxes restrict ptrace; if so, LSan prints a fatal error instead of a
@@ -85,6 +86,11 @@ let
           echo ""
           if [ "$violations" -gt 0 ]; then
             echo "Result: $violations sanitizer report line(s) — see report.txt."
+            if [ "$exercise" != "exercise: clean" ]; then
+              echo "The exercise didn't finish, so the checks that would have"
+              echo "run after the server stopped, including the leak check, may"
+              echo "not have run."
+            fi
           else
             echo "Result: no sanitizer violations detected."
           fi
@@ -92,8 +98,12 @@ let
         cat $out/summary.txt
 
         # A run that never reached the clean shutdown never ran the leak
-        # check, so "no violations" would be a false all-clear.
-        if [ "$exercise" != "exercise: clean" ]; then
+        # check, so "no violations" would be a false all-clear. A run with
+        # violations did find something, though, and it often can't finish:
+        # the sanitizers are built with -fno-sanitize-recover=all, so the
+        # first ASan or UBSan error ends the server. That run doesn't fail
+        # the build, like any other violation.
+        if [ "$exercise" != "exercise: clean" ] && [ "$violations" -eq 0 ]; then
           echo "${name}: $exercise; the report above is not a real check" >&2
           exit 1
         fi

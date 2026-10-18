@@ -29,7 +29,9 @@ HERE = Path(__file__).resolve().parent
 #   ok         binds the socket and logs "Shutdown complete" on SIGTERM
 #   early      exits with status 9 before binding the socket
 #   no-socket  never binds the socket
-#   attach     logs the failed client attach message the driver looks for
+#   attach     waits for the client to connect, then logs the failed client
+#              attach message and exits with status 1, as the real server's
+#              err() call does
 #   hang       ignores SIGTERM
 #   bad-exit   logs "Shutdown complete" but exits with status 9
 #   no-marker  exits on SIGTERM without logging "Shutdown complete"
@@ -56,18 +58,28 @@ sock = socket.socket(socket.AF_UNIX)
 if mode != "no-socket":
     sock.bind(sys.argv[sys.argv.index("--socket") + 1])
 if mode == "attach":
+    sock.listen()
+    sock.accept()
     print("vfu_attach_ctx() failed", flush=True)
+    sys.exit(1)
 while True:
     time.sleep(0.01)
 """
 
-# Stands in for the client. CLIENT_MODE is ok (exits with status 0), fail
-# (exits with status 7), or hang (outlives the driver's client timeout).
+# Stands in for the client. It connects to the socket if the server is
+# listening, which only the attach server does. CLIENT_MODE is ok (exits
+# with status 0), fail (exits with status 7), or hang (outlives the
+# driver's client timeout).
 FAKE_CLIENT = """\
 import os
+import socket
 import sys
 import time
 
+try:
+    socket.socket(socket.AF_UNIX).connect(sys.argv[sys.argv.index("--socket") + 1])
+except OSError:
+    pass
 if os.environ["CLIENT_MODE"] == "hang":
     time.sleep(60)
 sys.exit(7 if os.environ["CLIENT_MODE"] == "fail" else 0)
@@ -158,6 +170,13 @@ class RunnerTests(unittest.TestCase):
                 "never logged a clean shutdown",
             ),
             ("negative", "failed attach", "ok", "attach", "failed client attach"),
+            (
+                "corner",
+                "failed attach and failed client",
+                "fail",
+                "attach",
+                "failed client attach",
+            ),
         ]
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
