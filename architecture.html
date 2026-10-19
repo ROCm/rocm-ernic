@@ -1238,9 +1238,9 @@ across it.</p>
 <li><p>The manager is node 0. Workers connect to it, register, and
 get node ids 1, 2, and so on, in the order they arrive.</p></li>
 <li><p>The manager broadcasts the topology; workers connect directly
-to each other (the lower id connects to the higher). A message
-for a node with no direct connection is relayed by the
-manager.</p></li>
+to each other (the lower id connects to the higher), and
+connect again if the connection drops. A message for a node
+with no direct connection is relayed by the manager.</p></li>
 <li><p>The manager sends heartbeats, notices dead nodes, and
 reconnects them.</p></li>
 <li><p>The protocol carries a magic number and a version, checked at
@@ -1532,7 +1532,8 @@ access, every interrupt</p></td>
 </tr>
 <tr class="row-even"><td><p>peer connect</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> worker</p></td>
-<td><p>Connects to peers as the topology changes</p></td>
+<td><p>Connects to peers as the topology changes, and closes dead
+connections</p></td>
 </tr>
 </tbody>
 </table>
