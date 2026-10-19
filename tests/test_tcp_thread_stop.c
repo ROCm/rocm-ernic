@@ -3569,13 +3569,16 @@ static int run_tp_case(const struct tp_case *c)
  * threads it did start.
  *
  * Each row runs tcp_init() as a worker on a thread of its own, against a
- * manager the test plays over loopback.
+ * manager the test plays over loopback.  The worker's id is above HS_NODE,
+ * which the peers that connect to it claim, so each has the lower id, as the
+ * protocol requires.  The peer-connect thread closes a connection from a
+ * higher id that no update names, on a pass that can come at any time.
  */
 
-#define WR_ID       4 /* the id the manager assigns */
-#define WR_OTHER_ID 9 /* the id a second answer, or a peer's, names */
-#define WR_LOWER    2 /* a node with a lower id, which the worker leaves be */
-#define WR_HIGHER   6 /* one with a higher id, which the worker connects to */
+#define WR_ID       8  /* the id the manager assigns */
+#define WR_OTHER_ID 9  /* the id a second answer, or a peer's, names */
+#define WR_LOWER    2  /* a node with a lower id, which the worker leaves be */
+#define WR_HIGHER   10 /* one with a higher id, which the worker connects to */
 
 enum wr_scenario {
     WR_ASSIGNED,       /* the manager assigns WR_ID */

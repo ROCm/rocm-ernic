@@ -200,6 +200,23 @@ started with `qemu_thread_create()`.
   by reasoning about the guest driver, not by a clean TSan run.
 - **A flaky test is a suspected race until shown otherwise.** Don't retry
   it, lengthen its timeout, or add a sleep to make it pass; find the race.
+- **A test must not race the threads it tests.** A background thread that
+  acts at a time the test can't observe, such as a first pass as soon as
+  it starts or a periodic sweep, can act on state the test has set up,
+  and the test then fails only on a slow runner. Before changing state
+  such a thread manages, stop it, set the state up before starting it,
+  or wait for something the thread exposes, such as a counter. Set up only
+  states the code can really reach: the code may rightly undo one it
+  can't, such as a mesh peer connecting to a node with a lower id, which
+  the protocol forbids.
+- **Loop a new threaded test in a way that moves the timing.** Repeated
+  runs on an idle machine tend to schedule the threads the same way each
+  time, and miss a window that a slow CI runner hits. Run the new rows
+  hundreds of times in one process, pinned to one CPU with
+  `taskset -c 0`, which interleaves the threads very differently: a race
+  that failed 13 times in 300 such runs unpinned failed 168 times pinned.
+  To confirm a suspected window, delay a thread at that point in a
+  scratch copy of the source and check that the test fails.
 
 ## Security
 
