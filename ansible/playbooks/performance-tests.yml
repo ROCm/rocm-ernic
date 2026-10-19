@@ -75,9 +75,10 @@
       -p {{ ernic_vm_ssh_base_port | int + 1 }}
       {{ ernic_vm_ssh_user }}@localhost
 
-    # vm1_ssh and vm2_ssh, but run again if ssh fails before the
-    # command starts; see run-on-guest.sh.  Use these for every
-    # command that doesn't read stdin, which they don't pass on.
+    # vm1_ssh and vm2_ssh, but try again if ssh fails before the
+    # command starts, and never start it twice; see run-on-guest.sh.
+    # Use these for every command that doesn't read stdin, which they
+    # don't pass on.
     run_on_guest: >-
       {{ ernic_project_root }}/ansible/playbooks/files/run-on-guest.sh
     vm1_run: "{{ run_on_guest }} {{ vm1_ssh }}"
@@ -634,12 +635,17 @@
         fail_msg: >-
           Pingpong tests had failures. Aborting.
 
-    # The last command on the guests.  A play stopped before here
-    # leaves its connections to close themselves after ControlPersist.
+    # The last commands on the guests.  .cache/run-on-guest is
+    # GUEST_DIR in run-on-guest.sh, which leaves a directory there for
+    # each command it ran.  A play stopped before here leaves them, a
+    # few hundred empty directories, and leaves its connections to
+    # close themselves after ControlPersist.
     - name: Close the ssh connections to the guests
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: |
+          {{ vm1_ssh }} 'rm -rf .cache/run-on-guest'
+          {{ vm2_ssh }} 'rm -rf .cache/run-on-guest'
           {{ vm1_ssh }} -O exit 2>/dev/null
           {{ vm2_ssh }} -O exit 2>/dev/null
           true
