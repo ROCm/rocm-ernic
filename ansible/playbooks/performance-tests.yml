@@ -32,29 +32,56 @@
     - ../group_vars/all.yml
 
   vars:
+    # The sweep runs some 300 commands on the guests, and a new
+    # connection for each was a few hundred chances for ssh to fail
+    # to connect, which has failed a nightly run on a point that
+    # never reached the device.  ControlMaster shares one connection
+    # to each guest, made by the first command, among all of them.
+    # ControlPersist closes a connection left idle for a minute, so
+    # one left behind by a play that stopped early doesn't outlive it
+    # by much; the play closes them itself at the end.
+    ssh_mux_opts: >-
+      -o ControlMaster=auto
+      -o ControlPath={{ ssh_mux_dir.path }}/%C
+      -o ControlPersist=60
+
     # BatchMode and the keepalives are not optional: without them
     # a bare ssh to a healthy guest can block indefinitely, and one
-    # did -- a 25-minute hang on a two-second command.
+    # did -- a 25-minute hang on a two-second command.  LogLevel=ERROR
+    # drops the warning that each connection adds the guest's host
+    # key to UserKnownHostsFile, and keeps the errors.
     vm1_ssh: >-
       ssh {{ ernic_guest_ssh_id_opts }}
       -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o LogLevel=ERROR
       -o BatchMode=yes
       -o ConnectTimeout=15
       -o ServerAliveInterval=10
       -o ServerAliveCountMax=3
+      {{ ssh_mux_opts }}
       -p {{ ernic_vm_ssh_base_port | int }}
       {{ ernic_vm_ssh_user }}@localhost
     vm2_ssh: >-
       ssh {{ ernic_guest_ssh_id_opts }}
       -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
+      -o LogLevel=ERROR
       -o BatchMode=yes
       -o ConnectTimeout=15
       -o ServerAliveInterval=10
       -o ServerAliveCountMax=3
+      {{ ssh_mux_opts }}
       -p {{ ernic_vm_ssh_base_port | int + 1 }}
       {{ ernic_vm_ssh_user }}@localhost
+
+    # vm1_ssh and vm2_ssh, but run again if ssh fails before the
+    # command starts; see run-on-guest.sh.  Use these for every
+    # command that doesn't read stdin, which they don't pass on.
+    run_on_guest: >-
+      {{ ernic_project_root }}/ansible/playbooks/files/run-on-guest.sh
+    vm1_run: "{{ run_on_guest }} {{ vm1_ssh }}"
+    vm2_run: "{{ run_on_guest }} {{ vm2_ssh }}"
     vm1_ip: "{{ ernic_nic_subnet }}.10"
     vm2_ip: "{{ ernic_nic_subnet }}.20"
 
@@ -116,6 +143,14 @@
     # ─────────────────────────────────────────────────
     # Setup
     # ─────────────────────────────────────────────────
+    # Holds the ControlPath sockets (see ssh_mux_opts).  Private to
+    # this run, since a socket there is a way into the guests.
+    - name: Create the directory for the ssh connection sockets
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ernic-ssh.
+      register: ssh_mux_dir
+
     - name: Copy free-perftest-port to VM1
       ansible.builtin.shell:
         executable: /bin/bash
@@ -139,14 +174,14 @@
     - name: Free perftest port on VM1
       ansible.builtin.command:
         cmd: >-
-          {{ vm1_ssh }} 'sudo /usr/local/bin/free-perftest-port'
+          {{ vm1_run }} 'sudo /usr/local/bin/free-perftest-port'
       changed_when: false
       failed_when: false
 
     - name: Free perftest port on VM2
       ansible.builtin.command:
         cmd: >-
-          {{ vm2_ssh }} 'sudo /usr/local/bin/free-perftest-port'
+          {{ vm2_run }} 'sudo /usr/local/bin/free-perftest-port'
       changed_when: false
       failed_when: false
 
@@ -221,6 +256,10 @@
         executable: /bin/bash
         cmd: |
           set -o pipefail
+          # The task exits 0 whatever happened, and Ansible shows only
+          # the stdout of a task that succeeds, so put ssh's errors and
+          # run-on-guest.sh's retries there too.
+          exec 2>&1
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
@@ -229,14 +268,14 @@
           UNIT="perftest-bw-$TOOL-$SZ"
 
           # Clean both VMs before starting server
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
+          {{ vm1_run }} '{{ kill_perftest }}'
+          {{ vm2_run }} '{{ kill_perftest }}'
           sleep 2
 
-          {{ vm1_ssh }} "
+          {{ vm1_run }} "
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
+            sudo systemd-run --quiet --unit=$UNIT \
               bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
                 --report_gbits \
                 >/tmp/${UNIT}.log 2>&1';
@@ -245,17 +284,24 @@
 
           sleep 3
 
-          RAW=$({{ vm2_ssh }} "
+          RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
               $TOOL -d $DEV -x 1 -s $SZ -n $N \
               --report_gbits $SERVER_IP 2>&1
           ")
           RC=$?
 
+          # What the client printed says why it failed.  The server's
+          # log is written when it exits, so it's empty if the server
+          # is still waiting for a client that never connected.
           if [ $RC -ne 0 ]; then
             echo "{{ item.0.label }},$SZ,FAIL,FAIL,FAIL" \
               >> "{{ bw_csv }}"
             echo "FAIL rc=$RC"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
+            echo "--- server log (VM1) ---"
+            {{ vm1_run }} "sudo tail -n 40 /tmp/${UNIT}.log"
             exit 0
           fi
 
@@ -264,6 +310,8 @@
             echo "{{ item.0.label }},$SZ,NODATA,NODATA,NODATA" \
               >> "{{ bw_csv }}"
             echo "NODATA"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
             exit 0
           fi
 
@@ -309,6 +357,7 @@
         executable: /bin/bash
         cmd: |
           set -o pipefail
+          exec 2>&1
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ item.1 }}"
@@ -317,14 +366,14 @@
           UNIT="perftest-lat-$TOOL-$SZ"
 
           # Clean both VMs before starting server
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
+          {{ vm1_run }} '{{ kill_perftest }}'
+          {{ vm2_run }} '{{ kill_perftest }}'
           sleep 2
 
-          {{ vm1_ssh }} "
+          {{ vm1_run }} "
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
+            sudo systemd-run --quiet --unit=$UNIT \
               bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
@@ -332,7 +381,7 @@
 
           sleep 3
 
-          RAW=$({{ vm2_ssh }} "
+          RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
               $TOOL -d $DEV -x 1 -s $SZ -n $N \
               $SERVER_IP 2>&1
@@ -343,6 +392,10 @@
             echo "{{ item.0.label }},$SZ,FAIL,FAIL,FAIL" \
               >> "{{ lat_csv }}"
             echo "FAIL rc=$RC"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
+            echo "--- server log (VM1) ---"
+            {{ vm1_run }} "sudo tail -n 40 /tmp/${UNIT}.log"
             exit 0
           fi
 
@@ -351,6 +404,8 @@
             echo "{{ item.0.label }},$SZ,NODATA,NODATA,NODATA" \
               >> "{{ lat_csv }}"
             echo "NODATA"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
             exit 0
           fi
 
@@ -398,6 +453,7 @@
         executable: /bin/bash
         cmd: |
           set -o pipefail
+          exec 2>&1
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
           SZ="{{ rel_size }}"
@@ -407,14 +463,14 @@
           UNIT="perftest-rel-$TOOL-run$RUN"
 
           # Clean both VMs before starting server
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
+          {{ vm1_run }} '{{ kill_perftest }}'
+          {{ vm2_run }} '{{ kill_perftest }}'
           sleep 2
 
-          {{ vm1_ssh }} "
+          {{ vm1_run }} "
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
+            sudo systemd-run --quiet --unit=$UNIT \
               bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
                 --report_gbits \
                 >/tmp/${UNIT}.log 2>&1';
@@ -423,7 +479,7 @@
 
           sleep 3
 
-          RAW=$({{ vm2_ssh }} "
+          RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
               $TOOL -d $DEV -x 1 -s $SZ -n $N \
               --report_gbits $SERVER_IP 2>&1
@@ -434,6 +490,10 @@
             echo "{{ item.0.label }},$RUN,$SZ,FAIL,FAIL,FAIL" \
               >> "{{ rel_csv }}"
             echo "FAIL rc=$RC"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
+            echo "--- server log (VM1) ---"
+            {{ vm1_run }} "sudo tail -n 40 /tmp/${UNIT}.log"
             exit 0
           fi
 
@@ -442,6 +502,8 @@
             echo "{{ item.0.label }},$RUN,$SZ,NODATA,NODATA,NODATA" \
               >> "{{ rel_csv }}"
             echo "NODATA"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
             exit 0
           fi
 
@@ -464,6 +526,14 @@
       loop_control:
         label: "{{ item.0.label }} run {{ item.1 }}"
 
+    - name: Display reliability sweep results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | default(['(no output)']) }}"
+      loop: "{{ rel_result.results }}"
+      loop_control:
+        label: "{{ item.item.0.label }} run {{ item.item.1 }}"
+      when: item.stdout is defined
+
     - name: Assert reliability sweep had no failures
       ansible.builtin.assert:
         that:
@@ -479,6 +549,7 @@
         executable: /bin/bash
         cmd: |
           set -o pipefail
+          exec 2>&1
           DEV="{{ rdma_dev }}"
           N="{{ pp_iters }}"
           SZ="{{ pp_size }}"
@@ -486,14 +557,14 @@
           UNIT="perftest-pp-run{{ item }}"
 
           # Clean both VMs before starting server
-          {{ vm1_ssh }} '{{ kill_perftest }}'
-          {{ vm2_ssh }} '{{ kill_perftest }}'
+          {{ vm1_run }} '{{ kill_perftest }}'
+          {{ vm2_run }} '{{ kill_perftest }}'
           sleep 2
 
-          {{ vm1_ssh }} "
+          {{ vm1_run }} "
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --unit=$UNIT \
+            sudo systemd-run --quiet --unit=$UNIT \
               bash -c 'ibv_rc_pingpong -d $DEV -g 1 \
                 -n $N -s $SZ \
                 >/tmp/${UNIT}.log 2>&1';
@@ -502,7 +573,7 @@
 
           sleep 3
 
-          RAW=$({{ vm2_ssh }} "
+          RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
               ibv_rc_pingpong -d $DEV -g 1 \
               -n $N -s $SZ $SERVER_IP 2>&1
@@ -513,6 +584,10 @@
             echo "pingpong,{{ item }},{{ pp_size }},FAIL,FAIL" \
               >> "{{ rel_csv }}"
             echo "FAIL rc=$RC"
+            echo "--- client output (VM2) ---"
+            printf '%s\n' "${RAW:-(none)}" | tail -n 40
+            echo "--- server log (VM1) ---"
+            {{ vm1_run }} "sudo tail -n 40 /tmp/${UNIT}.log"
             exit 0
           fi
 
@@ -544,12 +619,36 @@
       loop_control:
         label: "run {{ item }}"
 
+    - name: Display pingpong results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | default(['(no output)']) }}"
+      loop: "{{ pp_result.results }}"
+      loop_control:
+        label: "run {{ item.item }}"
+      when: item.stdout is defined
+
     - name: Assert pingpong had no failures
       ansible.builtin.assert:
         that:
           - pp_result.results | selectattr('rc', 'ne', 0) | list | length == 0
         fail_msg: >-
           Pingpong tests had failures. Aborting.
+
+    # The last command on the guests.  A play stopped before here
+    # leaves its connections to close themselves after ControlPersist.
+    - name: Close the ssh connections to the guests
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          {{ vm1_ssh }} -O exit 2>/dev/null
+          {{ vm2_ssh }} -O exit 2>/dev/null
+          true
+      changed_when: false
+
+    - name: Remove the directory for the ssh connection sockets
+      ansible.builtin.file:
+        path: "{{ ssh_mux_dir.path }}"
+        state: absent
 
     # ─────────────────────────────────────────────────
     # Summary

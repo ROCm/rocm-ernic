@@ -1,0 +1,20 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``performance-tests.yml`` no longer fails a sweep point when ssh fails
+    to connect to a guest.  It shares one ssh connection to each guest
+    among all of its commands, instead of opening a new one for each of
+    some 300, and runs a command again if ssh fails before the command
+    starts.  A command that started is never run again, so a failure in
+    perftest or the device still fails its point.
+minor_changes:
+  - >-
+    ``performance-tests.yml`` shows why a point failed: the client's
+    output and the server's log for a ``FAIL``, the client's output for
+    a ``NODATA``, and ssh's errors and retries for every point.  It also
+    shows the results of the reliability and pingpong runs, as it
+    already did for the bandwidth and latency sweeps.
