@@ -610,9 +610,13 @@ struct TcpBackendPrivate {
 
     /* Node identity */
     /*
-     * This node's ID.  A worker learns it from the manager on its receive
-     * thread while the accept thread may already be answering handshakes
-     * with it, so every access is atomic.
+     * This node's ID.  The manager's is 0 from the start.  A worker's is 0,
+     * which no worker is given, until the manager answers its registration:
+     * the receive thread for manager_conn stores it, once, before tcp_init()
+     * starts the threads that introduce this node to its peers (see
+     * tcp_worker_registration_done()).  Atomic as a precaution: no thread
+     * reads it while it can still change, but that rests on the order
+     * tcp_init() starts threads in.
      */
     _Atomic uint32_t local_node_id;
     TcpMode mode; /* Operation mode */
@@ -717,14 +721,21 @@ struct TcpBackendPrivate {
     char *manager_host;
     uint16_t manager_port;
     /*
-     * Connection to the manager, holding a reference.  Set by tcp_init() and
-     * released only at teardown, so the data path, which runs only once
-     * tcp_init() has returned, can read it without a lock.
+     * Connection to the manager, holding a reference.  Set by tcp_init()
+     * before it starts any thread but this connection's own receive thread,
+     * and released only at teardown, so every thread can read it without a
+     * lock.
      */
     TcpConnection *manager_conn;
-    bool registration_complete;   /* Registration completion flag */
-    QemuCond registration_cond;   /* Condition variable for registration */
-    QemuMutex registration_mutex; /* Mutex for registration synchronization */
+    /*
+     * Set when the manager has answered this worker's registration, whether
+     * it gave the worker an id or not; see tcp_worker_registration_done().
+     * Protected by registration_mutex, and registration_cond is signalled
+     * when it is set.
+     */
+    bool registration_complete;
+    QemuCond registration_cond;
+    QemuMutex registration_mutex;
 
     /*
      * The peers this worker is to connect to, as TcpPeerTarget, from the
@@ -796,6 +807,41 @@ struct TcpBackendPrivate {
 static inline uint32_t tcp_local_node(TcpBackendPrivate *priv)
 {
     return atomic_load(&priv->local_node_id);
+}
+
+/*
+ * Whether a worker has its node id.  Until it does, its id reads as 0, the
+ * manager's, which it must not present as its own.
+ */
+static inline bool tcp_worker_registered(TcpBackendPrivate *priv)
+{
+    return tcp_local_node(priv) != 0;
+}
+
+/*
+ * Record the manager's answer to this worker's registration and wake
+ * tcp_worker_register_with_manager(): the node id the manager assigned, or 0
+ * if it refused the registration or its answer can't be used.  Only the
+ * first answer counts.  Returns false, recording nothing, if the
+ * registration has already been answered.
+ *
+ * The id is stored under the mutex, with the flag, because the waiter reads
+ * both under it on another thread.
+ */
+static bool tcp_worker_registration_done(TcpBackendPrivate *priv,
+                                         uint32_t node_id)
+{
+    bool first;
+
+    qemu_mutex_lock(&priv->registration_mutex);
+    first = !priv->registration_complete;
+    if (first) {
+        atomic_store(&priv->local_node_id, node_id);
+        priv->registration_complete = true;
+        qemu_cond_signal(&priv->registration_cond);
+    }
+    qemu_mutex_unlock(&priv->registration_mutex);
+    return first;
 }
 
 /* Forward declarations */
@@ -2883,60 +2929,81 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
+                /*
+                 * Only the manager assigns this node its id, and only once.
+                 * The answer rewrites the id and the GIDs this node claims,
+                 * so one accepted from a peer, or a second one, would let
+                 * another node take this one's place in the mesh.
+                 * manager_conn is the connection this node opened to the
+                 * manager itself; a peer can't be it.
+                 */
+                if (conn != priv->manager_conn) {
+                    rdma_error_report("TCP: REGISTER_RESP from a connection "
+                                      "that is not the manager; ignoring");
+                    break;
+                }
+
+                /* The id to record: 0 if the answer refuses this node */
+                uint32_t assigned_id = 0;
+
                 if (!payload || hdr.msg_len < TCP_REGISTER_RESP_LEN_V3) {
                     rdma_error_report("TCP: Invalid REGISTER_RESP payload");
-                    break;
-                }
+                } else {
+                    TcpRegisterRespPayload *resp =
+                        (TcpRegisterRespPayload *)payload;
+                    uint32_t resp_id = ntohl(resp->assigned_node_id);
+                    int32_t result = (int32_t)ntohl(resp->result);
 
-                TcpRegisterRespPayload *resp =
-                    (TcpRegisterRespPayload *)payload;
-                uint32_t assigned_id = ntohl(resp->assigned_node_id);
-                int32_t result = (int32_t)ntohl(resp->result);
+                    /*
+                     * The other half of the check the manager makes: a
+                     * pre-v4 manager sends no version and would otherwise
+                     * admit this node to a mesh whose resolver still
+                     * guesses.  Refusing here is what makes the gate work in
+                     * both directions, since an old manager cannot refuse
+                     * us.
+                     */
+                    uint32_t mgr_version = 0;
+
+                    if (hdr.msg_len >= sizeof(TcpRegisterRespPayload)) {
+                        mgr_version = ntohl(resp->version);
+                    }
+
+                    if (mgr_version != TCP_PROTOCOL_VERSION) {
+                        rdma_error_report(
+                            "TCP: manager speaks v%u, this node speaks v%u; "
+                            "refusing to join -- a pre-v%u mesh resolves "
+                            "every destination GID to one default node",
+                            mgr_version, TCP_PROTOCOL_VERSION,
+                            TCP_PROTOCOL_VERSION);
+                    } else if (result != 0) {
+                        rdma_error_report("TCP: Registration failed: %d",
+                                          result);
+                    } else if (resp_id == 0 || resp_id == UINT32_MAX) {
+                        /*
+                         * 0 is the manager's own id, and UINT32_MAX means
+                         * no node at all, to the GID table and to the data
+                         * path (tcp_backend_local_node_id()).
+                         */
+                        rdma_error_report("TCP: manager assigned node id %u, "
+                                          "which no worker can have",
+                                          resp_id);
+                    } else {
+                        assigned_id = resp_id;
+                    }
+                }
 
                 /*
-                 * The other half of the check the manager makes: a pre-v4
-                 * manager sends no version and would otherwise admit this
-                 * node to a mesh whose resolver still guesses.  Refusing
-                 * here is what makes the gate work in both directions,
-                 * since an old manager cannot refuse us.
+                 * A refusal ends the wait too, so tcp_init() fails at once
+                 * rather than at the registration timeout.
                  */
-                uint32_t mgr_version = 0;
-
-                if (hdr.msg_len >= sizeof(TcpRegisterRespPayload)) {
-                    mgr_version = ntohl(resp->version);
-                }
-
-                if (mgr_version != TCP_PROTOCOL_VERSION) {
-                    rdma_error_report(
-                        "TCP: manager speaks v%u, this node speaks v%u; "
-                        "refusing to join -- a pre-v%u mesh resolves every "
-                        "destination GID to one default node",
-                        mgr_version, TCP_PROTOCOL_VERSION,
-                        TCP_PROTOCOL_VERSION);
+                if (!tcp_worker_registration_done(priv, assigned_id)) {
+                    rdma_error_report("TCP: ignoring a REGISTER_RESP after "
+                                      "registration was answered");
                     break;
                 }
-
-                if (result != 0) {
-                    rdma_error_report("TCP: Registration failed: %d", result);
+                if (assigned_id == 0) {
                     break;
                 }
-
-                conn->node_id = assigned_id;
-
-                /*
-                 * Publish the id with the flag, not before it. The waiter
-                 * in tcp_worker_register_with_manager() reads
-                 * local_node_id under this mutex to decide whether
-                 * registration succeeded, so assigning it outside meant the
-                 * value it tested was written by another thread with no
-                 * synchronisation between the two.
-                 */
-                qemu_mutex_lock(&priv->registration_mutex);
-                atomic_store_explicit(&priv->local_node_id, assigned_id,
-                                      memory_order_relaxed);
-                priv->registration_complete = true;
-                qemu_cond_signal(&priv->registration_cond);
-                qemu_mutex_unlock(&priv->registration_mutex);
 
                 rdma_info_report(
                     "TCP: Registered with manager, assigned node_id=%u",
@@ -2970,6 +3037,19 @@ static void *tcp_recv_thread_per_conn(void *opaque)
 
                 if (!payload || hdr.msg_len < sizeof(TcpMeshTopologyPayload)) {
                     rdma_error_report("TCP: Invalid MESH_TOPOLOGY payload");
+                    break;
+                }
+
+                /*
+                 * Which peers this node connects to depends on its id.  The
+                 * manager publishes a new worker's connection before it
+                 * answers the registration, so the broadcast for another
+                 * node's registration can come first.  It follows its answer
+                 * with a broadcast of its own, so nothing is lost.
+                 */
+                if (!tcp_worker_registered(priv)) {
+                    rdma_info_report("TCP: Ignoring a mesh topology update "
+                                     "that came before registration");
                     break;
                 }
 
@@ -4386,7 +4466,8 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
         }
     }
 
-    bool success = (tcp_local_node(priv) != 0);
+    /* The receive thread logged why if the manager refused this node */
+    bool success = tcp_worker_registered(priv);
     qemu_mutex_unlock(&priv->registration_mutex);
 
     if (!success) {
@@ -4770,21 +4851,28 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
         }
         priv->is_listening = true;
 
-        /* Start the accept and peer-connect threads */
+        /* Register with manager */
+        ret = tcp_worker_register_with_manager(priv);
+        if (ret < 0) {
+            /* manager_host already assigned to priv->manager_host, will be
+             * freed in error path */
+            goto error;
+        }
+
+        /*
+         * Start the accept and peer-connect threads only now that this node
+         * has its id.  Both introduce the node to its peers with it, and
+         * before registration it reads as 0, the manager's.  A peer that
+         * connects before then waits in the listen socket's backlog.  This
+         * also means every thread that reads manager_conn starts after it
+         * is set.
+         */
         if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
                               tcp_accept_thread, priv,
                               &priv->accept_thread_running) ||
             !tcp_start_thread(&priv->peer_thread, "tcp-peers",
                               tcp_worker_peer_thread, priv,
                               &priv->peer_thread_running)) {
-            goto error;
-        }
-
-        /* Register with manager */
-        ret = tcp_worker_register_with_manager(priv);
-        if (ret < 0) {
-            /* manager_host already assigned to priv->manager_host, will be
-             * freed in error path */
             goto error;
         }
 
@@ -4801,8 +4889,10 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     return 0;
 
 error:
-    /* A worker that fails to register has already started its accept and
-     * receive threads; they must be gone before priv is freed under them. */
+    /* A worker that fails to register has already started the receive thread
+     * for its manager connection, and one that fails to start its accept or
+     * peer-connect thread has started others; they must be gone before priv
+     * is freed under them. */
     tcp_stop_threads(priv);
     if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
@@ -5323,13 +5413,15 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                              "per send",
                              qpn);
         } else {
+            uint32_t local = tcp_local_node(priv);
+
             rdma_info_report("TCP: Resolved GID %s -> node %u",
                              tcp_gid_str(dgid->raw, gidbuf), resolved);
 
-            if (tqp->remote_node_id == tcp_local_node(priv)) {
+            if (tqp->remote_node_id == local) {
                 rdma_info_report("TCP: QP %u routed to local node %u "
                                  "(loopback)",
-                                 qpn, tcp_local_node(priv));
+                                 qpn, local);
             }
         }
 
@@ -5406,6 +5498,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     TcpWR *wr;
     TcpConnection *conn = NULL; /* holds a reference once set */
     uint32_t seq;
+    uint32_t local; /* this node's id, for the route and every header */
     int ret;
 
     /*
@@ -5439,6 +5532,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                                    0, 0, wc_opcode, ctx);
         return;
     }
+    local = tcp_local_node(priv);
 
     qemu_mutex_lock(&priv->lock);
     tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
@@ -5507,7 +5601,7 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     seq = atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed);
     qemu_mutex_unlock(&priv->lock);
 
-    if (dst_node == tcp_local_node(priv)) {
+    if (dst_node == local) {
         /*
          * Accumulate in 64 bits: 32 SGEs of up to UINT32_MAX bytes each would
          * wrap a uint32_t sum, which would then pass the bounds check below
@@ -5719,8 +5813,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             }
 
             ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_RDMA_WRITE, buf,
-                                   payload_sz, seq, tcp_local_node(priv),
-                                   dst_node, qpn, dst_qpn);
+                                   payload_sz, seq, local, dst_node, qpn,
+                                   dst_qpn);
             g_free(buf);
             if (ret < 0)
                 rdma_error_report("TCP: RDMA WRITE send failed");
@@ -5736,8 +5830,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             oh.data_len = (uint32_t)total_len;
 
             ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_RDMA_READ_REQ,
-                                   &oh, sizeof(oh), seq, tcp_local_node(priv),
-                                   dst_node, qpn, dst_qpn);
+                                   &oh, sizeof(oh), seq, local, dst_node, qpn,
+                                   dst_qpn);
             if (ret < 0)
                 rdma_error_report("TCP: RDMA READ REQ send failed");
         } else if (total_len <= TCP_COALESCE_THRESHOLD) {
@@ -5760,8 +5854,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             }
 
             ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_SEND, buf,
-                                   payload_sz, seq, tcp_local_node(priv),
-                                   dst_node, qpn, dst_qpn);
+                                   payload_sz, seq, local, dst_node, qpn,
+                                   dst_qpn);
             g_free(buf);
             if (ret < 0)
                 rdma_error_report("TCP: POST_SEND failed to "
@@ -5774,8 +5868,8 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
              * payloads through a temporary buffer.
              */
             ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_SEND, wr,
-                                   sizeof(*wr), seq, tcp_local_node(priv),
-                                   dst_node, qpn, dst_qpn);
+                                   sizeof(*wr), seq, local, dst_node, qpn,
+                                   dst_qpn);
             if (ret < 0) {
                 rdma_error_report("TCP: POST_SEND header failed "
                                   "to node %u",
@@ -5783,10 +5877,10 @@ static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
             } else {
                 for (uint32_t i = 0; i < num_sge && i < 32; i++) {
                     if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
-                        ret = tcp_send_message(
-                            priv, conn->sockfd, TCP_MSG_DATA,
-                            wr->sge[i].host_addr, wr->sge[i].length, seq,
-                            tcp_local_node(priv), dst_node, qpn, dst_qpn);
+                        ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_DATA,
+                                               wr->sge[i].host_addr,
+                                               wr->sge[i].length, seq, local,
+                                               dst_node, qpn, dst_qpn);
                         if (ret < 0) {
                             rdma_error_report("TCP: DATA send "
                                               "failed");
@@ -5949,10 +6043,11 @@ static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
     TcpBackendPrivate *priv = get_private(backend_dev);
 
     if (priv) {
+        uint32_t local = tcp_local_node(priv);
+
         memset(gid, 0, sizeof(*gid));
-        gid->raw[15] = (uint8_t)tcp_local_node(priv);
-        rdma_info_report("TCP: Added GID with node_id=%u",
-                         tcp_local_node(priv));
+        gid->raw[15] = (uint8_t)local;
+        rdma_info_report("TCP: Added GID with node_id=%u", local);
     } else {
         rdma_info_report("TCP: Added GID (no priv)");
     }
@@ -6137,13 +6232,15 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
     size_t len = hdr_len + body_len;
+    uint32_t local;
     int rc;
 
     if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP || !hdr ||
         hdr_len == 0 || len > TCP_MAX_PAYLOAD_LEN)
         return -EINVAL;
 
-    if (dst_node == tcp_local_node(priv))
+    local = tcp_local_node(priv);
+    if (dst_node == local)
         return -EINVAL;
 
     /* A worker may have no direct socket to another worker; the manager
@@ -6168,7 +6265,7 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
     rc = tcp_send_message2(
         priv, conn->sockfd, TCP_MSG_IONIC, hdr, hdr_len, body, body_len,
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
-        tcp_local_node(priv), dst_node, 0, 0);
+        local, dst_node, 0, 0);
     qemu_mutex_unlock(&conn->lock);
     tcp_connection_unref(conn);
 

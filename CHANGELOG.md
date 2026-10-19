@@ -511,6 +511,17 @@
   as the data's sender had by then, so a peer could have it delivered to
   another node. If that connection has closed meanwhile, no completion is
   sent. `tcp-thread-stop-unit` covers both fixes.
+* A TCP mesh worker now takes its node id only from the manager, and only
+  once. It used to accept the answer to its registration from any
+  connection, at any time, so another worker could change its node id, and
+  the GIDs it claims, by sending it one. A worker also no longer accepts
+  connections from its peers, or connects to them, before it has its id. It
+  used to introduce itself as node 0, the manager's id, to a peer that
+  connected while it was registering, and to its peers when a topology update
+  arrived before the manager's answer. A manager that refuses the
+  registration, or assigns 0 or `UINT32_MAX`, now makes the worker fail at
+  once rather than after the 5-second registration timeout.
+  `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
