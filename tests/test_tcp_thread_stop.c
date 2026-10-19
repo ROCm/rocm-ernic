@@ -65,6 +65,13 @@
  * free meanwhile, that a stop or the interval ends the wait, and that a
  * connection the peer opened meanwhile is kept.
  *
+ * A worker must take its node id only from the manager, only once, and must
+ * not introduce itself to its peers until it has it.  The worker
+ * registration rows run tcp_init() as a worker against a manager played by
+ * the test.  The manager refuses the worker or answers it twice, a peer
+ * answers instead, or a peer connects, or a topology update arrives, before
+ * the manager answers.
+ *
  * A message's header can arrive in parts, and tcp_recv_message() has to wait
  * for the rest rather than lose the part it has read.  The partial rows split
  * messages at several points and check what is read, and that a stop, a
@@ -2851,8 +2858,8 @@ static void tp_entry(TcpMeshTopologyPayload *topo, uint32_t id, uint16_t port,
     topo->num_nodes = htonl(n + 1);
 }
 
-/* Send topo as the manager. */
-static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
+/* Send topo on fd, as the manager does. */
+static bool send_topology(int fd, const TcpMeshTopologyPayload *topo)
 {
     struct {
         TcpMsgHeader hdr;
@@ -2864,7 +2871,13 @@ static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
     msg.hdr.msg_type = htonl(TCP_MSG_MESH_TOPOLOGY);
     msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.topo));
     memcpy(&msg.topo, topo, sizeof(msg.topo));
-    return send(fx->mgr, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+}
+
+/* Send topo as the manager. */
+static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
+{
+    return send_topology(fx->mgr, topo);
 }
 
 /*
@@ -3257,6 +3270,578 @@ static int run_tp_case(const struct tp_case *c)
     fflush(stdout);
 
     tp_close(&net);
+    return ok ? 0 : 1;
+}
+
+/* ---- A worker's registration ------------------------------------------- */
+
+/*
+ * A worker takes its node id from the manager's REGISTER_RESP.  It used to
+ * take one from any connection, at any time, so a peer could rewrite a
+ * worker's id, and with it the GIDs the worker claims, by sending it a
+ * REGISTER_RESP.  Only the manager's connection may answer now, and only
+ * once, with an id a worker can have.  An answer that refuses the worker
+ * makes tcp_init() fail at once, rather than at the registration timeout.
+ *
+ * A worker also used to start its accept and peer-connect threads before it
+ * registered, while its id still read as 0, the manager's.  A peer that
+ * connected meanwhile was told it was talking to the manager.  A topology
+ * update that came before the answer, as the broadcast for another node's
+ * registration can, had the worker connect to its peers as node 0, and to
+ * peers with lower ids, which connect to it.  The threads now start once the
+ * worker has its id, and an update before then is ignored.  The last rows
+ * have one of them fail to start, after which tcp_init() has to join the
+ * threads it did start.
+ *
+ * Each row runs tcp_init() as a worker on a thread of its own, against a
+ * manager the test plays over loopback.
+ */
+
+#define WR_ID       4 /* the id the manager assigns */
+#define WR_OTHER_ID 9 /* the id a second answer, or a peer's, names */
+#define WR_LOWER    2 /* a node with a lower id, which the worker leaves be */
+#define WR_HIGHER   6 /* one with a higher id, which the worker connects to */
+
+enum wr_scenario {
+    WR_ASSIGNED,       /* the manager assigns WR_ID */
+    WR_REFUSED,        /* the manager refuses the registration */
+    WR_OLD_VERSION,    /* an answer with no version, as a pre-v4 manager's */
+    WR_SHORT,          /* an answer too short to hold an id */
+    WR_ID_ZERO,        /* the manager assigns 0 */
+    WR_ID_NONE,        /* the manager assigns UINT32_MAX */
+    WR_TWICE,          /* a second answer, naming WR_OTHER_ID */
+    WR_FROM_PEER,      /* a peer's answer, naming WR_OTHER_ID */
+    WR_EARLY_PEER,     /* a peer's handshake before the answer */
+    WR_EARLY_TOPOLOGY, /* a topology update before the answer */
+    WR_NO_ACCEPT,      /* registered, but the accept thread can't start */
+    WR_NO_PEERS,       /* registered, but the peer-connect thread can't */
+};
+
+struct wr_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum wr_scenario scenario;
+};
+
+static const struct wr_case wr_cases[] = {
+    {"positive", "the manager assigns the worker an id",
+     "tcp_init() succeeds, and the worker takes the id and advertises its "
+     "GIDs as that node",
+     WR_ASSIGNED},
+    {"negative", "the manager refuses the registration",
+     "tcp_init() fails at once, not at the registration timeout", WR_REFUSED},
+    {"negative", "an answer with no version, as a pre-v4 manager sends",
+     "tcp_init() fails at once", WR_OLD_VERSION},
+    {"boundary", "an answer one byte too short to hold a pre-v4 manager's",
+     "refused: tcp_init() fails at once", WR_SHORT},
+    {"boundary", "the manager assigns node id 0, its own",
+     "refused: tcp_init() fails at once", WR_ID_ZERO},
+    {"boundary", "the manager assigns node id UINT32_MAX",
+     "refused: tcp_init() fails at once", WR_ID_NONE},
+    {"corner", "a second answer from the manager, naming another id",
+     "ignored: the id is unchanged, and the GIDs aren't advertised again",
+     WR_TWICE},
+    {"negative", "an answer from a peer, naming another id",
+     "ignored: the id is unchanged, and nobody is sent an advertisement",
+     WR_FROM_PEER},
+    {"corner", "a peer's handshake before the manager answers",
+     "answered only once the worker has its id, with that id", WR_EARLY_PEER},
+    {"corner",
+     "a topology update before the manager answers, naming a lower and a "
+     "higher id",
+     "ignored: the worker connects only to the peer a later update names, as "
+     "its own id",
+     WR_EARLY_TOPOLOGY},
+    {"negative", "the worker registers, and its accept thread can't be created",
+     "tcp_init() fails, and joins the thread it started", WR_NO_ACCEPT},
+    {"negative",
+     "the worker registers, and its peer-connect thread can't be created",
+     "tcp_init() fails, and joins the threads it started", WR_NO_PEERS},
+};
+
+/*
+ * How many of the worker's qemu_thread_create() calls succeed, for g_creates
+ * to stop at: the first is the receive thread for the manager's connection,
+ * then the accept thread, then the peer-connect thread.  -1 for all.
+ */
+static int wr_creates_left(enum wr_scenario scenario)
+{
+    switch (scenario) {
+    case WR_NO_ACCEPT:
+        return 1;
+    case WR_NO_PEERS:
+        return 2;
+    case WR_ASSIGNED:
+    case WR_REFUSED:
+    case WR_OLD_VERSION:
+    case WR_SHORT:
+    case WR_ID_ZERO:
+    case WR_ID_NONE:
+    case WR_TWICE:
+    case WR_FROM_PEER:
+    case WR_EARLY_PEER:
+    case WR_EARLY_TOPOLOGY:
+    default:
+        return -1;
+    }
+}
+
+/* tcp_init() as a worker, run on a thread of its own by wr_init_run() */
+struct wr_init {
+    RdmaBackendDev dev;
+    char config[64];
+    pthread_t tid;
+    bool running; /* tid hasn't been joined */
+    int ret;
+    double took; /* how long tcp_init() took */
+};
+
+static void *wr_init_run(void *opaque)
+{
+    struct wr_init *in = opaque;
+    double start = now_s();
+
+    in->ret = tcp_init(&in->dev, in->config);
+    in->took = now_s() - start;
+    return NULL;
+}
+
+/* Wait for tcp_init() to return; its results are in `in` once it has. */
+static void wr_init_join(struct wr_init *in)
+{
+    if (in->running) {
+        pthread_join(in->tid, NULL);
+        in->running = false;
+    }
+}
+
+/* Read the next message on fd, waiting up to timeout_ms for it to start. */
+static bool wr_recv(int fd, TcpMsgHeader *hdr, void **payload, int timeout_ms)
+{
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+
+    *payload = NULL;
+    return poll(&pfd, 1, timeout_ms) == 1 &&
+           tcp_recv_message(fd, hdr, payload, NULL, NULL, 0) == 0;
+}
+
+/*
+ * Read messages on fd, for up to timeout_ms, until one of type arrives, and
+ * return its header and payload, which the caller frees.  The NODE_GIDS on
+ * the way, if type isn't that, are counted in *gids, if it isn't NULL.
+ */
+static bool wr_until(int fd, TcpMsgType type, int timeout_ms, TcpMsgHeader *hdr,
+                     void **payload, int *gids)
+{
+    double end = now_s() + timeout_ms / 1000.0;
+
+    while (now_s() < end) {
+        int left = (int)((end - now_s()) * 1000.0);
+
+        if (!wr_recv(fd, hdr, payload, left > 0 ? left : 1))
+            return false;
+        if (hdr->msg_type == type)
+            return true;
+        if (gids && hdr->msg_type == TCP_MSG_NODE_GIDS)
+            (*gids)++;
+        g_free(*payload);
+    }
+    *payload = NULL;
+    return false;
+}
+
+/*
+ * The node id in the next message of type on fd, from its payload: a
+ * handshake's or an advertisement's.  UINT32_MAX if none arrives within 5 s.
+ * *src, if it isn't NULL, gets the sender the header names.
+ */
+static uint32_t wr_node_in(int fd, TcpMsgType type, uint32_t *src)
+{
+    TcpMsgHeader hdr;
+    void *payload;
+    uint32_t id = UINT32_MAX;
+
+    if (!wr_until(fd, type, 5000, &hdr, &payload, NULL))
+        return UINT32_MAX;
+    /* Both payloads start with the node id, in network order */
+    if (payload && hdr.msg_len >= sizeof(uint32_t)) {
+        memcpy(&id, payload, sizeof(id));
+        id = ntohl(id);
+    }
+    if (src)
+        *src = hdr.src_node_id;
+    g_free(payload);
+    return id;
+}
+
+/*
+ * Whether fd's other end answers a heartbeat within 2 s, having handled
+ * everything sent before it; *gids counts the advertisements it sent first.
+ */
+static bool wr_settled(int fd, int *gids)
+{
+    TcpMsgHeader hdr;
+    void *payload;
+
+    if (!send_heartbeat(fd, 0) ||
+        !wr_until(fd, TCP_MSG_HEARTBEAT, 2000, &hdr, &payload, gids))
+        return false;
+    g_free(payload);
+    return true;
+}
+
+/*
+ * Send a REGISTER_RESP assigning id, with result, as the manager does.  len
+ * is the payload's length: TCP_REGISTER_RESP_LEN_V3 leaves off the version.
+ */
+static bool send_register_resp(int fd, uint32_t id, int32_t result,
+                               uint32_t len)
+{
+    struct {
+        TcpMsgHeader hdr;
+        TcpRegisterRespPayload resp;
+    } msg;
+    size_t size = sizeof(msg.hdr) + len;
+
+    if (len > sizeof(msg.resp))
+        return false;
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(TCP_MSG_REGISTER_RESP);
+    msg.hdr.msg_len = htonl(len);
+    msg.resp.assigned_node_id = htonl(id);
+    msg.resp.num_nodes = htonl(2);
+    msg.resp.result = htonl((uint32_t)result);
+    msg.resp.version = htonl(TCP_PROTOCOL_VERSION);
+    return send(fd, &msg, size, 0) == (ssize_t)size;
+}
+
+static bool wr_assign(int mgr, uint32_t id)
+{
+    return send_register_resp(mgr, id, 0,
+                              (uint32_t)sizeof(TcpRegisterRespPayload));
+}
+
+/*
+ * Accept the worker's connection on lfd and read its registration; *port
+ * gets the port it listens on for its peers.  Returns NULL, or what failed.
+ */
+static const char *wr_registered(int lfd, int *mgr, uint16_t *port)
+{
+    TcpMsgHeader hdr;
+    void *payload;
+    const char *why = NULL;
+
+    *mgr = accept_within(lfd);
+    if (*mgr < 0)
+        return "the worker never connected to the manager";
+    if (!wr_recv(*mgr, &hdr, &payload, 5000))
+        return "the worker sent no registration";
+    if (hdr.msg_type != TCP_MSG_REGISTER_NODE || !payload ||
+        hdr.msg_len < sizeof(TcpRegisterNodePayload))
+        why = "the worker's first message wasn't a registration";
+    else
+        *port = ntohs(((const TcpRegisterNodePayload *)payload)->port);
+    g_free(payload);
+    return why;
+}
+
+/* The worker's id, once tcp_init() has succeeded */
+static uint32_t wr_local(struct wr_init *in)
+{
+    return tcp_local_node(in->dev.backend_private);
+}
+
+/*
+ * A handshake from a peer claiming to be node HS_NODE on a new connection to
+ * the worker's listen port; returns the connection, or -1.
+ */
+static int wr_peer(uint16_t port)
+{
+    int fd = connect_loopback(port);
+
+    if (fd >= 0 && !send_hs(fd, TCP_MSG_HANDSHAKE,
+                            (uint32_t)sizeof(TcpHandshakePayload))) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* After the answer that registers the worker as WR_ID */
+static const char *wr_after_assign(struct wr_init *in, int mgr)
+{
+    if (in->ret != 0)
+        return "tcp_init() failed";
+    if (wr_local(in) != WR_ID)
+        return "the worker didn't take the id it was assigned";
+    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WR_ID)
+        return "the worker didn't advertise its GIDs as its own id";
+    return NULL;
+}
+
+/* WR_TWICE, once the worker has registered */
+static const char *wr_twice(struct wr_init *in, int mgr)
+{
+    int gids = 0;
+
+    if (!wr_assign(mgr, WR_OTHER_ID) || !wr_settled(mgr, &gids))
+        return "the worker stopped answering the manager";
+    if (wr_local(in) != WR_ID)
+        return "the second answer changed the worker's id";
+    return gids == 0 ? NULL : "the worker advertised its GIDs again";
+}
+
+/* WR_FROM_PEER, once the worker has registered */
+static const char *wr_from_peer(struct wr_init *in, int mgr, uint16_t port,
+                                int *peer)
+{
+    uint32_t src = UINT32_MAX;
+    int peer_gids = 0, mgr_gids = 0;
+
+    *peer = wr_peer(port);
+    if (*peer < 0)
+        return "the peer could not connect";
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
+        src != WR_ID)
+        return "the peer's handshake wasn't answered as WR_ID";
+    if (!send_register_resp(*peer, WR_OTHER_ID, 0,
+                            (uint32_t)sizeof(TcpRegisterRespPayload)) ||
+        !wr_settled(*peer, &peer_gids) || !wr_settled(mgr, &mgr_gids))
+        return "the worker stopped answering";
+    if (wr_local(in) != WR_ID)
+        return "the peer changed the worker's id";
+    return peer_gids == 0 && mgr_gids == 0
+               ? NULL
+               : "the worker advertised its GIDs again";
+}
+
+/*
+ * WR_EARLY_PEER, before the manager answers: a peer's handshake isn't
+ * answered until then, and is then answered as WR_ID.
+ */
+static const char *wr_early_peer(struct wr_init *in, int mgr, uint16_t port,
+                                 int *peer)
+{
+    struct pollfd pfd = {.events = POLLIN};
+    uint32_t src = UINT32_MAX;
+
+    *peer = wr_peer(port);
+    if (*peer < 0)
+        return "the peer could not connect";
+    pfd.fd = *peer;
+    if (poll(&pfd, 1, 300) != 0)
+        return "the worker answered the handshake before it had an id";
+    if (!wr_assign(mgr, WR_ID))
+        return "could not answer the registration";
+    wr_init_join(in);
+    if (in->ret != 0)
+        return "tcp_init() failed";
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
+        src != WR_ID)
+        return "the handshake wasn't answered as the assigned id";
+    return NULL;
+}
+
+/*
+ * WR_EARLY_TOPOLOGY, before the manager answers: an update naming WR_LOWER
+ * at low and WR_HIGHER at high.  The worker connects to nothing until a
+ * second update, after the answer, names WR_HIGHER alone, and then
+ * introduces itself to it as WR_ID.
+ */
+static const char *wr_early_topology(struct wr_init *in, int mgr, int low,
+                                     int high, int *peer)
+{
+    TcpMeshTopologyPayload topo;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    struct pollfd pfd = {.fd = low, .events = POLLIN};
+    uint16_t low_port, high_port;
+
+    if (getsockname(low, (struct sockaddr *)&addr, &len) < 0)
+        return "could not find the peers' ports";
+    low_port = ntohs(addr.sin_port);
+    len = sizeof(addr);
+    if (getsockname(high, (struct sockaddr *)&addr, &len) < 0)
+        return "could not find the peers' ports";
+    high_port = ntohs(addr.sin_port);
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, WR_LOWER, low_port, true);
+    tp_entry(&topo, WR_HIGHER, high_port, true);
+    if (!send_topology(mgr, &topo))
+        return "could not send the first update";
+    sleep_ms(300); /* time for a worker that didn't ignore it to connect */
+    if (!wr_assign(mgr, WR_ID))
+        return "could not answer the registration";
+    wr_init_join(in);
+    if (in->ret != 0)
+        return "tcp_init() failed";
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, WR_HIGHER, high_port, true);
+    if (!send_topology(mgr, &topo))
+        return "could not send the second update";
+    *peer = accept_within(high);
+    if (*peer < 0)
+        return "the worker never connected to the higher id";
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE, NULL) != WR_ID)
+        return "the worker didn't introduce itself as the assigned id";
+    return poll(&pfd, 1, 0) == 0 ? NULL
+                                 : "the worker connected to the lower id";
+}
+
+/* Play the manager, and any peers, for the row; returns NULL or what failed */
+static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
+                          int *mgr, int *peer)
+{
+    const char *why;
+    uint16_t port = 0;
+    int low = -1, high = -1;
+
+    why = wr_registered(lfd, mgr, &port);
+    if (why)
+        return why;
+
+    switch (c->scenario) {
+    case WR_ASSIGNED:
+    case WR_TWICE:
+    case WR_FROM_PEER:
+        if (!wr_assign(*mgr, WR_ID))
+            return "could not answer the registration";
+        wr_init_join(in);
+        why = wr_after_assign(in, *mgr);
+        if (!why && c->scenario == WR_TWICE)
+            why = wr_twice(in, *mgr);
+        if (!why && c->scenario == WR_FROM_PEER)
+            why = wr_from_peer(in, *mgr, port, peer);
+        return why;
+    case WR_REFUSED:
+        if (!send_register_resp(*mgr, 0, -EPROTO,
+                                (uint32_t)sizeof(TcpRegisterRespPayload)))
+            return "could not answer the registration";
+        break;
+    case WR_OLD_VERSION:
+        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3))
+            return "could not answer the registration";
+        break;
+    case WR_SHORT:
+        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3 - 1))
+            return "could not answer the registration";
+        break;
+    case WR_ID_ZERO:
+        if (!wr_assign(*mgr, 0))
+            return "could not answer the registration";
+        break;
+    case WR_ID_NONE:
+        if (!wr_assign(*mgr, UINT32_MAX))
+            return "could not answer the registration";
+        break;
+    case WR_NO_ACCEPT:
+    case WR_NO_PEERS:
+        if (!wr_assign(*mgr, WR_ID))
+            return "could not answer the registration";
+        break;
+    case WR_EARLY_PEER:
+        return wr_early_peer(in, *mgr, port, peer);
+    case WR_EARLY_TOPOLOGY:
+        low = listen_loopback();
+        high = listen_loopback();
+        why = low < 0 || high < 0
+                  ? "could not open the peers' listeners"
+                  : wr_early_topology(in, *mgr, low, high, peer);
+        if (low >= 0)
+            close(low);
+        if (high >= 0)
+            close(high);
+        return why;
+    default:
+        return "unknown scenario";
+    }
+
+    /* The rows in which tcp_init() fails */
+    wr_init_join(in);
+    if (in->ret == 0)
+        return "tcp_init() succeeded";
+    return in->took < 2.0 ? NULL : "tcp_init() waited for the timeout";
+}
+
+/*
+ * Run one registration row: start tcp_init() as a worker, play the manager
+ * for it, then stop the worker, if it started, and check that every thread
+ * it created exited.
+ */
+static int run_wr_case(const struct wr_case *c)
+{
+    struct wr_init in;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    const char *why = NULL;
+    int lfd, mgr = -1, peer = -1;
+    int creates_left = wr_creates_left(c->scenario);
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    atomic_store(&g_create_failures, 0);
+    memset(&in, 0, sizeof(in));
+    in.ret = -1;
+    /* No backend threads exist yet, so nothing reads the environment */
+    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    lfd = listen_loopback();
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+        why = "could not open the manager's listener";
+    } else {
+        snprintf(in.config, sizeof(in.config), "tcp:worker:127.0.0.1:%u",
+                 (unsigned)ntohs(addr.sin_port));
+        atomic_store(&g_creates_left, creates_left);
+        /* Not counted: it isn't one of the worker's threads */
+        if (pthread_create(&in.tid, NULL, wr_init_run, &in) != 0)
+            why = "could not start tcp_init()";
+        else
+            in.running = true;
+    }
+    if (!why)
+        why = wr_run(c, &in, lfd, &mgr, &peer);
+
+    /* A row that failed before the answer: refuse, so tcp_init() returns */
+    if (in.running && mgr >= 0)
+        send_register_resp(mgr, 0, -EPROTO,
+                           (uint32_t)sizeof(TcpRegisterRespPayload));
+    wr_init_join(&in);
+    atomic_store(&g_creates_left, -1);
+    if (in.ret == 0)
+        tcp_fini(&in.dev);
+    alarm(0);
+    if (!why && creates_left >= 0 &&
+        (atomic_load(&g_creates) != creates_left ||
+         atomic_load(&g_create_failures) != 1))
+        why = "the thread that couldn't be created wasn't the expected one";
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread the worker started wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s worker registration %s: %s; expected: %s\n",
+           ok ? "ok  " : "FAIL", c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; tcp_init() returned %d after %.3f s, %d thread(s) "
+               "created, %d joined, %d exited\n",
+               why, in.ret, in.took, atomic_load(&g_creates),
+               atomic_load(&g_joins), atomic_load(&g_exits));
+    fflush(stdout);
+
+    if (peer >= 0)
+        close(peer);
+    if (mgr >= 0)
+        close(mgr);
+    if (lfd >= 0)
+        close(lfd);
     return ok ? 0 : 1;
 }
 
@@ -5018,6 +5603,8 @@ int main(void)
         failures += run_reg_case(&reg_cases[i]);
     for (size_t i = 0; i < sizeof(tp_cases) / sizeof(tp_cases[0]); i++)
         failures += run_tp_case(&tp_cases[i]);
+    for (size_t i = 0; i < sizeof(wr_cases) / sizeof(wr_cases[0]); i++)
+        failures += run_wr_case(&wr_cases[i]);
     for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++)
         failures += run_sp_case(&sp_cases[i]);
     for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++)
