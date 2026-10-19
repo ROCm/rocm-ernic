@@ -6134,15 +6134,19 @@ static const char *dc_connect(struct dc_worker *a, struct dc_worker *b,
 }
 
 /*
- * DC_DEAD_THEN_ALIVE.  DC_B's peer-connect thread makes no pass, so its dead
- * connection is still in its table when DC_A connects again, and the accept
- * thread has to replace it.
+ * DC_DEAD_THEN_ALIVE.  DC_B's peer-connect thread is stopped first, so its
+ * dead connection is still in its table when DC_A connects again, and the
+ * accept thread has to replace it.  Its first pass runs whenever the thread
+ * is scheduled, whatever the interval, and could otherwise come after the
+ * connection died and close it.  DC_B connects to nobody in this row.
  */
 static const char *dc_dead_then_alive(struct dc_worker *a, struct dc_worker *b,
                                       struct dc_conns *held)
 {
-    const char *why = dc_connect(a, b, held);
+    const char *why;
 
+    tcp_stop_peer_thread(dc_priv(b));
+    why = dc_connect(a, b, held);
     if (why)
         return why;
     if (!dc_report(a, b, false))
