@@ -186,10 +186,12 @@
   the system tests run in their guests), and the workflow `run:` blocks
   that GitHub runs under `sh`. It needs PyYAML.
 * **Breaking:** the server's vfio-user socket is now mode `0660` rather than
-  `0666`, and `rocm-ernic-launcher` no longer makes the instance sockets
-  `0666`. Whoever connects to the socket drives the emulated device as the
-  guest's QEMU, so any local user could take over an instance, or keep the
-  real VM from attaching. QEMU running as the server's user or as root, as
+  `0666`, and `rocm-ernic-launcher` and `ernicctl hot-reload` no longer make
+  the instance sockets `0666`. The server creates the socket `0660` whatever
+  its umask, rather than changing the mode after it's already listening.
+  Whoever connects to the socket drives the emulated device as the guest's
+  QEMU, so any local user could take over an instance, or keep the real VM
+  from attaching. QEMU running as the server's user or as root, as
   with `sudo ernicctl vm-launch`, is unaffected. To let a QEMU running as
   another user connect, change the socket's group to one that user belongs
   to (`chgrp`) after the server starts.

@@ -1231,10 +1231,18 @@ int main(int argc, char *argv[])
     /* Give the system a moment to release the socket */
     usleep(100000); /* 100ms */
 
-    /* Create libvfio-user context with non-blocking attach */
+    /* Create libvfio-user context with non-blocking attach.  It binds and
+     * listens on the socket here, creating it with mode 0777 less the umask,
+     * and a connection queued under a permissive umask would survive the
+     * chmod() below.  So the socket is created 0660 under a umask that takes
+     * the rest away.  The umask is per process, so this must stay ahead of
+     * the first thread, and it's restored so the log and stats files get
+     * the caller's. */
+    mode_t old_umask = umask(S_IXUSR | S_IXGRP | S_IRWXO);
     vfu_ctx =
         vfu_create_ctx(VFU_TRANS_SOCK, socket_path, LIBVFIO_USER_FLAG_ATTACH_NB,
                        dev, VFU_DEV_TYPE_PCI);
+    umask(old_umask);
     if (!vfu_ctx) {
         err(EXIT_FAILURE, "vfu_create_ctx() failed");
     }
@@ -1304,8 +1312,10 @@ int main(int argc, char *argv[])
 
     /* Connecting to a UNIX socket needs write permission on it, and whoever
      * connects drives the device as the guest's QEMU, so limit it to the
-     * owner and group whatever the umask. A QEMU running as another user can
-     * be let in by changing the socket's group to one it belongs to. */
+     * owner and group. The umask around vfu_create_ctx() already did, but a
+     * default ACL on the directory takes the umask's place, so set the mode
+     * outright too. A QEMU running as another user can be let in by changing
+     * the socket's group to one it belongs to. */
     if (chmod(socket_path, 0660) < 0) {
         fprintf(stderr,
                 "rocm-ernic: WARNING: Failed to set socket permissions: %s\n",

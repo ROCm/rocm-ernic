@@ -1390,7 +1390,6 @@ def cmd_hot_reload(args):
         sys.exit(1)
 
     inst["pid"] = proc.pid
-    os.chmod(sock_path, 0o666)
 
     # Step 5: re-attach to VM
     if had_vm and vm_snapshot:

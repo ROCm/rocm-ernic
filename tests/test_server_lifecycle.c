@@ -27,13 +27,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -73,6 +75,17 @@ static bool path_is_socket(const char *path)
     struct stat st;
 
     return stat(path, &st) == 0 && S_ISSOCK(st.st_mode);
+}
+
+/* Store path's permission bits in *mode; false if it can't be stat()ed. */
+static bool path_mode(const char *path, uint32_t *mode)
+{
+    struct stat st;
+
+    if (stat(path, &st) != 0)
+        return false;
+    *mode = (uint32_t)(st.st_mode & 07777);
+    return true;
 }
 
 static int connect_unix(const char *path)
@@ -240,7 +253,9 @@ struct lifecycle_case {
     const char *env_name; /* an environment variable for the server, or NULL */
     const char *env_value;
     bool fake_manager; /* hold @PORT@ open as a manager that never answers */
-    bool want_socket;  /* the socket should appear */
+    bool set_umask;    /* run the server under umask, not the inherited one */
+    mode_t umask;      /* the umask for set_umask */
+    bool want_socket;  /* the socket should appear, mode 0660 */
     bool settle;       /* let the server reach its attach loop first */
     enum action action;
     int clients;           /* how many times to do the action */
@@ -385,6 +400,40 @@ static const struct lifecycle_case cases[] = {
      .want_exit = 0,
      .want_dropped = 0,
      .want_shutdown = 1},
+    /* Every row that wants a socket checks its mode as it's created and
+     * again once the server is up.  The first catches a server that creates
+     * it under the inherited umask and fixes the mode afterwards, which is
+     * too late: a connection queued in between is kept. */
+    {.category = "boundary",
+     .description = "the server inherits umask 000",
+     .expected = "the socket is 0660 from the moment it appears, not 0777",
+     .backend = "loopback",
+     .set_umask = true,
+     .umask = 0,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    {.category = "boundary",
+     .description = "the server inherits umask 077",
+     .expected = "the socket is still 0660, so its group can connect",
+     .backend = "loopback",
+     .set_umask = true,
+     .umask = 077,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
     {.category = "boundary",
      .description = "three clients hang up in a row",
      .expected = "three drops logged, still listening, then a clean shutdown",
@@ -487,6 +536,8 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
             _exit(126);
         if (c->env_name && setenv(c->env_name, c->env_value, 1) < 0)
             _exit(126);
+        if (c->set_umask)
+            umask(c->umask);
         dup2(fd, STDOUT_FILENO);
         dup2(fd, STDERR_FILENO);
         close(fd);
@@ -497,16 +548,35 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
     return pid;
 }
 
-static bool wait_for_socket(pid_t pid, const char *sock)
+/*
+ * Wait for the socket to appear, and store its permission bits in *mode as
+ * soon as it does.  A server that creates the socket under the inherited
+ * umask and chmod()s it afterwards leaves it open in between, for less time
+ * than a poll interval, so @watch, an inotify descriptor on the scratch
+ * directory, wakes this up as the socket is created.  With @watch < 0 it
+ * polls.
+ */
+static bool wait_for_socket(pid_t pid, const char *sock, int watch,
+                            uint32_t *mode)
 {
     int64_t deadline = now_ms() + SOCKET_WAIT_MS;
+    char events[4096];
 
     while (now_ms() < deadline) {
-        if (path_is_socket(sock))
+        if (path_is_socket(sock) && path_mode(sock, mode))
             return true;
         if (waitpid(pid, NULL, WNOHANG) == pid)
             return false;
-        sleep_ms(10);
+        if (watch < 0) {
+            sleep_ms(10);
+            continue;
+        }
+        struct pollfd pfd = {.fd = watch, .events = POLLIN};
+
+        /* Which entry was created doesn't matter: the loop looks again. */
+        if (poll(&pfd, 1, 10) > 0)
+            while (read(watch, events, sizeof(events)) > 0)
+                ;
     }
     return false;
 }
@@ -533,7 +603,8 @@ static void describe_status(int status, char *buf, size_t len)
 static int run_case(size_t idx, const struct lifecycle_case *c)
 {
     char sock[320], log[320], backend[512], why[480] = "", got[64] = "";
-    int held[8], nheld = 0, status = 0, port_fd = -1;
+    int held[8], nheld = 0, status = 0, port_fd = -1, watch;
+    uint32_t mode = 0;
     uint16_t port = 0;
     bool ok = true;
     pid_t pid;
@@ -561,22 +632,52 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             close(port_fd);
         return 1;
     }
+    /* Set up before the server starts, so it sees the socket created. */
+    watch = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (watch >= 0 && inotify_add_watch(watch, g_dir, IN_CREATE) < 0) {
+        close(watch);
+        watch = -1;
+    }
     pid = start_server(c, backend, sock, log);
     if (pid < 0) {
         printf("FAIL %s: %s; could not fork\n", c->category, c->description);
+        if (watch >= 0)
+            close(watch);
         if (port_fd >= 0)
             close(port_fd);
         return 1;
     }
 
-    if (c->want_socket && !wait_for_socket(pid, sock)) {
+    if (c->want_socket && !wait_for_socket(pid, sock, watch, &mode)) {
         snprintf(why, sizeof(why), "the socket never appeared");
+        ok = false;
+    }
+    if (watch >= 0)
+        close(watch);
+
+    /* Whoever can connect drives the device, so not the world, not even
+     * briefly. */
+    if (ok && c->want_socket && mode != 0660) {
+        snprintf(why, sizeof(why),
+                 "the socket was mode %04" PRIo32 ", not 0660", mode);
         ok = false;
     }
 
     if (ok && c->settle && !wait_for_log(log, "waiting for client", 1)) {
         snprintf(why, sizeof(why), "never reached the attach loop");
         ok = false;
+    }
+
+    /* Nor later, once the server has finished setting it up. */
+    if (ok && c->settle) {
+        if (!path_mode(sock, &mode)) {
+            snprintf(why, sizeof(why), "the socket disappeared");
+            ok = false;
+        } else if (mode != 0660) {
+            snprintf(why, sizeof(why),
+                     "the socket became mode %04" PRIo32 ", not 0660", mode);
+            ok = false;
+        }
     }
 
     for (int i = 0; ok && i < c->clients; i++) {
