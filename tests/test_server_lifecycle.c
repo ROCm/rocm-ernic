@@ -29,18 +29,17 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/inotify.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -86,6 +85,67 @@ static bool path_mode(const char *path, uint32_t *mode)
         return false;
     *mode = (uint32_t)(st.st_mode & 07777);
     return true;
+}
+
+/*
+ * POSIX ACLs, as the kernel stores them in an extended attribute: a 32-bit
+ * version, then 8 bytes per entry (16-bit tag, 16-bit permissions, 32-bit
+ * id), all little-endian.  The kernel's <linux/posix_acl_xattr.h> describes
+ * it, but kernel headers before 6.2 don't install that.
+ */
+#define ACL_XATTR_VERSION 2
+#define ACL_USER_OBJ      0x01
+#define ACL_USER          0x02
+#define ACL_GROUP_OBJ     0x04
+#define ACL_MASK          0x10
+#define ACL_OTHER         0x20
+#define ACL_RW            0x06
+#define ACL_NO_ID         UINT32_MAX
+#define NOBODY_UID        65534
+
+/* A default ACL for a scratch directory, which is copied onto what's created
+ * in it. */
+enum dir_acl {
+    NO_ACL,    /* none: the scratch directory itself */
+    ACL_NAMED, /* owner and group rw, as the server wants, and user nobody rw,
+                  which no mode shows */
+    ACL_OPEN,  /* owner, group, and other rw, only the base entries */
+};
+
+static uint8_t *put_le(uint8_t *p, uint32_t value, size_t bytes)
+{
+    for (size_t i = 0; i < bytes; i++)
+        *p++ = (uint8_t)(value >> (8 * i));
+    return p;
+}
+
+static uint8_t *put_acl_entry(uint8_t *p, uint32_t tag, uint32_t perm,
+                              uint32_t id)
+{
+    p = put_le(p, tag, 2);
+    p = put_le(p, perm, 2);
+    return put_le(p, id, 4);
+}
+
+/* Make dir with the default ACL @kind; false if it can't. */
+static bool make_acl_dir(const char *dir, enum dir_acl kind)
+{
+    uint8_t acl[4 + 5 * 8], *p = acl;
+
+    if (mkdir(dir, 0700) < 0)
+        return false;
+    memset(acl, 0, sizeof(acl));
+    p = put_le(p, ACL_XATTR_VERSION, 4);
+    /* In the order the kernel requires: by tag, then by id. */
+    p = put_acl_entry(p, ACL_USER_OBJ, ACL_RW, ACL_NO_ID);
+    if (kind == ACL_NAMED)
+        p = put_acl_entry(p, ACL_USER, ACL_RW, NOBODY_UID);
+    p = put_acl_entry(p, ACL_GROUP_OBJ, ACL_RW, ACL_NO_ID);
+    if (kind == ACL_NAMED)
+        p = put_acl_entry(p, ACL_MASK, ACL_RW, ACL_NO_ID);
+    p = put_acl_entry(p, ACL_OTHER, kind == ACL_OPEN ? ACL_RW : 0, ACL_NO_ID);
+    return setxattr(dir, "system.posix_acl_default", acl, (size_t)(p - acl),
+                    0) == 0;
 }
 
 static int connect_unix(const char *path)
@@ -255,6 +315,7 @@ struct lifecycle_case {
     bool fake_manager; /* hold @PORT@ open as a manager that never answers */
     bool set_umask;    /* run the server under umask, not the inherited one */
     mode_t umask;      /* the umask for set_umask */
+    enum dir_acl acl;  /* put the socket in a directory with this ACL */
     bool want_socket;  /* the socket should appear, mode 0660 */
     bool settle;       /* let the server reach its attach loop first */
     enum action action;
@@ -387,6 +448,44 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "Registration timeout"},
+    /* A default ACL on the directory is copied onto the socket, and a named
+     * entry in it lets that user connect whatever the mode says, so the
+     * server refuses to serve the socket. */
+    {.category = "negative",
+     .description = "the socket's directory has a default ACL that also "
+                    "grants another user rw",
+     .expected = "the socket comes out 0660 with an ACL entry no mode "
+                 "shows; the server refuses to serve it and exits non-zero",
+     .backend = "loopback",
+     .acl = ACL_NAMED,
+     .want_socket = false,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "has an ACL"},
+    /* The kernel applies the umask to a UNIX socket before a default ACL,
+     * which can only take bits away. */
+    {.category = "boundary",
+     .description = "the socket's directory has a default ACL that grants "
+                    "everyone rw, and no named entries",
+     .expected = "the socket is still 0660, and the server serves it and "
+                 "shuts down cleanly",
+     .backend = "loopback",
+     .acl = ACL_OPEN,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
     {.category = "boundary",
      .description = "SIGTERM as soon as the socket appears",
      .expected = "a clean shutdown even before the attach loop is reached",
@@ -400,10 +499,10 @@ static const struct lifecycle_case cases[] = {
      .want_exit = 0,
      .want_dropped = 0,
      .want_shutdown = 1},
-    /* Every row that wants a socket checks its mode as it's created and
-     * again once the server is up.  The first catches a server that creates
-     * it under the inherited umask and fixes the mode afterwards, which is
-     * too late: a connection queued in between is kept. */
+    /* Every row that wants a socket checks that it's mode 0660, as soon as
+     * it appears and again once the server is up.  The server sets the mode
+     * through the umask as it creates the socket, so nothing changes it in
+     * between and these rows don't depend on timing. */
     {.category = "boundary",
      .description = "the server inherits umask 000",
      .expected = "the socket is 0660 from the moment it appears, not 0777",
@@ -549,34 +648,23 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
 }
 
 /*
- * Wait for the socket to appear, and store its permission bits in *mode as
- * soon as it does.  A server that creates the socket under the inherited
- * umask and chmod()s it afterwards leaves it open in between, for less time
- * than a poll interval, so @watch, an inotify descriptor on the scratch
- * directory, wakes this up as the socket is created.  With @watch < 0 it
- * polls.
+ * Wait for the socket to appear.  If the server exits first, this reaps it,
+ * stores its status in *status, and sets *exited.
  */
-static bool wait_for_socket(pid_t pid, const char *sock, int watch,
-                            uint32_t *mode)
+static bool wait_for_socket(pid_t pid, const char *sock, int *status,
+                            bool *exited)
 {
     int64_t deadline = now_ms() + SOCKET_WAIT_MS;
-    char events[4096];
 
+    *exited = false;
     while (now_ms() < deadline) {
-        if (path_is_socket(sock) && path_mode(sock, mode))
+        if (path_is_socket(sock))
             return true;
-        if (waitpid(pid, NULL, WNOHANG) == pid)
+        if (waitpid(pid, status, WNOHANG) == pid) {
+            *exited = true;
             return false;
-        if (watch < 0) {
-            sleep_ms(10);
-            continue;
         }
-        struct pollfd pfd = {.fd = watch, .events = POLLIN};
-
-        /* Which entry was created doesn't matter: the loop looks again. */
-        if (poll(&pfd, 1, 10) > 0)
-            while (read(watch, events, sizeof(events)) > 0)
-                ;
+        sleep_ms(10);
     }
     return false;
 }
@@ -603,13 +691,25 @@ static void describe_status(int status, char *buf, size_t len)
 static int run_case(size_t idx, const struct lifecycle_case *c)
 {
     char sock[320], log[320], backend[512], why[480] = "", got[64] = "";
-    int held[8], nheld = 0, status = 0, port_fd = -1, watch;
+    char dir[256]; /* shorter than sock, which adds a name to it */
+    int held[8], nheld = 0, status = 0, port_fd = -1;
     uint32_t mode = 0;
     uint16_t port = 0;
-    bool ok = true;
+    bool ok = true, exited = false;
     pid_t pid;
 
-    snprintf(sock, sizeof(sock), "%s/row%zu.sock", g_dir, idx);
+    /* A row with an ACL gets a directory of its own for the socket. */
+    if (c->acl == NO_ACL) {
+        snprintf(dir, sizeof(dir), "%s", g_dir);
+    } else {
+        snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
+        if (!make_acl_dir(dir, c->acl)) {
+            printf("FAIL %s: %s; could not give %s a default ACL: %s\n",
+                   c->category, c->description, dir, strerror(errno));
+            return 1;
+        }
+    }
+    snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
     snprintf(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
     unlink(sock);
 
@@ -632,35 +732,41 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             close(port_fd);
         return 1;
     }
-    /* Set up before the server starts, so it sees the socket created. */
-    watch = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-    if (watch >= 0 && inotify_add_watch(watch, g_dir, IN_CREATE) < 0) {
-        close(watch);
-        watch = -1;
-    }
     pid = start_server(c, backend, sock, log);
     if (pid < 0) {
         printf("FAIL %s: %s; could not fork\n", c->category, c->description);
-        if (watch >= 0)
-            close(watch);
         if (port_fd >= 0)
             close(port_fd);
         return 1;
     }
 
-    if (c->want_socket && !wait_for_socket(pid, sock, watch, &mode)) {
-        snprintf(why, sizeof(why), "the socket never appeared");
+    if (c->want_socket && !wait_for_socket(pid, sock, &status, &exited)) {
+        if (exited) {
+            describe_status(status, got, sizeof(got));
+            snprintf(why, sizeof(why),
+                     "the server %s before its socket "
+                     "appeared",
+                     got);
+            pid = -1; /* reaped, so there's nothing to signal or wait for */
+        } else {
+            snprintf(why, sizeof(why), "the socket never appeared");
+        }
         ok = false;
     }
-    if (watch >= 0)
-        close(watch);
 
-    /* Whoever can connect drives the device, so not the world, not even
-     * briefly. */
-    if (ok && c->want_socket && mode != 0660) {
-        snprintf(why, sizeof(why),
-                 "the socket was mode %04" PRIo32 ", not 0660", mode);
-        ok = false;
+    /* Whoever can connect drives the device, so not the world.  Checked as
+     * soon as the socket appears, and again once the server is up, in case
+     * something changes it in between. */
+    if (ok && c->want_socket) {
+        if (!path_mode(sock, &mode)) {
+            snprintf(why, sizeof(why), "could not stat the socket");
+            ok = false;
+        } else if (mode != 0660) {
+            snprintf(why, sizeof(why),
+                     "the socket was created mode %04" PRIo32 ", not 0660",
+                     mode);
+            ok = false;
+        }
     }
 
     if (ok && c->settle && !wait_for_log(log, "waiting for client", 1)) {
@@ -668,7 +774,6 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         ok = false;
     }
 
-    /* Nor later, once the server has finished setting it up. */
     if (ok && c->settle) {
         if (!path_mode(sock, &mode)) {
             snprintf(why, sizeof(why), "the socket disappeared");
@@ -783,6 +888,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
     unlink(sock);
     unlink(log);
+    if (c->acl != NO_ACL)
+        rmdir(dir);
     return 0;
 }
 

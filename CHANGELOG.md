@@ -194,7 +194,11 @@
   from attaching. QEMU running as the server's user or as root, as
   with `sudo ernicctl vm-launch`, is unaffected. To let a QEMU running as
   another user connect, change the socket's group to one that user belongs
-  to (`chgrp`) after the server starts.
+  to (`chgrp`) after the server starts. The server now also refuses to start
+  if the socket's directory has a default ACL with more than the owner,
+  group, and other entries, such as one naming another user, which the
+  socket would inherit without its mode showing it; remove the default ACL
+  (`setfacl -k`) or use another directory.
 
 ### Removed
 

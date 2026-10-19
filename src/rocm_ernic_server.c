@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/xattr.h>
 #include <syslog.h>
 #include <getopt.h>
 #include <time.h>
@@ -1025,6 +1026,55 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
     return 0;
 }
 
+/*
+ * Check that only the socket's owner and group, and root, can connect to it:
+ * no mode bits beyond 0660, and no access ACL.  The kernel applies the umask
+ * to a UNIX socket itself, so the mode check is a backstop.  The ACL is the
+ * real hole: a default ACL on the socket's directory is copied onto the
+ * socket, and its named entries can grant other users access that no mode
+ * shows.  Prints why and returns false if someone else may be able to
+ * connect, or if it can't tell.
+ */
+static bool socket_access_ok(const char *path)
+{
+    struct stat st;
+
+    if (stat(path, &st) < 0) {
+        fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
+                strerror(errno));
+        return false;
+    }
+    if (!S_ISSOCK(st.st_mode)) {
+        fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
+        return false;
+    }
+    if ((st.st_mode & 07777 & ~(mode_t)0660) != 0) {
+        fprintf(stderr,
+                "rocm-ernic: socket %s was created with mode %04o, which "
+                "lets more than its owner and group connect\n",
+                path, (unsigned)(st.st_mode & 07777));
+        return false;
+    }
+
+    /* A file whose ACL says no more than its mode has no ACL stored, and a
+     * file system without ACLs can't have one. */
+    if (getxattr(path, "system.posix_acl_access", NULL, 0) >= 0) {
+        fprintf(stderr,
+                "rocm-ernic: socket %s has an ACL, from a default ACL on its "
+                "directory, that may let other users connect; remove the "
+                "default ACL (setfacl -k) and let QEMU in by changing the "
+                "socket's group instead\n",
+                path);
+        return false;
+    }
+    if (errno != ENODATA && errno != ENOTSUP) {
+        fprintf(stderr, "rocm-ernic: cannot check the ACL of socket %s: %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 /**
  * Main entry point
  */
@@ -1232,12 +1282,14 @@ int main(int argc, char *argv[])
     usleep(100000); /* 100ms */
 
     /* Create libvfio-user context with non-blocking attach.  It binds and
-     * listens on the socket here, creating it with mode 0777 less the umask,
-     * and a connection queued under a permissive umask would survive the
-     * chmod() below.  So the socket is created 0660 under a umask that takes
-     * the rest away.  The umask is per process, so this must stay ahead of
-     * the first thread, and it's restored so the log and stats files get
-     * the caller's. */
+     * listens on the socket here, creating it with mode 0777 less the umask.
+     * Whoever connects drives the device as the guest's QEMU, and connecting
+     * needs write permission, so the socket is created 0660 under a umask
+     * that takes the rest away.  Changing the mode afterwards would be too
+     * late: a connection queued in between would be kept.  The umask is per
+     * process, so this must stay ahead of the first thread, and it's restored
+     * so the log and stats files get the caller's.  A QEMU running as another
+     * user can be let in by changing the socket's group to one it's in. */
     mode_t old_umask = umask(S_IXUSR | S_IXGRP | S_IRWXO);
     vfu_ctx =
         vfu_create_ctx(VFU_TRANS_SOCK, socket_path, LIBVFIO_USER_FLAG_ATTACH_NB,
@@ -1246,6 +1298,17 @@ int main(int argc, char *argv[])
     if (!vfu_ctx) {
         err(EXIT_FAILURE, "vfu_create_ctx() failed");
     }
+
+    /* A default ACL on the directory can still let others in.  Refuse to
+     * serve the socket then; destroying the context closes the listener, so
+     * a connection already queued on it is never accepted. */
+    if (!socket_access_ok(socket_path)) {
+        vfu_destroy_ctx(vfu_ctx);
+        exit(EXIT_FAILURE);
+    }
+    ernic_startup_report("rocm-ernic: ✓ Socket permissions set to 0660 "
+                         "(rw-rw----) for %s",
+                         socket_path);
     g_vfu_ctx = vfu_ctx;
     dev->vfu_ctx = vfu_ctx;
 
@@ -1308,25 +1371,6 @@ int main(int argc, char *argv[])
     ret = vfu_realize_ctx(vfu_ctx);
     if (ret < 0) {
         err(EXIT_FAILURE, "vfu_realize_ctx() failed");
-    }
-
-    /* Connecting to a UNIX socket needs write permission on it, and whoever
-     * connects drives the device as the guest's QEMU, so limit it to the
-     * owner and group. The umask around vfu_create_ctx() already did, but a
-     * default ACL on the directory takes the umask's place, so set the mode
-     * outright too. A QEMU running as another user can be let in by changing
-     * the socket's group to one it belongs to. */
-    if (chmod(socket_path, 0660) < 0) {
-        fprintf(stderr,
-                "rocm-ernic: WARNING: Failed to set socket permissions: %s\n",
-                strerror(errno));
-        fprintf(stderr,
-                "rocm-ernic: You may need to manually run: chmod 660 %s\n",
-                socket_path);
-    } else {
-        ernic_startup_report("rocm-ernic: ✓ Socket permissions set to 0660 "
-                             "(rw-rw----) for %s",
-                             socket_path);
     }
 
     /* Log MAC address if set */

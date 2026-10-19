@@ -45,6 +45,13 @@ started:
 
    sudo chgrp kvm /tmp/vfio-user-rocm-ernic.sock
 
+The server refuses to start if the socket's directory has a
+default ACL with more than the owner, group, and other entries,
+such as one naming another user: the socket would inherit it,
+and the user's access, without its mode showing it. Remove the
+default ACL (``setfacl -k DIR``), or put the socket in another
+directory.
+
 The Emulated Device
 -------------------
 
