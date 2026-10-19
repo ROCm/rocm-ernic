@@ -770,9 +770,9 @@ Topology
 - The manager is node 0. Workers connect to it, register, and
   get node ids 1, 2, and so on, in the order they arrive.
 - The manager broadcasts the topology; workers connect directly
-  to each other (the lower id connects to the higher). A message
-  for a node with no direct connection is relayed by the
-  manager.
+  to each other (the lower id connects to the higher), and
+  connect again if the connection drops. A message for a node
+  with no direct connection is relayed by the manager.
 - The manager sends heartbeats, notices dead nodes, and
   reconnects them.
 - The protocol carries a magic number and a version, checked at
@@ -1037,7 +1037,8 @@ Threads
      - Heartbeats, dead-node detection, reconnects
    * - peer connect
      - ``tcp`` worker
-     - Connects to peers as the topology changes
+     - Connects to peers as the topology changes, and closes dead
+       connections
 
 The rule is that **only the main thread touches guest memory**.
 Every other thread hands work to it through a locked queue: the

@@ -200,6 +200,23 @@ started with `qemu_thread_create()`.
   by reasoning about the guest driver, not by a clean TSan run.
 - **A flaky test is a suspected race until shown otherwise.** Don't retry
   it, lengthen its timeout, or add a sleep to make it pass; find the race.
+- **A test must not race the threads it tests.** A background thread that
+  acts at a time the test can't observe, such as a first pass as soon as
+  it starts or a periodic sweep, can act on state the test has set up,
+  and the test then fails only on a slow runner. Before changing state
+  such a thread manages, stop it, set the state up before starting it,
+  or wait for something the thread exposes, such as a counter. Set up only
+  states the code can really reach: the code may rightly undo one it
+  can't, such as a mesh peer connecting to a node with a lower id, which
+  the protocol forbids.
+- **Loop a new threaded test in a way that moves the timing.** Repeated
+  runs on an idle machine tend to schedule the threads the same way each
+  time, and miss a window that a slow CI runner hits. Run the new rows
+  hundreds of times in one process, pinned to one CPU with
+  `taskset -c 0`, which interleaves the threads very differently: a race
+  that failed 13 times in 300 such runs unpinned failed 168 times pinned.
+  To confirm a suspected window, delay a thread at that point in a
+  scratch copy of the source and check that the test fails.
 
 ## Security
 
@@ -819,10 +836,12 @@ the source; the rest have not:
   that never registered (`tcp_reap_pending_conns()`) and retires a
   registered node's connection when it hangs up
   (`tcp_health_check_retire()`), taking it out of the connections table. A
-  worker still keeps a dead connection to another worker, and the pair
-  never reconnect. `TcpConnection` is reference counted now, so a worker
-  can take a dead connection out of its table while the data path still
-  holds it; see the comment on `TcpConnection` for the rules.
+  worker closes a dead connection to another worker on its peer-connect
+  thread's next pass (`tcp_worker_peer_sweep()`), and the pair reconnect:
+  the accept thread and `tcp_worker_publish_peer()` replace a dead
+  connection, but never a live one. `TcpConnection` is reference counted,
+  so a connection can leave its table while the data path still holds it;
+  see the comment on `TcpConnection` for the rules.
 - An `EMFILE` retry loop with no backoff. One run produced 295 GB of
   logs. This was the accept thread: an `accept()` that fails for lack of
   descriptors leaves the connection queued, so the next one fails at once
