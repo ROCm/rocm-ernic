@@ -12,9 +12,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 
 #include "parse_int.h"
@@ -24,6 +24,13 @@ struct int_case {
     const char *input; /* NULL exercises the NULL path */
     bool expect_ok;
     int expect_val; /* checked only when expect_ok */
+};
+
+struct u32_case {
+    const char *name;
+    const char *input; /* NULL exercises the NULL path */
+    bool expect_ok;
+    uint32_t expect_val; /* checked only when expect_ok */
 };
 
 struct port_case {
@@ -45,6 +52,27 @@ static int run_int(const struct int_case *tc)
     if (ok && v != tc->expect_val) {
         printf("FAIL int %-16s: val=%d expected %d\n", tc->name, v,
                tc->expect_val);
+        return 1;
+    }
+    return 0;
+}
+
+static int run_u32(const struct u32_case *tc)
+{
+    uint32_t v = 0xDEADBEEF;
+    bool ok = ernic_parse_u32(tc->input, &v);
+    if (ok != tc->expect_ok) {
+        printf("FAIL u32 %-16s: ok=%d expected %d\n", tc->name, ok,
+               tc->expect_ok);
+        return 1;
+    }
+    if (ok && v != tc->expect_val) {
+        printf("FAIL u32 %-16s: val=%" PRIu32 " expected %" PRIu32 "\n",
+               tc->name, v, tc->expect_val);
+        return 1;
+    }
+    if (!ok && v != 0xDEADBEEF) {
+        printf("FAIL u32 %-16s: changed the output on failure\n", tc->name);
         return 1;
     }
     return 0;
@@ -82,6 +110,25 @@ int main(void)
         {"int-max", "2147483647", true, INT_MAX},
     };
 
+    /* gid_t and uid_t are 32 bits, and above INT_MAX is valid for both. */
+    static const struct u32_case u32_cases[] = {
+        {"null", NULL, false, 0},
+        {"empty", "", false, 0},
+        {"zero", "0", true, 0},
+        {"valid", "1234", true, 1234},
+        {"leading-zeros", "007", true, 7},
+        {"above-int-max", "3000000000", true, UINT32_C(3000000000)},
+        {"max", "4294967295", true, UINT32_MAX},
+        {"max-plus-one", "4294967296", false, 0},
+        {"ull-overflow", "18446744073709551616", false, 0},
+        {"negative", "-1", false, 0},
+        {"plus-sign", "+5", false, 0},
+        {"leading-space", " 5", false, 0},
+        {"trailing-space", "5 ", false, 0},
+        {"trailing-garbage", "12x", false, 0},
+        {"non-numeric", "kvm", false, 0},
+    };
+
     static const struct port_case port_cases[] = {
         {"valid", "8080", true, 8080},    {"min", "1", true, 1},
         {"max", "65535", true, 65535},    {"zero", "0", false, 0},
@@ -92,9 +139,13 @@ int main(void)
 
     int failures = 0;
     size_t ni = sizeof(int_cases) / sizeof(int_cases[0]);
+    size_t nu = sizeof(u32_cases) / sizeof(u32_cases[0]);
     size_t np = sizeof(port_cases) / sizeof(port_cases[0]);
     for (size_t i = 0; i < ni; i++) {
         failures += run_int(&int_cases[i]);
+    }
+    for (size_t i = 0; i < nu; i++) {
+        failures += run_u32(&u32_cases[i]);
     }
     for (size_t i = 0; i < np; i++) {
         failures += run_port(&port_cases[i]);
@@ -104,6 +155,6 @@ int main(void)
         printf("parse_int: %d case(s) FAILED\n", failures);
         return 1;
     }
-    printf("parse_int: all %zu cases passed\n", ni + np);
+    printf("parse_int: all %zu cases passed\n", ni + nu + np);
     return 0;
 }

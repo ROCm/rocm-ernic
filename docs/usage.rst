@@ -62,9 +62,29 @@ connect without the mode showing it. Remove the default ACL
 (``setfacl -k DIR``), or put the socket in another directory.
 
 Put the socket in a directory that only the server's user and
-root can write to, such as ``/run/rocm-ernic``, or in a sticky
-one such as ``/tmp``. Anyone who can replace entries in its
-directory can replace the socket.
+root can write to, such as ``/run/rocm-ernic``, which the
+service uses, or one of your own. Don't put it in a directory
+other users can write to, such as ``/tmp``, even though the
+server's default socket and the examples here are there. The
+sticky bit on ``/tmp`` stops other users removing or replacing
+the server's socket, but not creating their own at the same
+name first, while the server isn't running. A server that
+isn't root then can't remove it and fails to start, and a QEMU
+that connects to it gives that user the guest's memory, which
+vfio-user shares with whatever serves the device. In a
+directory others can write to that isn't sticky, they can also
+replace the server's socket.
+
+With ``--socket-group``, the group also has to be able to reach
+the socket through its directory, which ``/run/rocm-ernic``
+allows (mode ``0755``) and ``$XDG_RUNTIME_DIR`` (``0700``)
+doesn't. A directory of your own can have that group and mode
+``0710``, which lets the group reach the socket but not list or
+change the directory:
+
+.. code-block:: bash
+
+   sudo install -d -o root -g kvm -m 0710 /run/vfio-user
 
 The Emulated Device
 -------------------

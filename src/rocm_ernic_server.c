@@ -1033,15 +1033,22 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
     return 0;
 }
 
+/* A numeric --socket-group is parsed as a uint32_t, which only fits a gid_t
+ * of that width. */
+_Static_assert(sizeof(gid_t) == sizeof(uint32_t) && (gid_t)-1 > 0,
+               "gid_t must be an unsigned 32-bit type");
+
 /*
  * Resolve --socket-group: a group name or, failing that, a numeric gid, as
- * chgrp(1) does.  Returns false if it's neither.
+ * chgrp(1) does.  Any gid but (gid_t)-1 is valid, including those above
+ * INT_MAX; that one tells lchown() to leave the group alone.  Returns false
+ * if it's neither.
  */
 static bool resolve_group(const char *spec, gid_t *gid)
 {
     long max = sysconf(_SC_GETGR_R_SIZE_MAX);
     size_t len = max > 0 ? (size_t)max : 1024;
-    int n;
+    uint32_t n;
 
     /* The buffer getgrnam_r() needs has no fixed bound, so grow it until
      * the entry fits, up to a limit no real group comes near. */
@@ -1063,7 +1070,7 @@ static bool resolve_group(const char *spec, gid_t *gid)
             break;
         len *= 2;
     }
-    if (ernic_parse_int(spec, &n) && n >= 0) {
+    if (ernic_parse_u32(spec, &n) && n != (uint32_t)(gid_t)-1) {
         *gid = (gid_t)n;
         return true;
     }
@@ -1410,9 +1417,11 @@ int main(int argc, char *argv[])
      * check it again, as QEMU will find it.  Both changes act on the path,
      * which is safe only because nobody untrusted can replace entries in the
      * socket's directory: one they could write to, unless it's sticky like
-     * /tmp, would let them swap in a socket of their own anyway.  The second
-     * check would catch a path that no longer leads to this socket, but
-     * only after the change. */
+     * /tmp, would let them swap in a socket of their own anyway.  (A shared
+     * directory, sticky or not, lets them take the name before the server
+     * starts, which is why docs/usage.rst says to keep the socket out of
+     * one.)  The second check would catch a path that no longer leads to
+     * this socket, but only after the change. */
     struct stat sock_st;
 
     if (!socket_access_ok(socket_path, NULL, &sock_st) ||

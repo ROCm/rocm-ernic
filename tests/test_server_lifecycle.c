@@ -105,20 +105,25 @@ static gid_t my_other_group(void)
     return getegid();
 }
 
-/* A group this process isn't in, so it can't give a file that group. */
-static bool foreign_group(gid_t *gid)
+/* Whether this process is in group @gid; true if it can't tell. */
+static bool in_group(gid_t gid)
 {
     gid_t groups[256];
     int n = getgroups((int)(sizeof(groups) / sizeof(groups[0])), groups);
 
-    if (n < 0)
-        return false;
-    for (gid_t g = 0; g < 65536; g++) {
-        bool mine = g == getegid();
+    if (n < 0 || gid == getegid())
+        return true;
+    for (int i = 0; i < n; i++)
+        if (groups[i] == gid)
+            return true;
+    return false;
+}
 
-        for (int i = 0; i < n && !mine; i++)
-            mine = groups[i] == g;
-        if (!mine) {
+/* A group this process isn't in, so it can't give a file that group. */
+static bool foreign_group(gid_t *gid)
+{
+    for (gid_t g = 0; g < 65536; g++) {
+        if (!in_group(g)) {
             *gid = g;
             return true;
         }
@@ -365,6 +370,8 @@ enum sock_group {
     SG_MINE_NUMBER, /* the same, as a number */
     SG_UNKNOWN,     /* a name no group has */
     SG_FOREIGN,     /* the number of a group this process isn't in */
+    SG_HUGE,        /* a gid above INT_MAX this process isn't in */
+    SG_NO_CHANGE,   /* (gid_t)-1, which tells chown() to change nothing */
 };
 
 struct lifecycle_case {
@@ -571,6 +578,43 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "be a member of that group"},
+    /* gid_t is unsigned 32 bits, so a gid above INT_MAX is valid.  Reaching
+     * the lchown() at all shows the number was taken as a gid. */
+    {.category = "boundary",
+     .description = "--socket-group is 3000000000, a gid above INT_MAX the "
+                    "server isn't in",
+     .expected = "it's taken as a gid, which the server can't give the "
+                 "socket, so it removes the socket and exits non-zero",
+     .backend = "loopback",
+     .group = SG_HUGE,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "be a member of that group"},
+    {.category = "boundary",
+     .description = "--socket-group is 4294967295, which is (gid_t)-1",
+     .expected = "it's no gid, since chown() takes it to mean no change: the "
+                 "server exits non-zero before creating the socket",
+     .backend = "loopback",
+     .group = SG_NO_CHANGE,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "no such group"},
     /* Every row that wants a socket checks that it's mode 0600, or 0660 and
      * the group asked for, as soon as it appears and again once the server
      * is up.  The server sets all of it before the socket can be served. */
@@ -891,6 +935,24 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         break;
     case SG_UNKNOWN:
         snprintf(group, sizeof(group), "ernic-lifecycle-no-such-group");
+        break;
+    case SG_NO_CHANGE:
+        snprintf(group, sizeof(group), "%" PRIu32, UINT32_MAX);
+        break;
+    case SG_HUGE:
+        /* Root can give a file any group, so there's nothing to refuse. */
+        if (geteuid() == 0) {
+            printf("ok   %s: %s; not applicable as root\n", c->category,
+                   c->description);
+            return 0;
+        }
+        want_gid = (gid_t)UINT32_C(3000000000);
+        if (in_group(want_gid)) {
+            printf("FAIL %s: %s; this process is in group %u\n", c->category,
+                   c->description, (unsigned)want_gid);
+            return 1;
+        }
+        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
         break;
     case SG_FOREIGN:
         /* Root can give a file any group, so there's nothing to refuse. */
