@@ -168,13 +168,25 @@ wait_for "Registered node 2" "$RUN/1.log" || {
     cat "$RUN/1.log"; fail "two workers never registered"
 }
 
+# How many GIDs node $1's log says it has learned an owner for. A GID is
+# logged in full, 39 characters, which keeps a line still being written
+# from counting as a different one.
+gids_known() {
+    { grep -oE "node [0-9]+ owns GID [0-9a-f:]{39}" "$RUN/$1.log" \
+        2>/dev/null || true; } | sort -u | wc -l
+}
+
+# Wait for all three, not for any one line: each node logs its own GID as
+# soon as it registers, before a peer's advertisement can arrive, and worker
+# 3's own id is node 2, so "node 2 owns GID" proves nothing in its log.
 for n in 1 2 3; do
-    wait_for "node 2 owns GID" "$RUN/$n.log" \
-        || { cat "$RUN/$n.log"; fail "node $n never learned node 2's GID"; }
-    owned=$(grep -oE "node [0-9]+ owns GID [0-9a-f:]+" "$RUN/$n.log" \
-            | sort -u | wc -l)
+    elapsed=0
+    while [ "$(gids_known "$n")" -lt 3 ] && [ $elapsed -lt 120 ]; do
+        sleep 0.5; elapsed=$((elapsed + 1))
+    done
+    owned=$(gids_known "$n")
     [ "$owned" -eq 3 ] \
-        || fail "node $n knows $owned of 3 GIDs"
+        || { cat "$RUN/$n.log"; fail "node $n knows $owned of 3 GIDs"; }
 done
 pass "every node resolved all three GIDs"
 

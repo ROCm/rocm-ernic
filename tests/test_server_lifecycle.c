@@ -5,8 +5,10 @@
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
  * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Three things are pinned here:
+ * status and the log.  Four things are pinned here:
  *
+ *   - only the socket's owner, and the group --socket-group names, can
+ *     connect to it, whatever the umask or a default ACL on its directory;
  *   - a client that drops out during vfio-user negotiation no longer takes
  *     the server down: it logs the drop and waits for the next client;
  *   - a clean shutdown frees the ionic layer.  When the server itself is
@@ -30,10 +32,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +45,7 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -76,6 +80,134 @@ static bool path_is_socket(const char *path)
     struct stat st;
 
     return stat(path, &st) == 0 && S_ISSOCK(st.st_mode);
+}
+
+/* Store path's permission bits in *mode and its group in *gid, without
+ * following a symlink; false if it can't be lstat()ed. */
+static bool path_perms(const char *path, uint32_t *mode, uint32_t *gid)
+{
+    struct stat st;
+
+    if (lstat(path, &st) != 0)
+        return false;
+    *mode = (uint32_t)(st.st_mode & 07777);
+    *gid = (uint32_t)st.st_gid;
+    return true;
+}
+
+/* A group this process is in: another than its own if it has one, so that
+ * giving the socket that group changes something. */
+static gid_t my_other_group(void)
+{
+    gid_t groups[256];
+    int n = getgroups((int)(sizeof(groups) / sizeof(groups[0])), groups);
+
+    for (int i = 0; i < n; i++)
+        if (groups[i] != getegid())
+            return groups[i];
+    return getegid();
+}
+
+/* Whether this process is in group @gid; true if it can't tell. */
+static bool in_group(gid_t gid)
+{
+    gid_t groups[256];
+    int n = getgroups((int)(sizeof(groups) / sizeof(groups[0])), groups);
+
+    if (n < 0 || gid == getegid())
+        return true;
+    for (int i = 0; i < n; i++)
+        if (groups[i] == gid)
+            return true;
+    return false;
+}
+
+/* A group this process isn't in, so it can't give a file that group. */
+static bool foreign_group(gid_t *gid)
+{
+    for (gid_t g = 0; g < 65536; g++) {
+        if (!in_group(g)) {
+            *gid = g;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Store the name of group @gid in @buf, or its number if it has none. */
+static void group_name(gid_t gid, char *buf, size_t len)
+{
+    char grbuf[4096];
+    struct group grp, *found = NULL;
+
+    if (getgrgid_r(gid, &grp, grbuf, sizeof(grbuf), &found) == 0 && found)
+        snprintf(buf, len, "%s", found->gr_name);
+    else
+        snprintf(buf, len, "%u", (unsigned)gid);
+}
+
+/*
+ * POSIX ACLs, as the kernel stores them in an extended attribute: a 32-bit
+ * version, then 8 bytes per entry (16-bit tag, 16-bit permissions, 32-bit
+ * id), all little-endian.  The kernel's <linux/posix_acl_xattr.h> describes
+ * it, but kernel headers before 6.2 don't install that.
+ */
+#define ACL_XATTR_VERSION 2
+#define ACL_USER_OBJ      0x01
+#define ACL_USER          0x02
+#define ACL_GROUP_OBJ     0x04
+#define ACL_MASK          0x10
+#define ACL_OTHER         0x20
+#define ACL_RW            0x06
+#define ACL_NO_ID         UINT32_MAX
+#define NOBODY_UID        65534
+
+/* A default ACL for a scratch directory, which is copied onto what's created
+ * in it. */
+enum dir_acl {
+    NO_ACL,    /* none: the scratch directory itself */
+    ACL_NAMED, /* owner and group rw, and user nobody rw, which no mode
+                  shows */
+    ACL_OPEN,  /* owner, group, and other rw, only the base entries */
+    ACL_TIGHT, /* owner rw and nothing for anyone else, only the base
+                  entries */
+};
+
+static uint8_t *put_le(uint8_t *p, uint32_t value, size_t bytes)
+{
+    for (size_t i = 0; i < bytes; i++)
+        *p++ = (uint8_t)(value >> (8 * i));
+    return p;
+}
+
+static uint8_t *put_acl_entry(uint8_t *p, uint32_t tag, uint32_t perm,
+                              uint32_t id)
+{
+    p = put_le(p, tag, 2);
+    p = put_le(p, perm, 2);
+    return put_le(p, id, 4);
+}
+
+/* Make dir with the default ACL @kind; false if it can't. */
+static bool make_acl_dir(const char *dir, enum dir_acl kind)
+{
+    uint8_t acl[4 + 5 * 8], *p = acl;
+
+    if (mkdir(dir, 0700) < 0)
+        return false;
+    memset(acl, 0, sizeof(acl));
+    p = put_le(p, ACL_XATTR_VERSION, 4);
+    /* In the order the kernel requires: by tag, then by id. */
+    p = put_acl_entry(p, ACL_USER_OBJ, ACL_RW, ACL_NO_ID);
+    if (kind == ACL_NAMED)
+        p = put_acl_entry(p, ACL_USER, ACL_RW, NOBODY_UID);
+    p = put_acl_entry(p, ACL_GROUP_OBJ, kind == ACL_TIGHT ? 0 : ACL_RW,
+                      ACL_NO_ID);
+    if (kind == ACL_NAMED)
+        p = put_acl_entry(p, ACL_MASK, ACL_RW, ACL_NO_ID);
+    p = put_acl_entry(p, ACL_OTHER, kind == ACL_OPEN ? ACL_RW : 0, ACL_NO_ID);
+    return setxattr(dir, "system.posix_acl_default", acl, (size_t)(p - acl),
+                    0) == 0;
 }
 
 static int connect_unix(const char *path)
@@ -234,6 +366,17 @@ static int send_bad_header(int fd)
 
 /* ---- Tests ------------------------------------------------------------- */
 
+/* What to pass as --socket-group. */
+enum sock_group {
+    SG_NONE,        /* nothing: the socket is the owner's alone, 0600 */
+    SG_MINE_NAME,   /* the name of a group this process is in: 0660 */
+    SG_MINE_NUMBER, /* the same, as a number */
+    SG_UNKNOWN,     /* a name no group has */
+    SG_FOREIGN,     /* the number of a group this process isn't in */
+    SG_HUGE,        /* a gid above INT_MAX this process isn't in */
+    SG_NO_CHANGE,   /* (gid_t)-1, which tells chown() to change nothing */
+};
+
 struct lifecycle_case {
     const char *category;
     const char *description;
@@ -243,8 +386,14 @@ struct lifecycle_case {
     const char *env_name; /* an environment variable for the server, or NULL */
     const char *env_value;
     bool fake_manager; /* hold @PORT@ open as a manager that never answers */
-    bool want_socket;  /* the socket should appear */
-    bool settle;       /* let the server reach its attach loop first */
+    bool set_umask;    /* run the server under umask, not the inherited one */
+    mode_t umask;      /* the umask for set_umask */
+    enum dir_acl acl;  /* put the socket in a directory with this ACL */
+    enum sock_group group;
+    bool want_socket; /* the socket should appear, mode 0600, or 0660 and the
+                         group asked for */
+    bool want_gone;   /* refused: no socket left once the server exits */
+    bool settle;      /* let the server reach its attach loop first */
     enum action action;
     int clients;           /* how many times to do the action */
     int sig;               /* signal to send (0: none, wait for exit) */
@@ -375,12 +524,193 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "Registration timeout"},
+    /* A default ACL on the directory is copied onto the socket, and a named
+     * entry in it lets that user connect whatever the mode says, so the
+     * server refuses to serve the socket.  It checks before --socket-group
+     * widens the mode, and with it the ACL mask, which would let the entry
+     * take effect. */
+    {.category = "negative",
+     .description = "the socket's directory has a default ACL that also "
+                    "grants another user rw, with --socket-group",
+     .expected = "the socket has an ACL entry no mode shows; the server "
+                 "refuses to serve it, removes it, and exits non-zero",
+     .backend = "loopback",
+     .acl = ACL_NAMED,
+     .group = SG_MINE_NAME,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "has an ACL"},
+    {.category = "negative",
+     .description = "--socket-group names no group",
+     .expected = "the server exits non-zero before creating the socket",
+     .backend = "loopback",
+     .group = SG_UNKNOWN,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "no such group"},
+    {.category = "negative",
+     .description = "--socket-group is a group the server isn't in",
+     .expected = "it can't give the socket that group, so it removes the "
+                 "socket and exits non-zero",
+     .backend = "loopback",
+     .group = SG_FOREIGN,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "be a member of that group"},
+    /* gid_t is unsigned 32 bits, so a gid above INT_MAX is valid.  Reaching
+     * the lchown() at all shows the number was taken as a gid. */
+    {.category = "boundary",
+     .description = "--socket-group is 3000000000, a gid above INT_MAX the "
+                    "server isn't in",
+     .expected = "it's taken as a gid, which the server can't give the "
+                 "socket, so it removes the socket and exits non-zero",
+     .backend = "loopback",
+     .group = SG_HUGE,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "be a member of that group"},
+    {.category = "boundary",
+     .description = "--socket-group is 4294967295, which is (gid_t)-1",
+     .expected = "it's no gid, since chown() takes it to mean no change: the "
+                 "server exits non-zero before creating the socket",
+     .backend = "loopback",
+     .group = SG_NO_CHANGE,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "no such group"},
+    /* Every row that wants a socket checks that it's mode 0600, or 0660 and
+     * the group asked for, as soon as it appears and again once the server
+     * is up.  The server sets all of it before the socket can be served. */
+    {.category = "positive",
+     .description = "--socket-group names a group the server is in",
+     .expected = "the socket is 0660 with that group, served, then a clean "
+                 "shutdown",
+     .backend = "loopback",
+     .group = SG_MINE_NAME,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    /* The kernel applies the umask to a UNIX socket before a default ACL,
+     * which can only take bits away. */
+    {.category = "boundary",
+     .description = "the socket's directory has a default ACL that grants "
+                    "everyone rw, and no named entries",
+     .expected = "the socket is still 0600, and the server serves it and "
+                 "shuts down cleanly",
+     .backend = "loopback",
+     .acl = ACL_OPEN,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    /* That ACL takes away what --socket-group then gives back. */
+    {.category = "boundary",
+     .description = "the socket's directory has a default ACL that grants "
+                    "the group nothing, with --socket-group",
+     .expected = "the socket is still 0660 with the group asked for, so the "
+                 "group can connect",
+     .backend = "loopback",
+     .acl = ACL_TIGHT,
+     .group = SG_MINE_NAME,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
     {.category = "boundary",
      .description = "SIGTERM as soon as the socket appears",
      .expected = "a clean shutdown even before the attach loop is reached",
      .backend = "loopback",
      .want_socket = true,
      .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    {.category = "boundary",
+     .description = "the server inherits umask 000",
+     .expected = "the socket is 0600 from the moment it appears, not 0777",
+     .backend = "loopback",
+     .set_umask = true,
+     .umask = 0,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    {.category = "boundary",
+     .description = "the server inherits umask 077, with --socket-group as a "
+                    "number",
+     .expected = "the socket is still 0660 with that group, so the group "
+                 "can connect",
+     .backend = "loopback",
+     .set_umask = true,
+     .umask = 077,
+     .group = SG_MINE_NUMBER,
+     .want_socket = true,
+     .settle = true,
      .action = IDLE,
      .clients = 0,
      .sig = SIGTERM,
@@ -476,8 +806,9 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
     return true;
 }
 
+/* @group is the --socket-group to pass, or NULL for none. */
 static pid_t start_server(const struct lifecycle_case *c, const char *backend,
-                          const char *sock, const char *log)
+                          const char *sock, const char *log, const char *group)
 {
     pid_t pid = fork();
 
@@ -494,28 +825,74 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
             _exit(126);
         if (c->env_name && setenv(c->env_name, c->env_value, 1) < 0)
             _exit(126);
+        if (c->set_umask)
+            umask(c->umask);
         dup2(fd, STDOUT_FILENO);
         dup2(fd, STDERR_FILENO);
         close(fd);
-        execl(g_server, g_server, "--socket", sock, "--backend", backend,
-              (char *)NULL);
+        if (group)
+            execl(g_server, g_server, "--socket", sock, "--backend", backend,
+                  "--socket-group", group, (char *)NULL);
+        else
+            execl(g_server, g_server, "--socket", sock, "--backend", backend,
+                  (char *)NULL);
         _exit(127);
     }
     return pid;
 }
 
-static bool wait_for_socket(pid_t pid, const char *sock)
+/*
+ * Wait for the socket to appear.  If the server exits first, this reaps it,
+ * stores its status in *status, and sets *exited.
+ */
+static bool wait_for_socket(pid_t pid, const char *sock, int *status,
+                            bool *exited)
 {
     int64_t deadline = now_ms() + SOCKET_WAIT_MS;
 
+    *exited = false;
     while (now_ms() < deadline) {
         if (path_is_socket(sock))
             return true;
-        if (waitpid(pid, NULL, WNOHANG) == pid)
+        if (waitpid(pid, status, WNOHANG) == pid) {
+            *exited = true;
             return false;
+        }
         sleep_ms(10);
     }
     return false;
+}
+
+/*
+ * Check that the socket is mode @want_mode and, if that's 0660, has group
+ * @want_gid.  If not, says why in @why, mentioning @when.  With @early, the
+ * server may not have let the group in yet, so 0600 will do too: it's
+ * created that way, and only then given the group and widened.
+ */
+static bool socket_perms_ok(const char *sock, uint32_t want_mode,
+                            gid_t want_gid, bool early, const char *when,
+                            char *why, size_t len)
+{
+    uint32_t mode, gid;
+
+    if (!path_perms(sock, &mode, &gid)) {
+        snprintf(why, len, "could not stat the socket %s", when);
+        return false;
+    }
+    if (early && mode == 0600)
+        return true;
+    if (mode != want_mode) {
+        snprintf(why, len,
+                 "the socket was mode %04" PRIo32 " %s, not %04" PRIo32, mode,
+                 when, want_mode);
+        return false;
+    }
+    if (want_mode == 0660 && gid != (uint32_t)want_gid) {
+        snprintf(why, len, "the socket had group %" PRIu32 " %s, not %u", gid,
+                 when, (unsigned)want_gid);
+        return false;
+    }
+    return true;
 }
 
 static bool exit_matches(int status, int want)
@@ -540,12 +917,79 @@ static void describe_status(int status, char *buf, size_t len)
 static int run_case(size_t idx, const struct lifecycle_case *c)
 {
     char sock[320], log[320], backend[512], why[480] = "", got[64] = "";
+    char dir[256]; /* shorter than sock, which adds a name to it */
+    char group[64];
     int held[8], nheld = 0, status = 0, port_fd = -1;
+    uint32_t want_mode = 0600;
     uint16_t port = 0;
-    bool ok = true;
+    gid_t want_gid = 0;
+    bool ok = true, exited = false;
     pid_t pid;
 
-    snprintf(sock, sizeof(sock), "%s/row%zu.sock", g_dir, idx);
+    switch (c->group) {
+    case SG_NONE:
+    default:
+        break;
+    case SG_MINE_NAME:
+        want_gid = my_other_group();
+        group_name(want_gid, group, sizeof(group));
+        want_mode = 0660;
+        break;
+    case SG_MINE_NUMBER:
+        want_gid = my_other_group();
+        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
+        want_mode = 0660;
+        break;
+    case SG_UNKNOWN:
+        snprintf(group, sizeof(group), "ernic-lifecycle-no-such-group");
+        break;
+    case SG_NO_CHANGE:
+        snprintf(group, sizeof(group), "%" PRIu32, UINT32_MAX);
+        break;
+    case SG_HUGE:
+        /* Root can give a file any group, so there's nothing to refuse. */
+        if (geteuid() == 0) {
+            printf("ok   %s: %s; not applicable as root\n", c->category,
+                   c->description);
+            return 0;
+        }
+        want_gid = (gid_t)UINT32_C(3000000000);
+        if (in_group(want_gid)) {
+            printf("FAIL %s: %s; this process is in group %u\n", c->category,
+                   c->description, (unsigned)want_gid);
+            return 1;
+        }
+        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
+        break;
+    case SG_FOREIGN:
+        /* Root can give a file any group, so there's nothing to refuse. */
+        if (geteuid() == 0) {
+            printf("ok   %s: %s; not applicable as root\n", c->category,
+                   c->description);
+            return 0;
+        }
+        if (!foreign_group(&want_gid)) {
+            printf("FAIL %s: %s; could not find a group this process isn't "
+                   "in\n",
+                   c->category, c->description);
+            return 1;
+        }
+        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
+        break;
+    }
+
+    /* A row with an ACL gets a directory of its own for the socket. */
+    if (c->acl == NO_ACL) {
+        snprintf(dir, sizeof(dir), "%s", g_dir);
+    } else {
+        snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
+        if (!make_acl_dir(dir, c->acl)) {
+            printf("FAIL %s: %s; could not give %s a default ACL: %s\n",
+                   c->category, c->description, dir, strerror(errno));
+            return 1;
+        }
+    }
+    snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
     snprintf(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
     unlink(sock);
 
@@ -568,7 +1012,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             close(port_fd);
         return 1;
     }
-    pid = start_server(c, backend, sock, log);
+    pid =
+        start_server(c, backend, sock, log, c->group == SG_NONE ? NULL : group);
     if (pid < 0) {
         printf("FAIL %s: %s; could not fork\n", c->category, c->description);
         if (port_fd >= 0)
@@ -576,15 +1021,36 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         return 1;
     }
 
-    if (c->want_socket && !wait_for_socket(pid, sock)) {
-        snprintf(why, sizeof(why), "the socket never appeared");
+    if (c->want_socket && !wait_for_socket(pid, sock, &status, &exited)) {
+        if (exited) {
+            describe_status(status, got, sizeof(got));
+            snprintf(why, sizeof(why),
+                     "the server %s before its socket "
+                     "appeared",
+                     got);
+            pid = -1; /* reaped, so there's nothing to signal or wait for */
+        } else {
+            snprintf(why, sizeof(why), "the socket never appeared");
+        }
         ok = false;
     }
+
+    /* Whoever can connect drives the device, so only the owner and the group
+     * asked for, at any moment.  Checked as soon as the socket appears, and
+     * again once the server is up, when it must be exactly what was asked
+     * for. */
+    if (ok && c->want_socket)
+        ok = socket_perms_ok(sock, want_mode, want_gid, true, "as it appeared",
+                             why, sizeof(why));
 
     if (ok && c->settle && !wait_for_log(log, "waiting for client", 1)) {
         snprintf(why, sizeof(why), "never reached the attach loop");
         ok = false;
     }
+
+    if (ok && c->want_socket && c->settle)
+        ok = socket_perms_ok(sock, want_mode, want_gid, false, "once serving",
+                             why, sizeof(why));
 
     for (int i = 0; ok && i < c->clients; i++) {
         int fd = connect_unix(sock);
@@ -672,6 +1138,11 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
                  c->want_shutdown);
         ok = false;
     }
+    /* A refused socket must not be left behind: the server closed it. */
+    if (ok && c->want_gone && access(sock, F_OK) == 0) {
+        snprintf(why, sizeof(why), "the refused socket is still there");
+        ok = false;
+    }
     if (ok && c->want_line && count_in_log(log, c->want_line) == 0) {
         snprintf(why, sizeof(why), "log lacks '%s'", c->want_line);
         ok = false;
@@ -689,6 +1160,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
     unlink(sock);
     unlink(log);
+    if (c->acl != NO_ACL)
+        rmdir(dir);
     return 0;
 }
 

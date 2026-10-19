@@ -359,7 +359,6 @@ jobs:
           
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
-            chmod 666 /tmp/vfio-user-rocm-ernic.sock 2>/dev/null || true
             echo "✓ Server started (PID: $SERVER_PID)"
             echo "✓ Socket created: /tmp/vfio-user-rocm-ernic.sock"
             ls -la /tmp/vfio-user-rocm-ernic.sock
@@ -1910,7 +1909,6 @@ jobs:
           
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-server1.sock ]; then
-            chmod 666 /tmp/vfio-user-server1.sock 2>/dev/null || true
             echo "✓ Server 1 started (PID: $SERVER1_PID)"
             echo "✓ Socket created: /tmp/vfio-user-server1.sock"
             ls -la /tmp/vfio-user-server1.sock
@@ -2019,7 +2017,6 @@ jobs:
         
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-server2.sock ]; then
-            chmod 666 /tmp/vfio-user-server2.sock 2>/dev/null || true
             echo "✓ Server 2 started (PID: $SERVER2_PID)"
             echo "✓ Socket created: /tmp/vfio-user-server2.sock"
             ls -la /tmp/vfio-user-server2.sock

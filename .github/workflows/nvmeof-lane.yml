@@ -311,7 +311,6 @@ jobs:
           
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
-            chmod 666 /tmp/vfio-user-rocm-ernic.sock 2>/dev/null || true
             echo "✓ Server started (PID: $SERVER_PID)"
             echo "✓ Socket created: /tmp/vfio-user-rocm-ernic.sock"
             ls -la /tmp/vfio-user-rocm-ernic.sock

@@ -261,6 +261,22 @@ Avoid them in new code, tests included: the scanners analyze the tests
 like everything else. When a scanner reports something new, add the
 general pattern here.
 
+- **A file or socket others can write to.** CodeQL's
+  `cpp/world-writable-file-creation` reports a `chmod()`, `open()`, or
+  `creat()` with a mode such as `0666`. Give access to the owner, and a
+  group only where one needs it. For something that mustn't be reachable
+  even briefly, create it under a restrictive `umask()` rather than
+  narrowing its mode afterwards: a client that connects to a socket in
+  between keeps its connection. `rocm_ernic_server.c` creates the
+  vfio-user socket that way.
+- **Checking a path and then acting on it.** CodeQL's
+  `cpp/toctou-race-condition` reports a `stat()`, `lstat()`, or `access()`
+  on a path followed, in the same function, by a `chmod()`, `chown()`,
+  `unlink()`, `open()`, or the like on that path, since what the path
+  leads to can change in between. Act on a file descriptor where one
+  exists, or skip the check, do the operation, and check what it did.
+  The removal of a stale socket in `rocm_ernic_server.c` still does
+  `stat()` then `unlink()`, which CodeQL reports.
 - **Running a program named by the environment or the command line.**
   CodeQL's `cpp/uncontrolled-process-operation` reports a value from
   `getenv()` or `argv` that reaches `exec*()`, `system()`, or `popen()`.

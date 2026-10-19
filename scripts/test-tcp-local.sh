@@ -106,7 +106,6 @@ SERVER1_PID=$!
 echo "Waiting for manager socket..."
 for i in {1..10}; do
     if [ -S /tmp/vfio-user-server1.sock ]; then
-        chmod 666 /tmp/vfio-user-server1.sock 2>/dev/null || true
         echo -e "${GREEN}✓ Manager started (PID: $SERVER1_PID)${NC}"
         break
     fi
@@ -147,7 +146,6 @@ SERVER2_PID=$!
 echo "Waiting for worker 1 socket..."
 for i in {1..10}; do
     if [ -S /tmp/vfio-user-server2.sock ]; then
-        chmod 666 /tmp/vfio-user-server2.sock 2>/dev/null || true
         echo -e "${GREEN}✓ Worker 1 started (PID: $SERVER2_PID)${NC}"
         break
     fi
@@ -188,7 +186,6 @@ SERVER3_PID=$!
 echo "Waiting for worker 2 socket..."
 for i in {1..10}; do
     if [ -S /tmp/vfio-user-server3.sock ]; then
-        chmod 666 /tmp/vfio-user-server3.sock 2>/dev/null || true
         echo -e "${GREEN}✓ Worker 2 started (PID: $SERVER3_PID)${NC}"
         break
     fi

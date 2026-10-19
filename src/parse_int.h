@@ -46,6 +46,32 @@ static inline bool ernic_parse_int(const char *s, int *out)
 }
 
 /*
+ * Parse a base-10 uint32_t in [0, UINT32_MAX]. Rejects NULL/empty input,
+ * anything but digits, and values above UINT32_MAX. Unlike
+ * ernic_parse_int(), it takes no sign and no leading space: strtoull()
+ * would accept "-1" and wrap it to the largest value. On success stores the
+ * value in *out and returns true; otherwise leaves *out untouched and
+ * returns false.
+ */
+static inline bool ernic_parse_u32(const char *s, uint32_t *out)
+{
+    if (!s || *s < '0' || *s > '9') {
+        return false;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(s, &end, 10);
+
+    if (errno != 0 || *end != '\0' || v > UINT32_MAX) {
+        return false;
+    }
+
+    *out = (uint32_t)v;
+    return true;
+}
+
+/*
  * Parse a TCP port in [1, 65535]. Returns true on success (value in *out),
  * false for anything out of range, non-numeric, or zero.
  */
