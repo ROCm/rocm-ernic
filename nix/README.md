@@ -250,7 +250,10 @@ uses the self-contained `loopback` backend with the socket under
 
 **Deployment note.** rocm-ernic and QEMU rendezvous over a **UNIX socket** (the
 `vfio-user-pci` transport), so a container must share that socket path with
-whoever attaches to it — bind-mount the socket directory. The `loopback` and
+whoever attaches to it — bind-mount the socket directory. The socket is mode
+`0600`, so only root and the server's user can connect; to let a host QEMU
+that runs as another user in, pass `--socket-group` the numeric gid of a group
+it's in (group names in the image aren't the host's). The `loopback` and
 `tcp` backends containerize cleanly; the `verbs` backend needs host RDMA
 devices (`/dev/infiniband`) and elevated privileges, so it is not a clean
 container target.

@@ -6,6 +6,12 @@
 
 * `-L` / `--log-level` and the `ERNIC_LOG_LEVEL` environment variable select
   the server log verbosity (`none`, `error`, `warn`, `info`, `debug`).
+* `-G` / `--socket-group GROUP` lets the members of a group, given by name
+  or number, connect to the server's vfio-user socket, which it makes mode
+  `0660` with that group before serving it. The server has to run as root or
+  be a member of the group. `ERNIC_SOCKET_GROUP` in `rocm-ernic.env` passes
+  it to every instance the service starts, and to `ernicctl hot-reload`, so
+  a QEMU that doesn't run as root can connect, and still can after a restart.
 * The server presents an AMD Pensando ionic NIC (`1dd8:1002`, subsystem
   `1dd8:5400`) so the guest can use the upstream Linux `ionic` and
   `ionic_rdma` drivers. The guest-side patch in `patches/` is built into a DKMS
@@ -185,20 +191,21 @@
   `run:` steps, the scripts that heredocs feed to a shell (such as the ones
   the system tests run in their guests), and the workflow `run:` blocks
   that GitHub runs under `sh`. It needs PyYAML.
-* **Breaking:** the server's vfio-user socket is now mode `0660` rather than
-  `0666`, and `rocm-ernic-launcher` and `ernicctl hot-reload` no longer make
-  the instance sockets `0666`. The server creates the socket `0660` whatever
-  its umask, rather than changing the mode after it's already listening.
-  Whoever connects to the socket drives the emulated device as the guest's
-  QEMU, so any local user could take over an instance, or keep the real VM
-  from attaching. QEMU running as the server's user or as root, as
-  with `sudo ernicctl vm-launch`, is unaffected. To let a QEMU running as
-  another user connect, change the socket's group to one that user belongs
-  to (`chgrp`) after the server starts. The server now also refuses to start
-  if the socket's directory has a default ACL with more than the owner,
-  group, and other entries, such as one naming another user, which the
-  socket would inherit without its mode showing it; remove the default ACL
-  (`setfacl -k`) or use another directory.
+* **Breaking:** the server's vfio-user socket is now mode `0600`, so only
+  the server's user and root can connect, rather than `0666`, and
+  `rocm-ernic-launcher` and `ernicctl hot-reload` no longer make the instance
+  sockets `0666`. Whoever connects to the socket drives the emulated device
+  as the guest's QEMU, so any local user could take over an instance, or
+  keep the real VM from attaching. The server creates the socket with these
+  permissions whatever its umask, rather than changing them after it's
+  already listening. QEMU running as the server's user or as root, as with
+  `sudo ernicctl vm-launch`, is unaffected. To let a QEMU running as another
+  user connect, use the new `--socket-group` (`ERNIC_SOCKET_GROUP` for the
+  service). The server also refuses to start if the socket ends up with
+  other permissions or an ACL, which a default ACL on its directory can
+  cause, since an ACL entry naming another user lets that user connect
+  without the mode showing it; remove the default ACL (`setfacl -k`) or use
+  another directory.
 
 ### Removed
 

@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <grp.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -45,6 +46,7 @@
 #include "ionic_rdma_devcmd.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
+#include "parse_int.h"
 #include "rocm-ernic-warnings.h"
 
 static const char *get_backend_type_base(const char *backend_str);
@@ -650,6 +652,11 @@ static void usage(const char *progname)
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
+    fprintf(stderr, "  -G, --socket-group GROUP Let this group, a name or a "
+                    "gid, connect to the\n");
+    fprintf(stderr, "                       socket (mode 0660); without it, "
+                    "only its owner\n");
+    fprintf(stderr, "                       and root can (mode 0600)\n");
     fprintf(stderr, "  -b, --backend TYPE   RDMA backend: "
                     "none|loopback|verbs|tcp|nvmeof|s3\n");
     fprintf(stderr, "                       (default: loopback)\n");
@@ -1027,43 +1034,116 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
 }
 
 /*
- * Check that only the socket's owner and group, and root, can connect to it:
- * no mode bits beyond 0660, and no access ACL.  The kernel applies the umask
- * to a UNIX socket itself, so the mode check is a backstop.  The ACL is the
- * real hole: a default ACL on the socket's directory is copied onto the
- * socket, and its named entries can grant other users access that no mode
- * shows.  Prints why and returns false if someone else may be able to
- * connect, or if it can't tell.
+ * Resolve --socket-group: a group name or, failing that, a numeric gid, as
+ * chgrp(1) does.  Returns false if it's neither.
  */
-static bool socket_access_ok(const char *path)
+static bool resolve_group(const char *spec, gid_t *gid)
 {
-    struct stat st;
+    long max = sysconf(_SC_GETGR_R_SIZE_MAX);
+    size_t len = max > 0 ? (size_t)max : 1024;
+    int n;
 
-    if (stat(path, &st) < 0) {
+    /* The buffer getgrnam_r() needs has no fixed bound, so grow it until
+     * the entry fits, up to a limit no real group comes near. */
+    for (;;) {
+        struct group grp, *found = NULL;
+        char *buf = malloc(len);
+        int rc;
+
+        if (!buf)
+            return false;
+        rc = getgrnam_r(spec, &grp, buf, len, &found);
+        if (rc == 0 && found) {
+            *gid = found->gr_gid;
+            free(buf);
+            return true;
+        }
+        free(buf);
+        if (rc != ERANGE || len >= ((size_t)1 << 20))
+            break;
+        len *= 2;
+    }
+    if (ernic_parse_int(spec, &n) && n >= 0) {
+        *gid = (gid_t)n;
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Give the socket at @path the group @gid (@name, for messages), then mode
+ * 0660 to let that group in.  Prints why and returns false if it can't.
+ */
+static bool socket_set_group(const char *path, const char *name, gid_t gid)
+{
+    if (lchown(path, (uid_t)-1, gid) < 0) {
+        int e = errno;
+
+        fprintf(stderr, "rocm-ernic: cannot give socket %s the group %s: %s\n",
+                path, name, strerror(e));
+        if (e == EPERM)
+            fprintf(stderr, "rocm-ernic: the server has to run as root or "
+                            "be a member of that group\n");
+        return false;
+    }
+    if (chmod(path, 0660) < 0) {
+        fprintf(stderr, "rocm-ernic: cannot make socket %s mode 0660: %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Check that exactly the socket's owner, and root, can connect to it, plus
+ * the group @want_gid if it isn't NULL: mode 0600, or 0660 with that group,
+ * and no access ACL.  Whatever is at @path is checked as it is, without
+ * following a symlink.  Prints why and returns false if anyone else may be
+ * able to connect, if the owner or group may not be able to, or if it can't
+ * tell.  On success *st holds what was checked.
+ *
+ * The umask the socket was created under only lets the owner in, and the
+ * kernel applies it to a UNIX socket itself, so the mode check is a
+ * backstop: a default ACL on the directory can only take bits away.  The ACL
+ * is the hole.  A default ACL is copied onto the socket, and a named entry
+ * in it lets that user or group connect whatever the mode says.
+ */
+static bool socket_access_ok(const char *path, const gid_t *want_gid,
+                             struct stat *st)
+{
+    mode_t want_mode = want_gid ? 0660 : 0600;
+
+    if (lstat(path, st) < 0) {
         fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
                 strerror(errno));
         return false;
     }
-    if (!S_ISSOCK(st.st_mode)) {
+    if (!S_ISSOCK(st->st_mode)) {
         fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
         return false;
     }
-    if ((st.st_mode & 07777 & ~(mode_t)0660) != 0) {
+    if ((st->st_mode & 07777) != want_mode) {
         fprintf(stderr,
-                "rocm-ernic: socket %s was created with mode %04o, which "
-                "lets more than its owner and group connect\n",
-                path, (unsigned)(st.st_mode & 07777));
+                "rocm-ernic: socket %s is mode %04o, not %04o; a default ACL "
+                "on its directory can do that, so remove it (setfacl -k) or "
+                "use another directory\n",
+                path, (unsigned)(st->st_mode & 07777), (unsigned)want_mode);
+        return false;
+    }
+    if (want_gid && st->st_gid != *want_gid) {
+        fprintf(stderr, "rocm-ernic: socket %s has group %u, not %u\n", path,
+                (unsigned)st->st_gid, (unsigned)*want_gid);
         return false;
     }
 
     /* A file whose ACL says no more than its mode has no ACL stored, and a
      * file system without ACLs can't have one. */
-    if (getxattr(path, "system.posix_acl_access", NULL, 0) >= 0) {
+    if (lgetxattr(path, "system.posix_acl_access", NULL, 0) >= 0) {
         fprintf(stderr,
                 "rocm-ernic: socket %s has an ACL, from a default ACL on its "
                 "directory, that may let other users connect; remove the "
-                "default ACL (setfacl -k) and let QEMU in by changing the "
-                "socket's group instead\n",
+                "default ACL (setfacl -k) or use another directory, and let "
+                "QEMU in with --socket-group\n",
                 path);
         return false;
     }
@@ -1085,6 +1165,8 @@ int main(int argc, char *argv[])
     const char *socket_path = DEFAULT_SOCKET_PATH;
     const char *log_file_path = NULL;
     const char *tap_ifname = NULL;
+    const char *socket_group = NULL;
+    gid_t socket_gid = 0;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
     bool log_level_set = false;
     int ret, opt;
@@ -1093,6 +1175,7 @@ int main(int argc, char *argv[])
     static struct option long_options[] = {
         /* Common options */
         {"socket", required_argument, NULL, 's'},
+        {"socket-group", required_argument, NULL, 'G'},
         {"backend", required_argument, NULL, 'b'},
         {"verbose", no_argument, NULL, 'v'},
         {"log-level", required_argument, NULL, 'L'},
@@ -1131,12 +1214,15 @@ int main(int argc, char *argv[])
     dev->mac_addr[5] = 0x6e;
 
     /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "s:b:vL:S:m:l:hT:", long_options,
+    while ((opt = getopt_long(argc, argv, "s:G:b:vL:S:m:l:hT:", long_options,
                               NULL)) != -1) {
         switch (opt) {
         /* Common options */
         case 's':
             socket_path = optarg;
+            break;
+        case 'G':
+            socket_group = optarg;
             break;
         case 'b':
             free(dev->backend_type_str);
@@ -1240,6 +1326,20 @@ int main(int argc, char *argv[])
         close(fd);
     }
 
+    /* Resolved before the socket exists, so a group that can't be resolved
+     * fails here rather than leaving a socket QEMU can't reach; and after
+     * the log is open, so the reason is in it. */
+    if (socket_group && !resolve_group(socket_group, &socket_gid)) {
+        fprintf(stderr, "Error: --socket-group: no such group: %s\n",
+                socket_group);
+        free(dev->backend_type_str);
+        free(dev->backend_device_name);
+        free(dev->backend_eth_device);
+        free(dev->stats_file_path);
+        free(dev);
+        exit(EXIT_FAILURE);
+    }
+
     /* Setup signal handlers */
     if (set_signal_handler(SIGINT, signal_handler) == -1 ||
         set_signal_handler(SIGTERM, signal_handler) == -1) {
@@ -1284,13 +1384,14 @@ int main(int argc, char *argv[])
     /* Create libvfio-user context with non-blocking attach.  It binds and
      * listens on the socket here, creating it with mode 0777 less the umask.
      * Whoever connects drives the device as the guest's QEMU, and connecting
-     * needs write permission, so the socket is created 0660 under a umask
-     * that takes the rest away.  Changing the mode afterwards would be too
-     * late: a connection queued in between would be kept.  The umask is per
-     * process, so this must stay ahead of the first thread, and it's restored
-     * so the log and stats files get the caller's.  A QEMU running as another
-     * user can be let in by changing the socket's group to one it's in. */
-    mode_t old_umask = umask(S_IXUSR | S_IXGRP | S_IRWXO);
+     * needs write permission, so the socket is created 0600, for its owner
+     * alone, under a umask that takes the rest away.  Narrowing the mode
+     * afterwards would be too late: a connection queued in between would be
+     * kept.  --socket-group widens it to 0660 below, once the group is the
+     * one asked for.  The umask is per process, so this must stay ahead of
+     * the first thread, and it's restored so the log and stats files get the
+     * caller's. */
+    mode_t old_umask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
     vfu_ctx =
         vfu_create_ctx(VFU_TRANS_SOCK, socket_path, LIBVFIO_USER_FLAG_ATTACH_NB,
                        dev, VFU_DEV_TYPE_PCI);
@@ -1299,16 +1400,32 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "vfu_create_ctx() failed");
     }
 
-    /* A default ACL on the directory can still let others in.  Refuse to
-     * serve the socket then; destroying the context closes the listener, so
-     * a connection already queued on it is never accepted. */
-    if (!socket_access_ok(socket_path)) {
+    /* Check the socket as created: a default ACL on the directory can still
+     * let others in, or keep the owner out.  Refuse to serve it then;
+     * destroying the context closes the listener, so a connection already
+     * queued on it is never accepted.
+     *
+     * With --socket-group, then give the socket that group, and only then
+     * let the group in, so no other group can connect even briefly; and
+     * check it again, as QEMU will find it.  Both changes act on the path,
+     * which is safe only because nobody untrusted can replace entries in the
+     * socket's directory: one they could write to, unless it's sticky like
+     * /tmp, would let them swap in a socket of their own anyway.  The second
+     * check would catch a path that no longer leads to this socket, but
+     * only after the change. */
+    struct stat sock_st;
+
+    if (!socket_access_ok(socket_path, NULL, &sock_st) ||
+        (socket_group &&
+         (!socket_set_group(socket_path, socket_group, socket_gid) ||
+          !socket_access_ok(socket_path, &socket_gid, &sock_st)))) {
         vfu_destroy_ctx(vfu_ctx);
         exit(EXIT_FAILURE);
     }
-    ernic_startup_report("rocm-ernic: ✓ Socket permissions set to 0660 "
-                         "(rw-rw----) for %s",
-                         socket_path);
+    ernic_startup_report("rocm-ernic: ✓ Socket permissions set to %04o, "
+                         "group %u, for %s",
+                         (unsigned)(sock_st.st_mode & 07777),
+                         (unsigned)sock_st.st_gid, socket_path);
     g_vfu_ctx = vfu_ctx;
     dev->vfu_ctx = vfu_ctx;
 

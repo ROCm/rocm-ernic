@@ -36,6 +36,9 @@ ERNIC_MANAGER_IP="${ERNIC_MANAGER_IP:-127.0.0.1}"
 ERNIC_VERBOSE="${ERNIC_VERBOSE:-false}"
 ERNIC_LOG_LEVEL="${ERNIC_LOG_LEVEL:-warn}"
 ERNIC_TAP_PREFIX="${ERNIC_TAP_PREFIX:-ernic-tap}"
+# A group whose members may connect to the instance sockets, passed to each
+# server as --socket-group.  Unset, only root can.
+ERNIC_SOCKET_GROUP="${ERNIC_SOCKET_GROUP:-}"
 
 MANIFEST="${ERNIC_RUN_DIR}/instances.json"
 
@@ -105,17 +108,29 @@ get_gids_for_instance() {
     fi
 }
 
+# Wait for the server with PID $2 to make its socket $1 ready: there, with
+# the permissions it ends up with.  The server creates it 0600 and, with
+# ERNIC_SOCKET_GROUP, gives it the group and widens it to 0660 just after.
+# Fails at once if the server exits, as one that refuses its socket does.
 wait_for_socket() {
-    local path="$1"
-    local timeout="${2:-15}"
-    local i
+    local path="$1" pid="$2"
+    local timeout="${3:-15}"
+    local want=600 i
+    if [ -n "${ERNIC_SOCKET_GROUP}" ]; then
+        want=660
+    fi
     for (( i=0; i < timeout * 2; i++ )); do
-        if [ -S "${path}" ]; then
+        if ! pid_alive "${pid}"; then
+            log_error "Server for ${path} exited during startup"
+            return 1
+        fi
+        if [ -S "${path}" ] &&
+            [ "$(stat -c %a -- "${path}" 2>/dev/null)" = "${want}" ]; then
             return 0
         fi
         sleep 0.5
     done
-    log_error "Socket ${path} not created" \
+    log_error "Socket ${path} not ready" \
         "after ${timeout}s"
     return 1
 }
@@ -223,6 +238,9 @@ start_instance() {
     rm -f "${sock}"
 
     local -a mode_args=()
+    if [ -n "${ERNIC_SOCKET_GROUP}" ]; then
+        mode_args+=(--socket-group "${ERNIC_SOCKET_GROUP}")
+    fi
     local tap="${ERNIC_TAP_PREFIX}${id}"
     if [ -d "/sys/class/net/${tap}" ]; then
         mode_args+=(--tap "${tap}")
@@ -245,9 +263,9 @@ start_instance() {
         --log-level "${level}" &
     local pid=$!
 
-    if ! wait_for_socket "${sock}" 15; then
+    if ! wait_for_socket "${sock}" "${pid}" 15; then
         log_error "Instance ${id} (${role})" \
-            "failed to create socket"
+            "failed to start; see ${logfile}"
         kill "${pid}" 2>/dev/null || true
         return 1
     fi

@@ -34,23 +34,37 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0
 
-The server makes the socket mode ``0660``, so only its own
-user and group, and root, can connect. Whoever connects drives
-the device as the guest's QEMU. Run QEMU as the same user as
-the server, or to let it run as another user, change the
-socket's group to one that user belongs to once the server has
-started:
+Whoever connects to the socket drives the device as the
+guest's QEMU, so the server makes it mode ``0600``: only the
+user the server runs as, and root, can connect. Run QEMU as
+the same user as the server, or as root. To let a QEMU that
+runs as another user connect, name a group it is in with
+``--socket-group`` (``-G``); the server gives the socket that
+group and makes it ``0660`` before it serves it. The server
+must run as root or be a member of the group:
 
 .. code-block:: bash
 
-   sudo chgrp kvm /tmp/vfio-user-rocm-ernic.sock
+   sudo ./build/rocm-ernic \
+     --socket /run/vfio-user-rocm-ernic.sock \
+     --socket-group kvm --backend loopback
 
-The server refuses to start if the socket's directory has a
-default ACL with more than the owner, group, and other entries,
-such as one naming another user: the socket would inherit it,
-and the user's access, without its mode showing it. Remove the
-default ACL (``setfacl -k DIR``), or put the socket in another
-directory.
+Changing the socket's group by hand after the server starts
+works too, but the next server started on that path, after a
+restart or a hot reload, creates a new socket without it.
+
+The server refuses to start if the socket ends up with
+different permissions, which a default ACL on its directory
+can cause, or with an ACL of its own, which it inherits from a
+default ACL with more than the owner, group, and other
+entries. An entry naming another user would let that user
+connect without the mode showing it. Remove the default ACL
+(``setfacl -k DIR``), or put the socket in another directory.
+
+Put the socket in a directory that only the server's user and
+root can write to, such as ``/run/rocm-ernic``, or in a sticky
+one such as ``/tmp``. Anyone who can replace entries in its
+directory can replace the socket.
 
 The Emulated Device
 -------------------
