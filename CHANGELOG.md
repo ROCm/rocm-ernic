@@ -206,6 +206,11 @@
   cause, since an ACL entry naming another user lets that user connect
   without the mode showing it; remove the default ACL (`setfacl -k`) or use
   another directory.
+* A TCP mesh worker now ignores a topology update that doesn't come on its
+  own connection to the manager, as it already ignored the GID table. An
+  update decides which other workers a worker connects to, and now also which
+  of its connections to them it closes, so another worker could otherwise
+  have it drop its links.
 
 ### Removed
 
@@ -522,6 +527,22 @@
   registration, or assigns 0 or `UINT32_MAX`, now makes the worker fail at
   once rather than after the 5-second registration timeout.
   `tcp-thread-stop-unit` covers each case.
+* A TCP mesh worker now reconnects to another worker when the connection
+  between them drops, or when the manager reports the other worker dead and
+  then alive again. It used to keep the dead connection, with its socket
+  open in `CLOSE_WAIT`, until it shut down, and the two workers never
+  connected again, because each refused or skipped a new connection as a
+  duplicate of the dead one. Traffic between them was sent into the dead
+  connection meanwhile, and failed; it now goes through the manager until
+  they reconnect. A worker now closes a dead connection within a
+  health-check interval (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default),
+  and connects again if it has the lower id; one with the higher id replaces
+  the dead connection when the other connects again. A worker also closes its
+  connection to a worker the manager reports dead, so the connection to one
+  that went away without closing it, in a crash or a network partition, no
+  longer looks connected until a send fails. A second connection claiming to
+  be a worker that is still connected is still refused.
+  `tcp-thread-stop-unit` covers each case.
 * The server no longer exits when a client disconnects or sends something
   other than a version message during vfio-user negotiation. A port probe or a
   client that crashed while connecting used to take the server down; it now
@@ -587,8 +608,8 @@
   resolver to give up, which its configured timeouts and retries bound. A
   hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
   wait.
-* A TCP mesh worker keeps its connection to another worker after that worker
-  hangs up, with the socket open in `CLOSE_WAIT`, until it shuts down. The
-  two workers then stay disconnected, because each refuses or skips a new
-  connection to the other as a duplicate of the dead one, until the worker
-  holding it restarts.
+* A TCP mesh worker whose connection to the manager drops doesn't connect to
+  it again. The manager connects to the worker instead, but the worker takes
+  topology updates and GID tables only on the connection it opened itself, so
+  it ignores the manager's from then on, and doesn't learn of workers that
+  join, die, or come back, or of their GIDs, until it restarts.

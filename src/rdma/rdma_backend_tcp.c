@@ -466,11 +466,11 @@ struct TcpConnection {
     _Atomic uint32_t refcount;
     /*
      * Whether the connection can be sent on.  tcp_retire_conn() clears it,
-     * under lock, with sockfd, but senders read it without the lock to pick
-     * a connection, so it is atomic.  It is only a hint: a connection can be
-     * retired just after it was picked.  sockfd is the authority, read only
-     * under lock, and a sender checks it there, in the same critical section
-     * as the send.
+     * under lock, with sockfd, and the receive thread clears it as it
+     * returns, but senders read it without the lock to pick a connection, so
+     * it is atomic.  It is only a hint: a connection can be retired just
+     * after it was picked.  sockfd is the authority, read only under lock,
+     * and a sender checks it there, in the same critical section as the send.
      */
     _Atomic bool is_connected;
     /*
@@ -491,8 +491,8 @@ struct TcpConnection {
     /*
      * Set by recv_thread as it returns, whatever the reason: the peer hung
      * up, a read failed, the peer was refused, or the thread was stopped.
-     * Tells the manager's reapers a connection is done with; the thread
-     * still has to be joined.
+     * Tells the threads that retire connections that this one is done with
+     * (see tcp_conn_dead()); the thread still has to be joined.
      */
     _Atomic bool recv_thread_exited;
     /*
@@ -741,7 +741,9 @@ struct TcpBackendPrivate {
      * The peers this worker is to connect to, as TcpPeerTarget, from the
      * latest topology update.  A receive thread replaces them and sets
      * peer_targets_changed; the peer-connect thread connects to them.  Both
-     * are protected by peer_lock, which is never held with another lock.
+     * are protected by peer_lock, which is taken before conn_table_lock when
+     * both are held: the peer-connect thread holds both to compare the
+     * connections table with the targets and change it.
      */
     GArray *peer_targets;
     bool peer_targets_changed;
@@ -1339,6 +1341,17 @@ static TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
 }
 
 /*
+ * Whether conn is dead: its receive thread has returned, because the peer
+ * hung up, a read failed, or the peer was refused.  Nothing more can come on
+ * it, and it can't be sent on, but it keeps its descriptor until whoever
+ * takes it out of its table retires it.
+ */
+static bool tcp_conn_dead(TcpConnection *conn)
+{
+    return atomic_load(&conn->recv_thread_exited);
+}
+
+/*
  * The connection to node_id, with a reference the caller drops with
  * tcp_connection_unref(), or NULL.
  */
@@ -1357,16 +1370,21 @@ static TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv,
     return conn;
 }
 
-/* Whether connections has an entry for node_id, as it stands now. */
-static bool tcp_has_connection(TcpBackendPrivate *priv, uint32_t node_id)
+/*
+ * Whether connections has an entry for node_id that isn't dead, as it stands
+ * now.  A dead one is replaced when the node connects again.
+ */
+static bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id)
 {
-    bool has;
+    TcpConnection *conn;
+    bool live;
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    has = g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id));
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    live = conn && !tcp_conn_dead(conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
 
-    return has;
+    return live;
 }
 
 /*
@@ -2245,6 +2263,25 @@ static void tcp_worker_set_peers(TcpBackendPrivate *priv,
 }
 
 /*
+ * Whether the latest topology update has the worker connect to node_id at
+ * host and port.  The caller holds peer_lock.
+ */
+static bool tcp_worker_peer_named(TcpBackendPrivate *priv, uint32_t node_id,
+                                  const char *host, uint16_t port)
+{
+    for (guint i = 0; i < priv->peer_targets->len; i++) {
+        const TcpPeerTarget *latest =
+            &g_array_index(priv->peer_targets, TcpPeerTarget, i);
+
+        if (latest->node_id == node_id) {
+            return latest->port == port && host &&
+                   strcmp(latest->host, host) == 0;
+        }
+    }
+    return false;
+}
+
+/*
  * Whether the latest topology update still has the worker connect to target,
  * at the same address.  The peer-connect thread works from a copy of the
  * targets taken at the start of its pass, and a connect can take an interval,
@@ -2253,21 +2290,75 @@ static void tcp_worker_set_peers(TcpBackendPrivate *priv,
 static bool tcp_worker_peer_current(TcpBackendPrivate *priv,
                                     const TcpPeerTarget *target)
 {
-    bool current = false;
+    bool current;
 
     qemu_mutex_lock(&priv->peer_lock);
-    for (guint i = 0; i < priv->peer_targets->len; i++) {
-        const TcpPeerTarget *latest =
-            &g_array_index(priv->peer_targets, TcpPeerTarget, i);
-
-        if (latest->node_id == target->node_id) {
-            current = latest->port == target->port &&
-                      strcmp(latest->host, target->host) == 0;
-            break;
-        }
-    }
+    current = tcp_worker_peer_named(priv, target->node_id, target->host,
+                                    target->port);
     qemu_mutex_unlock(&priv->peer_lock);
     return current;
+}
+
+/*
+ * Publish conn, a new connection to target that has sent its handshake, and
+ * start its receive thread, unless the latest topology update no longer
+ * names target, or the table has a live connection to it by then.  The
+ * table takes over the caller's reference; if conn isn't published, it is
+ * closed.  Returns true if it was published.
+ *
+ * peer_lock and conn_table_lock are held together from the check that
+ * target is current to the insert, so an update can't come between them and
+ * leave a connection to a peer it dropped.  A dead connection to target is
+ * replaced, and retired once the locks are dropped, since retiring joins its
+ * receive thread.
+ */
+static bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
+                                    const TcpPeerTarget *target,
+                                    TcpConnection *conn)
+{
+    TcpConnection *old = NULL;
+    bool published = false;
+    char thread_name[32];
+
+    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", target->node_id);
+
+    qemu_mutex_lock(&priv->peer_lock);
+    qemu_mutex_lock(&priv->conn_table_lock);
+    if (!tcp_worker_peer_named(priv, target->node_id, target->host,
+                               target->port)) {
+        rdma_info_report("TCP: Peer node %u was dropped from the topology "
+                         "meanwhile; closing the new connection",
+                         target->node_id);
+    } else {
+        old = g_hash_table_lookup(priv->connections,
+                                  GUINT_TO_POINTER(target->node_id));
+        if (old && !tcp_conn_dead(old)) {
+            rdma_info_report("TCP: Peer node %u connected to this node "
+                             "meanwhile; closing the new connection",
+                             target->node_id);
+        } else if (tcp_start_recv_thread(conn, thread_name)) {
+            /* Neither can fail: the lock has been held since the lookup */
+            if (old) {
+                tcp_conn_table_take(priv, target->node_id, old);
+            }
+            tcp_conn_table_add(priv, target->node_id, conn);
+            published = true;
+        }
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    qemu_mutex_unlock(&priv->peer_lock);
+
+    if (!published) {
+        tcp_connection_unref(conn);
+        return false;
+    }
+    if (old) {
+        rdma_info_report("TCP: Replaced the dead connection to peer node %u",
+                         target->node_id);
+        tcp_retire_conn(old);
+        tcp_connection_unref(old);
+    }
+    return true;
 }
 
 /*
@@ -2283,12 +2374,11 @@ static bool tcp_worker_peer_current(TcpBackendPrivate *priv,
  * Either of the checks the pass made can be out of date once the connect
  * returns: an update can have dropped the peer, and the accept thread can
  * have published the peer's own connection to this node.  Both are checked
- * again before the handshake, since the peer publishes the connection when
- * it gets the handshake, and keeps it even after this worker closes it; a
- * connection closed before then leaves nothing behind.  After the handshake
- * the connection is kept, as one made just before an update would be, unless
- * the table has a connection to the peer by then: that one is kept, and this
- * one closed.
+ * again before the handshake, which has the peer publish the connection, so
+ * a connection closed before then costs the peer nothing.
+ * tcp_worker_publish_peer() checks them once more, under the locks it
+ * publishes under.  A connection it closes after the handshake dies on the
+ * peer's side, which replaces it, or closes it within an interval.
  */
 static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
                                     const TcpPeerTarget *target,
@@ -2320,7 +2410,7 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
         tcp_connection_unref(peer_conn);
         return false;
     }
-    if (tcp_has_connection(priv, target->node_id)) {
+    if (tcp_has_live_connection(priv, target->node_id)) {
         rdma_info_report("TCP: Peer node %u connected to this node meanwhile; "
                          "closing the new connection",
                          target->node_id);
@@ -2337,47 +2427,95 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
         return false;
     }
 
-    char thread_name[32];
-    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", target->node_id);
-
-    qemu_mutex_lock(&priv->conn_table_lock);
-    if (g_hash_table_contains(priv->connections,
-                              GUINT_TO_POINTER(target->node_id))) {
-        qemu_mutex_unlock(&priv->conn_table_lock);
-        rdma_info_report("TCP: Peer node %u connected to this node meanwhile; "
-                         "closing the new connection",
-                         target->node_id);
-        tcp_connection_unref(peer_conn);
+    if (!tcp_worker_publish_peer(priv, target, peer_conn)) {
         return false;
     }
-    if (!tcp_start_recv_thread(peer_conn, thread_name)) {
-        qemu_mutex_unlock(&priv->conn_table_lock);
-        tcp_connection_unref(peer_conn);
-        return false;
-    }
-    /* Can't be refused: the lock has been held since the check above */
-    tcp_conn_table_add(priv, target->node_id, peer_conn);
-    qemu_mutex_unlock(&priv->conn_table_lock);
-
     rdma_info_report("TCP: Connected to peer node %u", target->node_id);
     return true;
 }
 
 /*
- * One pass of the peer-connect thread: connect to each of targets that this
- * worker has no connection to.  Every one is tried, and each connect gives up
- * after a health-check interval, so a peer that doesn't answer delays the
- * ones after it by no more than that, and can't keep them from connecting.
- * A target that an update during the pass no longer names is skipped; one
- * the update added is left to the next pass, which comes straight after.
+ * Take out of connections the connections this worker is done with, and
+ * retire them:
+ *
+ *   - every dead one, whatever its node.  Otherwise its descriptor would
+ *     wait in CLOSE_WAIT until the node connected again, and a node this
+ *     worker connects to would never be connected to again.
+ *   - every one to a node with a higher id, which this worker connects to,
+ *     that the latest topology update no longer names, or names at another
+ *     address: the manager has reported the node dead, or it has come back
+ *     elsewhere.  A link that died without a hang-up, in a crash or a
+ *     partition, would otherwise look connected until a send failed, and
+ *     the node would not be connected to again when it came back.
+ *
+ * Under peer_lock and conn_table_lock, so the connections are compared with
+ * the latest targets, and with neither held to retire them, since that joins
+ * their receive threads.
+ */
+static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
+{
+    GPtrArray *swept = g_ptr_array_new();
+    uint32_t local = tcp_local_node(priv);
+    GHashTableIter iter;
+    gpointer key, value;
+
+    qemu_mutex_lock(&priv->peer_lock);
+    qemu_mutex_lock(&priv->conn_table_lock);
+    g_hash_table_iter_init(&iter, priv->connections);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        TcpConnection *conn = value;
+        uint32_t node_id = GPOINTER_TO_UINT(key);
+
+        if (tcp_conn_dead(conn)) {
+            rdma_info_report("TCP: Closing the connection to node %u, which "
+                             "has ended",
+                             node_id);
+        } else if (node_id > local &&
+                   !tcp_worker_peer_named(priv, node_id, conn->remote_host,
+                                          conn->remote_port)) {
+            rdma_info_report("TCP: Closing the connection to node %u, which "
+                             "the manager no longer reports alive at %s:%u",
+                             node_id,
+                             conn->remote_host ? conn->remote_host : "",
+                             conn->remote_port);
+        } else {
+            continue;
+        }
+        /* Hands the table's reference over, as tcp_conn_table_take() does */
+        g_hash_table_iter_steal(&iter);
+        g_ptr_array_add(swept, conn);
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    qemu_mutex_unlock(&priv->peer_lock);
+
+    for (guint i = 0; i < swept->len; i++) {
+        TcpConnection *conn = g_ptr_array_index(swept, i);
+
+        tcp_retire_conn(conn);
+        tcp_connection_unref(conn);
+    }
+    g_ptr_array_free(swept, TRUE);
+}
+
+/*
+ * One pass of the peer-connect thread: close the connections this worker is
+ * done with (see tcp_worker_peer_sweep()), then connect to each of targets
+ * that this worker has no live connection to.  Every one is tried, and each
+ * connect gives up after a health-check interval, so a peer that doesn't
+ * answer delays the ones after it by no more than that, and can't keep them
+ * from connecting.  A target that an update during the pass no longer names
+ * is skipped; one the update added is left to the next pass, which comes
+ * straight after.
  */
 static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 {
+    tcp_worker_peer_sweep(priv);
+
     for (guint i = 0;
          i < targets->len && atomic_load(&priv->peer_thread_running); i++) {
         const TcpPeerTarget *target = &g_array_index(targets, TcpPeerTarget, i);
 
-        if (tcp_has_connection(priv, target->node_id) ||
+        if (tcp_has_live_connection(priv, target->node_id) ||
             !tcp_worker_peer_current(priv, target)) {
             continue;
         }
@@ -2390,10 +2528,11 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 
 /*
  * Worker peer-connect thread.  Connects to the peers in the latest topology
- * update: a pass comes as soon as an update arrives, and otherwise a
- * health-check interval (ERNIC_TCP_HEALTH_INTERVAL) after the last one, so a
- * peer that couldn't be reached is tried again without waiting for the mesh
- * to change.
+ * update, and closes the connections the worker is done with: a pass comes
+ * as soon as an update arrives, and otherwise a health-check interval
+ * (ERNIC_TCP_HEALTH_INTERVAL) after the last one, so a peer that couldn't be
+ * reached, or whose connection has ended, is tried again without waiting for
+ * the mesh to change.
  *
  * The connects are made here rather than on the receive thread that gets the
  * update, because that thread also answers the manager's heartbeats, and a
@@ -3041,6 +3180,19 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                 }
 
                 /*
+                 * Authorise on the connection, as for NODE_GIDS: only the
+                 * manager says who is in the mesh.  An update decides which
+                 * peers this worker connects to, and which of its
+                 * connections it closes (tcp_worker_peer_sweep()), so one
+                 * from a peer could take down the worker's links.
+                 */
+                if (conn != priv->manager_conn) {
+                    rdma_error_report("TCP: MESH_TOPOLOGY from a connection "
+                                      "that is not the manager; ignoring");
+                    break;
+                }
+
+                /*
                  * Which peers this node connects to depends on its id.  The
                  * manager publishes a new worker's connection before it
                  * answers the registration, so the broadcast for another
@@ -3432,6 +3584,13 @@ static void *tcp_recv_thread_per_conn(void *opaque)
     }
 
     rdma_info_report("TCP: Receive thread exiting for node %u", conn->node_id);
+    /*
+     * Senders then pass the connection over (a worker's go through the
+     * manager's relay instead) rather than send into a socket the peer has
+     * left.  Cleared first, so a thread that finds the connection dead also
+     * finds it can't be sent on.
+     */
+    atomic_store(&conn->is_connected, false);
     atomic_store(&conn->recv_thread_exited, true);
     return NULL;
 }
@@ -3484,7 +3643,7 @@ static void tcp_reap_pending_conns(TcpBackendPrivate *priv)
     for (guint i = 0; i < priv->pending_conns->len;) {
         TcpConnection *conn = g_ptr_array_index(priv->pending_conns, i);
 
-        if (atomic_load(&conn->recv_thread_exited) ||
+        if (tcp_conn_dead(conn) ||
             (now_ms >= conn->accepted_ms &&
              now_ms - conn->accepted_ms >= TCP_REGISTER_TIMEOUT_MS)) {
             /* Moves the last connection to i, which is looked at next */
@@ -3519,7 +3678,7 @@ static void *tcp_accept_thread(void *opaque)
     TcpMsgHeader hdr;
     void *payload = NULL;
     TcpHandshakePayload *hs_payload;
-    TcpConnection *conn;
+    TcpConnection *conn, *old;
     char thread_name[32];
 
     rdma_info_report("TCP: Accept thread started");
@@ -3695,10 +3854,17 @@ static void *tcp_accept_thread(void *opaque)
                 continue;
             }
 
-            /* Check if connection already exists */
+            /*
+             * A live connection to the node is kept, and this one closed:
+             * replacing it would let anyone who can reach this port take
+             * over a working link by claiming its node id.  A dead one is
+             * replaced, or the node could never connect again, and retired
+             * once the lock is dropped, since that joins its thread.
+             */
             qemu_mutex_lock(&priv->conn_table_lock);
-            if (g_hash_table_contains(priv->connections,
-                                      GUINT_TO_POINTER(remote_node_id))) {
+            old = g_hash_table_lookup(priv->connections,
+                                      GUINT_TO_POINTER(remote_node_id));
+            if (old && !tcp_conn_dead(old)) {
                 qemu_mutex_unlock(&priv->conn_table_lock);
                 rdma_info_report(
                     "TCP: Connection to node %u already exists, closing "
@@ -3735,12 +3901,23 @@ static void *tcp_accept_thread(void *opaque)
             /*
              * Add to connection table, which takes over the reference from
              * tcp_connection_new(), so take another for the response below.
-             * The add can't be refused: the lock has been held since the
-             * check above.
+             * Neither the take nor the add can fail: the lock has been held
+             * since the lookup above.
              */
+            if (old) {
+                tcp_conn_table_take(priv, remote_node_id, old);
+            }
             tcp_connection_ref(conn);
             tcp_conn_table_add(priv, remote_node_id, conn);
             qemu_mutex_unlock(&priv->conn_table_lock);
+
+            if (old) {
+                rdma_info_report("TCP: Replaced the dead connection from node "
+                                 "%u",
+                                 remote_node_id);
+                tcp_retire_conn(old);
+                tcp_connection_unref(old);
+            }
 
             /* Send handshake response */
             tcp_send_handshake(conn, tcp_local_node(priv),
@@ -4040,7 +4217,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
          * come on the connection, and it can't be sent anything, so there's
          * no need to wait for the node to go silent.
          */
-        if (item.conn && atomic_load(&item.conn->recv_thread_exited)) {
+        if (item.conn && tcp_conn_dead(item.conn)) {
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u disconnected", node->node_id);
                 node->is_alive = false;

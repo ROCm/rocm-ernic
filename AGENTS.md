@@ -819,10 +819,12 @@ the source; the rest have not:
   that never registered (`tcp_reap_pending_conns()`) and retires a
   registered node's connection when it hangs up
   (`tcp_health_check_retire()`), taking it out of the connections table. A
-  worker still keeps a dead connection to another worker, and the pair
-  never reconnect. `TcpConnection` is reference counted now, so a worker
-  can take a dead connection out of its table while the data path still
-  holds it; see the comment on `TcpConnection` for the rules.
+  worker closes a dead connection to another worker on its peer-connect
+  thread's next pass (`tcp_worker_peer_sweep()`), and the pair reconnect:
+  the accept thread and `tcp_worker_publish_peer()` replace a dead
+  connection, but never a live one. `TcpConnection` is reference counted,
+  so a connection can leave its table while the data path still holds it;
+  see the comment on `TcpConnection` for the rules.
 - An `EMFILE` retry loop with no backoff. One run produced 295 GB of
   logs. This was the accept thread: an `accept()` that fails for lack of
   descriptors leaves the connection queued, so the next one fails at once
