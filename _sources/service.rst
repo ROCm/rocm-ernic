@@ -157,6 +157,15 @@ Server settings
      - ``warn``
      - Server log verbosity:
        ``none|error|warn|info|debug``
+   * - ``ERNIC_SOCKET_GROUP``
+     - (unset)
+     - Group whose members may connect to
+       the instance sockets, such as the
+       group of a QEMU not run as root.
+       Passed to the server as
+       ``--socket-group``. Unset, the
+       sockets are ``0600`` and only root
+       can connect.
    * - ``ERNIC_VERBOSE``
      - ``false``
      - Deprecated shorthand for

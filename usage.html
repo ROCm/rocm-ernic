@@ -426,6 +426,51 @@
 <span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span>--tap<span class="w"> </span>ernic0
 </pre></div>
 </div>
+<p>Whoever connects to the socket drives the device as the
+guest’s QEMU, so the server makes it mode <code class="docutils literal notranslate"><span class="pre">0600</span></code>: only the
+user the server runs as, and root, can connect. Run QEMU as
+the same user as the server, or as root. To let a QEMU that
+runs as another user connect, name a group it is in with
+<code class="docutils literal notranslate"><span class="pre">--socket-group</span></code> (<code class="docutils literal notranslate"><span class="pre">-G</span></code>); the server gives the socket that
+group and makes it <code class="docutils literal notranslate"><span class="pre">0660</span></code> before it serves it. The server
+must run as root or be a member of the group:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/run/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket-group<span class="w"> </span>kvm<span class="w"> </span>--backend<span class="w"> </span>loopback
+</pre></div>
+</div>
+<p>Changing the socket’s group by hand after the server starts
+works too, but the next server started on that path, after a
+restart or a hot reload, creates a new socket without it.</p>
+<p>The server refuses to start if the socket ends up with
+different permissions, which a default ACL on its directory
+can cause, or with an ACL of its own, which it inherits from a
+default ACL with more than the owner, group, and other
+entries. An entry naming another user would let that user
+connect without the mode showing it. Remove the default ACL
+(<code class="docutils literal notranslate"><span class="pre">setfacl</span> <span class="pre">-k</span> <span class="pre">DIR</span></code>), or put the socket in another directory.</p>
+<p>Put the socket in a directory that only the server’s user and
+root can write to, such as <code class="docutils literal notranslate"><span class="pre">/run/rocm-ernic</span></code>, which the
+service uses, or one of your own. Don’t put it in a directory
+other users can write to, such as <code class="docutils literal notranslate"><span class="pre">/tmp</span></code>, even though the
+server’s default socket and the examples here are there. The
+sticky bit on <code class="docutils literal notranslate"><span class="pre">/tmp</span></code> stops other users removing or replacing
+the server’s socket, but not creating their own at the same
+name first, while the server isn’t running. A server that
+isn’t root then can’t remove it and fails to start, and a QEMU
+that connects to it gives that user the guest’s memory, which
+vfio-user shares with whatever serves the device. In a
+directory others can write to that isn’t sticky, they can also
+replace the server’s socket.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">--socket-group</span></code>, the group also has to be able to reach
+the socket through its directory, which <code class="docutils literal notranslate"><span class="pre">/run/rocm-ernic</span></code>
+allows (mode <code class="docutils literal notranslate"><span class="pre">0755</span></code>) and <code class="docutils literal notranslate"><span class="pre">$XDG_RUNTIME_DIR</span></code> (<code class="docutils literal notranslate"><span class="pre">0700</span></code>)
+doesn’t. A directory of your own can have that group and mode
+<code class="docutils literal notranslate"><span class="pre">0710</span></code>, which lets the group reach the socket but not list or
+change the directory:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>install<span class="w"> </span>-d<span class="w"> </span>-o<span class="w"> </span>root<span class="w"> </span>-g<span class="w"> </span>kvm<span class="w"> </span>-m<span class="w"> </span><span class="m">0710</span><span class="w"> </span>/run/vfio-user
+</pre></div>
+</div>
 </section>
 <section id="the-emulated-device">
 <h2>The Emulated Device<a class="headerlink" href="#the-emulated-device" title="Link to this heading">#</a></h2>
