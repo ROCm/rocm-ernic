@@ -40,11 +40,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format-18
 
-      # Everything tracked except third-party/, which is still in QEMU's
-      # style. It's reformatted when it's cleaned up and moved into src/.
       - name: Run clang-format check
         run: |
-          mapfile -t files < <(git ls-files -- '*.c' '*.h' ':!:third-party/')
+          mapfile -t files < <(git ls-files -- '*.c' '*.h')
 
           needs_format=0
           for file in "${files[@]}"; do

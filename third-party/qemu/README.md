@@ -36,7 +36,7 @@ how far it is from upstream, and the plan for it.
   [`src/qemu-compat/`](../../src/qemu-compat/).
 - Until the code moves into `src/`, the build still treats it as vendored:
   the `.c` files compile with `-w`, both header trees are SYSTEM
-  includes, and clang-format, clang-tidy, and IWYU skip it.
+  includes, and clang-tidy and IWYU skip it.
 
 ## Licenses
 

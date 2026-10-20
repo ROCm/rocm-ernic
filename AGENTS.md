@@ -356,11 +356,11 @@ them and where their configuration files are picked up.
 ### C
 
 - **clang-format 18**, with [`.clang-format`](.clang-format), over every
-  `.c` and `.h` outside `third-party/`. Check without changing anything:
+  `.c` and `.h`, `third-party/` included. Check without changing
+  anything:
 
   ```bash
-  git ls-files -z -- '*.c' '*.h' ':!:third-party/' \
-    | xargs -0 clang-format-18 --dry-run --Werror
+  git ls-files -z -- '*.c' '*.h' | xargs -0 clang-format-18 --dry-run --Werror
   ```
 
   Reformat with `clang-format-18 -i`. CI:
@@ -713,12 +713,12 @@ checks than one in `src/`:
 
 - Its `.c` files compile with `-w`, and its headers are SYSTEM includes,
   so the compilers report no warnings in it.
-- clang-format, clang-tidy, and IWYU skip it.
+- clang-tidy and IWYU skip it.
 - The coverage floor counts `src/` only.
 
 Hold what you change there to the rules for `src/` anyway, and check it
-by hand for what those exemptions hide. Don't reformat whole files in an
-unrelated change; the cleanup will come with the move.
+by hand for what those exemptions hide. clang-format does cover it, like
+the rest of the tree.
 
 ## Copyright lines
 
