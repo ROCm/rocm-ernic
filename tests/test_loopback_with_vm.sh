@@ -36,10 +36,8 @@ NC='\033[0m' # No Color
 # Test configurations
 declare -a CONFIGS=(
     "loopback"
-    "loopback:mode=preserve"
-    "loopback:mode=zeros"
-    "loopback:mode=random"
-    "loopback:md5"
+    # Options the backend took before its PVRDMA data path was removed. It
+    # accepts and ignores them, so a command line that names them still works.
     "loopback:mode=preserve,md5"
 )
 

@@ -38,7 +38,6 @@
 #include "ionic_harness.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
-#include "rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
@@ -1631,14 +1630,10 @@ static void test_nvmeof(void)
 /* ---- Teardown ---------------------------------------------------------- */
 
 /*
- * A backend's teardown puts back the guest memory it mapped for work
- * requests still queued, and pci_dma_unmap() does that through the context
- * each mapping was made with, so the device has to go before the context:
- * ih_destroy() does it in that order, as the server does.  The TCP backend
- * keeps a receive queued until data comes for it, so one posted with
- * nothing to fill it is still mapped at teardown, and fake_vfu_destroy()
- * reports it if teardown doesn't put it back.  Nothing in the device posts
- * to this backend's queues, so the receive goes in through its ops table.
+ * Tear down a TCP-backed device with resources still allocated: a manager,
+ * so no peer is needed.  Teardown must free what the TCP backend and the
+ * resource manager hold for them, which LeakSanitizer checks, and leave no
+ * guest memory mapped.
  */
 
 /* A TCP port on loopback that nothing was listening on a moment ago. */
@@ -1688,25 +1683,10 @@ static void test_teardown(void)
               ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
               "no DMA memory region");
 
-    if (made) {
-        RdmaRmQP *qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
-        struct ibv_sge sge = {
-            .addr = fake_vfu_alloc(h.vfu, 64, 64),
-            .length = 64,
-            .lkey = mr,
-        };
+    if (made)
+        check(T, rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn) != NULL,
+              "QP %u isn't in the resource manager", qpn);
 
-        if (check(T, qp != NULL, "QP %u isn't in the resource manager", qpn)) {
-            rdma_backend_ops_tcp.post_recv(&pvrdma->backend_dev,
-                                           &qp->backend_qp, IBV_QPT_RC, &sge, 1,
-                                           NULL);
-            check(T, fake_vfu_mapped(h.vfu) == 1,
-                  "the receive has %zu entries mapped, not 1",
-                  fake_vfu_mapped(h.vfu));
-        }
-    }
-
-    /* Fails, and says so, if the mapping is left */
     teardown(T, &h);
 }
 

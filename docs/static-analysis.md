@@ -7,10 +7,12 @@
 > S4 by #67. S3 remains open as #68. Re-run `nix build .#analysis-deep` for
 > the current state rather than relying on the statuses below.
 >
-> **D2, D3 and D4 no longer have any code to regress.** The mesh never
-> sent a DHCP request, so `src/net/dhcp_server.c` was unreachable and has
-> been removed along with its fuzz harness; the same change removed
-> `src/net/eth_rx_inject.c`, named under **Paths** below.
+> **D2, D3, D4 and S3 no longer have any code to regress.** The mesh
+> never sent a DHCP request, so `src/net/dhcp_server.c` was unreachable and
+> has been removed along with its fuzz harness; the same change removed
+> `src/net/eth_rx_inject.c`, named under **Paths** below. The loopback
+> SGE-copy helpers of S3 went with the rest of the loopback backend's
+> PVRDMA data path.
 >
 > **Paths.** File paths and line numbers are as of that commit. The
 > `src/from-qemu/` tree has since been split up: the vendored QEMU files

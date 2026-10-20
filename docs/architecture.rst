@@ -992,9 +992,7 @@ mesh exists and whether a target is attached.
      - What it means for the guest
    * - ``loopback`` (default)
      - Single VM. Every peer QP is in the same guest. Resources
-       are tracked in memory. The ``mode=`` and ``md5`` options
-       apply to the old PVRDMA data path and don't affect the
-       ionic data path.
+       are tracked in memory.
    * - ``tcp``
      - Multi-VM. The mesh described in `More Than One VM: the
        TCP Mesh`_.

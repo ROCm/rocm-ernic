@@ -339,7 +339,7 @@ jobs:
 
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
-          --backend loopback:mode=preserve \
+          --backend loopback \
           --verbose > /tmp/vfu_server.log 2>&1 &
         
         SERVER_PID=$!
@@ -722,10 +722,10 @@ jobs:
     - name: Verify RDMA device with running server
       shell: bash
       run: |
-        echo "=== Verifying RDMA device via loopback:mode=preserve backend ==="
+        echo "=== Verifying RDMA device via loopback backend ==="
 
         # The VM was launched against the server started in the
-        # "Start rocm-ernic server" step (loopback:mode=preserve on
+        # "Start rocm-ernic server" step (loopback on
         # /tmp/vfio-user-rocm-ernic.sock).  We must NOT kill that
         # server or cycle configs -- doing so severs the vfio-user
         # connection and destabilises the VM.

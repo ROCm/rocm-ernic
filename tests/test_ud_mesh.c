@@ -4,11 +4,11 @@
  * Every other UD test in this tree puts both endpoints on one ibv_context and
  * addresses the AH with the device's own GID. That is deliberate and it tests
  * real things, but on the TCP backend it tests only one branch: a self-GID
- * resolves to the local node, so tcp_post_send() takes the
- * `dst_node == tcp_local_node(priv)` shortcut and the datagram never reaches a
- * socket. The wire path -- tcp_resolve_node_from_gid() picking a REMOTE node
- * from the send's dgid, and the datagram being framed, sent, received and
- * delivered on the far side -- had no test at all.
+ * resolves to the local node, so the ionic data path delivers the datagram
+ * in-process and it never reaches a socket. The wire path --
+ * tcp_resolve_node_from_gid() picking a REMOTE node for the AH's dgid, and
+ * the datagram being framed, sent, received and delivered on the far side --
+ * had no test at all.
  *
  * This is that test. Two processes on two guests, each with its own device:
  *
@@ -49,7 +49,6 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <sys/socket.h>
 
 #include <infiniband/verbs.h>
