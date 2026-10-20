@@ -362,7 +362,11 @@ static int oob_connect(const char *peer_ip)
             return fd;
         }
         close(fd);
-        sleep(1);
+
+        /* Not sleep(), which glibc documents as not thread safe */
+        struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
+
+        nanosleep(&ts, NULL);
     }
 
     fprintf(stderr, "FAIL: could not reach %s:%d -- is the server running?\n",
