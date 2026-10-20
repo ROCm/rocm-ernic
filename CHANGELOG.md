@@ -214,8 +214,10 @@
 * The hosted CI starts its guests with `-machine hpet=off`, to avoid an
   occasional hang of the nested guest kernel in early boot, before the ionic
   driver loads. When a guest never answers SSH,
-  `scripts/qemu-vm-diagnose.sh` now also samples where each vCPU is, and
-  flags a kernel that hung setting up its clocks.
+  `scripts/qemu-vm-diagnose.sh` now also samples where each vCPU is,
+  reports a QMP command that never returns, and reports a kernel that
+  stopped before switching to its final clocksource, with what else to rule
+  out before putting it down to that hang.
 
 ### Removed
 
