@@ -113,32 +113,6 @@ target_include_directories(test_ernic_device PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 
-# net_headers.h checksum helpers are header-only and self-contained.
-add_executable(test_net_checksum test_net_checksum.c)
-target_include_directories(test_net_checksum PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-)
-
-# -- Parser unit tests -------------------------------------------
-# These link the wire parsers in src/net directly.
-add_executable(test_rdma_cm_proto
-    test_rdma_cm_proto.c
-    ${PROJECT_SOURCE_DIR}/src/net/rdma_cm_proto.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
-)
-target_include_directories(test_rdma_cm_proto PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-)
-# Vendored header trees are SYSTEM includes.
-target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-)
-target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
-target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
-target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
-
 # Strict integer parser (parse_int.h) unit test (header-only).
 add_executable(test_parse_int test_parse_int.c)
 target_include_directories(test_parse_int PRIVATE
@@ -528,7 +502,6 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${NVMEOF_SOURCES}
     ${S3_SOURCES}
     ${RDMA_BACKEND_SOURCES}
-    ${NET_SOURCES}
     ${QEMU_COMPAT_SOURCES}
 )
 list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
@@ -583,8 +556,6 @@ set(ERNIC_TEST_TARGETS
     test_ud_mesh
     test_ernic_device
     test_write_imm
-    test_net_checksum
-    test_rdma_cm_proto
     test_parse_int
     test_nvmeof_target
     test_nvmeof_cm
@@ -654,20 +625,6 @@ set_tests_properties(ernic-device-tuple-unit PROPERTIES
 # (test_data_transfer is the loopback config step's TEST_BIN) and are run for
 # real inside the VM by the loopback job in system-tests.yml, where a device
 # is guaranteed and exit 77 is treated as a failure.
-
-# TCP/UDP checksum helper unit test (table-driven)
-add_test(
-    NAME net-checksum-unit
-    COMMAND $<TARGET_FILE:test_net_checksum>
-)
-set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
-
-# rdma_cm protocol parser unit test (table-driven)
-add_test(
-    NAME rdma-cm-proto-unit
-    COMMAND $<TARGET_FILE:test_rdma_cm_proto>
-)
-set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
 
 # Strict integer parser unit test (table-driven)
 add_test(

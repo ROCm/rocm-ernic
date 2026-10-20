@@ -43,26 +43,27 @@ The driver also replays a saved crash input, which reproduces a finding
 from a real fuzz run under ASan without rebuilding via Nix:
 
 ```
-./fuzz_replay_rdma_cm_proto crash-da39a3ee5e6b4b0d
+./fuzz_replay_<harness> crash-da39a3ee5e6b4b0d
 ```
 
 ## Harnesses
 
-| Harness | Target | Notes |
-|---|---|---|
-| `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
-| `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
+There are none at the moment. The two there were fuzzed
+`rdma_cm_process_message()` and the `net_headers.h` parse and checksum
+helpers, which the server no longer has. The live untrusted parsers in
+`src/nvmeof_cm.c`, `src/s3_http.c` and `src/s3_token.c` are the candidates
+for new ones.
 
-Inputs are copied into an exact-size heap buffer before each call, so
-AddressSanitizer flags any read the parser performs past the supplied
-length.
+Have a harness copy each input into an exact-size heap buffer before the
+call, so AddressSanitizer flags any read the parser performs past the
+supplied length.
 
 ## Not yet fuzzed (device-fixture required)
 
 The ionic devcmd and datapath handlers in
 `src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c` are **not** fuzzed
 here. They are not byte-buffer parsers: they move guest data through
-`rdma_pci_dma_map()` and operate on the RDMA resource manager, so a
+vfio-user DMA and operate on the RDMA resource manager, so a
 faithful harness needs a fully-wired device (PCI config + DMA + backend)
 rather than a raw buffer. A device-emulation harness that maps a fake DMA
 region and drives the admin and doorbell rings is the way to reach them;
@@ -70,6 +71,5 @@ that is future work.
 
 ## Extending a corpus
 
-Drop representative inputs (an rdma_cm SA message, a real
-Ethernet/IP/UDP frame) into `corpus/<harness>/` to speed
-up coverage. The build seeds each corpus with a single trivial input.
+Drop representative inputs into `corpus/<harness>/` to speed up
+coverage. The build seeds each corpus with a single trivial input.

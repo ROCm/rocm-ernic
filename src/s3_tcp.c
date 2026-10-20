@@ -112,10 +112,9 @@ struct s3_tcp {
 /* ------------------------------------------------------------------ */
 
 /*
- * net_headers.h has checksum helpers, but its TCP one substitutes 0xffff
- * for a computed zero.  That is the UDP rule; in TCP a zero checksum is
- * a legal value that must be sent as-is, and substituting for it makes
- * roughly one segment in 65536 arrive corrupt.  Hence these.
+ * A computed zero is sent as-is.  Substituting 0xffff for it is the UDP
+ * rule; in TCP a zero checksum is a legal value, and substituting for it
+ * makes roughly one segment in 65536 arrive corrupt.
  */
 static uint32_t csum_add(uint32_t sum, const void *data, size_t len)
 {

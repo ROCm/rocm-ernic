@@ -7,15 +7,16 @@
 #              crash inputs and a symbolized report (always exits 0 — the
 #              crashes are the deliverable, not a build failure)
 #
-# Harnesses target the genuinely self-contained parsers:
-#   fuzz_rdma_cm_proto   rdma_cm_process_message() — pure TCP-payload parser
-#   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
+# There are no harnesses at the moment: the two there were fuzzed parsers
+# the server no longer has. Add one to `harnesses` below for each
+# self-contained untrusted parser worth fuzzing.
 #
-# Deliberately NOT fuzzed here: the ionic devcmd and datapath handlers. Those are DMA/ring plumbing — they memcpy guest data
-# through rdma_pci_dma_map() and manipulate the RDMA resource manager, so a
-# faithful harness needs a fully-wired device (PCI + DMA + backend) fixture
-# rather than a byte buffer. Reaching them meaningfully is a device-emulation
-# harness, tracked as future work; see nix/analysis/fuzz/README.md.
+# Deliberately NOT fuzzed here: the ionic devcmd and datapath handlers. Those
+# are DMA/ring plumbing — they move guest data through vfio-user DMA and
+# manipulate the RDMA resource manager, so a faithful harness needs a
+# fully-wired device (PCI + DMA + backend) fixture rather than a byte buffer.
+# Reaching them meaningfully is a device-emulation harness, tracked as future
+# work; see nix/analysis/fuzz/README.md.
 
 { ctx, src }:
 
@@ -37,15 +38,7 @@ let
   # These targets are opt-in, so tests/nix/CMakeLists.txt also builds every
   # harness against a plain main() during the ordinary CMake build to keep
   # them from going stale. Add a harness in both places.
-  harnesses = [
-    { name = "rdma_cm_proto";
-      extra = [
-        "src/net/rdma_cm_proto.c"
-        "src/qemu-compat/error-report.c"
-      ]; }
-    { name = "net_headers";
-      extra = [ ]; }
-  ];
+  harnesses = [ ];
 
   names = map (h: h.name) harnesses;
 

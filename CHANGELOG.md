@@ -258,6 +258,12 @@
   self-hosted CI from the Actions tab's *Run workflow* button, or with
   `gh workflow run self-hosted-ci.yml -f pr=N`; `ci/README.md` describes the
   inputs.
+* Code the server never ran: the loopback-mode rdma_cm message handler
+  (`src/net/rdma_cm_proto.c`) and the packet parse and checksum helpers in
+  `src/net/net_headers.h`. Their unit tests (`rdma-cm-proto-unit`,
+  `net-checksum-unit`) and the two fuzz harnesses, which fuzzed only that
+  code, went with them. The opt-in fuzz workflow, `nix build .#fuzz`, and the
+  `tests/nix/` replay build are kept, with no harnesses for now.
 * The PVRDMA DMA-mapping layer in `rocm_ernic_compat.c`, which nothing
   called, and the QEMU compatibility stubs and headers that only removed
   PVRDMA code used. With it went the `ERNIC_DEBUG_DMA_MAP` environment
