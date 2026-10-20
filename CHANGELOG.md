@@ -237,7 +237,12 @@
     as `02:00:00:00:00:01`, as its usage says. It used to accept single
     digits, and ignore anything after the sixth byte.
   * The verbs backend's `port=` is refused if it has anything but digits;
-    `port=1x` used to be port 1.
+    `port=1x`, `port=+1`, and `port= 1` used to be port 1.
+  * The `tcp` backend's ports (`tcp:manager:listen:PORT`,
+    `tcp:manager:HOST:PORT`, and `tcp:worker:HOST:PORT`) are refused if
+    they have anything but digits, and a value with a leading space or `+`
+    in `ERNIC_TCP_LISTEN_BACKLOG`, `ERNIC_TCP_HEALTH_INTERVAL`, or
+    `ERNIC_TCP_SOCKBUF` is ignored, as other malformed values already were.
 * The `s3` backend's `size=` accepts a `T` multiplier, as
   `docs/s3.rst` says and the `nvmeof` backend's does.
 

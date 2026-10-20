@@ -23,14 +23,21 @@
 #include <string.h>
 
 /*
- * Parse a base-10 int. Rejects NULL/empty input, trailing non-numeric
- * characters, and values outside [INT_MIN, INT_MAX]. On success stores the
- * value in *out and returns true; otherwise leaves *out untouched and
- * returns false.
+ * Parse a base-10 int: digits, optionally preceded by a '-'. Rejects
+ * NULL/empty input, a leading space or '+', trailing characters, and values
+ * outside [INT_MIN, INT_MAX]. On success stores the value in *out and
+ * returns true; otherwise leaves *out untouched and returns false.
  */
 static inline bool ernic_parse_int(const char *s, int *out)
 {
-    if (!s || *s == '\0') {
+    if (!s) {
+        return false;
+    }
+
+    /* strtol() would skip leading space and take a '+', so check first that
+     * the digits start at once, after a '-' at most. */
+    const char *digits = *s == '-' ? s + 1 : s;
+    if (*digits < '0' || *digits > '9') {
         return false;
     }
 
@@ -52,10 +59,9 @@ static inline bool ernic_parse_int(const char *s, int *out)
 /*
  * Parse a base-10 uint32_t in [0, UINT32_MAX]. Rejects NULL/empty input,
  * anything but digits, and values above UINT32_MAX. Unlike
- * ernic_parse_int(), it takes no sign and no leading space: strtoull()
- * would accept "-1" and wrap it to the largest value. On success stores the
- * value in *out and returns true; otherwise leaves *out untouched and
- * returns false.
+ * ernic_parse_int(), it takes no '-' either: strtoull() would accept "-1"
+ * and wrap it to the largest value. On success stores the value in *out and
+ * returns true; otherwise leaves *out untouched and returns false.
  */
 static inline bool ernic_parse_u32(const char *s, uint32_t *out)
 {
@@ -290,8 +296,9 @@ static inline bool ernic_parse_mac(const char *s, uint8_t out[6])
 }
 
 /*
- * Parse a TCP port in [1, 65535]. Returns true on success (value in *out),
- * false for anything out of range, non-numeric, or zero.
+ * Parse a TCP port in [1, 65535]: digits only. Returns true on success
+ * (value in *out), false for anything out of range, zero, or not just
+ * digits, including a sign or a space.
  */
 static inline bool ernic_parse_port(const char *s, uint16_t *out)
 {

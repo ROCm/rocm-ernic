@@ -85,6 +85,10 @@ static int run_int(const struct int_case *tc)
                tc->expect_val);
         return 1;
     }
+    if (!ok && v != 0xDEAD) {
+        printf("FAIL int %-16s: changed the output on failure\n", tc->name);
+        return 1;
+    }
     return 0;
 }
 
@@ -221,6 +225,10 @@ static int run_port(const struct port_case *tc)
                (unsigned)tc->expect_val);
         return 1;
     }
+    if (!ok && p != 0xBEEF) {
+        printf("FAIL port %-16s: changed the output on failure\n", tc->name);
+        return 1;
+    }
     return 0;
 }
 
@@ -237,6 +245,21 @@ int main(void)
         {"trailing-space", "123 ", false, 0},
         {"overflow", "99999999999999999999", false, 0},
         {"int-max", "2147483647", true, INT_MAX},
+        {"int-min", "-2147483648", true, INT_MIN},
+        {"int-max-plus-one", "2147483648", false, 0},
+        {"int-min-minus-one", "-2147483649", false, 0},
+        {"leading-zeros", "007", true, 7},
+        {"negative-zero", "-0", true, 0},
+        /* strtol() takes all of these; the parser must not. */
+        {"leading-space", " 5", false, 0},
+        {"leading-tab", "\t5", false, 0},
+        {"leading-newline", "\n5", false, 0},
+        {"plus-sign", "+5", false, 0},
+        {"space-after-minus", "- 5", false, 0},
+        {"plus-after-minus", "-+5", false, 0},
+        {"double-minus", "--5", false, 0},
+        {"minus-only", "-", false, 0},
+        {"hex", "0x10", false, 0},
     };
 
     /* gid_t and uid_t are 32 bits, and above INT_MAX is valid for both. */
@@ -365,11 +388,13 @@ int main(void)
     };
 
     static const struct port_case port_cases[] = {
-        {"valid", "8080", true, 8080},    {"min", "1", true, 1},
-        {"max", "65535", true, 65535},    {"zero", "0", false, 0},
-        {"too-large", "65536", false, 0}, {"way-too-large", "99999", false, 0},
-        {"negative", "-1", false, 0},     {"garbage", "80x", false, 0},
-        {"empty", "", false, 0},
+        {"valid", "8080", true, 8080},     {"min", "1", true, 1},
+        {"max", "65535", true, 65535},     {"zero", "0", false, 0},
+        {"too-large", "65536", false, 0},  {"way-too-large", "99999", false, 0},
+        {"negative", "-1", false, 0},      {"garbage", "80x", false, 0},
+        {"empty", "", false, 0},           {"null", NULL, false, 0},
+        {"plus-sign", "+80", false, 0},    {"leading-space", " 80", false, 0},
+        {"leading-tab", "\t80", false, 0}, {"minus-zero", "-0", false, 0},
     };
 
     int failures = 0;
