@@ -525,7 +525,7 @@
   could only partly parse. The Nix Check workflow builds the new
   `analysis-runners` check, which tests these targets' scripts against a
   fake server, client and scan.
-- `ernic-device-tuple-unit` no longer fails when the build directory's path
+* `ernic-device-tuple-unit` no longer fails when the build directory's path
   is long. The emulated-device lookup in `tests/ernic_device.h` built each
   sysfs attribute path in a 192-byte buffer and treated a longer one as no
   match; it now allows `PATH_MAX`.

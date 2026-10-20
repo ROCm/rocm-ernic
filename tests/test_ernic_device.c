@@ -130,49 +130,101 @@ static int create_device(const char *name)
            write_attr(name, "subsystem_device", ERNIC_PCI_SUBSYSTEM_DEVICE_ID);
 }
 
-/* Lengths of device name, each with the emulated tuple when it fits. */
+/* Lengths of device name, each with the emulated tuple. */
 static const struct name_case {
     const char *description;
     size_t name_len;
-    int create; /* build a fixture device of this name */
-    int expected;
 } name_cases[] = {
-    {"one-character name", 1, 1, 1},
-    {"name longer than the old 192-byte path buffer", 200, 1, 1},
-    {"name at NAME_MAX", NAME_MAX, 1, 1},
-    {"name that cannot fit in PATH_MAX is rejected, not truncated", PATH_MAX, 0,
-     0},
+    {"one-character name", 1},
+    {"name longer than the old 192-byte path buffer", 200},
+    {"name at NAME_MAX", NAME_MAX},
 };
 
 static int run_name_cases(void)
 {
-    static char name[PATH_MAX + 1];
+    static char name[NAME_MAX + 1];
     int failures = 0;
     size_t i;
 
     for (i = 0; i < sizeof(name_cases) / sizeof(name_cases[0]); i++) {
         const struct name_case *c = &name_cases[i];
-        int got;
 
         memset(name, 'n', c->name_len);
         name[c->name_len] = '\0';
-        if (c->create && !create_device(name)) {
+        if (!create_device(name)) {
             fprintf(stderr, "FAIL %s: could not create the fixture\n",
                     c->description);
             failures++;
-            remove_device(name);
-            continue;
-        }
-        got = ernic_device_tuple_matches(name);
-        if (got != c->expected) {
-            fprintf(stderr, "FAIL %s: matched %d, expected %d\n",
-                    c->description, got, c->expected);
+        } else if (!ernic_device_tuple_matches(name)) {
+            fprintf(stderr, "FAIL %s: the emulated tuple did not match\n",
+                    c->description);
             failures++;
         }
-        if (c->create)
-            remove_device(name);
+        remove_device(name);
     }
 
+    return failures == 0;
+}
+
+/* Sets @name to @tail with enough '/' in front of it that
+ * ERNIC_SYSFS_INFINIBAND "/" @name is @length bytes long. The kernel reads a
+ * run of '/' as one, so the padding doesn't change the file the path names. */
+static int pad_name(char *name, size_t size, const char *tail, size_t length)
+{
+    const size_t prefix = sizeof(ERNIC_SYSFS_INFINIBAND "/") - 1;
+    const size_t tail_len = strlen(tail);
+    size_t pad;
+
+    if (length < prefix + tail_len)
+        return 0;
+    pad = length - prefix - tail_len;
+    if (pad >= size || tail_len >= size - pad)
+        return 0;
+
+    memset(name, '/', pad);
+    memcpy(name + pad, tail, tail_len + 1);
+    return 1;
+}
+
+#define LIMIT_DEVICE "limit"
+
+/* The longest attribute path, PATH_MAX - 1 bytes, has to be read. A longer
+ * one has to be rejected, even when its first PATH_MAX - 1 bytes name a real
+ * attribute, which is what a lookup that truncated the path would read. */
+static int run_path_limit_cases(void)
+{
+    static char name[PATH_MAX];
+    unsigned int value = 0;
+    int failures = 0;
+
+    if (!create_device(LIMIT_DEVICE)) {
+        fprintf(stderr, "FAIL path limit: could not create the fixture\n");
+        remove_device(LIMIT_DEVICE);
+        return 0;
+    }
+
+    if (!pad_name(name, sizeof(name), LIMIT_DEVICE,
+                  PATH_MAX - 1 - strlen("/device/vendor"))) {
+        fprintf(stderr, "FAIL path limit: the fixture path is too long\n");
+        failures++;
+    } else if (!ernic_read_hex_attr(name, "device/vendor", &value) ||
+               value != ERNIC_PCI_VENDOR_ID) {
+        fprintf(stderr,
+                "FAIL path of PATH_MAX - 1 bytes: did not read the vendor\n");
+        failures++;
+    }
+
+    if (!pad_name(name, sizeof(name), LIMIT_DEVICE "/device/vendor",
+                  PATH_MAX - 1)) {
+        fprintf(stderr, "FAIL path limit: the fixture path is too long\n");
+        failures++;
+    } else if (ernic_read_hex_attr(name, "device/device", &value)) {
+        fprintf(stderr,
+                "FAIL path longer than PATH_MAX: read its truncation\n");
+        failures++;
+    }
+
+    remove_device(LIMIT_DEVICE);
     return failures == 0;
 }
 
@@ -230,6 +282,8 @@ int main(void)
     }
 
     if (!run_name_cases())
+        goto cleanup;
+    if (!run_path_limit_cases())
         goto cleanup;
 
     result = EXIT_SUCCESS;

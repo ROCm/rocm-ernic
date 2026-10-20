@@ -56,12 +56,15 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
      * build directory is much longer than /sys/class/infiniband. */
     char path[PATH_MAX];
     FILE *attr;
+    int length;
     int fields;
 
     if (!name || !suffix || !value)
         return 0;
-    if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/%s", name,
-                 suffix) >= (int)sizeof(path))
+    /* A truncated path names some other file, so reject it. */
+    length = snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/%s", name,
+                      suffix);
+    if (length < 0 || (size_t)length >= sizeof(path))
         return 0;
 
     attr = fopen(path, "re");
