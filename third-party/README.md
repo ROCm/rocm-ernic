@@ -80,11 +80,11 @@ Changed lines against QEMU v9.0.0, ignoring whitespace and blank lines:
 
 | File                  | Upstream | Here | Changed |
 |-----------------------|---------:|-----:|--------:|
-| `rdma_rm.c`           |      812 | 1078 |     415 |
+| `rdma_rm.c`           |      812 | 1069 |     420 |
 | `vmw/pvrdma_qp_ops.c` |      298 |  296 |     380 |
-| `rdma_backend.c`      |     1401 | 1543 |     326 |
+| `rdma_backend.c`      |     1401 | 1541 |     324 |
 | `vmw/pvrdma.h`        |      144 |  129 |     139 |
-| `rdma_backend_defs.h` |       76 |  185 |     125 |
+| `rdma_backend_defs.h` |       76 |  183 |     123 |
 | `rdma_rm_defs.h`      |      146 |  207 |      69 |
 | The other 8 files     |          |      | 9 to 58 |
 
@@ -106,7 +106,7 @@ The changes are rocm-ernic features, not portability patches:
 About 45 commits in this repository changed these files, from the
 first server commit in November 2025 until September 2026. They lived
 in `src/from-qemu/` until PR #177 moved them here and labeled them
-vendored, and nothing has changed them since.
+vendored. Since then, only commented-out code has been removed.
 
 ## Why it matters
 
