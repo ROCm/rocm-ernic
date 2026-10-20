@@ -26,6 +26,7 @@
 #ifndef ERNIC_TESTS_DEVICE_H
 #define ERNIC_TESTS_DEVICE_H
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,14 +52,19 @@ enum ernic_device_result {
 static inline int ernic_read_hex_attr(const char *name, const char *suffix,
                                       unsigned int *value)
 {
-    char path[192];
+    /* PATH_MAX, not a guess at the sysfs path: a fixture tree under a deep
+     * build directory is much longer than /sys/class/infiniband. */
+    char path[PATH_MAX];
     FILE *attr;
+    int length;
     int fields;
 
     if (!name || !suffix || !value)
         return 0;
-    if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/%s", name,
-                 suffix) >= (int)sizeof(path))
+    /* A truncated path names some other file, so reject it. */
+    length = snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/%s", name,
+                      suffix);
+    if (length < 0 || (size_t)length >= sizeof(path))
         return 0;
 
     attr = fopen(path, "re");
