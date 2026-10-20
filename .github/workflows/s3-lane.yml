@@ -314,8 +314,13 @@ jobs:
         SSH_PORT=2222
 
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
+        #
+        # hpet=off: now and then a nested guest's kernel hangs for good
+        # just after setting up the HPET.  See "boot hang" in
+        # scripts/qemu-vm-diagnose.sh, which says what to do if it
+        # still happens.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \

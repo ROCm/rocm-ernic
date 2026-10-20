@@ -211,6 +211,13 @@
   update decides which other workers a worker connects to, and now also which
   of its connections to them it closes, so another worker could otherwise
   have it drop its links.
+* The hosted CI starts its guests with `-machine hpet=off`, to avoid an
+  occasional hang of the nested guest kernel in early boot, before the ionic
+  driver loads. When a guest never answers SSH,
+  `scripts/qemu-vm-diagnose.sh` now also samples where each vCPU is,
+  reports a QMP command that never returns, and reports a kernel that
+  stopped before switching to its final clocksource, with what else to rule
+  out before putting it down to that hang.
 
 ### Removed
 
