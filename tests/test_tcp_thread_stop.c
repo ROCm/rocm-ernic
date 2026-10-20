@@ -4934,9 +4934,12 @@ static int run_reap_case(const struct reap_case *c)
  * peer could use to grow the node's memory without bound.  A retired message
  * now gets no answer and nothing of it is kept.
  *
- * Each row starts a manager with tcp_init(), on a one-hour interval so the
- * health check leaves the nodes alone, and registers two workers over
- * socketpairs, as in the fini rows: nodes 1 and 2.
+ * Each row starts a manager with tcp_init(), stops its health-check thread,
+ * and registers two workers over socketpairs, as in the fini rows: nodes 1
+ * and 2.  The health check's first pass comes as soon as the thread runs,
+ * which can be after the row has set up the nodes' liveness or drained the
+ * workers' sockets, and its heartbeats, or a node it declares dead, would
+ * then fail the row.  Stopping the thread first makes that pass come first.
  */
 
 enum sender_scenario {
@@ -5214,6 +5217,7 @@ static int run_sender_case(const struct sender_case *c)
         return 1;
     }
     priv = dev.backend_private;
+    tcp_stop_health_check_thread(priv);
 
     w1 = worker_register(priv);
     if (w1 < 0 || !wait_for_registered(priv, 1))
