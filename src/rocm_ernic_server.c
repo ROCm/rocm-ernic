@@ -477,7 +477,8 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 }
 
 /**
- * Setup PCI configuration for the emulated ionic device
+ * Setup PCI configuration for the emulated ionic device.  Returns 0, or -1
+ * after saying why.
  */
 static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
@@ -487,7 +488,8 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ret =
         vfu_pci_init(vfu_ctx, VFU_PCI_TYPE_EXPRESS, PCI_HEADER_TYPE_NORMAL, 0);
     if (ret < 0) {
-        err(EXIT_FAILURE, "vfu_pci_init() failed");
+        warn("vfu_pci_init() failed");
+        return -1;
     }
 
     /* Upstream ionic.ko + ionic_rdma.ko bind to this ID. */
@@ -515,6 +517,8 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
  *   BAR0 (64-bit): 32 KB device registers (devcmd + MSI-X ctrl),
  *                  with the MSI-X table/PBA above the register window
  *   BAR2 (64-bit): 4 MB doorbell pages (BAR1 is skipped per ionic spec)
+ *
+ * Returns 0, or -1 after saying why.
  */
 static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
@@ -524,20 +528,26 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
      * register window; the register window itself is shadowed inside
      * ionic_eth_emu. */
     dev->bar0_mem = calloc(1, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
-    if (!dev->bar0_mem)
-        err(EXIT_FAILURE, "ionic: Failed to allocate BAR0 MSI-X shadow");
+    if (!dev->bar0_mem) {
+        warn("ionic: Failed to allocate BAR0 MSI-X shadow");
+        return -1;
+    }
 
     ret = vfu_setup_region(
         vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, IONIC_BAR0_TOTAL_SIZE,
         bar0_access, VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
-    if (ret < 0)
-        err(EXIT_FAILURE, "ionic: Failed to setup BAR0");
+    if (ret < 0) {
+        warn("ionic: Failed to setup BAR0");
+        return -1;
+    }
 
     ret = vfu_setup_region(
         vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX, IONIC_BAR2_DB_SIZE, bar2_access,
         VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
-    if (ret < 0)
-        err(EXIT_FAILURE, "ionic: Failed to setup BAR2");
+    if (ret < 0) {
+        warn("ionic: Failed to setup BAR2");
+        return -1;
+    }
 
     ernic_startup_report(
         "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
@@ -1130,7 +1140,54 @@ static bool socket_access_ok(const char *path, const gid_t *want_gid,
 }
 
 /**
+ * Free the device structure and the strings it owns.  Safe on a structure
+ * that was only partly filled in.
+ */
+static void dev_free(rocm_ernic_dev_t *dev)
+{
+    free(dev->stats_file_path);
+    free(dev->bar0_mem);
+    free(dev->backend_device_name);
+    free(dev->backend_eth_device);
+    free(dev->backend_type_str);
+    free(dev);
+}
+
+/**
+ * Tear down everything built on vfu_ctx, and free the device.
+ *
+ * This stops and joins the backend's threads, such as the TCP backend's, so
+ * the process never exits with them still running: exit() isn't thread
+ * safe.  Safe on a device that was only partly built.
+ */
+static void server_teardown(rocm_ernic_dev_t *dev, vfu_ctx_t *vfu_ctx)
+{
+    /* The ionic layer first, while the ctx it was built on and the pvrdma
+     * backend it registered with are both still alive. */
+    ionic_device_fini(dev);
+
+    /*
+     * Then the PVRDMA device, before the ctx: its backend's teardown puts
+     * back the guest memory mapped for work requests still queued, and
+     * pci_dma_unmap() does that through the ctx each mapping was made with.
+     */
+    if (dev->pvrdma_handle) {
+        pvrdma_device_destroy(dev->pvrdma_handle);
+        dev->pvrdma_handle = NULL;
+    }
+
+    vfu_destroy_ctx(vfu_ctx);
+    g_vfu_ctx = NULL;
+
+    dev_free(dev);
+}
+
+/**
  * Main entry point
+ *
+ * Until vfu_ctx exists, no other thread does either, so a failure ends the
+ * process at once.  From then on, a failure goes to fail, which tears the
+ * device down first, and with it the threads ionic_device_init() starts.
  */
 int main(int argc, char *argv[])
 {
@@ -1213,9 +1270,8 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "Error: Invalid log level: %s\n", optarg);
                 fprintf(stderr,
                         "  Expected one of: none, error, warn, info, debug\n");
-                free(dev->backend_type_str);
-                free(dev);
-                exit(EXIT_FAILURE);
+                dev_free(dev);
+                return EXIT_FAILURE;
             }
             log_level_set = true;
             break;
@@ -1239,17 +1295,15 @@ int main(int argc, char *argv[])
                             optarg);
                     fprintf(stderr, "  Expected format: XX:XX:XX:XX:XX:XX\n");
                     fprintf(stderr, "  Example: --mac 02:00:00:00:00:01\n");
-                    free(dev->backend_type_str);
-                    free(dev);
-                    exit(EXIT_FAILURE);
+                    dev_free(dev);
+                    return EXIT_FAILURE;
                 }
                 for (int i = 0; i < 6; i++) {
                     if (mac[i] > 255) {
                         fprintf(stderr, "Error: Invalid MAC address byte: %u\n",
                                 mac[i]);
-                        free(dev->backend_type_str);
-                        free(dev);
-                        exit(EXIT_FAILURE);
+                        dev_free(dev);
+                        return EXIT_FAILURE;
                     }
                     dev->mac_addr[i] = (uint8_t)mac[i];
                 }
@@ -1261,10 +1315,12 @@ int main(int argc, char *argv[])
             break;
         case 'h':
             usage(argv[0]);
-            exit(EXIT_SUCCESS);
+            dev_free(dev);
+            return EXIT_SUCCESS;
         default:
             usage(argv[0]);
-            exit(EXIT_FAILURE);
+            dev_free(dev);
+            return EXIT_FAILURE;
         }
     }
 
@@ -1278,11 +1334,8 @@ int main(int argc, char *argv[])
 
     /* Validate backend-specific options */
     if (validate_backend_options(dev) < 0) {
-        free(dev->backend_type_str);
-        free(dev->backend_device_name);
-        free(dev->backend_eth_device);
-        free(dev);
-        exit(EXIT_FAILURE);
+        dev_free(dev);
+        return EXIT_FAILURE;
     }
 
     /* Redirect stdout and stderr to log file if requested */
@@ -1309,12 +1362,8 @@ int main(int argc, char *argv[])
     if (socket_group && !resolve_group(socket_group, &socket_gid)) {
         fprintf(stderr, "Error: --socket-group: no such group: %s\n",
                 socket_group);
-        free(dev->backend_type_str);
-        free(dev->backend_device_name);
-        free(dev->backend_eth_device);
-        free(dev->stats_file_path);
-        free(dev);
-        exit(EXIT_FAILURE);
+        dev_free(dev);
+        return EXIT_FAILURE;
     }
 
     /* Setup signal handlers */
@@ -1398,8 +1447,7 @@ int main(int argc, char *argv[])
         (socket_group &&
          (!socket_set_group(socket_path, socket_group, socket_gid) ||
           !socket_access_ok(socket_path, &socket_gid, &sock_st)))) {
-        vfu_destroy_ctx(vfu_ctx);
-        exit(EXIT_FAILURE);
+        goto fail;
     }
     ernic_startup_report("rocm-ernic: ✓ Socket permissions set to %04o, "
                          "group %u, for %s",
@@ -1412,11 +1460,14 @@ int main(int argc, char *argv[])
     ret = vfu_setup_log(vfu_ctx, vfu_log_cb,
                         vfu_log_threshold(ernic_log_get_level()));
     if (ret < 0) {
-        err(EXIT_FAILURE, "vfu_setup_log() failed");
+        warn("vfu_setup_log() failed");
+        goto fail;
     }
 
-    if (ionic_device_init(dev) < 0)
-        err(EXIT_FAILURE, "ionic_device_init() failed");
+    if (ionic_device_init(dev) < 0) {
+        warn("ionic_device_init() failed");
+        goto fail;
+    }
 
     /* Set stats file path if provided */
     if (dev->stats_file_path && dev->pvrdma_handle) {
@@ -1431,19 +1482,15 @@ int main(int argc, char *argv[])
         pvrdma_write_stats(dev->pvrdma_handle);
     }
 
-    /* Setup PCI configuration */
-    if (setup_pci_config(vfu_ctx, dev) < 0) {
-        err(EXIT_FAILURE, "setup_pci_config() failed");
-    }
-
-    /* Setup BARs */
-    if (setup_bars(vfu_ctx, dev) < 0) {
-        err(EXIT_FAILURE, "setup_bars() failed");
+    /* Setup PCI configuration and BARs, which say why they failed */
+    if (setup_pci_config(vfu_ctx, dev) < 0 || setup_bars(vfu_ctx, dev) < 0) {
+        goto fail;
     }
 
     /* Setup interrupts */
     if (setup_interrupts(vfu_ctx, dev) < 0) {
-        err(EXIT_FAILURE, "setup_interrupts() failed");
+        warn("setup_interrupts() failed");
+        goto fail;
     }
 
     /* Setup DMA callbacks */
@@ -1454,19 +1501,22 @@ int main(int argc, char *argv[])
     ret = vfu_setup_device_dma(vfu_ctx, dma_register_cb, dma_unregister_cb);
 #endif
     if (ret < 0) {
-        err(EXIT_FAILURE, "vfu_setup_device_dma() failed");
+        warn("vfu_setup_device_dma() failed");
+        goto fail;
     }
 
     /* Setup reset callback */
     ret = vfu_setup_device_reset_cb(vfu_ctx, device_reset_cb);
     if (ret < 0) {
-        err(EXIT_FAILURE, "vfu_setup_device_reset_cb() failed");
+        warn("vfu_setup_device_reset_cb() failed");
+        goto fail;
     }
 
     /* Realize the device */
     ret = vfu_realize_ctx(vfu_ctx);
     if (ret < 0) {
-        err(EXIT_FAILURE, "vfu_realize_ctx() failed");
+        warn("vfu_realize_ctx() failed");
+        goto fail;
     }
 
     /* Log MAC address if set */
@@ -1484,7 +1534,7 @@ int main(int argc, char *argv[])
         if (!dev->ionic_emu) {
             fprintf(stderr,
                     "rocm-ernic: Ethernet emulation is not initialized\n");
-            exit(EXIT_FAILURE);
+            goto fail;
         }
         char assigned[64] = {0};
         ret = ionic_eth_emu_attach_tap(dev->ionic_emu, tap_ifname, assigned,
@@ -1496,7 +1546,7 @@ int main(int argc, char *argv[])
                     "rocm-ernic: pre-create it with: ip tuntap add dev "
                     "%s mode tap user $USER\n",
                     tap_ifname);
-            exit(EXIT_FAILURE);
+            goto fail;
         }
         ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s",
                              assigned);
@@ -1527,7 +1577,8 @@ int main(int argc, char *argv[])
             vfu_log(vfu_ctx, LOG_ERR,
                     "vfu_attach_ctx() failed with errno=%d: %s", errno,
                     strerror(errno));
-            err(EXIT_FAILURE, "vfu_attach_ctx() failed");
+            warn("vfu_attach_ctx() failed");
+            goto fail;
         }
 
         ernic_startup_report("rocm-ernic: Client connected!");
@@ -1650,35 +1701,17 @@ int main(int argc, char *argv[])
     set_signal_handler(SIGINT, SIG_IGN);
     set_signal_handler(SIGTERM, SIG_IGN);
 
-    /* Cleanup: the ionic layer first, while the ctx it was built on and
-     * the pvrdma backend it registered with are both still alive. */
-    ionic_device_fini(dev);
-
-    /*
-     * Then the PVRDMA device, before the ctx: its backend's teardown puts
-     * back the guest memory mapped for work requests still queued, and
-     * pci_dma_unmap() does that through the ctx each mapping was made with.
-     */
-    if (dev->pvrdma_handle) {
-        pvrdma_device_destroy(dev->pvrdma_handle);
-        dev->pvrdma_handle = NULL;
-    }
-
-    vfu_destroy_ctx(vfu_ctx);
-    g_vfu_ctx = NULL;
-
-
-    free(dev->stats_file_path);
-
-    free(dev->bar0_mem);
-    free(dev->backend_device_name);
-    free(dev->backend_eth_device);
-    free(dev->backend_type_str);
-    free(dev);
+    server_teardown(dev, vfu_ctx);
 
     unlink(socket_path);
 
     ernic_startup_report("rocm-ernic: Shutdown complete");
 
     return EXIT_SUCCESS;
+
+fail:
+    /* Destroying vfu_ctx also removes the socket.  Only a clean shutdown
+     * says "Shutdown complete". */
+    server_teardown(dev, vfu_ctx);
+    return EXIT_FAILURE;
 }

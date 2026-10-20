@@ -5,7 +5,7 @@
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
  * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Four things are pinned here:
+ * status and the log.  Five things are pinned here:
  *
  *   - only the socket's owner, and the group --socket-group names, can
  *     connect to it, whatever the umask or a default ACL on its directory;
@@ -16,7 +16,9 @@
  *     and any report fails the row;
  *   - on the TCP backend, SIGTERM stops the backend's threads promptly
  *     rather than waiting out a blocking accept() or the health-check
- *     interval.
+ *     interval;
+ *   - a startup failure after the backend has started its threads stops
+ *     and joins them before the server exits.
  *
  * Usage: test_server_lifecycle
  *
@@ -390,10 +392,12 @@ struct lifecycle_case {
     mode_t umask;      /* the umask for set_umask */
     enum dir_acl acl;  /* put the socket in a directory with this ACL */
     enum sock_group group;
-    bool want_socket; /* the socket should appear, mode 0600, or 0660 and the
-                         group asked for */
-    bool want_gone;   /* refused: no socket left once the server exits */
-    bool settle;      /* let the server reach its attach loop first */
+    const char *opt;     /* another option for the server, or NULL */
+    const char *opt_arg; /* its argument, or NULL for none */
+    bool want_socket;    /* the socket should appear, mode 0600, or 0660 and the
+                            group asked for */
+    bool want_gone;      /* refused: no socket left once the server exits */
+    bool settle;         /* let the server reach its attach loop first */
     enum action action;
     int clients;           /* how many times to do the action */
     int sig;               /* signal to send (0: none, wait for exit) */
@@ -524,6 +528,84 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "Registration timeout"},
+    /* Attaching the TAP comes after the backend has started its threads.
+     * '/' is never valid in an interface name, so the attach fails whether
+     * or not the test can create TAP devices.  "Cleaning up" is logged at
+     * info level, by tcp_fini(), so it shows that the threads were stopped
+     * and joined before the process exited. */
+    {.category = "negative",
+     .description = "a TAP that can't be attached, on a TCP mesh manager",
+     .expected = "the backend's threads are stopped, the socket is removed, "
+                 "and the server exits non-zero, with no sanitizer report",
+     .backend = "tcp:manager:listen:@PORT@",
+     .env_name = "ERNIC_LOG_LEVEL",
+     .env_value = "info",
+     .opt = "--tap",
+     .opt_arg = "ernic/bad",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "TCP backend: Cleaning up"},
+    /* Bad options are refused before the socket exists.  Under LeakSanitizer
+     * these also check that the refusal frees what parsing allocated. */
+    {.category = "negative",
+     .description = "--log-level names no level",
+     .expected = "the server exits non-zero before creating the socket",
+     .backend = "loopback",
+     .opt = "--log-level",
+     .opt_arg = "loud",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "Invalid log level"},
+    {.category = "negative",
+     .description = "--mac has five bytes",
+     .expected = "the server exits non-zero before creating the socket",
+     .backend = "loopback",
+     .opt = "--mac",
+     .opt_arg = "02:00:00:00:00",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "Invalid MAC address format"},
+    {.category = "negative",
+     .description = "an option the server doesn't know",
+     .expected = "the server prints its usage and exits non-zero before "
+                 "creating the socket",
+     .backend = "loopback",
+     .opt = "--no-such-option",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "Usage:"},
     /* A default ACL on the directory is copied onto the socket, and a named
      * entry in it lets that user connect whatever the mode says, so the
      * server refuses to serve the socket.  It checks before --socket-group
@@ -806,12 +888,52 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
     return true;
 }
 
+/*
+ * The environment for the server: this process's, with name=value in place
+ * of any name= already in it.  The array is the caller's to free; its
+ * strings are this process's, apart from the last, which is written to
+ * entry.  Returns NULL if there's no memory, or entry is too small.
+ */
+static char **server_env(const char *name, const char *value, char *entry,
+                         size_t len)
+{
+    size_t name_len = strlen(name), n = 0, out = 0;
+    int w = snprintf(entry, len, "%s=%s", name, value);
+    char **env;
+
+    if (w < 0 || (size_t)w >= len)
+        return NULL;
+    while (environ[n])
+        n++;
+    env = calloc(n + 2, sizeof(*env));
+    if (!env)
+        return NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (strncmp(environ[i], name, name_len) != 0 ||
+            environ[i][name_len] != '=')
+            env[out++] = environ[i];
+    }
+    env[out] = entry;
+    return env;
+}
+
 /* @group is the --socket-group to pass, or NULL for none. */
 static pid_t start_server(const struct lifecycle_case *c, const char *backend,
                           const char *sock, const char *log, const char *group)
 {
-    pid_t pid = fork();
+    char entry[256];
+    char **env = NULL;
+    pid_t pid;
 
+    /* Built here, since the child may only call async-signal-safe functions
+     * until it execs, and setenv() and malloc() aren't */
+    if (c->env_name) {
+        env = server_env(c->env_name, c->env_value, entry, sizeof(entry));
+        if (!env)
+            return -1;
+    }
+
+    pid = fork();
     if (pid == 0) {
         /* dup2() clears close-on-exec on the copies, so the server still
          * inherits stdout and stderr.  With _FORTIFY_SOURCE, glibc 2.40 and
@@ -823,21 +945,32 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
 
         if (fd < 0)
             _exit(126);
-        if (c->env_name && setenv(c->env_name, c->env_value, 1) < 0)
-            _exit(126);
+        if (env)
+            environ = env;
         if (c->set_umask)
             umask(c->umask);
         dup2(fd, STDOUT_FILENO);
         dup2(fd, STDERR_FILENO);
         close(fd);
-        if (group)
-            execl(g_server, g_server, "--socket", sock, "--backend", backend,
-                  "--socket-group", group, (char *)NULL);
-        else
-            execl(g_server, g_server, "--socket", sock, "--backend", backend,
-                  (char *)NULL);
+        /* The options a row may add, packed to the front, since execl()
+         * stops at the first NULL */
+        const char *opt[4] = {NULL, NULL, NULL, NULL};
+        size_t n = 0;
+
+        if (group) {
+            opt[n++] = "--socket-group";
+            opt[n++] = group;
+        }
+        if (c->opt) {
+            opt[n++] = c->opt;
+            if (c->opt_arg)
+                opt[n++] = c->opt_arg;
+        }
+        execl(g_server, g_server, "--socket", sock, "--backend", backend,
+              opt[0], opt[1], opt[2], opt[3], (char *)NULL);
         _exit(127);
     }
+    free(env);
     return pid;
 }
 
@@ -1015,7 +1148,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     pid =
         start_server(c, backend, sock, log, c->group == SG_NONE ? NULL : group);
     if (pid < 0) {
-        printf("FAIL %s: %s; could not fork\n", c->category, c->description);
+        printf("FAIL %s: %s; could not start the server\n", c->category,
+               c->description);
         if (port_fd >= 0)
             close(port_fd);
         return 1;
