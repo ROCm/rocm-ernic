@@ -112,9 +112,9 @@
  * exited, and how many joins it took.  The health-check rows also check
  * that the thread still runs once per interval when nobody stops it.  A
  * per-row alarm() turns a hang into a named failure rather than a ctest
- * timeout.  The translation unit is #included to reach the static
- * functions, and its externals are stubbed; the thread entry points are
- * backed by real pthreads.
+ * timeout.  The test links rdma_backend_tcp.c, reaches its internals
+ * through rdma_backend_tcp_priv.h, and stubs its externals; the thread
+ * entry points are backed by real pthreads.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -128,6 +128,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -147,8 +148,14 @@
 #include <valgrind/valgrind.h>
 #endif
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+
+#include "qemu/error-report.h"
+#include "qemu/thread.h"
+#include "rdma/rdma_backend_ops.h"
+#include "rdma/rdma_backend_tcp_priv.h"
+#include "rdma_backend.h"
+#include "rdma_backend_defs.h"
 
 /* ---- Stubs ------------------------------------------------------------- */
 
@@ -554,7 +561,7 @@ static int run_health_case(const struct health_case *c)
     qemu_cond_init(&priv->health_check_cond);
     priv->health_check_interval_sec = c->interval;
     priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
+        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
     /* Each pass reaps the pending connections, of which there are none */
     priv->pending_conns = g_ptr_array_new();
@@ -563,12 +570,12 @@ static int run_health_case(const struct health_case *c)
     qemu_mutex_init(&priv->conn_table_lock);
 
     if (c->peer) {
-        MeshNodeInfo *node = mesh_node_info_new(1, "peer", 0);
+        MeshNodeInfo *node = tcp_mesh_node_info_new(1, "peer", 0);
 
         if (!node || socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
             printf("FAIL health %s: %s; could not set up the peer\n",
                    c->category, c->description);
-            mesh_node_info_free(node);
+            tcp_mesh_node_info_free(node);
             ok = false;
             goto out;
         }
@@ -685,7 +692,10 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     TcpConnection *conn;
     int sv[2];
 
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0)
+    /* A successful socketpair() always gives two descriptors, but the static
+     * analyzer doesn't know that, and would otherwise follow *peer into a
+     * send() as -1. */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0 || sv[0] < 0 || sv[1] < 0)
         return NULL;
     conn = tcp_connection_new(id, "peer", 0);
     conn->priv = priv;
@@ -1074,7 +1084,7 @@ static int run_fini_case(const struct fini_case *c)
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
         printf("FAIL fini %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -1120,7 +1130,7 @@ static int run_fini_case(const struct fini_case *c)
 
 stop:
     start = now_s();
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     took = now_s() - start;
     alarm(0);
 
@@ -1233,7 +1243,7 @@ static int run_create_case(const struct create_case *c)
     }
     if (c->when == FAIL_IN_INIT)
         atomic_store(&g_creates_left, c->creates_left);
-    init_ret = tcp_init(&dev, config);
+    init_ret = rdma_backend_ops_tcp.init(&dev, config);
 
     if (c->when == FAIL_ON_ACCEPT && init_ret == 0) {
         TcpBackendPrivate *priv = dev.backend_private;
@@ -1253,7 +1263,7 @@ static int run_create_case(const struct create_case *c)
     }
     atomic_store(&g_creates_left, -1);
     if (init_ret == 0)
-        tcp_fini(&dev);
+        rdma_backend_ops_tcp.fini(&dev);
 
 out:
     alarm(0);
@@ -1665,7 +1675,7 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
     qemu_cond_init(&priv->health_check_cond);
     priv->health_check_interval_sec = interval;
     priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
+        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
     qemu_mutex_init(&priv->topology_broadcast_lock);
     priv->connections = g_hash_table_new_full(
@@ -1682,7 +1692,7 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
             return "could not set up an old connection";
         g_hash_table_insert(priv->connections, GUINT_TO_POINTER(id),
                             tcp_connection_ref(fx->old[i]));
-        fx->node[i] = mesh_node_info_new(id, "127.0.0.1", port);
+        fx->node[i] = tcp_mesh_node_info_new(id, "127.0.0.1", port);
         if (!fx->node[i])
             return "could not create a mesh node";
         fx->node[i]->is_alive = false; /* already reported dead: no broadcast */
@@ -2573,7 +2583,7 @@ static int run_reg_case(const struct reg_case *c)
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
         printf("FAIL registration %s: %s; could not start a manager\n",
                c->category, c->description);
         alarm(0);
@@ -2629,7 +2639,7 @@ static int run_reg_case(const struct reg_case *c)
     /* A connection in the table twice is freed twice, and ASan aborts */
     fflush(stdout);
 
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (fd >= 0)
         close(fd);
@@ -3591,7 +3601,7 @@ static void *wr_init_run(void *opaque)
     struct wr_init *in = opaque;
     double start = now_s();
 
-    in->ret = tcp_init(&in->dev, in->config);
+    in->ret = rdma_backend_ops_tcp.init(&in->dev, in->config);
     in->took = now_s() - start;
     return NULL;
 }
@@ -4005,7 +4015,7 @@ static int run_wr_case(const struct wr_case *c)
     wr_init_join(&in);
     atomic_store(&g_creates_left, -1);
     if (in.ret == 0)
-        tcp_fini(&in.dev);
+        rdma_backend_ops_tcp.fini(&in.dev);
     alarm(0);
     if (!why && creates_left >= 0 &&
         (atomic_load(&g_creates) != creates_left ||
@@ -4882,7 +4892,7 @@ static int run_reap_case(const struct reap_case *c)
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
         printf("FAIL reap %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -4891,7 +4901,7 @@ static int run_reap_case(const struct reap_case *c)
     why = reap_run(dev.backend_private, port, c->scenario, &k, &errors);
 
     start = now_s();
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     took = now_s() - start;
     alarm(0);
     if (!why && took >= 2.0)
@@ -5210,7 +5220,7 @@ static int run_sender_case(const struct sender_case *c)
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
         printf("FAIL sender %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -5227,7 +5237,7 @@ static int run_sender_case(const struct sender_case *c)
     else
         why = sender_run(priv, w1, w2, c->scenario);
 
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
                  atomic_load(&g_exits) != atomic_load(&g_creates)))
@@ -5461,7 +5471,7 @@ static const char *lt_register_vs_stop(void)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
     /* No backend threads exist yet, so nothing reads the environment */
     setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
-    if (port == 0 || tcp_init(&dev, config) != 0)
+    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0)
         return "could not start a manager";
     priv = dev.backend_private;
     tcp_stop_health_check_thread(priv);
@@ -5504,7 +5514,7 @@ static const char *lt_register_vs_stop(void)
 
 out:
     /* Joins nothing more; ASan reports it if the connection is freed twice */
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     if (fd >= 0)
         close(fd);
     return why;
@@ -5788,7 +5798,7 @@ static void dc_stop(struct dc_worker *w)
                            (uint32_t)sizeof(TcpRegisterRespPayload));
     wr_init_join(&w->in);
     if (w->in.ret == 0)
-        tcp_fini(&w->in.dev);
+        rdma_backend_ops_tcp.fini(&w->in.dev);
     if (w->mgr >= 0)
         close(w->mgr);
 }

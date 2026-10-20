@@ -39,13 +39,17 @@
  * rkey is an MR handle). That assertion is vacuous in both directions --
  * rdma_res_tbl_get() guards with `handle < tbl->tbl_sz`, which is correct
  * and was never part of this bug, so it rejects the out-of-range handle on
- * fixed and unfixed builds alike. The over-capacity pointer reaches a
- * caller only as the allocator's return value, which the cases below check
+ * fixed and unfixed builds alike. The over-capacity slot reaches a caller
+ * only through the allocator's result, which the cases below check
  * directly.
  *
- * The allocator is static inline, so it is reached by #including the
- * translation unit; the resource manager's backend externs are stubbed,
- * as no path under test reaches them.
+ * The allocator is static inline in the vendored rdma_rm.c, so it is
+ * reached through the resource manager's public API instead: rdma_rm_init()
+ * sizes the CQE context table as max_qp * max_qp_wr, which with max_qp = 1
+ * makes max_qp_wr the table size, and rdma_rm_alloc_cqe_ctx() and
+ * rdma_rm_dealloc_cqe_ctx() are thin wrappers over the allocator that call
+ * no backend. The resource manager's backend externs are stubbed, as no
+ * path under test reaches them.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -54,6 +58,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -61,36 +66,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "rocm-ernic-warnings.h"
-
-/*
- * rdma_rm.c includes rdma_utils.h from its own directory, which is not a
- * SYSTEM include path here, so the logging macros it defines would be checked
- * as our code. Including it first through the SYSTEM path, as the main build
- * does, keeps them vendored: under -pedantic, GCC 13 and older report a
- * variadic macro called with no variadic arguments in a way that ignores
- * diagnostic pragmas, so the macros below cannot silence it.
- */
-#include "rdma_utils.h" // IWYU pragma: keep
-
-/*
- * Pull in the code under test (including its static functions). rdma_rm.c
- * is vendored, so the warnings it raises are silenced here rather than fixed;
- * the suppression covers only the #included code.
- */
-ROCM_ERNIC_WARN_IMPLICIT_CONVERSION_OFF
-ROCM_ERNIC_WARN_SIGN_CONVERSION_OFF
-ROCM_ERNIC_WARN_FORMAT_MISMATCH_OFF
-ROCM_ERNIC_WARN_FORMAT_NONVOID_POINTER_OFF
-ROCM_ERNIC_WARN_VOID_POINTER_ARITH_OFF
-#include "hw/rdma/rdma_rm.c"
-ROCM_ERNIC_WARN_VOID_POINTER_ARITH_ON
-ROCM_ERNIC_WARN_FORMAT_NONVOID_POINTER_ON
-ROCM_ERNIC_WARN_FORMAT_MISMATCH_ON
-ROCM_ERNIC_WARN_SIGN_CONVERSION_ON
-ROCM_ERNIC_WARN_IMPLICIT_CONVERSION_ON
+#include <infiniband/verbs.h>
 
 #include "hw/pci/pci.h" /* declares the pci_dma_* stubs below */
+#include "rdma_backend.h"
+#include "rdma_backend_defs.h"
+#include "rdma_rm.h"
+#include "rdma_rm_defs.h"
 
 /* ---- Stubs for the backend entry points rdma_rm.c calls, and for the two
  * DMA symbols the linked qemu-stubs TU references but does not define.
@@ -177,29 +159,48 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
  * bitmap and only the table memset goes out of bounds. */
 #define TBL_SZ_RAGGED 100
 
-#define RES_SZ     32
 #define GUARD_BYTE 0xC7u
 
 /*
- * res_tbl_init() allocates tbl->tbl itself, so a guard band cannot be placed
- * around it in the usual way. Instead the table is re-pointed at the middle
- * of a larger buffer of our own: the allocator only ever indexes off
+ * rdma_rm_init() allocates the table itself, so a guard band cannot be
+ * placed around it in the usual way. Instead the table is re-pointed at the
+ * middle of a larger buffer of our own: the allocator only ever indexes off
  * tbl->tbl, so it cannot tell the difference, and the one-past-the-end
- * memset lands in a readable guard band instead of an ASan redzone. That
+ * write lands in a readable guard band instead of an ASan redzone. That
  * keeps the failure reportable rather than fatal, and keeps the ragged case
- * meaningful in a non-sanitized build.
+ * meaningful in a non-sanitized build. The original table is put back
+ * before rdma_rm_fini() frees it.
  */
+static RdmaDeviceResources dev_res;
 static void *orig_tbl;
 static uint8_t *backing;
 static size_t backing_len;
+static size_t res_sz;
 
-static void tbl_init_guarded(RdmaRmResTbl *tbl, const char *name,
-                             uint32_t tbl_sz)
+/* Any value will do; rdma_rm_alloc_cqe_ctx() only stores it. */
+static int ctx_token;
+
+static RdmaRmResTbl *tbl_init_guarded(uint32_t tbl_sz)
 {
-    res_tbl_init(name, tbl, tbl_sz, RES_SZ);
+    /* Every other table gets one entry, so none is created empty. */
+    struct ibv_device_attr attr = {
+        .max_qp = 1,
+        .max_qp_wr = (int)tbl_sz,
+        .max_cq = 1,
+        .max_mr = 1,
+        .max_pd = 1,
+        .max_srq = 1,
+    };
+    RdmaRmResTbl *tbl = &dev_res.cqe_ctx_tbl;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    if (rdma_rm_init(&dev_res, &attr) != 0 || tbl->tbl_sz != tbl_sz) {
+        abort();
+    }
+    res_sz = tbl->res_sz;
 
     /* One spare element's worth of guard on each side. */
-    backing_len = (size_t)(tbl_sz + 2) * RES_SZ;
+    backing_len = (size_t)(tbl_sz + 2) * res_sz;
     backing = malloc(backing_len);
     if (!backing) {
         abort();
@@ -207,13 +208,14 @@ static void tbl_init_guarded(RdmaRmResTbl *tbl, const char *name,
     memset(backing, GUARD_BYTE, backing_len);
 
     orig_tbl = tbl->tbl;
-    tbl->tbl = backing + RES_SZ;
+    tbl->tbl = backing + res_sz;
+    return tbl;
 }
 
 static void tbl_destroy_guarded(RdmaRmResTbl *tbl)
 {
     tbl->tbl = orig_tbl;
-    res_tbl_free(tbl);
+    rdma_rm_fini(&dev_res, NULL, "");
     free(backing);
     backing = NULL;
 }
@@ -223,7 +225,7 @@ static bool guards_intact(const char *name)
 {
     bool ok = true;
 
-    for (size_t i = 0; i < RES_SZ; i++) {
+    for (size_t i = 0; i < res_sz; i++) {
         if (backing[i] != GUARD_BYTE) {
             printf(
                 "FAIL %-18s: low guard byte %zu is 0x%02x, expected 0x%02x\n",
@@ -232,7 +234,7 @@ static bool guards_intact(const char *name)
             break;
         }
     }
-    for (size_t i = backing_len - RES_SZ; i < backing_len; i++) {
+    for (size_t i = backing_len - res_sz; i < backing_len; i++) {
         if (backing[i] != GUARD_BYTE) {
             printf("FAIL %-18s: high guard byte %zu is 0x%02x, expected "
                    "0x%02x -- an over-capacity handle was written past the "
@@ -251,16 +253,14 @@ static bool guards_intact(const char *name)
  *
  * On the unfixed code the refusal never happens: find_first_zero_bit()
  * returns tbl_sz, the `>` guard admits it, and the allocator hands back a
- * pointer one element past the end of the table having already scribbled
- * on it. Under ASan the TBL_SZ_EXACT case aborts inside set_bit() before
+ * slot one element past the end of the table having already scribbled on
+ * it. Under ASan the TBL_SZ_EXACT case aborts inside set_bit() before
  * returning at all, which is also a failure -- just a louder one.
  */
 static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
 {
-    RdmaRmResTbl tbl;
     bool ok = true;
-
-    tbl_init_guarded(&tbl, "test", tbl_sz);
+    RdmaRmResTbl *tbl = tbl_init_guarded(tbl_sz);
 
     /* Every handle up to capacity must be allocated, distinct, in range. */
     bool *seen = calloc(tbl_sz, sizeof(*seen));
@@ -269,12 +269,12 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
     }
     for (uint32_t i = 0; i < tbl_sz; i++) {
         uint32_t handle = UINT32_MAX;
-        void *res = rdma_res_tbl_alloc(&tbl, &handle);
+        int rc = rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token);
 
-        if (!res) {
-            printf("FAIL %-18s: allocation %u of %u returned NULL before the "
+        if (rc != 0) {
+            printf("FAIL %-18s: allocation %u of %u returned %d before the "
                    "table was full\n",
-                   name, i, tbl_sz);
+                   name, i, tbl_sz, rc);
             ok = false;
             break;
         }
@@ -294,9 +294,9 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
     }
     free(seen);
 
-    if (ok && tbl.used != tbl_sz) {
+    if (ok && tbl->used != tbl_sz) {
         printf("FAIL %-18s: used is %u after filling, expected %u\n", name,
-               tbl.used, tbl_sz);
+               tbl->used, tbl_sz);
         ok = false;
     }
 
@@ -305,26 +305,26 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
      * so a bare "it wasn't written" cannot masquerade as a valid result. */
     if (ok) {
         uint32_t handle = UINT32_MAX;
-        void *res = rdma_res_tbl_alloc(&tbl, &handle);
+        int rc = rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token);
 
-        if (res != NULL) {
-            printf("FAIL %-18s: allocation from a full table returned %p with "
-                   "handle %u, expected NULL (table size %u)\n",
-                   name, res, handle, tbl_sz);
+        if (rc != -ENOMEM) {
+            printf("FAIL %-18s: allocation from a full table returned %d with "
+                   "handle %u, expected %d (table size %u)\n",
+                   name, rc, handle, -ENOMEM, tbl_sz);
             ok = false;
         }
         if (!guards_intact(name)) {
             ok = false;
         }
-        if (tbl.used != tbl_sz) {
+        if (tbl->used != tbl_sz) {
             printf("FAIL %-18s: used is %u after a refused allocation, "
                    "expected %u\n",
-                   name, tbl.used, tbl_sz);
+                   name, tbl->used, tbl_sz);
             ok = false;
         }
     }
 
-    tbl_destroy_guarded(&tbl);
+    tbl_destroy_guarded(tbl);
 
     if (ok) {
         printf("ok   %-18s\n", name);
@@ -341,14 +341,12 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
 static bool test_dealloc_reopens_one_slot(void)
 {
     const char *name = "dealloc-realloc";
-    RdmaRmResTbl tbl;
     bool ok = true;
-
-    tbl_init_guarded(&tbl, "test", TBL_SZ_EXACT);
+    RdmaRmResTbl *tbl = tbl_init_guarded(TBL_SZ_EXACT);
 
     for (uint32_t i = 0; i < TBL_SZ_EXACT; i++) {
         uint32_t handle;
-        if (!rdma_res_tbl_alloc(&tbl, &handle)) {
+        if (rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token) != 0) {
             printf("FAIL %-18s: could not fill the table (failed at %u)\n",
                    name, i);
             ok = false;
@@ -360,14 +358,14 @@ static bool test_dealloc_reopens_one_slot(void)
      * handle, since find_first_zero_bit() scans from zero. */
     const uint32_t freed = TBL_SZ_EXACT / 2;
     if (ok) {
-        rdma_res_tbl_dealloc(&tbl, freed);
+        rdma_rm_dealloc_cqe_ctx(&dev_res, freed);
 
         uint32_t handle = UINT32_MAX;
-        void *res = rdma_res_tbl_alloc(&tbl, &handle);
-        if (!res) {
+        int rc = rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token);
+        if (rc != 0) {
             printf("FAIL %-18s: allocation after freeing handle %u returned "
-                   "NULL\n",
-                   name, freed);
+                   "%d\n",
+                   name, freed, rc);
             ok = false;
         } else if (handle != freed) {
             printf("FAIL %-18s: expected the freed handle %u, got %u\n", name,
@@ -379,7 +377,7 @@ static bool test_dealloc_reopens_one_slot(void)
     /* Full again, so refused again. */
     if (ok) {
         uint32_t handle = UINT32_MAX;
-        if (rdma_res_tbl_alloc(&tbl, &handle) != NULL) {
+        if (rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token) != -ENOMEM) {
             printf("FAIL %-18s: table refilled to capacity still allocated "
                    "(handle %u)\n",
                    name, handle);
@@ -390,7 +388,7 @@ static bool test_dealloc_reopens_one_slot(void)
         }
     }
 
-    tbl_destroy_guarded(&tbl);
+    tbl_destroy_guarded(tbl);
 
     if (ok) {
         printf("ok   %-18s\n", name);

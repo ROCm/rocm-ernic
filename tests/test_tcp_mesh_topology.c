@@ -13,9 +13,9 @@
  * socketpair and asserts every byte past num_nodes is zero. Without the
  * zero-fill the poison shows up on the wire and the test fails.
  *
- * The static function is reached by #including the translation unit; the
- * broadcast path only needs the mesh/connection hash tables, so the rest of
- * the backend's externals are stubbed out.
+ * The test links rdma_backend_tcp.c and reaches the broadcast through
+ * rdma_backend_tcp_priv.h; the broadcast path only needs the mesh/connection
+ * hash tables, so the rest of the backend's externals are stubbed out.
  *
  * Table-driven: empty mesh (every slot unused), single node, a few nodes, and
  * a full mesh (no tail at all).
@@ -27,6 +27,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <arpa/inet.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,8 +39,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+
+#include "qemu/error-report.h"
+#include "qemu/thread.h"
+#include "rdma/rdma_backend_tcp_priv.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the topology-broadcast path; they exist
@@ -187,7 +193,7 @@ static void fill_mesh(GHashTable *mesh_nodes, uint32_t n)
         char hostname[64];
         snprintf(hostname, sizeof(hostname), "node-%u.example", i);
         MeshNodeInfo *node =
-            mesh_node_info_new(i + 100, hostname, (uint16_t)(9000 + i));
+            tcp_mesh_node_info_new(i + 100, hostname, (uint16_t)(9000 + i));
         g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(i + 100), node);
     }
 }
@@ -199,7 +205,7 @@ static void empty_mesh(GHashTable *mesh_nodes)
 
     g_hash_table_iter_init(&iter, mesh_nodes);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
-        mesh_node_info_free((MeshNodeInfo *)value);
+        tcp_mesh_node_info_free((MeshNodeInfo *)value);
     }
     g_hash_table_remove_all(mesh_nodes);
 }
