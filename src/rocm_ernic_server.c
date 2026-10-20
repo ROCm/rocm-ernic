@@ -1139,6 +1139,71 @@ static bool socket_access_ok(const char *path, const gid_t *want_gid,
     return true;
 }
 
+/*
+ * Remove a socket left at @path by a server that didn't exit cleanly, so
+ * vfu_create_ctx() can bind there.  Anything else at @path, a symlink
+ * included, is left alone.  Returns true if nothing is at @path now.  Prints
+ * why and returns false if something other than a socket is there, or if it
+ * can't tell or can't remove it.
+ *
+ * The check and the removal both name the entry relative to its directory,
+ * opened once, so changing a component of @path in between can't point the
+ * removal at another directory.  The entry itself can still be replaced in
+ * between, but only by someone who can write to that directory, who could
+ * remove it anyway.
+ *
+ * The directory is opened with O_PATH, which needs no permission on the
+ * directory itself, as binding the socket doesn't: O_RDONLY would refuse one
+ * the server can write and search but not read.  fstatat() and unlinkat()
+ * still check search and write permission.
+ */
+static bool remove_stale_socket(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+    /* The directory keeps its trailing slash, so "/x.sock" opens "/". */
+    char *dir = slash ? strndup(path, (size_t)(slash - path) + 1) : strdup(".");
+    struct stat st;
+    bool ok = false;
+    int dfd = -1;
+
+    if (!dir) {
+        fprintf(stderr, "rocm-ernic: out of memory\n");
+        return false;
+    }
+
+    if (*name == '\0') {
+        fprintf(stderr, "rocm-ernic: socket path \"%s\" has no file name\n",
+                path);
+    } else if ((dfd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC)) < 0) {
+        fprintf(stderr, "rocm-ernic: cannot open socket directory %s: %s\n",
+                dir, strerror(errno));
+    } else if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) < 0) {
+        if (errno == ENOENT) {
+            ok = true;
+        } else {
+            fprintf(stderr, "rocm-ernic: cannot check %s: %s\n", path,
+                    strerror(errno));
+        }
+    } else if (!S_ISSOCK(st.st_mode)) {
+        fprintf(stderr,
+                "rocm-ernic: %s exists and isn't a socket; not removing it\n",
+                path);
+    } else if (unlinkat(dfd, name, 0) < 0 && errno != ENOENT) {
+        fprintf(stderr, "rocm-ernic: cannot remove stale socket %s: %s\n", path,
+                strerror(errno));
+    } else {
+        ernic_startup_report("Removed stale socket file: %s", path);
+        ok = true;
+    }
+
+    if (dfd >= 0) {
+        close(dfd);
+    }
+    free(dir);
+    return ok;
+}
+
 /**
  * Free the device structure and the strings it owns.  Safe on a structure
  * that was only partly filled in.
@@ -1393,19 +1458,12 @@ int main(int argc, char *argv[])
         ernic_startup_report("  IB Port: %u", dev->backend_port_num);
     }
 
-    /* Remove old socket if it exists - try multiple approaches */
-    struct stat st;
-    if (stat(socket_path, &st) == 0) {
-        if (S_ISSOCK(st.st_mode)) {
-            ernic_startup_report("Removing stale socket file: %s", socket_path);
-            if (unlink(socket_path) != 0) {
-                warn("Failed to unlink existing socket");
-            }
-        }
+    /* Binding fails if anything is at the path, so remove a socket that a
+     * server that didn't exit cleanly left there. */
+    if (!remove_stale_socket(socket_path)) {
+        dev_free(dev);
+        return EXIT_FAILURE;
     }
-
-    /* Give the system a moment to release the socket */
-    usleep(100000); /* 100ms */
 
     /* Create libvfio-user context with non-blocking attach.  It binds and
      * listens on the socket here, creating it with mode 0777 less the umask.
@@ -1701,9 +1759,9 @@ int main(int argc, char *argv[])
     set_signal_handler(SIGINT, SIG_IGN);
     set_signal_handler(SIGTERM, SIG_IGN);
 
+    /* Destroying vfu_ctx removes the socket.  Removing it by name again could
+     * remove one that another server has since created there. */
     server_teardown(dev, vfu_ctx);
-
-    unlink(socket_path);
 
     ernic_startup_report("rocm-ernic: Shutdown complete");
 

@@ -218,6 +218,14 @@
   reports a QMP command that never returns, and reports a kernel that
   stopped before switching to its final clocksource, with what else to rule
   out before putting it down to that hang.
+* At startup, the server removes what's at its `--socket` path only if it's
+  a socket, as one left by a server that didn't exit cleanly is. It refuses
+  to start, saying why, if anything else is there, a symlink included. It
+  used to remove a symlink to a socket, and fail with only
+  `vfu_create_ctx() failed` for anything else. It now checks and removes the
+  entry relative to its directory, opened once, so changing a directory in
+  the path in between can't make a server running as root remove a file
+  elsewhere. It also no longer waits 100 ms before creating the socket.
 
 ### Removed
 
@@ -253,6 +261,9 @@
 
 ### Fixed
 
+* A server that shut down cleanly removed its socket's path a second time
+  after closing the socket, so it could remove the socket of another server
+  started at the same path in between.
 * The server sized its resource tables from the backend's device limits
   without checking them. A negative limit, or a `max_qp * max_qp_wr` too
   large for the completion context table, gave a table of the wrong size,
