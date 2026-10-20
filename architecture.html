@@ -818,11 +818,9 @@ wrappers.</p></li>
 a second (<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>, consumed by <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>;
 see <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>).</p></li>
 </ol>
-<p>The core does <strong>not</strong> move data for the ionic device. The
-backends’ <code class="docutils literal notranslate"><span class="pre">post_send</span></code> and <code class="docutils literal notranslate"><span class="pre">post_recv</span></code> entry points, and the
-vendored completion code in <code class="docutils literal notranslate"><span class="pre">pvrdma_qp_ops.c</span></code>, belonged to the
-PVRDMA data path; nothing in the ionic path calls them. All data
-movement happens in <code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>.</p>
+<p>The core does <strong>not</strong> move data for the ionic device, or post
+its completions. All data movement happens in
+<code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>.</p>
 </section>
 <section id="the-main-loop">
 <h3>The Main Loop<a class="headerlink" href="#the-main-loop" title="Link to this heading">#</a></h3>
@@ -833,7 +831,7 @@ QEMU to connect. Once QEMU has connected, it loops:</p>
 accesses arrive here as callbacks, and <strong>BAR 2 doorbells for
 send queues are executed inside the callback</strong> (see
 <a class="reference internal" href="#the-data-path">The Data Path</a>).</p></li>
-<li><p>Run any GLib idle callbacks and deliver deferred interrupts.</p></li>
+<li><p>Run any GLib idle callbacks.</p></li>
 <li><p>Move received Ethernet frames from the TAP, or from frames
 other threads queued, into the guest’s receive ring.</p></li>
 <li><p>Process new entries on the RDMA admin queues.</p></li>
