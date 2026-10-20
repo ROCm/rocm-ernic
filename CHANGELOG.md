@@ -264,6 +264,12 @@
 * A server that shut down cleanly removed its socket's path a second time
   after closing the socket, so it could remove the socket of another server
   started at the same path in between.
+* The server sized its resource tables from the backend's device limits
+  without checking them. A negative limit, or a `max_qp * max_qp_wr` too
+  large for the completion context table, gave a table of the wrong size,
+  and a table that couldn't be allocated aborted the server. The server now
+  refuses to start with an error naming the limits, and reports a failed
+  allocation instead of aborting.
 * A server that failed to start after creating its vfio-user socket, such as
   one given a `--tap` it couldn't attach, exited with the TCP backend's
   threads still running and left the socket behind. It now tears the device
