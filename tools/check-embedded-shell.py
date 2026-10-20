@@ -43,7 +43,10 @@ import os
 import pathlib
 import re
 import shlex
-import subprocess
+
+# Bandit flags the import itself. Each call below is marked with the reason
+# it is safe.
+import subprocess  # nosec B404
 import sys
 import tempfile
 from typing import Callable
@@ -234,7 +237,9 @@ def git_files(*patterns: str) -> list[str]:
     """Tracked files matching the pathspecs, outside third-party/."""
     # third-party/ is filtered here rather than with a ":!:" pathspec, which
     # stops git from matching some of the glob patterns at all.
-    out = subprocess.run(
+    # No shell, and the pathspecs are literals in this script, after "--".
+    # git is found on PATH, so the script also runs on NixOS.
+    out = subprocess.run(  # nosec B603 B607
         ["git", "ls-files", "-z", "--", *patterns],
         check=True,
         capture_output=True,
@@ -763,7 +768,10 @@ def run_shellcheck(shell: str, names: list[str]) -> list[dict]:
     env.pop("SHELLCHECK_OPTS", None)
     command = ["shellcheck", "--norc", "-s", shell, "-e", EXCLUDED_CHECKS]
     try:
-        result = subprocess.run(
+        # No shell. The names are paths shellcheck() made in its own
+        # temporary directory, so none starts with "-" and reads as an
+        # option. ShellCheck only parses the snippets in them.
+        result = subprocess.run(  # nosec B603
             [*command, "-f", "json1", *names],
             capture_output=True,
             text=True,
