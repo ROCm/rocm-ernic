@@ -494,25 +494,45 @@ Working:
 
 Not yet working:
 
-- ``rdma_cm`` connection establishment between two guests,
-  and therefore ``rping``, is not yet confirmed working
-  end to end on a guest pair. Both of the reasons previously
-  given here were wrong: GSI traffic *is* forwarded between
-  endpoints, which ``ernic-test-gsi-mesh`` demonstrates, and
-  both the link-local and the v4-mapped GID are populated.
-  What actually stopped it was the shape of the 40-byte
-  header in front of a datagram -- the device claimed RoCEv2
-  over IPv4 in the completion while writing an IPv6 GRH, so
-  ``ib_cm`` read the wrong bytes as the sender's address,
-  failed to resolve them, and dropped every CM REQ without a
-  reject. That is fixed, and the forms are pinned in both
-  directions by ``ionic-harness-ud``, ``ionic-harness-nvmeof``
-  and ``gsi-mesh``; what remains is to confirm a real
-  ``rping`` between two guests. The ``nvmeof`` backend does
-  not depend on any of this: it answers the CM exchange
-  inside the server rather than routing it to a peer, so
-  ``nvme connect -t rdma`` has always had a responder
-  (see :doc:`nvmeof`)
+- guest-to-guest ``rping`` does not complete. ``rdma_cm``
+  *connection establishment* now works -- the server accepts
+  and both ends reach ``RDMA_CM_EVENT_DISCONNECTED`` -- but
+  the connection tears down before the client advertises its
+  buffer, so the server stops at ``wait for RDMA_READ_ADV
+  state 10``. That is the data path, not the CM exchange,
+  and it is not yet diagnosed.
+
+  Establishment was broken until recently, and both reasons
+  this page used to give were wrong: GSI traffic *is*
+  forwarded between endpoints, which ``ernic-test-gsi-mesh``
+  demonstrates, and both the link-local and the v4-mapped
+  GID are populated. What actually stopped it was the shape
+  of the 40-byte header in front of a datagram -- the device
+  claimed RoCEv2 over IPv4 in the completion while writing an
+  IPv6 GRH, so ``ib_cm`` read the middle of the destination
+  GID as the sender's address, ARPed for ``0.0.255.255``,
+  and dropped every CM REQ with ``-ETIMEDOUT`` and no
+  reject. Fixed, pinned in both directions by
+  ``ionic-harness-ud``, ``ionic-harness-nvmeof`` and
+  ``gsi-mesh``, and confirmed on a two-guest pair: with the
+  previous build the client printed nothing and the server's
+  neighbour table held ``0.0.255.255 FAILED``; with the fix
+  that entry is gone and the connection is accepted.
+
+  The ``nvmeof`` backend does not depend on any of this: it
+  answers the CM exchange inside the server rather than
+  routing it to a peer, so ``nvme connect -t rdma`` has
+  always had a responder (see :doc:`nvmeof`)
+
+- restarting a mesh worker strands the GIDs it had claimed.
+  The manager gives the restarted node a new id while the
+  old id still holds its claims, so every GID it owns
+  resolves to "more than one node" and therefore to none,
+  and a peer addressing that guest gets ``no mesh node owns
+  destination gid``. The claims are not retired by the
+  health check and a manager restart does not clear them, so
+  the guest stays unreachable over RDMA until the whole mesh
+  is rebuilt
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
 - The PCI Express capability is not advertised, so the guest
