@@ -238,6 +238,11 @@
   region with no host mapping used as if it had one, a work request partly
   mapped or with more entries than it holds, DMA mappings leaked on local
   sends, and a rejected local RDMA write reported to the guest as a success.
+* The `/run-ci` pull request comment command and its `ci-command.yml`
+  workflow, which ran on every issue and pull request comment. Start the
+  self-hosted CI from the Actions tab's *Run workflow* button, or with
+  `gh workflow run self-hosted-ci.yml -f pr=N`; `ci/README.md` describes the
+  inputs.
 
 ### Fixed
 
