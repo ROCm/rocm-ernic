@@ -299,7 +299,6 @@ void ih_poll(struct ih *h)
     rocm_ernic_dev_t *dev = h->dev;
 
     /* The body of the server's main loop, minus vfu_run_ctx(). */
-    pvrdma_drain_pending_interrupts(dev->pvrdma_handle);
     ionic_eth_emu_poll_rx(dev->ionic_emu);
 
     struct ionic_adminq_ctx *aqctx =

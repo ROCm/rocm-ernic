@@ -3552,7 +3552,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     /* Default mesh metadata */
     backend_dev->mesh_enabled = false;
     backend_dev->mesh_node_id = 0;
-    backend_dev->mesh_num_nodes = 0;
 
     /* Determine mode from config string */
     if (strstr(config, "manager:")) {
@@ -3614,7 +3613,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 
         backend_dev->mesh_enabled = true;
         backend_dev->mesh_node_id = 0;
-        backend_dev->mesh_num_nodes = 1; /* Will grow as workers register */
 
         rdma_info_report("TCP backend: Manager mode on port %u", manager_port);
 
@@ -3914,8 +3912,6 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     handle = priv->next_pd_handle++;
     qemu_mutex_unlock(&priv->lock);
 
-    pd->ibpd = (struct ibv_pd *)(uintptr_t)handle;
-
     rdma_info_report("TCP: Created PD handle %u", handle);
     return 0;
 }
@@ -3934,7 +3930,6 @@ static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
 {
     (void)access;
 
-    mr->ibpd = pd->ibpd;
     mr->ibmr = NULL;
 
     rdma_info_report("TCP: Created MR len=%zu", length);
@@ -4011,7 +4006,6 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     qpn = priv->next_qpn++;
     qemu_mutex_unlock(&priv->lock);
 
-    qp->ibpd = pd->ibpd;
     qp->ibqp = (struct ibv_qp *)(uintptr_t)qpn;
 
     rdma_info_report("TCP: Created QP qpn=%u, type=%u", qpn, qp_type);

@@ -67,7 +67,6 @@ static int none_query_device(RdmaBackendDev *backend_dev,
 /* PD operations - stub implementations */
 static int none_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
-    pd->ibpd = NULL; /* No actual PD */
     return 0;
 }
 
@@ -80,7 +79,6 @@ static void none_destroy_pd(RdmaBackendPD *pd)
 static int none_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                           size_t length, uint64_t guest_start, int access)
 {
-    mr->ibpd = NULL;
     mr->ibmr = NULL;
     return 0;
 }
@@ -121,9 +119,7 @@ static int none_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                           uint32_t max_recv_wr, uint32_t max_send_sge,
                           uint32_t max_recv_sge)
 {
-    qp->ibpd = NULL;
     qp->ibqp = NULL;
-    qp->sgid_idx = 0;
     return 0;
 }
 

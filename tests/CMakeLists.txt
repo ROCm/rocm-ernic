@@ -79,46 +79,11 @@ endforeach()
 # warning-checked -- a target-wide -w would disable warnings everywhere,
 # since GCC honours -w regardless of where it appears in the flag list.
 set(ERNIC_TEST_VENDORED_SOURCES
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
 )
 set_source_files_properties(${ERNIC_TEST_VENDORED_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"
 )
-
-# rdma_backend_query_port test. Links the backend TU plus the utility /
-# resource-manager / qemu-stub sources it depends on; the query_port paths
-# under test never reach libibverbs or the DMA layer.
-add_executable(test_rdma_backend_query_port
-    test_rdma_backend_query_port.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
-)
-target_include_directories(test_rdma_backend_query_port PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-)
-# The vendored header trees are SYSTEM includes so their warnings stay quiet
-# while the test source itself is still warning-checked. The vendored .c
-# files are silenced per-source via ERNIC_TEST_VENDORED_SOURCES.
-target_include_directories(test_rdma_backend_query_port SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_rdma_backend_query_port PRIVATE
-    _GNU_SOURCE)
-target_link_directories(test_rdma_backend_query_port PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_rdma_backend_query_port PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # -- test_write_imm (requires libibverbs) ------------------------
 add_executable(test_write_imm
@@ -500,13 +465,12 @@ target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
 
 # RDMA resource-table allocator test. rdma_rm.c keeps its allocator
 # static inline, so the test drives it through the resource
-# manager's CQE context table. It stubs the backend entry points rdma_rm.c
+# manager's CQ table. It stubs the backend entry points rdma_rm.c
 # calls, so no RDMA subsystem link is needed. ERNIC_TEST_VENDORED_SOURCES
 # silences rdma_rm.c with -w, and the test's own code is still
 # warning-checked.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
@@ -620,7 +584,6 @@ set(ERNIC_TEST_TARGETS
     test_ud_sq_reclaim
     test_ud_mesh
     test_ernic_device
-    test_rdma_backend_query_port
     test_write_imm
     test_net_checksum
     test_rdma_cm_proto
@@ -693,13 +656,6 @@ set_tests_properties(ernic-device-tuple-unit PROPERTIES
 # (test_data_transfer is the loopback config step's TEST_BIN) and are run for
 # real inside the VM by the loopback job in system-tests.yml, where a device
 # is guaranteed and exit 77 is treated as a failure.
-
-# rdma_backend_query_port NULL-guard / dispatch unit test
-add_test(
-    NAME rdma-backend-query-port-unit
-    COMMAND $<TARGET_FILE:test_rdma_backend_query_port>
-)
-set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # TCP/UDP checksum helper unit test (table-driven)
 add_test(

@@ -13,24 +13,25 @@ how far it is from upstream, and the plan for it.
   manager, the tables of PDs, MRs, CQs, QPs, and SRQs, indexed by the
   handles the guest uses.
 - `hw/rdma/rdma_backend.c`, `.h`, and `rdma_backend_defs.h`: the
-  backend device and the dispatch to rocm-ernic's backends through
-  `RdmaBackendOps`.
-- `hw/rdma/rdma_utils.c` and `.h`: logging macros, and GLib queues and
-  lists guarded by a mutex.
-- `hw/rdma/vmw/pvrdma.h` and `pvrdma_qp_ops.c` and `.h`: the device
-  state, `PVRDMADev`, and completion handling.
-- `include/standard-headers/`: VMware's PVRDMA device and ABI headers,
-  from the Linux `vmw_pvrdma` driver by way of QEMU.
+  backend device, and the dispatch of SRQ operations to rocm-ernic's
+  backends through `RdmaBackendOps`.
+- `hw/rdma/rdma_utils.h`: logging macros.
+- `hw/rdma/vmw/pvrdma.h`: the device state, `PVRDMADev`, and its
+  statistics.
+- `include/standard-headers/`: VMware's PVRDMA ABI header, from the
+  Linux `vmw_pvrdma` driver by way of QEMU. Only its work request and
+  completion layouts are used, to size the device's limits and to number
+  the per-QP statistics.
 
 ## Build
 
 - The server, `rocm-ernic`, builds the `.c` files listed in
-  `ERNIC_VENDORED_SOURCES` in the top-level `CMakeLists.txt`. So do
-  `ernic-test-ionic-harness`, `test_rdma_backend_query_port`, and
-  `test_rdma_res_tbl` in `tests/CMakeLists.txt`.
-- The sources include `rdma_backend_ops.h` and `pvrdma_comp_ctx.h` from
-  `src/rdma/` by bare name, so any target that builds them needs
-  `src/rdma` on its include path.
+  `ERNIC_VENDORED_SOURCES` in the top-level `CMakeLists.txt`. So does
+  `ernic-test-ionic-harness`, and `test_rdma_res_tbl` builds
+  `rdma_rm.c`, in `tests/CMakeLists.txt`.
+- The sources include `rdma_backend_ops.h` from `src/rdma/` by bare
+  name, so any target that builds them needs `src/rdma` on its include
+  path.
 - The QEMU APIs the code calls are implemented in
   [`src/qemu-compat/`](../../src/qemu-compat/).
 - Until the code moves into `src/`, the build still treats it as vendored:
@@ -39,8 +40,8 @@ how far it is from upstream, and the plan for it.
 
 ## Licenses
 
-The QEMU sources are `GPL-2.0-or-later`. The VMware headers under
-`include/standard-headers/` are
+The QEMU sources are `GPL-2.0-or-later`. The VMware header under
+`include/standard-headers/` is
 `(GPL-2.0 WITH Linux-syscall-note) OR BSD-2-Clause`. Each file's SPDX
 tag is authoritative; see also [`LICENSE.md`](../../LICENSE.md). Keep
 each file's original copyright lines.
