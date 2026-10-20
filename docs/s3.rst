@@ -312,8 +312,9 @@ Server-side coverage runs without a VM and is part of
 
 The end-to-end RDMA transfer needs a guest, because it needs
 a real ``ibv_reg_mr`` for the token to describe.
-:file:`tests/s3_rdma_client.c` is a single self-contained
-libibverbs client, built inside the guest and run there. It
+:file:`tests/s3_rdma_client.c` is a libibverbs client,
+built inside the guest and run there with nothing else from
+the tree but the header-only :file:`src/parse_int.h`. It
 opens the RDMA device, registers one buffer, splits it in
 half -- low half the ``PUT`` source, high half the ``GET``
 destination -- and mints a token per request. In functional

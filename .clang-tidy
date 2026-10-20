@@ -70,8 +70,6 @@ Checks:
   - -bugprone-suspicious-memory-comparison  # TODO(2)
   - -cert-exp42-c  # TODO: the same check
   - -cert-flp37-c  # TODO: the same check
-  - -bugprone-unchecked-string-to-number-conversion  # TODO(10)
-  - -cert-err34-c  # TODO: the same check
   - -cert-err33-c  # TODO(426): unchecked return values
   - -clang-analyzer-core.CallAndMessage  # TODO(7)
   - -clang-analyzer-core.NonNullParamChecker  # TODO(2)

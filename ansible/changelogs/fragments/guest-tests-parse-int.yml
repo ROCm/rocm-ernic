@@ -1,0 +1,10 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+trivial:
+  - >-
+    ``s3-tests.yml`` and the UD mesh test in ``sanity-tests.yml`` copy
+    ``src/parse_int.h`` into the guest with the test sources, which now
+    include it.

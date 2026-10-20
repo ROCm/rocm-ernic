@@ -876,8 +876,9 @@ static int parse_verbs_options(const char *backend_str, char **device,
                     goto fail;
                 }
             } else if (!strcmp(key, "port")) {
-                int port_val = atoi(value);
-                if (port_val < 1 || port_val > 255) {
+                int port_val;
+                if (!ernic_parse_int(value, &port_val) || port_val < 1 ||
+                    port_val > 255) {
                     fprintf(stderr,
                             "Error: Invalid port number '%s' (must be "
                             "1-255)\n",
@@ -1345,31 +1346,15 @@ int main(int argc, char *argv[])
             log_file_path = optarg;
             break;
         case 'm':
-            /* Parse MAC address: format XX:XX:XX:XX:XX:XX */
-            {
-                unsigned int mac[6];
-                int count =
-                    sscanf(optarg, "%02x:%02x:%02x:%02x:%02x:%02x", &mac[0],
-                           &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-                if (count != 6) {
-                    fprintf(stderr, "Error: Invalid MAC address format: %s\n",
-                            optarg);
-                    fprintf(stderr, "  Expected format: XX:XX:XX:XX:XX:XX\n");
-                    fprintf(stderr, "  Example: --mac 02:00:00:00:00:01\n");
-                    dev_free(dev);
-                    return EXIT_FAILURE;
-                }
-                for (int i = 0; i < 6; i++) {
-                    if (mac[i] > 255) {
-                        fprintf(stderr, "Error: Invalid MAC address byte: %u\n",
-                                mac[i]);
-                        dev_free(dev);
-                        return EXIT_FAILURE;
-                    }
-                    dev->mac_addr[i] = (uint8_t)mac[i];
-                }
-                dev->mac_addr_set = true;
+            if (!ernic_parse_mac(optarg, dev->mac_addr)) {
+                fprintf(stderr, "Error: Invalid MAC address format: %s\n",
+                        optarg);
+                fprintf(stderr, "  Expected format: XX:XX:XX:XX:XX:XX\n");
+                fprintf(stderr, "  Example: --mac 02:00:00:00:00:01\n");
+                dev_free(dev);
+                return EXIT_FAILURE;
             }
+            dev->mac_addr_set = true;
             break;
         case 'T':
             tap_ifname = optarg;

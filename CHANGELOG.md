@@ -56,7 +56,7 @@
   (`s3-http-unit`), `tests/test_s3_target.c` (`s3-target-unit`),
   `tests/test_s3_tcp.c` (`s3-tcp-unit`) and `tests/test_s3_ci.sh` (`s3-ci`)
   cover the store without needing a VM; `tests/s3_rdma_client.c` is a
-  self-contained libibverbs client built and run inside the guest by
+  libibverbs client built and run inside the guest by
   `ansible/playbooks/s3-tests.yml`, which the hosted `system-test-s3` job runs
   end to end, the `vm-s3` self-hosted job runs via `ci/jobs/vm-s3.sh`, and
   which can be run by hand with `--tags s3`. The hosted lane publishes an
@@ -226,6 +226,20 @@
   entry relative to its directory, opened once, so changing a directory in
   the path in between can't make a server running as root remove a file
   elsewhere. It also no longer waits 100 ms before creating the socket.
+* **Breaking:** The server reads the numbers in its options strictly, and
+  refuses to start, saying which option is wrong, if one is malformed:
+  * The numbers in `--backend nvmeof:...` and `--backend s3:...` options are
+    decimal only. A `0x` prefix used to be read as hexadecimal and a leading
+    0 as octal, so `port=010` was port 8; it's now port 10, and `port=0x1145`
+    is refused. Addresses (`ip=`) are dotted decimal, with no leading zeros,
+    signs, or spaces.
+  * `--mac` takes exactly six pairs of hex digits separated by colons, such
+    as `02:00:00:00:00:01`, as its usage says. It used to accept single
+    digits, and ignore anything after the sixth byte.
+  * The verbs backend's `port=` is refused if it has anything but digits;
+    `port=1x` used to be port 1.
+* The `s3` backend's `size=` accepts a `T` multiplier, as
+  `docs/s3.rst` says and the `nvmeof` backend's does.
 
 ### Removed
 
@@ -563,6 +577,13 @@
   is long. The emulated-device lookup in `tests/ernic_device.h` built each
   sysfs attribute path in a 192-byte buffer and treated a longer one as no
   match; it now allows `PATH_MAX`.
+* The `s3` backend read a `Content-Length` of `-1`, or one too large for 64
+  bits, on a request with an `x-amz-rdma-token` as the largest possible
+  length, rather than refusing the request. It now answers a
+  `Content-Length` that isn't just digits with `400`. A `Range` header with
+  a sign in it, such as `bytes=--64`, which was read as a huge suffix and
+  returned the whole object, is now answered with `416`, as other malformed
+  ranges are. `partNumber` is read as decimal; `0x10` used to be part 16.
 
 ### Limitations
 

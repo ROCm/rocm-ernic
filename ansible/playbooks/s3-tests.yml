@@ -153,9 +153,12 @@
 
     - name: Copy the client source into the guest
       ansible.builtin.copy:
-        src: ../../tests/s3_rdma_client.c
-        dest: "{{ ernic_s3_dir }}/s3_rdma_client.c"
+        src: "{{ item }}"
+        dest: "{{ ernic_s3_dir }}/"
         mode: "0644"
+      loop:
+        - ../../tests/s3_rdma_client.c
+        - ../../src/parse_int.h
 
     # Compiled in the guest rather than shipped as a binary:
     # the guest kernel and rdma-core are the ones the image

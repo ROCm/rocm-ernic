@@ -28,6 +28,7 @@
  */
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,7 @@
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
+#include "parse_int.h"
 
 #define GRH_LEN      40
 #define MSG_LEN      256
@@ -311,7 +313,12 @@ int main(void)
      * fe80:: one; UCX picks the IPv4-mapped RoCEv2 GID instead, so make it
      * selectable rather than assuming they behave the same. */
     const char *gidx_env = getenv("ERNIC_GID_INDEX");
-    int gidx = gidx_env ? atoi(gidx_env) : 0;
+    int gidx = 0;
+    if (gidx_env && !ernic_parse_int(gidx_env, &gidx)) {
+        fprintf(stderr, "FAIL: ERNIC_GID_INDEX=\"%s\" is not a number\n",
+                gidx_env);
+        goto out;
+    }
     if (ibv_query_gid(ctx, 1, gidx, &gid)) {
         perror("ibv_query_gid");
         goto out;
@@ -354,7 +361,12 @@ int main(void)
      * after a two-message test has passed.
      */
     const char *iter_env = getenv("ERNIC_UD_ITERS");
-    int iters = iter_env ? atoi(iter_env) : 0;
+    int iters = 0;
+    if (iter_env && (!ernic_parse_int(iter_env, &iters) || iters < 0)) {
+        fprintf(stderr, "FAIL: ERNIC_UD_ITERS=\"%s\" is not a count\n",
+                iter_env);
+        goto out;
+    }
     for (int n = 0; n < iters; n++) {
         if (post_recv(&b, 0xC000 + (uint64_t)n) ||
             do_send_quiet(&a, &b, ah, n & 1)) {

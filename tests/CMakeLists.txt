@@ -20,6 +20,7 @@ target_compile_definitions(test_data_transfer PRIVATE
     _GNU_SOURCE
 )
 target_include_directories(test_data_transfer PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_data_transfer PRIVATE
@@ -34,6 +35,7 @@ add_executable(test_rdma_cm
     test_rdma_cm.c
 )
 target_include_directories(test_rdma_cm PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_rdma_cm PRIVATE
@@ -65,6 +67,7 @@ foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
     add_executable(${guest_test} ${guest_test}.c)
     target_compile_definitions(${guest_test} PRIVATE _GNU_SOURCE)
     target_include_directories(${guest_test} PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
         ${ERNIC_IBVERBS_INCLUDE_DIRS}
     )
     target_link_directories(${guest_test} PRIVATE ${IBVERBS_LIBRARY_DIRS})
@@ -93,6 +96,7 @@ target_compile_definitions(test_write_imm PRIVATE
     _POSIX_C_SOURCE=200809L
 )
 target_include_directories(test_write_imm PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_write_imm PRIVATE
@@ -110,6 +114,7 @@ target_compile_definitions(test_ernic_device PRIVATE
     ERNIC_TEST_FIXTURE_ROOT="${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture"
 )
 target_include_directories(test_ernic_device PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 

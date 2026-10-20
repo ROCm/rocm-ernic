@@ -17,10 +17,13 @@
  *   cc -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c -libverbs
  *   ./s3_rdma_client -d rocm_ernic0 -a 192.168.200.1 -p 9000
  *
+ * It needs src/parse_int.h, which is header-only, in the same directory or
+ * on the include path.
+ *
  * The token encoding is duplicated here rather than shared with
- * src/s3_token.c: this file is scp'd into a guest and built there on its
- * own.  tests/test_s3_token.c pins the same layout against a hand-assembled
- * reference image, so the two cannot drift silently.
+ * src/s3_token.c: this file is scp'd into a guest, with parse_int.h, and
+ * built there.  tests/test_s3_token.c pins the same layout against a
+ * hand-assembled reference image, so the two cannot drift silently.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -35,6 +38,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <infiniband/verbs.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdbool.h>
@@ -46,6 +50,8 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "parse_int.h"
 
 #define TOKEN_BIN_LEN  44
 #define TOKEN_HEX_LEN  (TOKEN_BIN_LEN * 2)
@@ -148,15 +154,8 @@ static bool parse_peer_token(const char *reply, uint32_t *qpn,
     if (hex == NULL || strlen(++hex) != TOKEN_HEX_LEN) {
         return false;
     }
-    for (int i = 0; i < TOKEN_BIN_LEN; i++) {
-        char pair[3] = {hex[i * 2], hex[i * 2 + 1], '\0'};
-        char *end;
-        unsigned long v = strtoul(pair, &end, 16);
-
-        if (*end != '\0') {
-            return false;
-        }
-        bin[i] = (uint8_t)v;
+    if (!ernic_parse_hex(hex, TOKEN_BIN_LEN, bin)) {
+        return false;
     }
     *qpn = get_le32(&bin[1]);
     memcpy(gid->raw, &bin[5], sizeof(gid->raw));
@@ -265,6 +264,35 @@ static const char *header_value(const char *head, const char *name, char *out,
     return NULL;
 }
 
+/* The status code from an "HTTP/1.x NNN ..." status line. */
+static bool parse_status_line(const char *line, int *status)
+{
+    uint64_t code;
+
+    /* In this order, so nothing past the end of a short line is read. */
+    if (strncmp(line, "HTTP/1.", 7) != 0 || line[7] < '0' || line[7] > '9' ||
+        line[8] != ' ' || !ernic_parse_u64_span(line + 9, 3, &code) ||
+        (line[12] != ' ' && line[12] != '\r')) {
+        return false;
+    }
+    *status = (int)code;
+    return true;
+}
+
+/*
+ * A length from a response header, or -1, as for an absent header, if it
+ * isn't a number of bytes, so the check that reads it fails.
+ */
+static long parse_length(const char *s)
+{
+    uint64_t v;
+
+    if (!ernic_parse_u64(s, &v) || v > LONG_MAX) {
+        return -1;
+    }
+    return (long)v;
+}
+
 /*
  * Send one request and read the whole response.  Connection: close, so the
  * server's FIN delimits the body and no second request shares the socket --
@@ -328,7 +356,7 @@ static bool http_do(struct client *c, const char *method, const char *path,
     close(fd);
     r->raw[r->raw_len] = '\0';
 
-    if (sscanf(r->raw, "HTTP/1.%*d %d", &r->status) != 1) {
+    if (!parse_status_line(r->raw, &r->status)) {
         fprintf(stderr, "unparsable response (%zu bytes)\n", r->raw_len);
         return false;
     }
@@ -345,11 +373,11 @@ static bool http_do(struct client *c, const char *method, const char *path,
     char val[TOKEN_HEX_LEN + 16];
     r->content_length = -1;
     if (header_value(r->raw, "Content-Length", val, sizeof(val))) {
-        r->content_length = strtol(val, NULL, 10);
+        r->content_length = parse_length(val);
     }
     r->rdma_bytes = -1;
     if (header_value(r->raw, "x-amz-rdma-bytes", val, sizeof(val))) {
-        r->rdma_bytes = strtol(val, NULL, 10);
+        r->rdma_bytes = parse_length(val);
     }
     if (header_value(r->raw, "x-amz-rdma-reply", val, sizeof(val))) {
         snprintf(r->rdma_reply, sizeof(r->rdma_reply), "%s", val);
@@ -374,7 +402,15 @@ static int reply_code(const struct reply *r)
     if (strncmp(r->rdma_reply, "err", 3) == 0) {
         return -1;
     }
-    return (int)strtol(r->rdma_reply, NULL, 10);
+
+    /* A decimal status, optionally followed by ":<peer token>". */
+    uint64_t code;
+    if (!ernic_parse_u64_span(r->rdma_reply, strcspn(r->rdma_reply, ":"),
+                              &code) ||
+        code > 999) {
+        return -1;
+    }
+    return (int)code;
 }
 
 /* ── verbs setup ──────────────────────────────────────────────── */
@@ -1043,7 +1079,8 @@ static void usage(const char *argv0)
             "  -a ADDR    endpoint address (default: %s)\n"
             "  -p PORT    endpoint port (default: %u)\n"
             "  -b BUCKET  bucket name (default: %s)\n"
-            "  -s BYTES   buffer size (default: 8388608)\n"
+            "  -s BYTES   buffer size, with an optional K, M, or G "
+            "(default: 8M)\n"
             "  -i ITERS   perf iterations per size (default: 20)\n"
             "  -c FILE    write the perf sweep to FILE as CSV\n"
             "  -P         run only the perf sweep\n"
@@ -1077,16 +1114,28 @@ int main(int argc, char **argv)
             c.host = optarg;
             break;
         case 'p':
-            c.port = (uint16_t)atoi(optarg);
+            if (!ernic_parse_port(optarg, &c.port)) {
+                usage(argv[0]);
+                return 1;
+            }
             break;
         case 'b':
             c.bucket = optarg;
             break;
-        case 's':
-            buflen = strtoul(optarg, NULL, 0);
+        case 's': {
+            uint64_t v;
+            if (!ernic_parse_size(optarg, &v)) {
+                usage(argv[0]);
+                return 1;
+            }
+            buflen = (size_t)v;
             break;
+        }
         case 'i':
-            iters = atoi(optarg);
+            if (!ernic_parse_int(optarg, &iters)) {
+                usage(argv[0]);
+                return 1;
+            }
             break;
         case 'c':
             csv_path = optarg;
