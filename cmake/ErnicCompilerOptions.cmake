@@ -142,7 +142,8 @@ function(ernic_set_compiler_flags target)
 endfunction()
 
 # Keep the linters (IWYU and clang-tidy) off a target's vendored sources
-# under third-party/, which aren't ours to fix
+# under third-party/, which are exempt until they're cleaned up and moved
+# into src/
 #
 # Source file properties belong to a directory, so call this from the
 # directory that creates the target.
