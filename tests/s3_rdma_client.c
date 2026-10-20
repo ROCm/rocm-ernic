@@ -33,6 +33,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <infiniband/verbs.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -1135,10 +1136,26 @@ int main(int argc, char **argv)
         FILE *csv = NULL;
 
         if (csv_path != NULL) {
-            csv = fopen(csv_path, "w");
+            /* open() rather than fopen(), which would create the file with
+             * mode 0666 less the umask.  With _FORTIFY_SOURCE, glibc 2.40 and
+             * later give Clang an open(path, flags, mode) overload, and
+             * android-cloexec-open looks for O_CLOEXEC in its mode */
+            /* NOLINTBEGIN(android-cloexec-open) */
+            int fd =
+                open(csv_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            /* NOLINTEND(android-cloexec-open) */
+
+            int err = errno;
+
+            if (fd >= 0) {
+                csv = fdopen(fd, "w");
+                err = errno;
+                if (csv == NULL)
+                    (void)close(fd);
+            }
             if (csv == NULL) {
                 fprintf(stderr, "cannot write %s: %s\n", csv_path,
-                        strerror(errno));
+                        strerror(err));
                 failures++;
             } else {
                 fprintf(csv, "verb,size,bw_peak_GBs,bw_avg_GBs,"
