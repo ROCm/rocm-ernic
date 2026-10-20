@@ -24,9 +24,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <inttypes.h> /* For PRId64, PRIx64 */
-/* #include "qapi/error.h" - Not needed for standalone */
-/* #include "cpu.h" - Not needed for PVRDMA */
-/* #include "monitor/monitor.h" - Not needed for standalone */
 
 #include <sys/mman.h>      /* For munmap */
 #include "qemu/compiler.h" /* For unlikely() */
@@ -366,13 +363,7 @@ int rdma_rm_alloc_uc(RdmaDeviceResources *dev_res, uint32_t pfn,
                      dev_res, &dev_res->uc_tbl, dev_res->uc_tbl.tbl_sz);
 
     /* TODO: Need to make sure pfn is between bar start address and
-     * bsd+RDMA_BAR2_UAR_SIZE
-    if (pfn > RDMA_BAR2_UAR_SIZE) {
-        rdma_error_report("pfn out of range (%d > %d)", pfn,
-                          RDMA_BAR2_UAR_SIZE);
-        return -ENOMEM;
-    }
-    */
+     * bsd+RDMA_BAR2_UAR_SIZE */
 
     uc = rdma_res_tbl_alloc(&dev_res->uc_tbl, uc_handle);
     if (!uc) {

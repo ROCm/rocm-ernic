@@ -21,8 +21,6 @@
 #include "qemu/thread.h"
 #include "chardev/char-fe.h"
 #include <infiniband/verbs.h>
-/* MAD multiplexer not needed for standalone operation */
-/* #include "contrib/rdmacm-mux/rdmacm-mux.h" */
 #include "rdma_utils.h"
 
 /* Forward declare backend ops (defined in rdma_backend_ops.h) */

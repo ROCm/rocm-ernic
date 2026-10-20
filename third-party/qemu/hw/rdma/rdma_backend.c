@@ -28,12 +28,10 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netdb.h>
-/* #include "qapi/qapi-events-rdma.h" - Not needed for standalone */
 
 #include <infiniband/verbs.h>
 #include <rdma/rdma_cma.h>
 
-/* #include "contrib/rdmacm-mux/rdmacm-mux.h" - Not needed for standalone */
 #include "qemu/compiler.h"         /* For likely(), unlikely() */
 #include "qemu/cutils.h"           /* For ARRAY_SIZE, etc. */
 #include "qemu/units.h"            /* For SCALE_MS, SCALE_US */
