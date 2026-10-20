@@ -125,7 +125,8 @@ checks than `src/`:
 
 - Its `.c` files compile with `-w`, and its headers are SYSTEM
   includes, so the compilers report nothing in it.
-- clang-format, clang-tidy, and IWYU skip it.
+- clang-tidy and IWYU skip it. (clang-format doesn't; the code is
+  already formatted like the rest of the tree.)
 - The coverage floor counts `src/` only.
 
 CodeQL, the sanitizers, and valgrind already cover it, since they work
