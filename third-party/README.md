@@ -135,10 +135,12 @@ through its public functions, and `ernic-test-ionic-harness` links all
 of it into the emulated device it drives.
 
 Moving it means taking it out of each of those exemptions and fixing
-what they then report. Problems already known:
+what they then report. Built with the compilers' warnings on, it still
+has these problems, all in `rdma_rm.c`:
 
-- The logging macros in `rdma_utils.h` use `##__VA_ARGS__`, a GNU
-  extension.
-- CodeQL has open alerts in it, among them
-  `cpp/integer-multiplication-cast-to-long` on the
-  `g_malloc(tbl_sz * res_sz)` in `res_tbl_init()`.
+- Arithmetic on `void *` pointers, a GNU extension.
+- Implicit integer conversions reported by `-Wconversion` and
+  `-Wsign-conversion`, among them the CQ size passed as an `int` to a
+  backend's `create_cq()`.
+
+clang-tidy and IWYU haven't been run on it yet.

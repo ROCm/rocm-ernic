@@ -14,6 +14,12 @@
 > SGE-copy helpers of S3 went with the rest of the loopback backend's
 > PVRDMA data path.
 >
+> **Two of the compiler diagnostics at the end of Appendix A are gone.**
+> The `-Wgnu-zero-variadic-macro-arguments` warnings came from the
+> `rdma_*_report()` logging macros in `rdma_utils.h`, which no longer use
+> the GNU `##__VA_ARGS__` extension. `pvrdma_qp_ops.c`, whose `qatomic`
+> operations the analyzer rejected, has been removed.
+>
 > **Paths.** File paths and line numbers are as of that commit. The
 > `src/from-qemu/` tree has since been split up: the vendored QEMU files
 > (`rdma_backend.c`, `pvrdma_qp_ops.c` and the `standard-headers/` uAPI

@@ -88,16 +88,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         # Don't bake gcc-isms into the code
         -Wgnu
 
-        # ...with one exception.  The vendored rdma_utils.h uses the GNU
-        # ``, ##__VA_ARGS__`` comma-swallowing extension in the
-        # rdma_*_report() macros.  The header is a SYSTEM include, but
-        # clang still reports the paste wherever the macros are expanded
-        # outside a system header -- that is, throughout our own code,
-        # where -w on the vendored .c files does not reach.  Until those
-        # macros are fixed, before the code moves into src/ (see
-        # third-party/README.md), drop just this one sub-warning of -Wgnu.
-        -Wno-gnu-zero-variadic-macro-arguments
-
         -Wdeprecated
 
         # Thread-safety analysis
