@@ -56,8 +56,8 @@
  * context table of max_qp * max_qp_wr entries that doesn't fit in a
  * uint32_t), and when a table can't be allocated it must free the tables
  * it had already built and leave nothing for rdma_rm_fini() to free twice.
- * g_try_malloc() is defined here so a case can make a given table's
- * allocation fail.
+ * g_try_malloc() and g_try_malloc0_n() are defined here so a case can make
+ * a given table's entry or bitmap allocation fail.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -161,24 +161,55 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
 
 /* ---- Allocation failure injection -------------------------------------
  *
- * res_tbl_init() allocates each table with g_try_malloc(), and nothing else
- * in rdma_rm.c calls it. This definition takes the place of glib's, so a
- * case can fail the call that allocates a given table. g_free() frees
- * glib's allocations with free(), so it frees these too.
+ * res_tbl_init() allocates each table's entries with g_try_malloc(), and
+ * its bitmap through bitmap_new(), whose g_try_new0() calls
+ * g_try_malloc0_n(). Nothing else the test reaches calls either. These
+ * definitions take the place of glib's, so a case can fail either
+ * allocation for a given table. g_free() frees glib's allocations with
+ * free(), so it frees these too.
  */
 #define NO_FAILURE UINT32_MAX
 
-static uint32_t try_malloc_calls;
-/* The 0-based call to fail, or NO_FAILURE. */
-static uint32_t try_malloc_fail_at = NO_FAILURE;
+/* The calls to one allocation function, and which of them to fail. */
+typedef struct {
+    uint32_t calls;
+    uint32_t fail_at; /* 0-based, or NO_FAILURE */
+} AllocInjector;
+
+static AllocInjector entry_allocs = {0, NO_FAILURE};
+static AllocInjector bitmap_allocs = {0, NO_FAILURE};
+
+static void alloc_injectors_reset(void)
+{
+    entry_allocs = (AllocInjector){0, NO_FAILURE};
+    bitmap_allocs = (AllocInjector){0, NO_FAILURE};
+}
+
+static bool alloc_should_fail(AllocInjector *inj)
+{
+    return inj->calls++ == inj->fail_at;
+}
 
 gpointer g_try_malloc(gsize n_bytes)
 {
-    if (try_malloc_calls++ == try_malloc_fail_at) {
+    if (alloc_should_fail(&entry_allocs)) {
         return NULL;
     }
     /* Like glib's, return NULL for zero bytes. */
     return n_bytes ? malloc(n_bytes) : NULL;
+}
+
+gpointer g_try_malloc0_n(gsize n_blocks, gsize n_block_bytes)
+{
+    if (alloc_should_fail(&bitmap_allocs)) {
+        return NULL;
+    }
+    /* Like glib's, return NULL for zero bytes. calloc() checks the product
+     * for overflow, as glib does. */
+    if (n_blocks == 0 || n_block_bytes == 0) {
+        return NULL;
+    }
+    return calloc(n_blocks, n_block_bytes);
 }
 
 /* ---- Fixture ----------------------------------------------------------- */
@@ -478,7 +509,7 @@ static bool test_init_rejects(const char *name,
     struct ibv_device_attr a = *attr;
 
     memset(&dev_res, 0, sizeof(dev_res));
-    try_malloc_calls = 0;
+    alloc_injectors_reset();
 
     int rc = rdma_rm_init(&dev_res, &a);
     if (rc != expected_rc) {
@@ -486,10 +517,10 @@ static bool test_init_rejects(const char *name,
                rc, expected_rc);
         ok = false;
     }
-    if (try_malloc_calls != 0) {
-        printf("FAIL %-18s: %u table(s) allocated before the limits were "
-               "refused\n",
-               name, try_malloc_calls);
+    if (entry_allocs.calls != 0 || bitmap_allocs.calls != 0) {
+        printf("FAIL %-18s: %u table(s) and %u bitmap(s) allocated before "
+               "the limits were refused\n",
+               name, entry_allocs.calls, bitmap_allocs.calls);
         ok = false;
     }
     if (!rm_init_left_nothing(name)) {
@@ -505,36 +536,45 @@ static bool test_init_rejects(const char *name,
 }
 
 /*
- * Fail each table's allocation in turn. rdma_rm_init() must report it and
- * free the tables it had already built (LSan and valgrind report any it
- * doesn't), and rdma_rm_fini() afterwards must not free them again (ASan
- * and valgrind report that).
+ * Fail each table's entry allocation in turn, or each table's bitmap
+ * allocation. rdma_rm_init() must report it and free what it had already
+ * built, including, when the bitmap fails, the same table's entries (LSan
+ * and valgrind report anything it doesn't), and rdma_rm_fini() afterwards
+ * must not free any of it again (ASan and valgrind report that).
  */
-static bool test_init_unwinds(void)
+static bool test_init_unwinds(const char *name, bool fail_bitmap)
 {
-    const char *name = "init-unwind";
     bool ok = true;
 
     for (uint32_t fail_at = 0; fail_at < RM_TABLE_COUNT; fail_at++) {
         struct ibv_device_attr a = one_each;
+        /* The failing table's entries are allocated before its bitmap. */
+        uint32_t expected_entries = fail_at + 1;
+        uint32_t expected_bitmaps = fail_bitmap ? fail_at + 1 : fail_at;
 
         memset(&dev_res, 0, sizeof(dev_res));
-        try_malloc_calls = 0;
-        try_malloc_fail_at = fail_at;
+        alloc_injectors_reset();
+        if (fail_bitmap) {
+            bitmap_allocs.fail_at = fail_at;
+        } else {
+            entry_allocs.fail_at = fail_at;
+        }
 
         int rc = rdma_rm_init(&dev_res, &a);
-        try_malloc_fail_at = NO_FAILURE;
 
         if (rc != -ENOMEM) {
-            printf("FAIL %-18s: with allocation %u failed, rdma_rm_init() "
+            printf("FAIL %-18s: with table %u failed, rdma_rm_init() "
                    "returned %d, expected %d\n",
                    name, fail_at, rc, -ENOMEM);
             ok = false;
         }
-        if (try_malloc_calls != fail_at + 1) {
-            printf("FAIL %-18s: with allocation %u failed, rdma_rm_init() "
-                   "made %u allocation(s), expected %u\n",
-                   name, fail_at, try_malloc_calls, fail_at + 1);
+        if (entry_allocs.calls != expected_entries ||
+            bitmap_allocs.calls != expected_bitmaps) {
+            printf("FAIL %-18s: with table %u failed, rdma_rm_init() "
+                   "allocated %u table(s) and %u bitmap(s), expected %u and "
+                   "%u\n",
+                   name, fail_at, entry_allocs.calls, bitmap_allocs.calls,
+                   expected_entries, expected_bitmaps);
             ok = false;
         }
         if (!rm_init_left_nothing(name)) {
@@ -551,9 +591,10 @@ static bool test_init_unwinds(void)
 }
 
 /*
- * A successful init allocates each table once, so test_init_unwinds()
- * reaches every one of them. Zero limits are valid: g_try_malloc() returns
- * NULL for an empty table, and that must not be taken for a failure.
+ * A successful init allocates each table's entries and bitmap once, so
+ * test_init_unwinds() reaches every one of them. Zero limits are valid:
+ * g_try_malloc() returns NULL for an empty table, and that must not be
+ * taken for a failure.
  */
 static bool test_init_succeeds(const char *name,
                                const struct ibv_device_attr *attr)
@@ -562,16 +603,17 @@ static bool test_init_succeeds(const char *name,
     struct ibv_device_attr a = *attr;
 
     memset(&dev_res, 0, sizeof(dev_res));
-    try_malloc_calls = 0;
+    alloc_injectors_reset();
 
     int rc = rdma_rm_init(&dev_res, &a);
     if (rc != 0) {
         printf("FAIL %-18s: rdma_rm_init() returned %d\n", name, rc);
         ok = false;
-    } else if (try_malloc_calls != RM_TABLE_COUNT) {
-        printf("FAIL %-18s: rdma_rm_init() made %u allocation(s), expected "
-               "%u\n",
-               name, try_malloc_calls, RM_TABLE_COUNT);
+    } else if (entry_allocs.calls != RM_TABLE_COUNT ||
+               bitmap_allocs.calls != RM_TABLE_COUNT) {
+        printf("FAIL %-18s: rdma_rm_init() allocated %u table(s) and %u "
+               "bitmap(s), expected %u of each\n",
+               name, entry_allocs.calls, bitmap_allocs.calls, RM_TABLE_COUNT);
         ok = false;
     }
 
@@ -634,7 +676,10 @@ int main(void)
         failures++;
     }
 
-    if (!test_init_unwinds()) {
+    if (!test_init_unwinds("init-unwind-table", false)) {
+        failures++;
+    }
+    if (!test_init_unwinds("init-unwind-bitmap", true)) {
         failures++;
     }
 
