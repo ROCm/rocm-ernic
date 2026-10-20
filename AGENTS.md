@@ -323,6 +323,21 @@ general pattern here.
   in `tests/CMakeLists.txt`. Only the module and its tests include that
   header. A function the header declares shares the program with every
   other module, so give it the module's prefix.
+- **A `${{ }}` expression in a workflow's `run:` block.** zizmor's
+  `template-injection` reports one whose value isn't fixed in the
+  workflow, such as a step output, even one read from a file in the
+  repository: GitHub pastes the value into the script before the shell
+  parses it, so a quote or a `$(` in it runs as code. Map it to a variable
+  in the step's `env:` and use `"$NAME"` in the script, as the fetch step
+  in `driver-build.yml` does with the kernel ref.
+- **Parsing XML with the standard library.** Bandit reports
+  `xml.etree.ElementTree.parse()` and the like (B314), which expand the
+  entities a DOCTYPE declares, so a small file can expand to gigabytes.
+  Parse with expat and refuse a DOCTYPE, as `parse_xml()` in
+  `ci/report/gen-report.py` does. Bandit still reports any import from
+  `xml.etree` (B405), as it does any import of `subprocess` (B404): mark
+  that import line `# nosec` with the one rule, and a comment saying why
+  it's safe.
 
 ## Linters, warnings, and sanitizers (mandatory)
 
