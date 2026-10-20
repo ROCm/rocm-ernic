@@ -89,19 +89,55 @@ void rdma_format_device_counters(RdmaDeviceResources *dev_res, GString *buf)
                            dev_res->cqe_ctx_tbl.used);
 }
 
-static inline void res_tbl_init(const char *name, RdmaRmResTbl *tbl,
-                                uint32_t tbl_sz, uint32_t res_sz)
+/*
+ * Returns 0, -EOVERFLOW if tbl_sz * res_sz doesn't fit in a size_t, or
+ * -ENOMEM. On failure tbl->bitmap is NULL, so res_tbl_free() skips the
+ * table.
+ *
+ * Every entry is addressed as tbl->tbl + (size_t)handle * res_sz with
+ * handle < tbl_sz, which is at most tbl_sz * res_sz and so can't wrap once
+ * that product is known to fit.
+ */
+static inline int res_tbl_init(const char *name, RdmaRmResTbl *tbl,
+                               uint32_t tbl_sz, uint32_t res_sz)
 {
-    tbl->tbl = g_malloc(tbl_sz * res_sz);
+    size_t tbl_bytes;
 
     strncpy(tbl->name, name, MAX_RM_TBL_NAME);
     tbl->name[MAX_RM_TBL_NAME - 1] = 0;
+    tbl->tbl = NULL;
+    tbl->bitmap = NULL;
+
+    if (res_sz != 0 && tbl_sz > SIZE_MAX / res_sz) {
+        rdma_error_report("Table %s, %" PRIu32 " entries of %" PRIu32
+                          " bytes is too large",
+                          tbl->name, tbl_sz, res_sz);
+        return -EOVERFLOW;
+    }
+    tbl_bytes = (size_t)tbl_sz * res_sz;
+
+    /* g_try_malloc() returns NULL for zero bytes, which isn't a failure. */
+    tbl->tbl = g_try_malloc(tbl_bytes);
+    if (!tbl->tbl && tbl_bytes != 0) {
+        rdma_error_report("Table %s, failed to allocate %zu bytes", tbl->name,
+                          tbl_bytes);
+        return -ENOMEM;
+    }
 
     tbl->bitmap = bitmap_new(tbl_sz);
+    if (!tbl->bitmap) {
+        rdma_error_report("Table %s, failed to allocate the bitmap", tbl->name);
+        g_free(tbl->tbl);
+        tbl->tbl = NULL;
+        return -ENOMEM;
+    }
+
     tbl->tbl_sz = tbl_sz;
     tbl->res_sz = res_sz;
     tbl->used = 0;
     qemu_mutex_init(&tbl->lock);
+
+    return 0;
 }
 
 static inline void res_tbl_free(RdmaRmResTbl *tbl)
@@ -111,13 +147,16 @@ static inline void res_tbl_free(RdmaRmResTbl *tbl)
     }
     qemu_mutex_destroy(&tbl->lock);
     g_free(tbl->tbl);
+    tbl->tbl = NULL;
     g_free(tbl->bitmap);
+    tbl->bitmap = NULL;
 }
 
 static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
 {
     if ((handle < tbl->tbl_sz) && (test_bit(handle, tbl->bitmap))) {
-        return tbl->tbl + handle * tbl->res_sz;
+        /* handle < tbl_sz, so this can't wrap; see res_tbl_init(). */
+        return tbl->tbl + (size_t)handle * tbl->res_sz;
     } else {
         rdma_error_report("Table %s, invalid handle %d", tbl->name, handle);
         return NULL;
@@ -171,9 +210,10 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
 
     qemu_mutex_unlock(&tbl->lock);
 
-    memset(tbl->tbl + *handle * tbl->res_sz, 0, tbl->res_sz);
+    /* *handle < tbl_sz, so this can't wrap; see res_tbl_init(). */
+    memset(tbl->tbl + (size_t)*handle * tbl->res_sz, 0, tbl->res_sz);
 
-    return tbl->tbl + *handle * tbl->res_sz;
+    return tbl->tbl + (size_t)*handle * tbl->res_sz;
 }
 
 static inline void rdma_res_tbl_dealloc(RdmaRmResTbl *tbl, uint32_t handle)
@@ -1001,9 +1041,46 @@ static void fini_ports(RdmaDeviceResources *dev_res,
     }
 }
 
+/*
+ * On failure everything rdma_rm_init() set up is released and its pointers
+ * cleared, so a later rdma_rm_fini() on the same dev_res is still safe.
+ */
 int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
 {
+    uint64_t cqe_ctx_sz;
+    int ret;
+
     rdma_info_report("rdma_rm_init: ENTRY dev_res=%p", dev_res);
+
+    /*
+     * The limits come from the backend's query_device(), and the struct
+     * ibv_device_attr fields are int. A negative one would turn into a huge
+     * uint32_t table size.
+     */
+    if (dev_attr->max_pd < 0 || dev_attr->max_cq < 0 || dev_attr->max_mr < 0 ||
+        dev_attr->max_qp < 0 || dev_attr->max_qp_wr < 0 ||
+        dev_attr->max_srq < 0) {
+        rdma_error_report("rdma_rm_init: negative device limit (max_pd=%d, "
+                          "max_cq=%d, max_mr=%d, max_qp=%d, max_qp_wr=%d, "
+                          "max_srq=%d)",
+                          dev_attr->max_pd, dev_attr->max_cq, dev_attr->max_mr,
+                          dev_attr->max_qp, dev_attr->max_qp_wr,
+                          dev_attr->max_srq);
+        return -EINVAL;
+    }
+
+    /*
+     * Multiplied in int, max_qp * max_qp_wr could overflow, which is
+     * undefined. Both are non-negative ints, so their product fits in a
+     * uint64_t, and the table size is a uint32_t.
+     */
+    cqe_ctx_sz = (uint64_t)dev_attr->max_qp * (uint64_t)dev_attr->max_qp_wr;
+    if (cqe_ctx_sz > UINT32_MAX) {
+        rdma_error_report("rdma_rm_init: max_qp (%d) * max_qp_wr (%d) is too "
+                          "large for the CQE context table",
+                          dev_attr->max_qp, dev_attr->max_qp_wr);
+        return -EOVERFLOW;
+    }
 
     dev_res->qp_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                              destroy_qp_hash_key, NULL);
@@ -1020,17 +1097,42 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
     dev_res->next_dctn = 1;
     qemu_mutex_init(&dev_res->dc_lock);
 
-    res_tbl_init("PD", &dev_res->pd_tbl, dev_attr->max_pd, sizeof(RdmaRmPD));
-    res_tbl_init("CQ", &dev_res->cq_tbl, dev_attr->max_cq, sizeof(RdmaRmCQ));
-    res_tbl_init("MR", &dev_res->mr_tbl, dev_attr->max_mr, sizeof(RdmaRmMR));
-    res_tbl_init("QP", &dev_res->qp_tbl, dev_attr->max_qp, sizeof(RdmaRmQP));
-    res_tbl_init("CQE_CTX", &dev_res->cqe_ctx_tbl,
-                 dev_attr->max_qp * dev_attr->max_qp_wr, sizeof(void *));
-    res_tbl_init("UC", &dev_res->uc_tbl, MAX_UCS, sizeof(RdmaRmUC));
+    ret = res_tbl_init("PD", &dev_res->pd_tbl, (uint32_t)dev_attr->max_pd,
+                       sizeof(RdmaRmPD));
+    if (ret < 0) {
+        goto err_pd;
+    }
+    ret = res_tbl_init("CQ", &dev_res->cq_tbl, (uint32_t)dev_attr->max_cq,
+                       sizeof(RdmaRmCQ));
+    if (ret < 0) {
+        goto err_cq;
+    }
+    ret = res_tbl_init("MR", &dev_res->mr_tbl, (uint32_t)dev_attr->max_mr,
+                       sizeof(RdmaRmMR));
+    if (ret < 0) {
+        goto err_mr;
+    }
+    ret = res_tbl_init("QP", &dev_res->qp_tbl, (uint32_t)dev_attr->max_qp,
+                       sizeof(RdmaRmQP));
+    if (ret < 0) {
+        goto err_qp;
+    }
+    ret = res_tbl_init("CQE_CTX", &dev_res->cqe_ctx_tbl, (uint32_t)cqe_ctx_sz,
+                       sizeof(void *));
+    if (ret < 0) {
+        goto err_cqe_ctx;
+    }
+    ret = res_tbl_init("UC", &dev_res->uc_tbl, MAX_UCS, sizeof(RdmaRmUC));
+    if (ret < 0) {
+        goto err_uc;
+    }
     rdma_info_report("rdma_rm_init: UC table initialized at %p with tbl_sz=%u",
                      &dev_res->uc_tbl, dev_res->uc_tbl.tbl_sz);
-    res_tbl_init("SRQ", &dev_res->srq_tbl, dev_attr->max_srq,
-                 sizeof(RdmaRmSRQ));
+    ret = res_tbl_init("SRQ", &dev_res->srq_tbl, (uint32_t)dev_attr->max_srq,
+                       sizeof(RdmaRmSRQ));
+    if (ret < 0) {
+        goto err_srq;
+    }
 
     init_ports(dev_res);
 
@@ -1040,6 +1142,26 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
     qatomic_set(&dev_res->stats.missing_cqe, 0);
 
     return 0;
+
+err_srq:
+    res_tbl_free(&dev_res->uc_tbl);
+err_uc:
+    res_tbl_free(&dev_res->cqe_ctx_tbl);
+err_cqe_ctx:
+    res_tbl_free(&dev_res->qp_tbl);
+err_qp:
+    res_tbl_free(&dev_res->mr_tbl);
+err_mr:
+    res_tbl_free(&dev_res->cq_tbl);
+err_cq:
+    res_tbl_free(&dev_res->pd_tbl);
+err_pd:
+    qemu_mutex_destroy(&dev_res->dc_lock);
+    g_hash_table_destroy(dev_res->dct_hash);
+    dev_res->dct_hash = NULL;
+    g_hash_table_destroy(dev_res->qp_hash);
+    dev_res->qp_hash = NULL;
+    return ret;
 }
 
 void rdma_rm_fini(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,

@@ -51,6 +51,14 @@
  * no backend. The resource manager's backend externs are stubbed, as no
  * path under test reaches them.
  *
+ * The init-* cases cover rdma_rm_init() itself: it must reject device
+ * limits that would size a table wrongly (a negative limit, or a CQE
+ * context table of max_qp * max_qp_wr entries that doesn't fit in a
+ * uint32_t), and when a table can't be allocated it must free the tables
+ * it had already built and leave nothing for rdma_rm_fini() to free twice.
+ * g_try_malloc() is defined here so a case can make a given table's
+ * allocation fail.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -66,6 +74,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <glib.h>
 #include <infiniband/verbs.h>
 
 #include "hw/pci/pci.h" /* declares the pci_dma_* stubs below */
@@ -148,6 +157,28 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
 {
     (void)srq;
     (void)dev_res;
+}
+
+/* ---- Allocation failure injection -------------------------------------
+ *
+ * res_tbl_init() allocates each table with g_try_malloc(), and nothing else
+ * in rdma_rm.c calls it. This definition takes the place of glib's, so a
+ * case can fail the call that allocates a given table. g_free() frees
+ * glib's allocations with free(), so it frees these too.
+ */
+#define NO_FAILURE UINT32_MAX
+
+static uint32_t try_malloc_calls;
+/* The 0-based call to fail, or NO_FAILURE. */
+static uint32_t try_malloc_fail_at = NO_FAILURE;
+
+gpointer g_try_malloc(gsize n_bytes)
+{
+    if (try_malloc_calls++ == try_malloc_fail_at) {
+        return NULL;
+    }
+    /* Like glib's, return NULL for zero bytes. */
+    return n_bytes ? malloc(n_bytes) : NULL;
 }
 
 /* ---- Fixture ----------------------------------------------------------- */
@@ -396,9 +427,168 @@ static bool test_dealloc_reopens_one_slot(void)
     return ok;
 }
 
+/* ---- rdma_rm_init() cases ---------------------------------------------- */
+
+/* The tables rdma_rm_init() builds, in the order it builds them. */
+static RdmaRmResTbl *const rm_tables[] = {
+    &dev_res.pd_tbl,      &dev_res.cq_tbl, &dev_res.mr_tbl,  &dev_res.qp_tbl,
+    &dev_res.cqe_ctx_tbl, &dev_res.uc_tbl, &dev_res.srq_tbl,
+};
+#define RM_TABLE_COUNT ((uint32_t)(sizeof(rm_tables) / sizeof(rm_tables[0])))
+
+/* One entry in every table. */
+static const struct ibv_device_attr one_each = {
+    .max_qp = 1,
+    .max_qp_wr = 1,
+    .max_cq = 1,
+    .max_mr = 1,
+    .max_pd = 1,
+    .max_srq = 1,
+};
+
+/* True if rdma_rm_init() left nothing allocated in dev_res. */
+static bool rm_init_left_nothing(const char *name)
+{
+    bool ok = true;
+
+    for (uint32_t i = 0; i < RM_TABLE_COUNT; i++) {
+        if (rm_tables[i]->bitmap || rm_tables[i]->tbl) {
+            printf("FAIL %-18s: table %s is still allocated\n", name,
+                   rm_tables[i]->name);
+            ok = false;
+        }
+    }
+    if (dev_res.qp_hash || dev_res.dct_hash) {
+        printf("FAIL %-18s: a hash table is still allocated\n", name);
+        ok = false;
+    }
+    return ok;
+}
+
+/*
+ * Device limits that would size a table wrongly must be refused before
+ * anything is allocated. rdma_rm_fini() runs afterwards, as the server's
+ * teardown does after a failed init, and must find nothing to free.
+ */
+static bool test_init_rejects(const char *name,
+                              const struct ibv_device_attr *attr,
+                              int expected_rc)
+{
+    bool ok = true;
+    struct ibv_device_attr a = *attr;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    try_malloc_calls = 0;
+
+    int rc = rdma_rm_init(&dev_res, &a);
+    if (rc != expected_rc) {
+        printf("FAIL %-18s: rdma_rm_init() returned %d, expected %d\n", name,
+               rc, expected_rc);
+        ok = false;
+    }
+    if (try_malloc_calls != 0) {
+        printf("FAIL %-18s: %u table(s) allocated before the limits were "
+               "refused\n",
+               name, try_malloc_calls);
+        ok = false;
+    }
+    if (!rm_init_left_nothing(name)) {
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res, NULL, "");
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/*
+ * Fail each table's allocation in turn. rdma_rm_init() must report it and
+ * free the tables it had already built (LSan and valgrind report any it
+ * doesn't), and rdma_rm_fini() afterwards must not free them again (ASan
+ * and valgrind report that).
+ */
+static bool test_init_unwinds(void)
+{
+    const char *name = "init-unwind";
+    bool ok = true;
+
+    for (uint32_t fail_at = 0; fail_at < RM_TABLE_COUNT; fail_at++) {
+        struct ibv_device_attr a = one_each;
+
+        memset(&dev_res, 0, sizeof(dev_res));
+        try_malloc_calls = 0;
+        try_malloc_fail_at = fail_at;
+
+        int rc = rdma_rm_init(&dev_res, &a);
+        try_malloc_fail_at = NO_FAILURE;
+
+        if (rc != -ENOMEM) {
+            printf("FAIL %-18s: with allocation %u failed, rdma_rm_init() "
+                   "returned %d, expected %d\n",
+                   name, fail_at, rc, -ENOMEM);
+            ok = false;
+        }
+        if (try_malloc_calls != fail_at + 1) {
+            printf("FAIL %-18s: with allocation %u failed, rdma_rm_init() "
+                   "made %u allocation(s), expected %u\n",
+                   name, fail_at, try_malloc_calls, fail_at + 1);
+            ok = false;
+        }
+        if (!rm_init_left_nothing(name)) {
+            ok = false;
+        }
+
+        rdma_rm_fini(&dev_res, NULL, "");
+    }
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/*
+ * A successful init allocates each table once, so test_init_unwinds()
+ * reaches every one of them. Zero limits are valid: g_try_malloc() returns
+ * NULL for an empty table, and that must not be taken for a failure.
+ */
+static bool test_init_succeeds(const char *name,
+                               const struct ibv_device_attr *attr)
+{
+    bool ok = true;
+    struct ibv_device_attr a = *attr;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    try_malloc_calls = 0;
+
+    int rc = rdma_rm_init(&dev_res, &a);
+    if (rc != 0) {
+        printf("FAIL %-18s: rdma_rm_init() returned %d\n", name, rc);
+        ok = false;
+    } else if (try_malloc_calls != RM_TABLE_COUNT) {
+        printf("FAIL %-18s: rdma_rm_init() made %u allocation(s), expected "
+               "%u\n",
+               name, try_malloc_calls, RM_TABLE_COUNT);
+        ok = false;
+    }
+
+    if (rc == 0) {
+        rdma_rm_fini(&dev_res, NULL, "");
+    }
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
 int main(void)
 {
     int failures = 0;
+    struct ibv_device_attr attr;
 
     if (!test_fill_to_capacity("full-exact-word", TBL_SZ_EXACT)) {
         failures++;
@@ -407,6 +597,44 @@ int main(void)
         failures++;
     }
     if (!test_dealloc_reopens_one_slot()) {
+        failures++;
+    }
+
+    if (!test_init_succeeds("init-one-each", &one_each)) {
+        failures++;
+    }
+    memset(&attr, 0, sizeof(attr));
+    if (!test_init_succeeds("init-all-zero", &attr)) {
+        failures++;
+    }
+
+    attr = one_each;
+    attr.max_mr = -1;
+    if (!test_init_rejects("init-negative-mr", &attr, -EINVAL)) {
+        failures++;
+    }
+    attr = one_each;
+    attr.max_qp_wr = -1;
+    if (!test_init_rejects("init-negative-wr", &attr, -EINVAL)) {
+        failures++;
+    }
+    /* 2^16 * 2^16 is one more than UINT32_MAX, and overflows an int. */
+    attr = one_each;
+    attr.max_qp = 65536;
+    attr.max_qp_wr = 65536;
+    if (!test_init_rejects("init-cqe-over-u32", &attr, -EOVERFLOW)) {
+        failures++;
+    }
+    /* 65537 * 65537 is 2^32 + 131073, so it would wrap to a small table, not
+     * an empty one. */
+    attr = one_each;
+    attr.max_qp = 65537;
+    attr.max_qp_wr = 65537;
+    if (!test_init_rejects("init-cqe-wraps", &attr, -EOVERFLOW)) {
+        failures++;
+    }
+
+    if (!test_init_unwinds()) {
         failures++;
     }
 
