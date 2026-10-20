@@ -1151,6 +1151,11 @@ static bool socket_access_ok(const char *path, const gid_t *want_gid,
  * removal at another directory.  The entry itself can still be replaced in
  * between, but only by someone who can write to that directory, who could
  * remove it anyway.
+ *
+ * The directory is opened with O_PATH, which needs no permission on the
+ * directory itself, as binding the socket doesn't: O_RDONLY would refuse one
+ * the server can write and search but not read.  fstatat() and unlinkat()
+ * still check search and write permission.
  */
 static bool remove_stale_socket(const char *path)
 {
@@ -1170,7 +1175,7 @@ static bool remove_stale_socket(const char *path)
     if (*name == '\0') {
         fprintf(stderr, "rocm-ernic: socket path \"%s\" has no file name\n",
                 path);
-    } else if ((dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+    } else if ((dfd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC)) < 0) {
         fprintf(stderr, "rocm-ernic: cannot open socket directory %s: %s\n",
                 dir, strerror(errno));
     } else if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) < 0) {

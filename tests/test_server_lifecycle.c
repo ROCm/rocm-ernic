@@ -435,6 +435,8 @@ enum sock_pre {
     PRE_NO_DIR,    /* the path is in a directory that doesn't exist */
     PRE_NO_SEARCH, /* the path is in a directory the server can read but not
                       search */
+    PRE_NO_READ,   /* the path is in a directory the server can write and
+                      search but not read */
     PRE_DIR_SLASH, /* the path is a directory's, ending in '/' */
 };
 
@@ -841,6 +843,23 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "cannot check"},
+    /* Binding the socket needs no read permission on its directory, so
+     * neither may the check for a stale one. */
+    {.category = "boundary",
+     .description = "the socket's directory can be written and searched but "
+                    "not read",
+     .expected = "the server serves the socket, then shuts down cleanly",
+     .backend = "loopback",
+     .pre = PRE_NO_READ,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
     {.category = "boundary",
      .description = "the socket's path is a directory's, ending in '/'",
      .expected = "it names no file, so the server exits non-zero",
@@ -1213,6 +1232,7 @@ static bool place_at_path(enum sock_pre pre, const char *sock,
     case PRE_NONE:
     case PRE_NO_DIR:
     case PRE_NO_SEARCH:
+    case PRE_NO_READ:
     case PRE_DIR_SLASH:
     default:
         return true;
@@ -1254,6 +1274,7 @@ static bool left_alone(enum sock_pre pre, const char *sock, const char *target)
     case PRE_STALE:
     case PRE_NO_DIR:
     case PRE_NO_SEARCH:
+    case PRE_NO_READ:
     case PRE_DIR_SLASH:
     default:
         return true;
@@ -1350,8 +1371,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         break;
     }
 
-    /* A row with an ACL, or with a directory the server can't search, gets a
-     * directory of its own for the socket. */
+    /* A row with an ACL, or with a directory the server can't search or
+     * read, gets a directory of its own for the socket. */
     if (c->acl != NO_ACL) {
         snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
         if (!make_acl_dir(dir, c->acl)) {
@@ -1360,9 +1381,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             return 1;
         }
         own_dir = true;
-    } else if (c->pre == PRE_NO_SEARCH) {
+    } else if (c->pre == PRE_NO_SEARCH || c->pre == PRE_NO_READ) {
         snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
-        if (mkdir(dir, 0600) < 0) {
+        if (mkdir(dir, c->pre == PRE_NO_SEARCH ? 0600 : 0300) < 0) {
             printf("FAIL %s: %s; could not make %s: %s\n", c->category,
                    c->description, dir, strerror(errno));
             return 1;

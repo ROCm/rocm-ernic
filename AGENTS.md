@@ -295,7 +295,9 @@ general pattern here.
   Where the operation can only name a file, as `unlink()` does, open the
   directory once and name the entry relative to it, with `fstatat()` and
   `unlinkat()`, so a component of the path changed in between can't
-  redirect it. `remove_stale_socket()` in `rocm_ernic_server.c` does that.
+  redirect it. Open it with `O_PATH`, not `O_RDONLY`, which would also
+  need read permission on the directory that the operation itself doesn't.
+  `remove_stale_socket()` in `rocm_ernic_server.c` does that.
 - **Running a program named by the environment or the command line.**
   CodeQL's `cpp/uncontrolled-process-operation` reports a value from
   `getenv()` or `argv` that reaches `exec*()`, `system()`, or `popen()`.
