@@ -18,7 +18,10 @@ and the GNU coreutils and util-linux commands the driver uses.
 import json
 import os
 from pathlib import Path
-import subprocess
+
+# Bandit flags the import itself. Each call below is marked with the reason
+# it is safe.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import unittest
@@ -228,7 +231,10 @@ class RunnerTests(unittest.TestCase):
                 with self.subTest(
                     category=category, description=description, expected=expected
                 ):
-                    result = subprocess.run(
+                    # No shell. The driver is the program under test: the
+                    # one flake.nix names in ERNIC_TEST_EXERCISE, or the one
+                    # make_driver() wrote into the scratch directory.
+                    result = subprocess.run(  # nosec B603
                         [
                             driver,
                             str(server),
@@ -318,7 +324,9 @@ class RunnerTests(unittest.TestCase):
             with self.subTest(
                 category=category, description=description, expected=expected
             ):
-                result = subprocess.run(
+                # A fixed command and no shell; the test data goes in on
+                # stdin. jq is found on PATH, which the Nix check sets.
+                result = subprocess.run(  # nosec B603 B607
                     ["jq", "-esr", "-f", str(HERE / "semgrep-report.jq")],
                     input=source,
                     capture_output=True,
