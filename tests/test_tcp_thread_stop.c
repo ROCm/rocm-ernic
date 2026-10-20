@@ -294,6 +294,16 @@ static bool still_listening(int fd)
     return getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &on, &len) == 0 && on;
 }
 
+/* Whether fd is close-on-exec, and non-blocking exactly when nonblocking is */
+static bool fd_flags_are(int fd, bool nonblocking)
+{
+    int fd_flags = fcntl(fd, F_GETFD);
+    int status_flags = fcntl(fd, F_GETFL);
+
+    return fd_flags >= 0 && status_flags >= 0 && (fd_flags & FD_CLOEXEC) &&
+           ((status_flags & O_NONBLOCK) != 0) == nonblocking;
+}
+
 static double now_s(void)
 {
     struct timespec ts;
@@ -1092,6 +1102,12 @@ static int run_fini_case(const struct fini_case *c)
     }
     priv = dev.backend_private;
 
+    /* The accept thread blocks in accept() until teardown wakes it */
+    if (!fd_flags_are(priv->listen_fd, false)) {
+        why = "the listen socket isn't close-on-exec and blocking";
+        goto stop;
+    }
+
     w1 = worker_register(priv);
     if (w1 < 0 || !wait_for_registered(priv, 1)) {
         why = "worker 1 did not register";
@@ -1483,6 +1499,7 @@ static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
                                 bool split, int *fd)
 {
     TcpConnection *conn;
+    bool flags_ok;
 
     *fd = connect_loopback(port);
     if (*fd < 0)
@@ -1494,10 +1511,16 @@ static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
     /* The thread answers after it has published the connection */
     if (!recv_type(*fd, TCP_MSG_HANDSHAKE_RESP, 5000))
         return "the good handshake wasn't answered";
-    qemu_mutex_lock(&priv->conn_table_lock);
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(HS_NODE));
-    qemu_mutex_unlock(&priv->conn_table_lock);
-    return conn ? NULL : "the good peer's connection isn't in the table";
+    conn = tcp_connection_lookup(priv, HS_NODE);
+    if (!conn)
+        return "the good peer's connection isn't in the table";
+    qemu_mutex_lock(&conn->lock);
+    flags_ok = fd_flags_are(conn->sockfd, true);
+    qemu_mutex_unlock(&conn->lock);
+    tcp_connection_unref(conn);
+    return flags_ok ? NULL
+                    : "the accepted socket isn't close-on-exec and "
+                      "non-blocking";
 }
 
 /*
@@ -1963,7 +1986,8 @@ struct connect_case {
 
 static const struct connect_case connect_cases[] = {
     {"positive", "connect to a listening port",
-     "a connected socket, left non-blocking", CT_LISTENING, 0, true, 0.0, 1.0},
+     "a connected socket, left non-blocking and close-on-exec", CT_LISTENING, 0,
+     true, 0.0, 1.0},
     {"negative", "connect to a port nothing listens on", "fails at once",
      CT_CLOSED, 0, false, 0.0, 1.0},
     {"boundary", "connect to a node that doesn't answer, with a 1 s timeout",
@@ -2044,7 +2068,7 @@ static int run_connect_case(const struct connect_case *c)
             fd = tcp_connect_any(ai, NULL, deadline_ms);
         took = now_s() - start;
         ok = (fd >= 0) == c->want_fd && took >= c->min_s && took < c->max_s &&
-             (fd < 0 || (fcntl(fd, F_GETFL, 0) & O_NONBLOCK));
+             (fd < 0 || fd_flags_are(fd, true));
     }
     alarm(0);
 

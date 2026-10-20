@@ -37,7 +37,6 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <time.h>
 #include <inttypes.h>
@@ -857,14 +856,13 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
     int err = ENOENT;
 
     for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next) {
-        int sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        int sockfd = socket(rp->ai_family,
+                            rp->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                            rp->ai_protocol);
         if (sockfd < 0) {
             err = errno;
             continue;
         }
-
-        int flags = fcntl(sockfd, F_GETFL, 0);
-        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
 
         if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
             (errno == EINPROGRESS &&
@@ -948,7 +946,7 @@ static int tcp_listen_on_port(uint16_t port)
     int ret;
     int opt = 1;
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sockfd < 0) {
         rdma_error_report("TCP: Failed to create listen socket: %s",
                           strerror(errno));
@@ -2353,7 +2351,6 @@ void *tcp_accept_thread(void *opaque)
     struct sockaddr_in client_addr;
     socklen_t client_len;
     int sockfd;
-    int flags;
     TcpMsgHeader hdr;
     void *payload = NULL;
     TcpHandshakePayload *hs_payload;
@@ -2364,8 +2361,8 @@ void *tcp_accept_thread(void *opaque)
 
     while (atomic_load(&priv->accept_thread_running)) {
         client_len = sizeof(client_addr);
-        sockfd = accept(priv->listen_fd, (struct sockaddr *)&client_addr,
-                        &client_len);
+        sockfd = accept4(priv->listen_fd, (struct sockaddr *)&client_addr,
+                         &client_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
 
         if (sockfd < 0) {
             if (errno == EAGAIN) {
@@ -2395,10 +2392,6 @@ void *tcp_accept_thread(void *opaque)
         setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
         tcp_tune_sockbuf(sockfd);
-
-        /* Set socket to non-blocking */
-        flags = fcntl(sockfd, F_GETFL, 0);
-        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
 
         rdma_info_report("TCP: Accepted connection from %s:%u",
                          inet_ntoa(client_addr.sin_addr),
@@ -3660,7 +3653,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
             0; /* Will be assigned by manager or use ephemeral */
         struct sockaddr_in addr;
         socklen_t len = sizeof(addr);
-        int test_fd = socket(AF_INET, SOCK_STREAM, 0);
+        int test_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (test_fd >= 0) {
             memset(&addr, 0, sizeof(addr));
             addr.sin_family = AF_INET;
