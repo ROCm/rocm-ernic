@@ -75,35 +75,14 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 
-#include "hw/pci/pci.h" /* declares the pci_dma_* stubs below */
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
 #include "rdma_rm.h"
 #include "rdma_rm_defs.h"
 
-/* ---- Stubs for the backend entry points rdma_rm.c calls, and for the two
- * DMA symbols the linked qemu-stubs TU references but does not define.
- * None of them are reachable from the table allocator; they exist only to
- * satisfy the link.
+/* ---- Stubs for the backend entry points rdma_rm.c calls. None of them are
+ * reachable from the table allocator; they exist only to satisfy the link.
  */
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dev;
-    (void)addr;
-    (void)len;
-    (void)dir;
-    return NULL;
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)buffer;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-}
-
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,
                             uint32_t srq_limit)

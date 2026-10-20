@@ -207,14 +207,12 @@ static void *trampoline_run(void *opaque)
     return ret;
 }
 
-int qemu_thread_create(QemuThread *thread, const char *name,
-                       void *(*start_routine)(void *), void *arg, int mode)
+int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
+                       void *arg)
 {
     struct trampoline *t;
     int left = atomic_load(&g_creates_left);
 
-    (void)name;
-    (void)mode;
     while (left > 0 &&
            !atomic_compare_exchange_weak(&g_creates_left, &left, left - 1))
         ;
@@ -233,10 +231,6 @@ int qemu_thread_create(QemuThread *thread, const char *name,
     }
     atomic_fetch_add(&g_creates, 1);
     return 0;
-}
-void qemu_thread_exit(void *retval)
-{
-    pthread_exit(retval);
 }
 void qemu_thread_join(QemuThread *thread)
 {
@@ -445,8 +439,7 @@ static int run_case(const struct stop_case *c)
 
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&priv->accept_thread, tcp_accept_thread, priv);
         if (c->setup == BLOCKED)
             sleep_ms(100);
     }
@@ -602,9 +595,8 @@ static int run_health_case(const struct health_case *c)
     alarm(ROW_TIMEOUT_S);
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->health_check_running, true);
-        qemu_thread_create(&priv->health_check_thread, "tcp-health",
-                           tcp_manager_health_check_thread, priv,
-                           QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&priv->health_check_thread,
+                           tcp_manager_health_check_thread, priv);
         if (c->setup == BLOCKED)
             sleep_ms(100);
     }
@@ -716,9 +708,7 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     *peer = sv[1];
     if (start) {
         atomic_store(&conn->recv_thread_running, true);
-        qemu_thread_create(&conn->recv_thread, "tcp-recv",
-                           tcp_recv_thread_per_conn, conn,
-                           QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
     }
     return conn;
 }
@@ -969,8 +959,7 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     qemu_mutex_lock(&priv->conn_table_lock);
     g_ptr_array_add(priv->pending_conns, conn);
     atomic_store(&conn->recv_thread_running, true);
-    qemu_thread_create(&conn->recv_thread, "tcp-recv-pending",
-                       tcp_recv_thread_per_conn, conn, QEMU_THREAD_JOINABLE);
+    qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
     if (connp)
         *connp = conn;
@@ -1597,8 +1586,7 @@ static int run_hs_case(const struct hs_case *c)
         why = "could not open a listening socket";
     } else {
         atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&priv->accept_thread, tcp_accept_thread, priv);
         if (c->peer != HS_GOOD && c->peer != HS_SPLIT && !hs_dup(c->peer))
             why = hs_bad_peer(c->peer, ntohs(addr.sin_port), &bad);
         if (!why && !hs_waits(c->peer))
@@ -1736,9 +1724,8 @@ static void rc_start(struct rc_fixture *fx, time_t dead_s)
     for (uint32_t i = 0; i < fx->nodes; i++)
         fx->node[i]->last_heartbeat = time(NULL) - dead_s;
     atomic_store(&fx->priv->health_check_running, true);
-    qemu_thread_create(&fx->priv->health_check_thread, "tcp-health",
-                       tcp_manager_health_check_thread, fx->priv,
-                       QEMU_THREAD_JOINABLE);
+    qemu_thread_create(&fx->priv->health_check_thread,
+                       tcp_manager_health_check_thread, fx->priv);
 }
 
 static void rc_teardown(struct rc_fixture *fx)
@@ -3107,9 +3094,7 @@ static TcpConnection *tp_publish(struct tp_fixture *fx, struct tp_net *net,
     }
     if (start) {
         atomic_store(&conn->recv_thread_running, true);
-        qemu_thread_create(&conn->recv_thread, "tcp-recv",
-                           tcp_recv_thread_per_conn, conn,
-                           QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
     }
     qemu_mutex_lock(&fx->priv->conn_table_lock);
     g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id), conn);

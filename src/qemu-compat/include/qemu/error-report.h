@@ -49,9 +49,4 @@ void warn_vreport(const char *fmt, va_list ap)
 void info_vreport(const char *fmt, va_list ap)
     __attribute__((format(printf, 1, 0)));
 
-/* Global state - not used but stubbed for compatibility */
-static bool message_with_timestamp __attribute__((unused)) = false;
-static bool error_with_guestname __attribute__((unused)) = false;
-static const char *error_guest_name __attribute__((unused)) = NULL;
-
 #endif /* QEMU_ERROR_REPORT_H */

@@ -258,6 +258,11 @@
   self-hosted CI from the Actions tab's *Run workflow* button, or with
   `gh workflow run self-hosted-ci.yml -f pr=N`; `ci/README.md` describes the
   inputs.
+* The PVRDMA DMA-mapping layer in `rocm_ernic_compat.c`, which nothing
+  called, and the QEMU compatibility stubs and headers that only removed
+  PVRDMA code used. With it went the `ERNIC_DEBUG_DMA_MAP` environment
+  variable, and the `ernic_debug_dma_map` Ansible setting that wrote it. Only
+  that layer read it, so it already had no effect.
 
 ### Fixed
 

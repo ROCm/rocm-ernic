@@ -1,23 +1,17 @@
 /*
  *
- * Unit tests for the bitmap and polling stubs in qemu_stubs.c.
+ * Unit tests for the bitmap stubs in qemu_stubs.c.
  *
  * The bitmap's storage word is unsigned long, which is 32 or 64 bits
- * depending on the platform, so the bitmap cases use sizes around that
- * width rather than fixed numbers. Each map is filled one bit at a time
- * and then emptied from the top, with find_first_zero_bit() checked after
- * every step. Built with ASan, an index that strays past the allocation
- * fails the test.
+ * depending on the platform, so the cases use sizes around that width
+ * rather than fixed numbers. Each map is filled one bit at a time and then
+ * emptied from the top, with find_first_zero_bit() checked after every
+ * step. Built with ASan, an index that strays past the allocation fails
+ * the test.
  *
  * find_first_zero_bit() must refuse a map larger than UINT32_MAX bits,
  * since its uint32_t result could not index it. That case runs in a child
  * process, which is expected to die by SIGABRT.
- *
- * The polling cases cover the two timeouts that a conversion to whole
- * milliseconds gets wrong: a negative timeout must wait indefinitely
- * rather than return at once, and a sub-millisecond timeout must wait
- * rather than round down to zero. Timeouts whose whole seconds overflow a
- * 32-bit time_t must still produce a valid timespec.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -26,44 +20,17 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
-#include <poll.h>
-#include <pthread.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
-#include "hw/pci/pci.h"
-#include "qemu/bitmap.h"
-#include "qemu/timer.h"
+#include <glib.h>
 
-/* ---- The two DMA symbols the stubs TU references but does not define.
- * Nothing under test reaches them; they exist only to satisfy the link.
- */
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dev;
-    (void)addr;
-    (void)len;
-    (void)dir;
-    return NULL;
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)buffer;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-}
+#include "qemu/bitmap.h"
 
 static int failures;
 
@@ -122,7 +89,8 @@ static void test_bitmap_size(uint32_t nbits)
         }
     }
 
-    bitmap_free(map);
+    /* The resource manager frees its maps with g_free(). */
+    g_free(map);
 }
 
 static void test_bitmap_sizes(void)
@@ -165,155 +133,10 @@ static void test_oversize_aborts(void)
     }
 }
 
-/* ---- Polling --------------------------------------------------------- */
-
-static int64_t now_ns(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * INT64_C(1000000000) + ts.tv_nsec;
-}
-
-struct delayed_write {
-    int fd;
-    bool ok;
-};
-
-static void *write_after_delay(void *arg)
-{
-    struct delayed_write *dw = arg;
-    const struct timespec delay = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
-
-    nanosleep(&delay, NULL);
-    dw->ok = write(dw->fd, "x", 1) == 1;
-    return NULL;
-}
-
-static void test_poll_sub_millisecond(void)
-{
-    const int64_t timeout_ns = 500 * 1000; /* 0.5 ms */
-    struct pollfd pfd;
-    int fds[2];
-    int64_t start;
-    int64_t elapsed;
-    int rc;
-
-    if (pipe2(fds, O_CLOEXEC) != 0) {
-        fail("pipe failed", 0, 0);
-        return;
-    }
-
-    pfd.fd = fds[0];
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-
-    start = now_ns();
-    rc = qemu_poll_ns(&pfd, 1, timeout_ns);
-    elapsed = now_ns() - start;
-
-    if (rc != 0) {
-        fail("sub-millisecond poll on an empty pipe did not time out", 0, 0);
-    }
-    if (elapsed < timeout_ns) {
-        fail("sub-millisecond poll returned before its timeout", 0, 0);
-    }
-
-    close(fds[0]);
-    close(fds[1]);
-}
-
-static void test_poll_negative_waits(void)
-{
-    struct delayed_write dw;
-    struct pollfd pfd;
-    pthread_t writer;
-    int fds[2];
-    int rc;
-
-    if (pipe2(fds, O_CLOEXEC) != 0) {
-        fail("pipe failed", 0, 0);
-        return;
-    }
-
-    dw.fd = fds[1];
-    dw.ok = false;
-    if (pthread_create(&writer, NULL, write_after_delay, &dw) != 0) {
-        fail("pthread_create failed", 0, 0);
-        close(fds[0]);
-        close(fds[1]);
-        return;
-    }
-
-    pfd.fd = fds[0];
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-
-    /* The pipe is empty until the writer wakes, so a poll that treats the
-     * negative timeout as zero returns 0 here instead of waiting. */
-    rc = qemu_poll_ns(&pfd, 1, -1);
-
-    pthread_join(writer, NULL);
-
-    if (!dw.ok) {
-        fail("writer thread could not write to the pipe", 0, 0);
-    }
-    if (rc != 1 || !(pfd.revents & POLLIN)) {
-        fail("negative timeout did not wait for the pipe to be readable", 0, 0);
-    }
-
-    close(fds[0]);
-    close(fds[1]);
-}
-
-static void test_poll_huge_timeouts(void)
-{
-    /* 2^31 seconds is the smallest whole-second count that a 32-bit
-     * time_t cannot hold: truncated, it becomes INT32_MIN. */
-    const int64_t timeouts_ns[] = {
-        ((int64_t)INT32_MAX + 1) * INT64_C(1000000000),
-        INT64_MAX,
-    };
-    struct pollfd pfd;
-    int fds[2];
-    int rc;
-
-    if (pipe2(fds, O_CLOEXEC) != 0) {
-        fail("pipe failed", 0, 0);
-        return;
-    }
-    if (write(fds[1], "x", 1) != 1) {
-        fail("could not write to the pipe", 0, 0);
-        close(fds[0]);
-        close(fds[1]);
-        return;
-    }
-
-    pfd.fd = fds[0];
-    pfd.events = POLLIN;
-
-    /* The pipe stays readable, so a valid timeout returns at once. A
-     * negative tv_sec makes ppoll() fail with EINVAL instead. */
-    for (size_t i = 0; i < sizeof(timeouts_ns) / sizeof(timeouts_ns[0]); i++) {
-        pfd.revents = 0;
-        rc = qemu_poll_ns(&pfd, 1, timeouts_ns[i]);
-        if (rc != 1 || !(pfd.revents & POLLIN)) {
-            fail("huge timeout did not report the readable pipe", 0,
-                 (uint32_t)i);
-        }
-    }
-
-    close(fds[0]);
-    close(fds[1]);
-}
-
 int main(void)
 {
     test_bitmap_sizes();
     test_oversize_aborts();
-    test_poll_sub_millisecond();
-    test_poll_negative_waits();
-    test_poll_huge_timeouts();
 
     if (failures) {
         printf("qemu_stubs: %d check(s) FAILED\n", failures);

@@ -1231,11 +1231,7 @@ static void server_teardown(rocm_ernic_dev_t *dev, vfu_ctx_t *vfu_ctx)
      * backend it registered with are both still alive. */
     ionic_device_fini(dev);
 
-    /*
-     * Then the PVRDMA device, before the ctx: its backend's teardown puts
-     * back the guest memory mapped for work requests still queued, and
-     * pci_dma_unmap() does that through the ctx each mapping was made with.
-     */
+    /* Then the PVRDMA device, and the ctx last. */
     if (dev->pvrdma_handle) {
         pvrdma_device_destroy(dev->pvrdma_handle);
         dev->pvrdma_handle = NULL;
