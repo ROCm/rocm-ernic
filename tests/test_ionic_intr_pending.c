@@ -10,10 +10,11 @@
  * that mask-on-assert still re-latches so a replayed interrupt behaves
  * exactly like a first-hand one.
  *
- * The per-vector state is private to the translation unit, so the TU is
- * #included and its external symbols are stubbed. vfu_irq_trigger() counts
- * deliveries per vector instead of touching a real vfio-user context, which
- * lets the whole interrupt path run in-process under AddressSanitizer.
+ * The per-vector state is private to ionic_eth_emu.c, so the test reaches
+ * it through ionic_eth_emu_priv.h and stubs the emulator's external
+ * symbols. vfu_irq_trigger() counts deliveries per vector instead of
+ * touching a real vfio-user context, which lets the whole interrupt path
+ * run in-process under AddressSanitizer.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -22,14 +23,24 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_eth_emu.c"
+#include <vfio-user/libvfio-user.h>
+
+#include "ionic_adminq.h"
+#include "ionic_datapath.h"
+#include "ionic_eth_emu.h"
+#include "ionic_eth_emu_priv.h"
+#include "ionic_eth_net.h"
+#include "rocm_ernic_compat.h"
+#include "rocm_ernic_internal.h"
 
 /* ---- Stubs for the TU's external symbols ------------------------------- */
 

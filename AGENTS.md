@@ -304,6 +304,16 @@ general pattern here.
   path in with a definition from `$<TARGET_FILE:...>`, as
   `test_server_lifecycle.c` does with `ERNIC_SERVER_PATH`, rather than
   passing the path on the command line.
+- **Including a `.c` file.** CodeQL's `cpp/include-non-header` reports an
+  `#include` of a `.c` file, as does clang-tidy's
+  `bugprone-suspicious-include`. A unit test that needs a module's private
+  types or functions includes the module's `_priv.h` header, such as
+  `src/ionic_adminq_priv.h`, and lists the module's `.c` among its sources
+  in `tests/CMakeLists.txt`. Only the module and its tests include that
+  header. A function the header declares shares the program with every
+  other module, so give it the module's prefix. Vendored code can't be
+  changed to declare anything, so test it through its public functions, as
+  `test_rdma_res_tbl.c` does.
 
 ## Linters, warnings, and sanitizers (mandatory)
 
@@ -492,10 +502,6 @@ them and where their configuration files are picked up.
   - Adding a forward declaration, such as `struct nvmeof_cm;`, of a
     module's opaque type to a file that includes the module's header,
     which already declares it.
-  - Anything for a test that `#include`s the translation unit under test
-    (for example, `test_tcp_mesh_topology.c` includes
-    `rdma/rdma_backend_tcp.c`). The test gets its declarations from that
-    file's includes on purpose, and IWYU asks it to repeat them.
   - Naming an internal header instead of the public one, or insisting on
     one of several headers that repeat a typedef (C11 allows that, and the
     QEMU compatibility headers in `src/qemu-compat/include/` do it for

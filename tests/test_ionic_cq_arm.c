@@ -15,9 +15,9 @@
  * hung for the full 60s admin timeout even though the controller had answered
  * it correctly.
  *
- * The CQ state is private to the translation unit, so the TU is #included and
- * the event callback is counted in-process instead of reaching a real
- * vfio-user context.
+ * The CQ state is private to ionic_datapath.c, so the test reaches it through
+ * ionic_datapath_priv.h, and the event callback is counted in-process instead
+ * of reaching a real vfio-user context.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -27,12 +27,21 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_datapath.c"
+#include <vfio-user/libvfio-user.h>
+
+#include "ionic_datapath.h"
+#include "ionic_datapath_priv.h"
+#include "ionic_eth_emu.h"
+#include "nvmeof_cm.h"
+#include "nvmeof_target.h"
+#include "rocm_ernic_compat.h"
+#include "s3_tcp.h"
+#include "s3_target.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  *

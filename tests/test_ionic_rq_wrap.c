@@ -27,13 +27,24 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
+#include <pthread.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_datapath.c"
+#include <vfio-user/libvfio-user.h>
+
+#include "ionic_datapath.h"
+#include "ionic_datapath_priv.h"
+#include "ionic_eth_emu.h"
+#include "nvmeof_cm.h"
+#include "nvmeof_target.h"
+#include "rocm_ernic_compat.h"
+#include "s3_tcp.h"
+#include "s3_target.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  *
@@ -437,12 +448,12 @@ static void test_page_table_is_bounded_by_the_region(void)
 
     /* One 4 KiB page, described by one entry: the single-page path. */
     desc.map_count = 1;
-    check(buf_init(&g_dp, &b, &desc, 0, 4096) == 0,
+    check(ionic_dp_buf_init(&g_dp, &b, &desc, 0, 4096) == 0,
           "a one-page region with one table entry is accepted");
 
     /* The same region, claiming a million pages. */
     desc.map_count = 1000000;
-    check(buf_init(&g_dp, &b, &desc, 0, 4096) == -EINVAL,
+    check(ionic_dp_buf_init(&g_dp, &b, &desc, 0, 4096) == -EINVAL,
           "a one-page region cannot have a million table entries");
     check(b.pages == NULL, "the oversized table was never allocated");
 
@@ -453,23 +464,27 @@ static void test_page_table_is_bounded_by_the_region(void)
 
     /* A geometry describing no bytes at all describes no page table. */
     desc.map_count = 1;
-    check(buf_init(&g_dp, &b, &desc, 0, 0) == -EINVAL,
+    check(ionic_dp_buf_init(&g_dp, &b, &desc, 0, 0) == -EINVAL,
           "a zero-length region is refused");
 
-    buf_release(&b);
+    ionic_dp_buf_release(&b);
 }
 
 /*
- * ring_span_bytes() exists so a guest geometry cannot shift by the width of
- * the type. The QP exponents are not bounded at the adminq yet, so this is
- * the thing standing between a malformed CREATE_QP and undefined behaviour.
+ * ionic_dp_ring_span_bytes() exists so a guest geometry cannot shift by the
+ * width of the type. The QP exponents are not bounded at the adminq yet, so
+ * this is the thing standing between a malformed CREATE_QP and undefined
+ * behaviour.
  */
 static void test_ring_span_saturates(void)
 {
-    check(ring_span_bytes(6, 6) == 4096, "2^6 entries of 2^6 bytes is 4 KiB");
-    check(ring_span_bytes(63, 0) != 0, "an exponent sum of 63 still computes");
-    check(ring_span_bytes(64, 0) == 0, "an exponent sum of 64 is refused");
-    check(ring_span_bytes(255, 255) == 0,
+    check(ionic_dp_ring_span_bytes(6, 6) == 4096,
+          "2^6 entries of 2^6 bytes is 4 KiB");
+    check(ionic_dp_ring_span_bytes(63, 0) != 0,
+          "an exponent sum of 63 still computes");
+    check(ionic_dp_ring_span_bytes(64, 0) == 0,
+          "an exponent sum of 64 is refused");
+    check(ionic_dp_ring_span_bytes(255, 255) == 0,
           "the largest guest bytes are refused");
 }
 
@@ -494,39 +509,40 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
      * for send, send-recv, write-imm and read, and only the operations that
      * take another path still worked.
      */
-    check(ud_delivery_refused(&rc, &rc, 0) == NULL,
+    check(ionic_dp_ud_delivery_refused(&rc, &rc, 0) == NULL,
           "an RC send to its connected peer is not a datagram send");
-    check(ud_delivery_refused(&uc, &uc, 0) == NULL,
+    check(ionic_dp_ud_delivery_refused(&uc, &uc, 0) == NULL,
           "a UC send to its connected peer is not a datagram send");
-    check(ud_delivery_refused(&rc, &ud, 0) == NULL,
+    check(ionic_dp_ud_delivery_refused(&rc, &ud, 0) == NULL,
           "a connected sender is never held to the datagram rules");
 
     /* A datagram may only land in a queue that accepts datagrams. */
-    check(ud_delivery_refused(&ud, &rc, 0) != NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &rc, 0) != NULL,
           "a datagram to a connected RC queue is refused");
-    check(ud_delivery_refused(&ud, &uc, 0) != NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &uc, 0) != NULL,
           "a datagram to a connected UC queue is refused");
-    check(ud_delivery_refused(&ud, &ud, 0) == NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0) == NULL,
           "a datagram to an unconfigured UD queue is delivered");
-    check(ud_delivery_refused(&ud, &gsi, 0) == NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0) == NULL,
           "GSI before the kernel sets its Q_Key still accepts one");
 
     /* Once a queue has a Q_Key, a datagram must present it. */
     ud.qkey_valid = true;
     ud.qkey = 0x11111111u;
-    check(ud_delivery_refused(&ud, &ud, 0x11111111u) == NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0x11111111u) == NULL,
           "the right Q_Key is delivered");
-    check(ud_delivery_refused(&ud, &ud, 0x22222222u) != NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0x22222222u) != NULL,
           "a wrong Q_Key is refused");
-    check(ud_delivery_refused(&ud, &ud, 0) != NULL, "a zero Q_Key is refused");
+    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0) != NULL,
+          "a zero Q_Key is refused");
 
     /* QP1's key is privileged; the point of checking it is that an
      * unprivileged guest guessing a QPN cannot reach the GSI queue. */
     gsi.qkey_valid = true;
     gsi.qkey = 0x80010000u;
-    check(ud_delivery_refused(&ud, &gsi, 0x80010000u) == NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x80010000u) == NULL,
           "the privileged GSI Q_Key is delivered");
-    check(ud_delivery_refused(&ud, &gsi, 0x11111111u) != NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x11111111u) != NULL,
           "GSI refuses a datagram that does not present its Q_Key");
 }
 
@@ -540,13 +556,13 @@ static struct ionic_cq_ring g_reg_cq[4];
  * The page-table bound is computed from the ring's geometry, and computing
  * it from the wrong place rejects every legitimate ring. That is exactly
  * what happened: the CQ path read c->depth, which is not assigned until
- * after buf_init() returns and is zero for a CQ being registered, so the
- * span was zero and no CQ in the device ever registered. The guest saw
- * "no completion" for every operation while the data still moved, because
- * memory regions take their span from a parameter rather than a field.
+ * after ionic_dp_buf_init() returns and is zero for a CQ being registered, so
+ * the span was zero and no CQ in the device ever registered. The guest saw "no
+ * completion" for every operation while the data still moved, because memory
+ * regions take their span from a parameter rather than a field.
  *
- * Testing buf_init() directly could not see this, and did not. These go
- * through the functions the adminq actually calls.
+ * Testing ionic_dp_buf_init() directly could not see this, and did not. These
+ * go through the functions the adminq actually calls.
  */
 static void test_registration_accepts_an_ordinary_ring(void)
 {

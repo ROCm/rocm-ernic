@@ -17,9 +17,9 @@
  * the device whatever its backend, so the last cases check that all of them
  * refuse a backend that isn't TCP.
  *
- * The static functions are reached by #including the translation unit;
- * resolution needs only the GID table, so the rest of the backend's
- * externals are stubbed out.
+ * The test links rdma_backend_tcp.c and reaches its helpers through
+ * rdma_backend_tcp_priv.h; resolution needs only the GID table, so the rest
+ * of the backend's externals are stubbed out.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -30,13 +30,24 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <netinet/in.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+#include <infiniband/verbs.h>
+
+#include "qemu/error-report.h"
+#include "qemu/thread.h"
+#include "rdma/rdma_backend_ops.h"
+#include "rdma/rdma_backend_tcp_priv.h"
+#include "rdma_backend.h"
+#include "rdma_backend_defs.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the resolution path; they exist only to
@@ -367,14 +378,17 @@ static void test_ud_rtr_needs_no_destination(void)
     memcpy(known.raw, raw, 16);
 
     /* UD with no destination: accepted. */
-    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99, 0, 0, false);
+    rc = rdma_backend_ops_tcp.qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99,
+                                           0, 0, false);
     CHECK(rc == 0, "UD RTR rejected with rc=%d", rc);
 
     /* A connected QP still must resolve, and still must fail when it cannot. */
-    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99, 0, 0, false);
+    rc = rdma_backend_ops_tcp.qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99,
+                                           0, 0, false);
     CHECK(rc != 0, "RC RTR accepted an unresolvable GID");
 
-    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known, 99, 0, 0, false);
+    rc = rdma_backend_ops_tcp.qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known,
+                                           99, 0, 0, false);
     CHECK(rc == 0, "RC RTR rejected a resolvable GID (rc=%d)", rc);
 
     priv_free(priv);

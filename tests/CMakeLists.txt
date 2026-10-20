@@ -253,10 +253,14 @@ add_executable(test_s3_tcp
 target_include_directories(test_s3_tcp PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 
-# ionic MSI-X mask/pending test. It #includes the ionic emulator translation
-# unit to reach the per-vector interrupt state and stubs vfu_irq_trigger()
-# with a per-vector counter, so no vfio-user link or live context is needed.
-add_executable(test_ionic_intr_pending test_ionic_intr_pending.c)
+# ionic MSI-X mask/pending test. It links the ionic emulator, reaches the
+# per-vector interrupt state through ionic_eth_emu_priv.h, and stubs
+# vfu_irq_trigger() with a per-vector counter, so no vfio-user link or live
+# context is needed.
+add_executable(test_ionic_intr_pending
+    test_ionic_intr_pending.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+)
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -271,11 +275,14 @@ target_include_directories(test_ionic_intr_pending SYSTEM PRIVATE
 target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
 
-# ionic PORT_INIT port-info test. It #includes the eth emulator translation
-# unit and backs the DMA entry points with a plain buffer, so the structure
-# the driver reads its link speed out of can be inspected directly -- no
-# guest, no VM and no vfio-user socket.
-add_executable(test_ionic_port_info test_ionic_port_info.c)
+# ionic PORT_INIT port-info test. It links the eth emulator, calls its
+# handlers through ionic_eth_emu_priv.h, and backs the DMA entry points with
+# a plain buffer, so the structure the driver reads its link speed out of
+# can be inspected directly -- no guest, no VM and no vfio-user socket.
+add_executable(test_ionic_port_info
+    test_ionic_port_info.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+)
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -301,10 +308,14 @@ target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE
     "ERNIC_SERVER_PATH=\"$<TARGET_FILE:rocm-ernic>\"")
 add_dependencies(test_server_lifecycle rocm-ernic)
 
-# ionic QUERY_QP test. It #includes the admin queue translation unit to reach
-# dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
-# side buffers the driver reads its answer out of can be inspected directly.
-add_executable(test_ionic_query_qp test_ionic_query_qp.c)
+# ionic QUERY_QP test. It links the admin queue, calls
+# ionic_adminq_dispatch_wqe() through ionic_adminq_priv.h, and backs the DMA
+# entry points with a plain buffer, so the side buffers the driver reads its
+# answer out of can be inspected directly.
+add_executable(test_ionic_query_qp
+    test_ionic_query_qp.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+)
 target_include_directories(test_ionic_query_qp PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -317,13 +328,16 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
     _GNU_SOURCE)
 
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
-# dispatch_wqe() against the same fake guest memory, so the response buffer
-# AND the reported length can both be inspected -- the pair that was wrong
-# while CREATE_SRQ wrote an id the driver was never told to read. Also pins
-# the id-map capacity against the advertised max_srq.
-add_executable(test_ionic_srq_adminq test_ionic_srq_adminq.c)
+# ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
+# response buffer AND the reported length can both be inspected -- the pair
+# that was wrong while CREATE_SRQ wrote an id the driver was never told to
+# read. Also pins the id-map capacity against the advertised max_srq.
+add_executable(test_ionic_srq_adminq
+    test_ionic_srq_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+)
 target_include_directories(test_ionic_srq_adminq PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -333,10 +347,13 @@ target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
 target_compile_definitions(test_ionic_srq_adminq PRIVATE
     _GNU_SOURCE)
 
-# ionic CQ arm-semantics test. It #includes the datapath translation unit to
-# reach the private CQ state and counts the event callback in-process, so no
-# vfio-user link or guest memory is needed.
-add_executable(test_ionic_cq_arm test_ionic_cq_arm.c)
+# ionic CQ arm-semantics test. It links the datapath, reaches the private CQ
+# state through ionic_datapath_priv.h, and counts the event callback
+# in-process, so no guest memory is needed.
+add_executable(test_ionic_cq_arm
+    test_ionic_cq_arm.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+)
 target_include_directories(test_ionic_cq_arm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -357,9 +374,14 @@ target_link_directories(test_ionic_cq_arm PRIVATE
 target_link_libraries(test_ionic_cq_arm PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
-add_executable(test_ionic_rq_wrap test_ionic_rq_wrap.c)
+# ionic receive-ring and buffer test. Like the CQ arm test, it links the
+# datapath and reaches its rings through ionic_datapath_priv.h.
+add_executable(test_ionic_rq_wrap
+    test_ionic_rq_wrap.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+)
 target_include_directories(test_ionic_rq_wrap PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -378,18 +400,20 @@ target_link_directories(test_ionic_rq_wrap PRIVATE
 target_link_libraries(test_ionic_rq_wrap PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
-# TCP mesh-topology broadcast test. It #includes the TCP backend translation
-# unit to reach its static helpers and stubs the backend's externals, so no
-# RDMA subsystem link is needed; the broadcast goes over a socketpair.
-add_executable(test_tcp_mesh_topology test_tcp_mesh_topology.c)
+# TCP mesh-topology broadcast test. It links the TCP backend, reaches its
+# helpers through rdma_backend_tcp_priv.h, and stubs the backend's externals,
+# so no RDMA subsystem link is needed; the broadcast goes over a socketpair.
+add_executable(test_tcp_mesh_topology
+    test_tcp_mesh_topology.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+)
 target_include_directories(test_tcp_mesh_topology PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# main target, so the backend and the test are still warning-checked.
 target_include_directories(test_tcp_mesh_topology SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/third-party/qemu/include
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
@@ -407,19 +431,21 @@ target_link_directories(test_tcp_mesh_topology PRIVATE
 target_link_libraries(test_tcp_mesh_topology PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP GID -> node resolution test. Like the mesh-topology test it #includes
-# the TCP backend translation unit to reach its static helpers and stubs the
-# backend's externals; resolution needs only the GID table, so no socket or
-# thread is involved.
-add_executable(test_tcp_gid_resolve test_tcp_gid_resolve.c)
+# TCP GID -> node resolution test. Like the mesh-topology test it links the
+# TCP backend, reaches its helpers through rdma_backend_tcp_priv.h, and stubs
+# the backend's externals; resolution needs only the GID table, so no socket
+# or thread is involved.
+add_executable(test_tcp_gid_resolve
+    test_tcp_gid_resolve.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+)
 target_include_directories(test_tcp_gid_resolve PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# main target, so the backend and the test are still warning-checked.
 target_include_directories(test_tcp_gid_resolve SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/third-party/qemu/include
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
@@ -434,19 +460,21 @@ target_link_directories(test_tcp_gid_resolve PRIVATE
 target_link_libraries(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP thread stop test. It #includes the TCP backend translation unit and runs
-# the real accept, health-check and receive threads on loopback sockets and
-# socketpairs, with the thread entry points backed by pthreads, so a stop that
-# never returns fails the test.
-add_executable(ernic-test-tcp-thread-stop test_tcp_thread_stop.c)
+# TCP thread stop test. It links the TCP backend and runs the real accept,
+# health-check and receive threads on loopback sockets and socketpairs, with
+# the thread entry points backed by pthreads, so a stop that never returns
+# fails the test.
+add_executable(ernic-test-tcp-thread-stop
+    test_tcp_thread_stop.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+)
 target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# main target, so the backend and the test are still warning-checked.
 target_include_directories(ernic-test-tcp-thread-stop SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/third-party/qemu/include
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
@@ -470,27 +498,23 @@ target_link_directories(ernic-test-tcp-thread-stop PRIVATE
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# RDMA resource-table allocator test. It #includes the resource-manager
-# translation unit to reach its static inline allocator and stubs the backend
-# entry points it calls, so no RDMA subsystem link is needed. rdma_rm.c is
-# vendored; the test silences the warnings it raises with the
-# rocm-ernic-warnings.h macros around the #include, so the test's own code is
-# still warning-checked.
+# RDMA resource-table allocator test. rdma_rm.c is vendored and keeps its
+# allocator static inline, so the test drives it through the resource
+# manager's CQE context table. It stubs the backend entry points rdma_rm.c
+# calls, so no RDMA subsystem link is needed. ERNIC_TEST_VENDORED_SOURCES
+# silences rdma_rm.c with -w, and the test's own code is still
+# warning-checked.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
+    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
 )
-# third-party/qemu is a normal include here: the test reaches rdma_rm.c
-# through it and relies on its own warning-suppression macros, not the
-# include path, to silence that file.
 target_include_directories(test_rdma_res_tbl PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu
-    ${PROJECT_SOURCE_DIR}/shared
 )
 # Vendored and third-party header trees are SYSTEM includes, matching the
 # main target.

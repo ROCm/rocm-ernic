@@ -13,9 +13,9 @@
  *
  * These tests pin the published layout at the offsets the driver reads, so a
  * future change cannot silently go back to publishing zeros.  They run
- * entirely in-process: the TU is #included and the DMA entry points are
- * backed by a plain buffer, so no guest, no VM and no vfio-user socket is
- * involved.
+ * entirely in-process: the test calls the PORT_INIT and LIF_IDENTIFY
+ * handlers through ionic_eth_emu_priv.h and backs the DMA entry points with
+ * a plain buffer, so no guest, no VM and no vfio-user socket is involved.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -24,14 +24,22 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <endian.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/uio.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_eth_emu.c"
+#include <vfio-user/libvfio-user.h>
+
+#include "ionic_adminq.h"
+#include "ionic_datapath.h"
+#include "ionic_eth_emu.h"
+#include "ionic_eth_emu_priv.h"
+#include "ionic_eth_net.h"
+#include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */
 
@@ -215,7 +223,7 @@ static void run_port_init(struct ionic_eth_emu *emu, uint64_t info_pa)
 
     cmd[0] = IONIC_CMD_PORT_INIT;
     memcpy(cmd + 8, &pa, 8);
-    handle_port_init(emu, cmd, comp);
+    ionic_eth_emu_handle_port_init(emu, cmd, comp);
     CHECK(comp[0] == 0, "PORT_INIT returned status %u, expected 0", comp[0]);
 }
 
@@ -407,7 +415,7 @@ static void test_srq_capability_is_published(void)
     uint32_t qid_count;
 
     memset(data, 0xaa, sizeof(data)); /* poison: prove we write every field */
-    handle_lif_identify(emu, cmd, comp, data);
+    ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
 
     const uint8_t *rdma = data + LIF_ID_RDMA_OFF;
     const uint8_t *srq = rdma + LIF_ID_SRQ_QTYPE_OFF;
@@ -443,7 +451,7 @@ static void test_srq_gate_needs_count_and_alloc_bit(void)
     uint32_t qid_count;
 
     memset(data, 0, sizeof(data));
-    handle_lif_identify(emu, cmd, comp, data);
+    ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
 
     const uint8_t *rdma = data + LIF_ID_RDMA_OFF;
     memcpy(&qid_count, rdma + LIF_ID_SRQ_QTYPE_OFF + 4, 4);
