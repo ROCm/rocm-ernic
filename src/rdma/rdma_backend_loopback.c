@@ -183,15 +183,12 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     handle = priv->next_pd_handle++;
     qemu_mutex_unlock(&priv->lock);
 
-    pd->ibpd = (struct ibv_pd *)(uintptr_t)handle; /* Store handle as pointer */
-
     rdma_info_report("Loopback: Created PD handle %u", handle);
     return 0;
 }
 
 static void loopback_destroy_pd(RdmaBackendPD *pd)
 {
-    /* Handle stored in ibpd - nothing to free here */
     rdma_info_report("Loopback: Destroyed PD");
 }
 
@@ -210,7 +207,6 @@ static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
     (void)access;
 
     /* Store handle in mr structure */
-    mr->ibpd = pd->ibpd;
     mr->ibmr = (struct ibv_mr *)(uintptr_t)handle;
 
     rdma_info_report("Loopback: Created MR handle %u, len=%zu", handle, length);
@@ -297,10 +293,8 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
 
     g_hash_table_insert(priv->qps, GUINT_TO_POINTER(lqp->qpn), lqp);
 
-    qp->ibpd = pd->ibpd;
     /* Store the actual LoopbackQP pointer, not the QPN! */
     qp->ibqp = (struct ibv_qp *)lqp;
-    qp->sgid_idx = 0;
 
     rdma_info_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)",
                      lqp->qpn, qp_type, (void *)lqp);

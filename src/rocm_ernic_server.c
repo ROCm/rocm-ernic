@@ -1669,9 +1669,6 @@ int main(int argc, char *argv[])
             /* Idle sources may not show up in g_main_context_pending() */
             gboolean had_events = g_main_context_iteration(main_context, FALSE);
 
-            if (dev->pvrdma_handle)
-                pvrdma_drain_pending_interrupts(dev->pvrdma_handle);
-
             /* ionic: move frames from the host TAP into the guest Rx ring.
              * This has to happen on this thread: only it may DMA. */
             if (dev->ionic_emu)

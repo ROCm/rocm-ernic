@@ -154,8 +154,6 @@ endif()
 set(ERNIC_VENDORED_SOURCES
     third-party/qemu/hw/rdma/rdma_backend.c
     third-party/qemu/hw/rdma/rdma_rm.c
-    third-party/qemu/hw/rdma/rdma_utils.c
-    third-party/qemu/hw/rdma/vmw/pvrdma_qp_ops.c
 )
 
 # The QEMU APIs the vendored code calls, implemented for a standalone
@@ -241,7 +239,7 @@ else()
 endif()
 
 # src/rdma is searched directly because the vendored sources include
-# rdma_backend_ops.h and pvrdma_comp_ctx.h by bare name.
+# rdma_backend_ops.h by bare name.
 target_include_directories(rocm-ernic PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma

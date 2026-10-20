@@ -381,11 +381,9 @@ world are:
    a second (``--stats-file``, consumed by ``ernic-exporter``;
    see :doc:`monitoring`).
 
-The core does **not** move data for the ionic device. The
-backends' ``post_send`` and ``post_recv`` entry points, and the
-vendored completion code in ``pvrdma_qp_ops.c``, belonged to the
-PVRDMA data path; nothing in the ionic path calls them. All data
-movement happens in ``ionic_datapath.c``.
+The core does **not** move data for the ionic device, or post
+its completions. All data movement happens in
+``ionic_datapath.c``.
 
 The Main Loop
 ^^^^^^^^^^^^^
@@ -397,7 +395,7 @@ QEMU to connect. Once QEMU has connected, it loops:
    accesses arrive here as callbacks, and **BAR 2 doorbells for
    send queues are executed inside the callback** (see
    `The Data Path`_).
-#. Run any GLib idle callbacks and deliver deferred interrupts.
+#. Run any GLib idle callbacks.
 #. Move received Ethernet frames from the TAP, or from frames
    other threads queued, into the guest's receive ring.
 #. Process new entries on the RDMA admin queues.

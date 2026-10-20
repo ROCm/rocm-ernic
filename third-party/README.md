@@ -25,27 +25,25 @@ VMware headers from QEMU's `include/standard-headers/`. It left out the
 device front end (`vmw/pvrdma_main.c`, `vmw/pvrdma_cmd.c`, and
 `vmw/pvrdma_dev_ring.c` and `.h`), `rdma.c`, and the tracing and build
 files. rocm-ernic's own front end in `src/`, the emulated ionic device,
-does that job.
+does that job. Nine of the 14 files are left: `rdma_utils.c`,
+`vmw/pvrdma_qp_ops.c` and `.h`, and two of the VMware headers were
+deleted once nothing used them.
 
 ### Origins
 
 Three sources are mixed in these files:
 
 - **QEMU**, by Oracle and Red Hat (Yuval Shaia and Marcel Apfelbaum),
-  under `GPL-2.0-or-later`: the 11 files from `hw/rdma/`.
+  under `GPL-2.0-or-later`: the eight files from `hw/rdma/`.
 - **VMware**, under `(GPL-2.0 WITH Linux-syscall-note) OR
-  BSD-2-Clause`: the three headers under `qemu/include/`, which VMware
-  wrote for the Linux `vmw_pvrdma` driver and QEMU copied in with its
+  BSD-2-Clause`: the header under `qemu/include/`, which VMware wrote
+  for the Linux `vmw_pvrdma` driver and QEMU copied in with its
   kernel-header import.
 - **rocm-ernic**: the changes described under
   [How far it is from upstream](#how-far-it-is-from-upstream), in nearly
   every file. The files still carry only the original copyright lines.
 
-Nothing else was copied in. `rdma_backend_defs.h` replaces upstream's
-include of QEMU's `contrib/rdmacm-mux/rdmacm-mux.h` with stubs of its
-types, and its `struct ib_user_mad` is a hand-written stand-in with the
-same field layout as the Linux uAPI structure of that name
-(`include/uapi/rdma/ib_user_mad.h`), not a copy of it.
+Nothing else was copied in.
 
 ### Why upstream dropped it
 
@@ -79,35 +77,34 @@ not this device. The deprecation cited both together.
 
 Changed lines against QEMU v9.0.0, ignoring whitespace and blank lines:
 
-| File                  | Upstream | Here | Changed |
-|-----------------------|---------:|-----:|--------:|
-| `rdma_rm.c`           |      812 | 1069 |     420 |
-| `vmw/pvrdma_qp_ops.c` |      298 |  296 |     380 |
-| `rdma_backend.c`      |     1401 | 1541 |     324 |
-| `vmw/pvrdma.h`        |      144 |  129 |     139 |
-| `rdma_backend_defs.h` |       76 |  183 |     123 |
-| `rdma_rm_defs.h`      |      146 |  207 |      69 |
-| The other 8 files     |          |      | 9 to 58 |
+| File                  | Upstream | Here | Changed  |
+|-----------------------|---------:|-----:|---------:|
+| `rdma_backend.c`      |     1401 |   71 |     1374 |
+| `rdma_rm.c`           |      812 |  829 |      714 |
+| `vmw/pvrdma.h`        |      144 |   85 |      147 |
+| `rdma_backend.h`      |      129 |   73 |      132 |
+| `vmw_pvrdma-abi.h`    |      310 |  190 |      130 |
+| `rdma_rm_defs.h`      |      146 |  109 |      101 |
+| The other 3 files     |          |      | 46 to 66 |
 
-The changes are rocm-ernic features, not portability patches:
+The changes are rocm-ernic's, not portability patches:
 
 - A backend dispatch layer, `RdmaBackendOps`, with backend types for
   loopback, TCP, NVMe-oF, and S3.
-- Dynamically connected (DC) queue pairs: `ROCM_ERNIC_PVRDMA_QPT_DCT`
-  and `_DCI`, a DCT hash table, and `PVRDMA_WR_SEND_DC` and a `dc` work
-  request member in `vmw_pvrdma-abi.h`.
 - Per-QP and per-device statistics.
-- Upstream's completion path is gone: `pvrdma_post_cqe()` no longer
-  writes to a guest ring. It records the completion and sets a flag,
-  and the main loop raises the interrupt, since libvfio-user isn't
-  thread-safe.
+- Everything the ionic front end doesn't use is gone: upstream's verbs
+  backend and data path, its completion thread and completion path, MAD
+  handling and the `rdmacm-mux` client, the GID table, user contexts,
+  and the resource manager's own statistics. Most of the changed lines
+  in `rdma_backend.c` and the headers are these deletions.
 - The QEMU dependencies are replaced with the shims in
   [`src/qemu-compat/`](../src/qemu-compat/).
 
 About 45 commits in this repository changed these files, from the
 first server commit in November 2025 until September 2026. They lived
 in `src/from-qemu/` until PR #177 moved them here and labeled them
-vendored. Since then, only commented-out code has been removed.
+vendored. Since then, commented-out code, and then the code nothing
+used, have been removed.
 
 ## Why it matters
 
@@ -132,30 +129,15 @@ checks than `src/`:
 - The coverage floor counts `src/` only.
 
 CodeQL, the sanitizers, and valgrind already cover it, since they work
-on the built program. `test_rdma_res_tbl` and
-`test_rdma_backend_query_port` test parts of `rdma_rm.c` and
-`rdma_backend.c` through their public functions, and
-`ernic-test-ionic-harness` links all of it into the emulated device it
-drives.
+on the built program. `test_rdma_res_tbl` tests parts of `rdma_rm.c`
+through its public functions, and `ernic-test-ionic-harness` links all
+of it into the emulated device it drives.
 
 Moving it means taking it out of each of those exemptions and fixing
 what they then report. Problems already known:
 
-- `PVRDMADev.pending_cq_interrupt` is a `volatile int` set with the GNU
-  builtin `__atomic_store_n()`, where AGENTS.md calls for
-  `<stdatomic.h>`.
-- The logging macros in `rdma_utils.h` use `##__VA_ARGS__`, another GNU
+- The logging macros in `rdma_utils.h` use `##__VA_ARGS__`, a GNU
   extension.
-- `rdma_backend.c` uses the `qatomic_*()` stubs, which aren't atomic
-  (see "Known defects and traps" in [AGENTS.md](../AGENTS.md)).
-- `PVRDMADev` still has `dhcp_server` and `dhcp_proxy` fields, which
-  nothing uses since the DHCP code was removed.
-- `rdma_backend.c` keeps upstream's `rdma_backend_init()` and the client
-  side of the `rdmacm-mux` helper, and `rdma_backend_defs.h` stubs the
-  helper's types. None of it is used: the server initializes the
-  backend with `rdma_backend_init_with_ops()` in `src/rdma/`, and the
-  character-device calls the helper's client makes are stubs in
-  `src/qemu-compat/` that fail.
 - CodeQL has open alerts in it, among them
   `cpp/integer-multiplication-cast-to-long` on the
   `g_malloc(tbl_sz * res_sz)` in `res_tbl_init()`.

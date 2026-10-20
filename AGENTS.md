@@ -850,13 +850,8 @@ rebuild a second one inside the mesh.
 The `qatomic_*()` functions in
 [`src/qemu-compat/qemu_stubs.c`][stubs] are plain loads, stores, and
 read-modify-writes on an `int`, written when the device logic was
-single-threaded. Their only remaining callers are in the forked QEMU
-code in `third-party/qemu/hw/rdma/`, which is safe only because that
-code's completion thread (started by `rdma_backend_start()`) is never
-started.
-
-Use `<stdatomic.h>` for anything shared between threads. Don't start the
-forked completion thread without first making these real atomics.
+single-threaded. Nothing calls them any more. Don't add a caller: use
+`<stdatomic.h>` for anything shared between threads.
 
 ### Adjacent issues
 

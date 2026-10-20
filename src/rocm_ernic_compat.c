@@ -8,7 +8,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -30,7 +29,6 @@
  * so the compiler already keeps their warnings quiet.
  */
 #include "vmw/pvrdma.h"
-#include "vmw/pvrdma_qp_ops.h"
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
 #include "rdma/rdma_backend_ops.h"
@@ -155,14 +153,8 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
                          pvrdma->backend_device_name);
     }
 
-    if (eth_dev_name) {
-        pvrdma->backend_eth_device_name = strdup(eth_dev_name);
-    }
-    pvrdma->backend_port_num = port_num;
-
     /* Copy MAC address from rocm_ernic_dev */
     memcpy(pvrdma->mac_addr, dev->mac_addr, 6);
-    pvrdma->mac_addr_set = dev->mac_addr_set;
 
     /* Initialize device attributes with defaults */
     pvrdma->dev_attr.max_qp = MAX_QP;
@@ -217,11 +209,7 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     pvrdma->stats.qp_stats =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     pvrdma->stats.stats_file = NULL;
-    pvrdma->stats.stats_fp = NULL;
     pvrdma->stats.stats_write_count = 0;
-
-    /* Set interrupt mask to 0 (interrupts enabled) */
-    pvrdma->interrupt_mask = 0;
 
     rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
@@ -237,19 +225,10 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     }
 
     /* Clean up resource manager */
-    rdma_rm_fini(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                 pvrdma->backend_eth_device_name);
+    rdma_rm_fini(&pvrdma->rdma_dev_res);
 
     /* Clean up backend using the new abstraction */
     rdma_backend_fini_with_ops(&pvrdma->backend_dev);
-
-    /* Undo pvrdma_qp_ops_init() from pvrdma_device_realize(). Its state is
-     * global, so without this a second device in the same process leaks
-     * the first one's deferred-completion queue. It has to follow the
-     * backend's fini, which joins the TCP receive threads: they post
-     * completions into that queue. Safe on a device that was never
-     * realized, since the fini tolerates state that was never set up. */
-    pvrdma_qp_ops_fini();
 
     /* Free stats hash table */
     if (pvrdma->stats.qp_stats) {
@@ -266,20 +245,9 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     pvrdma->stats_backend_str = NULL;
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str = NULL;
-    if (pvrdma->stats.stats_fp) {
-        fclose(pvrdma->stats.stats_fp);
-        pvrdma->stats.stats_fp = NULL;
-    }
 
     /* Free device names */
     free(pvrdma->backend_device_name);
-    free(pvrdma->backend_eth_device_name);
-
-    /* Free TCP connections */
-    if (pvrdma->tcp_connections) {
-        g_hash_table_destroy(pvrdma->tcp_connections);
-        pvrdma->tcp_connections = NULL;
-    }
 
     free(pvrdma);
 
@@ -310,17 +278,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
             rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
         return -EIO;
     }
-
-    /* CRITICAL: Link backend_dev to the device resources */
-    pvrdma->backend_dev.rdma_dev_res = &pvrdma->rdma_dev_res;
-    rdma_info_report("Linked backend_dev to rdma_dev_res at %p",
-                     (void *)pvrdma->backend_dev.rdma_dev_res);
-
-    /* CRITICAL: Set PCIDevice pointer for DMA operations */
-    /* PVRDMADev has PCIDevice parent_obj as first field, so we can cast */
-    pvrdma->backend_dev.dev = (PCIDevice *)pvrdma;
-    rdma_info_report("Set backend_dev->dev to PCIDevice at %p",
-                     (void *)pvrdma->backend_dev.dev);
 
     /* Query device capabilities from backend to populate dev_attr */
     if (pvrdma->backend_dev.backend_ops &&
@@ -353,15 +310,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         return -EIO;
     }
     rdma_info_report("Resource manager initialized with dev_attr tables");
-
-    /* Initialize QP operations and register completion handler */
-    rc = pvrdma_qp_ops_init();
-    if (rc < 0) {
-        rdma_error_report("Failed to initialize QP operations (rc=%d)", rc);
-        return -EIO;
-    }
-    rdma_info_report(
-        "QP operations initialized, completion handler registered");
 
     rdma_info_report("PVRDMA device realized successfully");
 
@@ -628,22 +576,6 @@ void pvrdma_write_stats(pvrdma_handle_t handle)
     pvrdma_write_stats_impl(pvrdma);
 }
 
-void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    pvrdma_drain_deferred_completions();
-
-    if (__atomic_exchange_n(&pvrdma->pending_cq_interrupt, 0,
-                            __ATOMIC_ACQUIRE)) {
-        post_interrupt(pvrdma, INTR_VEC_CMD_COMPLETION_Q);
-    }
-}
-
 /*
  * DMA Mapping (called FROM QEMU code)
  */
@@ -829,44 +761,6 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
     DMA_MAP_UNLOCK();
 }
 
-/*
- * Interrupt Handling (called FROM QEMU code)
- */
-
-void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
-{
-    vfu_ctx_t *vfu_ctx;
-    int ret;
-
-    if (!pvrdma || !pvrdma->parent_obj.vfu_dev || !pvrdma->parent_obj.vfu_ctx) {
-        rdma_error_report("post_interrupt: invalid device pointer");
-        return;
-    }
-
-    vfu_ctx = pvrdma->parent_obj.vfu_ctx;
-
-    if (vector >= RDMA_MAX_INTRS) {
-        rdma_error_report("post_interrupt: invalid vector %u", vector);
-        return;
-    }
-
-    /* Check interrupt mask */
-    if (pvrdma->interrupt_mask) {
-        rdma_debug_report("Interrupt vector %u masked", vector);
-        return;
-    }
-
-    /* Trigger MSI-X interrupt via libvfio-user */
-    ret = vfu_irq_trigger(vfu_ctx, vector);
-    if (ret < 0) {
-        rdma_error_report("Failed to trigger IRQ vector %u: %s", vector,
-                          strerror(errno));
-        return;
-    }
-
-    pvrdma->stats.interrupts++;
-}
-
 /* -------------------------------------------------------------------------
  * Resource accessors for the ionic migration path (ionic_adminq.c).
  * -------------------------------------------------------------------------
@@ -883,7 +777,7 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_cq(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, cqe,
-                            cq_handle, NULL);
+                            cq_handle);
 }
 
 void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
@@ -902,7 +796,7 @@ int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, pd_handle, max_wr, max_sge,
-                             srq_limit, srq_handle, NULL);
+                             srq_limit, srq_handle);
 }
 
 void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
@@ -967,7 +861,7 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_pd(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                            pd_handle, 0);
+                            pd_handle);
 }
 
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
@@ -981,8 +875,7 @@ int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
     RdmaRmQP *out_qp = NULL;
     return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, pd_handle, qp_type,
                             max_send_wr, 16, send_cq_handle, max_recv_wr, 16,
-                            recv_cq_handle, NULL, qpn, 0, 0, 0, 0, NULL,
-                            &out_qp);
+                            recv_cq_handle, qpn, 0, 0, &out_qp);
 }
 
 void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
@@ -1055,11 +948,11 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
 
-    ret = rdma_rm_query_qp(
-        &pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn, &attr,
-        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_ACCESS_FLAGS |
-            IBV_QP_RQ_PSN | IBV_QP_SQ_PSN,
-        &init_attr);
+    ret = rdma_rm_query_qp(&pvrdma->rdma_dev_res, qpn, &attr,
+                           IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+                               IBV_QP_ACCESS_FLAGS | IBV_QP_RQ_PSN |
+                               IBV_QP_SQ_PSN,
+                           &init_attr);
     if (ret)
         return ret;
 

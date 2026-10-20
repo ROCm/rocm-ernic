@@ -83,8 +83,7 @@ void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
  * pvrdma_irq_count - Record one delivered MSI-X interrupt
  * @handle: Device handle
  *
- * post_interrupt() counts its own; this is for the ionic path, which triggers
- * the vector itself.
+ * The ionic path triggers the vector itself and reports it here.
  */
 void pvrdma_irq_count(pvrdma_handle_t handle);
 
@@ -226,13 +225,6 @@ void pvrdma_write_stats(pvrdma_handle_t handle);
  */
 
 /* DMA functions are now pci_dma_map/unmap declared in hw/pci/pci.h */
-
-/**
- * pvrdma_drain_pending_interrupts - deliver any CQ
- * completion interrupts queued by background threads.
- * Must be called from the main (vfio-user) thread.
- */
-void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle);
 
 /*
  * Thin wrappers for the ionic migration path.

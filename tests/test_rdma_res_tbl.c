@@ -45,17 +45,15 @@
  *
  * The allocator is static inline in the vendored rdma_rm.c, so it is
  * reached through the resource manager's public API instead: rdma_rm_init()
- * sizes the CQE context table as max_qp * max_qp_wr, which with max_qp = 1
- * makes max_qp_wr the table size, and rdma_rm_alloc_cqe_ctx() and
- * rdma_rm_dealloc_cqe_ctx() are thin wrappers over the allocator that call
- * no backend. The resource manager's backend externs are stubbed, as no
- * path under test reaches them.
+ * sizes the CQ table as max_cq, and rdma_rm_alloc_cq() and
+ * rdma_rm_dealloc_cq() given no backend are thin wrappers over the
+ * allocator. The resource manager's backend externs are stubbed, as no path
+ * under test reaches them.
  *
  * The init-* cases cover rdma_rm_init() itself: it must reject device
- * limits that would size a table wrongly (a negative limit, or a CQE
- * context table of max_qp * max_qp_wr entries that doesn't fit in a
- * uint32_t), and when a table can't be allocated it must free the tables
- * it had already built and leave nothing for rdma_rm_fini() to free twice.
+ * limits that would size a table wrongly (a negative limit), and when a
+ * table can't be allocated it must free the tables it had already built and
+ * leave nothing for rdma_rm_fini() to free twice.
  * g_try_malloc() and g_try_malloc0_n() are defined here so a case can make
  * a given table's entry or bitmap allocation fail.
  *
@@ -106,28 +104,6 @@ void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
     (void)access_len;
 }
 
-int rdma_backend_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                         union ibv_gid *gid)
-{
-    (void)backend_dev;
-    (void)ifname;
-    (void)gid;
-    return -1;
-}
-int rdma_backend_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                         union ibv_gid *gid)
-{
-    (void)backend_dev;
-    (void)ifname;
-    (void)gid;
-    return -1;
-}
-int rdma_backend_get_gid_index(RdmaBackendDev *backend_dev, union ibv_gid *gid)
-{
-    (void)backend_dev;
-    (void)gid;
-    return -1;
-}
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,
                             uint32_t srq_limit)
@@ -153,10 +129,9 @@ int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
     (void)srq_attr_mask;
     return -1;
 }
-void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
+void rdma_backend_destroy_srq(RdmaBackendSRQ *srq)
 {
     (void)srq;
-    (void)dev_res;
 }
 
 /* ---- Allocation failure injection -------------------------------------
@@ -239,21 +214,17 @@ static uint8_t *backing;
 static size_t backing_len;
 static size_t res_sz;
 
-/* Any value will do; rdma_rm_alloc_cqe_ctx() only stores it. */
-static int ctx_token;
-
 static RdmaRmResTbl *tbl_init_guarded(uint32_t tbl_sz)
 {
     /* Every other table gets one entry, so none is created empty. */
     struct ibv_device_attr attr = {
         .max_qp = 1,
-        .max_qp_wr = (int)tbl_sz,
-        .max_cq = 1,
+        .max_cq = (int)tbl_sz,
         .max_mr = 1,
         .max_pd = 1,
         .max_srq = 1,
     };
-    RdmaRmResTbl *tbl = &dev_res.cqe_ctx_tbl;
+    RdmaRmResTbl *tbl = &dev_res.cq_tbl;
 
     memset(&dev_res, 0, sizeof(dev_res));
     if (rdma_rm_init(&dev_res, &attr) != 0 || tbl->tbl_sz != tbl_sz) {
@@ -277,7 +248,7 @@ static RdmaRmResTbl *tbl_init_guarded(uint32_t tbl_sz)
 static void tbl_destroy_guarded(RdmaRmResTbl *tbl)
 {
     tbl->tbl = orig_tbl;
-    rdma_rm_fini(&dev_res, NULL, "");
+    rdma_rm_fini(&dev_res);
     free(backing);
     backing = NULL;
 }
@@ -331,7 +302,7 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
     }
     for (uint32_t i = 0; i < tbl_sz; i++) {
         uint32_t handle = UINT32_MAX;
-        int rc = rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token);
+        int rc = rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle);
 
         if (rc != 0) {
             printf("FAIL %-18s: allocation %u of %u returned %d before the "
@@ -367,7 +338,7 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
      * so a bare "it wasn't written" cannot masquerade as a valid result. */
     if (ok) {
         uint32_t handle = UINT32_MAX;
-        int rc = rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token);
+        int rc = rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle);
 
         if (rc != -ENOMEM) {
             printf("FAIL %-18s: allocation from a full table returned %d with "
@@ -408,7 +379,7 @@ static bool test_dealloc_reopens_one_slot(void)
 
     for (uint32_t i = 0; i < TBL_SZ_EXACT; i++) {
         uint32_t handle;
-        if (rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token) != 0) {
+        if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle) != 0) {
             printf("FAIL %-18s: could not fill the table (failed at %u)\n",
                    name, i);
             ok = false;
@@ -420,10 +391,10 @@ static bool test_dealloc_reopens_one_slot(void)
      * handle, since find_first_zero_bit() scans from zero. */
     const uint32_t freed = TBL_SZ_EXACT / 2;
     if (ok) {
-        rdma_rm_dealloc_cqe_ctx(&dev_res, freed);
+        rdma_rm_dealloc_cq(&dev_res, freed);
 
         uint32_t handle = UINT32_MAX;
-        int rc = rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token);
+        int rc = rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle);
         if (rc != 0) {
             printf("FAIL %-18s: allocation after freeing handle %u returned "
                    "%d\n",
@@ -439,7 +410,7 @@ static bool test_dealloc_reopens_one_slot(void)
     /* Full again, so refused again. */
     if (ok) {
         uint32_t handle = UINT32_MAX;
-        if (rdma_rm_alloc_cqe_ctx(&dev_res, &handle, &ctx_token) != -ENOMEM) {
+        if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle) != -ENOMEM) {
             printf("FAIL %-18s: table refilled to capacity still allocated "
                    "(handle %u)\n",
                    name, handle);
@@ -462,15 +433,14 @@ static bool test_dealloc_reopens_one_slot(void)
 
 /* The tables rdma_rm_init() builds, in the order it builds them. */
 static RdmaRmResTbl *const rm_tables[] = {
-    &dev_res.pd_tbl,      &dev_res.cq_tbl, &dev_res.mr_tbl,  &dev_res.qp_tbl,
-    &dev_res.cqe_ctx_tbl, &dev_res.uc_tbl, &dev_res.srq_tbl,
+    &dev_res.pd_tbl, &dev_res.cq_tbl,  &dev_res.mr_tbl,
+    &dev_res.qp_tbl, &dev_res.srq_tbl,
 };
 #define RM_TABLE_COUNT ((uint32_t)(sizeof(rm_tables) / sizeof(rm_tables[0])))
 
 /* One entry in every table. */
 static const struct ibv_device_attr one_each = {
     .max_qp = 1,
-    .max_qp_wr = 1,
     .max_cq = 1,
     .max_mr = 1,
     .max_pd = 1,
@@ -489,8 +459,8 @@ static bool rm_init_left_nothing(const char *name)
             ok = false;
         }
     }
-    if (dev_res.qp_hash || dev_res.dct_hash) {
-        printf("FAIL %-18s: a hash table is still allocated\n", name);
+    if (dev_res.qp_hash) {
+        printf("FAIL %-18s: the QP hash table is still allocated\n", name);
         ok = false;
     }
     return ok;
@@ -527,7 +497,7 @@ static bool test_init_rejects(const char *name,
         ok = false;
     }
 
-    rdma_rm_fini(&dev_res, NULL, "");
+    rdma_rm_fini(&dev_res);
 
     if (ok) {
         printf("ok   %-18s\n", name);
@@ -581,7 +551,7 @@ static bool test_init_unwinds(const char *name, bool fail_bitmap)
             ok = false;
         }
 
-        rdma_rm_fini(&dev_res, NULL, "");
+        rdma_rm_fini(&dev_res);
     }
 
     if (ok) {
@@ -618,7 +588,7 @@ static bool test_init_succeeds(const char *name,
     }
 
     if (rc == 0) {
-        rdma_rm_fini(&dev_res, NULL, "");
+        rdma_rm_fini(&dev_res);
     }
 
     if (ok) {
@@ -653,26 +623,6 @@ int main(void)
     attr = one_each;
     attr.max_mr = -1;
     if (!test_init_rejects("init-negative-mr", &attr, -EINVAL)) {
-        failures++;
-    }
-    attr = one_each;
-    attr.max_qp_wr = -1;
-    if (!test_init_rejects("init-negative-wr", &attr, -EINVAL)) {
-        failures++;
-    }
-    /* 2^16 * 2^16 is one more than UINT32_MAX, and overflows an int. */
-    attr = one_each;
-    attr.max_qp = 65536;
-    attr.max_qp_wr = 65536;
-    if (!test_init_rejects("init-cqe-over-u32", &attr, -EOVERFLOW)) {
-        failures++;
-    }
-    /* 65537 * 65537 is 2^32 + 131073, so it would wrap to a small table, not
-     * an empty one. */
-    attr = one_each;
-    attr.max_qp = 65537;
-    attr.max_qp_wr = 65537;
-    if (!test_init_rejects("init-cqe-wraps", &attr, -EOVERFLOW)) {
         failures++;
     }
 

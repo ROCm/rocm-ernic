@@ -50,18 +50,6 @@
 
 #include "standard-headers/linux/types.h"
 
-#define PVRDMA_UVERBS_ABI_VERSION 3          /* ABI Version. */
-#define PVRDMA_UAR_HANDLE_MASK    0x00FFFFFF /* Bottom 24 bits. */
-#define PVRDMA_UAR_QP_OFFSET      0          /* QP doorbell. */
-#define PVRDMA_UAR_QP_SEND        (1 << 30)  /* Send bit. */
-#define PVRDMA_UAR_QP_RECV        (1 << 31)  /* Recv bit. */
-#define PVRDMA_UAR_CQ_OFFSET      4          /* CQ doorbell. */
-#define PVRDMA_UAR_CQ_ARM_SOL     (1 << 29)  /* Arm solicited bit. */
-#define PVRDMA_UAR_CQ_ARM         (1 << 30)  /* Arm bit. */
-#define PVRDMA_UAR_CQ_POLL        (1 << 31)  /* Poll bit. */
-#define PVRDMA_UAR_SRQ_OFFSET     8          /* SRQ doorbell. */
-#define PVRDMA_UAR_SRQ_RECV       (1 << 30)  /* Recv bit. */
-
 enum pvrdma_wr_opcode {
     PVRDMA_WR_RDMA_WRITE,
     PVRDMA_WR_RDMA_WRITE_WITH_IMM,
@@ -81,116 +69,6 @@ enum pvrdma_wr_opcode {
     PVRDMA_WR_REG_SIG_MR,
     PVRDMA_WR_ERROR,
     PVRDMA_WR_SEND_DC,
-};
-
-enum pvrdma_wc_status {
-    PVRDMA_WC_SUCCESS,
-    PVRDMA_WC_LOC_LEN_ERR,
-    PVRDMA_WC_LOC_QP_OP_ERR,
-    PVRDMA_WC_LOC_EEC_OP_ERR,
-    PVRDMA_WC_LOC_PROT_ERR,
-    PVRDMA_WC_WR_FLUSH_ERR,
-    PVRDMA_WC_MW_BIND_ERR,
-    PVRDMA_WC_BAD_RESP_ERR,
-    PVRDMA_WC_LOC_ACCESS_ERR,
-    PVRDMA_WC_REM_INV_REQ_ERR,
-    PVRDMA_WC_REM_ACCESS_ERR,
-    PVRDMA_WC_REM_OP_ERR,
-    PVRDMA_WC_RETRY_EXC_ERR,
-    PVRDMA_WC_RNR_RETRY_EXC_ERR,
-    PVRDMA_WC_LOC_RDD_VIOL_ERR,
-    PVRDMA_WC_REM_INV_RD_REQ_ERR,
-    PVRDMA_WC_REM_ABORT_ERR,
-    PVRDMA_WC_INV_EECN_ERR,
-    PVRDMA_WC_INV_EEC_STATE_ERR,
-    PVRDMA_WC_FATAL_ERR,
-    PVRDMA_WC_RESP_TIMEOUT_ERR,
-    PVRDMA_WC_GENERAL_ERR,
-};
-
-enum pvrdma_wc_opcode {
-    PVRDMA_WC_SEND,
-    PVRDMA_WC_RDMA_WRITE,
-    PVRDMA_WC_RDMA_READ,
-    PVRDMA_WC_COMP_SWAP,
-    PVRDMA_WC_FETCH_ADD,
-    PVRDMA_WC_BIND_MW,
-    PVRDMA_WC_LSO,
-    PVRDMA_WC_LOCAL_INV,
-    PVRDMA_WC_FAST_REG_MR,
-    PVRDMA_WC_MASKED_COMP_SWAP,
-    PVRDMA_WC_MASKED_FETCH_ADD,
-    PVRDMA_WC_RECV = 1 << 7,
-    PVRDMA_WC_RECV_RDMA_WITH_IMM,
-};
-
-enum pvrdma_wc_flags {
-    PVRDMA_WC_GRH = 1 << 0,
-    PVRDMA_WC_WITH_IMM = 1 << 1,
-    PVRDMA_WC_WITH_INVALIDATE = 1 << 2,
-    PVRDMA_WC_IP_CSUM_OK = 1 << 3,
-    PVRDMA_WC_WITH_SMAC = 1 << 4,
-    PVRDMA_WC_WITH_VLAN = 1 << 5,
-    PVRDMA_WC_WITH_NETWORK_HDR_TYPE = 1 << 6,
-    PVRDMA_WC_FLAGS_MAX = PVRDMA_WC_WITH_NETWORK_HDR_TYPE,
-};
-
-enum pvrdma_network_type {
-    PVRDMA_NETWORK_IB,
-    PVRDMA_NETWORK_ROCE_V1 = PVRDMA_NETWORK_IB,
-    PVRDMA_NETWORK_IPV4,
-    PVRDMA_NETWORK_IPV6
-};
-
-struct pvrdma_alloc_ucontext_resp {
-    uint32_t qp_tab_size;
-    uint32_t reserved;
-};
-
-struct pvrdma_alloc_pd_resp {
-    uint32_t pdn;
-    uint32_t reserved;
-};
-
-struct pvrdma_create_cq {
-    uint64_t __attribute__((aligned(8))) buf_addr;
-    uint32_t buf_size;
-    uint32_t reserved;
-};
-
-struct pvrdma_create_cq_resp {
-    uint32_t cqn;
-    uint32_t reserved;
-};
-
-struct pvrdma_resize_cq {
-    uint64_t __attribute__((aligned(8))) buf_addr;
-    uint32_t buf_size;
-    uint32_t reserved;
-};
-
-struct pvrdma_create_srq {
-    uint64_t __attribute__((aligned(8))) buf_addr;
-    uint32_t buf_size;
-    uint32_t reserved;
-};
-
-struct pvrdma_create_srq_resp {
-    uint32_t srqn;
-    uint32_t reserved;
-};
-
-struct pvrdma_create_qp {
-    uint64_t __attribute__((aligned(8))) rbuf_addr;
-    uint64_t __attribute__((aligned(8))) sbuf_addr;
-    uint32_t rbuf_size;
-    uint32_t sbuf_size;
-    uint64_t __attribute__((aligned(8))) qp_addr;
-};
-
-struct pvrdma_create_qp_resp {
-    uint32_t qpn;
-    uint32_t qp_handle;
 };
 
 /* PVRDMA masked atomic compare and swap */
@@ -284,12 +162,6 @@ struct pvrdma_sq_wqe_hdr {
             uint32_t remote_qkey;
             struct pvrdma_av av;
         } ud;
-        struct {
-            uint32_t remote_dctn;
-            uint32_t dc_access_key;
-            uint32_t ah_id;
-            uint32_t reserved;
-        } dc;
     } wr;
 };
 /* Use pvrdma_sge (ib_sge) for send queue s/g array elements. */
