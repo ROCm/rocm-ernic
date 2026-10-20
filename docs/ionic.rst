@@ -491,16 +491,32 @@ Working:
   ``IB_WR_LOCAL_INV`` as local work requests, which is what
   a stock ``nvme-rdma`` initiator uses to produce the keys
   in its keyed SGLs
+- guest-to-guest ``rdma_cm``, and the transfers that follow
+  it: ``rping`` between two guests on a mesh completes its
+  connection, and its SEND, RDMA READ and RDMA WRITE all
+  carry the right bytes -- verified at both ends over ten
+  exchanges. The client does not exit cleanly afterwards;
+  that is the missing flush below, not the transfer
 
 Not yet working:
 
-- guest-to-guest ``rping`` does not complete. ``rdma_cm``
-  *connection establishment* now works -- the server accepts
-  and both ends reach ``RDMA_CM_EVENT_DISCONNECTED`` -- but
-  the connection tears down before the client advertises its
-  buffer, so the server stops at ``wait for RDMA_READ_ADV
-  state 10``. That is the data path, not the CM exchange,
-  and it is not yet diagnosed.
+- a work request outstanding when its QP enters the Error
+  state is never completed. The spec says each one should be
+  flushed with ``IBV_WC_WR_FLUSH_ERR``; ``MODIFY_QP`` records
+  the new state and leaves the send and receive queues alone,
+  and there is no flush path in the device at all.
+
+  What that costs is teardown, not transfer. ``rping``
+  between two guests exchanges its payloads correctly and
+  both ends verify them, but the client then hangs instead of
+  exiting: it keeps a receive posted, nothing ever completes
+  it, so its CQ thread waits in ``ibv_get_cq_event()`` for an
+  event that cannot arrive while the main thread waits on
+  ``pthread_join``. Any consumer that drains its CQ on
+  teardown is exposed to the same hang. The server's
+  ``wait for RDMA_READ_ADV state 10`` at the end of a run is
+  not a symptom of this -- that is how ``rping``'s server
+  loop reports that the client disconnected, and it is normal.
 
   Establishment was broken until recently, and both reasons
   this page used to give were wrong: GSI traffic *is*
