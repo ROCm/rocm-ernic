@@ -1,7 +1,11 @@
 """Parse cppcheck XML reports."""
 
 import xml.parsers.expat
-from xml.etree.ElementTree import TreeBuilder
+
+# Bandit flags any import from xml.etree. Nothing here parses with it:
+# parse_xml() parses with expat and refuses a DOCTYPE, as defusedxml does,
+# and TreeBuilder only builds the tree from expat's callbacks.
+from xml.etree.ElementTree import TreeBuilder  # nosec B405
 
 from finding import Finding, normalize_path, normalize_severity
 

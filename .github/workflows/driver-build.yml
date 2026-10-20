@@ -90,6 +90,10 @@ jobs:
         echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
     - name: Fetch upstream ionic sources and apply patches
+      env:
+        # Read from files a PR can change, so pass it through the environment
+        # rather than expanding it into the script.
+        KERNEL_REF: ${{ steps.ref.outputs.ref }}
       run: |
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
@@ -102,7 +106,7 @@ jobs:
         # checked out, reported as "patch does not apply".
         ./scripts/fetch-ionic-sources.sh \
           --source-dir "$PWD/ionic-kernel-src" \
-          --kernel-ref "${{ steps.ref.outputs.ref }}" \
+          --kernel-ref "$KERNEL_REF" \
           --patches-dir "$PWD/${{ matrix.patches }}"
 
     - name: Verify the patched tree
