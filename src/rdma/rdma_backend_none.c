@@ -114,11 +114,6 @@ static void none_destroy_cq(RdmaBackendCQ *cq)
     /* Nothing to free */
 }
 
-static void none_poll_cq(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq)
-{
-    /* No completions */
-}
-
 /* QP operations - stub implementations */
 static int none_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                           RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
@@ -178,35 +173,6 @@ static int none_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
     return 0;
 }
 
-static void none_query_remote_conn_info(RdmaBackendQP *qp,
-                                        uint64_t *remote_addr, uint32_t *rkey)
-{
-    /* None backend has no remote connections */
-    if (remote_addr) {
-        *remote_addr = 0;
-    }
-    if (rkey) {
-        *rkey = 0;
-    }
-}
-
-/* Data path - stub implementations */
-static void none_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
-                           uint8_t qp_type, struct ibv_sge *sge,
-                           uint32_t num_sge, uint8_t sgid_idx,
-                           union ibv_gid *sgid, union ibv_gid *dgid,
-                           uint32_t dqpn, uint32_t dqkey, void *ctx)
-{
-    /* No-op: send would go nowhere */
-}
-
-static void none_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
-                           uint8_t qp_type, struct ibv_sge *sge,
-                           uint32_t num_sge, void *ctx)
-{
-    /* No-op: no data to receive */
-}
-
 /* GID management - stub implementations */
 static int none_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
                         union ibv_gid *gid)
@@ -251,7 +217,6 @@ const RdmaBackendOps rdma_backend_ops_none = {
 
     .create_cq = none_create_cq,
     .destroy_cq = none_destroy_cq,
-    .poll_cq = none_poll_cq,
 
     .create_qp = none_create_qp,
     .destroy_qp = none_destroy_qp,
@@ -261,10 +226,6 @@ const RdmaBackendOps rdma_backend_ops_none = {
     .qp_state_rtr = none_qp_state_rtr,
     .qp_state_rts = none_qp_state_rts,
     .query_qp = none_query_qp,
-    .query_remote_conn_info = none_query_remote_conn_info,
-
-    .post_send = none_post_send,
-    .post_recv = none_post_recv,
 
     .add_gid = none_add_gid,
     .del_gid = none_del_gid,
@@ -275,5 +236,4 @@ const RdmaBackendOps rdma_backend_ops_none = {
     .destroy_srq = NULL,
     .query_srq = NULL,
     .modify_srq = NULL,
-    .post_srq_recv = NULL,
 };

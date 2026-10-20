@@ -16,13 +16,8 @@
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
-#include "rdma_rm.h"
 #include "rdma_rm_defs.h"
 #include "rdma_utils.h"
-#include "standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "vmw/pvrdma.h"
-#include "exec/memory.h"
-#include "hw/pci/pci.h"        /* For pci_dma_map/unmap/sync */
 #include "rocm_ernic_compat.h" /* IONIC_MESH_MAX_MSG, kept in step below */
 #include "parse_int.h"
 #include "qemu/thread.h"
@@ -67,9 +62,8 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
 
 #define TCP_PROTOCOL_MAGIC 0x52444D41 /* "RDMA" */
 /* v4: TCP_MSG_NODE_GIDS, and registration carries a version. */
-#define TCP_PROTOCOL_VERSION   4u
-#define TCP_MAX_PAYLOAD_LEN    (16u << 20)   /* 16 MiB */
-#define TCP_COALESCE_THRESHOLD (256u * 1024) /* 256 KB */
+#define TCP_PROTOCOL_VERSION 4u
+#define TCP_MAX_PAYLOAD_LEN  (16u << 20) /* 16 MiB */
 /* How long a peer that connects to a worker has to send its whole handshake */
 #define TCP_HANDSHAKE_TIMEOUT_MS 5000u
 /*
@@ -108,15 +102,21 @@ static int tcp_env_int(const char *name, int fallback)
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,
     TCP_MSG_HANDSHAKE_RESP,
-    TCP_MSG_POST_SEND,
-    TCP_MSG_POST_RECV,
-    TCP_MSG_COMPLETION,
-    TCP_MSG_DATA,
-    TCP_MSG_QP_STATE_INIT,
-    TCP_MSG_QP_STATE_RTR,
-    TCP_MSG_QP_STATE_RTS,
-    TCP_MSG_QUERY_REMOTE_CONN_INFO,
-    TCP_MSG_REMOTE_CONN_INFO_RESP,
+    /*
+     * Retired: the PVRDMA device's sends, receives and their completions,
+     * which went with that device, and QP state and connection info, which
+     * nothing ever sent.  The ionic data path carries its traffic in
+     * TCP_MSG_IONIC.  The ordinals stay reserved, as for 18 to 20 below.
+     */
+    TCP_MSG_RESERVED_3,
+    TCP_MSG_RESERVED_4,
+    TCP_MSG_RESERVED_5,
+    TCP_MSG_RESERVED_6,
+    TCP_MSG_RESERVED_7,
+    TCP_MSG_RESERVED_8,
+    TCP_MSG_RESERVED_9,
+    TCP_MSG_RESERVED_10,
+    TCP_MSG_RESERVED_11,
     /* Manager/Worker mesh discovery messages */
     TCP_MSG_REGISTER_NODE,
     TCP_MSG_REGISTER_RESP,
@@ -133,10 +133,10 @@ typedef enum {
     TCP_MSG_RESERVED_18,
     TCP_MSG_RESERVED_19,
     TCP_MSG_RESERVED_20,
-    /* RDMA one-sided operations */
-    TCP_MSG_RDMA_WRITE,     /* RDMA Write: DMA to remote MR */
-    TCP_MSG_RDMA_READ_REQ,  /* RDMA Read request */
-    TCP_MSG_RDMA_READ_RESP, /* RDMA Read response data */
+    /* Retired: the PVRDMA device's RDMA writes and reads, as for 3 to 11 */
+    TCP_MSG_RESERVED_21,
+    TCP_MSG_RESERVED_22,
+    TCP_MSG_RESERVED_23,
     /*
      * Opaque node-to-node payload for the ionic data path.  The mesh only
      * routes it; ionic_datapath.c owns the contents, because ionic resolves
@@ -151,6 +151,11 @@ typedef enum {
      */
     TCP_MSG_NODE_GIDS,
 } TcpMsgType;
+
+/* The ordinals are on the wire; see the reserved ones above. */
+_Static_assert(TCP_MSG_REGISTER_NODE == 12 && TCP_MSG_IONIC == 24 &&
+                   TCP_MSG_NODE_GIDS == 25,
+               "a TcpMsgType ordinal moved");
 
 typedef struct {
     uint32_t magic;
@@ -213,30 +218,6 @@ typedef struct {
     uint8_t reserved[3];
 } __attribute__((packed)) TcpMeshNodeInfo;
 
-/* RDMA Write/Read operation header (prepended to data) */
-typedef struct {
-    uint64_t remote_addr;
-    uint32_t rkey;
-    uint32_t data_len;
-} __attribute__((packed)) TcpRdmaOpHeader;
-
-/*
- * Ceiling on the scatter-gather total of one send, as opposed to
- * TCP_MAX_PAYLOAD_LEN, which bounds a single wire message. An RDMA write
- * prepends a TcpRdmaOpHeader to the payload, so a total equal to the message
- * ceiling would put a message sizeof(TcpRdmaOpHeader) bytes over it -- which
- * the peer's tcp_recv_message() rejects, tearing the connection down. Leaving
- * room for the largest header any send branch prepends keeps every branch's
- * message inside the ceiling the receiver enforces.
- */
-#define TCP_MAX_SEND_TOTAL_LEN \
-    (TCP_MAX_PAYLOAD_LEN - (uint32_t)sizeof(TcpRdmaOpHeader))
-
-/* The coalesced-send branch prepends sizeof(TcpWR) instead, and relies on
- * TCP_COALESCE_THRESHOLD rather than the bound above to stay under the
- * ceiling. TcpWR is declared further down, so this is asserted at its
- * definition rather than here. */
-
 typedef struct {
     uint32_t num_nodes;
     TcpMeshNodeInfo nodes[64]; /* Max 64 nodes */
@@ -280,64 +261,6 @@ static inline const uint8_t (*tcp_const_gids(uint8_t (*gids)[16]))[16]
 /*
  * TCP Backend Data Structures
  */
-
-typedef struct {
-    uint32_t handle;
-} TcpPD;
-
-typedef struct {
-    uint32_t handle;
-    void *virt;
-    size_t length;
-    uint64_t guest_start;
-    int access_flags;
-    uint32_t lkey;
-    uint32_t rkey;
-    uint32_t pd_handle;
-} TcpMR;
-
-typedef struct {
-    enum ibv_wc_status status;
-    uint64_t wr_id;
-    uint32_t byte_len;
-    uint32_t qp_num;
-    enum ibv_wc_opcode opcode;
-} TcpCompletion;
-
-typedef struct {
-    uint32_t handle;
-    int cqe;
-    GQueue *completions; /* Queue of TcpCompletion */
-    QemuMutex lock;
-} TcpCQ;
-
-typedef struct {
-    void *addr;
-    void *host_addr; /* translated host pointer from MR */
-    uint32_t length;
-    uint32_t lkey;
-    bool dma_mapped; /* host_addr obtained via pci_dma_map */
-} TcpSGE;
-
-typedef struct {
-    uint64_t wr_id;
-    uint32_t num_sge;
-    enum ibv_wc_opcode wc_opcode;
-    TcpSGE sge[32]; /* Max SGEs */
-} TcpWR;
-
-/*
- * Both send branches that build one contiguous wire message must land inside
- * the ceiling tcp_recv_message() enforces on receipt; a message over it is
- * rejected and the connection torn down. The write branch gets its headroom
- * from TCP_MAX_SEND_TOTAL_LEN, the coalesced branch from the threshold.
- */
-_Static_assert(sizeof(TcpRdmaOpHeader) + TCP_MAX_SEND_TOTAL_LEN <=
-                   TCP_MAX_PAYLOAD_LEN,
-               "RDMA write payload must fit the receiver's message ceiling");
-_Static_assert(sizeof(TcpWR) + TCP_COALESCE_THRESHOLD <= TCP_MAX_PAYLOAD_LEN,
-               "coalesced send payload must fit the receiver's message "
-               "ceiling");
 
 /*
  * SRQ bookkeeping for the TCP backend.
@@ -434,9 +357,8 @@ typedef struct TcpBackendPrivate TcpBackendPrivate;
  * A connection is reference counted.  Whatever publishes it holds a
  * reference: its slot in connections or pending_conns, or priv->manager_conn.
  * So does anything that goes on using it after dropping the lock it was found
- * under: a caller of tcp_connection_lookup() or tcp_route_to_node(), a
- * health-check pass, or data waiting for a receive (TcpPendingData).  The
- * last tcp_connection_unref() frees it.
+ * under: a caller of tcp_connection_lookup() or tcp_route_to_node(), or a
+ * health-check pass.  The last tcp_connection_unref() frees it.
  *
  * The receive thread holds no reference of its own.  Instead, a connection
  * is retired, which joins the thread, before the reference that published it
@@ -505,76 +427,6 @@ struct TcpConnection {
     TcpBackendPrivate *priv;
 };
 
-/*
- * Data that arrived for a QP with no receive posted, waiting for one.  conn
- * is the connection it came on, with a reference: the completion goes back
- * on it once a receive takes the data, as tcp_reply() does for a reply sent
- * at once, rather than to whichever connection src_node_id, which the sender
- * wrote, names by then.
- */
-typedef struct {
-    TcpConnection *conn;
-    uint32_t src_node_id;
-    uint32_t src_qpn;
-    uint32_t length;
-    void *data;
-} TcpPendingData;
-
-typedef struct {
-    uint32_t qpn;
-    uint8_t qp_type;
-    enum ibv_qp_state state;
-    uint32_t qkey;
-    uint32_t pd_handle;
-
-    /* Connection info */
-    uint32_t remote_node_id;
-    uint32_t remote_qpn;
-    union ibv_gid remote_gid;
-    uint32_t rq_psn;
-    uint32_t sq_psn;
-
-    /* Remote connection info */
-    uint64_t remote_addr;
-    uint32_t remote_rkey;
-    uint64_t local_addr;
-    uint32_t local_rkey;
-
-    /* Associated CQs */
-    TcpCQ *scq;
-    TcpCQ *rcq;
-
-    /* Backend device reference */
-    RdmaBackendDev *backend_dev;
-
-    /* Work queues */
-    GQueue *send_queue;
-    GQueue *recv_queue;
-
-
-    /* Pending data buffer for when no recv WR is available */
-    GQueue *pending_data; /* Queue of buffered data payloads */
-
-    QemuMutex lock;
-} TcpQP;
-
-/*
- * Take the next receive WR for this QP.
- *
- * Returns NULL when no buffer is available, which both callers already treat
- * as "stash the payload in pending_data".
- *
- * There is no SRQ case here. The ionic device serves shared receive queues
- * from ionic_datapath.c's own rings and never routes a receive through this
- * backend, and nothing else in the tree creates a QP against an SRQ --
- * rdma_rm_alloc_qp() has exactly one caller, ionic_rm_alloc_qp(), which
- * passes NULL. A binding here was therefore unreachable by construction.
- */
-static TcpWR *tcp_qp_pop_recv_wr(TcpQP *tqp)
-{
-    return g_queue_pop_head(tqp->recv_queue);
-}
-
 /* Multi-node configuration modes */
 typedef enum {
     TCP_MODE_MANAGER,
@@ -605,9 +457,6 @@ typedef struct {
 } MeshNodeInfo;
 
 struct TcpBackendPrivate {
-    /* Backend device reference */
-    RdmaBackendDev *backend_dev; /* Reference to backend device */
-
     /* Node identity */
     /*
      * This node's ID.  The manager's is 0 from the start.  A worker's is 0,
@@ -757,20 +606,10 @@ struct TcpBackendPrivate {
      */
     atomic_bool peer_thread_running;
 
-    /* Resource tracking */
-    GHashTable *pds; /* handle -> TcpPD */
-    GHashTable *mrs; /* handle -> TcpMR */
-    GHashTable *cqs; /* handle -> TcpCQ */
-    GHashTable *qps; /* qpn -> TcpQP */
-
-    /* Handle generators */
+    /* Handle generators, protected by lock */
     uint32_t next_pd_handle;
-    uint32_t next_mr_handle;
     uint32_t next_cq_handle;
     uint32_t next_qpn;
-
-    /* QP pairing */
-    GHashTable *qp_pairs; /* local_qpn -> remote_qpn */
 
     /* Sequence number for protocol */
     _Atomic uint32_t next_seq;
@@ -779,23 +618,16 @@ struct TcpBackendPrivate {
     TcpBufPool recv_pool;
 
     /* Sink for TCP_MSG_IONIC, registered by the ionic data path.  Called on
-     * a receive thread, so the callee must hand off to its own thread. */
+     * a receive thread, so the callee must hand off to its own thread.  Both
+     * are protected by lock. */
     tcp_ionic_recv_fn ionic_recv_fn;
     void *ionic_recv_opaque;
 
-    /* TCP-layer performance counters */
+    /* TCP-layer counters */
     struct {
-        uint64_t msgs_sent;
-        uint64_t msgs_recv;
-        uint64_t bytes_wire_sent;
-        uint64_t bytes_wire_recv;
-        uint64_t send_eagain;
-        uint64_t recv_eagain;
         _Atomic uint64_t reconnect_attempts;
         _Atomic uint64_t reconnect_successes;
         _Atomic uint64_t peer_connect_attempts; /* a worker's, to its peers */
-        uint64_t completions_posted;
-        uint64_t cq_polls;
     } tcp_stats;
 
     QemuMutex lock;
@@ -1074,200 +906,6 @@ static void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
     }
 }
 
-/* `bytes` is 64-bit because the counters it feeds are, and because the
- * loopback path in tcp_post_send() sums SGE lengths in 64 bits. Callers
- * passing a uint32_t promote implicitly. */
-static void tcp_update_dev_stats(TcpBackendPrivate *priv, uint64_t bytes,
-                                 enum ibv_wc_opcode opcode)
-{
-    if (!priv || !priv->backend_dev || !priv->backend_dev->dev)
-        return;
-    PVRDMADev *dev = (PVRDMADev *)priv->backend_dev->dev;
-
-    /* An if chain rather than a switch: -Wswitch-enum would demand a case
-     * for every ibv_wc_opcode, and the members of that enum vary with the
-     * installed rdma-core version. */
-    if (opcode == IBV_WC_SEND) {
-        dev->stats.total_bytes_sent += bytes;
-    } else if (opcode == IBV_WC_RECV) {
-        dev->stats.total_bytes_received += bytes;
-    } else if (opcode == IBV_WC_RDMA_READ) {
-        dev->stats.total_bytes_rdma_read += bytes;
-    } else if (opcode == IBV_WC_RDMA_WRITE) {
-        dev->stats.total_bytes_rdma_write += bytes;
-    }
-}
-
-/* 64-bit for the same reason as tcp_update_dev_stats(), which this wraps. */
-static void tcp_update_stats(TcpBackendPrivate *priv, uint64_t bytes,
-                             enum ibv_wc_opcode opcode)
-{
-    tcp_update_dev_stats(priv, bytes, opcode);
-    if (!priv)
-        return;
-
-    /* An if chain for the same reason as in tcp_update_dev_stats(). */
-    if (opcode == IBV_WC_SEND || opcode == IBV_WC_RDMA_WRITE) {
-        priv->tcp_stats.bytes_wire_sent += bytes;
-        priv->tcp_stats.msgs_sent++;
-    } else if (opcode == IBV_WC_RECV || opcode == IBV_WC_RDMA_READ) {
-        priv->tcp_stats.bytes_wire_recv += bytes;
-        priv->tcp_stats.msgs_recv++;
-    }
-    priv->tcp_stats.completions_posted++;
-}
-
-/*
- * Overflow-safe memory region bounds check.
- *
- * Returns true only when the region is backed by host memory and
- * [addr, addr + len) lies entirely inside it, i.e. inside
- * [mr->start, mr->start + mr->length).
- *
- * The naive form
- *     addr < mr->start || addr + len > mr->start + mr->length
- * relies on unchecked 64-bit arithmetic. Both addr and len come off the wire,
- * so an addr near UINT64_MAX makes addr + len wrap past 0 and the comparison
- * succeeds; the host pointer later computed as mr->virt + (addr - mr->start)
- * then lands outside the region at an attacker-chosen offset. Subtracting
- * instead of adding keeps every intermediate value inside a range that has
- * already been proven not to wrap.
- *
- * The mr->virt test belongs here rather than at each call site because every
- * caller forms mr->virt + (addr - mr->start) and dereferences it. A NULL virt
- * is not an internal inconsistency: rdma_rm_alloc_mr() stores NULL whenever
- * the host mapping fails, and create_mr() deliberately carries on in that
- * case so the loopback backend can run on metadata alone -- while still
- * accepting the guest's own start and length. Without this test those bounds
- * are satisfiable by construction and the offset is added to NULL, which is
- * an absolute write at a guest-chosen address rather than an out-of-region
- * one. Returning false sends such a region down each caller's existing
- * reject path.
- */
-static inline bool tcp_mr_range_ok(const RdmaRmMR *mr, uint64_t addr,
-                                   uint64_t len)
-{
-    if (!mr || !mr->virt || addr < mr->start) {
-        return false;
-    }
-
-    /* Cannot wrap: addr >= mr->start was just established. */
-    uint64_t offset = addr - mr->start;
-    if (offset > mr->length) {
-        return false;
-    }
-
-    /* Cannot wrap: offset <= mr->length was just established. */
-    return len <= mr->length - offset;
-}
-
-/*
- * Map every scatter-gather entry of a work request to a host pointer.
- *
- * All-or-nothing: true only if every entry now has a usable host_addr (or is
- * legitimately zero-length). This is a contract the copy loops depend on
- * rather than a mere convenience. Each of them walks the entries in order and
- * advances its destination cursor only for entries it actually copies, so an
- * entry skipped for want of a mapping does not leave a hole -- it slides every
- * later entry down by its length. Tolerating a partial mapping therefore
- * writes the surviving entries to the *wrong offsets* and reports the byte
- * count as if nothing were wrong, which is worse than refusing the request.
- *
- * On failure some earlier entries may already hold pci_dma_map() mappings, so
- * a caller that gets false must still run tcp_wr_unmap_sge() before freeing
- * the request. Entries past the failure point keep the caller's zero
- * initialisation, which tcp_wr_unmap_sge() skips.
- */
-static bool tcp_wr_map_sge(TcpQP *tqp, TcpWR *wr, struct ibv_sge *sge,
-                           uint32_t num_sge)
-{
-    RdmaDeviceResources *res;
-    if (!tqp || !wr || !tqp->backend_dev) {
-        return false;
-    }
-
-    /*
-     * The entry array is fixed at 32, which is also the max_sge this backend
-     * advertises, so pvrdma_qp_ops.c rejects anything larger before it reaches
-     * here. Enforce it anyway: num_sge is copied to wr->num_sge, which travels
-     * to the peer inside TcpWR and bounds receive-side loops that do not all
-     * re-clamp it.
-     */
-    if (num_sge > 32) {
-        rdma_error_report("TCP: num_sge %u exceeds the %d supported entries",
-                          num_sge, 32);
-        return false;
-    }
-
-    res = tqp->backend_dev->rdma_dev_res;
-    wr->num_sge = num_sge;
-    for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-        wr->sge[i].addr = (void *)(uintptr_t)sge[i].addr;
-        wr->sge[i].length = sge[i].length;
-        wr->sge[i].lkey = sge[i].lkey;
-        wr->sge[i].host_addr = NULL;
-        wr->sge[i].dma_mapped = false;
-
-        if (sge[i].length == 0) {
-            continue;
-        }
-
-        RdmaRmMR *mr = rdma_rm_get_mr(res, sge[i].lkey);
-        if (!mr) {
-            rdma_error_report("TCP: Invalid lkey 0x%x for SGE %u", sge[i].lkey,
-                              i);
-            return false;
-        }
-
-        uint64_t guest_addr = sge[i].addr;
-
-        if (mr->start == 0 && mr->length == 0) {
-            PCIDevice *pci_dev = tqp->backend_dev->dev;
-            dma_addr_t dma_len = sge[i].length;
-            void *host = pci_dma_map(pci_dev, (dma_addr_t)guest_addr, &dma_len,
-                                     DMA_DIRECTION_FROM_DEVICE);
-            if (!host) {
-                rdma_error_report("TCP: DMA MR map failed for SGE %u "
-                                  "addr=0x%lx len=%u",
-                                  i, (unsigned long)guest_addr, sge[i].length);
-                return false;
-            }
-            wr->sge[i].host_addr = host;
-            wr->sge[i].dma_mapped = true;
-            continue;
-        }
-
-        if (!tcp_mr_range_ok(mr, guest_addr, sge[i].length)) {
-            rdma_error_report("TCP: SGE %u out of MR bounds addr=0x%lx len=%u "
-                              "mr=[0x%lx len=%lu]",
-                              i, (unsigned long)guest_addr, sge[i].length,
-                              (unsigned long)mr->start,
-                              (unsigned long)mr->length);
-            return false;
-        }
-
-        wr->sge[i].host_addr = (char *)mr->virt + (guest_addr - mr->start);
-    }
-
-    return true;
-}
-
-static void tcp_wr_unmap_sge(TcpQP *tqp, TcpWR *wr)
-{
-    if (!tqp || !wr || !tqp->backend_dev) {
-        return;
-    }
-    for (uint32_t i = 0; i < wr->num_sge && i < 32; i++) {
-        if (wr->sge[i].dma_mapped && wr->sge[i].host_addr) {
-            pci_dma_unmap(tqp->backend_dev->dev, wr->sge[i].host_addr,
-                          wr->sge[i].length, DMA_DIRECTION_FROM_DEVICE,
-                          wr->sge[i].length);
-            wr->sge[i].host_addr = NULL;
-            wr->sge[i].dma_mapped = false;
-        }
-    }
-}
-
 /*
  * Free conn.  Called only by the last tcp_connection_unref().
  *
@@ -1442,67 +1080,6 @@ static bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
     }
     g_hash_table_steal(priv->connections, GUINT_TO_POINTER(node_id));
     return true;
-}
-
-/*
- * Free data that waited for a receive, dropping its reference to the
- * connection it came on.
- */
-static void tcp_pending_free(TcpPendingData *pending)
-{
-    tcp_connection_unref(pending->conn);
-    g_free(pending->data);
-    g_free(pending);
-}
-
-/*
- * GDestroyNotify for cqs: the completions not yet polled, and the CQ.  Run
- * by tcp_destroy_cq() and, for the CQs still there, by teardown.
- */
-static void tcp_cq_destroy_notify(gpointer data)
-{
-    TcpCQ *tcq = data;
-
-    g_queue_free_full(tcq->completions, g_free);
-    qemu_mutex_destroy(&tcq->lock);
-    g_free(tcq);
-}
-
-/* Unmap and free every work request on queue, then the queue. */
-static void tcp_wr_queue_free(TcpQP *tqp, GQueue *queue)
-{
-    TcpWR *queued;
-
-    if (!queue) {
-        return;
-    }
-    while ((queued = g_queue_pop_head(queue))) {
-        tcp_wr_unmap_sge(tqp, queued);
-        g_free(queued);
-    }
-    g_queue_free(queue);
-}
-
-/*
- * GDestroyNotify for qps, which keeps every QP until teardown: its queued
- * work requests, the data still waiting for a receive, and the QP.
- */
-static void tcp_qp_destroy_notify(gpointer data)
-{
-    TcpQP *tqp = data;
-
-    tcp_wr_queue_free(tqp, tqp->send_queue);
-    tcp_wr_queue_free(tqp, tqp->recv_queue);
-    if (tqp->pending_data) {
-        TcpPendingData *pending;
-
-        while ((pending = g_queue_pop_head(tqp->pending_data))) {
-            tcp_pending_free(pending);
-        }
-        g_queue_free(tqp->pending_data);
-    }
-    qemu_mutex_destroy(&tqp->lock);
-    g_free(tqp);
 }
 
 /* Mesh node management helpers */
@@ -2580,28 +2157,6 @@ static void *tcp_worker_peer_thread(void *opaque)
     return NULL;
 }
 
-/*
- * Answer the request in hdr, which arrived on conn, on conn itself: from this
- * node, to the node hdr says sent it, with hdr's sequence number and its
- * queue pair numbers swapped.  Not on the connection to that node: the sender
- * writes src_node_id, so a peer could have the answer -- a completion, or the
- * memory it asked to read -- sent to another node.  Called on conn's own
- * receive thread, which conn outlives (see TcpConnection), but it can have
- * been retired, which sockfd shows.
- */
-static void tcp_reply(TcpBackendPrivate *priv, TcpConnection *conn,
-                      const TcpMsgHeader *hdr, TcpMsgType msg_type,
-                      const void *payload, size_t payload_len)
-{
-    qemu_mutex_lock(&conn->lock);
-    if (conn->sockfd >= 0) {
-        tcp_send_message(priv, conn->sockfd, msg_type, payload, payload_len,
-                         hdr->seq, tcp_local_node(priv), hdr->src_node_id,
-                         hdr->dst_qpn, hdr->src_qpn);
-    }
-    qemu_mutex_unlock(&conn->lock);
-}
-
 /* Per-connection receive thread */
 static void *tcp_recv_thread_per_conn(void *opaque)
 {
@@ -2675,215 +2230,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                     "TCP: Received handshake response from node %u",
                     hdr.src_node_id);
                 /* Handshake complete, connection is established */
-                break;
-
-            case TCP_MSG_POST_SEND: {
-                /* Handle incoming send - match with posted receive and complete
-                 */
-                rdma_info_report("TCP: Received POST_SEND from node %u, "
-                                 "qpn %u->%u",
-                                 hdr.src_node_id, hdr.src_qpn, hdr.dst_qpn);
-
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv)
-                    break;
-
-                qemu_mutex_lock(&priv->lock);
-                TcpQP *tqp = g_hash_table_lookup(priv->qps,
-                                                 GUINT_TO_POINTER(hdr.dst_qpn));
-                if (tqp && tqp->rcq) {
-                    TcpWR *send_wr = (TcpWR *)payload;
-                    if (send_wr && hdr.msg_len >= sizeof(TcpWR)) {
-                        uint32_t data_off = sizeof(TcpWR);
-                        uint32_t data_len =
-                            hdr.msg_len > data_off ? hdr.msg_len - data_off : 0;
-
-                        if (data_len > 0) {
-                            /*
-                             * Coalesced message: WR + inline
-                             * data. Process the same way as
-                             * a DATA message.
-                             */
-                            TcpWR *recv_wr = tcp_qp_pop_recv_wr(tqp);
-                            if (recv_wr) {
-                                uint32_t bytes_copied = 0;
-                                const char *src =
-                                    (const char *)payload + data_off;
-                                for (uint32_t i = 0; i < recv_wr->num_sge &&
-                                                     bytes_copied < data_len;
-                                     i++) {
-                                    uint32_t to_copy = recv_wr->sge[i].length;
-                                    if (bytes_copied + to_copy > data_len)
-                                        to_copy = data_len - bytes_copied;
-                                    void *hb = recv_wr->sge[i].host_addr;
-                                    if (hb && to_copy > 0) {
-                                        memcpy(hb, src + bytes_copied, to_copy);
-                                        bytes_copied += to_copy;
-                                    }
-                                }
-
-                                qemu_mutex_unlock(&priv->lock);
-                                tcp_update_stats(priv, bytes_copied,
-                                                 IBV_WC_RECV);
-                                rdma_backend_complete_work(
-                                    IBV_WC_SUCCESS, 0, bytes_copied,
-                                    hdr.dst_qpn, IBV_WC_RECV,
-                                    (void *)recv_wr->wr_id);
-                                qemu_mutex_lock(&priv->lock);
-
-                                tcp_wr_unmap_sge(tqp, recv_wr);
-                                g_free(recv_wr);
-
-                                tcp_reply(priv, conn, &hdr, TCP_MSG_COMPLETION,
-                                          NULL, 0);
-                            } else {
-                                TcpPendingData *pd = g_new0(TcpPendingData, 1);
-                                /* This thread's own connection, which can't
-                                 * be freed while the thread runs */
-                                pd->conn = tcp_connection_ref(conn);
-                                pd->src_node_id = hdr.src_node_id;
-                                pd->src_qpn = hdr.src_qpn;
-                                pd->length = data_len;
-                                pd->data = g_malloc(data_len);
-                                memcpy(pd->data,
-                                       (const char *)payload + data_off,
-                                       data_len);
-                                g_queue_push_tail(tqp->pending_data, pd);
-                            }
-                        } else {
-                            rdma_info_report("TCP: POST_SEND with no "
-                                             "inline data (legacy)");
-                        }
-                    }
-                }
-                qemu_mutex_unlock(&priv->lock);
-                break;
-            }
-
-            case TCP_MSG_DATA: {
-                /* Handle incoming data - complete the receive */
-                rdma_info_report("TCP: Received DATA from node %u, len %u, "
-                                 "qpn %u->%u",
-                                 hdr.src_node_id, hdr.msg_len, hdr.src_qpn,
-                                 hdr.dst_qpn);
-
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv)
-                    break;
-
-                qemu_mutex_lock(&priv->lock);
-                TcpQP *tqp = g_hash_table_lookup(priv->qps,
-                                                 GUINT_TO_POINTER(hdr.dst_qpn));
-                if (tqp && tqp->rcq) {
-                    /* Pop the receive WR */
-                    TcpWR *recv_wr = tcp_qp_pop_recv_wr(tqp);
-                    if (recv_wr && payload && hdr.msg_len > 0) {
-                        /* Copy data to receive buffer */
-                        uint32_t bytes_copied = 0;
-                        for (uint32_t i = 0;
-                             i < recv_wr->num_sge && bytes_copied < hdr.msg_len;
-                             i++) {
-                            uint32_t to_copy = recv_wr->sge[i].length;
-                            if (bytes_copied + to_copy > hdr.msg_len) {
-                                to_copy = hdr.msg_len - bytes_copied;
-                            }
-                            void *host_buf = recv_wr->sge[i].host_addr;
-                            if (host_buf && to_copy > 0) {
-                                memcpy(host_buf, (char *)payload + bytes_copied,
-                                       to_copy);
-                                bytes_copied += to_copy;
-                            }
-                        }
-
-                        rdma_info_report(
-                            "TCP: Copied %u bytes to receive buffer",
-                            bytes_copied);
-
-                        /* Post completion directly to guest */
-                        qemu_mutex_unlock(&priv->lock);
-                        tcp_update_stats(priv, bytes_copied, IBV_WC_RECV);
-                        rdma_backend_complete_work(
-                            IBV_WC_SUCCESS, 0, bytes_copied, hdr.dst_qpn,
-                            IBV_WC_RECV, (void *)recv_wr->wr_id);
-                        qemu_mutex_lock(&priv->lock);
-
-                        rdma_info_report("TCP: Delivered receive completion, "
-                                         "wr_id=%lu, bytes=%u",
-                                         recv_wr->wr_id, bytes_copied);
-
-                        tcp_wr_unmap_sge(tqp, recv_wr);
-                        g_free(recv_wr);
-
-                        /* Send completion ACK back to sender */
-                        tcp_reply(priv, conn, &hdr, TCP_MSG_COMPLETION, NULL,
-                                  0);
-                    } else if (payload && hdr.msg_len > 0) {
-                        /* No recv WR available - buffer the data */
-                        rdma_info_report(
-                            "TCP: No recv WR available, buffering %u bytes",
-                            hdr.msg_len);
-                        TcpPendingData *pending = g_new0(TcpPendingData, 1);
-                        /* As in POST_SEND */
-                        pending->conn = tcp_connection_ref(conn);
-                        pending->src_node_id = hdr.src_node_id;
-                        pending->src_qpn = hdr.src_qpn;
-                        pending->length = hdr.msg_len;
-                        pending->data = g_malloc(hdr.msg_len);
-                        memcpy(pending->data, payload, hdr.msg_len);
-                        g_queue_push_tail(tqp->pending_data, pending);
-                    } else {
-                        rdma_info_report(
-                            "TCP: No receive WR and no valid data");
-                    }
-                }
-                qemu_mutex_unlock(&priv->lock);
-                break;
-            }
-
-            case TCP_MSG_COMPLETION: {
-                /* Handle completion ACK from receiver */
-                rdma_info_report(
-                    "TCP: Received COMPLETION from node %u for qpn %u",
-                    hdr.src_node_id, hdr.dst_qpn);
-
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv)
-                    break;
-
-                qemu_mutex_lock(&priv->lock);
-                TcpQP *tqp = g_hash_table_lookup(priv->qps,
-                                                 GUINT_TO_POINTER(hdr.dst_qpn));
-                if (tqp && tqp->scq) {
-                    /* Pop the send WR and post completion directly to guest */
-                    TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
-                    if (send_wr) {
-                        uint64_t wr_id = send_wr->wr_id;
-                        enum ibv_wc_opcode op = send_wr->wc_opcode;
-                        uint32_t send_bytes = 0;
-                        for (uint32_t si = 0; si < send_wr->num_sge; si++)
-                            send_bytes += send_wr->sge[si].length;
-                        tcp_wr_unmap_sge(tqp, send_wr);
-                        g_free(send_wr);
-
-                        qemu_mutex_unlock(&priv->lock);
-                        tcp_update_stats(priv, send_bytes, op);
-                        rdma_backend_complete_work(IBV_WC_SUCCESS, 0, 0,
-                                                   hdr.dst_qpn, op,
-                                                   (void *)wr_id);
-                        qemu_mutex_lock(&priv->lock);
-
-                        rdma_info_report(
-                            "TCP: Delivered send completion, wr_id=%lu", wr_id);
-                    }
-                }
-                qemu_mutex_unlock(&priv->lock);
-                break;
-            }
-
-            case TCP_MSG_POST_RECV:
-            case TCP_MSG_REMOTE_CONN_INFO_RESP:
-                rdma_info_report("TCP: Received msg type %u from node %u",
-                                 hdr.msg_type, hdr.src_node_id);
                 break;
 
             case TCP_MSG_REGISTER_NODE: {
@@ -3393,166 +2739,6 @@ static void *tcp_recv_thread_per_conn(void *opaque)
                                           hdr.src_node_id, hdr.dst_node_id);
                     }
                 }
-                break;
-            }
-
-            case TCP_MSG_RDMA_WRITE: {
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv || !payload ||
-                    hdr.msg_len < sizeof(TcpRdmaOpHeader)) {
-                    rdma_error_report("TCP: Invalid RDMA_WRITE payload");
-                    break;
-                }
-                TcpRdmaOpHeader *oh = (TcpRdmaOpHeader *)payload;
-                uint64_t raddr = oh->remote_addr;
-                uint32_t rk = oh->rkey;
-                uint32_t dlen = oh->data_len;
-                const void *data =
-                    (const uint8_t *)payload + sizeof(TcpRdmaOpHeader);
-
-                if (hdr.msg_len < sizeof(TcpRdmaOpHeader) + dlen) {
-                    rdma_error_report("TCP: RDMA_WRITE truncated: "
-                                      "msg_len=%u need=%zu",
-                                      hdr.msg_len,
-                                      sizeof(TcpRdmaOpHeader) + dlen);
-                    break;
-                }
-
-                RdmaDeviceResources *res = priv->backend_dev->rdma_dev_res;
-                RdmaRmMR *mr = rdma_rm_get_mr(res, rk);
-                if (!mr) {
-                    rdma_error_report("TCP: RDMA_WRITE invalid "
-                                      "rkey 0x%x",
-                                      rk);
-                    break;
-                }
-
-                if (!tcp_mr_range_ok(mr, raddr, dlen)) {
-                    rdma_error_report("TCP: RDMA_WRITE out of bounds "
-                                      "addr=0x%lx len=%u "
-                                      "mr=[0x%lx len=%lu]",
-                                      (unsigned long)raddr, dlen,
-                                      (unsigned long)mr->start,
-                                      (unsigned long)mr->length);
-                    break;
-                }
-
-                void *host_dst = (char *)mr->virt + (raddr - mr->start);
-                rdma_info_report(
-                    "TCP: RDMA_WRITE pre-memcpy: host_dst=%p "
-                    "mr->virt=%p offset=%lu dlen=%u "
-                    "mr->start=0x%lx mr->length=%lu",
-                    host_dst, mr->virt, (unsigned long)(raddr - mr->start),
-                    dlen, (unsigned long)mr->start, (unsigned long)mr->length);
-                memcpy(host_dst, data, dlen);
-
-                PCIDevice *pci_dev = priv->backend_dev->dev;
-                if (pci_dev)
-                    pci_dma_sync(pci_dev, raddr, dlen);
-
-                rdma_info_report("TCP: RDMA_WRITE %u bytes to "
-                                 "rkey=0x%x addr=0x%lx from node %u",
-                                 dlen, rk, (unsigned long)raddr,
-                                 hdr.src_node_id);
-
-                tcp_update_stats(priv, dlen, IBV_WC_RECV);
-                tcp_reply(priv, conn, &hdr, TCP_MSG_COMPLETION, NULL, 0);
-                break;
-            }
-
-            case TCP_MSG_RDMA_READ_REQ: {
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv || !payload ||
-                    hdr.msg_len < sizeof(TcpRdmaOpHeader)) {
-                    rdma_error_report("TCP: Invalid RDMA_READ_REQ");
-                    break;
-                }
-                TcpRdmaOpHeader *oh = (TcpRdmaOpHeader *)payload;
-                uint64_t raddr = oh->remote_addr;
-                uint32_t rk = oh->rkey;
-                uint32_t dlen = oh->data_len;
-
-                RdmaDeviceResources *res = priv->backend_dev->rdma_dev_res;
-                RdmaRmMR *mr = rdma_rm_get_mr(res, rk);
-                if (!mr) {
-                    rdma_error_report("TCP: RDMA_READ invalid "
-                                      "rkey 0x%x",
-                                      rk);
-                    break;
-                }
-
-                if (!tcp_mr_range_ok(mr, raddr, dlen)) {
-                    rdma_error_report("TCP: RDMA_READ out of bounds "
-                                      "addr=0x%lx len=%u "
-                                      "mr=[0x%lx len=%lu]",
-                                      (unsigned long)raddr, dlen,
-                                      (unsigned long)mr->start,
-                                      (unsigned long)mr->length);
-                    break;
-                }
-
-                void *host_src = (char *)mr->virt + (raddr - mr->start);
-
-                rdma_info_report("TCP: RDMA_READ_REQ %u bytes from "
-                                 "rkey=0x%x addr=0x%lx for node %u",
-                                 dlen, rk, (unsigned long)raddr,
-                                 hdr.src_node_id);
-
-                tcp_update_stats(priv, dlen, IBV_WC_SEND);
-                tcp_reply(priv, conn, &hdr, TCP_MSG_RDMA_READ_RESP, host_src,
-                          dlen);
-                break;
-            }
-
-            case TCP_MSG_RDMA_READ_RESP: {
-                TcpBackendPrivate *priv = conn->priv;
-                if (!priv)
-                    break;
-
-                rdma_info_report("TCP: RDMA_READ_RESP %u bytes "
-                                 "from node %u for qpn %u",
-                                 hdr.msg_len, hdr.src_node_id, hdr.dst_qpn);
-
-                qemu_mutex_lock(&priv->lock);
-                TcpQP *tqp = g_hash_table_lookup(priv->qps,
-                                                 GUINT_TO_POINTER(hdr.dst_qpn));
-                if (tqp && tqp->scq) {
-                    TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
-                    if (send_wr && payload && hdr.msg_len > 0) {
-                        uint32_t bytes_copied = 0;
-                        for (uint32_t i = 0;
-                             i < send_wr->num_sge && bytes_copied < hdr.msg_len;
-                             i++) {
-                            uint32_t to_copy = send_wr->sge[i].length;
-                            if (bytes_copied + to_copy > hdr.msg_len)
-                                to_copy = hdr.msg_len - bytes_copied;
-                            void *hb = send_wr->sge[i].host_addr;
-                            if (hb && to_copy > 0) {
-                                memcpy(hb, (char *)payload + bytes_copied,
-                                       to_copy);
-                                bytes_copied += to_copy;
-                            }
-                        }
-
-                        uint64_t wr_id = send_wr->wr_id;
-                        tcp_wr_unmap_sge(tqp, send_wr);
-                        g_free(send_wr);
-
-                        qemu_mutex_unlock(&priv->lock);
-                        tcp_update_stats(priv, bytes_copied, IBV_WC_RDMA_READ);
-                        rdma_backend_complete_work(
-                            IBV_WC_SUCCESS, 0, bytes_copied, hdr.dst_qpn,
-                            IBV_WC_RDMA_READ, (void *)wr_id);
-                        qemu_mutex_lock(&priv->lock);
-
-                        rdma_info_report("TCP: RDMA_READ completed "
-                                         "%u bytes",
-                                         bytes_copied);
-                    } else if (send_wr) {
-                        g_free(send_wr);
-                    }
-                }
-                qemu_mutex_unlock(&priv->lock);
                 break;
             }
 
@@ -4823,17 +4009,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     rdma_info_report("TCP backend: Initializing");
 
     priv = g_new0(TcpBackendPrivate, 1);
-    priv->backend_dev = backend_dev;
 
-    priv->pds =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    priv->mrs =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    priv->cqs = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      tcp_cq_destroy_notify);
-    priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      tcp_qp_destroy_notify);
-    priv->qp_pairs = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
@@ -4845,7 +4021,6 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     tcp_bufpool_init(&priv->recv_pool);
 
     priv->next_pd_handle = 1;
-    priv->next_mr_handle = 1;
     priv->next_cq_handle = 1;
     priv->next_qpn = 100;
     atomic_init(&priv->next_seq, 1);
@@ -5092,11 +4267,6 @@ error:
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
-    g_hash_table_destroy(priv->pds);
-    g_hash_table_destroy(priv->mrs);
-    g_hash_table_destroy(priv->cqs);
-    g_hash_table_destroy(priv->qps);
-    g_hash_table_destroy(priv->qp_pairs);
     g_hash_table_destroy(priv->connections);
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
@@ -5153,12 +4323,6 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     g_hash_table_destroy(priv->connections);
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
-
-    g_hash_table_destroy(priv->pds);
-    g_hash_table_destroy(priv->mrs);
-    g_hash_table_destroy(priv->cqs);
-    g_hash_table_destroy(priv->qps);
-    g_hash_table_destroy(priv->qp_pairs);
 
     tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
@@ -5226,9 +4390,7 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
      * ionic receive, local and off the TCP mesh alike, is satisfied by
      * deliver_recv() in ionic_datapath.c, reading either the destination
      * QP's own RQ ring or -- for a QP bound to one -- the SRQ's ring,
-     * straight out of guest memory. Nothing posts guest receives into this
-     * backend, and tcp_qp_pop_recv_wr() unconditionally pops the QP's own
-     * queue; see the comment on it for why there is no SRQ case there.
+     * straight out of guest memory. This backend has no receive queues.
      *
      * So for ionic this value only sizes the rdma_rm table the adminq
      * handler allocates out of. The datapath half it used to disclaim is
@@ -5243,27 +4405,27 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
 
 /*
  * Protection Domain Operations
+ *
+ * The backend keeps no state for a PD, CQ or QP.  The ionic data path keeps
+ * its own, and these only hand out the handles rdma_rm records.
  */
 
 static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    TcpPD *tpd;
+    uint32_t handle;
 
     if (!priv) {
         return -EINVAL;
     }
 
-    tpd = g_new0(TcpPD, 1);
-
     qemu_mutex_lock(&priv->lock);
-    tpd->handle = priv->next_pd_handle++;
-    g_hash_table_insert(priv->pds, GUINT_TO_POINTER(tpd->handle), tpd);
+    handle = priv->next_pd_handle++;
     qemu_mutex_unlock(&priv->lock);
 
-    pd->ibpd = (struct ibv_pd *)(uintptr_t)tpd->handle;
+    pd->ibpd = (struct ibv_pd *)(uintptr_t)handle;
 
-    rdma_info_report("TCP: Created PD handle %u", tpd->handle);
+    rdma_info_report("TCP: Created PD handle %u", handle);
     return 0;
 }
 
@@ -5284,13 +4446,6 @@ static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
     mr->ibpd = pd->ibpd;
     mr->ibmr = NULL;
 
-    /*
-     * MR bookkeeping (lkey, host_virt, bounds) lives in
-     * the RdmaRmMR allocated by rdma_rm_alloc_mr.
-     * tcp_mr_lkey returns 0, so the RM layer uses the
-     * resource-table handle as lkey -- keeping lookups
-     * in tcp_wr_map_sge consistent.
-     */
     rdma_info_report("TCP: Created MR len=%zu", length);
     return 0;
 }
@@ -5303,12 +4458,7 @@ static void tcp_destroy_mr(RdmaBackendMR *mr)
 static uint32_t tcp_mr_lkey(const RdmaBackendMR *mr)
 {
     (void)mr;
-    /*
-     * Return 0 so rdma_rm_alloc_mr uses the resource
-     * table handle as the lkey.  This keeps lkeys in
-     * sync with rdma_rm_get_mr lookups in the SGE
-     * mapping path (tcp_wr_map_sge).
-     */
+    /* 0 has rdma_rm_alloc_mr() use the resource table handle as the lkey */
     return 0;
 }
 
@@ -5326,90 +4476,27 @@ static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
                          int cqe)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    TcpCQ *tcq;
+    uint32_t handle;
 
     if (!priv) {
         return -EINVAL;
     }
 
-    tcq = g_new0(TcpCQ, 1);
-
     qemu_mutex_lock(&priv->lock);
-    tcq->handle = priv->next_cq_handle++;
-    tcq->cqe = cqe;
-    tcq->completions = g_queue_new();
-    qemu_mutex_init(&tcq->lock);
-    g_hash_table_insert(priv->cqs, GUINT_TO_POINTER(tcq->handle), tcq);
+    handle = priv->next_cq_handle++;
     qemu_mutex_unlock(&priv->lock);
 
     cq->backend_dev = backend_dev;
-    cq->ibcq = (struct ibv_cq *)(uintptr_t)tcq->handle;
+    cq->ibcq = (struct ibv_cq *)(uintptr_t)handle;
 
-    rdma_info_report("TCP: Created CQ handle %u, cqe=%d", tcq->handle, cqe);
+    rdma_info_report("TCP: Created CQ handle %u, cqe=%d", handle, cqe);
     return 0;
 }
 
 static void tcp_destroy_cq(RdmaBackendCQ *cq)
 {
-    TcpBackendPrivate *priv = get_private(cq->backend_dev);
-    uint32_t handle = (uint32_t)(uintptr_t)cq->ibcq;
-
-    if (!priv) {
-        return;
-    }
-
-    /* The table's destroy notifier frees the CQ and its completions */
-    qemu_mutex_lock(&priv->lock);
-    g_hash_table_remove(priv->cqs, GUINT_TO_POINTER(handle));
-    qemu_mutex_unlock(&priv->lock);
-
-    rdma_info_report("TCP: Destroyed CQ handle %u", handle);
-}
-
-static void tcp_poll_cq(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq)
-{
-    TcpBackendPrivate *priv = get_private(cq->backend_dev);
-    uint32_t handle = (uint32_t)(uintptr_t)cq->ibcq;
-    TcpCQ *tcq;
-
-    if (!priv) {
-        return;
-    }
-
-    priv->tcp_stats.cq_polls++;
-
-    /*
-     * Look up the CQ under priv->lock, but release it
-     * before draining completions so the data path is
-     * not blocked.
-     */
-    qemu_mutex_lock(&priv->lock);
-    tcq = g_hash_table_lookup(priv->cqs, GUINT_TO_POINTER(handle));
-    qemu_mutex_unlock(&priv->lock);
-
-    if (!tcq) {
-        return;
-    }
-
-    /*
-     * Drain all available completions in one pass
-     * using only the per-CQ lock.
-     */
-    for (;;) {
-        qemu_mutex_lock(&tcq->lock);
-        TcpCompletion *comp = g_queue_pop_head(tcq->completions);
-        qemu_mutex_unlock(&tcq->lock);
-
-        if (!comp) {
-            break;
-        }
-
-        tcp_update_stats(priv, comp->byte_len, comp->opcode);
-        rdma_backend_complete_work(comp->status, 0, comp->byte_len,
-                                   comp->qp_num, comp->opcode,
-                                   (void *)(uintptr_t)comp->wr_id);
-        g_free(comp);
-    }
+    rdma_info_report("TCP: Destroyed CQ handle %u",
+                     (uint32_t)(uintptr_t)cq->ibcq);
 }
 
 /*
@@ -5423,45 +4510,25 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                          uint32_t max_recv_sge)
 {
     TcpBackendPrivate *priv = get_private(scq->backend_dev);
-    TcpQP *tqp;
-    uint32_t scq_handle = (uint32_t)(uintptr_t)scq->ibcq;
-    uint32_t rcq_handle = (uint32_t)(uintptr_t)rcq->ibcq;
+    uint32_t qpn;
 
     if (!priv) {
         return -EINVAL;
     }
 
-    tqp = g_new0(TcpQP, 1);
-
     qemu_mutex_lock(&priv->lock);
-    tqp->qpn = priv->next_qpn++;
-    tqp->qp_type = qp_type;
-    tqp->state = IBV_QPS_RESET;
-    tqp->pd_handle = (uint32_t)(uintptr_t)pd->ibpd;
-    tqp->remote_node_id = 0; /* Default to node 0 (manager) */
-    tqp->send_queue = g_queue_new();
-    tqp->recv_queue = g_queue_new();
-    tqp->pending_data = g_queue_new();
-    qemu_mutex_init(&tqp->lock);
-
-    /* Look up CQs */
-    tqp->scq = g_hash_table_lookup(priv->cqs, GUINT_TO_POINTER(scq_handle));
-    tqp->rcq = g_hash_table_lookup(priv->cqs, GUINT_TO_POINTER(rcq_handle));
-    tqp->backend_dev = scq->backend_dev;
-
-    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(tqp->qpn), tqp);
+    qpn = priv->next_qpn++;
     qemu_mutex_unlock(&priv->lock);
 
     qp->ibpd = pd->ibpd;
-    qp->ibqp = (struct ibv_qp *)(uintptr_t)tqp->qpn;
+    qp->ibqp = (struct ibv_qp *)(uintptr_t)qpn;
 
-    rdma_info_report("TCP: Created QP qpn=%u, type=%u", tqp->qpn, qp_type);
+    rdma_info_report("TCP: Created QP qpn=%u, type=%u", qpn, qp_type);
     return 0;
 }
 
 static void tcp_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
-    /* Simplified implementation - QP cleanup handled by resource manager */
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
     rdma_info_report("TCP: Destroyed QP qpn=%u", qpn);
 }
@@ -5478,23 +4545,11 @@ static uint32_t tcp_qpn(const RdmaBackendQP *qp)
 static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                              uint8_t qp_type, uint32_t qkey)
 {
-    TcpBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    TcpQP *tqp;
-
-    if (!priv) {
+    if (!get_private(backend_dev)) {
         return -EINVAL;
     }
 
-    qemu_mutex_lock(&priv->lock);
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
-    if (tqp) {
-        tqp->state = IBV_QPS_INIT;
-        tqp->qkey = qkey;
-    }
-    qemu_mutex_unlock(&priv->lock);
-
-    rdma_info_report("TCP: QP %u -> INIT", qpn);
+    rdma_info_report("TCP: QP %u -> INIT", (uint32_t)(uintptr_t)qp->ibqp);
     return 0;
 }
 
@@ -5530,6 +4585,11 @@ static uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
     return found ? GPOINTER_TO_UINT(value) : UINT32_MAX;
 }
 
+/*
+ * Refuse a connected QP whose destination GID no mesh node owns.  Nothing is
+ * recorded: the ionic data path resolves the destination for itself, through
+ * tcp_backend_node_from_gid().
+ */
 static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                             uint8_t qp_type, uint8_t sgid_idx,
                             union ibv_gid *dgid, uint32_t dqpn, uint32_t rq_psn,
@@ -5537,81 +4597,44 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    TcpQP *tqp;
+    char gidbuf[TCP_GID_STR_LEN];
+    uint32_t resolved;
 
     if (!priv) {
         return -EINVAL;
     }
 
-    char gidbuf[TCP_GID_STR_LEN];
-    uint32_t resolved;
-
     /*
      * An unreliable datagram QP has no destination at this point: UD names
      * its peer per work request, through the AH on the send, so the
      * transition carries a zero GID.  Requiring one here rejects every
-     * ordinary UD QP.  Resolution happens in tcp_post_send() instead, and
-     * remote_node_id stays UINT32_MAX so a send that somehow reaches the
-     * connected path cannot fall back to node 0.
+     * ordinary UD QP.
      */
     if (qp_type == IBV_QPT_UD) {
-        resolved = UINT32_MAX;
-    } else {
-        resolved = tcp_resolve_node_from_gid(priv, dgid);
-
-        if (resolved == UINT32_MAX) {
-            /*
-             * No node owns this GID.  Fail the transition rather than route
-             * to an arbitrary peer: rdma_rm_modify_qp() turns this into
-             * -EIO and the guest sees the failure at connection setup,
-             * where it is diagnosable, instead of silently writing into the
-             * wrong node.
-             */
-            rdma_error_report(
-                "TCP: QP %u -> RTR refused: no mesh node owns destination "
-                "GID %s (check ERNIC_TCP_GUEST_GIDS on every node)",
-                qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
-            return -EINVAL;
-        }
+        rdma_info_report("TCP: QP %u -> RTR as UD; destination resolved "
+                         "per send",
+                         qpn);
+        return 0;
     }
 
-    qemu_mutex_lock(&priv->lock);
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
-    if (tqp) {
-        tqp->state = IBV_QPS_RTR;
-        tqp->remote_qpn = dqpn;
-        if (dgid) {
-            memcpy(&tqp->remote_gid, dgid, sizeof(*dgid));
-        }
-        tqp->remote_node_id = resolved;
-
-        if (qp_type == IBV_QPT_UD) {
-            rdma_info_report("TCP: QP %u -> RTR as UD; destination resolved "
-                             "per send",
-                             qpn);
-        } else {
-            uint32_t local = tcp_local_node(priv);
-
-            rdma_info_report("TCP: Resolved GID %s -> node %u",
-                             tcp_gid_str(dgid->raw, gidbuf), resolved);
-
-            if (tqp->remote_node_id == local) {
-                rdma_info_report("TCP: QP %u routed to local node %u "
-                                 "(loopback)",
-                                 qpn, local);
-            }
-        }
-
-        tqp->rq_psn = rq_psn;
-        if (qkey_set) {
-            tqp->qkey = qkey;
-        }
+    resolved = tcp_resolve_node_from_gid(priv, dgid);
+    if (resolved == UINT32_MAX) {
+        /*
+         * No node owns this GID.  Fail the transition rather than route to an
+         * arbitrary peer: rdma_rm_modify_qp() turns this into -EIO and the
+         * guest sees the failure at connection setup, where it is
+         * diagnosable, instead of silently writing into the wrong node.
+         */
+        rdma_error_report(
+            "TCP: QP %u -> RTR refused: no mesh node owns destination "
+            "GID %s (check ERNIC_TCP_GUEST_GIDS on every node)",
+            qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
+        return -EINVAL;
     }
-    qemu_mutex_unlock(&priv->lock);
 
-    rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, "
-                     "node=%u, mode=%u)",
-                     qpn, dqpn, tqp ? tqp->remote_node_id : 0, priv->mode);
+    rdma_info_report("TCP: QP %u -> RTR (remote qpn=%u, GID %s -> node %u%s)",
+                     qpn, dqpn, tcp_gid_str(dgid->raw, gidbuf), resolved,
+                     resolved == tcp_local_node(priv) ? ", local" : "");
     return 0;
 }
 
@@ -5641,573 +4664,6 @@ static int tcp_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
     attr->cur_qp_state = IBV_QPS_RTS;
 
     return 0;
-}
-
-static void tcp_query_remote_conn_info(RdmaBackendQP *qp, uint64_t *remote_addr,
-                                       uint32_t *rkey)
-{
-    (void)qp; /* QP info would be queried via TCP protocol */
-
-    if (remote_addr) {
-        *remote_addr = 0;
-    }
-    if (rkey) {
-        *rkey = 0;
-    }
-
-    /* Query remote connection info via TCP protocol */
-    rdma_info_report("TCP: Query remote conn info");
-}
-
-/*
- * Data Path Operations
- */
-
-static void tcp_post_send(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
-                          uint8_t qp_type, struct ibv_sge *sge,
-                          uint32_t num_sge, uint8_t sgid_idx,
-                          union ibv_gid *sgid, union ibv_gid *dgid,
-                          uint32_t dqpn, uint32_t dqkey, void *ctx)
-{
-    TcpBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    TcpQP *tqp;
-    TcpWR *wr;
-    TcpConnection *conn = NULL; /* holds a reference once set */
-    uint32_t seq;
-    uint32_t local; /* this node's id, for the route and every header */
-    int ret;
-
-    /*
-     * Layout of the completion context passed from
-     * pvrdma_qp_ops.c.  Must match PvrdmaCompHandlerCtx layout.
-     */
-    typedef struct {
-        void *dev;
-        uint32_t cq_handle;
-        uint32_t qp_handle;
-        struct pvrdma_cqe cqe;
-        uint32_t opcode;
-        uint64_t remote_addr;
-        uint32_t rkey;
-    } TcpCompCtx;
-
-    TcpCompCtx *comp = (TcpCompCtx *)ctx;
-    uint32_t pvrdma_opcode = comp ? comp->opcode : 0;
-    uint64_t remote_addr = comp ? comp->remote_addr : 0;
-    uint32_t rkey = comp ? comp->rkey : 0;
-    enum ibv_wc_opcode wc_opcode =
-        comp ? (enum ibv_wc_opcode)comp->cqe.opcode : IBV_WC_SEND;
-
-    rdma_info_report("TCP: >>> post_send QPN %u opcode=%u "
-                     "remote_addr=0x%lx rkey=0x%x",
-                     qpn, pvrdma_opcode, (unsigned long)remote_addr, rkey);
-
-    if (!priv) {
-        rdma_error_report("TCP: Invalid backend");
-        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
-                                   0, 0, wc_opcode, ctx);
-        return;
-    }
-    local = tcp_local_node(priv);
-
-    qemu_mutex_lock(&priv->lock);
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
-    if (!tqp) {
-        qemu_mutex_unlock(&priv->lock);
-        rdma_error_report("TCP: QP %u not found", qpn);
-        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
-                                   0, qpn, wc_opcode, ctx);
-        return;
-    }
-
-    /*
-     * UD names its destination per work request rather than at RTR, so the
-     * address to route on is this send's dgid and not anything stored on
-     * the QP.  Connected types resolved their node once, at RTR.
-     */
-    uint32_t dst_node = tqp->remote_node_id;
-
-    if (qp_type == IBV_QPT_UD) {
-        dst_node = tcp_resolve_node_from_gid(priv, dgid);
-    }
-
-    if (dst_node == UINT32_MAX) {
-        char gidbuf[TCP_GID_STR_LEN];
-
-        qemu_mutex_unlock(&priv->lock);
-        rdma_error_report("TCP: QP %u send dropped: no mesh node owns "
-                          "destination GID %s",
-                          qpn, dgid ? tcp_gid_str(dgid->raw, gidbuf) : "none");
-        rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND,
-                                   0, qpn, wc_opcode, ctx);
-        return;
-    }
-
-    /*
-     * The destination QP is per request for the same reason the node is:
-     * UD carries it on the send, and its RTR had no destination to record.
-     * Request-local rather than written back to the QP, because consecutive
-     * UD sends on one QP legitimately address different peers.
-     */
-    uint32_t dst_qpn = (qp_type == IBV_QPT_UD) ? dqpn : tqp->remote_qpn;
-
-    wr = g_new0(TcpWR, 1);
-    wr->wr_id = (uint64_t)(uintptr_t)ctx;
-    wr->num_sge = 0;
-    wr->wc_opcode = wc_opcode;
-
-    /*
-     * Fail the request rather than queue a partially mapped one: the copy
-     * loops below pack the entries they can read contiguously, so a missing
-     * mapping silently shifts every later entry's data to the wrong offset.
-     * Checked before the queue push so the unwind is a plain free -- nothing
-     * downstream has seen this request yet.
-     */
-    if (!tcp_wr_map_sge(tqp, wr, sge, num_sge)) {
-        qemu_mutex_unlock(&priv->lock);
-        rdma_error_report("TCP: Failed to map SGEs for send on QP %u", qpn);
-        tcp_wr_unmap_sge(tqp, wr);
-        g_free(wr);
-        rdma_backend_complete_work(IBV_WC_LOC_PROT_ERR, VENDOR_ERR_INVLKEY, 0,
-                                   qpn, wc_opcode, ctx);
-        return;
-    }
-
-    g_queue_push_tail(tqp->send_queue, wr);
-    seq = atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed);
-    qemu_mutex_unlock(&priv->lock);
-
-    if (dst_node == local) {
-        /*
-         * Accumulate in 64 bits: 32 SGEs of up to UINT32_MAX bytes each would
-         * wrap a uint32_t sum, which would then pass the bounds check below
-         * while the per-SGE copies still write the full unwrapped length.
-         * The `off` cursor over the same lengths is widened to match.
-         */
-        uint64_t total_len = 0;
-        for (uint32_t i = 0; i < num_sge && i < 32; i++)
-            total_len += wr->sge[i].length;
-
-        bool is_write = (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
-                         pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM);
-        /*
-         * Whether the target region rejected the write. The completion below
-         * is shared with the non-write opcodes, which never touch a remote
-         * region and so can never set this.
-         */
-        bool write_failed = false;
-
-        if (is_write) {
-            RdmaRmMR *target_mr =
-                rdma_rm_get_mr(priv->backend_dev->rdma_dev_res, rkey);
-            if (!target_mr) {
-                rdma_error_report("TCP: Local loopback RDMA_WRITE "
-                                  "invalid rkey 0x%x",
-                                  rkey);
-                write_failed = true;
-            } else if (tcp_mr_range_ok(target_mr, remote_addr, total_len)) {
-                char *dst =
-                    (char *)target_mr->virt + (remote_addr - target_mr->start);
-                /* Sums a subset of the lengths in total_len, so it is bounded
-                 * by it and stays inside the region the check above cleared. */
-                uint64_t off = 0;
-                for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-                    if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
-                        memcpy(dst + off, wr->sge[i].host_addr,
-                               wr->sge[i].length);
-                        off += wr->sge[i].length;
-                    }
-                }
-                if (priv->backend_dev->dev)
-                    pci_dma_sync(priv->backend_dev->dev, remote_addr,
-                                 total_len);
-
-                rdma_info_report("TCP: Local loopback RDMA_WRITE "
-                                 "%lu bytes to rkey=0x%x addr=0x%lx",
-                                 (unsigned long)total_len, rkey,
-                                 (unsigned long)remote_addr);
-            } else {
-                rdma_error_report("TCP: Local loopback RDMA_WRITE "
-                                  "MR bounds error rkey=0x%x "
-                                  "addr=0x%lx len=%lu",
-                                  rkey, (unsigned long)remote_addr,
-                                  (unsigned long)total_len);
-                write_failed = true;
-            }
-        }
-
-        /*
-         * Only a copy that happened counts. Updating these unconditionally
-         * would bill the guest for bytes the bounds check just refused to
-         * write, on the one path where the refusal is otherwise invisible.
-         */
-        if (!write_failed)
-            tcp_update_dev_stats(priv, total_len, wc_opcode);
-
-        /*
-         * Under priv->lock, as at the two receive-thread sites that pop this
-         * same queue: a COMPLETION or READ_RESP for this QP arriving on any
-         * connection pops it too, and an unsynchronised pop races those. The
-         * completion is posted after the unlock, also matching those sites.
-         */
-        qemu_mutex_lock(&priv->lock);
-        TcpWR *send_wr = g_queue_pop_head(tqp->send_queue);
-        bool have_wr = (send_wr != NULL);
-        uint64_t wr_id = 0;
-        if (send_wr) {
-            wr_id = send_wr->wr_id;
-            /* Releases any pci_dma_map() mappings taken for DMA-MR entries;
-             * this path used to free the request without them. */
-            tcp_wr_unmap_sge(tqp, send_wr);
-            g_free(send_wr);
-        }
-        qemu_mutex_unlock(&priv->lock);
-
-        if (have_wr) {
-            /*
-             * A rejected write copied nothing, so completing it as a success
-             * would tell the guest its data had landed and leave it reading
-             * whatever the target region held before. The remote path already
-             * fails such a request through `fail`; this is the same verdict
-             * for the same fault, reached without the wire.
-             */
-            rdma_backend_complete_work(
-                write_failed ? IBV_WC_REM_ACCESS_ERR : IBV_WC_SUCCESS,
-                write_failed ? VENDOR_ERR_FAIL_BACKEND : 0, 0, qpn, wc_opcode,
-                (void *)wr_id);
-        }
-        rdma_info_report("TCP: Local loopback %s for QP %u",
-                         write_failed ? "write rejected" : "complete", qpn);
-        return;
-    }
-
-    conn = tcp_route_to_node(priv, dst_node);
-    if (!conn) {
-        rdma_error_report("TCP: No connection to node %u", dst_node);
-        goto fail;
-    }
-
-    /*
-     * Accumulate in 64 bits for the same reason as the loopback path above.
-     * Here the sum also sizes the g_malloc() buffers below, whose fill loops
-     * write the full unwrapped per-SGE lengths, so a wrapped sum would
-     * undersize the allocation rather than merely mis-report it.
-     *
-     * Widening alone is not enough: the branches below narrow the sum to
-     * 32-bit wire fields, so an oversized total has to be rejected outright
-     * rather than truncated.
-     *
-     * What the limit is depends on how the branch frames the data, because
-     * the peer's tcp_recv_message() enforces its ceiling per message rather
-     * than per send. Checking one bound against the sum would be wrong for
-     * the branch that never puts the sum on the wire as a single message, so
-     * each branch is checked against the size it actually sends. The checks
-     * sit here, above conn->lock, because the reject path unwinds through
-     * `fail`, which must not run with that lock held.
-     */
-    uint64_t total_len = 0;
-    for (uint32_t i = 0; i < num_sge && i < 32; i++)
-        total_len += wr->sge[i].length;
-
-    bool is_write = (pvrdma_opcode == PVRDMA_WR_RDMA_WRITE ||
-                     pvrdma_opcode == PVRDMA_WR_RDMA_WRITE_WITH_IMM);
-    bool is_read = (pvrdma_opcode == PVRDMA_WR_RDMA_READ ||
-                    pvrdma_opcode == PVRDMA_WR_RDMA_READ_WITH_INV);
-
-    if (is_write) {
-        /* One message: TcpRdmaOpHeader followed by the whole sum. */
-        if (total_len > TCP_MAX_SEND_TOTAL_LEN) {
-            rdma_error_report("TCP: RDMA write of %lu bytes over QP %u exceeds "
-                              "the %u-byte limit for a single message",
-                              (unsigned long)total_len, qpn,
-                              TCP_MAX_SEND_TOTAL_LEN);
-            goto fail;
-        }
-    } else if (is_read) {
-        /*
-         * The request is header-only; the sum is the size the peer will send
-         * back, as a bare payload with no header of its own. So the ceiling
-         * applies to it whole, not less a header as on the write path.
-         */
-        if (total_len > TCP_MAX_PAYLOAD_LEN) {
-            rdma_error_report("TCP: RDMA read of %lu bytes over QP %u exceeds "
-                              "the %u-byte limit for the peer's response",
-                              (unsigned long)total_len, qpn,
-                              TCP_MAX_PAYLOAD_LEN);
-            goto fail;
-        }
-    } else if (total_len > TCP_COALESCE_THRESHOLD) {
-        /*
-         * Large send: one message per SGE, so the sum is never framed as a
-         * single message and bounding it would reject sends the wire format
-         * has no trouble with. Each SGE is its own message, and the leading
-         * metadata message is sizeof(*wr), asserted against the ceiling at
-         * the TcpWR definition.
-         */
-        for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-            if (wr->sge[i].length > TCP_MAX_PAYLOAD_LEN) {
-                rdma_error_report("TCP: SGE %u of %u bytes over QP %u exceeds "
-                                  "the %u-byte limit for a single message",
-                                  i, wr->sge[i].length, qpn,
-                                  TCP_MAX_PAYLOAD_LEN);
-                goto fail;
-            }
-        }
-    }
-    /*
-     * The remaining case is the coalesced send, whose branch condition caps
-     * the sum at TCP_COALESCE_THRESHOLD; sizeof(*wr) on top of that is
-     * asserted to fit the ceiling at the TcpWR definition.
-     */
-
-    qemu_mutex_lock(&conn->lock);
-    if (conn->sockfd >= 0) {
-        if (is_write) {
-            /*
-             * RDMA Write: send header + data in one
-             * message.  Receiver writes directly to
-             * the MR identified by rkey.
-             */
-            /* Bounded by the is_write check above, which reserves room for
-             * exactly this header, so the sum lands at or under the ceiling
-             * the peer enforces and the narrowing to the 32-bit wire fields
-             * is safe. */
-            uint32_t payload_sz =
-                (uint32_t)(sizeof(TcpRdmaOpHeader) + total_len);
-            uint8_t *buf = g_malloc(payload_sz);
-            TcpRdmaOpHeader *oh = (TcpRdmaOpHeader *)buf;
-            oh->remote_addr = remote_addr;
-            oh->rkey = rkey;
-            oh->data_len = (uint32_t)total_len;
-
-            uint32_t off = sizeof(TcpRdmaOpHeader);
-            for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-                if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
-                    memcpy(buf + off, wr->sge[i].host_addr, wr->sge[i].length);
-                    off += wr->sge[i].length;
-                }
-            }
-
-            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_RDMA_WRITE, buf,
-                                   payload_sz, seq, local, dst_node, qpn,
-                                   dst_qpn);
-            g_free(buf);
-            if (ret < 0)
-                rdma_error_report("TCP: RDMA WRITE send failed");
-        } else if (is_read) {
-            /*
-             * RDMA Read: send request header only.
-             * Peer reads from its MR and sends data
-             * back in TCP_MSG_RDMA_READ_RESP.
-             */
-            TcpRdmaOpHeader oh;
-            oh.remote_addr = remote_addr;
-            oh.rkey = rkey;
-            oh.data_len = (uint32_t)total_len;
-
-            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_RDMA_READ_REQ,
-                                   &oh, sizeof(oh), seq, local, dst_node, qpn,
-                                   dst_qpn);
-            if (ret < 0)
-                rdma_error_report("TCP: RDMA READ REQ send failed");
-        } else if (total_len <= TCP_COALESCE_THRESHOLD) {
-            /*
-             * Small message: coalesce WR metadata and
-             * SGE data into one message to avoid
-             * per-SGE syscall overhead.
-             */
-            /* Bounded by TCP_COALESCE_THRESHOLD in the branch condition. */
-            uint32_t payload_sz = (uint32_t)(sizeof(*wr) + total_len);
-            uint8_t *buf = g_malloc(payload_sz);
-            memcpy(buf, wr, sizeof(*wr));
-
-            uint32_t off = sizeof(*wr);
-            for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-                if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
-                    memcpy(buf + off, wr->sge[i].host_addr, wr->sge[i].length);
-                    off += wr->sge[i].length;
-                }
-            }
-
-            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_SEND, buf,
-                                   payload_sz, seq, local, dst_node, qpn,
-                                   dst_qpn);
-            g_free(buf);
-            if (ret < 0)
-                rdma_error_report("TCP: POST_SEND failed to "
-                                  "node %u",
-                                  dst_node);
-        } else {
-            /*
-             * Large message: send WR header and each
-             * SGE separately to avoid copying multi-MB
-             * payloads through a temporary buffer.
-             */
-            ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_SEND, wr,
-                                   sizeof(*wr), seq, local, dst_node, qpn,
-                                   dst_qpn);
-            if (ret < 0) {
-                rdma_error_report("TCP: POST_SEND header failed "
-                                  "to node %u",
-                                  dst_node);
-            } else {
-                for (uint32_t i = 0; i < num_sge && i < 32; i++) {
-                    if (wr->sge[i].host_addr && wr->sge[i].length > 0) {
-                        ret = tcp_send_message(priv, conn->sockfd, TCP_MSG_DATA,
-                                               wr->sge[i].host_addr,
-                                               wr->sge[i].length, seq, local,
-                                               dst_node, qpn, dst_qpn);
-                        if (ret < 0) {
-                            rdma_error_report("TCP: DATA send "
-                                              "failed");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        ret = -1;
-    }
-    qemu_mutex_unlock(&conn->lock);
-
-    if (ret < 0) {
-        goto fail;
-    }
-
-    tcp_connection_unref(conn);
-    rdma_info_report("TCP: Posted send QP %u -> node %u, "
-                     "%u SGEs, opcode=%u",
-                     qpn, dst_node, num_sge, pvrdma_opcode);
-    return;
-
-fail:
-    tcp_connection_unref(conn);
-    qemu_mutex_lock(&priv->lock);
-    g_queue_remove(tqp->send_queue, wr);
-    qemu_mutex_unlock(&priv->lock);
-    tcp_wr_unmap_sge(tqp, wr);
-    g_free(wr);
-    rdma_backend_complete_work(IBV_WC_GENERAL_ERR, VENDOR_ERR_FAIL_BACKEND, 0,
-                               qpn, wc_opcode, ctx);
-}
-
-static void tcp_post_recv(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
-                          uint8_t qp_type, struct ibv_sge *sge,
-                          uint32_t num_sge, void *ctx)
-{
-    TcpBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
-    TcpQP *tqp;
-    TcpWR *wr;
-    TcpConnection *conn;
-    uint32_t seq = 0;
-
-    rdma_info_report("TCP: >>> post_recv CALLED for QPN %u", qpn);
-
-    if (!priv) {
-        return;
-    }
-
-    qemu_mutex_lock(&priv->lock);
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(qpn));
-    if (!tqp) {
-        qemu_mutex_unlock(&priv->lock);
-        return;
-    }
-
-    uint32_t dst_node = tqp->remote_node_id;
-
-    wr = g_new0(TcpWR, 1);
-    wr->wr_id = (uint64_t)(uintptr_t)ctx;
-    wr->num_sge = 0;
-
-    /*
-     * As on the send path, a partially mapped request would scatter incoming
-     * data to the wrong offsets. Refuse it instead of posting a buffer that
-     * cannot be filled correctly.
-     */
-    if (!tcp_wr_map_sge(tqp, wr, sge, num_sge)) {
-        qemu_mutex_unlock(&priv->lock);
-        rdma_error_report("TCP: Failed to map SGEs for recv on QP %u", qpn);
-        tcp_wr_unmap_sge(tqp, wr);
-        g_free(wr);
-        rdma_backend_complete_work(IBV_WC_LOC_PROT_ERR, VENDOR_ERR_INVLKEY, 0,
-                                   qpn, IBV_WC_RECV, ctx);
-        return;
-    }
-
-    /* Check if there's pending data */
-    TcpPendingData *pending = g_queue_pop_head(tqp->pending_data);
-    if (pending) {
-        qemu_mutex_unlock(&priv->lock);
-
-        rdma_info_report("TCP: Processing buffered data (%u bytes) "
-                         "for new recv WR",
-                         pending->length);
-
-        uint32_t bytes_copied = 0;
-        for (uint32_t i = 0; i < num_sge && bytes_copied < pending->length;
-             i++) {
-            uint32_t to_copy = sge[i].length;
-            if (bytes_copied + to_copy > pending->length)
-                to_copy = pending->length - bytes_copied;
-            void *host_buf = wr->sge[i].host_addr;
-            if (host_buf && to_copy > 0) {
-                memcpy(host_buf, (char *)pending->data + bytes_copied, to_copy);
-                bytes_copied += to_copy;
-            }
-        }
-
-        tcp_update_stats(priv, bytes_copied, IBV_WC_RECV);
-        rdma_backend_complete_work(IBV_WC_SUCCESS, 0, bytes_copied, qpn,
-                                   IBV_WC_RECV, ctx);
-
-        tcp_wr_unmap_sge(tqp, wr);
-
-        /* On the connection the data came on; see TcpPendingData */
-        TcpConnection *src_conn = pending->conn;
-        if (atomic_load(&src_conn->is_connected)) {
-            qemu_mutex_lock(&src_conn->lock);
-            if (src_conn->sockfd >= 0) {
-                seq = atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                memory_order_relaxed);
-                tcp_send_message(priv, src_conn->sockfd, TCP_MSG_COMPLETION,
-                                 NULL, 0, seq, tcp_local_node(priv),
-                                 pending->src_node_id, qpn, pending->src_qpn);
-            }
-            qemu_mutex_unlock(&src_conn->lock);
-        }
-
-        tcp_pending_free(pending);
-        g_free(wr);
-        return;
-    }
-
-    /* No pending data - queue the WR normally */
-    g_queue_push_tail(tqp->recv_queue, wr);
-    seq = atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed);
-    qemu_mutex_unlock(&priv->lock);
-
-    /* Get connection */
-    conn = tcp_connection_lookup(priv, dst_node);
-    if (!conn || !atomic_load(&conn->is_connected)) {
-        tcp_connection_unref(conn);
-        return;
-    }
-
-    /* Send POST_RECV message over TCP */
-    qemu_mutex_lock(&conn->lock);
-    if (conn->sockfd >= 0) {
-        tcp_send_message(priv, conn->sockfd, TCP_MSG_POST_RECV, wr, sizeof(*wr),
-                         seq, tcp_local_node(priv), dst_node, qpn,
-                         tqp->remote_qpn);
-    }
-    qemu_mutex_unlock(&conn->lock);
-    tcp_connection_unref(conn);
-
-    rdma_info_report("TCP: Posted recv to QP %u, %u SGEs", qpn, num_sge);
 }
 
 /*
@@ -6331,7 +4787,6 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
 
     .create_cq = tcp_create_cq,
     .destroy_cq = tcp_destroy_cq,
-    .poll_cq = tcp_poll_cq,
 
     .create_qp = tcp_create_qp,
     .destroy_qp = tcp_destroy_qp,
@@ -6341,10 +4796,6 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .qp_state_rtr = tcp_qp_state_rtr,
     .qp_state_rts = tcp_qp_state_rts,
     .query_qp = tcp_query_qp,
-    .query_remote_conn_info = tcp_query_remote_conn_info,
-
-    .post_send = tcp_post_send,
-    .post_recv = tcp_post_recv,
 
     .add_gid = tcp_add_gid,
     .del_gid = tcp_del_gid,

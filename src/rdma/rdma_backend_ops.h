@@ -58,6 +58,7 @@ struct RdmaBackendOps {
     /* Completion Queue operations */
     int (*create_cq)(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq, int cqe);
     void (*destroy_cq)(RdmaBackendCQ *cq);
+    /* Unused, like the data path operations below */
     void (*poll_cq)(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq);
 
     /* Queue Pair operations */
@@ -80,10 +81,14 @@ struct RdmaBackendOps {
                         uint32_t qkey, bool qkey_set);
     int (*query_qp)(RdmaBackendQP *qp, struct ibv_qp_attr *attr, int attr_mask,
                     struct ibv_qp_init_attr *init_attr);
-    void (*query_remote_conn_info)(RdmaBackendQP *qp, uint64_t *remote_addr,
-                                   uint32_t *rkey);
 
-    /* Data path operations */
+    /*
+     * Data path operations.  No backend has these, or poll_cq or
+     * post_srq_recv: the ionic data path moves the data itself, and nothing
+     * calls rdma_backend_post_send(), rdma_backend_post_recv(),
+     * rdma_backend_post_srq_recv() or rdma_backend_poll_cq().  They stay in
+     * the table because the vendored rdma_backend.c still refers to them.
+     */
     void (*post_send)(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                       uint8_t qp_type, struct ibv_sge *sge, uint32_t num_sge,
                       uint8_t sgid_idx, union ibv_gid *sgid,
@@ -107,6 +112,7 @@ struct RdmaBackendOps {
     int (*query_srq)(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr);
     int (*modify_srq)(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
                       int srq_attr_mask);
+    /* Unused, like the data path operations above */
     void (*post_srq_recv)(RdmaBackendSRQ *srq, struct ibv_sge *sge,
                           uint32_t num_sge, void *ctx);
 };

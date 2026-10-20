@@ -73,47 +73,6 @@ void qemu_thread_join(QemuThread *thread)
 {
     (void)thread;
 }
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dev;
-    (void)addr;
-    (void)len;
-    (void)dir;
-    return NULL;
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)buffer;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-}
-int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
-{
-    (void)dev;
-    (void)guest_addr;
-    (void)len;
-    return 0;
-}
-void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
-                                uint32_t byte_len, uint32_t qp_num,
-                                enum ibv_wc_opcode opcode, void *ctx)
-{
-    (void)status;
-    (void)vendor_err;
-    (void)byte_len;
-    (void)qp_num;
-    (void)opcode;
-    (void)ctx;
-}
-RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
-{
-    (void)dev_res;
-    (void)mr_handle;
-    return NULL;
-}
 
 /* ---- Test helpers ------------------------------------------------------ */
 
@@ -382,9 +341,8 @@ static void test_gid_formatting(void)
  *
  * UD names its peer per work request, so the INIT->RTR transition carries
  * a zero GID. Requiring one there rejected every ordinary UD QP with -EIO
- * once the resolver stopped guessing. remote_node_id must stay UINT32_MAX
- * rather than the default 0, or a send that misses the per-send lookup
- * silently goes to the manager.
+ * once the resolver stopped guessing. A connected QP must still name a GID
+ * some node owns.
  */
 static void test_ud_rtr_needs_no_destination(void)
 {
@@ -393,7 +351,6 @@ static void test_ud_rtr_needs_no_destination(void)
     RdmaBackendQP bqp;
     union ibv_gid zero, known;
     uint8_t raw[16];
-    TcpQP *tqp;
     int rc;
 
     printf("  UD reaches RTR without a destination GID\n");
@@ -404,25 +361,14 @@ static void test_ud_rtr_needs_no_destination(void)
     dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     bqp.ibqp = (struct ibv_qp *)(uintptr_t)7u;
 
-    qemu_mutex_init(&priv->lock);
-    priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      (GDestroyNotify)g_free);
-    tqp = g_new0(TcpQP, 1);
-    tqp->qpn = 7;
-    tqp->remote_node_id = 0; /* the default tcp_create_qp() leaves */
-    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(7u), tqp);
-
     gid_v4(raw, 11);
     tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16]) & raw, 1);
     memset(&zero, 0, sizeof(zero));
     memcpy(known.raw, raw, 16);
 
-    /* UD with no destination: accepted, and left unrouted. */
+    /* UD with no destination: accepted. */
     rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99, 0, 0, false);
     CHECK(rc == 0, "UD RTR rejected with rc=%d", rc);
-    CHECK(tqp->remote_node_id == UINT32_MAX,
-          "UD QP left routed to node %u; a send would go there silently",
-          tqp->remote_node_id);
 
     /* A connected QP still must resolve, and still must fail when it cannot. */
     rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99, 0, 0, false);
@@ -430,12 +376,7 @@ static void test_ud_rtr_needs_no_destination(void)
 
     rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known, 99, 0, 0, false);
     CHECK(rc == 0, "RC RTR rejected a resolvable GID (rc=%d)", rc);
-    CHECK(tqp->remote_node_id == 2, "RC QP routed to node %u, expected 2",
-          tqp->remote_node_id);
 
-    g_hash_table_destroy(priv->qps);
-    priv->qps = NULL;
-    qemu_mutex_destroy(&priv->lock);
     priv_free(priv);
 }
 

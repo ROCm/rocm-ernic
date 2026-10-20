@@ -1,5 +1,5 @@
 /*
- * Shared completion context for PVRDMA send path and loopback backend.
+ * Completion context for the vendored PVRDMA send path (pvrdma_qp_ops.c).
  *
  * Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
  *

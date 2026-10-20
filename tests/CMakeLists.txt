@@ -253,30 +253,6 @@ add_executable(test_s3_tcp
 target_include_directories(test_s3_tcp PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 
-# Loopback SGE-copy test. It #includes the loopback translation unit to
-# reach its static helpers and stubs the DMA layer with an identity
-# mapping, so no RDMA subsystem link is needed.
-add_executable(test_loopback_sge_copy test_loopback_sge_copy.c)
-target_include_directories(test_loopback_sge_copy PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-)
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
-target_include_directories(test_loopback_sge_copy SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_loopback_sge_copy PRIVATE
-    _GNU_SOURCE)
-target_link_directories(test_loopback_sge_copy PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_loopback_sge_copy PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES})
-
 # ionic MSI-X mask/pending test. It #includes the ionic emulator translation
 # unit to reach the per-vector interrupt state and stubs vfu_irq_trigger()
 # with a per-vector counter, so no vfio-user link or live context is needed.
@@ -458,33 +434,6 @@ target_link_directories(test_tcp_gid_resolve PRIVATE
 target_link_libraries(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP memory-region bounds test. Like the mesh-topology test it #includes the
-# TCP backend translation unit to reach its static helpers and stubs the
-# backend's externals; the wire-driven cases run the real receive thread over
-# a socketpair.
-add_executable(test_tcp_mr_bounds test_tcp_mr_bounds.c)
-target_include_directories(test_tcp_mr_bounds PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/shared
-)
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
-target_include_directories(test_tcp_mr_bounds SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${VFIO_USER_INCLUDE_DIRS}
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_tcp_mr_bounds PRIVATE
-    _GNU_SOURCE)
-target_link_directories(test_tcp_mr_bounds PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_tcp_mr_bounds PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
-
 # TCP thread stop test. It #includes the TCP backend translation unit and runs
 # the real accept, health-check and receive threads on loopback sockets and
 # socketpairs, with the thread entry points backed by pthreads, so a stop that
@@ -658,7 +607,6 @@ set(ERNIC_TEST_TARGETS
     test_s3_http
     test_s3_target
     test_s3_tcp
-    test_loopback_sge_copy
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_query_qp
@@ -668,7 +616,6 @@ set(ERNIC_TEST_TARGETS
     test_ionic_rq_wrap
     test_tcp_mesh_topology
     test_tcp_gid_resolve
-    test_tcp_mr_bounds
     ernic-test-tcp-thread-stop
     test_rdma_res_tbl
     test_qemu_stubs
@@ -799,13 +746,6 @@ add_test(
 )
 set_tests_properties(s3-tcp-unit PROPERTIES TIMEOUT 60)
 
-# Loopback SGE-copy boundary-walking unit test
-add_test(
-    NAME loopback-sge-copy-unit
-    COMMAND $<TARGET_FILE:test_loopback_sge_copy>
-)
-set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
-
 # ionic MSI-X mask/pending unit test: asserts an assertion raised on a masked
 # vector is latched and replayed on unmask rather than dropped.
 add_test(
@@ -890,15 +830,6 @@ add_test(
     COMMAND $<TARGET_FILE:test_tcp_gid_resolve>
 )
 set_tests_properties(tcp-gid-resolve-unit PROPERTIES TIMEOUT 30)
-
-# TCP memory-region bounds unit test: asserts that remote addresses whose
-# addr+len wraps 64 bits are rejected rather than resolving to a host pointer
-# below the registered region.
-add_test(
-    NAME tcp-mr-bounds-unit
-    COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
-)
-set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # TCP thread stop unit test: asserts stopping the accept thread returns while
 # it is blocked in accept(), stopping the health-check thread returns without

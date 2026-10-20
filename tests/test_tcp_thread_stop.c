@@ -85,11 +85,10 @@
  * isn't retried in a tight loop.
  *
  * The node a message's header names as its sender is whatever the sender
- * wrote.  The sender rows name another node in a heartbeat and in data-path
- * requests, and check that the heartbeat is credited, and the answer sent,
- * by connection instead, and that data that waits for a receive is completed
- * on the connection it came on.  They also check that a dead node that
- * answers a heartbeat again is reported alive to the rest of the mesh.
+ * wrote.  The sender rows name another node in a heartbeat, and check that
+ * the heartbeat is credited by connection instead.  They also check that a
+ * dead node that answers a heartbeat again is reported alive to the rest of
+ * the mesh, and that the retired data-path messages are ignored.
  *
  * A connection is reference counted.  A thread that looked one up used to
  * get a bare pointer, and the health check's reconnect freed the old
@@ -153,17 +152,6 @@
 
 /* ---- Stubs ------------------------------------------------------------- */
 
-/* The one memory region there is, while a row sets it; see the sender rows */
-static _Atomic(RdmaRmMR *) g_mr;
-
-RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
-{
-    RdmaRmMR *mr = atomic_load(&g_mr);
-
-    (void)dev_res;
-    return mr && mr->rkey == mr_handle ? mr : NULL;
-}
-
 static atomic_int g_errors; /* error_report() calls */
 
 void error_report(const char *fmt, ...)
@@ -178,83 +166,6 @@ void warn_report(const char *fmt, ...)
 void info_report(const char *fmt, ...)
 {
     (void)fmt;
-}
-
-/*
- * DMA mappings, which only a work request through a DMA memory region makes
- * (see the sender rows): each pci_dma_map() hands out the next slot, and
- * pci_dma_unmap() counts the unmaps of each.  The rows map only from the
- * test's own thread, but a receive thread may unmap.
- */
-#define DMA_SLOTS    4
-#define DMA_SLOT_LEN 64u
-
-static uint8_t g_dma_mem[DMA_SLOTS][DMA_SLOT_LEN];
-static atomic_int g_dma_maps;
-static atomic_int g_dma_unmaps[DMA_SLOTS];
-static atomic_int g_dma_stray_unmaps; /* of an address that isn't a slot */
-
-static void dma_reset(void)
-{
-    atomic_store(&g_dma_maps, 0);
-    for (int i = 0; i < DMA_SLOTS; i++)
-        atomic_store(&g_dma_unmaps[i], 0);
-    atomic_store(&g_dma_stray_unmaps, 0);
-}
-
-/* Whether every mapping handed out has been unmapped once, and only once. */
-static bool dma_unmapped_once(void)
-{
-    for (int i = 0; i < atomic_load(&g_dma_maps); i++)
-        if (atomic_load(&g_dma_unmaps[i]) != 1)
-            return false;
-    return atomic_load(&g_dma_stray_unmaps) == 0;
-}
-
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    int slot = atomic_load(&g_dma_maps);
-
-    (void)dev;
-    (void)addr;
-    (void)dir;
-    if (slot >= DMA_SLOTS || *len > DMA_SLOT_LEN)
-        return NULL;
-    atomic_store(&g_dma_maps, slot + 1);
-    return g_dma_mem[slot];
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-    for (int i = 0; i < DMA_SLOTS; i++) {
-        if (buffer == g_dma_mem[i]) {
-            atomic_fetch_add(&g_dma_unmaps[i], 1);
-            return;
-        }
-    }
-    atomic_fetch_add(&g_dma_stray_unmaps, 1);
-}
-int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
-{
-    (void)dev;
-    (void)guest_addr;
-    (void)len;
-    return 0;
-}
-void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
-                                uint32_t byte_len, uint32_t qp_num,
-                                enum ibv_wc_opcode opcode, void *ctx)
-{
-    (void)status;
-    (void)vendor_err;
-    (void)byte_len;
-    (void)qp_num;
-    (void)opcode;
-    (void)ctx;
 }
 
 /*
@@ -5010,29 +4921,18 @@ static int run_reap_case(const struct reap_case *c)
 /*
  * A message's header names the node that sent it, and the sender writes
  * that.  The manager used to credit a heartbeat to the node the header named,
- * so any registered worker could keep another, dead, node alive.  Every node
- * also sent its answer to a data-path request, a completion or the memory
- * asked for, to the node the request named, so a peer could have it
- * delivered to another node.  A heartbeat is now credited to the node whose
- * connection it came on, and an answer goes back on the connection the
- * request came on.
- *
- * Data that arrives before a receive is posted waits for one, and its
- * completion goes out when the receive is posted, from another thread.  That
- * one went to whichever connection the node the data named had by then.  It
- * now goes back on the connection the data came on, which the waiting data
- * holds a reference to: the pending rows check it reaches worker 1, and that
- * nothing is sent, and nothing is used after it is freed, if worker 1's
- * connection is retired while the data waits.  Teardown frees what is still
- * queued on a QP: the teardown rows leave data waiting, with worker 1's
- * connection in the table or retired, and check that teardown drops the
- * data's reference; and leave an RDMA write waiting for its completion and
- * a receive waiting for data, both mapped through a DMA memory region, and
- * check that teardown unmaps each mapping once.
+ * so any registered worker could keep another, dead, node alive.  A heartbeat
+ * is now credited to the node whose connection it came on.
  *
  * A node the manager had declared dead that answered a heartbeat again
  * stayed dead to the rest of the mesh until its topology next changed.  The
  * manager now reports it alive.
+ *
+ * The data-path messages the PVRDMA device used are retired.  Their handlers
+ * answered a request, a completion or the memory asked for, and kept data
+ * that came before a receive was posted until the QP was destroyed, which a
+ * peer could use to grow the node's memory without bound.  A retired message
+ * now gets no answer and nothing of it is kept.
  *
  * Each row starts a manager with tcp_init(), on a one-hour interval so the
  * health check leaves the nodes alone, and registers two workers over
@@ -5042,13 +4942,7 @@ static int run_reap_case(const struct reap_case *c)
 enum sender_scenario {
     SENDER_HEARTBEAT, /* worker 1's heartbeat names node 2, which is dead */
     SENDER_REVIVES,   /* node 2, declared dead, answers a heartbeat */
-    SENDER_WRITE,     /* worker 1's RDMA write names node 2 as its sender */
-    SENDER_READ,      /* worker 1's RDMA read names node 2 as its sender */
-    SENDER_PENDING,   /* worker 1's data, naming node 2, waits for a receive */
-    SENDER_PENDING_GONE,  /* and worker 1's connection is retired meanwhile */
-    SENDER_TEARDOWN_KEPT, /* data waits, never received, at teardown */
-    SENDER_TEARDOWN_RETIRED, /* and worker 1's connection is retired first */
-    SENDER_TEARDOWN_QUEUED,  /* a write and a receive still queued */
+    SENDER_RETIRED,   /* worker 1 sends the retired data-path messages */
 };
 
 struct sender_case {
@@ -5063,57 +4957,17 @@ static const struct sender_case sender_cases[] = {
      "credited to node 1; node 2 stays dead", SENDER_HEARTBEAT},
     {"positive", "node 2, declared dead, answers a heartbeat",
      "node 2 is alive again, and worker 1 is told so", SENDER_REVIVES},
-    {"negative", "worker 1 sends an RDMA write naming node 2 as its sender",
-     "the write lands, and the completion goes to worker 1, not worker 2",
-     SENDER_WRITE},
-    {"negative", "worker 1 asks to read memory, naming node 2 as its sender",
-     "the memory goes to worker 1, not worker 2", SENDER_READ},
     {"negative",
-     "worker 1 sends data naming node 2 as its sender, before a receive is "
-     "posted",
-     "once one is, the data lands and the completion goes to worker 1, not "
-     "worker 2",
-     SENDER_PENDING},
-    {"corner",
-     "worker 1 sends data before a receive is posted, and its connection is "
-     "retired before one is",
-     "the data lands, no completion is sent, and the connection is freed",
-     SENDER_PENDING_GONE},
-    {"corner",
-     "worker 1 sends data before a receive is posted, and none is before "
-     "teardown",
-     "teardown frees the data and drops its reference to worker 1's "
-     "connection, as well as the table's",
-     SENDER_TEARDOWN_KEPT},
-    {"corner",
-     "worker 1 sends data before a receive is posted, its connection is "
-     "retired, and no receive is posted before teardown",
-     "teardown frees the data and drops the connection's last reference but "
-     "the test's",
-     SENDER_TEARDOWN_RETIRED},
-    {"corner",
-     "an RDMA write waits for worker 1's completion, and a receive for data, "
-     "both mapped through a DMA memory region, at teardown",
-     "teardown unmaps each mapping once and frees both requests",
-     SENDER_TEARDOWN_QUEUED},
+     "worker 1 sends each retired data-path message, naming node 2 as its "
+     "sender",
+     "ignored: nothing is sent to either worker, and worker 1 is still "
+     "answered",
+     SENDER_RETIRED},
 };
 
-/* The memory region the RDMA rows write and read, at g_mr while they run */
-#define SENDER_MR_START UINT64_C(0x10000)
-#define SENDER_MR_RKEY  0x5eedu
-#define SENDER_LEN      8u
-#define SENDER_BYTE     0xab /* what the write writes */
-
-#define SENDER_QPN      12u    /* the QP the requests are addressed to */
-#define SENDER_DMA_KEY  0xd3au /* a DMA memory region's key */
-#define SENDER_DMA_ADDR UINT64_C(0x20000)
-
-static uint8_t g_sender_mem[SENDER_LEN];
-static RdmaRmMR g_sender_mr;
-static RdmaRmMR g_sender_dma_mr; /* starts at 0 with no length: DMA */
-static TcpCQ g_sender_cq;        /* the QP these rows add has to have one */
-/* A reference a teardown row keeps to worker 1's connection past tcp_fini() */
-static TcpConnection *g_sender_held;
+/* The payload each retired message carries */
+#define SENDER_LEN  8u
+#define SENDER_BYTE 0xab
 
 /* Set node id's liveness and the time of its last heartbeat. */
 static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
@@ -5144,37 +4998,6 @@ static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return node != NULL;
-}
-
-/*
- * Send an RDMA write of SENDER_LEN bytes of SENDER_BYTE to the region, or a
- * request to read SENDER_LEN bytes of it, naming node src as the sender.
- * The operation header is in host byte order, as the backend sends it.
- */
-static bool send_rdma(int fd, TcpMsgType type, uint32_t src)
-{
-    TcpMsgHeader hdr;
-    TcpRdmaOpHeader op;
-    uint8_t buf[sizeof(hdr) + sizeof(op) + SENDER_LEN];
-    size_t len =
-        type == TCP_MSG_RDMA_WRITE ? sizeof(buf) : sizeof(hdr) + sizeof(op);
-
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(type);
-    hdr.msg_len = htonl((uint32_t)(len - sizeof(hdr)));
-    hdr.seq = htonl(1);
-    hdr.src_node_id = htonl(src);
-    hdr.src_qpn = htonl(11);
-    hdr.dst_qpn = htonl(SENDER_QPN);
-    memset(&op, 0, sizeof(op));
-    op.remote_addr = SENDER_MR_START;
-    op.rkey = SENDER_MR_RKEY;
-    op.data_len = SENDER_LEN;
-    memset(buf, SENDER_BYTE, sizeof(buf));
-    memcpy(buf, &hdr, sizeof(hdr));
-    memcpy(buf + sizeof(hdr), &op, sizeof(op));
-    return send(fd, buf, len, 0) == (ssize_t)len;
 }
 
 /*
@@ -5242,66 +5065,90 @@ static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
     return NULL;
 }
 
-/* SENDER_WRITE and SENDER_READ */
-static const char *sender_rdma(int w1, int w2, enum sender_scenario scenario)
-{
-    bool is_write = scenario == SENDER_WRITE;
-    TcpMsgType answer = is_write ? TCP_MSG_COMPLETION : TCP_MSG_RDMA_READ_RESP;
-
-    if (!send_rdma(w1, is_write ? TCP_MSG_RDMA_WRITE : TCP_MSG_RDMA_READ_REQ,
-                   2))
-        return "could not send the request";
-    if (!wait_for_type(w1, answer, 2000))
-        return "the answer didn't come back to worker 1";
-    if (count_type(w2, answer) != 0)
-        return "the answer went to worker 2";
-    if (is_write) {
-        for (uint32_t i = 0; i < SENDER_LEN; i++)
-            if (g_sender_mem[i] != SENDER_BYTE)
-                return "the write didn't land";
-    }
-    return NULL;
-}
-
-/* Send SENDER_LEN bytes of SENDER_BYTE as data for SENDER_QPN from node src */
-static bool send_data(int fd, uint32_t src)
+/* Send SENDER_LEN bytes of SENDER_BYTE as a message of type from node src */
+static bool send_payload(int fd, TcpMsgType type, uint32_t src)
 {
     TcpMsgHeader hdr;
     uint8_t buf[sizeof(hdr) + SENDER_LEN];
 
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(TCP_MSG_DATA);
+    hdr.msg_type = htonl(type);
     hdr.msg_len = htonl(SENDER_LEN);
     hdr.seq = htonl(1);
     hdr.src_node_id = htonl(src);
     hdr.src_qpn = htonl(11);
-    hdr.dst_qpn = htonl(SENDER_QPN);
+    hdr.dst_qpn = htonl(12);
     memset(buf, SENDER_BYTE, sizeof(buf));
     memcpy(buf, &hdr, sizeof(hdr));
     return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
 }
 
 /*
- * Add SENDER_QPN to the manager's QPs, connected to node remote, as
- * tcp_create_qp() and an RTR would.
+ * Read messages from fd until one of type arrives, for up to timeout_ms.
+ * Returns how many others came first, or -1 if none of type came.
  */
-static void sender_qp_add(TcpBackendPrivate *priv, uint32_t remote)
+static int others_before(int fd, TcpMsgType type, int timeout_ms)
 {
-    TcpQP *tqp = g_new0(TcpQP, 1);
+    double end = now_s() + timeout_ms / 1000.0;
+    int others = 0;
 
-    tqp->qpn = SENDER_QPN;
-    tqp->backend_dev = priv->backend_dev;
-    tqp->remote_node_id = remote;
-    tqp->scq = &g_sender_cq;
-    tqp->rcq = &g_sender_cq;
-    tqp->send_queue = g_queue_new();
-    tqp->recv_queue = g_queue_new();
-    tqp->pending_data = g_queue_new();
-    qemu_mutex_init(&tqp->lock);
-    qemu_mutex_lock(&priv->lock);
-    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(SENDER_QPN), tqp);
-    qemu_mutex_unlock(&priv->lock);
+    while (now_s() < end) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int left = (int)((end - now_s()) * 1000.0);
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+
+        if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
+            continue;
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+            return -1;
+        g_free(payload);
+        if (hdr.msg_type == type)
+            return others;
+        others++;
+    }
+    return -1;
+}
+
+/*
+ * SENDER_RETIRED.  Worker 1's receive thread on the manager handles one
+ * message at a time, so once it has answered a heartbeat sent after the
+ * retired messages, anything it sent for them, to either worker, is already
+ * waiting.
+ */
+static const char *sender_retired(int w1, int w2)
+{
+    static const TcpMsgType retired[] = {
+        TCP_MSG_RESERVED_3,  TCP_MSG_RESERVED_4,  TCP_MSG_RESERVED_5,
+        TCP_MSG_RESERVED_6,  TCP_MSG_RESERVED_7,  TCP_MSG_RESERVED_8,
+        TCP_MSG_RESERVED_9,  TCP_MSG_RESERVED_10, TCP_MSG_RESERVED_11,
+        TCP_MSG_RESERVED_21, TCP_MSG_RESERVED_22, TCP_MSG_RESERVED_23,
+    };
+    struct pollfd pfd = {.fd = w2, .events = POLLIN};
+
+    /* Finish the registrations, and discard what they sent */
+    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+        return "a registration wasn't finished";
+    count_type(w1, TCP_MSG_HEARTBEAT_RESP);
+    count_type(w2, TCP_MSG_HEARTBEAT_RESP);
+
+    for (size_t i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
+        if (!send_payload(w1, retired[i], 2))
+            return "could not send a retired message";
+    if (!send_heartbeat(w1, 1))
+        return "could not send the heartbeat";
+
+    switch (others_before(w1, TCP_MSG_HEARTBEAT_RESP, 2000)) {
+    case -1:
+        return "the heartbeat after the retired messages wasn't answered";
+    case 0:
+        break;
+    default:
+        return "a retired message was answered";
+    }
+    return poll(&pfd, 1, 0) == 0 ? NULL
+                                 : "a retired message sent worker 2 something";
 }
 
 /*
@@ -5325,129 +5172,6 @@ static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
     return taken;
 }
 
-/* How many requests or buffers wait on each of SENDER_QPN's queues */
-static void sender_queued(TcpBackendPrivate *priv, guint *sends, guint *recvs,
-                          guint *pending)
-{
-    TcpQP *tqp;
-
-    qemu_mutex_lock(&priv->lock);
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(SENDER_QPN));
-    *sends = tqp ? g_queue_get_length(tqp->send_queue) : 0;
-    *recvs = tqp ? g_queue_get_length(tqp->recv_queue) : 0;
-    *pending = tqp ? g_queue_get_length(tqp->pending_data) : 0;
-    qemu_mutex_unlock(&priv->lock);
-}
-
-/*
- * Have worker 1's data, naming node 2 as its sender, wait for a receive on
- * SENDER_QPN.  The manager has finished with the data once it has answered a
- * heartbeat sent after it.
- */
-static const char *sender_buffer(TcpBackendPrivate *priv, int w1)
-{
-    guint sends, recvs, pending;
-
-    sender_qp_add(priv, 0);
-    if (!send_data(w1, 2))
-        return "could not send the data";
-    if (!worker_settled(w1, 1))
-        return "the data wasn't taken";
-    sender_queued(priv, &sends, &recvs, &pending);
-    return pending == 1 ? NULL : "the data isn't waiting for a receive";
-}
-
-/* SENDER_PENDING and SENDER_PENDING_GONE */
-static const char *sender_pending(TcpBackendPrivate *priv, int w1, int w2,
-                                  enum sender_scenario scenario)
-{
-    RdmaBackendQP qp;
-    struct ibv_sge sge;
-    const char *why = sender_buffer(priv, w1);
-
-    if (why)
-        return why;
-    if (scenario == SENDER_PENDING_GONE && !retire_node_conn(priv, 1))
-        return "worker 1's connection wasn't in the table";
-    count_type(w2, TCP_MSG_COMPLETION);
-
-    memset(&qp, 0, sizeof(qp));
-    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
-    memset(&sge, 0, sizeof(sge));
-    sge.addr = SENDER_MR_START;
-    sge.length = SENDER_LEN;
-    sge.lkey = SENDER_MR_RKEY;
-    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
-
-    for (uint32_t i = 0; i < SENDER_LEN; i++)
-        if (g_sender_mem[i] != SENDER_BYTE)
-            return "the data didn't land";
-    if (count_type(w2, TCP_MSG_COMPLETION) != 0)
-        return "the completion went to worker 2";
-    /* Sent before tcp_post_recv() returned, if at all */
-    if (scenario == SENDER_PENDING_GONE)
-        return count_type(w1, TCP_MSG_COMPLETION) == 0
-                   ? NULL
-                   : "a completion went out on a retired connection";
-    return wait_for_type(w1, TCP_MSG_COMPLETION, 2000)
-               ? NULL
-               : "the completion didn't come back to worker 1";
-}
-
-/*
- * SENDER_TEARDOWN_KEPT and SENDER_TEARDOWN_RETIRED.  The row keeps a
- * reference to worker 1's connection in g_sender_held, which must be the
- * only one left once tcp_fini() has freed the waiting data.
- */
-static const char *sender_teardown_pending(TcpBackendPrivate *priv, int w1,
-                                           enum sender_scenario scenario)
-{
-    const char *why = sender_buffer(priv, w1);
-
-    if (why)
-        return why;
-    g_sender_held = tcp_connection_lookup(priv, 1);
-    if (!g_sender_held)
-        return "worker 1 has no connection";
-    if (scenario == SENDER_TEARDOWN_RETIRED && !retire_node_conn(priv, 1))
-        return "worker 1's connection wasn't in the table";
-    return NULL;
-}
-
-/*
- * SENDER_TEARDOWN_QUEUED.  A receive with no data waiting stays queued, and
- * a request to worker 1, which never answers, waits on the send queue for
- * its completion.  Each maps its one entry through the DMA region.  With no
- * completion context the request's opcode is 0, PVRDMA_WR_RDMA_WRITE, so it
- * goes out as an RDMA write.
- */
-static const char *sender_teardown_queued(TcpBackendPrivate *priv, int w1)
-{
-    RdmaBackendQP qp;
-    struct ibv_sge sge;
-    guint sends, recvs, pending;
-
-    atomic_store(&g_mr, &g_sender_dma_mr);
-    sender_qp_add(priv, 1);
-    memset(&qp, 0, sizeof(qp));
-    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
-    memset(&sge, 0, sizeof(sge));
-    sge.addr = SENDER_DMA_ADDR;
-    sge.length = SENDER_LEN;
-    sge.lkey = SENDER_DMA_KEY;
-
-    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
-    tcp_post_send(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0,
-                  0, NULL);
-    if (!wait_for_type(w1, TCP_MSG_RDMA_WRITE, 2000))
-        return "the write didn't reach worker 1";
-    sender_queued(priv, &sends, &recvs, &pending);
-    if (sends != 1 || recvs != 1)
-        return "the write and the receive aren't both queued";
-    return atomic_load(&g_dma_maps) == 2 ? NULL
-                                         : "the requests weren't both mapped";
-}
-
 static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
                               enum sender_scenario scenario)
 {
@@ -5456,17 +5180,8 @@ static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
         return sender_heartbeat(priv, w1);
     case SENDER_REVIVES:
         return sender_revives(priv, w1, w2);
-    case SENDER_WRITE:
-    case SENDER_READ:
-        return sender_rdma(w1, w2, scenario);
-    case SENDER_PENDING:
-    case SENDER_PENDING_GONE:
-        return sender_pending(priv, w1, w2, scenario);
-    case SENDER_TEARDOWN_KEPT:
-    case SENDER_TEARDOWN_RETIRED:
-        return sender_teardown_pending(priv, w1, scenario);
-    case SENDER_TEARDOWN_QUEUED:
-        return sender_teardown_queued(priv, w1);
+    case SENDER_RETIRED:
+        return sender_retired(w1, w2);
     default:
         return "unknown scenario";
     }
@@ -5485,17 +5200,6 @@ static int run_sender_case(const struct sender_case *c)
     atomic_store(&g_creates, 0);
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
-    memset(g_sender_mem, 0, sizeof(g_sender_mem));
-    memset(&g_sender_mr, 0, sizeof(g_sender_mr));
-    g_sender_mr.virt = g_sender_mem;
-    g_sender_mr.start = SENDER_MR_START;
-    g_sender_mr.length = sizeof(g_sender_mem);
-    g_sender_mr.rkey = SENDER_MR_RKEY;
-    memset(&g_sender_dma_mr, 0, sizeof(g_sender_dma_mr));
-    g_sender_dma_mr.rkey = SENDER_DMA_KEY;
-    atomic_store(&g_mr, &g_sender_mr);
-    dma_reset();
-    g_sender_held = NULL;
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
     /* No backend threads exist yet, so nothing reads the environment */
@@ -5507,7 +5211,6 @@ static int run_sender_case(const struct sender_case *c)
         printf("FAIL sender %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
-        atomic_store(&g_mr, NULL);
         return 1;
     }
     priv = dev.backend_private;
@@ -5522,19 +5225,9 @@ static int run_sender_case(const struct sender_case *c)
 
     tcp_fini(&dev);
     alarm(0);
-    atomic_store(&g_mr, NULL);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
                  atomic_load(&g_exits) != atomic_load(&g_creates)))
         why = "a thread wasn't joined exactly once";
-    if (!why && !dma_unmapped_once())
-        why = "a DMA mapping wasn't unmapped exactly once";
-    if (g_sender_held) {
-        if (!why && atomic_load(&g_sender_held->refcount) != 1)
-            why = "teardown left a reference to worker 1's connection";
-        /* Frees it; LeakSanitizer reports it, and the data, otherwise */
-        tcp_connection_unref(g_sender_held);
-        g_sender_held = NULL;
-    }
 
     ok = !why;
     printf("%s sender %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
