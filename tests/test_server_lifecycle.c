@@ -5,10 +5,12 @@
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
  * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Five things are pinned here:
+ * status and the log.  Six things are pinned here:
  *
  *   - only the socket's owner, and the group --socket-group names, can
  *     connect to it, whatever the umask or a default ACL on its directory;
+ *   - at startup, the server removes a stale socket at its path, and leaves
+ *     anything else there alone and refuses to start;
  *   - a client that drops out during vfio-user negotiation no longer takes
  *     the server down: it logs the drop and waits for the next client;
  *   - a clean shutdown frees the ionic layer.  When the server itself is
@@ -58,6 +60,10 @@
 
 #define DROPPED_LINE  "client dropped during negotiation"
 #define SHUTDOWN_LINE "Shutdown complete"
+#define STALE_LINE    "Removed stale socket file"
+
+/* What a row leaves in a regular file at the socket's path. */
+#define KEEP_CONTENT "not a socket\n"
 
 /* ---- Helpers ----------------------------------------------------------- */
 
@@ -234,6 +240,46 @@ static int connect_unix(const char *path)
     return fd;
 }
 
+/* Leave a socket at @path that nothing listens on, as a server that didn't
+ * exit cleanly does.  False if it can't. */
+static bool make_stale_socket(const char *path)
+{
+    struct sockaddr_un addr;
+    size_t len = strlen(path);
+    bool ok;
+    int fd;
+
+    if (len >= sizeof(addr.sun_path))
+        return false;
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return false;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path, len + 1);
+    ok = bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+    close(fd);
+    return ok;
+}
+
+/* Create a regular file at @path holding @content.  False if it can't. */
+static bool write_file(const char *path, const char *content)
+{
+    size_t len = strlen(content);
+    /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
+    bool ok;
+
+    if (fd < 0)
+        return false;
+    ok = write(fd, content, len) == (ssize_t)len;
+    return close(fd) == 0 && ok;
+}
+
 /*
  * A listening TCP socket on an ephemeral port, on every address as the TCP
  * manager binds.  Its port is stored in *port.  Closing it frees the port
@@ -379,6 +425,19 @@ enum sock_group {
     SG_NO_CHANGE,   /* (gid_t)-1, which tells chown() to change nothing */
 };
 
+/* What's at the socket's path, or on the way to it, as the server starts. */
+enum sock_pre {
+    PRE_NONE,      /* nothing at the path */
+    PRE_STALE,     /* a socket nothing listens on, as a server that didn't
+                      exit cleanly leaves */
+    PRE_FILE,      /* a regular file */
+    PRE_SYMLINK,   /* a symlink to a stale socket */
+    PRE_NO_DIR,    /* the path is in a directory that doesn't exist */
+    PRE_NO_SEARCH, /* the path is in a directory the server can read but not
+                      search */
+    PRE_DIR_SLASH, /* the path is a directory's, ending in '/' */
+};
+
 struct lifecycle_case {
     const char *category;
     const char *description;
@@ -391,6 +450,7 @@ struct lifecycle_case {
     bool set_umask;    /* run the server under umask, not the inherited one */
     mode_t umask;      /* the umask for set_umask */
     enum dir_acl acl;  /* put the socket in a directory with this ACL */
+    enum sock_pre pre; /* what's at the socket's path beforehand */
     enum sock_group group;
     const char *opt;     /* another option for the server, or NULL */
     const char *opt_arg; /* its argument, or NULL for none */
@@ -700,6 +760,102 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "no such group"},
+    /* What's at the socket's path beforehand.  The server removes only a
+     * socket, and the client's drop shows that the one it then serves is its
+     * own: connecting to the stale one would be refused. */
+    {.category = "positive",
+     .description = "a stale socket is at the socket's path",
+     .expected = "the server removes it, serves a socket of its own, then "
+                 "shuts down cleanly",
+     .backend = "loopback",
+     .pre = PRE_STALE,
+     .want_socket = true,
+     .settle = true,
+     .action = HANG_UP,
+     .clients = 1,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 1,
+     .want_shutdown = 1,
+     .want_line = STALE_LINE},
+    {.category = "negative",
+     .description = "a regular file is at the socket's path",
+     .expected = "the server leaves the file alone and exits non-zero",
+     .backend = "loopback",
+     .pre = PRE_FILE,
+     .want_socket = false,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "isn't a socket; not removing it"},
+    {.category = "negative",
+     .description = "a symlink to a stale socket is at the socket's path",
+     .expected = "the server leaves the symlink and the socket alone and "
+                 "exits non-zero",
+     .backend = "loopback",
+     .pre = PRE_SYMLINK,
+     .want_socket = false,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "isn't a socket; not removing it"},
+    {.category = "negative",
+     .description = "the socket's directory doesn't exist",
+     .expected = "the server can't open the directory, so it exits non-zero",
+     .backend = "loopback",
+     .pre = PRE_NO_DIR,
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "cannot open socket directory"},
+    {.category = "negative",
+     .description = "the socket's directory can be read but not searched",
+     .expected = "the server can't check the path, so it exits non-zero",
+     .backend = "loopback",
+     .pre = PRE_NO_SEARCH,
+     .want_socket = false,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "cannot check"},
+    {.category = "boundary",
+     .description = "the socket's path is a directory's, ending in '/'",
+     .expected = "it names no file, so the server exits non-zero",
+     .backend = "loopback",
+     .pre = PRE_DIR_SLASH,
+     .want_socket = false,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "has no file name"},
     /* Every row that wants a socket checks that it's mode 0600, or 0660 and
      * the group asked for, as soon as it appears and again once the server
      * is up.  The server sets all of it before the socket can be served. */
@@ -987,17 +1143,19 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
 }
 
 /*
- * Wait for the socket to appear.  If the server exits first, this reaps it,
- * stores its status in *status, and sets *exited.
+ * Wait for the socket to appear, and if @after isn't NULL, for the line
+ * @after in @log before it, so a socket already there doesn't count.  If the
+ * server exits first, this reaps it, stores its status in *status, and sets
+ * *exited.
  */
-static bool wait_for_socket(pid_t pid, const char *sock, int *status,
-                            bool *exited)
+static bool wait_for_socket(pid_t pid, const char *sock, const char *log,
+                            const char *after, int *status, bool *exited)
 {
     int64_t deadline = now_ms() + SOCKET_WAIT_MS;
 
     *exited = false;
     while (now_ms() < deadline) {
-        if (path_is_socket(sock))
+        if ((!after || count_in_log(log, after) > 0) && path_is_socket(sock))
             return true;
         if (waitpid(pid, status, WNOHANG) == pid) {
             *exited = true;
@@ -1040,6 +1198,68 @@ static bool socket_perms_ok(const char *sock, uint32_t want_mode,
     return true;
 }
 
+/* Put what @pre asks for at @sock; a symlink points to @target.  False if it
+ * can't. */
+static bool place_at_path(enum sock_pre pre, const char *sock,
+                          const char *target)
+{
+    switch (pre) {
+    case PRE_STALE:
+        return make_stale_socket(sock);
+    case PRE_FILE:
+        return write_file(sock, KEEP_CONTENT);
+    case PRE_SYMLINK:
+        return make_stale_socket(target) && symlink(target, sock) == 0;
+    case PRE_NONE:
+    case PRE_NO_DIR:
+    case PRE_NO_SEARCH:
+    case PRE_DIR_SLASH:
+    default:
+        return true;
+    }
+}
+
+/* Whether what place_at_path() put at @sock for @pre is still there as it
+ * was.  The server must not remove anything but a socket. */
+static bool left_alone(enum sock_pre pre, const char *sock, const char *target)
+{
+    struct stat st;
+    char buf[320];
+    ssize_t n;
+    bool same;
+    int fd;
+
+    switch (pre) {
+    case PRE_FILE:
+        /* Checked through the descriptor that's read, without following a
+         * symlink. */
+        fd = open(sock, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0)
+            return false;
+        n = read(fd, buf, sizeof(buf));
+        same = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+               n == (ssize_t)strlen(KEEP_CONTENT) &&
+               memcmp(buf, KEEP_CONTENT, (size_t)n) == 0;
+        close(fd);
+        return same;
+    case PRE_SYMLINK:
+        if (lstat(sock, &st) != 0 || !S_ISLNK(st.st_mode))
+            return false;
+        n = readlink(sock, buf, sizeof(buf) - 1);
+        if (n < 0)
+            return false;
+        buf[n] = '\0';
+        return strcmp(buf, target) == 0 && path_is_socket(target);
+    case PRE_NONE:
+    case PRE_STALE:
+    case PRE_NO_DIR:
+    case PRE_NO_SEARCH:
+    case PRE_DIR_SLASH:
+    default:
+        return true;
+    }
+}
+
 static bool exit_matches(int status, int want)
 {
     if (!WIFEXITED(status))
@@ -1063,13 +1283,20 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
 {
     char sock[320], log[320], backend[512], why[480] = "", got[64] = "";
     char dir[256]; /* shorter than sock, which adds a name to it */
-    char group[64];
+    char target[320], group[64];
     int held[8], nheld = 0, status = 0, port_fd = -1;
     uint32_t want_mode = 0600;
     uint16_t port = 0;
     gid_t want_gid = 0;
-    bool ok = true, exited = false;
+    bool ok = true, exited = false, own_dir = false;
     pid_t pid;
+
+    /* Root can search any directory, so there's nothing to refuse. */
+    if (c->pre == PRE_NO_SEARCH && geteuid() == 0) {
+        printf("ok   %s: %s; not applicable as root\n", c->category,
+               c->description);
+        return 0;
+    }
 
     switch (c->group) {
     case SG_NONE:
@@ -1123,20 +1350,41 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         break;
     }
 
-    /* A row with an ACL gets a directory of its own for the socket. */
-    if (c->acl == NO_ACL) {
-        snprintf(dir, sizeof(dir), "%s", g_dir);
-    } else {
+    /* A row with an ACL, or with a directory the server can't search, gets a
+     * directory of its own for the socket. */
+    if (c->acl != NO_ACL) {
         snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
         if (!make_acl_dir(dir, c->acl)) {
             printf("FAIL %s: %s; could not give %s a default ACL: %s\n",
                    c->category, c->description, dir, strerror(errno));
             return 1;
         }
+        own_dir = true;
+    } else if (c->pre == PRE_NO_SEARCH) {
+        snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
+        if (mkdir(dir, 0600) < 0) {
+            printf("FAIL %s: %s; could not make %s: %s\n", c->category,
+                   c->description, dir, strerror(errno));
+            return 1;
+        }
+        own_dir = true;
+    } else if (c->pre == PRE_NO_DIR) {
+        snprintf(dir, sizeof(dir), "%s/row%zu.none", g_dir, idx);
+    } else {
+        snprintf(dir, sizeof(dir), "%s", g_dir);
     }
-    snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
+    if (c->pre == PRE_DIR_SLASH)
+        snprintf(sock, sizeof(sock), "%s/", dir);
+    else
+        snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
+    snprintf(target, sizeof(target), "%s/row%zu.target", g_dir, idx);
     snprintf(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
     unlink(sock);
+    if (!place_at_path(c->pre, sock, target)) {
+        printf("FAIL %s: %s; could not set up %s: %s\n", c->category,
+               c->description, sock, strerror(errno));
+        return 1;
+    }
 
     if (strstr(c->backend, "@PORT@")) {
         port_fd = listen_ephemeral(&port);
@@ -1167,7 +1415,10 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         return 1;
     }
 
-    if (c->want_socket && !wait_for_socket(pid, sock, &status, &exited)) {
+    if (c->want_socket &&
+        !wait_for_socket(pid, sock, log,
+                         c->pre == PRE_STALE ? STALE_LINE : NULL, &status,
+                         &exited)) {
         if (exited) {
             describe_status(status, got, sizeof(got));
             snprintf(why, sizeof(why),
@@ -1289,6 +1540,10 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         snprintf(why, sizeof(why), "the refused socket is still there");
         ok = false;
     }
+    if (ok && !left_alone(c->pre, sock, target)) {
+        snprintf(why, sizeof(why), "what was at the socket's path changed");
+        ok = false;
+    }
     if (ok && c->want_line && count_in_log(log, c->want_line) == 0) {
         snprintf(why, sizeof(why), "log lacks '%s'", c->want_line);
         ok = false;
@@ -1306,7 +1561,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
     unlink(sock);
     unlink(log);
-    if (c->acl != NO_ACL)
+    if (c->pre == PRE_SYMLINK)
+        unlink(target);
+    if (own_dir)
         rmdir(dir);
     return 0;
 }
