@@ -21,11 +21,14 @@
 
 #include "qemu/error-report.h"
 
-#define rdma_error_report(fmt, ...) \
-    error_report("%s: " fmt, "rdma", ##__VA_ARGS__)
-#define rdma_warn_report(fmt, ...) \
-    warn_report("%s: " fmt, "rdma", ##__VA_ARGS__)
-#define rdma_info_report(fmt, ...) \
-    info_report("%s: " fmt, "rdma", ##__VA_ARGS__)
+/*
+ * The first argument must be a string literal, the format, which the prefix
+ * is concatenated with. Taking the format as part of __VA_ARGS__, rather
+ * than as a named parameter, lets a call pass no other arguments without
+ * the GNU ", ##__VA_ARGS__" extension.
+ */
+#define rdma_error_report(...) error_report("rdma: " __VA_ARGS__)
+#define rdma_warn_report(...)  warn_report("rdma: " __VA_ARGS__)
+#define rdma_info_report(...)  info_report("rdma: " __VA_ARGS__)
 
 #endif
