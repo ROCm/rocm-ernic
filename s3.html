@@ -651,8 +651,8 @@ the end of the client’s registration.</p>
 ever connected. One guest owns every registration in the
 emulator, so an <code class="docutils literal notranslate"><span class="pre">rkey</span></code> arriving in a token resolves in the
 same memory-region table as any local <code class="docutils literal notranslate"><span class="pre">lkey</span></code>, and the
-target DMAs against it directly through the same
-<code class="docutils literal notranslate"><span class="pre">rdma_pci_dma_map</span></code> machinery the rest of the emulator uses.
+target DMAs against it directly, with the same guest-memory
+DMA the rest of the ionic data path uses.
 The client still creates a real RC queue pair and puts its
 QPN in the token, because that is what it would have to do on
 hardware and the field is checked – but nothing on this path
