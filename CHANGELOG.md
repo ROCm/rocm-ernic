@@ -253,6 +253,11 @@
 
 ### Fixed
 
+* A server that failed to start after creating its vfio-user socket, such as
+  one given a `--tap` it couldn't attach, exited with the TCP backend's
+  threads still running and left the socket behind. It now tears the device
+  down first, which stops and joins those threads and removes the socket, as
+  a clean shutdown does.
 * The test scripts, the self-hosted CI scripts in `ci/`, and the developer
   scripts in `scripts/` find bash through `PATH` (`#!/usr/bin/env bash`)
   instead of requiring `/bin/bash`, so `ctest` and the scripts run on systems

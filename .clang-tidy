@@ -95,7 +95,6 @@ Checks:
   - -clang-analyzer-unix.Stream  # TODO(1)
   # A compiler warning, new in Clang 23, which clang-tidy reports too
   - -clang-diagnostic-unused-but-set-global  # TODO(4)
-  - -concurrency-mt-unsafe  # TODO(22)
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(116)
   - -cppcoreguidelines-init-variables  # TODO(545)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)
