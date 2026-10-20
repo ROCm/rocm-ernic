@@ -99,7 +99,8 @@ static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
         /* handle < tbl_sz, so this can't wrap; see res_tbl_init(). */
         return tbl->tbl + (size_t)handle * tbl->res_sz;
     } else {
-        rdma_error_report("Table %s, invalid handle %d", tbl->name, handle);
+        rdma_error_report("Table %s, invalid handle %" PRIu32, tbl->name,
+                          handle);
         return NULL;
     }
 }
@@ -116,8 +117,8 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
     }
     if (!tbl->bitmap) {
         rdma_error_report("rdma_res_tbl_alloc: Table %s bitmap is NULL "
-                          "(tbl=%p, tbl_sz=%u, res_sz=%u)",
-                          tbl->name, tbl, tbl->tbl_sz, tbl->res_sz);
+                          "(tbl=%p, tbl_sz=%zu, res_sz=%zu)",
+                          tbl->name, (void *)tbl, tbl->tbl_sz, tbl->res_sz);
         return NULL;
     }
 
@@ -389,7 +390,7 @@ RdmaRmQP *rdma_rm_get_qp(RdmaDeviceResources *dev_res, uint32_t qpn)
     g_bytes_unref(key);
 
     if (!qp) {
-        rdma_error_report("Invalid QP handle %d", qpn);
+        rdma_error_report("Invalid QP handle %" PRIu32, qpn);
     }
 
     return qp;
@@ -418,7 +419,7 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     rcq = rdma_rm_get_cq(dev_res, recv_cq_handle);
 
     if (!scq || !rcq) {
-        rdma_error_report("Invalid send_cqn or recv_cqn (%d, %d)",
+        rdma_error_report("Invalid send_cqn %" PRIu32 " or recv_cqn %" PRIu32,
                           send_cq_handle, recv_cq_handle);
         return -EINVAL;
     }
@@ -426,7 +427,7 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     if (is_srq) {
         srq = rdma_rm_get_srq(dev_res, srq_handle);
         if (!srq) {
-            rdma_error_report("Invalid srqn %d", srq_handle);
+            rdma_error_report("Invalid srqn %" PRIu32, srq_handle);
             return -EINVAL;
         }
     }
@@ -579,7 +580,7 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
             /* No backend - just track state locally */
             rdma_info_report(
                 "rdma_rm_modify_qp: No backend, QP %u state transition to %d",
-                qp_handle, qp_state);
+                qp_handle, (int)qp_state);
         }
     }
 
@@ -751,7 +752,7 @@ int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
 {
     int ret;
 
-    rdma_info_report("rdma_rm_init: ENTRY dev_res=%p", dev_res);
+    rdma_info_report("rdma_rm_init: ENTRY dev_res=%p", (void *)dev_res);
 
     /*
      * The limits come from the backend's query_device(), and the struct
