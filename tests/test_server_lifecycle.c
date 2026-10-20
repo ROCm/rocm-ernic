@@ -890,30 +890,41 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
 
 /*
  * The environment for the server: this process's, with name=value in place
- * of any name= already in it.  The array is the caller's to free; its
- * strings are this process's, apart from the last, which is written to
- * entry.  Returns NULL if there's no memory, or entry is too small.
+ * of any name= already in it.  Its strings are this process's, apart from
+ * the last, name=value, which is stored in *entry.  The caller frees both
+ * the array and *entry.  Returns NULL if there's no memory.
+ *
+ * The new string is on the heap, not in a buffer of the caller's, so that
+ * no stack address ends up in environ when the child installs the array.
  */
-static char **server_env(const char *name, const char *value, char *entry,
-                         size_t len)
+static char **server_env(const char *name, const char *value, char **entry)
 {
-    size_t name_len = strlen(name), n = 0, out = 0;
-    int w = snprintf(entry, len, "%s=%s", name, value);
+    size_t name_len = strlen(name), value_len = strlen(value), n = 0, out = 0;
     char **env;
 
-    if (w < 0 || (size_t)w >= len)
+    *entry = NULL;
+    if (name_len > SIZE_MAX - 2 - value_len) /* '=' and '\0' */
         return NULL;
+    *entry = malloc(name_len + value_len + 2);
+    if (!*entry)
+        return NULL;
+    memcpy(*entry, name, name_len);
+    (*entry)[name_len] = '=';
+    memcpy(*entry + name_len + 1, value, value_len + 1);
     while (environ[n])
         n++;
     env = calloc(n + 2, sizeof(*env));
-    if (!env)
+    if (!env) {
+        free(*entry);
+        *entry = NULL;
         return NULL;
+    }
     for (size_t i = 0; i < n; i++) {
         if (strncmp(environ[i], name, name_len) != 0 ||
             environ[i][name_len] != '=')
             env[out++] = environ[i];
     }
-    env[out] = entry;
+    env[out] = *entry;
     return env;
 }
 
@@ -921,14 +932,14 @@ static char **server_env(const char *name, const char *value, char *entry,
 static pid_t start_server(const struct lifecycle_case *c, const char *backend,
                           const char *sock, const char *log, const char *group)
 {
-    char entry[256];
+    char *entry = NULL;
     char **env = NULL;
     pid_t pid;
 
     /* Built here, since the child may only call async-signal-safe functions
      * until it execs, and setenv() and malloc() aren't */
     if (c->env_name) {
-        env = server_env(c->env_name, c->env_value, entry, sizeof(entry));
+        env = server_env(c->env_name, c->env_value, &entry);
         if (!env)
             return -1;
     }
@@ -971,6 +982,7 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         _exit(127);
     }
     free(env);
+    free(entry);
     return pid;
 }
 

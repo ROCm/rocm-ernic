@@ -304,6 +304,13 @@ general pattern here.
   path in with a definition from `$<TARGET_FILE:...>`, as
   `test_server_lifecycle.c` does with `ERNIC_SERVER_PATH`, rather than
   passing the path on the command line.
+- **A stack address stored where it can outlive its frame.** CodeQL's
+  `cpp/stack-address-escape` reports the address of a local variable, or
+  one that arrived through a parameter, stored in heap memory or a global,
+  even when the code never uses it after the frame returns. Allocate what
+  such a pointer points to, rather than pointing it at a local buffer.
+  `test_server_lifecycle.c` builds the server's environment that way,
+  since the child installs it as `environ`.
 - **Including a `.c` file.** CodeQL's `cpp/include-non-header` reports an
   `#include` of a `.c` file, as does clang-tidy's
   `bugprone-suspicious-include`. A unit test that needs a module's private
