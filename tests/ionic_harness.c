@@ -1147,10 +1147,22 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
         uint32_t qpn_op = get_be32(b + 8);
 
         memcpy(&cqe->wqe_id, b, 8);
-        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x7fu);
+        /* 0x1f, as the driver masks it: bits 30 and 31 of src_qpn_op are
+         * IS_VLAN and IS_IPV4, not part of the opcode. */
+        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x1fu);
         cqe->src_qpn = qpn_op & 0xffffffu;
-        cqe->has_smac = (qpn_op & 0x80000000u) != 0;
+        cqe->is_ipv4 = (qpn_op & 0x80000000u) != 0;
         memcpy(cqe->smac, b + 12, 6);
+        /*
+         * There is no SMAC-valid bit on the wire: the driver sets
+         * IB_WC_WITH_SMAC for every UD/GSI completion and copies the field
+         * unconditionally. Presence is therefore inferred from the field
+         * itself, which the device only fills in for a datagram. This used
+         * to read IS_IPV4 instead, which held only while the device set
+         * that bit on every receive that carried a MAC.
+         */
+        static const uint8_t no_mac[6] = {0};
+        cqe->has_smac = memcmp(cqe->smac, no_mac, sizeof(no_mac)) != 0;
         memcpy(&cqe->imm_be, b + 20, 4);
         break;
     }

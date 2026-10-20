@@ -55,6 +55,15 @@
 #define GM_IP_A 0xc0a8fa01u /* 192.168.250.1 */
 #define GM_IP_B 0xc0a8fa02u /* 192.168.250.2 */
 
+#define GM_CQ      1u
+#define GM_AH      7u
+#define GM_MR      0x0800000au
+#define GM_VA      UINT64_C(0x7f6100000000)
+#define GM_TX_OFF  0x0000u
+#define GM_RX_OFF  0x0200u
+#define GM_MAD_LEN 256u
+/* The Q_Key ib_mad uses for GSI; the device checks it on a datagram. */
+#define GM_QKEY 0x80010000u
 
 
 static int failures;
@@ -100,6 +109,52 @@ static void gm_pump(struct ih *a, struct ih *b, unsigned rounds)
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
+}
+
+
+/*
+ * One device's GSI plumbing: a CQ, QP1 and an MR big enough for a MAD out
+ * and a MAD plus its GRH back.
+ */
+struct gm_ep {
+    struct ih_cq cq;
+    struct ih_qp qp;
+    struct ih_mr mr;
+};
+
+static bool gm_ep_open(struct ih *h, struct gm_ep *ep)
+{
+    return ih_cq_create(h, &ep->cq, GM_CQ, 5) &&
+           ih_qp_create(h, &ep->qp, 1, IH_QPT_UD, &ep->cq, &ep->cq, NULL) &&
+           ih_mr_create(h, &ep->mr, GM_MR, GM_VA, 2 * IH_PAGE_SIZE,
+                        IH_ACCESS_ALL, false);
+}
+
+struct gm_counts {
+    unsigned sends;
+    unsigned recvs;
+    bool recv_ipv4; /* the last receive's IONIC_V1_CQE_RECV_IS_IPV4 */
+};
+
+/* Drain a CQ, counting what came back. */
+static void gm_drain(struct ih *h, struct gm_ep *ep, struct gm_counts *c)
+{
+    struct ih_cqe e;
+
+    while (ih_cq_poll(h, &ep->cq, &e)) {
+        if (e.type == IH_CQE_TYPE_RECV) {
+            c->recvs++;
+            c->recv_ipv4 = e.is_ipv4;
+        } else {
+            c->sends++;
+        }
+    }
+}
+
+static uint32_t gm_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
 }
 
 /*
@@ -184,12 +239,128 @@ int main(void)
     gm_check(ionic_mesh_node_from_gid(a.dev->pvrdma_handle, gid_a) == node_a,
              "the manager does not own the GID it claimed");
 
+    /*
+     * 4/5. A CM-shaped MAD on QP1, addressed to the peer's GID, must arrive
+     * on the PEER's QP1 and not come back round to the sender's. The
+     * destination QPN in the WQE is 1 either way, so an unresolved peer
+     * delivers it to the sender's own GSI QP -- silently, with no log.
+     */
+    struct gm_ep ea, eb;
+
+    memset(&ea, 0, sizeof(ea));
+    memset(&eb, 0, sizeof(eb));
+    if (!gm_check(gm_ep_open(&a, &ea) && gm_ep_open(&b, &eb),
+                  "GSI endpoint setup failed"))
+        goto out_ep;
+    if (!gm_check(ih_ah_create(&a, GM_AH, GM_IP_A, GM_IP_B) == 0,
+                  "CREATE_AH for the peer failed"))
+        goto out_ep;
+
+    uint8_t mad[GM_MAD_LEN];
+
+    memset(mad, 0, sizeof(mad));
+    mad[0] = 0x01;  /* base version */
+    mad[1] = 0x07;  /* mgmt class: CM */
+    mad[2] = 0x02;  /* class version */
+    mad[3] = 0x03;  /* method: SEND */
+    mad[16] = 0x00; /* attribute id 0x0010: ConnectRequest */
+    mad[17] = 0x10;
+
+    struct ih_sge rx = {.va = eb.mr.va + GM_RX_OFF,
+                        .len = IH_GRH_SIZE + GM_MAD_LEN,
+                        .lkey = eb.mr.lkey};
+    /*
+     * The sender posts a receive too, on its own QP1. Without one a MAD
+     * that came back round would be dropped for want of a buffer and the
+     * loopback check below could not tell that from a MAD that was
+     * correctly forwarded -- both leave the sender's CQ empty.
+     */
+    struct ih_sge rx_self = {.va = ea.mr.va + GM_RX_OFF,
+                             .len = IH_GRH_SIZE + GM_MAD_LEN,
+                             .lkey = ea.mr.lkey};
+    struct ih_sge tx = {
+        .va = ea.mr.va + GM_TX_OFF, .len = GM_MAD_LEN, .lkey = ea.mr.lkey};
+    struct ih_send s = {.op = IH_OP_SEND,
+                        .flags = IH_WQE_SIGNALLED,
+                        .ah_id = GM_AH,
+                        .dest_qpn = 1,
+                        .qkey = GM_QKEY,
+                        .sge = &tx,
+                        .nsge = 1};
+
+    ih_mr_write(&a, &ea.mr, tx.va, mad, sizeof(mad));
+    ih_post_recv(&b, &eb.qp, &rx, 1);
+    ih_post_recv(&a, &ea.qp, &rx_self, 1);
+    ih_post_send(&a, &ea.qp, &s);
+
+    struct gm_counts ca = {0}, cb = {0};
+
+    for (unsigned i = 0; i < 250 && cb.recvs == 0; i++) {
+        gm_pump(&a, &b, 1);
+        gm_drain(&a, &ea, &ca);
+        gm_drain(&b, &eb, &cb);
+    }
+    /* A few more rounds, so a copy that also came back round is counted. */
+    gm_pump(&a, &b, 10);
+    gm_drain(&a, &ea, &ca);
+    gm_drain(&b, &eb, &cb);
+
+    gm_check(ca.sends == 1, "the sender got %u send completions, want 1",
+             ca.sends);
+    gm_check(cb.recvs == 1, "the peer's QP1 got %u MADs, want 1", cb.recvs);
+    gm_check(ca.recvs == 0,
+             "the sender's own QP1 got %u MADs back: the MAD was looped back "
+             "instead of forwarded",
+             ca.recvs);
+
+    /*
+     * 6/7. What the MAD arrived behind, which is the half of this that
+     * rdma_cm actually turns on. Both nodes' GIDs are v4-mapped, so a
+     * forwarded datagram has to look like RoCEv2 over IPv4: the IPv4 header
+     * in the last 20 bytes of the 40-byte field, the completion flagged to
+     * say so, and the SENDER's address as its source.
+     *
+     * The source is what was wrong. The device flagged every datagram IPv4
+     * while writing an IPv6 GRH, so a receiver read bytes 8..11 of the
+     * destination GID as the source address -- for ::ffff:a.b.c.d that is
+     * 0.0.255.255, plausible enough to ARP for and impossible to resolve.
+     * ib_cm resolves that address to build the reply's address handle, so
+     * cm_req_handler() blocked for a second, returned -ETIMEDOUT and dropped
+     * the REQ without even a reject; rdma_connect() on the far side retried
+     * forever with nothing logged at either end. Every check above passed
+     * throughout: the MAD was forwarded correctly and still went nowhere.
+     */
+    if (cb.recvs == 1) {
+        uint8_t rx_buf[IH_GRH_SIZE + GM_MAD_LEN];
+
+        ih_mr_read(&b, &eb.mr, rx.va, rx_buf, sizeof(rx_buf));
+
+        const uint8_t *ip = rx_buf + IH_GRH_SIZE - 20;
+
+        gm_check(cb.recv_ipv4, "the forwarded MAD is not flagged IPv4");
+        gm_check(ip[0] == 0x45, "the forwarded MAD carries no IPv4 header");
+        gm_check(gm_be32(ip + 12) == GM_IP_A,
+                 "the forwarded MAD's source address is %u.%u.%u.%u, want the "
+                 "sender's 192.168.250.1",
+                 ip[12], ip[13], ip[14], ip[15]);
+        gm_check(gm_be32(ip + 16) == GM_IP_B,
+                 "the forwarded MAD's destination address is %u.%u.%u.%u, want "
+                 "the peer's 192.168.250.2",
+                 ip[16], ip[17], ip[18], ip[19]);
+        gm_check(memcmp(rx_buf + IH_GRH_SIZE, mad, sizeof(mad)) == 0,
+                 "the MAD is not behind the 40-byte header");
+    }
+
+out_ep:
+    ih_mr_free(&eb.mr);
+    ih_mr_free(&ea.mr);
+
 out:
     ih_destroy(&b);
     ih_destroy(&a);
     if (failures)
         fprintf(stderr, "%d check(s) failed\n", failures);
     else
-        puts("PASS: the mesh resolves a GID claimed after it formed");
+        puts("PASS: a GSI MAD addressed to the peer reaches the peer's QP1");
     return failures ? 1 : 0;
 }

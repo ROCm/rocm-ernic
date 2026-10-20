@@ -495,12 +495,23 @@ Working:
 Not yet working:
 
 - ``rdma_cm`` connection establishment between two guests,
-  and therefore ``rping``: only the link-local GID is
-  populated, and GSI traffic is not forwarded between
-  endpoints. The ``nvmeof`` backend sidesteps this by
-  answering the CM exchange inside the server rather than
-  routing it to a peer, so ``nvme connect -t rdma`` has a
-  responder even though guest-to-guest ``rdma_cm`` does not
+  and therefore ``rping``, is not yet confirmed working
+  end to end on a guest pair. Both of the reasons previously
+  given here were wrong: GSI traffic *is* forwarded between
+  endpoints, which ``ernic-test-gsi-mesh`` demonstrates, and
+  both the link-local and the v4-mapped GID are populated.
+  What actually stopped it was the shape of the 40-byte
+  header in front of a datagram -- the device claimed RoCEv2
+  over IPv4 in the completion while writing an IPv6 GRH, so
+  ``ib_cm`` read the wrong bytes as the sender's address,
+  failed to resolve them, and dropped every CM REQ without a
+  reject. That is fixed, and the forms are pinned in both
+  directions by ``ionic-harness-ud``, ``ionic-harness-nvmeof``
+  and ``gsi-mesh``; what remains is to confirm a real
+  ``rping`` between two guests. The ``nvmeof`` backend does
+  not depend on any of this: it answers the CM exchange
+  inside the server rather than routing it to a peer, so
+  ``nvme connect -t rdma`` has always had a responder
   (see :doc:`nvmeof`)
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``

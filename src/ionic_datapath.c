@@ -45,6 +45,7 @@
 #include "ionic_datapath.h"
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
+#include "net/net_headers.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
@@ -1350,10 +1351,109 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     cq_fire_event(dp, c, cq_id);
 }
 
+/* ::ffff:a.b.c.d -- the GID an IPv4 RoCEv2 port advertises for itself. */
+static bool dp_gid_is_v4mapped(const uint8_t gid[16])
+{
+    static const uint8_t prefix[12] = {0, 0, 0, 0, 0,    0,
+                                       0, 0, 0, 0, 0xff, 0xff};
+    return memcmp(gid, prefix, sizeof(prefix)) == 0;
+}
+
+/* The IPv6 form: a real GRH, with the GIDs where struct ib_grh keeps them. */
+static void dp_grh_ipv6(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                        const uint8_t *sgid, const uint8_t *dgid)
+{
+    memset(grh, 0, IB_GRH_SIZE);
+    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
+    uint16_t pl = htobe16((uint16_t)paylen);
+    memcpy(grh + 4, &pl, 2);
+    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
+    grh[7] = 64;
+    if (sgid)
+        memcpy(grh + 8, sgid, 16);
+    if (dgid)
+        memcpy(grh + 24, dgid, 16);
+}
+
+/*
+ * The IPv4 form, which is not a GRH at all: RoCEv2 over IPv4 reports the
+ * packet's IPv4 header, and the IB spec puts it in the *last* 20 bytes of
+ * the 40-byte field. The kernel reads it through union rdma_network_hdr,
+ * which is struct iphdr behind reserved[20], so the source address lands at
+ * offset 32 and the destination at 36 -- nowhere near offsets 8 and 24,
+ * where the IPv6 form keeps its GIDs. Real hardware delivers exactly this.
+ *
+ * Which form a receiver applies is decided by the completion, not by looking
+ * at the bytes: the driver turns CQE_RECV_IS_IPV4 into wc->network_hdr_type
+ * and the kernel parses by that alone. So the flag and the header have to be
+ * built together, or a mismatch is read as a well-formed header at the wrong
+ * offsets rather than rejected -- see dp_grh_is_ipv4().
+ */
+static void dp_grh_ipv4(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                        const uint8_t *sgid, const uint8_t *dgid)
+{
+    struct ip_header ip;
+
+    memset(grh, 0, IB_GRH_SIZE);
+    memset(&ip, 0, sizeof(ip));
+    ip.version_ihl = 0x45; /* IPv4, a 5-word header with no options */
+    ip.total_len = htobe16((uint16_t)(sizeof(ip) + paylen));
+    ip.ttl = 64;
+    ip.protocol = IP_PROTOCOL_UDP; /* RoCEv2 rides UDP port 4791 */
+    memcpy(&ip.src_ip, sgid + 12, 4);
+    memcpy(&ip.dst_ip, dgid + 12, 4);
+    ip.checksum = ip_checksum(&ip, sizeof(ip));
+
+    memcpy(grh + IB_GRH_SIZE - sizeof(ip), &ip, sizeof(ip));
+}
+
+/*
+ * Build whichever form the addresses call for. A v4-mapped pair means the
+ * port is RoCEv2 over IPv4 and the receiver will parse an IPv4 header;
+ * anything else -- a link-local fe80:: GID, or no address handle at all --
+ * stays IPv6.
+ *
+ * Which form was chosen is deliberately not returned: the completion reads
+ * it back off the bytes with dp_grh_is_ipv4() instead, so that a header
+ * built here and one that arrived from another mesh instance are flagged by
+ * the same rule, with no second copy of the decision to drift.
+ */
+static void dp_grh_build(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                         const uint8_t *sgid, const uint8_t *dgid)
+{
+    if (sgid && dgid && dp_gid_is_v4mapped(sgid) && dp_gid_is_v4mapped(dgid)) {
+        dp_grh_ipv4(grh, paylen, sgid, dgid);
+        return;
+    }
+    dp_grh_ipv6(grh, paylen, sgid, dgid);
+}
+
+/*
+ * Which form a 40-byte header already in hand is in.
+ *
+ * The completion flag is derived from the delivered bytes rather than
+ * threaded down from whoever built them, because a datagram from another
+ * mesh instance arrives with its header already on the front: it was built
+ * by the sender, and the mesh protocol carries no room to say which form it
+ * chose. Reading it here keeps the flag true for a locally built header and
+ * a received one alike, with nothing to drift.
+ *
+ * Both halves are checked. The IPv4 form leaves bytes 0..19 zero and starts
+ * its header with a 0x4 version nibble at offset 20; the IPv6 form has 0x6
+ * at offset 0 and arbitrary GID bytes at 20. Neither test alone separates
+ * them -- an IPv6 GRH whose sgid happens to hold 0x4x at offset 20 would
+ * pass the second.
+ */
+static bool dp_grh_is_ipv4(const uint8_t *grh, uint32_t len)
+{
+    return grh && len >= IB_GRH_SIZE && (grh[0] & 0xf0) != 0x60 &&
+           (grh[IB_GRH_SIZE - 20] & 0xf0) == 0x40;
+}
+
 static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
                          uint32_t qid, uint64_t rq_wqe_id, uint32_t src_qpn,
                          uint8_t recv_op, uint32_t imm_be, uint32_t byte_len,
-                         bool error, const uint8_t *src_mac)
+                         bool error, const uint8_t *src_mac, bool is_ipv4)
 {
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
@@ -1365,14 +1465,21 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
         ((uint32_t)recv_op << CQE_RECV_OP_SHIFT) | (src_qpn & 0xffffffu);
     /*
      * A UD or GSI completion is only usable if it also names the sender's
-     * link layer: the driver turns src_mac and the IPv4 bit into
-     * IB_WC_WITH_SMAC and a network_hdr_type, and ib_cm refuses a MAD whose
-     * work completion has neither.
+     * link layer: the driver turns src_mac into IB_WC_WITH_SMAC, and ib_cm
+     * refuses a MAD whose work completion does not carry one.
      */
-    if (src_mac) {
-        qpn_op |= CQE_RECV_IS_IPV4;
+    if (src_mac)
         memcpy(body + 12, src_mac, 6);
-    }
+    /*
+     * Separate from the MAC, and deliberately so. This bit becomes
+     * wc->network_hdr_type, which decides where the receiver reads the
+     * datagram's addresses out of the 40-byte header; setting it alongside
+     * the MAC claimed IPv4 for every UD receive while dp_ud_grh() was still
+     * writing the IPv6 form, so the kernel read the middle of the
+     * destination GID as the source address. It must follow the header.
+     */
+    if (is_ipv4)
+        qpn_op |= CQE_RECV_IS_IPV4;
     qpn_op = htobe32(qpn_op);
     memcpy(body + 8, &qpn_op, 4);
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
@@ -1679,7 +1786,8 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     cq_post_recv(
         dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op, imm_be,
         truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR) : copied,
-        truncated, ud ? smac : NULL);
+        truncated, ud ? smac : NULL,
+        ud && dp_grh_is_ipv4(src_host, src->total));
 
     return copied;
 }
@@ -2154,14 +2262,8 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
 static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
                           uint32_t paylen)
 {
-    memset(grh, 0, IB_GRH_SIZE);
-    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
-    uint16_t pl = htobe16((uint16_t)paylen);
-    memcpy(grh + 4, &pl, 2);
-    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
-    grh[7] = 64;
-    memcpy(grh + 8, dp->nvmeof_sgid, 16);  /* controller */
-    memcpy(grh + 24, dp->nvmeof_dgid, 16); /* guest */
+    /* sgid is the controller, dgid the guest. */
+    dp_grh_build(grh, paylen, dp->nvmeof_sgid, dp->nvmeof_dgid);
 }
 
 /*
@@ -2177,19 +2279,14 @@ static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
 static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
                       uint32_t paylen, const struct ionic_ah *ah)
 {
-    memset(grh, 0, IB_GRH_SIZE);
-    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
-    uint16_t pl = htobe16((uint16_t)paylen);
-    memcpy(grh + 4, &pl, 2);
-    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
-    grh[7] = 64;
-
     /*
      * The addresses are not decoration. A receiver is entitled to check
      * them, and UCX's ud_verbs does: it compares the GRH's destination GID
      * against its own and silently drops anything that does not match, so a
      * zeroed GRH makes every datagram vanish on arrival with no error on
-     * either side.
+     * either side. It copes with either form -- it picks them apart the same
+     * way dp_grh_is_ipv4() does, on the version nibble at offset 0, and for
+     * the IPv4 one compares just the four address bytes at the end.
      *
      * The destination comes from the handle the sender used. So does the
      * source, but from the other address in the same RoCE header template:
@@ -2203,10 +2300,9 @@ static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
      * sender's. A consumer that replies to the GRH source then answers
      * itself.
      */
-    if (ah) {
-        memcpy(grh + 8, ah->sgid_valid ? ah->sgid : ah->dgid, 16); /* sgid */
-        memcpy(grh + 24, ah->dgid, 16);                            /* dgid */
-    }
+    dp_grh_build(grh, paylen,
+                 ah ? (ah->sgid_valid ? ah->sgid : ah->dgid) : NULL,
+                 ah ? ah->dgid : NULL);
     (void)dp;
 }
 

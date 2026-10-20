@@ -430,7 +430,28 @@
   was told the wrong thing and the wrong queue pair was blamed; one crossing
   the mesh sent the peer a request it could not satisfy. No data was
   transferred in either case, and none is now.
-
+* A UD or GSI receive is now reported as RoCEv2 over IPv4 when the addresses
+  are v4-mapped, instead of being flagged IPv4 while carrying an IPv6 GRH.
+  The two disagreed: `IONIC_V1_CQE_RECV_IS_IPV4` was set on every receive
+  that carried a source MAC, and the driver turns it into
+  `wc->network_hdr_type`, which is the only thing telling a receiver where
+  the datagram's addresses are. The kernel reads the 40-byte field through
+  `union rdma_network_hdr`, so under that flag the source address is at
+  offset 32 and the destination at 36 -- but the GRH kept its GIDs at 8 and
+  24. The destination still resolved, by coincidence, because a v4-mapped
+  GID carries its IPv4 bytes in its own tail; the source came out as
+  `0.0.255.255`, the middle of the destination GID.
+  `ib_init_ah_attr_from_wc()` resolves that address with ARP to build the
+  reply's address handle, so `cm_req_handler()` blocked for a second,
+  returned `-ETIMEDOUT` and dropped the CM REQ without even a reject, and
+  guest-to-guest `rdma_connect()` retried forever with nothing logged at
+  either end. The device now builds the IPv4 header real hardware delivers
+  -- 20 reserved bytes, then an IPv4 header with a valid checksum naming
+  UDP -- and derives the completion flag from the bytes it is about to
+  deliver, so a locally built header and one forwarded from another mesh
+  instance are flagged by the same rule. Datagrams whose GIDs are not
+  v4-mapped, such as link-local ones, keep the IPv6 GRH. `ionic-harness-ud`
+  and `gsi-mesh` pin the IPv4 form, `ionic-harness-nvmeof` the IPv6 one.
 * A server that shut down cleanly removed its socket's path a second time
   after closing the socket, so it could remove the socket of another server
   started at the same path in between.

@@ -276,6 +276,14 @@ struct ih_cqe {
     uint32_t imm_be;
     bool has_smac;
     uint8_t smac[6];
+    /*
+     * IONIC_V1_CQE_RECV_IS_IPV4. The driver reports this as
+     * wc->network_hdr_type, which is the only thing that tells a receiver
+     * whether the 40-byte header in front of the payload is an IPv6 GRH or
+     * a RoCEv2 IPv4 header -- so a test that checks the header's shape has
+     * to check this with it.
+     */
+    bool is_ipv4;
 };
 
 /* ---- Device lifecycle -------------------------------------------------- */

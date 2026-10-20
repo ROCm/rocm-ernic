@@ -182,7 +182,14 @@ worker, joined over loopback TCP by the real TCP backend. It
 checks that the two register, that a GID claimed *after* the
 mesh has formed is advertised and resolves to the claiming
 node from the other side, and that neither node resolves its
-peer's address to itself.
+peer's address to itself. It then sends a CM-shaped MAD on
+QP1 and checks both that it reaches the peer's QP1 rather
+than coming back round, and that it arrives behind the right
+header: the two nodes' GIDs are v4-mapped, so a forwarded
+datagram has to look like RoCEv2 over IPv4, flagged as such,
+with the *sender's* address as its source. Forwarding the MAD
+correctly and describing it wrongly looks identical from
+every other angle, and is what used to strand ``rdma_cm``.
 
 That is the path ``rdma_cm`` depends on and the one
 ``ERNIC_TCP_GUEST_GIDS`` cannot cover: it is read once at

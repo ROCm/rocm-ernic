@@ -97,6 +97,30 @@ static uint32_t get_be32(const uint8_t *p)
     return be32toh(v);
 }
 
+static bool all_zero(const uint8_t *p, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+        if (p[i])
+            return false;
+    return true;
+}
+
+/*
+ * The one's-complement sum of a header, which for a correct IPv4 checksum
+ * comes to 0xffff -- summing the checksum field in with everything else
+ * rather than recomputing it around a hole.
+ */
+static uint16_t ones_sum16(const uint8_t *p, size_t len)
+{
+    uint32_t sum = 0;
+
+    for (size_t i = 0; i + 1 < len; i += 2)
+        sum += get_be16(p + i);
+    while (sum >> 16)
+        sum = (sum & 0xffffu) + (sum >> 16);
+    return (uint16_t)sum;
+}
+
 static void put_le16(uint8_t *p, uint16_t v)
 {
     v = htole16(v);
@@ -1294,16 +1318,30 @@ static void test_ud(void)
               "UD receive is for the wrong WQE or sender");
         check(T, e.has_smac, "UD receive carries no source MAC");
         ih_mr_read(&h, &mr, dst_va, got, sizeof(got));
-        static const uint8_t v4[12] = {0, 0, 0, 0, 0,    0,
-                                       0, 0, 0, 0, 0xff, 0xff};
-        check(T, got[0] == 0x60 && get_be16(got + 4) == sizeof(want),
-              "GRH version or payload length is wrong");
-        check(T,
-              memcmp(got + 8, v4, 12) == 0 && get_be32(got + 20) == UD_SIP &&
-                  memcmp(got + 24, v4, 12) == 0 && get_be32(got + 36) == UD_DIP,
-              "GRH addresses do not come from the address handle");
+        /*
+         * A v4-mapped address handle means RoCEv2 over IPv4, and that is
+         * reported as the packet's IPv4 header in the LAST 20 bytes of the
+         * 40-byte field -- union rdma_network_hdr is reserved[20] then
+         * struct iphdr -- not as an IPv6 GRH with GIDs at 8 and 24.
+         *
+         * The flag is checked with the bytes because nothing else ties them
+         * together: it becomes wc->network_hdr_type, and a receiver reads
+         * the addresses at 32 and 36 on the strength of that alone. Claiming
+         * IPv4 over an IPv6 GRH is what made ib_cm resolve the middle of the
+         * destination GID as the sender's address and drop every CM REQ.
+         */
+        const uint8_t *ip = got + IH_GRH_SIZE - 20;
+        check(T, e.is_ipv4, "an IPv4 UD receive is not flagged as one");
+        check(T, all_zero(got, 20), "the first 20 bytes are not reserved");
+        check(T, ip[0] == 0x45 && get_be16(ip + 2) == 20 + sizeof(want),
+              "the IPv4 header's version or total length is wrong");
+        check(T, ip[9] == 17, "the IPv4 header does not name UDP");
+        check(T, ones_sum16(ip, 20) == 0xffff,
+              "the IPv4 header's checksum does not verify");
+        check(T, get_be32(ip + 12) == UD_SIP && get_be32(ip + 16) == UD_DIP,
+              "the IPv4 addresses do not come from the address handle");
         check(T, memcmp(got + IH_GRH_SIZE, want, sizeof(want)) == 0,
-              "UD payload is not behind the GRH");
+              "UD payload is not behind the 40-byte header");
     }
 
     /* The wrong Q_Key, and a connected destination, are refused even with a
@@ -1685,13 +1723,14 @@ static bool gsi_exchange(const char *test, struct ih *h, struct ih_qp *gsi,
         ih_post_recv(h, gsi, &rx, 1);
     ih_post_send(h, gsi, &s);
 
-    bool sent = false, got = false;
+    bool sent = false, got = false, recv_ipv4 = false;
     while (ih_cq_poll(h, cq, &e)) {
         if (e.type == IH_CQE_TYPE_SEND_NPG) {
             sent = true;
         } else if (e.type == IH_CQE_TYPE_RECV) {
             got = check(test, !e.error && e.status_len == rx.len,
                         "GSI reply length %u", e.status_len);
+            recv_ipv4 = e.is_ipv4;
         }
     }
     check(test, sent, "the GSI send did not complete");
@@ -1701,7 +1740,25 @@ static bool gsi_exchange(const char *test, struct ih *h, struct ih_qp *gsi,
         return false;
     uint8_t buf[IH_GRH_SIZE + IB_MAD_SIZE];
     ih_mr_read(h, mr, rx.va, buf, sizeof(buf));
-    check(test, buf[0] == 0x60, "the GSI reply has no GRH");
+    /*
+     * build_req() fills the CM REQ's GIDs with 0x11 and 0x22, which are not
+     * v4-mapped, so this is the other branch: a real IPv6 GRH, with the
+     * GIDs where struct ib_grh keeps them and the completion's IPv4 flag
+     * clear. The ud test covers the RoCEv2-over-IPv4 form. Between them the
+     * dispatch is pinned both ways, which matters because the two forms put
+     * the addresses 24 bytes apart and the flag is all a receiver has to
+     * tell them apart.
+     */
+    uint8_t controller[16], guest[16];
+    memset(controller, 0x22, sizeof(controller));
+    memset(guest, 0x11, sizeof(guest));
+    check(test, !recv_ipv4, "a GSI reply carrying a GRH is flagged IPv4");
+    check(test, buf[0] == 0x60 && get_be16(buf + 4) == IB_MAD_SIZE,
+          "the GSI reply has no GRH, or the wrong payload length");
+    check(test,
+          memcmp(buf + 8, controller, 16) == 0 &&
+              memcmp(buf + 24, guest, 16) == 0,
+          "the GRH's GIDs are not where a GRH keeps them");
     memcpy(reply, buf + IH_GRH_SIZE, IB_MAD_SIZE);
     return true;
 }
