@@ -28,9 +28,6 @@ ernic_verbose: "false"
 # logs to WARN/ERROR plus a short startup banner.  Note that
 # ernic_verbose: "true" overrides this with debug.
 ernic_log_level: warn
-# When true, each pci_dma_map logs a line (very noisy under load).
-# Use only for short-lived pointer / mapping debugging.
-ernic_debug_dma_map: false
 
 # ── Host TAP / bridge ───────────────────────────
 # Each instance gets ${ernic_tap_prefix}<n>, enslaved to a shared

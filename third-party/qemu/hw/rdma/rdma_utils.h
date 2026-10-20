@@ -28,14 +28,4 @@
 #define rdma_info_report(fmt, ...) \
     info_report("%s: " fmt, "rdma", ##__VA_ARGS__)
 
-/* Optional debug tracing - define RDMA_DEBUG to enable */
-#ifdef RDMA_DEBUG
-#define rdma_debug_report(fmt, ...) \
-    fprintf(stderr, "rdma-debug: " fmt "\n", ##__VA_ARGS__)
-#else
-#define rdma_debug_report(fmt, ...) \
-    do {                            \
-    } while (0)
-#endif
-
 #endif

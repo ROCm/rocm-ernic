@@ -17,8 +17,6 @@
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
-typedef uint64_t dma_addr_t;
-typedef uint64_t hwaddr;
 
 /*
  * Opaque handle to RDMA device
@@ -163,10 +161,6 @@ void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id);
 void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
 
 /*
- * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
- */
-
-/*
  * Statistics
  */
 
@@ -216,15 +210,6 @@ void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle);
  * @handle: Device handle
  */
 void pvrdma_write_stats(pvrdma_handle_t handle);
-
-/*
- * Bridge Functions: DMA and Interrupts
- *
- * These are called FROM QEMU code TO interact with libvfio-user.
- * They need access to vfu_ctx which we get from the device.
- */
-
-/* DMA functions are now pci_dma_map/unmap declared in hw/pci/pci.h */
 
 /*
  * Thin wrappers for the ionic migration path.

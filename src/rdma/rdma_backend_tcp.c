@@ -1246,7 +1246,7 @@ bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
                       void *arg, atomic_bool *running)
 {
     atomic_store(running, true);
-    if (qemu_thread_create(thread, name, fn, arg, QEMU_THREAD_JOINABLE) != 0) {
+    if (qemu_thread_create(thread, fn, arg) != 0) {
         atomic_store(running, false);
         rdma_error_report("TCP: Failed to start thread %s", name);
         return false;

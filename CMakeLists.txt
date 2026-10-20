@@ -161,7 +161,6 @@ set(ERNIC_VENDORED_SOURCES
 set(QEMU_COMPAT_SOURCES
     src/qemu-compat/error-report.c
     src/qemu-compat/qemu_stubs.c
-    src/qemu-compat/qemu_type_stubs.c
 )
 
 # RDMA backends (none, loopback, TCP mesh) behind the vendored device model

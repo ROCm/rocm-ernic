@@ -27,7 +27,6 @@ _Static_assert(SIZE_MAX <= UINT64_MAX,
                "a size_t bitmap size must convert to uint64_t without loss");
 
 unsigned long *bitmap_new(uint32_t nbits);
-void bitmap_free(unsigned long *bitmap);
 void set_bit(uint32_t nr, unsigned long *addr);
 void clear_bit(uint32_t nr, unsigned long *addr);
 bool test_bit(uint32_t nr, const unsigned long *addr);

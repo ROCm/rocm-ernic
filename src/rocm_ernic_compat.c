@@ -11,16 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <pthread.h>
-#include <sys/mman.h> /* For PROT_READ, PROT_WRITE */
-#include <sys/uio.h>
 
 #include <glib.h>
 #include <infiniband/verbs.h>
-
-/* Define libvfio-user types we need - full structs to avoid incomplete type */
-#include <vfio-user/libvfio-user.h>
-
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
@@ -36,66 +29,6 @@
 #include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "hw/pci/pci.h"
-
-/*
- * DMA Mapping Tracking
- * We must track SGL/iovec pairs to properly call vfu_sgl_put().
- * Uses a GHashTable keyed by host_addr for O(1) lookup and
- * unlimited capacity (the old 256-entry fixed array overflowed
- * after sustained QP churn and caused heap corruption).
- */
-typedef struct dma_mapping {
-    dma_addr_t guest_addr;
-    size_t len;
-    dma_sg_t *sg;
-    struct iovec iov;
-    void *host_addr;
-    vfu_ctx_t *vfu_ctx;
-} dma_mapping_t;
-
-static void dma_mapping_free(gpointer data);
-
-static GHashTable *dma_map_table;
-
-/*
- * Protects dma_map_table.  Recursive so that
- * g_hash_table_remove/replace value destructors and vfu_sgl_* paths
- * cannot deadlock if they re-enter map/sync/unmap on the same thread.
- */
-static pthread_mutex_t dma_map_lock;
-static pthread_once_t dma_map_once = PTHREAD_ONCE_INIT;
-
-static void dma_map_global_init(void)
-{
-    pthread_mutexattr_t attr;
-
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&dma_map_lock, &attr);
-    pthread_mutexattr_destroy(&attr);
-
-    dma_map_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                          dma_mapping_free);
-}
-
-static void dma_map_ensure(void)
-{
-    pthread_once(&dma_map_once, dma_map_global_init);
-}
-
-#define DMA_MAP_LOCK()   pthread_mutex_lock(&dma_map_lock)
-#define DMA_MAP_UNLOCK() pthread_mutex_unlock(&dma_map_lock)
-
-static void dma_mapping_free(gpointer data)
-{
-    dma_mapping_t *m = (dma_mapping_t *)data;
-    if (m->vfu_ctx && m->sg) {
-        vfu_sgl_put(m->vfu_ctx, m->sg, &m->iov, 1);
-    }
-    free(m->sg);
-    g_free(m);
-}
 
 /*
  * Device Management
@@ -121,8 +54,6 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
         return NULL;
     }
 
-    /* Initialize PCIDevice wrapper for bridge functions */
-    pvrdma->parent_obj.vfu_dev = dev;
     pvrdma->parent_obj.vfu_ctx = dev->vfu_ctx;
 
     /* Parse backend type and extract config */
@@ -575,196 +506,6 @@ void pvrdma_write_stats(pvrdma_handle_t handle)
 
     pvrdma_write_stats_impl(pvrdma);
 }
-
-/*
- * DMA Mapping (called FROM QEMU code)
- */
-
-/* Implement pci_dma_map - called by QEMU PVRDMA code via hw/pci/pci.h */
-void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
-{
-    vfu_ctx_t *vfu_ctx;
-    dma_sg_t *sg;
-    struct iovec iov;
-    void *host_addr;
-    int ret;
-    size_t sg_size;
-
-    /* Check for obviously invalid addresses */
-    if (addr == 0) {
-        rdma_error_report("DMA map: guest address is NULL!");
-        if (plen)
-            *plen = 0;
-        return NULL;
-    }
-
-    if (!dev) {
-        rdma_error_report("DMA map: NULL device pointer");
-        if (plen)
-            *plen = 0;
-        return NULL;
-    }
-
-    if (!dev->vfu_ctx) {
-        rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)",
-                          (void *)dev);
-        rdma_error_report(
-            "  This means vfu_ctx was not set in pvrdma_device_create");
-        if (plen)
-            *plen = 0;
-        return NULL;
-    }
-
-    if (!plen) {
-        rdma_error_report("DMA map: NULL plen pointer");
-        return NULL;
-    }
-
-    vfu_ctx = dev->vfu_ctx;
-
-    (void)dir; /* Direction not used with vfio-user */
-
-    /* Get SG size */
-    sg_size = dma_sg_size();
-
-    /* Allocate scatter-gather entry */
-    sg = malloc(sg_size);
-    if (!sg) {
-        rdma_error_report("DMA map: Failed to allocate SG entry of size %zu",
-                          sg_size);
-        *plen = 0;
-        return NULL;
-    }
-
-    /* Convert guest physical address to scatter-gather list */
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)addr, *plen, sg,
-                          1, PROT_READ | PROT_WRITE);
-    if (ret < 0) {
-        rdma_error_report(
-            "DMA map: vfu_addr_to_sgl FAILED for addr=%#lx: %s (errno=%d)",
-            addr, strerror(errno), errno);
-        rdma_error_report("  This usually means the guest address is not in "
-                          "any registered DMA region");
-        free(sg);
-        *plen = 0;
-        return NULL;
-    }
-
-    /* Get host virtual address */
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) {
-        rdma_error_report(
-            "DMA map: vfu_sgl_get FAILED for addr=%#lx: %s (errno=%d)", addr,
-            strerror(errno), errno);
-        rdma_error_report("  This usually means the memory is not mapped "
-                          "(vaddr=NULL in DMA region)");
-        free(sg);
-        *plen = 0;
-        return NULL;
-    }
-
-    host_addr = iov.iov_base;
-    *plen = iov.iov_len; /* Update with actual mapped length */
-
-    if (!host_addr) {
-        rdma_error_report(
-            "DMA map: vfu_sgl_get returned NULL iov_base for guest=%#lx", addr);
-        rdma_error_report("  This means the region is not memory-mapped");
-        free(sg);
-        *plen = 0;
-        return NULL;
-    }
-
-    dma_mapping_t *m = g_new0(dma_mapping_t, 1);
-    m->guest_addr = addr;
-    m->len = *plen;
-    m->sg = sg;
-    m->iov = iov;
-    m->host_addr = host_addr;
-    m->vfu_ctx = vfu_ctx;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-    g_hash_table_replace(dma_map_table, host_addr, m);
-    DMA_MAP_UNLOCK();
-
-    return host_addr;
-}
-
-/*
- * Helper: Sync DMA writes back to guest by calling vfu_sgl_put()
- * This releases the memory mapping and ensures writes are visible to the guest.
- */
-int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
-{
-    (void)dev;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-
-    GHashTableIter sync_iter;
-    gpointer skey, svalue;
-    g_hash_table_iter_init(&sync_iter, dma_map_table);
-
-    while (g_hash_table_iter_next(&sync_iter, &skey, &svalue)) {
-        dma_mapping_t *mapping = (dma_mapping_t *)svalue;
-
-        /* Check if this address is within the mapped region */
-        if (guest_addr >= mapping->guest_addr &&
-            guest_addr + len <= mapping->guest_addr + mapping->len) {
-            /* Call vfu_sgl_put() to sync writes back to guest */
-            if (!mapping->vfu_ctx || !mapping->sg) {
-                rdma_error_report("DMA sync: NULL vfu_ctx or sg");
-                DMA_MAP_UNLOCK();
-                return -EINVAL;
-            }
-            vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-
-            /* Re-acquire the mapping for future use */
-            int ret =
-                vfu_sgl_get(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1, 0);
-            if (ret < 0) {
-                rdma_error_report("DMA sync: Failed to re-acquire mapping: %s",
-                                  strerror(errno));
-                DMA_MAP_UNLOCK();
-                return -1;
-            }
-
-            DMA_MAP_UNLOCK();
-            return 0;
-        }
-    }
-
-    DMA_MAP_UNLOCK();
-    rdma_error_report("DMA sync: No mapping found for guest=%#lx", guest_addr);
-    return -1;
-}
-
-/* Implement pci_dma_unmap - called by QEMU PVRDMA code via hw/pci/pci.h */
-void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
-                   dma_addr_t access_len)
-{
-    (void)dev;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-
-    if (!g_hash_table_remove(dma_map_table, buffer)) {
-        rdma_debug_report(
-            "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
-            buffer);
-    }
-
-    DMA_MAP_UNLOCK();
-}
-
-/* -------------------------------------------------------------------------
- * Resource accessors for the ionic migration path (ionic_adminq.c).
- * -------------------------------------------------------------------------
- */
 
 /* -------------------------------------------------------------------------
  * Thin wrappers for ionic_adminq.c (cannot include rdma_rm.h directly).

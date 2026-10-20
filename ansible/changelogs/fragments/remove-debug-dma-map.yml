@@ -1,0 +1,10 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+removed_features:
+  - >-
+    ``ernic_debug_dma_map`` is gone from ``ernic_host_setup``, along with
+    ``ERNIC_DEBUG_DMA_MAP`` in the service env file.  The server code that
+    read it no longer exists, so the variable already had no effect.

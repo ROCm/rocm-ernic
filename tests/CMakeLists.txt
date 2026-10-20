@@ -473,7 +473,6 @@ add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
     ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
 )
 target_include_directories(test_rdma_res_tbl PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -495,9 +494,8 @@ target_link_directories(test_rdma_res_tbl PRIVATE
 target_link_libraries(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# QEMU utility stubs test: bitmap word boundaries, the oversize-map abort,
-# and qemu_poll_ns() timeout handling. It links the stubs translation unit
-# directly. The vendored header trees are SYSTEM includes, as in the main
+# QEMU utility stubs test: bitmap word boundaries and the oversize-map
+# abort. It links the stubs translation unit directly. The vendored header trees are SYSTEM includes, as in the main
 # build, so the test source itself is still warning-checked.
 add_executable(test_qemu_stubs test_qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
@@ -834,7 +832,7 @@ add_test(
 )
 set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# QEMU utility stubs unit test (bitmap, qemu_poll_ns)
+# QEMU utility stubs unit test (bitmap)
 add_test(
     NAME qemu-stubs-unit
     COMMAND $<TARGET_FILE:test_qemu_stubs>

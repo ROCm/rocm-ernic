@@ -165,8 +165,6 @@ started with `qemu_thread_create()`.
   hangs.
 - **`volatile` is not synchronization.** Its one legitimate use here is
   `volatile sig_atomic_t` for a flag set by a signal handler.
-- **Don't use `qatomic_*()` for shared data.** They aren't atomic (see
-  [Known defects and traps](#trap-qatomic_-are-not-atomic)).
 - **Explain any memory order other than the default.** Plain atomic
   operations are sequentially consistent, which is always correct. If you
   use `memory_order_relaxed` or acquire/release, comment why it's enough,
@@ -527,13 +525,13 @@ them and where their configuration files are picked up.
     module's opaque type to a file that includes the module's header,
     which already declares it.
   - Naming an internal header instead of the public one, or insisting on
-    one of several headers that repeat a typedef (C11 allows that, and the
-    QEMU compatibility headers in `src/qemu-compat/include/` do it for
-    `PCIDevice`, `dma_addr_t`, and others). Fix these with a mapping in
+    one of several headers that repeat a typedef (C11 allows that, and
+    `rocm_ernic_compat.h` and `rocm_ernic_internal.h` both do it for
+    `rocm_ernic_dev_t`). Fix these with a mapping in
     [`cmake/iwyu-libc.imp`](cmake/iwyu-libc.imp) or
     [`cmake/iwyu-ernic.imp`](cmake/iwyu-ernic.imp), or with an
     `// IWYU pragma: export` on the include in the header that should
-    provide the symbol, as `hw/pci/pci.h` does for `hw/pci/pci_device.h`.
+    provide the symbol.
 
   CI ([iwyu.yml](.github/workflows/iwyu.yml)) runs IWYU but only fails if
   IWYU itself stops working. It lists the files with suggestions in the job
@@ -860,14 +858,6 @@ what follows would silently misparse against an unupgraded peer.
 If you need guest-visible networking, the TAP/bridge is the path. Do not
 rebuild a second one inside the mesh.
 
-### Trap: `qatomic_*()` are not atomic
-
-The `qatomic_*()` functions in
-[`src/qemu-compat/qemu_stubs.c`][stubs] are plain loads, stores, and
-read-modify-writes on an `int`, written when the device logic was
-single-threaded. Nothing calls them any more. Don't add a caller: use
-`<stdatomic.h>` for anything shared between threads.
-
 ### Adjacent issues
 
 Observed alongside the GID bug. The first two have since been traced in
@@ -908,4 +898,3 @@ replaces its own entries.
 [adminq]: src/ionic_adminq.c
 [pool]: src/rocm_ernic_compat.c
 [ethnet]: src/ionic_eth_net.c
-[stubs]: src/qemu-compat/qemu_stubs.c

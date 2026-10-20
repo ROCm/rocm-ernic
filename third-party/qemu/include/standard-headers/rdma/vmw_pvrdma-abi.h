@@ -48,7 +48,7 @@
 #ifndef __VMW_PVRDMA_ABI_H__
 #define __VMW_PVRDMA_ABI_H__
 
-#include "standard-headers/linux/types.h"
+#include <stdint.h>
 
 enum pvrdma_wr_opcode {
     PVRDMA_WR_RDMA_WRITE,
