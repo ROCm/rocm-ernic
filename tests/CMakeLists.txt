@@ -498,8 +498,8 @@ target_link_directories(ernic-test-tcp-thread-stop PRIVATE
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# RDMA resource-table allocator test. rdma_rm.c is vendored and keeps its
-# allocator static inline, so the test drives it through the resource
+# RDMA resource-table allocator test. rdma_rm.c keeps its allocator
+# static inline, so the test drives it through the resource
 # manager's CQE context table. It stubs the backend entry points rdma_rm.c
 # calls, so no RDMA subsystem link is needed. ERNIC_TEST_VENDORED_SOURCES
 # silences rdma_rm.c with -w, and the test's own code is still

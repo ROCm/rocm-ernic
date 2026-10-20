@@ -148,8 +148,9 @@ CheckOptions:
   readability-trailing-comma.SingleLineCommaPolicy: Ignore
 
 # Report problems in every header that isn't a system header, except the
-# vendored ones under third-party/, which aren't ours to fix. Most of
-# those are SYSTEM includes anyway; this leaves out any that aren't.
+# QEMU ones under third-party/, which are exempt until they're cleaned up
+# and moved into src/. Most of those are SYSTEM includes anyway; this
+# leaves out any that aren't.
 HeaderFilterRegex: '.*'
 ExcludeHeaderFilterRegex: '.*/third-party/.*'
 SystemHeaders: false

@@ -147,8 +147,10 @@ endif()
 # Source file groups
 # ---------------------------------------------------------------
 
-# Upstream QEMU/VMware code, under Oracle / Red Hat copyright.
-# Not ours to fix
+# rocm-ernic's fork of QEMU's PVRDMA code, under Oracle / Red Hat
+# copyright. Treated as vendored, and exempt from the warning and lint
+# checks, until it's cleaned up and moved into src/ (see
+# third-party/README.md)
 set(ERNIC_VENDORED_SOURCES
     third-party/qemu/hw/rdma/rdma_backend.c
     third-party/qemu/hw/rdma/rdma_rm.c
@@ -270,7 +272,7 @@ target_compile_options(rocm-ernic PRIVATE
 
 # Suppress strict warnings under third-party/
 #
-# Vendored code is not ours to fix.
+# Until the code there is cleaned up and moved into src/.
 set_source_files_properties(
     ${ERNIC_VENDORED_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-w"

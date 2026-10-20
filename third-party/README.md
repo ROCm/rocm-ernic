@@ -2,10 +2,11 @@
 
 Everything here is in [`qemu/`](qemu/): the core of QEMU's paravirtual
 RDMA (PVRDMA) device model, which rocm-ernic forked and has since
-rewritten heavily. It has been treated as vendored code, but most of
-what is in it now was written in this repository, and nobody maintains
-the upstream original. It is going to be un-vendored, cleaned up, and
-treated like the rest of rocm-ernic's source; see [Plan](#plan).
+rewritten heavily. Most of what is in it now was written in this
+repository, and nobody maintains the upstream original. It's ours to
+change. The build treats it as vendored only so that its problems don't
+all have to be fixed at once; once they are, it moves into `src/`. See
+[Plan](#plan).
 
 [`qemu/README.md`](qemu/README.md) covers the files themselves: what
 each one is, how the build uses them, and their licenses.
@@ -117,13 +118,13 @@ rocm-ernic changes exist only here.
 
 ## Plan
 
-The code is going to be un-vendored, cleaned up, and held to the same
-rules as the rest of rocm-ernic's source. Whether it stays together in
-one place, which keeps its licensing simple, or moves into `src/`
-alongside the code that uses it is not decided yet.
+The code is going to be cleaned up, moved into `src/` alongside the code
+that uses it, and held to the same rules as the rest of rocm-ernic's
+source. It can be changed in the meantime; AGENTS.md asks that changes
+to it follow the rules for `src/`.
 
-Until that lands, AGENTS.md's vendored-code rule and the build still
-treat it as vendored, so it gets fewer checks than `src/`:
+Until it moves, the build still treats it as vendored, so it gets fewer
+checks than `src/`:
 
 - Its `.c` files compile with `-w`, and its headers are SYSTEM
   includes, so the compilers report nothing in it.
@@ -137,8 +138,8 @@ on the built program. `test_rdma_res_tbl` and
 `ernic-test-ionic-harness` links all of it into the emulated device it
 drives.
 
-Un-vendoring it means taking it out of each of those exemptions and
-fixing what they then report. Problems already known:
+Moving it means taking it out of each of those exemptions and fixing
+what they then report. Problems already known:
 
 - `PVRDMADev.pending_cq_interrupt` is a `volatile int` set with the GNU
   builtin `__atomic_store_n()`, where AGENTS.md calls for

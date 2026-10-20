@@ -49,8 +49,9 @@ jobs:
           python -m pip install -r prometheus/requirements-exporter.txt
 
       # *.py plus extension-less scripts with a python shebang
-      # (service/ernicctl, prometheus/ernic-exporter). third-party/ and
-      # nix/analysis/triage/ (adapted from xdp2) are vendored, and
+      # (service/ernicctl, prometheus/ernic-exporter). third-party/ is
+      # exempt until its QEMU code moves into src/,
+      # nix/analysis/triage/ (adapted from xdp2) is vendored, and
       # .cmake-format.py is cmakelang configuration that is only valid
       # Python inside cmakelang's own evaluator.
       - name: Find Python files

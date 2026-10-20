@@ -2,8 +2,9 @@
 
 rocm-ernic's fork of the core of QEMU's paravirtual RDMA (PVRDMA)
 device model (`https://gitlab.com/qemu-project/qemu`), which QEMU
-removed in 9.1. It has been rewritten heavily here and is going to be
-un-vendored. [`../README.md`](../README.md) covers where it came from,
+removed in 9.1. It has been rewritten heavily here, can be changed like
+the rest of rocm-ernic's source, and will move into `src/` once it's
+cleaned up. [`../README.md`](../README.md) covers where it came from,
 how far it is from upstream, and the plan for it.
 
 ## Files
@@ -32,7 +33,7 @@ how far it is from upstream, and the plan for it.
   `src/rdma` on its include path.
 - The QEMU APIs the code calls are implemented in
   [`src/qemu-compat/`](../../src/qemu-compat/).
-- Until the code is un-vendored, the build still treats it as vendored:
+- Until the code moves into `src/`, the build still treats it as vendored:
   the `.c` files compile with `-w`, both header trees are SYSTEM
   includes, and clang-format, clang-tidy, and IWYU skip it.
 

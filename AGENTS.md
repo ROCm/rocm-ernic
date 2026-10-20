@@ -318,9 +318,7 @@ general pattern here.
   `src/ionic_adminq_priv.h`, and lists the module's `.c` among its sources
   in `tests/CMakeLists.txt`. Only the module and its tests include that
   header. A function the header declares shares the program with every
-  other module, so give it the module's prefix. Vendored code can't be
-  changed to declare anything, so test it through its public functions, as
-  `test_rdma_res_tbl.c` does.
+  other module, so give it the module's prefix.
 
 ## Linters, warnings, and sanitizers (mandatory)
 
@@ -683,10 +681,27 @@ as `tomllib`, `except*`, or `typing.Self` (all 3.11).
   and its version is pinned in the workflow; lint with that version, since
   older ones report problems that it doesn't and miss ones that it does.
 
-## Vendored code
+## The QEMU code in `third-party/`
 
-Code in `third-party/` does not belong to AMD and should not be modified,
-including formatting.
+`third-party/` holds only `third-party/qemu/`: the core of QEMU's
+paravirtual RDMA (PVRDMA) device model, which rocm-ernic forked and has
+since rewritten heavily. Upstream QEMU has deleted it, so nobody else
+maintains it. **It's ours, and fine to modify.** It will move into
+`src/` once it's cleaned up. [third-party/README.md](third-party/README.md)
+has its history and the problems already known in it.
+
+The build treats it as vendored only so that those problems don't all
+have to be fixed at once. Until it moves, a change there gets fewer
+checks than one in `src/`:
+
+- Its `.c` files compile with `-w`, and its headers are SYSTEM includes,
+  so the compilers report no warnings in it.
+- clang-format, clang-tidy, and IWYU skip it.
+- The coverage floor counts `src/` only.
+
+Hold what you change there to the rules for `src/` anyway, and check it
+by hand for what those exemptions hide. Don't reformat whole files in an
+unrelated change; the cleanup will come with the move.
 
 ## Copyright lines
 
@@ -831,13 +846,13 @@ rebuild a second one inside the mesh.
 The `qatomic_*()` functions in
 [`src/qemu-compat/qemu_stubs.c`][stubs] are plain loads, stores, and
 read-modify-writes on an `int`, written when the device logic was
-single-threaded. Their only remaining callers are in the vendored QEMU
+single-threaded. Their only remaining callers are in the forked QEMU
 code in `third-party/qemu/hw/rdma/`, which is safe only because that
 code's completion thread (started by `rdma_backend_start()`) is never
 started.
 
 Use `<stdatomic.h>` for anything shared between threads. Don't start the
-vendored completion thread without first making these real atomics.
+forked completion thread without first making these real atomics.
 
 ### Adjacent issues
 
