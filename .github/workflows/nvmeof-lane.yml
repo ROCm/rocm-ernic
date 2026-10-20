@@ -459,8 +459,12 @@ jobs:
           StrictHostKeyChecking no
           UserKnownHostsFile "$HOME/.ssh/known_hosts"
         EOF
+        # SSH_KEY_PRIVATE and VM_USER are not exported through
+        # $GITHUB_ENV: they come from vm-info.json in the downloaded
+        # image, and a newline in either would let it define any
+        # variable, such as BASH_ENV, for every later step.  The steps
+        # that need them map them from steps.vm_info.outputs instead.
         echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
-        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
         echo "✓ SSH_CONFIG=$SSH_CONFIG:"
         cat "$SSH_CONFIG"
     
@@ -479,7 +483,6 @@ jobs:
         for i in {1..60}; do
           if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
-            echo "VM_USER=$VM_USER" >> "$GITHUB_ENV"
             exit 0
           fi
           echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
@@ -504,6 +507,8 @@ jobs:
 
     - name: Verify the ionic PCI function is present in the VM
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Verifying the emulated PCI function in the VM ==="
 
@@ -594,6 +599,8 @@ jobs:
 
     - name: Install kernel headers, build tools and pciutils in VM
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Installing kernel headers, build tools and pciutils in VM ==="
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
@@ -640,6 +647,9 @@ jobs:
 
     - name: Provision the VM with the Ansible collection
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
+        SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
       run: |
         echo "=== Provisioning the guest via ernic_guest_setup ==="
         ERNIC_RUN_DIR=/tmp/ernic-ci
@@ -688,6 +698,8 @@ jobs:
 
     - name: Verify the RDMA device and the running controller
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Verifying the RDMA device and the nvmeof controller ==="
 
@@ -741,13 +753,14 @@ jobs:
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "ip -4 -br addr show rocm-ernic0; ip route" || true
 
-        echo "RDMA_DEVICE=$DEVICE" >> "$GITHUB_ENV"
         echo "✓ $DEVICE is PORT_ACTIVE and the controller is up"
 
     - name: NVMe-oF end-to-end tests (Ansible)
       shell: bash
       env:
         PUBLISH: ${{ inputs.publish }}
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
+        SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
       run: |
         echo "=== NVMe-oF over the emulated fabric ==="
         ERNIC_RUN_DIR=/tmp/ernic-ci
