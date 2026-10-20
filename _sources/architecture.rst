@@ -1146,7 +1146,7 @@ Where to Look in the Source
      - Bridge to the QEMU-derived core; guest-memory mapping for
        it; mesh wrappers; shared limits
    * - ``third-party/qemu/hw/rdma/``
-     - Vendored resource manager and backend dispatch
+     - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
      - Backend registry; none, loopback, and TCP mesh backends
    * - ``src/rdma/pvrdma_stats.c``

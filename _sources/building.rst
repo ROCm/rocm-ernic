@@ -133,10 +133,10 @@ Warnings as Errors
 
 ``ERNIC_WERROR`` adds ``-Werror`` to every target that
 ``ernic_set_compiler_flags()`` sets up: the server, the test
-programs, and the fuzz harness replay programs. The vendored
-QEMU sources under ``third-party/`` are compiled with ``-w``
-regardless, so the flag only governs code this project
-maintains.
+programs, and the fuzz harness replay programs. The QEMU-derived
+sources under ``third-party/`` are compiled with ``-w``
+regardless, until they're cleaned up and moved into ``src/``,
+so the flag doesn't reach them yet.
 
 It defaults to ``OFF`` so that a packager or downstream
 consumer building with a compiler version we have not tested
