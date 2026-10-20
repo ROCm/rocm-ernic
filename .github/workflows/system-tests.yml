@@ -400,8 +400,13 @@ jobs:
         
         # Start VM with vfio-user device
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
+        #
+        # hpet=off: now and then a nested guest's kernel hangs for good
+        # just after setting up the HPET.  See "boot hang" in
+        # scripts/qemu-vm-diagnose.sh, which says what to do if it
+        # still happens.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \
@@ -2205,9 +2210,13 @@ jobs:
         echo "=== Starting VM 1 ==="
         VM_DISK_1="${COPY_VM_DISK_1}"
         SSH_PORT_1=2222
-        
+
+        # hpet=off: now and then a nested guest's kernel hangs for good
+        # just after setting up the HPET.  See "boot hang" in
+        # scripts/qemu-vm-diagnose.sh, which says what to do if it
+        # still happens.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem1" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem1,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \
@@ -2250,9 +2259,10 @@ jobs:
         echo "=== Starting VM 2 ==="
         VM_DISK_2="${COPY_VM_DISK_2}"
         SSH_PORT_2=2223
-        
+
+        # hpet=off: see Start VM 1.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem2" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem2,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \

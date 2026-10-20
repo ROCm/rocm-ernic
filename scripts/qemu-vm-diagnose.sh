@@ -10,6 +10,9 @@
 # as well, because a key-only guest that will not answer SSH cannot be
 # logged into.
 #
+# It also samples where the vCPUs are, and names the known case of a guest
+# kernel that hung in early boot; see "boot hang" below.
+#
 # Usable outside CI: the same failure is worth dumping when reproducing a
 # stuck guest by hand on the self-hosted node.
 
@@ -130,8 +133,10 @@ qmp_check() {
 
     python3 - "$QMP_SOCK" <<'EOF'
 import json
+import re
 import socket
 import sys
+import time
 
 sock_path = sys.argv[1]
 
@@ -183,11 +188,38 @@ if status.get("status") in ("paused", "io-error", "internal-error"):
     print("  NOTE: a stopped machine looks exactly like a hung one from")
     print("  the outside -- this is the cause, not a symptom.")
 
-for hmp in ("info network", "info usernet", "info block", "info chardev"):
-    res = q.cmd("human-monitor-command", **{"command-line": hmp})
+def hmp(command):
+    res = q.cmd("human-monitor-command", **{"command-line": command})
     out = res.get("return", res.get("error", ""))
-    print(f"\n--- {hmp} ---")
-    print(out if isinstance(out, str) else json.dumps(out))
+    return out if isinstance(out, str) else json.dumps(out)
+
+
+for command in ("info network", "info usernet", "info block", "info chardev",
+                "info cpus"):
+    print(f"\n--- {command} ---")
+    print(hmp(command))
+
+# A guest whose kernel hung is running but going nowhere.  One register
+# dump can't tell a vCPU that's spinning from one that's stuck, so sample
+# each vCPU's RIP several times: one halted (HLT=1) is waiting for an
+# interrupt, one whose RIP moves among a few addresses is spinning, most
+# likely waiting on another vCPU.  The addresses are shifted by KASLR, so
+# compare them with each other, not with System.map.
+SAMPLES = 5
+print(f"\n--- vCPU RIP, {SAMPLES} samples 0.5 s apart ---")
+regs = ""
+for n in range(SAMPLES):
+    if n:
+        time.sleep(0.5)
+    regs = hmp("info registers -a")
+    cpus = re.findall(r"CPU#(\d+).*?RIP=([0-9a-f]+).*?HLT=(\d)", regs, re.S)
+    if not cpus:
+        print("could not parse info registers -a; full output follows")
+        break
+    print(f"{n}: " + "  ".join(f"#{c} {rip} hlt={h}" for c, rip, h in cpus))
+
+print("\n--- info registers -a (last sample) ---")
+print(regs)
 EOF
 }
 
@@ -220,10 +252,46 @@ log_dump() {
     fi
 }
 
+# -------------------------------------------------------------- boot hang
+
+# The hosted runners are themselves VMs, so a CI guest runs nested. Now and
+# then (three times in about 170 System Tests runs, 2026-10-01 to
+# 2026-10-20, in the loopback, S3, and TCP mesh jobs alike) the guest kernel
+# stops right after "hpet0: 3 comparators", before "clocksource: Switched to
+# clocksource kvm-clock", and stays there with every vCPU busy. That's
+# before the ionic driver loads, and the server answered every config space
+# access the guest made, so it isn't the emulator.
+#
+# The hosted workflows start guests with -machine hpet=off, to see whether
+# taking the HPET away avoids the hang. If this still reports a hang, it
+# didn't, and the next step is to stop waiting the hang out: a healthy guest
+# answers SSH within about 30 s, so the boot wait can reset a guest whose
+# console has stopped growing short of the clocksource switch (QMP
+# system_reset), once, with a ::warning::, and fail if it hangs again. That
+# is a retry, which AGENTS.md otherwise rules out for a flaky test. It's
+# justified only because the hang is in the guest kernel before anything of
+# ours runs, so check the vCPU samples above first.
+boot_hang_check() {
+    [ -n "$CONSOLE_LOG" ] && [ -f "$CONSOLE_LOG" ] || return 0
+    grep -q 'Linux version' "$CONSOLE_LOG" || return 0
+    grep -q 'clocksource: Switched to clocksource' "$CONSOLE_LOG" && return 0
+
+    banner "the guest kernel hung setting up its clocks"
+    echo "The kernel started but never switched to its final clocksource."
+    echo "This is the occasional nested-guest hang described under"
+    echo "\"boot hang\" in scripts/qemu-vm-diagnose.sh, not a failure of"
+    echo "the code under test."
+    echo "If it keeps happening, that comment says what to do next."
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        echo "::error title=${LABEL}: guest kernel hung during boot::The kernel never switched to its final clocksource. See \"boot hang\" in scripts/qemu-vm-diagnose.sh."
+    fi
+}
+
 listener_check
 process_check
 qmp_check
 log_dump
+boot_hang_check
 
 echo ""
 echo "=== ${LABEL}: diagnostics complete ==="
