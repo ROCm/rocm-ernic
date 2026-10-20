@@ -1187,7 +1187,10 @@ int main(int argc, char *argv[])
     dev->mac_addr[4] = 0x2d;
     dev->mac_addr[5] = 0x6e;
 
-    /* Parse command line options */
+    /* Parse command line options.  getopt_long() keeps its state in globals,
+     * such as optind, so it isn't thread safe, but no other thread has
+     * started yet */
+    /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
     while ((opt = getopt_long(argc, argv, "s:G:b:vL:S:m:l:hT:", long_options,
                               NULL)) != -1) {
         switch (opt) {

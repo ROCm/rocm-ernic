@@ -902,19 +902,19 @@ struct fini_case {
     const char *description;
     const char *expected;
     enum mgr_block block;
-    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+    uint32_t interval; /* health_check_interval_sec */
 };
 
 static const struct fini_case fini_cases[] = {
     {"positive", "a manager with two registered workers",
-     "tcp_fini() returns and every thread exits", BLOCK_NONE, "3600"},
+     "tcp_fini() returns and every thread exits", BLOCK_NONE, LONG_INTERVAL_S},
     {"negative", "a worker that stops reading the manager's heartbeats",
      "the blocked heartbeat gives up, so the health-check join returns",
-     BLOCK_HEARTBEAT, "1"},
+     BLOCK_HEARTBEAT, 1},
     {"negative", "a worker that stops reading while another registers",
      "the broadcast blocked under conn_table_lock gives up, so the receive "
      "threads can be stopped",
-     BLOCK_BROADCAST, "3600"},
+     BLOCK_BROADCAST, LONG_INTERVAL_S},
 };
 
 /* A TCP port that is free on every address, as the manager binds. */
@@ -1079,12 +1079,10 @@ static int run_fini_case(const struct fini_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
+    if (port == 0 || tcp_init_with_interval(&dev, config, c->interval) != 0) {
         printf("FAIL fini %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -1232,8 +1230,6 @@ static int run_create_case(const struct create_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
@@ -1243,7 +1239,7 @@ static int run_create_case(const struct create_case *c)
     }
     if (c->when == FAIL_IN_INIT)
         atomic_store(&g_creates_left, c->creates_left);
-    init_ret = rdma_backend_ops_tcp.init(&dev, config);
+    init_ret = tcp_init_with_interval(&dev, config, LONG_INTERVAL_S);
 
     if (c->when == FAIL_ON_ACCEPT && init_ret == 0) {
         TcpBackendPrivate *priv = dev.backend_private;
@@ -2578,12 +2574,11 @@ static int run_reg_case(const struct reg_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL registration %s: %s; could not start a manager\n",
                c->category, c->description);
         alarm(0);
@@ -3590,6 +3585,7 @@ static int wr_creates_left(enum wr_scenario scenario)
 struct wr_init {
     RdmaBackendDev dev;
     char config[64];
+    uint32_t interval; /* health_check_interval_sec */
     pthread_t tid;
     bool running; /* tid hasn't been joined */
     int ret;
@@ -3601,7 +3597,7 @@ static void *wr_init_run(void *opaque)
     struct wr_init *in = opaque;
     double start = now_s();
 
-    in->ret = rdma_backend_ops_tcp.init(&in->dev, in->config);
+    in->ret = tcp_init_with_interval(&in->dev, in->config, in->interval);
     in->took = now_s() - start;
     return NULL;
 }
@@ -3986,9 +3982,8 @@ static int run_wr_case(const struct wr_case *c)
     atomic_store(&g_exits, 0);
     atomic_store(&g_create_failures, 0);
     memset(&in, 0, sizeof(in));
+    in.interval = LONG_INTERVAL_S;
     in.ret = -1;
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
@@ -4338,39 +4333,39 @@ struct reap_case {
     const char *description;
     const char *expected;
     enum reap_scenario scenario;
-    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+    uint32_t interval; /* health_check_interval_sec */
 };
 
 static const struct reap_case reap_cases[] = {
     {"positive", "100 peers that connect and hang up without registering",
      "each is closed, and its thread joined, by the time the next connects: "
      "one left waiting, and 2 descriptors more open, not 102",
-     REAP_PROBES, "3600"},
+     REAP_PROBES, LONG_INTERVAL_S},
     {"negative", "a peer refused for running an older protocol version",
      "sent the refusal, then closed by the next health-check pass",
-     REAP_REFUSED, "1"},
+     REAP_REFUSED, 1},
     {"negative",
      "a peer that, before registering, sends an ionic message for a "
      "registered worker",
      "not relayed; the connection is closed by the next health-check pass",
-     REAP_EARLY, "1"},
+     REAP_EARLY, 1},
     {"negative", "a peer that has sent nothing for the registration timeout",
-     "closed by the next health-check pass", REAP_TIMEOUT, "1"},
+     "closed by the next health-check pass", REAP_TIMEOUT, 1},
     {"boundary", "a peer that has sent nothing, with time left to register",
-     "kept through two health-check passes", REAP_YOUNG, "1"},
+     "kept through two health-check passes", REAP_YOUNG, 1},
     {"boundary", "64 peers waiting to register, then another",
      "the next is closed at once; once one of the 64 hangs up, the one after "
      "it is let in",
-     REAP_CAP, "3600"},
+     REAP_CAP, LONG_INTERVAL_S},
     {"negative", "a peer that connects while the manager is out of descriptors",
      "accept() is retried every 100 ms, not in a loop that floods the log, "
      "and succeeds once descriptors are free",
-     REAP_NO_FDS, "3600"},
+     REAP_NO_FDS, LONG_INTERVAL_S},
     {"negative", "a registered worker that hangs up",
      "the next health-check pass closes its connection, joins its thread, "
      "takes it out of the connections table, and reports it dead to the "
      "other workers",
-     REAP_HANGUP, "1"},
+     REAP_HANGUP, 1},
 };
 
 /* The peers' descriptors a row keeps open, closed at the end of the row */
@@ -4887,12 +4882,10 @@ static int run_reap_case(const struct reap_case *c)
     memset(&k, 0, sizeof(k));
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
+    if (port == 0 || tcp_init_with_interval(&dev, config, c->interval) != 0) {
         printf("FAIL reap %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -5215,12 +5208,11 @@ static int run_sender_case(const struct sender_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0) {
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL sender %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -5469,9 +5461,7 @@ static const char *lt_register_vs_stop(void)
 
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
-    if (port == 0 || rdma_backend_ops_tcp.init(&dev, config) != 0)
+    if (port == 0 || tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0)
         return "could not start a manager";
     priv = dev.backend_private;
     tcp_stop_health_check_thread(priv);
@@ -5733,7 +5723,7 @@ struct dc_case {
     const char *description;
     const char *expected;
     enum dc_scenario scenario;
-    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+    uint32_t interval; /* health_check_interval_sec */
 };
 
 static const struct dc_case dc_cases[] = {
@@ -5741,15 +5731,15 @@ static const struct dc_case dc_cases[] = {
      "the worker closes its connection, which ends the peer's, and connects "
      "again, and the peer replaces its dead connection; each old one is "
      "closed and its thread joined once",
-     DC_DEAD_THEN_ALIVE, "3600"},
+     DC_DEAD_THEN_ALIVE, LONG_INTERVAL_S},
     {"negative",
      "the peer drops its connection to the worker, on a 1 s interval",
      "the worker closes its end and connects again, with no update",
-     DC_HANGS_UP, "1"},
+     DC_HANGS_UP, 1},
     {"negative",
      "a peer that connected to the worker hangs up, on a 1 s interval",
      "the worker closes the connection, rather than keeping it in CLOSE_WAIT",
-     DC_ACCEPTED, "1"},
+     DC_ACCEPTED, 1},
 };
 
 /* A worker, its connection to the manager, and the port it listens on */
@@ -5759,9 +5749,10 @@ struct dc_worker {
     uint16_t port;
 };
 
-static void dc_init(struct dc_worker *w)
+static void dc_init(struct dc_worker *w, uint32_t interval)
 {
     memset(w, 0, sizeof(*w));
+    w->in.interval = interval;
     w->in.ret = -1;
     w->mgr = -1;
 }
@@ -5963,10 +5954,8 @@ static int run_dc_case(const struct dc_case *c)
     atomic_store(&g_creates, 0);
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
-    dc_init(&a);
-    dc_init(&b);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
+    dc_init(&a, c->interval);
+    dc_init(&b, c->interval);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);

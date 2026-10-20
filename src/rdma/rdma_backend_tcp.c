@@ -237,19 +237,22 @@ char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN])
 }
 
 /*
- * Parse ERNIC_TCP_GUEST_GIDS: a comma-separated list of this instance's own
- * guest RoCE addresses, each in inet_pton() notation.  An IPv4 address is
- * stored in the ::ffff:a.b.c.d mapped form that adminq_parse_roce_hdr()
- * builds for a RoCE-over-IPv4 header, so both branches compare equal to what
- * arrives on the wire.
+ * Parse the value of ERNIC_TCP_GUEST_GIDS, which may be NULL: a
+ * comma-separated list of this instance's own guest RoCE addresses, each in
+ * inet_pton() notation.  An IPv4 address is stored in the ::ffff:a.b.c.d
+ * mapped form that adminq_parse_roce_hdr() builds for a RoCE-over-IPv4
+ * header, so both branches compare equal to what arrives on the wire.
  *
  * A malformed entry is reported and skipped rather than fatal: losing one
  * address costs connectivity to one peer, which the unresolved-GID error
  * names, while refusing to start costs the whole node.
+ *
+ * The caller reads the environment, so the tests can pass a list without
+ * calling setenv(), which isn't thread safe.
  */
-uint32_t tcp_parse_guest_gids(uint8_t out[TCP_MAX_NODE_GIDS][16])
+uint32_t tcp_parse_guest_gids(const char *val,
+                              uint8_t out[TCP_MAX_NODE_GIDS][16])
 {
-    const char *val = getenv("ERNIC_TCP_GUEST_GIDS");
     uint32_t n = 0;
 
     if (!val || !*val)
@@ -3480,7 +3483,14 @@ void tcp_stop_threads(TcpBackendPrivate *priv)
     tcp_stop_recv_threads(priv);
 }
 
-static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
+/*
+ * tcp_init() with the health-check interval, in seconds, given rather than
+ * read from ERNIC_TCP_HEALTH_INTERVAL, so the tests can set it without
+ * calling setenv(), which isn't thread safe.  health_interval_s must be
+ * positive.
+ */
+int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
+                           uint32_t health_interval_s)
 {
     TcpBackendPrivate *priv;
     int ret;
@@ -3518,7 +3528,8 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     qemu_mutex_init(&priv->gid_broadcast_lock);
     qemu_mutex_init(&priv->topology_broadcast_lock);
 
-    priv->num_local_gids = tcp_parse_guest_gids(priv->local_gids);
+    priv->num_local_gids =
+        tcp_parse_guest_gids(getenv("ERNIC_TCP_GUEST_GIDS"), priv->local_gids);
     if (priv->num_local_gids == 0) {
         rdma_warn_report("TCP: ERNIC_TCP_GUEST_GIDS is unset or empty; this "
                          "node advertises no GIDs and peers will refuse to "
@@ -3536,9 +3547,7 @@ static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
     qemu_mutex_init(&priv->peer_lock);
     qemu_cond_init(&priv->peer_cond);
     atomic_init(&priv->peer_thread_running, false);
-    /* tcp_env_int() only returns positive values */
-    priv->health_check_interval_sec = (uint32_t)tcp_env_int(
-        "ERNIC_TCP_HEALTH_INTERVAL", TCP_DEFAULT_HEALTH_INTERVAL_S);
+    priv->health_check_interval_sec = health_interval_s;
     priv->next_available_node_id = 1; /* Manager starts assigning from 1 */
     priv->manager_host = NULL;
     priv->manager_port = 0;
@@ -3758,6 +3767,15 @@ error:
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
     g_free(priv);
     return -1;
+}
+
+static int tcp_init(RdmaBackendDev *backend_dev, const char *config)
+{
+    /* tcp_env_int() only returns positive values */
+    return tcp_init_with_interval(
+        backend_dev, config,
+        (uint32_t)tcp_env_int("ERNIC_TCP_HEALTH_INTERVAL",
+                              TCP_DEFAULT_HEALTH_INTERVAL_S));
 }
 
 static void tcp_fini(RdmaBackendDev *backend_dev)

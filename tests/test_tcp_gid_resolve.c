@@ -263,11 +263,10 @@ static void test_env_parsing(void)
 
     printf("  ERNIC_TCP_GUEST_GIDS parsing\n");
 
-    unsetenv("ERNIC_TCP_GUEST_GIDS");
-    CHECK(tcp_parse_guest_gids(out) == 0, "unset env yielded GIDs");
+    CHECK(tcp_parse_guest_gids(NULL, out) == 0, "unset env yielded GIDs");
+    CHECK(tcp_parse_guest_gids("", out) == 0, "empty env yielded GIDs");
 
-    setenv("ERNIC_TCP_GUEST_GIDS", "192.168.100.11, fe80::3 ,bogus", 1);
-    uint32_t n = tcp_parse_guest_gids(out);
+    uint32_t n = tcp_parse_guest_gids("192.168.100.11, fe80::3 ,bogus", out);
     CHECK(n == 2, "expected 2 parsed GIDs, got %u", n);
 
     gid_v4(expect, 11);
@@ -279,8 +278,6 @@ static void test_env_parsing(void)
     expect[1] = 0x80;
     expect[15] = 0x03;
     CHECK(memcmp(out[1], expect, 16) == 0, "IPv6 entry was not stored raw");
-
-    unsetenv("ERNIC_TCP_GUEST_GIDS");
 }
 
 /* The advertisement goes on the wire whole, so the slots past num_gids must

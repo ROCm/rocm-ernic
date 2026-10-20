@@ -28,6 +28,7 @@
 #include <time.h>
 
 #include "qemu/thread.h"
+#include "rdma_backend_defs.h"
 #include "rdma_backend.h"
 #include "rocm_ernic_compat.h"
 
@@ -556,7 +557,8 @@ void tcp_bufpool_destroy(TcpBufPool *pool);
 
 /* GIDs and the GID -> node table */
 char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN]);
-uint32_t tcp_parse_guest_gids(uint8_t out[TCP_MAX_NODE_GIDS][16]);
+uint32_t tcp_parse_guest_gids(const char *val,
+                              uint8_t out[TCP_MAX_NODE_GIDS][16]);
 void tcp_gid_key_free(gpointer key);
 void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids);
@@ -595,6 +597,10 @@ int tcp_connect_to_remote(const char *host, uint16_t port,
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      TcpBufPool *pool, atomic_bool *running,
                      uint64_t deadline_ms);
+
+/* Setup */
+int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
+                           uint32_t health_interval_s);
 
 /* Threads, and what they do */
 bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
