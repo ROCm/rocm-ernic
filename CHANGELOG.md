@@ -4,6 +4,20 @@
 
 ### Added
 
+* A node can claim and withdraw GIDs while it is running, instead of only
+  announcing the set `ERNIC_TCP_GUEST_GIDS` named at startup. The claim is
+  recorded locally and re-advertised to the mesh, so an address a guest
+  configures after the mesh has formed resolves on its peers rather than
+  nowhere. `ERNIC_TCP_GUEST_GIDS` still works and is still the way to
+  declare a guest's addresses up front; nothing needs changing to keep the
+  old behaviour. The mesh protocol is unchanged -- `TCP_MSG_NODE_GIDS`
+  already carried "this node's current set" and its handler replaces rather
+  than merges -- so a node doing this interoperates with one that does not.
+* `ernic-test-gsi-mesh` (CTest `gsi-mesh`) runs two whole devices in one
+  process, joined over loopback TCP by the real mesh backend, and checks
+  that a GID claimed after the mesh formed resolves to the peer's node from
+  both sides. It needs no VM, no RDMA device and no root, so it runs in
+  every CI build leg. `ERNIC_TEST_MESH_PORT` moves its listening port.
 * `-L` / `--log-level` and the `ERNIC_LOG_LEVEL` environment variable select
   the server log verbosity (`none`, `error`, `warn`, `info`, `debug`).
 * `-G` / `--socket-group GROUP` lets the members of a group, given by name

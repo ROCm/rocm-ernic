@@ -192,6 +192,7 @@ static bool tcp_worker_registration_done(TcpBackendPrivate *priv,
 
 /* Forward declarations */
 static void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
+static void tcp_advertise_local_gids(TcpBackendPrivate *priv);
 static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                                const TcpNodeGidsPayload *payload);
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
@@ -2029,19 +2030,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
 
                 /*
                  * The node id is only known now, so this is the first point
-                 * at which this node can say which GIDs are its own.  Record
-                 * them locally too: a QP whose destination is this node's own
-                 * guest has to resolve to the local node, not fail.
+                 * at which this node can say which GIDs are its own.
                  */
-                tcp_gid_claims_set(priv, assigned_id,
-                                   tcp_const_gids(priv->local_gids),
-                                   priv->num_local_gids);
-
-                TcpNodeGidsPayload mine;
-                tcp_fill_node_gids(&mine, assigned_id,
-                                   tcp_const_gids(priv->local_gids),
-                                   priv->num_local_gids);
-                tcp_send_node_gids(priv, conn, &mine);
+                tcp_advertise_local_gids(priv);
                 break;
             }
 
@@ -2741,6 +2732,52 @@ void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
     out->num_gids = htonl(num_gids);
     for (uint32_t i = 0; i < num_gids; i++)
         memcpy(out->gids[i], gids[i], 16);
+}
+
+/*
+ * Record this node's own GIDs and tell the mesh about them.
+ *
+ * Called at registration, and again whenever the set changes -- a guest that
+ * brings its RDMA device up after the mesh has formed, or that is given an
+ * address later, has GIDs nobody has heard of, and a peer cannot resolve what
+ * was never advertised.  TCP_MSG_NODE_GIDS already means "node N's current
+ * set" and its handler replaces rather than merges, so re-advertising is the
+ * whole update protocol: no new message type, no version bump.
+ *
+ * Claims are recorded locally as well as sent.  A QP whose destination is this
+ * node's own guest has to resolve to the local node rather than fail, and on
+ * the manager nothing else would record them at all.
+ *
+ * Silent on a worker before registration: tcp_local_node() is 0 until the
+ * manager answers, and node 0 is the manager's own id, so claiming under it
+ * would collide with the manager's claims and leave both contested.
+ * Registration calls this again, so nothing is lost.  The manager's id is
+ * fixed at 0 from tcp_init(), so it never waits.
+ */
+static void tcp_advertise_local_gids(TcpBackendPrivate *priv)
+{
+    if (!priv)
+        return;
+    if (!priv->is_manager && !tcp_worker_registered(priv))
+        return;
+
+    uint32_t node = tcp_local_node(priv);
+
+    tcp_gid_claims_set(priv, node, tcp_const_gids(priv->local_gids),
+                       priv->num_local_gids);
+
+    if (priv->is_manager) {
+        /* The manager is the authority: push the whole table, which is also
+         * how a claimant learns its advertisement was rejected. */
+        tcp_broadcast_gid_table(priv);
+        return;
+    }
+
+    TcpNodeGidsPayload mine;
+
+    tcp_fill_node_gids(&mine, node, tcp_const_gids(priv->local_gids),
+                       priv->num_local_gids);
+    tcp_send_node_gids(priv, priv->manager_conn, &mine);
 }
 
 /* Send one advertisement on an already-locked-free connection. */
@@ -4208,24 +4245,79 @@ static int tcp_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
  * GID Management
  */
 
+/*
+ * Claim @gid for this node, or withdraw it, and re-advertise.
+ *
+ * This used to overwrite the caller's GID with a synthetic one holding only
+ * the local node id, which claimed nothing: tcp_gid_claims_set() was never
+ * called and the mesh's only GID source was ERNIC_TCP_GUEST_GIDS, read once
+ * at startup.  A guest address that appeared later resolved nowhere, so a
+ * peer-addressed datagram could not find its node.
+ */
+static int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid,
+                         bool add)
+{
+    uint32_t i;
+    bool changed = false;
+
+    if (!priv || !gid)
+        return -EINVAL;
+
+    qemu_mutex_lock(&priv->lock);
+
+    for (i = 0; i < priv->num_local_gids; i++) {
+        if (memcmp(priv->local_gids[i], gid->raw, 16) == 0)
+            break;
+    }
+
+    if (add) {
+        if (i == priv->num_local_gids) {
+            if (priv->num_local_gids >= TCP_MAX_NODE_GIDS) {
+                qemu_mutex_unlock(&priv->lock);
+                rdma_error_report(
+                    "TCP: cannot claim another GID, the %d-entry table is full",
+                    TCP_MAX_NODE_GIDS);
+                return -ENOSPC;
+            }
+            memcpy(priv->local_gids[priv->num_local_gids++], gid->raw, 16);
+            changed = true;
+        }
+    } else if (i < priv->num_local_gids) {
+        /* Order does not matter to a claim set, so close the hole with the
+         * last entry rather than shifting the tail. */
+        priv->num_local_gids--;
+        memcpy(priv->local_gids[i], priv->local_gids[priv->num_local_gids], 16);
+        memset(priv->local_gids[priv->num_local_gids], 0, 16);
+        changed = true;
+    }
+
+    qemu_mutex_unlock(&priv->lock);
+
+    if (changed)
+        tcp_advertise_local_gids(priv);
+
+    return 0;
+}
+
 static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
                        union ibv_gid *gid)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (priv) {
-        uint32_t local = tcp_local_node(priv);
-
-        memset(gid, 0, sizeof(*gid));
-        gid->raw[15] = (uint8_t)local;
-        rdma_info_report("TCP: Added GID with node_id=%u", local);
-    } else {
+    if (!priv) {
         rdma_info_report("TCP: Added GID (no priv)");
+        return 0;
     }
 
-    return 0;
+    return tcp_claim_gid(priv, gid, true);
 }
 
+/*
+ * The ops signature gives an index into the device's GID table, not the GID
+ * itself, and this backend keeps no index-to-GID map -- the table belongs to
+ * the guest kernel.  Withdrawal therefore goes through
+ * tcp_backend_claim_gid(), which the data path calls with the GID in hand.
+ */
 static int tcp_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
                        int gid_idx)
 {
@@ -4365,6 +4457,24 @@ uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
     /* UINT32_MAX on a miss, with no default peer: see
      * tcp_resolve_node_from_gid(). The caller fails the command. */
     return tcp_resolve_node_from_gid(priv, dgid);
+}
+
+/*
+ * Claim @gid for this node (@add) or withdraw it, and re-advertise to the
+ * mesh.  The data path calls this when the guest's GID table changes, so that
+ * a peer can resolve an address that did not exist when the mesh formed.
+ *
+ * Harmless on a non-mesh backend: loopback and none have no peers to tell.
+ */
+int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
+                          bool add)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+        return 0;
+
+    return tcp_claim_gid(priv, gid, add);
 }
 
 void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,

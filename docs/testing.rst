@@ -173,6 +173,31 @@ Like the shell suites, they run the server under the command
 in ``ERNIC_TEST_SERVER_WRAPPER``, so CI's valgrind leg
 covers them too.
 
+Two devices in one process
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``ernic-test-gsi-mesh`` (CTest ``gsi-mesh``) builds the same
+harness twice: one device as the mesh manager and one as a
+worker, joined over loopback TCP by the real TCP backend. It
+checks that the two register, that a GID claimed *after* the
+mesh has formed is advertised and resolves to the claiming
+node from the other side, and that neither node resolves its
+peer's address to itself.
+
+That is the path ``rdma_cm`` depends on and the one
+``ERNIC_TCP_GUEST_GIDS`` cannot cover: it is read once at
+startup, and one environment variable cannot describe two
+devices in one process. ``test_ud_mesh`` covers the same
+journey for a UD datagram, but needs two VMs and two real
+devices, so it cannot run in CI.
+
+.. code-block:: bash
+
+   ctest --test-dir build -R gsi-mesh
+
+``ERNIC_TEST_MESH_PORT`` moves the port it listens on, for a
+runner that already has something on the default.
+
 NVMe-oF tests
 ^^^^^^^^^^^^^
 

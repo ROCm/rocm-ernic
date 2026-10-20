@@ -493,6 +493,15 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes);
+/*
+ * Claim @gid_16bytes for this node, or withdraw it, and re-advertise to the
+ * mesh.  Without this the mesh's only GID source is ERNIC_TCP_GUEST_GIDS,
+ * read once at startup, so a guest address that appears later resolves
+ * nowhere and a peer-addressed datagram cannot find its node.  Returns 0 on
+ * a non-mesh backend, which has no peers to tell.
+ */
+int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
+                         bool add);
 /* Header and body stay separate all the way down to writev. */
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len);
