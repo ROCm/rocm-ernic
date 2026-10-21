@@ -151,6 +151,7 @@ if(ERNIC_BUILD_P4)
     add_executable(ernic-test-p4-engine
         test_p4_engine.c
         ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_exec.c
         ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
     )
     target_include_directories(ernic-test-p4-engine PRIVATE

@@ -99,11 +99,30 @@ dependency is taken only when ``ERNIC_BUILD_P4`` is on, so a
 build without the engine -- which is what a superproject sees
 first -- keeps the dependency set it had before.
 
-A program now loads completely: the header definitions, the
+A program loads completely -- the header definitions, the
 parse state machine, the deparser's emit order, the actions,
-and the pipelines with their tables and conditionals.
-Executing one is separate and does not exist yet, so a loaded
-program still forwards nothing.
+and the pipelines with their tables and conditionals -- and
+then runs: parse, walk the pipeline, deparse.
+
+Where a frame goes is the program's decision. It writes
+``standard_metadata.egress_spec``, and the engine turns that
+into an egress port, so a program without that field cannot
+say where a packet goes and is refused at load. An
+``egress_spec`` naming a port this two-port device does not
+have is a drop, never an index -- a ported program may well
+name one.
+
+A frame the program cannot be run over is dropped rather than
+forwarded unexamined. Failing open would put a frame on the
+wire that the pipeline never saw, which defeats the point of
+having one.
+
+There are no table entries yet: nothing installs them, so
+every lookup misses and takes the table's default action.
+That is enough for a program to forward, drop, or rewrite a
+header, and it is why ``loopback.json`` returns a frame
+unchanged while ``minimal_forward.json`` drops one -- its
+default action is a drop.
 
 The pipeline graph is checked for cycles at load time, by an
 iterative depth-first search with an explicit stack. A loop

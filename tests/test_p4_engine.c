@@ -328,12 +328,20 @@ static void test_load_whole_program_in_one_chunk(void)
  * A header section, a parser over it, and a whole program, as text. Built
  * up in pieces so a case can introduce exactly one defect into one of them.
  */
-#define P4_HDRS                                             \
-    "{\"__meta__\":{\"version\":[2,24]},"                   \
-    "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"       \
-    "\"fields\":[[\"dst\",48],[\"src\",48],[\"ty\",16]]}]," \
-    "\"headers\":[{\"name\":\"eth\",\"id\":0,"              \
-    "\"header_type\":\"eth_t\",\"metadata\":false}],"
+/*
+ * A header section carrying standard_metadata, which v1model always emits
+ * and without which a program cannot say where a packet goes.
+ */
+#define P4_HDRS                                                \
+    "{\"__meta__\":{\"version\":[2,24]},"                      \
+    "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"          \
+    "\"fields\":[[\"dst\",48],[\"src\",48],[\"ty\",16]]},"     \
+    "{\"name\":\"std_t\",\"id\":1,"                            \
+    "\"fields\":[[\"ingress_port\",9],[\"egress_spec\",9]]}]," \
+    "\"headers\":[{\"name\":\"eth\",\"id\":0,"                 \
+    "\"header_type\":\"eth_t\",\"metadata\":false},"           \
+    "{\"name\":\"standard_metadata\",\"id\":1,"                \
+    "\"header_type\":\"std_t\",\"metadata\":true}],"
 
 #define P4_PARSER                                                    \
     P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"                 \
@@ -406,8 +414,10 @@ static void test_load_parses(void)
     check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},\"checksums\":[],"
                          "\"header_types\":[],\"headers\":[]}") == -EINVAL,
           "an empty checksums list is accepted");
-    check(strstr(p4_engine_load_error(eng), "parsers") != NULL,
-          "the walk got past the feature check, to the missing parser");
+    /* With no headers there is no standard_metadata, and a program that
+     * cannot name egress_spec cannot say where a packet goes. */
+    check(strstr(p4_engine_load_error(eng), "egress_spec") != NULL,
+          "the walk got past the feature check, to the missing metadata");
 
     /* Header types and their fields, with a parser and deparser so the
      * walk reaches the part that is not written yet. */
@@ -857,11 +867,128 @@ static void test_load_real_artifacts(void)
     p4_engine_destroy(eng);
 }
 
+/*
+ * Running a loaded program over a frame. This is what the whole loader is
+ * for: the decision has to come from the program, not from the engine.
+ */
+static void test_execute(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+    struct p4_stats st;
+
+    for (size_t i = 0; i < sizeof(in); i++)
+        in[i] = (uint8_t)i;
+
+    /* bmv2's own loopback program forwards what it is given, unchanged. */
+    check(load_fixture(eng, "loopback.json") == 0, "loopback.json loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame runs through the program");
+    check(res.verdict == P4_VERDICT_FORWARD, "loopback forwards the frame");
+    check(res.len == sizeof(in) && memcmp(in, out, sizeof(in)) == 0,
+          "the frame comes out byte for byte");
+
+    /*
+     * The minimal program's table has no entries and its default action is
+     * a drop, so every packet misses and is dropped. The program decides,
+     * not the engine.
+     */
+    check(load_fixture(eng, "minimal_forward.json") == 0,
+          "minimal_forward.json loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame runs through the program");
+    check(res.verdict == P4_VERDICT_DROP,
+          "a table whose default action drops, drops");
+
+    p4_engine_get_stats(eng, &st);
+    check(st.frames_dropped == 1, "the drop is counted");
+
+    p4_engine_destroy(eng);
+}
+
+/* A program whose default action sends every frame to a chosen port. */
+#define P4_TO_PORT(port)                                              \
+    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0,"              \
+              "\"order\":[\"eth\"]}],"                                \
+              "\"actions\":[{\"name\":\"fwd\",\"id\":0,"              \
+              "\"runtime_data\":[],"                                  \
+              "\"primitives\":[{\"op\":\"assign\",\"parameters\":["   \
+              "{\"type\":\"field\",\"value\":[\"standard_metadata\"," \
+              "\"egress_spec\"]},"                                    \
+              "{\"type\":\"hexstr\",\"value\":\"" port "\"}]}]}],"    \
+              "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"        \
+              "\"init_table\":\"t\",\"tables\":["                     \
+              "{\"name\":\"t\",\"id\":0,\"match_type\":\"exact\","    \
+              "\"type\":\"simple\",\"max_size\":16,"                  \
+              "\"with_counters\":false,\"direct_meters\":null,"       \
+              "\"support_timeout\":false,\"key\":[],"                 \
+              "\"actions\":[\"fwd\"],"                                \
+              "\"next_tables\":{\"fwd\":null},"                       \
+              "\"default_entry\":{\"action_id\":0,"                   \
+              "\"action_data\":[]}}],"                                \
+              "\"action_profiles\":[],\"conditionals\":[]}]}"
+
+static void test_execute_egress(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+
+    for (size_t i = 0; i < sizeof(in); i++)
+        in[i] = (uint8_t)i;
+
+    /* To the uplink: the ordinary direction. */
+    check(load_text(eng, P4_TO_PORT("0x1")) == 0, "a forwarding program "
+                                                  "loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_UPLINK,
+          "the program sent the frame to the uplink");
+
+    /*
+     * Back to the port it came from. This is the loop that was
+     * unreachable until a program could set egress_spec, and it is what
+     * lets a guest frame be answered without a TAP.
+     */
+    check(load_text(eng, P4_TO_PORT("0x0")) == 0, "a looping program loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_FORWARD && res.egress_port == P4_PORT_HOST,
+          "the program sent the frame back to the host port");
+
+    /* A port this device does not have is a drop, never an index. */
+    check(load_text(eng, P4_TO_PORT("0x9")) == 0, "a program naming port 9 "
+                                                  "loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_DROP,
+          "an egress_spec outside this device's ports is dropped");
+
+    /* A frame too short for the headers the parser wants. */
+    check(load_text(eng, P4_TO_PORT("0x1")) == 0, "reload");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, 4, out, sizeof(out), &res) ==
+              0,
+          "a short frame runs");
+    check(res.verdict == P4_VERDICT_DROP, "a frame too short to parse is "
+                                          "dropped");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
     test_load_parses();
     test_load_real_artifacts();
+    test_execute();
+    test_execute_egress();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

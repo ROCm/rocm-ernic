@@ -490,6 +490,30 @@ static bool p4_resolve_field(const struct p4_program *prog, const char *hname,
     return false;
 }
 
+/*
+ * The architecture's own metadata. v1model puts egress_spec and
+ * ingress_port in a header instance called standard_metadata, and a
+ * program addresses them like any other field, so they are found once here
+ * rather than searched for on every packet.
+ */
+static int p4_resolve_std_metadata(struct p4_walk *w)
+{
+    static const char *const std = "standard_metadata";
+
+    if (!p4_resolve_field(w->prog, std, "egress_spec", &w->prog->egress_spec))
+        return p4_fail(w, -EINVAL,
+                       "no '%s.egress_spec'; a program without it cannot say "
+                       "where a packet goes",
+                       std);
+    /* ingress_port is optional: a program may never read it. */
+    if (!p4_resolve_field(w->prog, std, "ingress_port",
+                          &w->prog->ingress_port)) {
+        w->prog->ingress_port.header = P4_IDX_NONE;
+        w->prog->ingress_port.field = P4_IDX_NONE;
+    }
+    return 0;
+}
+
 /* Read a two-element ["header", "field"] array into names. */
 static bool p4_pair_strings(struct json_object *arr, char *a, size_t acap,
                             char *b, size_t bcap)
@@ -1520,6 +1544,81 @@ static int p4_walk_table(struct p4_walk *w, struct json_object *t,
     dst->base_default_next = P4_IDX_NONE;
     dst->default_action = P4_IDX_NONE;
 
+    /*
+     * default_entry is what a table does on a miss. Without it, and
+     * without a control plane to install entries, a table does nothing at
+     * all, so the program would parse and deparse and decide nothing.
+     */
+    if (p4_get_obj(t, "default_entry", &v)) {
+        struct json_object *data;
+        uint32_t aid;
+        size_t ndata;
+
+        if (!p4_get_u32(v, "action_id", 0, P4_MAX_ID, &aid))
+            return p4_fail(w, -EINVAL, "table '%s' has a bad default action",
+                           dst->name);
+        for (uint16_t a = 0; a < w->prog->nactions; a++) {
+            if (w->prog->actions[a].id == aid) {
+                dst->default_action = (p4_idx_t)a;
+                break;
+            }
+        }
+        if (dst->default_action == P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "table '%s' defaults to action id %u, which does "
+                           "not exist",
+                           dst->name, aid);
+        /* The default action has to be one the table may actually run. */
+        ok = false;
+        for (uint16_t i = 0; i < dst->nactions; i++) {
+            if (dst->actions[i] == dst->default_action) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok)
+            return p4_fail(w, -EINVAL,
+                           "table '%s' defaults to '%s', which is not one of "
+                           "its actions",
+                           dst->name,
+                           w->prog->actions[dst->default_action].name);
+
+        if (!p4_get_array(v, "action_data", &data, P4_MAX_RUNTIME_ARGS, &ndata))
+            return p4_fail(w, -EINVAL, "table '%s' has bad default action data",
+                           dst->name);
+        /* Too few or too many arguments and the action would read one the
+         * entry never supplied. */
+        if (ndata != w->prog->actions[dst->default_action].nruntime)
+            return p4_fail(w, -EINVAL,
+                           "table '%s' gives %zu arguments to '%s', which "
+                           "takes %u",
+                           dst->name, ndata,
+                           w->prog->actions[dst->default_action].name,
+                           w->prog->actions[dst->default_action].nruntime);
+        for (size_t i = 0; i < ndata; i++) {
+            struct json_object *e = json_object_array_get_idx(data, i);
+            size_t blen = 0;
+            bool neg = false;
+            const char *vs;
+
+            if (!e || !json_object_is_type(e, json_type_string))
+                return p4_fail(w, -EINVAL,
+                               "table '%s' default argument %zu is not a "
+                               "literal",
+                               dst->name, i);
+            vs = json_object_get_string(e);
+            if (!vs ||
+                !ernic_parse_hexstr(vs, dst->default_data[i], P4_MAX_IMM_BYTES,
+                                    &blen, &neg) ||
+                neg)
+                return p4_fail(w, -EINVAL,
+                               "table '%s' default argument %zu is malformed",
+                               dst->name, i);
+            dst->default_data_len[i] = (uint16_t)blen;
+        }
+        dst->ndefault_data = (uint16_t)ndata;
+    }
+
     (void)pl;
     return 0;
 }
@@ -1920,6 +2019,9 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (rc)
         goto out;
     rc = p4_walk_headers(&w, root);
+    if (rc)
+        goto out;
+    rc = p4_resolve_std_metadata(&w);
     if (rc)
         goto out;
     rc = p4_walk_parser(&w, root);

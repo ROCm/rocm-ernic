@@ -205,6 +205,10 @@ struct p4_table {
     p4_idx_t next[P4_MAX_TABLE_ACTIONS];    /* into pipeline nodes */
     p4_idx_t base_default_next;
     p4_idx_t default_action; /* P4_IDX_NONE when the program gave none */
+    /* Arguments for the default action, as the program fixed them. */
+    uint16_t ndefault_data;
+    uint16_t default_data_len[P4_MAX_RUNTIME_ARGS];
+    uint8_t default_data[P4_MAX_RUNTIME_ARGS][P4_MAX_IMM_BYTES];
 };
 
 enum p4_expr_op {
@@ -283,6 +287,16 @@ struct p4_pipeline {
 };
 
 struct p4_program {
+    /*
+     * The standard metadata fields the architecture gives meaning to.
+     * The program addresses them like any other field, so they are
+     * resolved once at load rather than searched for per packet.
+     * egress_spec is how a program says where a packet goes, so a program
+     * without it cannot forward and is refused.
+     */
+    struct p4_field_ref egress_spec;
+    struct p4_field_ref ingress_port;
+
     uint16_t npipelines;
     struct p4_pipeline pipelines[P4_MAX_PIPELINES];
     uint16_t nactions;

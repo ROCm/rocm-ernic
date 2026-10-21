@@ -17,7 +17,9 @@
 #include <string.h>
 
 #include "p4_engine.h"
+#include "p4_exec.h"
 #include "p4_json.h"
+#include "p4_program.h"
 
 struct p4_engine {
     /*
@@ -181,6 +183,34 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
 
     memset(res, 0, sizeof(*res));
     eng->stats.frames_in[in_port]++;
+
+    if (eng->prog) {
+        struct p4_exec_result er;
+        int rc = p4_exec_run(eng->prog, in_port, frame, len, out, out_cap, &er);
+
+        if (rc != 0) {
+            /* A frame the program could not be run over is dropped rather
+             * than forwarded unexamined: the pipeline is the policy, and
+             * failing open would bypass it. */
+            if (rc == -EBADMSG || rc == -EMSGSIZE)
+                eng->stats.parse_errors++;
+            eng->stats.frames_dropped++;
+            res->verdict = P4_VERDICT_DROP;
+            return 0;
+        }
+        if (er.dropped || er.egress_spec >= P4_PORT_COUNT) {
+            /* An egress_spec outside this device's ports is a drop, not an
+             * index: a ported program may name a port we do not have. */
+            eng->stats.frames_dropped++;
+            res->verdict = P4_VERDICT_DROP;
+            return 0;
+        }
+        res->verdict = P4_VERDICT_FORWARD;
+        res->egress_port = er.egress_spec;
+        res->len = er.len;
+        eng->stats.frames_out[res->egress_port]++;
+        return 0;
+    }
 
     memcpy(out, frame, len);
     res->verdict = P4_VERDICT_FORWARD;
