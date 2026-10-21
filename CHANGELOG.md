@@ -108,6 +108,21 @@
   The tests that only run a script or CMake are left out.
   `tcp-thread-stop-unit` skips its out-of-descriptors row under valgrind,
   which it detects with `<valgrind/valgrind.h>` when that's installed.
+* `tests/py/` drives real server processes over the vfio-user socket from
+  Python, the way a VMM does, with no VM, RDMA hardware, root, or package
+  outside the standard library. Guest memory is a `memfd` the client maps and
+  the server maps too, so the real DMA path runs. Three suites are registered
+  with CTest: `ernic-vfu-client` (the vfio-user protocol, and the offsets,
+  counts, addresses and interrupt ranges a client must not get away with),
+  `ernic-ionic-driver` (device bring-up, queue pairs, memory regions, work
+  requests and completions, through a server process rather than the
+  in-process harness) and `ernic-mesh-stress` (a three-node mesh under
+  traffic between every pair of nodes, peers sending frames no real node
+  sends, the protocol version gate in both directions, and nodes killed and
+  restarted while the manager's descriptors are counted). They honour
+  `ERNIC_TEST_SERVER_WRAPPER`, so the valgrind leg covers them too, and
+  `test_mesh_stress.py --size N` varies the mesh. They need python3, which
+  the shell suites already needed. Documented in `docs/testing.rst`.
 
 ### Changed
 
@@ -606,6 +621,16 @@
   resolver to give up, which its configured timeouts and retries bound. A
   hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
   wait.
+* A TCP mesh node that is restarted becomes unreachable for the rest of the
+  mesh's life. The manager allocates node ids monotonically and never evicts
+  a dead node, so the restarted process registers under a new id while the
+  dead one keeps its claim on the guest's GID. Both ids then claim the same
+  address, and the duplicate-claim rule resolves it to neither, so peers fail
+  `MODIFY_QP` for that destination with "claimed by more than one node".
+  Traffic is not misrouted -- the point of that rule is that it refuses
+  rather than guessing -- but the node can only be reached again by
+  restarting the whole mesh. Covered by `ernic-mesh-stress`, which asserts
+  the refusal.
 * A TCP mesh worker whose connection to the manager drops doesn't connect to
   it again. The manager connects to the worker instead, but the worker takes
   topology updates and GID tables only on the connection it opened itself, so

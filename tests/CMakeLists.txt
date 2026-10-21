@@ -941,6 +941,69 @@ set_tests_properties(s3-ci PROPERTIES
 )
 
 # ---------------------------------------------------------------
+# Python suites that drive real servers over the vfio-user socket
+# ---------------------------------------------------------------
+# tests/py/ stands in for a guest VM: it speaks the vfio-user protocol to
+# a real rocm-ernic process, maps guest memory from a memfd the server
+# maps too, and plays the ionic driver against it. None of it needs a VM,
+# RDMA hardware, or root. See docs/testing.rst.
+#
+# python3 is already a run-time dependency of the shell suites, so a build
+# host without it cannot run the test suite either way; registering these
+# only when it is present keeps the failure a clear one.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    # -I keeps the interpreter from picking up anything outside the tree:
+    # the suites put tests/py on sys.path themselves.
+    set(ERNIC_PY_RUN ${Python3_EXECUTABLE} -I)
+
+    # The vfio-user protocol itself: version negotiation, regions, DMA
+    # mapping, interrupts, and the offsets, counts and ranges a client
+    # must not get away with.
+    add_test(
+        NAME ernic-vfu-client
+        COMMAND ${ERNIC_PY_RUN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_vfu_client.py
+            --server $<TARGET_FILE:rocm-ernic>
+    )
+    set_tests_properties(ernic-vfu-client PROPERTIES
+        TIMEOUT 180
+        RUN_SERIAL TRUE
+    )
+
+    # The ionic driver over that protocol: bring-up, queue pairs, memory
+    # regions, work requests and completions, through a server process
+    # rather than the in-process harness in ionic_harness.c.
+    add_test(
+        NAME ernic-ionic-driver
+        COMMAND ${ERNIC_PY_RUN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_driver.py
+            --server $<TARGET_FILE:rocm-ernic>
+    )
+    set_tests_properties(ernic-ionic-driver PROPERTIES
+        TIMEOUT 300
+        RUN_SERIAL TRUE
+    )
+
+    # A three-node mesh under traffic, malformed peers, and churn.
+    # Generous timeout: it starts and restarts several servers and waits
+    # on mesh convergence, in every build leg including thread-sanitizer
+    # Release, where that chain is slow.
+    add_test(
+        NAME ernic-mesh-stress
+        COMMAND ${ERNIC_PY_RUN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_mesh_stress.py
+            --server $<TARGET_FILE:rocm-ernic>
+    )
+    set_tests_properties(ernic-mesh-stress PROPERTIES
+        TIMEOUT 600
+        RUN_SERIAL TRUE
+    )
+else()
+    message(WARNING "python3 not found: the tests/py suites are not registered")
+endif()
+
+# ---------------------------------------------------------------
 # Compile checks for the Nix fuzz harnesses
 # ---------------------------------------------------------------
 # Builds nix/analysis/fuzz/ against a plain main() so the harnesses cannot

@@ -90,6 +90,30 @@ synthetic sysfs tree to verify the shared RDMA-device lookup accepts the
 emulated vendor/device/subsystem tuple and rejects devices that differ in
 any tuple field.
 
+### py/
+
+Python suites that drive a real server over its vfio-user socket, the
+way a VMM does, with no VM, RDMA hardware, root, or package outside the
+standard library. Guest memory is a `memfd` that the client maps and
+hands to the server, so the real DMA path runs.
+
+`py/ernic/` holds the pieces: `vfu.py` (the vfio-user client and guest
+memory), `server.py` (starting server processes and holding them to a
+shutdown deadline), `ionic.py` (the ionic driver, the counterpart of
+`ionic_harness.c`), `mesh.py` (the TCP mesh wire protocol and a fixture
+that starts a manager and some workers), and `check.py` (the test
+runner).
+
+The suites, each registered with CTest:
+
+- `py/test_vfu_client.py` (`ernic-vfu-client`): the vfio-user protocol
+- `py/test_ionic_driver.py` (`ernic-ionic-driver`): the device, driven
+  as the guest driver drives it
+- `py/test_mesh_stress.py` (`ernic-mesh-stress`): a multi-node mesh
+  under traffic, malformed peers, and churn
+
+See `docs/testing.rst` for what each covers and how to run one directly.
+
 ## Running Tests
 
 ### Quick Local Test
