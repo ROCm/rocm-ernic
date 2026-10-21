@@ -1166,6 +1166,119 @@ static void test_atomic_and_reg_mr(void)
     rc_teardown(T, &r);
 }
 
+/* ---- Flush when a QP enters the Error state ----------------------------- */
+
+/*
+ * A work request outstanding when its QP goes to Error has to be completed,
+ * or whoever posted it waits for it forever. rping is the case that found
+ * this: it keeps a receive posted for the life of the connection, so after
+ * rdma_disconnect its completion thread sat in ibv_get_cq_event() and the
+ * process never exited.
+ *
+ * The device signals this with one completion per queue rather than one per
+ * work request -- it carries no wqe_id, and the driver matches it to what it
+ * has posted -- so what is checked here is that both queues raise one, that
+ * it is marked an error with the flushed status, and that it raises the CQ
+ * event. The event is the half that unwedges a blocked consumer.
+ */
+static void test_qp_flush(void)
+{
+    const char *T = "qp-flush";
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_cqe e;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    /* The receive a consumer is still waiting on when the peer goes away. */
+    struct ih_sge dst = {.va = VA_B, .len = 64, .lkey = MR_B};
+    ih_post_recv(h, &r.b, &dst, 1);
+    check(T, cq_empty(h, &r.cqb), "a posted receive completed on its own");
+
+    /* Armed, so the event the flush raises is visible. */
+    ih_cq_arm(h, &r.cqb);
+    check(T, eq_count(h, RC_CQ_B) == 0, "arming an empty CQ fired");
+
+    /* Only Error flushes. A move to RTS must leave the receive posted. */
+    check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0,
+          "MODIFY_QP to RTS failed");
+    check(T, cq_empty(h, &r.cqb),
+          "a state change other than Error raised a completion");
+
+    check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+          "MODIFY_QP to Error failed");
+
+    unsigned n = 0;
+    bool saw_recv = false, saw_send = false;
+
+    while (ih_cq_poll(h, &r.cqb, &e)) {
+        n++;
+        check(T, e.error, "a flush completion is not marked an error");
+        check(T, e.status_len == IH_STS_WQE_FLUSHED_ERR,
+              "flush status %u, want %u", e.status_len, IH_STS_WQE_FLUSHED_ERR);
+        saw_recv |= e.type == IH_CQE_TYPE_RECV;
+        saw_send |= e.type == IH_CQE_TYPE_SEND_NPG;
+    }
+    check(T, n == 2, "Error raised %u completions, want one per queue", n);
+    check(T, saw_recv, "the receive queue was not flushed");
+    check(T, saw_send, "the send queue was not flushed");
+    check(T, eq_count(h, RC_CQ_B) >= 1,
+          "the flush raised no event: a consumer blocked in "
+          "ibv_get_cq_event() would never wake");
+
+    rc_teardown(T, &r);
+}
+
+/*
+ * The receives of a QP bound to a shared receive queue are not its own, so
+ * Error must not flush them: the SRQ is still live and other QPs are still
+ * drawing from it. Only the send queue flushes.
+ */
+static void test_qp_flush_srq(void)
+{
+    const char *T = "qp-flush-srq";
+    struct ih h;
+    struct ih_cq cqf;
+    struct ih_qp f;
+    struct ih_srq srq;
+    struct ih_cqe e;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    if (!check(T, ih_srq_create(&h, &srq, 4) == 0, "CREATE_SRQ failed")) {
+        teardown(T, &h);
+        return;
+    }
+    if (!check(T,
+               ih_cq_create(&h, &cqf, 5, 5) &&
+                   ih_qp_create(&h, &f, 30, IH_QPT_RC, &cqf, &cqf, &srq),
+               "SRQ-bound QP setup failed")) {
+        teardown(T, &h);
+        return;
+    }
+
+    check(T, ih_qp_modify(&h, 30, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+          "MODIFY_QP to Error failed");
+
+    unsigned n = 0;
+    bool saw_recv = false;
+
+    while (ih_cq_poll(&h, &cqf, &e)) {
+        n++;
+        saw_recv |= e.type == IH_CQE_TYPE_RECV;
+    }
+    check(T, !saw_recv,
+          "an SRQ-bound QP flushed receives that belong to its SRQ");
+    check(T, n == 1, "Error raised %u completions, want only the send one", n);
+
+    check(T, ih_qp_destroy(&h, &f) == 0, "DESTROY_QP failed");
+    check(T, ih_srq_destroy(&h, &srq) == 0, "DESTROY_SRQ failed");
+    check(T, ih_cq_destroy(&h, &cqf) == 0, "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
 /* ---- CQ arming and events ---------------------------------------------- */
 
 static void test_cq_events(void)
@@ -1984,6 +2097,8 @@ static const struct {
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},
     {"cq-events", test_cq_events},
+    {"qp-flush", test_qp_flush},
+    {"qp-flush-srq", test_qp_flush_srq},
     {"ud", test_ud},
     {"srq", test_srq},
     {"eth", test_eth},

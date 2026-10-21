@@ -1025,9 +1025,11 @@ set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
 # driver drives it, one CTest test per group so a failure names its area.
 # Bring-up and devcmds, refused admin commands, RC transfers, atomics and
 # fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
-# CM handshake and Connect over the GSI QP.
+# CM handshake and Connect over the GSI QP, and the flush a QP entering the
+# Error state owes its outstanding work requests.
 foreach(ernic_harness_group
-        devcmds bringup admin rc atomic cq-events ud srq eth nvmeof teardown)
+        devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
+        ud srq eth nvmeof teardown)
     add_test(
         NAME ionic-harness-${ernic_harness_group}
         COMMAND $<TARGET_FILE:ernic-test-ionic-harness>

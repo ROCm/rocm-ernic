@@ -492,31 +492,35 @@ Working:
   a stock ``nvme-rdma`` initiator uses to produce the keys
   in its keyed SGLs
 - guest-to-guest ``rdma_cm``, and the transfers that follow
-  it: ``rping`` between two guests on a mesh completes its
-  connection, and its SEND, RDMA READ and RDMA WRITE all
-  carry the right bytes -- verified at both ends over ten
-  exchanges. The client does not exit cleanly afterwards;
-  that is the missing flush below, not the transfer
+  it: ``rping`` between two guests on a mesh connects,
+  exchanges its payloads -- SEND, RDMA READ and RDMA WRITE,
+  verified at both ends -- and exits 0
+- flushing a QP that enters the Error state, so that work
+  requests still outstanding are completed with
+  ``IBV_WC_WR_FLUSH_ERR`` rather than left to a consumer that
+  waits for them forever. One completion per queue, which is
+  what the device owes: it names no work request, and the
+  driver completes what it has posted from its own records.
+  A QP bound to an SRQ flushes its send queue only, because
+  the receives in an SRQ belong to the SRQ and other QPs are
+  still drawing from them
 
 Not yet working:
 
-- a work request outstanding when its QP enters the Error
-  state is never completed. The spec says each one should be
-  flushed with ``IBV_WC_WR_FLUSH_ERR``; ``MODIFY_QP`` records
-  the new state and leaves the send and receive queues alone,
-  and there is no flush path in the device at all.
-
-  What that costs is teardown, not transfer. ``rping``
-  between two guests exchanges its payloads correctly and
-  both ends verify them, but the client then hangs instead of
-  exiting: it keeps a receive posted, nothing ever completes
-  it, so its CQ thread waits in ``ibv_get_cq_event()`` for an
-  event that cannot arrive while the main thread waits on
-  ``pthread_join``. Any consumer that drains its CQ on
-  teardown is exposed to the same hang. The server's
-  ``wait for RDMA_READ_ADV state 10`` at the end of a run is
-  not a symptom of this -- that is how ``rping``'s server
-  loop reports that the client disconnected, and it is normal.
+- ``rping`` prints ``poll error -5`` once as it tears down,
+  from a bug in the rdma-core ionic provider rather than in
+  the device. The provider keeps receive metadata in slots
+  taken off a free list and records which slot a queue
+  position used in ``rq.meta_idx``;
+  ``ionic_poll_recv()`` reads it back through that index, but
+  ``ionic_flush_recv()`` uses the raw ``wqe_id`` as the slot
+  number. The two agree only until the first completion
+  permutes the free list, after which the flush walk reads a
+  slot that has already been returned, calls it "wqe not
+  posted" and gives ``ibv_poll_cq()`` ``-EIO``. Present in
+  rdma-core v61.0 and still in master
+  (``providers/ionic/ionic_verbs.c``). The exchange itself is
+  unaffected and ``rping`` exits 0.
 
   Establishment was broken until recently, and both reasons
   this page used to give were wrong: GSI traffic *is*

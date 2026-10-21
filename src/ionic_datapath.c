@@ -186,6 +186,7 @@ _Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
 #define IONIC_STS_LOCAL_LEN_ERR      1
 #define IONIC_STS_LOCAL_QP_OPER_ERR  2
 #define IONIC_STS_LOCAL_PROT_ERR     3
+#define IONIC_STS_WQE_FLUSHED_ERR    4
 #define IONIC_STS_LOCAL_ACC_ERR      7
 #define IONIC_STS_REMOTE_ACC_ERR     9
 #define IONIC_STS_RETRY_EXCEEDED     11
@@ -1485,6 +1486,69 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
 
     cq_post(dp, cq_id, body, byte_len, CQE_TYPE_RECV, qid, error);
+}
+
+/*
+ * Tell the driver a queue has gone into flush.
+ *
+ * This is one completion per queue, not one per outstanding work request.
+ * The flush CQE consumes no WQE and carries no wqe_id -- the driver ignores
+ * the field -- it only says "this queue is flushing now", and the driver
+ * then completes whatever it still has posted with IB_WC_WR_FLUSH_ERR out
+ * of its own records. The device cannot do that part itself: the wr_id a
+ * consumer gets back lives in driver memory and was never handed down here.
+ *
+ * It goes through cq_post() rather than writing the ring directly because
+ * the event matters as much as the CQE. A consumer blocked in
+ * ibv_get_cq_event() is woken by nothing else, and that is exactly where a
+ * process sits when it has disconnected and is waiting for its last receive
+ * to come back.
+ */
+static void cq_post_flush(struct ionic_datapath *dp, uint32_t cq_id,
+                          uint32_t qid, uint32_t type)
+{
+    uint8_t body[CQE_SIZE - 8];
+
+    memset(body, 0, sizeof(body));
+    cq_post(dp, cq_id, body, IONIC_STS_WQE_FLUSHED_ERR, type, qid, true);
+}
+
+/*
+ * A QP has entered the Error state: start the flush on both its queues.
+ *
+ * Every work request still outstanding has to be completed -- with
+ * IB_WC_WR_FLUSH_ERR -- or a consumer waits for it forever. That is not
+ * pedantry about the spec: rping keeps a receive posted for the whole
+ * connection, so when it disconnects its completion thread sits in
+ * ibv_get_cq_event() and the process never exits. Anything that drains its
+ * CQ on teardown behaves the same way.
+ *
+ * The send queue is flushed even when it looks idle. A send completes when
+ * the peer acknowledges it, so "nothing left here" is not the same as
+ * "nothing outstanding", and the driver is the side that knows; it treats
+ * this as a hint and starts flushing once it has polled everything that can
+ * still complete normally.
+ *
+ * A QP bound to a shared receive queue gets no receive flush. The WQEs in
+ * an SRQ are the SRQ's, not this QP's -- other QPs are still drawing from
+ * them -- and flushing a queue that is still live would complete another
+ * QP's receives out from under it.
+ */
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    if (!dp || qp_id >= dp->qp_count)
+        return;
+
+    struct ionic_qp_ring *q = &dp->qp[qp_id];
+    if (!q->valid)
+        return;
+
+    cq_post_flush(dp, q->sq_cq_id, qp_id, CQE_TYPE_SEND_NPG);
+    if (!q->has_srq)
+        cq_post_flush(dp, q->rq_cq_id, qp_id, CQE_TYPE_RECV);
+
+    vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: QP %u flushed%s", qp_id,
+            q->has_srq ? " (send only, receives belong to its SRQ)" : "");
 }
 
 static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,

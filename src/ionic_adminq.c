@@ -1732,6 +1732,16 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                 "ionic_adminq MODIFY_QP qp_id=%u qpn=%u type_state=%#x "
                 "attr=%#x",
                 qp_id, qpn, type_state, attr_mask);
+
+        /*
+         * Entering Error is the point at which outstanding work requests
+         * stop being able to complete normally, so it is the point at which
+         * they have to be flushed. MODIFY_QP carries the state alone in this
+         * field -- unlike CREATE_QP, which packs the type into the low
+         * nibble -- so the whole byte is the state here.
+         */
+        if (type_state == IONIC_QPS_ERR)
+            ionic_datapath_flush_qp(ctx->dp, qp_id);
         return 0;
     }
 

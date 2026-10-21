@@ -164,6 +164,17 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint32_t srq_id);
 
 /*
+ * Begin the flush on a QP that has entered the Error state, so that work
+ * requests still outstanding are completed with IB_WC_WR_FLUSH_ERR instead
+ * of left to a consumer that waits for them forever. One completion per
+ * queue: it names no work request, and the driver completes what it has
+ * posted from its own records. Receives are left alone for a QP bound to an
+ * SRQ, because those WQEs belong to the SRQ and other QPs are still using
+ * them.
+ */
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id);
+
+/*
  * Address handles.
  *
  * A connected QP learns its peer once, at MODIFY_QP's RTR transition. An

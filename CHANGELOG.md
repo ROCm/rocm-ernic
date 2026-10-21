@@ -430,6 +430,23 @@
   was told the wrong thing and the wrong queue pair was blamed; one crossing
   the mesh sent the peer a request it could not satisfy. No data was
   transferred in either case, and none is now.
+* A QP entering the Error state now flushes its queues, so a work request
+  still outstanding is completed with `IBV_WC_WR_FLUSH_ERR` instead of left
+  for a consumer that waits on it forever. `MODIFY_QP` recorded the new state
+  and left the send and receive queues alone, and the device had no flush
+  path at all; `rping` between two guests therefore exchanged its payloads
+  correctly and then hung instead of exiting, because it keeps a receive
+  posted and its completion thread sat in `ibv_get_cq_event()` while the main
+  thread waited on `pthread_join`. Anything that drains its CQ on teardown
+  was exposed to the same hang. It now exits 0 in under a second.
+  The device posts one completion per queue rather than one per work request,
+  which is the division of labour the driver expects -- the completion names
+  no work request, and the driver completes what it has posted from its own
+  records, which the device never sees. It goes through the normal CQ path so
+  that it raises the CQ event too; the event is the half that unwedges a
+  blocked consumer. A QP bound to an SRQ flushes only its send queue, because
+  the receives in an SRQ belong to the SRQ and other QPs are still drawing
+  from them. Covered by the `qp-flush` and `qp-flush-srq` CTests.
 * A UD or GSI receive is now reported as RoCEv2 over IPv4 when the addresses
   are v4-mapped, instead of being flagged IPv4 while carrying an IPv6 GRH.
   The two disagreed: `IONIC_V1_CQE_RECV_IS_IPV4` was set on every receive

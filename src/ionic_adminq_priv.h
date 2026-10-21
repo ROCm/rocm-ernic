@@ -54,6 +54,22 @@ enum ionic_v1_admin_op {
     IONIC_V1_ADMIN_DESTROY_SRQ = 29,
 };
 
+/*
+ * QP states, as MODIFY_QP's type_state carries them. CREATE_QP packs the
+ * queue type into the low nibble of its own type_state and the state above
+ * it; MODIFY_QP's field is the state on its own. See enum ionic_qp_state in
+ * the kernel's ionic_fw.h.
+ */
+enum ionic_qp_state {
+    IONIC_QPS_RESET = 0,
+    IONIC_QPS_INIT = 1,
+    IONIC_QPS_RTR = 2,
+    IONIC_QPS_RTS = 3,
+    IONIC_QPS_SQD = 4,
+    IONIC_QPS_SQE = 5,
+    IONIC_QPS_ERR = 6,
+};
+
 /* Command body lengths, from the struct ionic_admin_* layouts that
  * ionic_adminq.c documents above each handler. */
 #define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24u
