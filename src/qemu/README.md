@@ -10,19 +10,21 @@ far it is from upstream.
 
 ## Files
 
-- `hw/rdma/rdma_rm.c`, `.h`, and `rdma_rm_defs.h`: the resource
-  manager, the tables of PDs, MRs, CQs, QPs, and SRQs, indexed by the
-  handles the guest uses.
-- `hw/rdma/rdma_backend.c`, `.h`, and `rdma_backend_defs.h`: the
-  backend device, and the dispatch of SRQ operations to rocm-ernic's
-  backends through `RdmaBackendOps`.
-- `hw/rdma/rdma_utils.h`: logging macros.
-- `hw/rdma/vmw/pvrdma.h`: the device state, `PVRDMADev`, and its
-  statistics.
-- `include/standard-headers/`: VMware's PVRDMA ABI header, from the
-  Linux `vmw_pvrdma` driver by way of QEMU. Only its work request and
+- `rdma_rm.c`, `.h`, and `rdma_rm_defs.h`: the resource manager, the
+  tables of PDs, MRs, CQs, QPs, and SRQs, indexed by the handles the
+  guest uses.
+- `rdma_backend.c`, `.h`, and `rdma_backend_defs.h`: the backend
+  device, and the dispatch of SRQ operations to rocm-ernic's backends
+  through `RdmaBackendOps`.
+- `rdma_utils.h`: logging macros.
+- `pvrdma.h`: the device state, `PVRDMADev`, and its statistics.
+- `vmw_pvrdma-abi.h`: VMware's PVRDMA ABI header, from the Linux
+  `vmw_pvrdma` driver by way of QEMU. Only its work request and
   completion layouts are used, to size the device's limits and to number
   the per-QP statistics.
+
+Upstream, these lived in QEMU's `hw/rdma/`, `hw/rdma/vmw/`, and
+`include/standard-headers/rdma/`. Here they are all in one directory.
 
 ## Build
 
@@ -32,8 +34,7 @@ far it is from upstream.
   `rdma_rm.c`, in `tests/CMakeLists.txt`.
 - The sources include their own headers, and `rdma_backend_ops.h` from
   `src/rdma/`, by bare name, so any target that builds them needs
-  `src/qemu/hw/rdma`, `src/qemu/include`, and `src/rdma` on its include
-  path.
+  `src/qemu` and `src/rdma` on its include path.
 - The QEMU APIs the code calls are implemented in
   [`src/qemu-compat/`](../qemu-compat/).
 - `test_rdma_res_tbl` tests the resource manager through its public
@@ -42,8 +43,8 @@ far it is from upstream.
 
 ## Licenses
 
-The QEMU sources are `GPL-2.0-or-later`. The VMware header under
-`include/standard-headers/` is
+The QEMU sources are `GPL-2.0-or-later`. The VMware header,
+`vmw_pvrdma-abi.h`, is
 `(GPL-2.0 WITH Linux-syscall-note) OR BSD-2-Clause`. Each file's SPDX
 tag is authoritative; see also [`LICENSE.md`](../../LICENSE.md). Keep
 each file's original copyright lines.
@@ -75,7 +76,7 @@ Three sources are mixed in these files:
 - **QEMU**, by Oracle and Red Hat (Yuval Shaia and Marcel Apfelbaum),
   under `GPL-2.0-or-later`: the eight files from `hw/rdma/`.
 - **VMware**, under `(GPL-2.0 WITH Linux-syscall-note) OR
-  BSD-2-Clause`: the header under `include/`, which VMware wrote for
+  BSD-2-Clause`: `vmw_pvrdma-abi.h`, which VMware wrote for
   the Linux `vmw_pvrdma` driver and QEMU copied in with its
   kernel-header import.
 - **rocm-ernic**: the changes described under
@@ -122,7 +123,7 @@ picture.
 |-----------------------|---------:|-----:|---------:|
 | `rdma_backend.c`      |     1401 |   71 |     1374 |
 | `rdma_rm.c`           |      812 |  829 |      714 |
-| `vmw/pvrdma.h`        |      144 |   85 |      147 |
+| `pvrdma.h`            |      144 |   85 |      147 |
 | `rdma_backend.h`      |      129 |   73 |      132 |
 | `vmw_pvrdma-abi.h`    |      310 |  190 |      130 |
 | `rdma_rm_defs.h`      |      146 |  109 |      101 |

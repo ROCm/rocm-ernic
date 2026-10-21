@@ -6,7 +6,7 @@ layout:
   - src/net/                       wire-protocol parsers (rdma-cm)
                                    — untrusted input
   - src/rdma/                      RDMA backends (loopback, TCP mesh)
-  - src/qemu/hw/rdma/              QEMU-derived PVRDMA device model
+  - src/qemu/                      QEMU-derived PVRDMA device model
                                    — handles guest input
   - tests/                         test programs
 """
@@ -59,7 +59,7 @@ SECURITY_PATHS = [
     'src/net/',
     'src/rdma/',
     'src/parse_int.h',
-    'src/qemu/hw/rdma/',
+    'src/qemu/',
     'src/rocm_ernic',
 ]
 

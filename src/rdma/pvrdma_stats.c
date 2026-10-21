@@ -19,7 +19,7 @@
 #include <unistd.h>
 #include <glib.h>
 
-#include "vmw/pvrdma.h"
+#include "pvrdma.h"
 #include "rdma_utils.h"
 
 /* Get or create QP stats entry */

@@ -37,9 +37,9 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
   `nix/analysis/fuzz/`, which build against `src/`.
 
 * The files under `src/qemu/` were imported from the QEMU project
-  (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI headers
-  under `src/qemu/include/standard-headers/` are instead
-  dual `GPL-2.0` / `BSD-2-Clause`, as stated in each file's header comment.
+  (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI header
+  `src/qemu/vmw_pvrdma-abi.h` is instead dual `GPL-2.0` / `BSD-2-Clause`,
+  as stated in its header comment.
 
 The patches under `patches/` modify code from other projects and are
 licensed under the terms of the files they modify:

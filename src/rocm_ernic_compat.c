@@ -18,14 +18,14 @@
 #include "rocm_ernic_internal.h"
 
 /* QEMU-derived headers, from src/qemu/ */
-#include "vmw/pvrdma.h"
+#include "pvrdma.h"
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rdma_rm_defs.h"
 #include "rdma_utils.h"
-#include "standard-headers/rdma/vmw_pvrdma-abi.h"
+#include "vmw_pvrdma-abi.h"
 
 /*
  * Device Management

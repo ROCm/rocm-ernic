@@ -129,7 +129,7 @@ add_executable(test_rdma_cm_proto
 target_include_directories(test_rdma_cm_proto PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes.
 target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
@@ -376,8 +376,7 @@ target_include_directories(test_tcp_mesh_topology PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -408,8 +407,7 @@ target_include_directories(test_tcp_gid_resolve PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -437,8 +435,7 @@ target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -468,7 +465,7 @@ target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
 # manager's CQ table. It stubs the backend entry points rdma_rm.c
 # calls, so no RDMA subsystem link is needed.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma/rdma_rm.c
+    ${PROJECT_SOURCE_DIR}/src/qemu/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
@@ -476,8 +473,7 @@ target_include_directories(test_rdma_res_tbl PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target.
@@ -499,7 +495,7 @@ add_executable(test_qemu_stubs test_qemu_stubs.c
 )
 target_include_directories(test_qemu_stubs PRIVATE
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 target_include_directories(test_qemu_stubs SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
@@ -541,8 +537,7 @@ target_include_directories(ernic-test-ionic-harness PRIVATE
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target.
