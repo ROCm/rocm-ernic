@@ -47,7 +47,7 @@ jobs:
       - name: Lint CMake files
         run: |
           mapfile -t files < <(git ls-files -- \
-            'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' ':!:third-party/')
+            'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::No CMake files found!"
             exit 1

@@ -80,16 +80,16 @@
   leg's floor goes from 45% to 60%.
 * `-DERNIC_USE_IWYU=ON` runs include-what-you-use on rocm-ernic's own sources
   as they compile, which prints suggestions for `#include` lines to add or
-  remove. The suggestions don't fail the build. It needs CMake 3.27 or later
-  and is best built with the clang that IWYU is built on. The new IWYU
-  workflow runs it on every change to the C sources and lists the
-  suggestions, failing only if IWYU itself fails.
+  remove. The suggestions don't fail the build. It is best built with the
+  clang that IWYU is built on. The new IWYU workflow runs it on every change
+  to the C sources and lists the suggestions, failing only if IWYU itself
+  fails.
 * `-DERNIC_USE_CLANG_TIDY=ON` runs clang-tidy on rocm-ernic's own sources as
   they compile, with the checks in the new `.clang-tidy`, and fails the build
-  on any finding. It needs CMake 3.27 or later, clang-tidy 19 or later, and
-  Clang as the C compiler. `.clang-tidy` enables every group of checks that
-  applies to rocm-ernic and, for now, turns off the checks the current code
-  doesn't pass. The new clang-tidy workflow runs it with clang-tidy 23 in
+  on any finding. It needs clang-tidy 19 or later, and Clang as the C
+  compiler. `.clang-tidy` enables every group of checks that applies to
+  rocm-ernic and, for now, turns off the checks the current code doesn't
+  pass. The new clang-tidy workflow runs it with clang-tidy 23 in
   Debug and Release on every change to the C sources.
 * rocm-ernic can be built as part of another CMake project with
   `add_subdirectory()`. When it is, it leaves the build type to the parent
@@ -126,6 +126,12 @@
 
 ### Changed
 
+* The QEMU-derived PVRDMA resource manager and backend device moved from
+  `third-party/qemu/` to `src/qemu/`, and `third-party/` is gone. The code
+  is no longer treated as vendored: it's compiled with the project's
+  warnings, so `ERNIC_WERROR` covers it, clang-tidy, IWYU and codespell
+  check it, and it counts toward the coverage floor. Local branches and
+  patches that touch it need their paths updated.
 * The emulated device now identifies as `1dd8:1002` with subsystem
   `1dd8:5400`, rather than `1022:8001`. A guest image built for an older
   release needs its udev rules updated to match and should refresh `pci.ids`

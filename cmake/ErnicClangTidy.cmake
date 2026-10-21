@@ -17,14 +17,6 @@ option(ERNIC_USE_CLANG_TIDY
   "Run clang-tidy when compiling" OFF)
 
 if(ERNIC_USE_CLANG_TIDY)
-    # The vendored sources are compiled in the same targets as ours, and
-    # the SKIP_LINTING source property, which keeps clang-tidy off them,
-    # is new in CMake 3.27
-    if(CMAKE_VERSION VERSION_LESS 3.27)
-        message(FATAL_ERROR
-          "ERNIC_USE_CLANG_TIDY needs CMake 3.27 or later")
-    endif()
-
     # clang-tidy parses each file with the compiler's flags, and rejects
     # the GCC-only ones
     if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -64,8 +56,7 @@ endif()
 # Run clang-tidy on a target's sources
 #
 # This is set per target instead of with CMAKE_C_CLANG_TIDY so that a
-# superproject's targets aren't checked. ernic_set_compiler_flags() keeps
-# it off the vendored sources under third-party/.
+# superproject's targets aren't checked.
 function(ernic_set_clang_tidy target)
     if(NOT ERNIC_USE_CLANG_TIDY)
         return()

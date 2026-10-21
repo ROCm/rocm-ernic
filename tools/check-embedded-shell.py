@@ -234,9 +234,7 @@ def scalar_locator(node: yaml.ScalarNode, lines: list[str]) -> Locator:
 
 
 def git_files(*patterns: str) -> list[str]:
-    """Tracked files matching the pathspecs, outside third-party/."""
-    # third-party/ is filtered here rather than with a ":!:" pathspec, which
-    # stops git from matching some of the glob patterns at all.
+    """Tracked files matching the pathspecs."""
     # No shell, and the pathspecs are literals in this script, after "--".
     # git is found on PATH, so the script also runs on NixOS.
     out = subprocess.run(  # nosec B603 B607
@@ -245,11 +243,7 @@ def git_files(*patterns: str) -> list[str]:
         capture_output=True,
         text=True,
     ).stdout
-    return [
-        f
-        for f in out.split("\0")
-        if f and not f.startswith("third-party/") and os.path.isfile(f)
-    ]
+    return [f for f in out.split("\0") if f and os.path.isfile(f)]
 
 
 def shell_scripts() -> list[str]:

@@ -4,10 +4,7 @@
 #   gcc-warnings  extra -W… flags, capture the diagnostics
 #   gcc-analyzer  -fanalyzer path-sensitive analysis
 #
-# Extra flags are injected via CMAKE_C_FLAGS. Note the repo applies `-w`
-# per-file to the vendored sources under third-party/, so these extra
-# warnings land on our own code under src/ — cppcheck / clang-tidy /
-# flawfinder / semgrep cover the vendored sources instead.
+# Extra flags are injected via CMAKE_C_FLAGS.
 { ctx, src }:
 
 let
@@ -43,8 +40,8 @@ let
         mkdir -p $out
         # Strip the sandbox source prefix so report paths are repo-relative
         # (src/…), then keep only in-tree diagnostics: warnings from glib /
-        # system headers are noise triage would discard anyway, and the
-        # QEMU-ported sources are built -w. The full log is kept alongside.
+        # system headers are noise triage would discard anyway. The full
+        # log is kept alongside.
         # -Wleading-whitespace is a gcc-15 formatting diagnostic that fires
         # on nearly every indented line of the QEMU-derived code; it is pure
         # noise for bug-finding, so drop it from the report.

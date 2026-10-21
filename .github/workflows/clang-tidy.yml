@@ -19,7 +19,6 @@ on:
     branches: [ develop ]
     paths: &paths
       - 'src/**'
-      - 'third-party/**'
       - 'tests/**'
       - 'shared/**'
       - 'nix/analysis/fuzz/**'

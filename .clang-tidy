@@ -145,10 +145,6 @@ CheckOptions:
   # clang-format from packing several elements onto a line
   readability-trailing-comma.SingleLineCommaPolicy: Ignore
 
-# Report problems in every header that isn't a system header, except the
-# QEMU ones under third-party/, which are exempt until they're cleaned up
-# and moved into src/. Most of those are SYSTEM includes anyway; this
-# leaves out any that aren't.
+# Report problems in every header that isn't a system header
 HeaderFilterRegex: '.*'
-ExcludeHeaderFilterRegex: '.*/third-party/.*'
 SystemHeaders: false

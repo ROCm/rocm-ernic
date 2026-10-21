@@ -33,12 +33,12 @@ READMEs in `patches/`.
 
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
-* Everything under `src/`, `tests/` and `third-party/`, and the fuzz
-  harnesses in `nix/analysis/fuzz/`, which build against `src/`.
+* Everything under `src/` and `tests/`, and the fuzz harnesses in
+  `nix/analysis/fuzz/`, which build against `src/`.
 
-* The files under `third-party/qemu/` were imported from the QEMU project
+* The files under `src/qemu/` were imported from the QEMU project
   (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI headers
-  under `third-party/qemu/include/standard-headers/` are instead
+  under `src/qemu/include/standard-headers/` are instead
   dual `GPL-2.0` / `BSD-2-Clause`, as stated in each file's header comment.
 
 The patches under `patches/` modify code from other projects and are

@@ -223,7 +223,7 @@
  * u32 it is assigned to. A literal 0xFFFFFFFF is avoided deliberately -- it
  * would be ~8 TiB but reads like a sentinel.
  *
- * MAX_MR_SIZE in third-party/qemu/hw/rdma/rdma_rm_defs.h (1UL << 32) does NOT
+ * MAX_MR_SIZE in src/qemu/hw/rdma/rdma_rm_defs.h (1UL << 32) does NOT
  * constrain this: it is referenced only by rocm_ernic_compat.c's pvrdma
  * dev_attr, which the ionic guest driver never reads, and no registration
  * path validates against it.

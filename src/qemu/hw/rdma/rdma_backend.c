@@ -19,8 +19,6 @@
 #include <stdint.h>
 #include <errno.h>
 
-#include <infiniband/verbs.h>
-
 #include "rdma_backend.h"
 #include "rdma_backend_ops.h" /* For RdmaBackendOps structure definition */
 

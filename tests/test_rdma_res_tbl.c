@@ -44,12 +44,11 @@
  * only through the allocator's result, which the cases below check
  * directly.
  *
- * The allocator is static inline in the vendored rdma_rm.c, so it is
- * reached through the resource manager's public API instead: rdma_rm_init()
- * sizes the CQ table as max_cq, and rdma_rm_alloc_cq() and
- * rdma_rm_dealloc_cq() given no backend are thin wrappers over the
- * allocator. The resource manager's backend externs are stubbed, as no path
- * under test reaches them.
+ * The allocator is static inline in rdma_rm.c, so it is reached through
+ * the resource manager's public API instead: rdma_rm_init() sizes the CQ
+ * table as max_cq, and rdma_rm_alloc_cq() and rdma_rm_dealloc_cq() given no
+ * backend are thin wrappers over the allocator. The resource manager's
+ * backend externs are stubbed, as no path under test reaches them.
  *
  * The init-* cases cover rdma_rm_init() itself: it must reject device
  * limits that would size a table wrongly (a negative limit), and when a

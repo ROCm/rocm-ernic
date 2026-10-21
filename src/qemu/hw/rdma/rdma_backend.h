@@ -18,8 +18,13 @@
 #ifndef RDMA_BACKEND_H
 #define RDMA_BACKEND_H
 
-#include "rdma_rm_defs.h"
+#include <stddef.h>
+#include <stdint.h>
+
 #include "rdma_backend_defs.h"
+
+struct ibv_srq_attr;
+union ibv_gid;
 
 /* Add definition for QP0 and QP1 as there is no userspace enums for them */
 enum ibv_special_qp_type {

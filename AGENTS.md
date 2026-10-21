@@ -358,8 +358,7 @@ them and where their configuration files are picked up.
 ### C
 
 - **clang-format 18**, with [`.clang-format`](.clang-format), over every
-  `.c` and `.h`, `third-party/` included. Check without changing
-  anything:
+  `.c` and `.h`. Check without changing anything:
 
   ```bash
   git ls-files -z -- '*.c' '*.h' | xargs -0 clang-format-18 --dry-run --Werror
@@ -458,11 +457,11 @@ them and where their configuration files are picked up.
 - **clang-tidy clean**: building with `-DERNIC_USE_CLANG_TIDY=ON` runs
   clang-tidy on every file as it compiles, with the checks in
   [`.clang-tidy`](.clang-tidy), and must report nothing; every finding is
-  an error. It needs CMake 3.27 or later, clang-tidy 19 or later, and
-  Clang as the C compiler (configuring fails with GCC, whose options
-  clang-tidy rejects). Use the clang of the same version as clang-tidy,
-  in a separate build directory, and build Release as well as Debug,
-  since `NDEBUG` and `_FORTIFY_SOURCE` change what the analyzer sees:
+  an error. It needs clang-tidy 19 or later, and Clang as the C compiler
+  (configuring fails with GCC, whose options clang-tidy rejects). Use the
+  clang of the same version as clang-tidy, in a separate build directory,
+  and build Release as well as Debug, since `NDEBUG` and `_FORTIFY_SOURCE`
+  change what the analyzer sees:
 
   ```bash
   cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
@@ -471,8 +470,7 @@ them and where their configuration files are picked up.
   ```
 
   `-k 0` keeps going after a file fails, so one build reports every
-  finding. The vendored sources in `third-party/` and their headers are
-  skipped.
+  finding.
 
   `.clang-tidy` turns on whole groups of checks, leaving out the groups
   for other platforms and code bases (listed there with the reason), and
@@ -485,9 +483,9 @@ them and where their configuration files are picked up.
 
   CI: [clang-tidy.yml](.github/workflows/clang-tidy.yml), with upstream
   clang-tidy 23, in Debug and Release.
-- **include-what-you-use (IWYU)** (`apt install iwyu`; needs CMake 3.27 or
-  later): it prints the `#include` lines it suggests adding or removing for
-  each file as the build compiles it. IWYU parses with its own clang, which
+- **include-what-you-use (IWYU)** (`apt install iwyu`): it prints the
+  `#include` lines it suggests adding or removing for each file as the
+  build compiles it. IWYU parses with its own clang, which
   rejects options it doesn't know, such as GCC 15's
   `-fzero-init-padding-bits`, so configure a separate build directory with
   the clang that IWYU is built on, whose version
@@ -514,8 +512,7 @@ them and where their configuration files are picked up.
 
   The build doesn't rerun IWYU on files that are already up to date, so
   start from an empty build directory, or `ninja -C build-iwyu -t clean`,
-  and an empty `iwyu-runs`. The vendored sources in `third-party/` are
-  skipped.
+  and an empty `iwyu-runs`.
 
   Unlike the other checks, IWYU doesn't have to report nothing, since some
   of its suggestions are wrong. Make the suggestions that are right for the
@@ -544,8 +541,7 @@ them and where their configuration files are picked up.
   ([static-analysis.yml](.github/workflows/static-analysis.yml)). It's
   informational and never fails, but read its findings for the files you
   touched. Its clang-tidy run uses its own set of checks, not
-  `.clang-tidy`, and includes the vendored code, so it doesn't replace the
-  clang-tidy check above.
+  `.clang-tidy`, so it doesn't replace the clang-tidy check above.
 
 ### Shell
 
@@ -559,12 +555,11 @@ bash scripts must be shellcheck-clean.
   `fetch-ionic-sources.sh`, and the Ansible collection's `files/`) keeps
   `#!/bin/bash`, so it doesn't depend on `PATH`.
 - **ShellCheck 0.11.0** over every `*.sh`, `*.sh.in`, and extension-less
-  executable with a shell shebang, outside `third-party/`, with every
-  default check on. The optional checks (`shellcheck --list-optional`)
-  stay off.
+  executable with a shell shebang, with every default check on. The
+  optional checks (`shellcheck --list-optional`) stay off.
 
   ```bash
-  git ls-files -- ':!:third-party/' | while IFS= read -r f; do
+  git ls-files | while IFS= read -r f; do
     if [[ "$f" == *.sh || "$f" == *.sh.in ]]; then
       echo "$f"
     elif [[ "${f##*/}" != *.* && -x "$f" ]] &&
@@ -627,8 +622,8 @@ bash scripts must be shellcheck-clean.
 - **cmakelint**, with [`.cmakelintrc`](.cmakelintrc):
 
   ```bash
-  git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' \
-    ':!:third-party/' | xargs -0 cmakelint
+  git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' |
+    xargs -0 cmakelint
   ```
 
   CI: [cmakelint.yml](.github/workflows/cmakelint.yml).
@@ -639,22 +634,22 @@ Python code must run on **Python 3.10**. Don't use anything newer, such
 as `tomllib`, `except*`, or `typing.Self` (all 3.11).
 
 - **black** and **pylint**, over every `*.py` and extension-less script
-  with a python shebang, except `third-party/`, `nix/analysis/triage/`,
-  and `.cmake-format.py`. pylint needs
+  with a python shebang, except `nix/analysis/triage/` and
+  `.cmake-format.py`. pylint needs
   `prometheus/requirements-exporter.txt` installed to resolve
   ernic-exporter's imports, and PyYAML for
   `tools/check-embedded-shell.py`'s.
 
   ```bash
-  git ls-files -- ':!:third-party/' ':!:nix/analysis/triage/' \
-    ':!:.cmake-format.py' | while IFS= read -r f; do
-    if [[ "$f" == *.py ]]; then
-      echo "$f"
-    elif [[ "${f##*/}" != *.* ]] &&
-      head -n1 -- "$f" | grep -Eqs '^#!.*python'; then
-      echo "$f"
-    fi
-  done > /tmp/python-files
+  git ls-files -- ':!:nix/analysis/triage/' ':!:.cmake-format.py' |
+    while IFS= read -r f; do
+      if [[ "$f" == *.py ]]; then
+        echo "$f"
+      elif [[ "${f##*/}" != *.* ]] &&
+        head -n1 -- "$f" | grep -Eqs '^#!.*python'; then
+        echo "$f"
+      fi
+    done > /tmp/python-files
   xargs -d '\n' black --check < /tmp/python-files
   xargs -d '\n' pylint < /tmp/python-files
   ```
@@ -700,27 +695,14 @@ as `tomllib`, `except*`, or `typing.Self` (all 3.11).
   and its version is pinned in the workflow; lint with that version, since
   older ones report problems that it doesn't and miss ones that it does.
 
-## The QEMU code in `third-party/`
+## The QEMU code in `src/qemu/`
 
-`third-party/` holds only `third-party/qemu/`: the core of QEMU's
-paravirtual RDMA (PVRDMA) device model, which rocm-ernic forked and has
-since rewritten heavily. Upstream QEMU has deleted it, so nobody else
-maintains it. **It's ours, and fine to modify.** It will move into
-`src/` once it's cleaned up. [third-party/README.md](third-party/README.md)
-has its history and the problems already known in it.
-
-The build treats it as vendored only so that those problems don't all
-have to be fixed at once. Until it moves, a change there gets fewer
-checks than one in `src/`:
-
-- Its `.c` files compile with `-w`, and its headers are SYSTEM includes,
-  so the compilers report no warnings in it.
-- clang-tidy and IWYU skip it.
-- The coverage floor counts `src/` only.
-
-Hold what you change there to the rules for `src/` anyway, and check it
-by hand for what those exemptions hide. clang-format does cover it, like
-the rest of the tree.
+`src/qemu/` is the core of QEMU's paravirtual RDMA (PVRDMA) device model,
+which rocm-ernic forked and has since rewritten heavily. Upstream QEMU
+has deleted it, so nobody else maintains it. **It's ours, and fine to
+modify**, and it's built and checked like the rest of `src/`. Keep each
+file's original copyright lines. [src/qemu/README.md](src/qemu/README.md)
+has its history.
 
 ## Copyright lines
 

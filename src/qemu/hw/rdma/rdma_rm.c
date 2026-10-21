@@ -16,11 +16,11 @@
  */
 
 /* Minimal includes instead of qemu/osdep.h */
-#include <stdint.h>
-#include <stdbool.h>
 #include <string.h>
 #include <errno.h>
 #include <inttypes.h> /* For PRIu32 */
+
+#include <glib.h> /* For GBytes and GHashTable */
 
 #include "qemu/bitmap.h" /* For bitmap operations */
 #include "qemu/thread.h" /* For QEMU_LOCK_GUARD */

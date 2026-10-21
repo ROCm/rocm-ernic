@@ -327,10 +327,10 @@ Inside the Server
         sees QEMU types)
               │
               ▼
-       third-party/qemu/hw/rdma   resource manager (rdma_rm)
+       src/qemu/hw/rdma           resource manager (rdma_rm)
        src/rdma/                  backend vtable: none,
                                   loopback, tcp mesh
-       src/qemu-compat/           the QEMU APIs the vendored
+       src/qemu-compat/           the QEMU APIs the QEMU-derived
                                   code expects
 
 The ionic Front End
@@ -345,7 +345,7 @@ The Device Core
 ^^^^^^^^^^^^^^^
 
 The device core is ``src/rocm_ernic_compat.c``,
-``third-party/qemu/``, and ``src/rdma/``.
+``src/qemu/``, and ``src/rdma/``.
 
 rocm-ernic began as an emulator of the VMware paravirtual RDMA
 device (PVRDMA), using the device model from QEMU's
@@ -1039,8 +1039,8 @@ Threads
 The rule is that **only the main thread touches guest memory**.
 Every other thread hands work to it through a locked queue: the
 data path's inbound message queue, or the Ethernet emulator's
-frame inbox. The vendored QEMU code's own completion thread is
-never started.
+frame inbox. The completion thread the QEMU code had upstream
+is gone.
 
 Shared state between threads uses mutexes or C11 atomics. The
 thread-safety section of ``AGENTS.md``, in the repository root,
@@ -1143,14 +1143,14 @@ Where to Look in the Source
    * - ``src/rocm_ernic_compat.c``, ``.h``
      - Bridge to the QEMU-derived core; guest-memory mapping for
        it; mesh wrappers; shared limits
-   * - ``third-party/qemu/hw/rdma/``
+   * - ``src/qemu/hw/rdma/``
      - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
      - Backend registry; none, loopback, and TCP mesh backends
    * - ``src/rdma/pvrdma_stats.c``
      - Statistics file
    * - ``src/qemu-compat/``
-     - Stand-ins for the QEMU APIs the vendored code calls
+     - Stand-ins for the QEMU APIs the QEMU-derived code calls
    * - ``src/nvmeof_cm.c``, ``src/nvmeof_target.c``
      - In-process NVMe-oF CM responder and controller
    * - ``src/s3_tcp.c``, ``src/s3_http.c``, ``src/s3_token.c``,

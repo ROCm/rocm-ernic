@@ -76,18 +76,6 @@ endforeach()
 
 # -- Unit tests --------------------------------------------------
 
-# Vendored QEMU sources that tests compile as separate translation units.
-# Suppressing warnings per-source rather than per-target keeps the vendored
-# C quiet (matching the main build) while the test's own source is still
-# warning-checked -- a target-wide -w would disable warnings everywhere,
-# since GCC honours -w regardless of where it appears in the flag list.
-set(ERNIC_TEST_VENDORED_SOURCES
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
-)
-set_source_files_properties(${ERNIC_TEST_VENDORED_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-w"
-)
-
 # -- test_write_imm (requires libibverbs) ------------------------
 add_executable(test_write_imm
     test_write_imm.c
@@ -141,10 +129,10 @@ add_executable(test_rdma_cm_proto
 target_include_directories(test_rdma_cm_proto PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
-# Vendored header trees are SYSTEM includes.
+# Headers from outside the project are SYSTEM includes.
 target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
@@ -388,12 +376,12 @@ target_include_directories(test_tcp_mesh_topology PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target, so the backend and the test are still warning-checked.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
 target_include_directories(test_tcp_mesh_topology SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -420,12 +408,12 @@ target_include_directories(test_tcp_gid_resolve PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target, so the backend and the test are still warning-checked.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
 target_include_directories(test_tcp_gid_resolve SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -449,12 +437,12 @@ target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target, so the backend and the test are still warning-checked.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
 target_include_directories(ernic-test-tcp-thread-stop SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -478,11 +466,9 @@ target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
 # RDMA resource-table allocator test. rdma_rm.c keeps its allocator
 # static inline, so the test drives it through the resource
 # manager's CQ table. It stubs the backend entry points rdma_rm.c
-# calls, so no RDMA subsystem link is needed. ERNIC_TEST_VENDORED_SOURCES
-# silences rdma_rm.c with -w, and the test's own code is still
-# warning-checked.
+# calls, so no RDMA subsystem link is needed.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
@@ -490,12 +476,12 @@ target_include_directories(test_rdma_res_tbl PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target.
 target_include_directories(test_rdma_res_tbl SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -507,16 +493,15 @@ target_link_libraries(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # QEMU utility stubs test: bitmap word boundaries and the oversize-map
-# abort. It links the stubs translation unit directly. The vendored header trees are SYSTEM includes, as in the main
-# build, so the test source itself is still warning-checked.
+# abort. It links the stubs translation unit directly.
 add_executable(test_qemu_stubs test_qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
 target_include_directories(test_qemu_stubs PRIVATE
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
 target_include_directories(test_qemu_stubs SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -542,32 +527,26 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${RDMA_BACKEND_SOURCES}
     ${NET_SOURCES}
     ${QEMU_COMPAT_SOURCES}
+    ${QEMU_SOURCES}
 )
 list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
-set(ERNIC_HARNESS_VENDORED_SOURCES ${ERNIC_VENDORED_SOURCES})
-list(TRANSFORM ERNIC_HARNESS_VENDORED_SOURCES
-    PREPEND "${PROJECT_SOURCE_DIR}/")
-set_source_files_properties(${ERNIC_HARNESS_VENDORED_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-w"
-)
 add_executable(ernic-test-ionic-harness
     test_ionic_harness.c
     ionic_harness.c
     fake_vfu.c
     ${ERNIC_HARNESS_DEVICE_SOURCES}
-    ${ERNIC_HARNESS_VENDORED_SOURCES}
 )
 target_include_directories(ernic-test-ionic-harness PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target.
 target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}

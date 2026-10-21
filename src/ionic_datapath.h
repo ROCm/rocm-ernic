@@ -26,8 +26,8 @@ struct ionic_datapath;
  * reachable before the first capsule moves.
  *
  * IONIC_MAX_MR sizes three tables that all have to hold that many: the
- * rdma_rm resource table (MAX_MR in third-party/qemu/hw/rdma/rdma_rm_defs.h,
- * which cannot include this header), the data path's own dp_mr array, and the
+ * rdma_rm resource table (MAX_MR in src/qemu/hw/rdma/rdma_rm_defs.h, which
+ * cannot include this header), the data path's own dp_mr array, and the
  * admin queue's driver-id-to-handle map.  Whichever is smallest is the real
  * ceiling, so they are kept equal deliberately.
  *

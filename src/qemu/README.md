@@ -1,17 +1,56 @@
-# third-party
+# QEMU PVRDMA code
 
-Everything here is in [`qemu/`](qemu/): the core of QEMU's paravirtual
-RDMA (PVRDMA) device model, which rocm-ernic forked and has since
-rewritten heavily. Most of what is in it now was written in this
-repository, and nobody maintains the upstream original. It's ours to
-change. The build treats it as vendored only so that its problems don't
-all have to be fixed at once; once they are, it moves into `src/`. See
-[Plan](#plan).
+rocm-ernic's fork of the core of QEMU's paravirtual RDMA (PVRDMA)
+device model (`https://gitlab.com/qemu-project/qemu`), which QEMU
+removed in 9.1. It has been rewritten heavily here: most of what is in
+it now was written in this repository, and nobody maintains the
+upstream original. It's built and checked like the rest of `src/`, and
+changed like it. [History](#history) covers where it came from and how
+far it is from upstream.
 
-[`qemu/README.md`](qemu/README.md) covers the files themselves: what
-each one is, how the build uses them, and their licenses.
+## Files
 
-## Where it came from
+- `hw/rdma/rdma_rm.c`, `.h`, and `rdma_rm_defs.h`: the resource
+  manager, the tables of PDs, MRs, CQs, QPs, and SRQs, indexed by the
+  handles the guest uses.
+- `hw/rdma/rdma_backend.c`, `.h`, and `rdma_backend_defs.h`: the
+  backend device, and the dispatch of SRQ operations to rocm-ernic's
+  backends through `RdmaBackendOps`.
+- `hw/rdma/rdma_utils.h`: logging macros.
+- `hw/rdma/vmw/pvrdma.h`: the device state, `PVRDMADev`, and its
+  statistics.
+- `include/standard-headers/`: VMware's PVRDMA ABI header, from the
+  Linux `vmw_pvrdma` driver by way of QEMU. Only its work request and
+  completion layouts are used, to size the device's limits and to number
+  the per-QP statistics.
+
+## Build
+
+- The server, `rocm-ernic`, builds the `.c` files listed in
+  `QEMU_SOURCES` in the top-level `CMakeLists.txt`. So does
+  `ernic-test-ionic-harness`, and `test_rdma_res_tbl` builds
+  `rdma_rm.c`, in `tests/CMakeLists.txt`.
+- The sources include their own headers, and `rdma_backend_ops.h` from
+  `src/rdma/`, by bare name, so any target that builds them needs
+  `src/qemu/hw/rdma`, `src/qemu/include`, and `src/rdma` on its include
+  path.
+- The QEMU APIs the code calls are implemented in
+  [`src/qemu-compat/`](../qemu-compat/).
+- `test_rdma_res_tbl` tests the resource manager through its public
+  functions, and `ernic-test-ionic-harness` links all of it into the
+  emulated device it drives.
+
+## Licenses
+
+The QEMU sources are `GPL-2.0-or-later`. The VMware header under
+`include/standard-headers/` is
+`(GPL-2.0 WITH Linux-syscall-note) OR BSD-2-Clause`. Each file's SPDX
+tag is authoritative; see also [`LICENSE.md`](../../LICENSE.md). Keep
+each file's original copyright lines.
+
+## History
+
+### Where it came from
 
 QEMU carried the PVRDMA device in `hw/rdma/` from v2.12.0 (2018) to
 v9.0.0. Upstream deprecated it in 8.2 (QEMU commit `e9a54265f5`) and
@@ -29,15 +68,15 @@ does that job. Nine of the 14 files are left: `rdma_utils.c`,
 `vmw/pvrdma_qp_ops.c` and `.h`, and two of the VMware headers were
 deleted once nothing used them.
 
-### Origins
+#### Origins
 
 Three sources are mixed in these files:
 
 - **QEMU**, by Oracle and Red Hat (Yuval Shaia and Marcel Apfelbaum),
   under `GPL-2.0-or-later`: the eight files from `hw/rdma/`.
 - **VMware**, under `(GPL-2.0 WITH Linux-syscall-note) OR
-  BSD-2-Clause`: the header under `qemu/include/`, which VMware wrote
-  for the Linux `vmw_pvrdma` driver and QEMU copied in with its
+  BSD-2-Clause`: the header under `include/`, which VMware wrote for
+  the Linux `vmw_pvrdma` driver and QEMU copied in with its
   kernel-header import.
 - **rocm-ernic**: the changes described under
   [How far it is from upstream](#how-far-it-is-from-upstream), in nearly
@@ -45,7 +84,7 @@ Three sources are mixed in these files:
 
 Nothing else was copied in.
 
-### Why upstream dropped it
+#### Why upstream dropped it
 
 The deprecation says the subsystem was "in a bad shape" and that
 nobody was picking up its patches. The evidence specific to the device:
@@ -73,9 +112,11 @@ never have passed review" and "I wouldn't let friends use it in
 production", were about QEMU's RDMA live migration (`migration/rdma.c`),
 not this device. The deprecation cited both together.
 
-## How far it is from upstream
+### How far it is from upstream
 
-Changed lines against QEMU v9.0.0, ignoring whitespace and blank lines:
+Changed lines against QEMU v9.0.0, ignoring whitespace and blank lines,
+as of `26e1144` (#302). Later changes have moved the counts, not the
+picture.
 
 | File                  | Upstream | Here | Changed  |
 |-----------------------|---------:|-----:|---------:|
@@ -98,44 +139,21 @@ The changes are rocm-ernic's, not portability patches:
   and the resource manager's own statistics. Most of the changed lines
   in `rdma_backend.c` and the headers are these deletions.
 - The QEMU dependencies are replaced with the shims in
-  [`src/qemu-compat/`](../src/qemu-compat/).
+  [`src/qemu-compat/`](../qemu-compat/).
 
 About 45 commits in this repository changed these files, from the
 first server commit in November 2025 until September 2026. They lived
-in `src/from-qemu/` until PR #177 moved them here and labeled them
-vendored. Since then, commented-out code, and then the code nothing
-used, have been removed.
+in `src/from-qemu/` until PR #177 moved them to `third-party/qemu/` and
+labeled them vendored, exempt from the compiler warnings, clang-tidy,
+IWYU, codespell, and the coverage floor until they were cleaned up.
+Commented-out code, and then the code nothing used, were removed, and
+the warnings the compilers then reported were fixed. Once the compilers,
+clang-tidy, and codespell reported nothing in it, it moved here, with
+the exemptions dropped.
 
-## Why it matters
+### Why it matters
 
 The code is linked into the server and sits behind QP, CQ, MR, and PD
 handles that the guest controls, so a bug in it is a guest-to-host bug.
 No upstream will find or fix one: QEMU has deleted the code, and the
 rocm-ernic changes exist only here.
-
-## Plan
-
-The code is going to be cleaned up, moved into `src/` alongside the code
-that uses it, and held to the same rules as the rest of rocm-ernic's
-source. It can be changed in the meantime; AGENTS.md asks that changes
-to it follow the rules for `src/`.
-
-Until it moves, the build still treats it as vendored, so it gets fewer
-checks than `src/`:
-
-- Its `.c` files compile with `-w`, and its headers are SYSTEM
-  includes, so the compilers report nothing in it.
-- clang-tidy and IWYU skip it. (clang-format doesn't; the code is
-  already formatted like the rest of the tree.)
-- The coverage floor counts `src/` only.
-
-CodeQL, the sanitizers, and valgrind already cover it, since they work
-on the built program. `test_rdma_res_tbl` tests parts of `rdma_rm.c`
-through its public functions, and `ernic-test-ionic-harness` links all
-of it into the emulated device it drives.
-
-Moving it means taking it out of each of those exemptions and fixing
-what they then report. It already builds without a warning, with GCC and
-Clang in Debug and Release, when its `.c` files are built without `-w`
-and its headers aren't SYSTEM includes. clang-tidy and IWYU haven't been
-run on it yet.
