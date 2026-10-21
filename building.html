@@ -540,10 +540,7 @@ launcher, and the Prometheus exporter
 <span id="werror-policy"></span><h2>Warnings as Errors<a class="headerlink" href="#warnings-as-errors" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code> adds <code class="docutils literal notranslate"><span class="pre">-Werror</span></code> to every target that
 <code class="docutils literal notranslate"><span class="pre">ernic_set_compiler_flags()</span></code> sets up: the server, the test
-programs, and the fuzz harness replay programs. The QEMU-derived
-sources under <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> are compiled with <code class="docutils literal notranslate"><span class="pre">-w</span></code>
-regardless, until they’re cleaned up and moved into <code class="docutils literal notranslate"><span class="pre">src/</span></code>,
-so the flag doesn’t reach them yet.</p>
+programs, and the fuzz harness replay programs.</p>
 <p>It defaults to <code class="docutils literal notranslate"><span class="pre">OFF</span></code> so that a packager or downstream
 consumer building with a compiler version we have not tested
 is never blocked by a newly-introduced warning. That
@@ -594,8 +591,8 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build-asan
 ctest<span class="w"> </span>--test-dir<span class="w"> </span>build-asan
 </pre></div>
 </div>
-<p>The sanitizers instrument everything rocm-ernic compiles,
-including the vendored QEMU sources. Libraries that come from
+<p>The sanitizers instrument everything rocm-ernic compiles.
+Libraries that come from
 the system, such as libvfio-user, GLib, and libibverbs, are not
 instrumented.</p>
 <p>Every sanitizer report is fatal, so a test with a report fails.
@@ -658,9 +655,7 @@ badge reads.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_IWYU</span></code> runs <a class="reference external" href="https://include-what-you-use.org/">include-what-you-use</a> (IWYU) on the server’s
 and the tests’ sources as they compile, which prints the
 <code class="docutils literal notranslate"><span class="pre">#include</span></code> lines it suggests adding or removing. The
-suggestions don’t fail the build, and some are wrong. The
-vendored sources in <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> are skipped. It needs
-CMake 3.27 or later.</p>
+suggestions don’t fail the build, and some are wrong.</p>
 <p>IWYU parses with its own clang, which rejects compiler options
 that it doesn’t know, so build with the clang that IWYU is
 built on. <code class="docutils literal notranslate"><span class="pre">include-what-you-use</span> <span class="pre">--version</span></code> prints its
@@ -681,11 +676,9 @@ locally and which suggestions to ignore.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code> runs <a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a> on the server’s
 and the tests’ sources as they compile, with the checks in
 <code class="docutils literal notranslate"><span class="pre">.clang-tidy</span></code>. Every finding is an error, so it fails the
-build. The vendored sources in <code class="docutils literal notranslate"><span class="pre">third-party/</span></code> and their
-headers are skipped. It needs CMake 3.27 or later, clang-tidy 19
-or later, and Clang as the C compiler, since clang-tidy rejects
-the options that the build uses with GCC. Use the clang of the
-same version as clang-tidy:</p>
+build. It needs clang-tidy 19 or later, and Clang as the C
+compiler, since clang-tidy rejects the options that the build
+uses with GCC. Use the clang of the same version as clang-tidy:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build-tidy<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang-23<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-DERNIC_USE_CLANG_TIDY<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-DERNIC_CLANG_TIDY_EXE<span class="o">=</span>/usr/bin/clang-tidy-23

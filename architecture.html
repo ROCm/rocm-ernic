@@ -766,10 +766,10 @@ rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
  sees QEMU types)
        │
        ▼
-third-party/qemu/hw/rdma   resource manager (rdma_rm)
+src/qemu/hw/rdma           resource manager (rdma_rm)
 src/rdma/                  backend vtable: none,
                            loopback, tcp mesh
-src/qemu-compat/           the QEMU APIs the vendored
+src/qemu-compat/           the QEMU APIs the QEMU-derived
                            code expects
 </pre></div>
 </div>
@@ -783,7 +783,7 @@ is described in a later section.</p>
 <section id="the-device-core">
 <h3>The Device Core<a class="headerlink" href="#the-device-core" title="Link to this heading">#</a></h3>
 <p>The device core is <code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>,
-<code class="docutils literal notranslate"><span class="pre">third-party/qemu/</span></code>, and <code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code>, and <code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>.</p>
 <p>rocm-ernic began as an emulator of the VMware paravirtual RDMA
 device (PVRDMA), using the device model from QEMU’s
 <code class="docutils literal notranslate"><span class="pre">hw/rdma/</span></code>. That guest-facing personality has been removed
@@ -1537,8 +1537,8 @@ connections</p></td>
 <p>The rule is that <strong>only the main thread touches guest memory</strong>.
 Every other thread hands work to it through a locked queue: the
 data path’s inbound message queue, or the Ethernet emulator’s
-frame inbox. The vendored QEMU code’s own completion thread is
-never started.</p>
+frame inbox. The completion thread the QEMU code had upstream
+is gone.</p>
 <p>Shared state between threads uses mutexes or C11 atomics. The
 thread-safety section of <code class="docutils literal notranslate"><span class="pre">AGENTS.md</span></code>, in the repository root,
 has the rules.</p>
@@ -1653,7 +1653,7 @@ interrupt controller, doorbell decode</p></td>
 <td><p>Bridge to the QEMU-derived core; guest-memory mapping for
 it; mesh wrappers; shared limits</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">third-party/qemu/hw/rdma/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/hw/rdma/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
@@ -1663,7 +1663,7 @@ it; mesh wrappers; shared limits</p></td>
 <td><p>Statistics file</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
-<td><p>Stand-ins for the QEMU APIs the vendored code calls</p></td>
+<td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code></p></td>
 <td><p>In-process NVMe-oF CM responder and controller</p></td>
