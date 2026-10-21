@@ -332,8 +332,11 @@ static size_t encode_seed(const struct seed *s, uint8_t *out)
     return IN_HDR + s->body_len;
 }
 
-/* Seed names are generated locally; environment data never becomes a path. */
-static void emit_seed(size_t i, const uint8_t *buf, size_t len)
+/*
+ * Seed names are generated locally; environment data never becomes a path.
+ * Returns false, having said why, if the seed could not be written.
+ */
+static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
 {
     char path[32];
     int fd;
@@ -350,21 +353,20 @@ static void emit_seed(size_t i, const uint8_t *buf, size_t len)
     /* NOLINTEND(android-cloexec-open) */
     if (fd < 0) {
         fprintf(stderr, "fuzz_ionic_stats: cannot create %s\n", path);
-        exit(EXIT_FAILURE);
+        return false;
     }
     f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
         fprintf(stderr, "fuzz_ionic_stats: cannot open %s as a stream\n", path);
-        exit(EXIT_FAILURE);
+        return false;
     }
     ok = fwrite(buf, 1, len, f) == len;
     if (fclose(f) != 0)
         ok = false;
-    if (!ok) {
+    if (!ok)
         fprintf(stderr, "fuzz_ionic_stats: cannot write %s\n", path);
-        exit(EXIT_FAILURE);
-    }
+    return ok;
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
@@ -372,6 +374,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     const char *emit = getenv("FUZZ_EMIT_SEEDS");
     bool emit_seeds = emit && strcmp(emit, "1") == 0;
     int failures = 0;
+    int unwritten = 0;
 
     (void)argc;
     (void)argv;
@@ -390,14 +393,19 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
                    why ? ": " : "", why ? why : "");
             failures++;
         }
-        if (emit_seeds)
-            emit_seed(i, buf, len);
+        if (emit_seeds && !emit_seed(i, buf, len))
+            unwritten++;
     }
     fflush(stdout);
-    if (failures) {
+    if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
-         * seed has to stop the run itself. */
-        fprintf(stderr, "fuzz_ionic_stats: %d seed(s) failed\n", failures);
+         * seed, or a corpus that could not be written, has to stop the run
+         * itself.  abort() rather than exit(), which isn't thread safe. */
+        if (failures)
+            fprintf(stderr, "fuzz_ionic_stats: %d seed(s) failed\n", failures);
+        if (unwritten)
+            fprintf(stderr, "fuzz_ionic_stats: %d seed(s) not written\n",
+                    unwritten);
         abort();
     }
     return 0;
