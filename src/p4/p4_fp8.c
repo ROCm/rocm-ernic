@@ -170,6 +170,52 @@ uint8_t p4_fp8_from_float(float v)
                      ((q - 8u) & FP8_MAN_MASK));
 }
 
+/* Combine one pair of operands. Shared so map and reduce cannot drift. */
+static bool fp8_combine(enum p4_fp8_op op, float fa, float fb, float *out)
+{
+    switch (op) {
+    case P4_FP8_OP_ADD:
+        *out = fa + fb;
+        return true;
+    case P4_FP8_OP_MUL:
+        *out = fa * fb;
+        return true;
+    case P4_FP8_OP_MAX:
+        *out = (fa > fb) ? fa : fb;
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool p4_fp8_map(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b, size_t n,
+                uint8_t *out)
+{
+    float probe;
+
+    if (!out)
+        return false;
+    if (n != 0 && (!a || !b))
+        return false;
+    /* Reject an unknown operation before writing anything, so a bad one
+     * cannot leave a partly transformed buffer behind. */
+    if (!fp8_combine(op, 0.0f, 0.0f, &probe))
+        return false;
+
+    for (size_t i = 0; i < n; i++) {
+        float r;
+
+        /* Elementwise, so a NaN spoils its own element and no other. */
+        if (p4_fp8_is_nan(a[i]) || p4_fp8_is_nan(b[i])) {
+            out[i] = P4_FP8_NAN;
+            continue;
+        }
+        (void)fp8_combine(op, p4_fp8_to_float(a[i]), p4_fp8_to_float(b[i]), &r);
+        out[i] = p4_fp8_from_float(r);
+    }
+    return true;
+}
+
 bool p4_fp8_reduce(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b,
                    size_t n, uint8_t *out)
 {

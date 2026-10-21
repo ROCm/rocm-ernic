@@ -286,36 +286,48 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp);
 #ifdef ERNIC_HAVE_P4
 
 /*
- * Reduce two registered memory regions to one value and deliver it to a
- * third.
+ * Apply an fp8 operation elementwise across two registered memory regions
+ * and write the result to a third.
  *
- * This is in-network compute: the emulated NIC reads both operand buffers,
- * applies the fp8 arithmetic, and writes the single result out to the
- * destination region, instead of the host reading two buffers and writing
- * a third.
+ * This is in-network compute: the NIC reads both operand regions, combines
+ * them pointwise, and writes a result region of the same length, instead
+ * of the host reading two buffers and writing a third.  Combining two
+ * partial buffers is what a collective does, so this is the primitive an
+ * allreduce is built from.
+ *
+ * The regions are streamed in blocks rather than staged whole, so the
+ * length is bounded by what a guest may ask the poll loop to do in one go
+ * rather than by how much will fit on the stack.
  *
  * Note what this is NOT, yet: it calls the arithmetic directly and no P4
- * program is involved, so which reduction happens is fixed by the caller
+ * program is involved, so which operation happens is fixed by the caller
  * rather than decided by a table.  Wiring the pipeline into this path and
  * making the arithmetic an extern a program calls is what turns it into
  * something P4 governs; this function is then the extern's implementation
- * rather than the whole story.  The destination is named by an rkey, so the
- * result travels the same path an RDMA WRITE takes -- over the loopback
- * backend, that is the local memory region the rkey resolves to.
+ * rather than the whole story.
  *
- * @op is an enum p4_fp8_op.  @len is the length of each operand buffer in
- * bytes, one fp8 value per byte, capped at IONIC_FP8_REDUCE_MAX.  The result
- * is one byte.
+ * @op is an enum p4_fp8_op.  @len is the length of each region in bytes,
+ * one fp8 value per byte, and the destination region is the same length.
  *
  * Returns 0, or a negative errno: -EINVAL for an argument out of range,
- * -EFAULT when a region could not be read or written in full.
+ * -EACCES for a key the guest may not name here, -EFAULT when a region
+ * could not be read or written in full.
  */
-#define IONIC_FP8_REDUCE_MAX 4096u
 
-int ionic_datapath_fp8_reduce(struct ionic_datapath *dp, uint8_t op,
-                              uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
-                              uint64_t b_va, uint32_t len, uint32_t c_rkey,
-                              uint64_t c_va);
+/*
+ * The most a single request may move.  The work happens on the thread
+ * that also services the vfio-user poll loop, so this is a bound on how
+ * long a guest may stall that loop, not a bound on memory -- the streaming
+ * below would take any length.  A megabyte of elements is a visible pause;
+ * this is the point at which that was judged acceptable, and it is one
+ * constant to revisit when it is not.
+ */
+#define IONIC_FP8_MAP_MAX 262144u
+
+int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
+                           uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                           uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                           uint64_t c_va);
 
 #endif /* ERNIC_HAVE_P4 */
 

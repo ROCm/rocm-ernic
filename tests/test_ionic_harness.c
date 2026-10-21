@@ -2123,7 +2123,7 @@ static void test_p4_port(void)
     ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, NULL, NULL);
     teardown(T, &h);
 }
-/* ---- In-network reduction across three memory regions ------------------ */
+/* ---- In-network elementwise compute across three memory regions ------- */
 
 #define FP8R_MR_A   0x03000001u
 #define FP8R_MR_B   0x03000002u
@@ -2131,21 +2131,26 @@ static void test_p4_port(void)
 #define FP8R_VA_A   UINT64_C(0x7F2000000000)
 #define FP8R_VA_B   UINT64_C(0x7F3000000000)
 #define FP8R_VA_C   UINT64_C(0x7F4000000000)
-#define FP8R_MR_LEN (2u * IH_PAGE_SIZE)
+#define FP8R_MR_LEN (4u * IH_PAGE_SIZE)
 
 /*
- * The worked example: the NIC reads two operand regions, reduces them with
- * the fp8 extern, and delivers the single result to a third region by the
- * same path an RDMA WRITE takes. Nothing here is on the Ethernet wire --
- * this is the RDMA plane, where the loopback backend resolves an rkey to a
- * local region.
+ * The worked example: the NIC reads two operand regions, combines them
+ * pointwise, and writes a result region of the same length. Combining two
+ * partial buffers is what a collective does, so this is the primitive an
+ * allreduce is built from.
+ *
+ * Nothing here is on the Ethernet wire -- this is the RDMA plane, where
+ * the loopback backend resolves a key to a local region.
  */
-static void test_fp8_reduce(void)
+static void test_fp8_map(void)
 {
-    const char *T = "fp8-reduce";
+    const char *T = "fp8-map";
     struct ih h;
     struct ih_mr mra, mrb, mrc;
-    uint8_t a[64], b[64], got;
+    /* Longer than one streaming block, so the chunking is exercised and a
+     * loop that dropped the offset would show up as a wrong tail. */
+    enum { N = 5000 };
+    static uint8_t a[N], b[N], got[N];
 
     if (!setup(T, &h, "loopback"))
         return;
@@ -2164,72 +2169,132 @@ static void test_fp8_reduce(void)
         return;
     }
 
-    /* 1.0 in every element of both operands: 0x38 is E4M3 1.0. */
+    /* 1.0 everywhere in A, 2.0 everywhere in B. */
     memset(a, 0x38, sizeof(a));
-    memset(b, 0x38, sizeof(b));
+    memset(b, 0x40, sizeof(b));
+    /* ...except one element, so a result that ignored position would be
+     * indistinguishable from one that did not. */
+    a[1234] = 0x48; /* 4.0 */
     check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write to A");
     check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
 
-    /* ADD reduces both regions: 64 elements of 1.0 + 1.0 is 128.0, which
-     * E4M3 encodes as 0x70 -- exponent field 14, mantissa 0. */
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, sizeof(a),
-                                    mrc.lkey, FP8R_VA_C) == 0,
-          "the reduction failed");
-    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, &got, 1), "read back from C");
-    check(T, got == 0x70, "ADD over 64 pairs of 1.0 gave 0x%02X, want 0x70",
-          got);
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, N, mrc.lkey,
+                                 FP8R_VA_C) == 0,
+          "the elementwise add failed");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back from C");
 
-    /* MUL is a dot product: 2.0 . 3.0 over 4 elements is 24.0, 0x5C. */
-    memset(a, 0x40, 4); /* 2.0 */
-    memset(b, 0x44, 4); /* 3.0 */
-    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, 4), "write to A");
-    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, 4), "write to B");
+    {
+        unsigned wrong = 0;
+        unsigned first = 0;
+
+        for (unsigned i = 0; i < N; i++) {
+            /* 1+2 is 3 (0x44) everywhere but the one element, where
+             * 4+2 is 6 (0x4C). */
+            uint8_t want = (i == 1234) ? 0x4Cu : 0x44u;
+
+            if (got[i] != want) {
+                if (!wrong)
+                    first = i;
+                wrong++;
+            }
+        }
+        check(T, wrong == 0, "%u of %u elements are wrong, the first at %u",
+              wrong, (unsigned)N, first);
+    }
+
+    /* Multiply, over a length that is not a multiple of the block. */
+    memset(a, 0x40, sizeof(a)); /* 2.0 */
+    memset(b, 0x44, sizeof(b)); /* 3.0 */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_MUL, mra.lkey,
-                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 4, mrc.lkey,
-                                    FP8R_VA_C) == 0,
-          "the dot product failed");
-    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, &got, 1), "read back from C");
-    check(T, got == 0x5C, "the dot product gave 0x%02X, want 0x5C (24.0)", got);
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_MUL, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 3001, mrc.lkey,
+                                 FP8R_VA_C) == 0,
+          "the elementwise multiply failed");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, 3001), "read back from C");
+    {
+        unsigned wrong = 0;
+
+        for (unsigned i = 0; i < 3001; i++) {
+            if (got[i] != 0x4Cu) /* 2*3 is 6 */
+                wrong++;
+        }
+        check(T, wrong == 0, "%u of 3001 products are wrong", wrong);
+    }
+
+    /*
+     * Key 0 is IONIC_DMA_LKEY, which bypasses the region table and treats
+     * the address as a bus address. A guest-supplied request must not be
+     * able to name it.
+     */
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, 0, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                 FP8R_VA_C) == -EACCES,
+          "key 0 was accepted as an operand");
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64, 0,
+                                 FP8R_VA_C) == -EACCES,
+          "key 0 was accepted as a destination");
 
     /* A key that was never registered must fault, not read host memory. */
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, 0xDEADBEEFu,
-                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 4, mrc.lkey,
-                                    FP8R_VA_C) == -EFAULT,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, 0xDEADBEEFu,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                 FP8R_VA_C) == -EACCES,
           "an unregistered operand key was accepted");
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 4,
-                                    0xDEADBEEFu, FP8R_VA_C) == -EFAULT,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64,
+                                 0xDEADBEEFu, FP8R_VA_C) == -EACCES,
           "an unregistered destination key was accepted");
 
-    /* A length past the end of a region must fault rather than run off it. */
+    /*
+     * A length past the end of a region is refused before anything moves,
+     * rather than part way through with a half-written destination.
+     */
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                    FP8R_VA_A + FP8R_MR_LEN - 8, mrb.lkey,
-                                    FP8R_VA_B, 64, mrc.lkey,
-                                    FP8R_VA_C) == -EFAULT,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A + FP8R_MR_LEN - 8, mrb.lkey,
+                                 FP8R_VA_B, 64, mrc.lkey, FP8R_VA_C) == -EACCES,
           "a read past the end of a region was accepted");
+    {
+        /* ...and the destination really was left alone. */
+        uint8_t probe[8];
+        uint8_t before[8];
+
+        memset(before, 0x5A, sizeof(before));
+        check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, before, sizeof(before)),
+              "prime C");
+        (void)ionic_datapath_fp8_map(
+            h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A, mrb.lkey,
+            FP8R_VA_B + FP8R_MR_LEN - 8, 64, mrc.lkey, FP8R_VA_C);
+        check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, probe, sizeof(probe)),
+              "read C back");
+        check(T, memcmp(probe, before, sizeof(probe)) == 0,
+              "a refused request wrote to the destination anyway");
+    }
 
     /* Bounds on the request itself. */
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 0, mrc.lkey,
-                                    FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 0, mrc.lkey,
+                                 FP8R_VA_C) == -EINVAL,
           "a zero length was accepted");
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B,
-                                    IONIC_FP8_REDUCE_MAX + 1, mrc.lkey,
-                                    FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_map(
+              h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A, mrb.lkey,
+              FP8R_VA_B, IONIC_FP8_MAP_MAX + 1, mrc.lkey, FP8R_VA_C) == -EINVAL,
           "a length over the cap was accepted");
     check(T,
-          ionic_datapath_fp8_reduce(h.dev->ionic_dp, 99, mra.lkey, FP8R_VA_A,
-                                    mrb.lkey, FP8R_VA_B, 4, mrc.lkey,
-                                    FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, 99, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                 FP8R_VA_C) == -EINVAL,
           "an unknown operation was accepted");
 
     check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
@@ -2425,7 +2490,7 @@ static const struct {
     {"eth", test_eth},
 #ifdef ERNIC_HAVE_P4
     {"p4-port", test_p4_port},
-    {"fp8-reduce", test_fp8_reduce},
+    {"fp8-map", test_fp8_map},
 #endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},

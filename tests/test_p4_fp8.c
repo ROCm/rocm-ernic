@@ -242,6 +242,83 @@ static void test_reduce(void)
           "an unknown operation is refused");
 }
 
+/*
+ * Elementwise. This is the shape a collective wants: two partial buffers
+ * combined into a third of the same length, rather than collapsed to one
+ * value the way p4_fp8_reduce() does.
+ */
+static void test_map(void)
+{
+    const uint8_t one = 0x38;  /* 1.0 */
+    const uint8_t two = 0x40;  /* 2.0 */
+    const uint8_t four = 0x48; /* 4.0 */
+    uint8_t out[8];
+
+    {
+        const uint8_t a[] = {one, two, four, one};
+        const uint8_t b[] = {one, two, one, four};
+
+        check(p4_fp8_map(P4_FP8_OP_ADD, a, b, 4, out), "ADD succeeds");
+        check(out[0] == two, "1+1 is 2");
+        check(feq(p4_fp8_to_float(out[1]), 4.0f), "2+2 is 4");
+        check(feq(p4_fp8_to_float(out[2]), 5.0f), "4+1 is 5");
+        check(feq(p4_fp8_to_float(out[3]), 5.0f), "1+4 is 5");
+    }
+
+    {
+        const uint8_t a[] = {two, four};
+        const uint8_t b[] = {four, two};
+
+        check(p4_fp8_map(P4_FP8_OP_MUL, a, b, 2, out), "MUL succeeds");
+        check(feq(p4_fp8_to_float(out[0]), 8.0f), "2*4 is 8");
+        check(feq(p4_fp8_to_float(out[1]), 8.0f), "4*2 is 8");
+
+        check(p4_fp8_map(P4_FP8_OP_MAX, a, b, 2, out), "MAX succeeds");
+        check(feq(p4_fp8_to_float(out[0]), 4.0f), "max(2,4) is 4");
+        check(feq(p4_fp8_to_float(out[1]), 4.0f), "max(4,2) is 4");
+    }
+
+    /*
+     * A NaN spoils its own element and no other. That is the difference
+     * from a reduction, where one NaN has to poison the result because
+     * there is only one.
+     */
+    {
+        const uint8_t a[] = {one, P4_FP8_NAN, one};
+        const uint8_t b[] = {one, one, one};
+
+        check(p4_fp8_map(P4_FP8_OP_ADD, a, b, 3, out), "ADD succeeds");
+        check(out[0] == two, "the element before a NaN is unaffected");
+        check(out[1] == P4_FP8_NAN, "the NaN element is NaN");
+        check(out[2] == two, "the element after a NaN is unaffected");
+    }
+
+    /* Each element saturates on its own. */
+    {
+        const uint8_t a[] = {0x7E, one}; /* 448, 1.0 */
+        const uint8_t b[] = {0x7E, one};
+
+        check(p4_fp8_map(P4_FP8_OP_ADD, a, b, 2, out), "ADD succeeds");
+        check(out[0] == P4_FP8_MAX, "448+448 saturates");
+        check(out[1] == two, "its neighbour is untouched");
+    }
+
+    /* Bad arguments are refused before anything is written. */
+    memset(out, 0xA5, sizeof(out));
+    /* Deliberately out of range: a control message can carry any value in
+     * the field, so the branch that rejects one has to be covered.
+     * NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+    check(!p4_fp8_map((enum p4_fp8_op)99, &one, &one, 1, out),
+          "an unknown operation is refused");
+    check(out[0] == 0xA5, "a refused operation wrote nothing");
+    check(!p4_fp8_map(P4_FP8_OP_ADD, NULL, NULL, 4, out),
+          "a NULL operand with a non-zero length is refused");
+    check(!p4_fp8_map(P4_FP8_OP_ADD, &one, &one, 1, NULL),
+          "a NULL destination is refused");
+    check(p4_fp8_map(P4_FP8_OP_ADD, NULL, NULL, 0, out),
+          "an empty map is accepted and does nothing");
+}
+
 int main(void)
 {
     test_known_encodings();
@@ -249,6 +326,7 @@ int main(void)
     test_round_trip_exhaustive();
     test_saturation_and_rounding();
     test_reduce();
+    test_map();
 
     if (failures) {
         printf("p4_fp8: %d check(s) FAILED\n", failures);

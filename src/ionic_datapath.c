@@ -1264,35 +1264,79 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
 }
 
 #ifdef ERNIC_HAVE_P4
-int ionic_datapath_fp8_reduce(struct ionic_datapath *dp, uint8_t op,
-                              uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
-                              uint64_t b_va, uint32_t len, uint32_t c_rkey,
-                              uint64_t c_va)
+/*
+ * Blocks the operands are streamed through.  Small enough that three of
+ * them on the stack of a function on the poll-loop thread is unremarkable,
+ * large enough that a megabyte moves in a few dozen passes.
+ */
+#define FP8_MAP_CHUNK 2048u
+
+/*
+ * Is @key one the guest may name as an operand here?
+ *
+ * Key 0 is IONIC_DMA_LKEY, which means "the va is already a bus address"
+ * and bypasses the memory region table entirely -- mr_covers() returns
+ * true for it without looking anything up.  That is a deliberate internal
+ * convention, and it is not one a guest-supplied compute request may use:
+ * it would let the request name any memory the VMM exported rather than
+ * only what the guest registered.
+ */
+static bool fp8_key_ok(struct ionic_datapath *dp, uint32_t key, uint64_t va,
+                       uint32_t len)
+{
+    return key != 0 && mr_covers(dp, key, va, len);
+}
+
+int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
+                           uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                           uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                           uint64_t c_va)
 {
     /*
-     * Both operands are staged in host memory rather than reduced in place.
-     * They are scattered across guest pages, and the reduction has to see
-     * matching elements of each, which a page-at-a-time walk of two
-     * independently scattered regions does not give without this.
+     * Both operands are staged a block at a time rather than combined in
+     * place.  They are independently scattered across guest pages and the
+     * operation has to see matching elements of each, which a page-at-a-
+     * time walk of two separate scatter lists does not give.
      */
-    uint8_t a[IONIC_FP8_REDUCE_MAX];
-    uint8_t b[IONIC_FP8_REDUCE_MAX];
-    uint8_t result;
+    uint8_t a[FP8_MAP_CHUNK];
+    uint8_t b[FP8_MAP_CHUNK];
+    uint8_t c[FP8_MAP_CHUNK];
+    uint32_t done = 0;
 
-    if (!dp || len == 0 || len > IONIC_FP8_REDUCE_MAX)
+    if (!dp || len == 0 || len > IONIC_FP8_MAP_MAX)
         return -EINVAL;
 
-    if (dp_sge_to_host(dp, a_lkey, a_va, a, len) != len ||
-        dp_sge_to_host(dp, b_lkey, b_va, b, len) != len)
-        return -EFAULT;
+    /*
+     * Every region is checked in full before a byte moves.  Checking as we
+     * go would leave a half-written destination behind when the tail of an
+     * operand turned out not to be registered, which is the transfer-then-
+     * report pattern the rest of this file was fixed away from.
+     */
+    if (!fp8_key_ok(dp, a_lkey, a_va, len) ||
+        !fp8_key_ok(dp, b_lkey, b_va, len) ||
+        !fp8_key_ok(dp, c_rkey, c_va, len))
+        return -EACCES;
 
-    if (!p4_fp8_reduce((enum p4_fp8_op)op, a, b, len, &result))
-        return -EINVAL;
+    while (done < len) {
+        uint32_t n = len - done;
 
-    /* Out through the same path an RDMA WRITE takes, so the result reaches
-     * the destination region the way any other payload would. */
-    if (dp_host_to_sge(dp, c_rkey, c_va, &result, 1) != 1)
-        return -EFAULT;
+        if (n > FP8_MAP_CHUNK)
+            n = FP8_MAP_CHUNK;
+
+        if (dp_sge_to_host(dp, a_lkey, a_va + done, a, n) != n ||
+            dp_sge_to_host(dp, b_lkey, b_va + done, b, n) != n)
+            return -EFAULT;
+
+        if (!p4_fp8_map((enum p4_fp8_op)op, a, b, n, c))
+            return -EINVAL;
+
+        /* Out through the same path an RDMA WRITE takes, so the result
+         * reaches the destination the way any other payload would. */
+        if (dp_host_to_sge(dp, c_rkey, c_va + done, c, n) != n)
+            return -EFAULT;
+
+        done += n;
+    }
 
     return 0;
 }

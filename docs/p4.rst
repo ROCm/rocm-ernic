@@ -54,9 +54,9 @@ so the same program and the same frame can be made to take a
 different path.
 
 The pipeline is on the Ethernet path only. RDMA traffic does
-not reach it, so the fp8 reduction in the RDMA data path
-(``ionic_datapath_fp8_reduce()``) calls the arithmetic
-directly rather than through a program -- which reduction
+not reach it, so the elementwise fp8 operation in the RDMA
+data path (``ionic_datapath_fp8_map()``) calls the arithmetic
+directly rather than through a program -- which operation
 happens is fixed by the caller, not chosen by a table. Wiring
 the pipeline into the RDMA path and making that arithmetic an
 extern a program calls is what will make it P4-governed.

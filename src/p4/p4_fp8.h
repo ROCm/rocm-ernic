@@ -46,11 +46,17 @@
 #define P4_FP8_MAX     0x7Eu /* 448.0 */
 #define P4_FP8_MAX_VAL 448.0f
 
-/* Elementwise operation applied to the two operand buffers. */
+/*
+ * The operation applied to a pair of operands.  The same code names the
+ * pointwise operation for p4_fp8_map() and the combining operation for
+ * p4_fp8_reduce(), so a program selects an arithmetic rather than a
+ * calling convention, and an operation that is neither -- a matrix
+ * product, say -- can be added without disturbing either.
+ */
 enum p4_fp8_op {
-    P4_FP8_OP_ADD = 0, /* sum of a[i] + b[i]  -- a reduction of both */
-    P4_FP8_OP_MUL = 1, /* sum of a[i] * b[i]  -- a dot product */
-    P4_FP8_OP_MAX = 2, /* largest a[i] or b[i] */
+    P4_FP8_OP_ADD = 0,
+    P4_FP8_OP_MUL = 1,
+    P4_FP8_OP_MAX = 2,
 };
 
 /* True when @v is one of the two NaN encodings. */
@@ -65,6 +71,23 @@ float p4_fp8_to_float(uint8_t v);
  * infinity, which E4M3 cannot represent; a NaN encodes to P4_FP8_NAN.
  */
 uint8_t p4_fp8_from_float(float v);
+
+/*
+ * Apply @op elementwise: out[i] = a[i] op b[i], over @n elements.
+ *
+ * This is the shape a collective wants -- two partial buffers combined
+ * into a third of the same length -- as distinct from p4_fp8_reduce()
+ * below, which collapses both to a single value.
+ *
+ * Each element is rounded once, on the way out.  A NaN in either input
+ * makes that element NaN and leaves the rest alone, which is what
+ * elementwise means: one bad value does not destroy the buffer.
+ *
+ * @out may alias neither @a nor @b.  Returns false and writes nothing on
+ * a bad argument.
+ */
+bool p4_fp8_map(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b, size_t n,
+                uint8_t *out);
 
 /*
  * Reduce two equal-length fp8 buffers to one fp8 value.
