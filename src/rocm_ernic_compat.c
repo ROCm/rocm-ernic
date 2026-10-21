@@ -634,8 +634,8 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     uint32_t lkey = 0, rkey = 0;
-    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, 0, 0, NULL,
-                            (int)access_flags, mr_handle, &lkey, &rkey);
+    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, (int)access_flags,
+                            mr_handle, &lkey, &rkey);
 }
 
 void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)

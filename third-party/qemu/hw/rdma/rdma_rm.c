@@ -22,7 +22,6 @@
 #include <errno.h>
 #include <inttypes.h> /* For PRIu32 */
 
-#include <sys/mman.h>    /* For munmap */
 #include "qemu/bitmap.h" /* For bitmap operations */
 #include "qemu/thread.h" /* For QEMU_LOCK_GUARD */
 #include "rdma_utils.h"
@@ -216,9 +215,8 @@ RdmaRmPD *rdma_rm_get_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
 }
 
 int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
-                     uint64_t guest_start, uint64_t guest_length,
-                     void *host_virt, int access_flags, uint32_t *mr_handle,
-                     uint32_t *lkey, uint32_t *rkey)
+                     int access_flags, uint32_t *mr_handle, uint32_t *lkey,
+                     uint32_t *rkey)
 {
     RdmaRmMR *mr;
     int ret = 0;
@@ -234,22 +232,13 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         return -ENOMEM;
     }
 
-    /* Set MR fields */
-    mr->start = guest_start;
-    mr->length = guest_length;
-    if (host_virt) {
-        mr->virt = host_virt;
-        mr->virt += (mr->start & (PAGE_SIZE - 1));
-    } else {
-        mr->virt = NULL; /* Loopback backend can work without host_virt */
-    }
-
-    /* Create backend MR using vtable dispatch */
-    /* This must be called even if host_virt is NULL (for loopback backend) */
+    /*
+     * Create backend MR using vtable dispatch. There is no host memory behind
+     * the MR (see RdmaRmMR), so the backend gets no address or length.
+     */
     if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_mr) {
         ret = pd->backend_pd.backend_ops->create_mr(
-            &mr->backend_mr, &pd->backend_pd, mr->virt, mr->length, guest_start,
-            access_flags);
+            &mr->backend_mr, &pd->backend_pd, NULL, 0, 0, access_flags);
         if (ret) {
             rdma_error_report("Backend create_mr failed: %d", ret);
             ret = -EIO;
@@ -305,10 +294,6 @@ void rdma_rm_dealloc_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
         if (mr->backend_mr.backend_ops &&
             mr->backend_mr.backend_ops->destroy_mr) {
             mr->backend_mr.backend_ops->destroy_mr(&mr->backend_mr);
-        }
-        if (mr->start) {
-            mr->virt -= (mr->start & (PAGE_SIZE - 1));
-            munmap(mr->virt, mr->length);
         }
         rdma_res_tbl_dealloc(&dev_res->mr_tbl, mr_handle);
         rdma_info_report("rdma_rm_dealloc_mr: Deallocated MR handle %u",

@@ -1,6 +1,7 @@
 /*
  *
- * Unit tests for the resource-table allocator in rdma_rm.c.
+ * Unit tests for the resource manager in rdma_rm.c, mostly its table
+ * allocator.
  *
  * Regression coverage for an off-by-one. find_first_zero_bit() returns the
  * size it was given when no zero bit exists, so a full table yields tbl_sz
@@ -33,10 +34,10 @@
  * and the ragged case's table overflow is checked against an explicit
  * guard band rather than left to ASan.
  *
- * Scope: the damage is confined to the allocator, so that is all this file
- * covers. It is tempting to also assert that the over-capacity handle never
- * resolves through rdma_res_tbl_get(), since handles are guest-visible (an
- * rkey is an MR handle). That assertion is vacuous in both directions --
+ * Scope: the damage is confined to the allocator, so that is all the table
+ * cases cover. It is tempting to also assert that the over-capacity handle
+ * never resolves through rdma_res_tbl_get(), since handles are guest-visible
+ * (an rkey is an MR handle). That assertion is vacuous in both directions --
  * rdma_res_tbl_get() guards with `handle < tbl->tbl_sz`, which is correct
  * and was never part of this bug, so it rejects the out-of-range handle on
  * fixed and unfixed builds alike. The over-capacity slot reaches a caller
@@ -57,6 +58,11 @@
  * g_try_malloc() and g_try_malloc0_n() are defined here so a case can make
  * a given table's entry or bitmap allocation fail.
  *
+ * The mr-* cases cover an MR's life in the resource manager, with no backend
+ * and with a stub one that records its calls: the MR owns no memory, so the
+ * backend must be given none, and freeing the MR, once or twice, must
+ * destroy the backend's MR exactly once and free its slot.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -65,9 +71,9 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,6 +83,7 @@
 
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
+#include "rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rdma_rm_defs.h"
 
@@ -576,6 +583,225 @@ static bool test_init_succeeds(const char *name,
     return ok;
 }
 
+/* ---- MR cases ----------------------------------------------------------
+ *
+ * An MR in the resource manager is a table slot and the backend's MR. It
+ * owns no memory, so allocating one must hand the backend no address, and
+ * freeing one must destroy the backend's MR exactly once and free the slot,
+ * however often it is called.
+ */
+
+/* What the recording backend's MR operations were called with. */
+typedef struct {
+    uint32_t create_calls;
+    uint32_t destroy_calls;
+    int create_rc; /* what create_mr returns */
+    const RdmaBackendMR *created;
+    const RdmaBackendMR *destroyed;
+    const void *addr;
+    size_t length;
+    uint64_t guest_start;
+    int access;
+} MrCalls;
+
+static MrCalls mr_calls;
+
+static int rec_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
+{
+    (void)backend_dev;
+    (void)pd;
+    return 0;
+}
+
+static int rec_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
+                         size_t length, uint64_t guest_start, int access)
+{
+    (void)pd;
+    mr_calls.create_calls++;
+    mr_calls.created = mr;
+    mr_calls.addr = addr;
+    mr_calls.length = length;
+    mr_calls.guest_start = guest_start;
+    mr_calls.access = access;
+    return mr_calls.create_rc;
+}
+
+static void rec_destroy_mr(RdmaBackendMR *mr)
+{
+    mr_calls.destroy_calls++;
+    mr_calls.destroyed = mr;
+}
+
+/* No mr_lkey, so the resource manager uses the handle as the lkey. */
+static const RdmaBackendOps recording_ops = {
+    .name = "recording",
+    .create_pd = rec_create_pd,
+    .create_mr = rec_create_mr,
+    .destroy_mr = rec_destroy_mr,
+};
+
+#define MR_ACCESS (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE)
+
+/* Init with one entry in every table and allocate a PD, with the recording
+ * backend or none. */
+static uint32_t mr_setup(RdmaBackendDev *backend_dev)
+{
+    struct ibv_device_attr a = one_each;
+    uint32_t pd_handle;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    memset(&mr_calls, 0, sizeof(mr_calls));
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, backend_dev, &pd_handle) != 0) {
+        abort();
+    }
+    return pd_handle;
+}
+
+static bool test_mr_lifecycle(const char *name, bool with_backend)
+{
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &recording_ops;
+    uint32_t pd_handle = mr_setup(with_backend ? &backend_dev : NULL);
+    const uint32_t expected_calls = with_backend ? 1 : 0;
+
+    uint32_t handle = UINT32_MAX;
+    uint32_t lkey = UINT32_MAX;
+    uint32_t rkey = UINT32_MAX;
+    int rc =
+        rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey, &rkey);
+    RdmaRmMR *mr = rc == 0 ? rdma_rm_get_mr(&dev_res, handle) : NULL;
+
+    if (rc != 0 || !mr) {
+        printf("FAIL %-18s: rdma_rm_alloc_mr() returned %d\n", name, rc);
+        ok = false;
+    } else if (lkey != handle || rkey != handle) {
+        printf("FAIL %-18s: lkey %u and rkey %u, expected the handle %u\n",
+               name, lkey, rkey, handle);
+        ok = false;
+    }
+
+    if (ok && mr_calls.create_calls != expected_calls) {
+        printf("FAIL %-18s: create_mr called %u time(s), expected %u\n", name,
+               mr_calls.create_calls, expected_calls);
+        ok = false;
+    }
+    if (ok && with_backend) {
+        if (mr_calls.created != &mr->backend_mr) {
+            printf("FAIL %-18s: create_mr was not given the MR's backend MR\n",
+                   name);
+            ok = false;
+        }
+        if (mr_calls.addr || mr_calls.length != 0 ||
+            mr_calls.guest_start != 0) {
+            printf("FAIL %-18s: create_mr was given memory (addr %p, length "
+                   "%zu, guest_start %" PRIu64 "), but an MR has none\n",
+                   name, mr_calls.addr, mr_calls.length, mr_calls.guest_start);
+            ok = false;
+        }
+        if (mr_calls.access != MR_ACCESS) {
+            printf("FAIL %-18s: create_mr was given access %#x, expected "
+                   "%#x\n",
+                   name, (unsigned int)mr_calls.access,
+                   (unsigned int)MR_ACCESS);
+            ok = false;
+        }
+    }
+
+    /* Free it twice: the second call must find nothing to free. */
+    if (ok) {
+        rdma_rm_dealloc_mr(&dev_res, handle);
+        rdma_rm_dealloc_mr(&dev_res, handle);
+
+        if (mr_calls.destroy_calls != expected_calls) {
+            printf("FAIL %-18s: destroy_mr called %u time(s), expected %u\n",
+                   name, mr_calls.destroy_calls, expected_calls);
+            ok = false;
+        } else if (with_backend && mr_calls.destroyed != &mr->backend_mr) {
+            printf("FAIL %-18s: destroy_mr was not given the MR's backend "
+                   "MR\n",
+                   name);
+            ok = false;
+        }
+        if (rdma_rm_get_mr(&dev_res, handle)) {
+            printf("FAIL %-18s: handle %u still resolves after being freed\n",
+                   name, handle);
+            ok = false;
+        }
+        if (dev_res.mr_tbl.used != 0) {
+            printf("FAIL %-18s: used is %u after freeing the only MR\n", name,
+                   dev_res.mr_tbl.used);
+            ok = false;
+        }
+    }
+
+    /* The table has one entry, so the slot must be reusable. */
+    if (ok) {
+        uint32_t again = UINT32_MAX;
+        rc = rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &again, &lkey,
+                              &rkey);
+        if (rc != 0 || again != handle) {
+            printf("FAIL %-18s: reallocating returned %d with handle %u, "
+                   "expected 0 with handle %u\n",
+                   name, rc, again, handle);
+            ok = false;
+        }
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* A backend that can't create the MR must leave the slot free and have
+ * nothing to destroy. */
+static bool test_mr_backend_fails(void)
+{
+    const char *name = "mr-backend-fails";
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &recording_ops;
+    uint32_t pd_handle = mr_setup(&backend_dev);
+    mr_calls.create_rc = -EINVAL;
+
+    uint32_t handle = UINT32_MAX;
+    uint32_t lkey;
+    uint32_t rkey;
+    int rc =
+        rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey, &rkey);
+
+    if (rc != -EIO) {
+        printf("FAIL %-18s: rdma_rm_alloc_mr() returned %d, expected %d\n",
+               name, rc, -EIO);
+        ok = false;
+    }
+    if (dev_res.mr_tbl.used != 0) {
+        printf("FAIL %-18s: used is %u after a failed allocation\n", name,
+               dev_res.mr_tbl.used);
+        ok = false;
+    }
+    if (mr_calls.destroy_calls != 0) {
+        printf("FAIL %-18s: destroy_mr called for an MR never created\n", name);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -609,6 +835,16 @@ int main(void)
         failures++;
     }
     if (!test_init_unwinds("init-unwind-bitmap", true)) {
+        failures++;
+    }
+
+    if (!test_mr_lifecycle("mr-no-backend", false)) {
+        failures++;
+    }
+    if (!test_mr_lifecycle("mr-backend", true)) {
+        failures++;
+    }
+    if (!test_mr_backend_fails()) {
         failures++;
     }
 

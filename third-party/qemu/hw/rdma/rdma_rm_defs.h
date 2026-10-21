@@ -62,7 +62,7 @@ typedef struct RdmaRmResTbl {
     unsigned long *bitmap;
     size_t tbl_sz;
     size_t res_sz;
-    void *tbl;
+    uint8_t *tbl;  /* tbl_sz entries of res_sz bytes */
     uint32_t used; /* number of used entries in the table */
 } RdmaRmResTbl;
 
@@ -74,12 +74,13 @@ typedef struct RdmaRmCQ {
     RdmaBackendCQ backend_cq;
 } RdmaRmCQ;
 
-/* MR (DMA region) */
+/*
+ * MR: a handle and the backend's MR, and nothing else. The resource manager
+ * maps no memory for it; the ionic data path keeps the guest's page table
+ * (ionic_datapath_register_mr()).
+ */
 typedef struct RdmaRmMR {
     RdmaBackendMR backend_mr;
-    void *virt;
-    uint64_t start;
-    size_t length;
 } RdmaRmMR;
 
 typedef struct RdmaRmQP {
