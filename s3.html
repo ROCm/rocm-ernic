@@ -710,8 +710,9 @@ malformed options are refused before the device appears.</p></li>
 </ul>
 <p>The end-to-end RDMA transfer needs a guest, because it needs
 a real <code class="docutils literal notranslate"><span class="pre">ibv_reg_mr</span></code> for the token to describe.
-<code class="file docutils literal notranslate"><span class="pre">tests/s3_rdma_client.c</span></code> is a single self-contained
-libibverbs client, built inside the guest and run there. It
+<code class="file docutils literal notranslate"><span class="pre">tests/s3_rdma_client.c</span></code> is a libibverbs client,
+built inside the guest and run there with nothing else from
+the tree but the header-only <code class="file docutils literal notranslate"><span class="pre">src/parse_int.h</span></code>. It
 opens the RDMA device, registers one buffer, splits it in
 half – low half the <code class="docutils literal notranslate"><span class="pre">PUT</span></code> source, high half the <code class="docutils literal notranslate"><span class="pre">GET</span></code>
 destination – and mints a token per request. In functional
