@@ -72,3 +72,17 @@ ernic_add_fuzz_replay(rdma_cm_proto
 
 # net_headers.h is header-only, so this harness links no extra sources.
 ernic_add_fuzz_replay(net_headers)
+
+# The stats harness links the admin queue and includes the shared fake device
+# from tests/, like tests/test_ionic_stats.c does, and defines
+# LLVMFuzzerInitialize() to check its seed table before replaying.
+ernic_add_fuzz_replay(ionic_stats ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c)
+target_include_directories(fuzz_replay_ionic_stats PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+)
+target_include_directories(fuzz_replay_ionic_stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+)
+target_compile_definitions(fuzz_replay_ionic_stats PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)

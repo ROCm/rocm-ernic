@@ -557,6 +557,7 @@ static const struct bad_admin bad_admins[] = {
     {"short QUERY_SRQ", IH_ADMIN_QUERY_SRQ, 2, build_none, 1},
     {"QUERY_SRQ of an unknown SRQ", IH_ADMIN_QUERY_SRQ, 4, build_unknown_id, 1},
     {"short DESTROY_SRQ", IH_ADMIN_DESTROY_SRQ, 2, build_none, 1},
+    {"short STATS_HDRS", IH_ADMIN_STATS_HDRS, 0, build_none, 1},
     /* Harmless, so not refused */
     {"DESTROY_SRQ of an unknown SRQ", IH_ADMIN_DESTROY_SRQ, 4, build_unknown_id,
      0},
@@ -565,7 +566,6 @@ static const struct bad_admin bad_admins[] = {
     {"DESTROY_QP of an unknown QP", IH_ADMIN_DESTROY_QP, 4, build_unknown_id,
      0},
     {"NOOP", IH_ADMIN_NOOP, 0, build_none, 0},
-    {"STATS_HDRS", IH_ADMIN_STATS_HDRS, 0, build_none, 0},
     {"QUERY_AH", IH_ADMIN_QUERY_AH, 0, build_none, 0},
 };
 

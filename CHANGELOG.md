@@ -134,6 +134,13 @@
   that the guest's RDMA port reaches `PORT_ACTIVE`. The Nix Check workflow
   builds the new `launchers` check, which tests `ernic-run` and the module's
   assertions without a VM. Documented in `nix/README.md`.
+* Guests running the in-tree `ionic_rdma` driver get a `hw_counters`
+  directory under `/sys/class/infiniband/<dev>/ports/1/`, with device and
+  per-QP counters (commands, bytes sent and received, RDMA read and write
+  bytes, doorbells, WQEs and CQEs). The LIF identity now advertises
+  `stats_type`, and the STATS_HDRS, STATS_VALS, QP_STATS_HDRS and
+  QP_STATS_VALS admin commands are implemented; before, the driver created no
+  counters at all.
 
 ### Changed
 

@@ -52,21 +52,40 @@ from a real fuzz run under ASan without rebuilding via Nix:
 |---|---|---|
 | `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
+| `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `ionic_adminq_dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises |
 
 Inputs are copied into an exact-size heap buffer before each call, so
 AddressSanitizer flags any read the parser performs past the supplied
 length.
 
+## The ionic stats harness
+
+`fuzz_ionic_stats` is the first harness that reaches a device handler. It
+links `src/ionic_adminq.c` and posts one of the four stats opcodes through
+`ionic_adminq_dispatch_wqe()`, with guest memory and the counter snapshots
+supplied by `tests/ionic_adminq_fakes.h` -- the same fake device the unit
+test uses, so the table and the fuzzer can't drift apart. Beyond ASan, it
+aborts when a result breaks one of the handler's promises: one DMA write at
+the buffer the body named, never past its length, in whole entries, with
+the NONE terminator when it fits, the right counters in header order, no
+QP values for an unmapped QP, and nothing written on failure or outside
+the write.
+
+`LLVMFuzzerInitialize()` first runs a table of seed inputs (positive,
+negative, boundary and corner rows, each with a description and expected
+outcome) through the same checks, and aborts if any fails, so a broken
+oracle can't fuzz quietly. With `FUZZ_EMIT_SEEDS=1` it also writes the
+rows into the current directory as private files, refusing existing files
+or symlinks; `fuzz.nix` does that to build the harness's seed corpus.
+
 ## Not yet fuzzed (device-fixture required)
 
-The ionic devcmd and datapath handlers in
-`src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c` are **not** fuzzed
-here. They are not byte-buffer parsers: they move guest data through
-`rdma_pci_dma_map()` and operate on the RDMA resource manager, so a
-faithful harness needs a fully-wired device (PCI config + DMA + backend)
-rather than a raw buffer. A device-emulation harness that maps a fake DMA
-region and drives the admin and doorbell rings is the way to reach them;
-that is future work.
+The rest of the ionic devcmd and datapath handlers in
+`src/ionic_adminq.c`, `src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c`
+are **not** fuzzed yet. They create and modify resources in the RDMA
+resource manager and walk the guest's rings, so they need more of the
+device faked than the stats commands do. Extending
+`tests/ionic_adminq_fakes.h` towards them is the natural next step.
 
 ## Extending a corpus
 

@@ -292,6 +292,25 @@ target_include_directories(test_ionic_query_qp SYSTEM PRIVATE
 target_compile_definitions(test_ionic_query_qp PRIVATE
     _GNU_SOURCE)
 
+# ionic hardware statistics test. It links the admin queue, calls
+# ionic_adminq_dispatch_wqe() through ionic_adminq_priv.h, and backs DMA with
+# a plain buffer, so the header table and values the driver builds
+# hw_counters from can be checked.
+add_executable(ernic-test-ionic-stats
+    test_ionic_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+)
+target_include_directories(ernic-test-ionic-stats PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(ernic-test-ionic-stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-ionic-stats PRIVATE
+    _GNU_SOURCE)
+
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
 # ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
 # response buffer AND the reported length can both be inspected -- the pair
@@ -582,6 +601,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_query_qp
+    ernic-test-ionic-stats
     test_server_lifecycle
     test_ionic_srq_adminq
     test_ionic_cq_arm
@@ -759,6 +779,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_query_qp>
 )
 set_tests_properties(ionic-query-qp-unit PROPERTIES TIMEOUT 30)
+
+# ionic hardware statistics unit test: asserts the four stats admin commands
+# answer with the header table and LE64 values the driver turns into its
+# hw_counters files, clamped to the buffer, and fail on an unknown QP.
+add_test(
+    NAME ionic-stats-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-stats>
+)
+set_tests_properties(ionic-stats-unit PROPERTIES TIMEOUT 30)
 
 # ionic SRQ adminq unit test: the four SRQ handlers had no in-process
 # coverage, which is how CREATE_SRQ shipped writing its id into a response
