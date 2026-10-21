@@ -43,6 +43,9 @@
 
 #include "dma_range.h"
 #include "ionic_datapath.h"
+#ifdef ERNIC_HAVE_P4
+#include "p4_fp8.h"
+#endif
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
 #include "net/net_headers.h"
@@ -1259,6 +1262,41 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
     }
     return done;
 }
+
+#ifdef ERNIC_HAVE_P4
+int ionic_datapath_p4_reduce(struct ionic_datapath *dp, uint8_t op,
+                             uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                             uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                             uint64_t c_va)
+{
+    /*
+     * Both operands are staged in host memory rather than reduced in place.
+     * They are scattered across guest pages, and the reduction has to see
+     * matching elements of each, which a page-at-a-time walk of two
+     * independently scattered regions does not give without this.
+     */
+    uint8_t a[IONIC_P4_REDUCE_MAX];
+    uint8_t b[IONIC_P4_REDUCE_MAX];
+    uint8_t result;
+
+    if (!dp || len == 0 || len > IONIC_P4_REDUCE_MAX)
+        return -EINVAL;
+
+    if (dp_sge_to_host(dp, a_lkey, a_va, a, len) != len ||
+        dp_sge_to_host(dp, b_lkey, b_va, b, len) != len)
+        return -EFAULT;
+
+    if (!p4_fp8_reduce((enum p4_fp8_op)op, a, b, len, &result))
+        return -EINVAL;
+
+    /* Out through the same path an RDMA WRITE takes, so the result reaches
+     * the destination region the way any other payload would. */
+    if (dp_host_to_sge(dp, c_rkey, c_va, &result, 1) != 1)
+        return -EFAULT;
+
+    return 0;
+}
+#endif /* ERNIC_HAVE_P4 */
 
 /* -------------------------------------------------------------------------
  * CQ posting

@@ -283,4 +283,33 @@ void ionic_datapath_poll(struct ionic_datapath *dp);
 /* True when a peer message is queued, so the caller can skip its idle sleep. */
 bool ionic_datapath_has_work(struct ionic_datapath *dp);
 
+#ifdef ERNIC_HAVE_P4
+
+/*
+ * Reduce two registered memory regions to one value and deliver it to a
+ * third.
+ *
+ * This is in-network compute: the emulated NIC reads both operand buffers,
+ * applies the P4 pipeline's fp8 extern, and writes the single result out to
+ * the destination region, instead of the host reading two buffers and
+ * writing a third.  The destination is named by an rkey, so the result
+ * travels the same path an RDMA WRITE takes -- over the loopback backend,
+ * that is the local memory region the rkey resolves to.
+ *
+ * @op is an enum p4_fp8_op.  @len is the length of each operand buffer in
+ * bytes, one fp8 value per byte, capped at IONIC_P4_REDUCE_MAX.  The result
+ * is one byte.
+ *
+ * Returns 0, or a negative errno: -EINVAL for an argument out of range,
+ * -EFAULT when a region could not be read or written in full.
+ */
+#define IONIC_P4_REDUCE_MAX 4096u
+
+int ionic_datapath_p4_reduce(struct ionic_datapath *dp, uint8_t op,
+                             uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                             uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                             uint64_t c_va);
+
+#endif /* ERNIC_HAVE_P4 */
+
 #endif /* IONIC_DATAPATH_H */

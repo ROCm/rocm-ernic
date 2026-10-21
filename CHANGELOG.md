@@ -231,6 +231,17 @@
   `ml_dtypes.float8_e4m3fn`: one overflowed term must not turn a whole
   reduction into NaN. `tests/test_p4_fp8.c` (CTest `p4-fp8-unit`) checks
   every one of the 256 encodings.
+* The emulated NIC can reduce two registered memory regions to a single
+  value and deliver it to a third, instead of the host reading two buffers
+  and writing one. `ionic_datapath_p4_reduce()` reads both operand regions,
+  applies the fp8 extern, and writes the one-byte result out through the
+  same path an RDMA WRITE takes, so over the loopback backend it lands in
+  whatever region the destination key resolves to. Operand length is capped
+  at 4096 bytes, and an unregistered key or a length running past the end of
+  a region faults rather than reaching host memory.
+  `tests/test_ionic_harness.c` (CTest `ionic-harness-p4-reduce`) covers it
+  across three regions, including the pages of the destination being
+  registered out of order.
 
 ### Changed
 
