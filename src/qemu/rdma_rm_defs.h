@@ -59,6 +59,11 @@
 
 typedef struct RdmaRmResTbl {
     char name[MAX_RM_TBL_NAME];
+    /*
+     * Held to change bitmap and used. rdma_res_tbl_get() reads bitmap
+     * without it, which is safe only while every caller is on the main
+     * thread, as it is today.
+     */
     QemuMutex lock;
     unsigned long *bitmap;
     size_t tbl_sz;
