@@ -145,6 +145,19 @@ target_include_directories(test_parse_int PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+# P4 engine test. The engine is frames-in/frames-out, so this links the
+# real translation unit and nothing else -- no device, no guest memory.
+if(ERNIC_BUILD_P4)
+    add_executable(ernic-test-p4-engine
+        test_p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
+    )
+    target_include_directories(ernic-test-p4-engine PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)
+endif()
+
 # NVMe-oF controller test. The controller core takes its DMA through a
 # callback pair, so the test links the real translation unit and stands a
 # byte array in for guest memory -- no VM, no RDMA device, no server.
@@ -823,6 +836,10 @@ set(ERNIC_TEST_TARGETS
     ernic-test-ionic-harness
 )
 
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_TEST_TARGETS ernic-test-p4-engine)
+endif()
+
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
     ernic_set_compiler_flags(${ernic_test_target})
 endforeach()
@@ -898,6 +915,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_parse_int>
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
+
+# P4 engine unit test: port model, frame bounds, and the no-program path.
+if(ERNIC_BUILD_P4)
+    add_test(
+        NAME p4-engine-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-engine>
+    )
+    set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 30)
+endif()
 
 # NVMe-oF controller unit test: drives the capsule sequence a real
 # nvme-rdma initiator emits, from Fabrics Connect to read-after-write.

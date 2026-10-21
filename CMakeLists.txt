@@ -199,6 +199,17 @@ set(NVMEOF_SOURCES
     src/nvmeof_cm.c
 )
 
+# P4-programmable match-action stage between the guest and the host network.
+# Off by default until the control plane lands; see docs/p4.rst.
+option(ERNIC_BUILD_P4
+  "Build the P4 match-action engine"
+  OFF)
+
+set(P4_SOURCES
+    src/p4/p4_engine.c
+    src/p4/p4_port.c
+)
+
 # In-process S3-over-RDMA object store, reached in-band over the emulated NIC
 set(S3_SOURCES
     src/s3_token.c
@@ -224,6 +235,10 @@ set(ALL_SOURCES
     ${QEMU_SOURCES}
 )
 
+if(ERNIC_BUILD_P4)
+    list(APPEND ALL_SOURCES ${P4_SOURCES})
+endif()
+
 # ---------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------
@@ -246,6 +261,7 @@ target_include_directories(rocm-ernic PRIVATE
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
 )
 
@@ -261,6 +277,7 @@ target_compile_definitions(rocm-ernic PRIVATE
     GIT_SHA_FULL="${ERNIC_GIT_SHA_FULL}"
     GIT_SHA_SHORT="${ERNIC_GIT_SHA_SHORT}"
     _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
 )
 
 target_compile_options(rocm-ernic PRIVATE

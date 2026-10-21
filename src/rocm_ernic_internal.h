@@ -129,6 +129,12 @@ struct rocm_ernic_dev {
     struct ionic_rdma_devcmd_state *ionic_rdma;
     struct ionic_datapath *ionic_dp;
 
+#ifdef ERNIC_HAVE_P4
+    /* P4 match-action stage between the guest and the host network */
+    struct p4_engine *p4_engine;
+    struct p4_port *p4_port;
+#endif
+
     /* BAR memory backing stores */
     void *bar0_mem; /* MSI-X table/PBA shadow, above the ionic register block */
 

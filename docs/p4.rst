@@ -1,0 +1,164 @@
+.. SPDX-License-Identifier: MIT
+.. Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+
+P4 Match-Action Engine
+======================
+
+The device rocm-ernic emulates is, in silicon, a P4-programmable
+DPU: its datapath is a match-action pipeline loaded at run time
+rather than a fixed function. The P4 engine is the emulator's
+equivalent. It sits between the guest's Ethernet queues and the
+host network backend and decides, for every frame in either
+direction, where the frame goes and what it looks like when it
+gets there.
+
+This is built only when the ``ERNIC_BUILD_P4`` CMake option is on,
+which it is not by default:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DERNIC_BUILD_P4=ON
+   cmake --build build
+
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback --tap ernic0 --p4
+
+Status
+------
+
+**This is the first step and the pipeline is not loaded yet.**
+The port model, the frame path in both directions, the frame
+bounds and the statistics are real; there is no way to load a
+program, so every frame takes the no-program path and is
+forwarded unchanged to the other port. A server started with
+``--p4`` therefore behaves exactly as one started without it.
+That is deliberate: attaching the engine cannot change behaviour
+until a program is actually loaded.
+
+Still to come, in order: the program loader, the parser and
+deparser, exact and LPM tables, the control plane, the
+host-facing device API, the remaining match kinds, and then the
+DASH pipeline.
+
+The port model
+--------------
+
+The pipeline sees the emulated NIC as a two-port device:
+
+``P4_PORT_HOST`` (0)
+   The guest's Ethernet queues. A frame ingresses here when the
+   guest transmits it, and egresses here by being injected into
+   the guest's receive ring.
+
+``P4_PORT_UPLINK`` (1)
+   The host network backend, which is the TAP interface attached
+   with ``--tap``. Without one, nothing ingresses on this port
+   and a frame sent to it is dropped.
+
+A P4 program's ``ingress_port`` and ``egress_spec`` metadata
+carry these values.
+
+The engine attaches to the emulated NIC through the two frame
+filters the Ethernet emulator already provides, so no frame path
+is duplicated. It takes the transmit filter slot and chains to
+whoever held it: a frame addressed to the in-band S3 control
+plane is consumed there and never reaches the pipeline, which is
+right, because that endpoint is not on the wire the pipeline
+models.
+
+Everything runs on the thread that owns the vfio-user context --
+the transmit filter is called from the doorbell path and the
+receive filter from the server's poll loop, both of which are
+already that thread. No lock is taken and no thread is started.
+
+Programs
+--------
+
+A program will be supplied as a **bmv2 JSON file**: the
+target-independent artifact that
+
+.. code-block:: bash
+
+   p4c --target bmv2 --arch v1model --std p4-16 \
+     -o program.json program.p4
+
+emits for any P4 program. Nothing in rocm-ernic links
+`bmv2 <https://github.com/p4lang/behavioral-model>`_ itself; the
+JSON is the interface. bmv2 is still useful as a behavioural
+oracle, and the conformance tests run the same program and the
+same frames through stock bmv2 to generate what the engine is
+expected to produce.
+
+Alignment with AMD Pensando silicon
+-----------------------------------
+
+The point of consuming a standard artifact rather than inventing
+a table format is that work done here should transfer to the real
+device. Three things line up by construction:
+
+- **bmv2 JSON and p4info as the program artifacts**, so any P4
+  program ``p4c`` can compile is loadable.
+- **P4Runtime semantics on the update path** -- entities,
+  ``INSERT``/``MODIFY``/``DELETE``, and role plus election-id
+  arbitration -- so the network-facing control API is the one the
+  ecosystem already speaks.
+- **The** `DASH <https://github.com/sonic-net/DASH>`_ **pipeline as
+  the target program.** ``dash-pipeline/bmv2/dash_pipeline.p4``
+  models the DASH overlay dataplane and is the closest open
+  artifact to what the DPU runs. It is written for
+  ``TARGET_BMV2_V1MODEL`` and carries ``@SaiTable`` and
+  ``@SaiVal`` annotations that ``p4c`` emits into p4info, so the
+  SAI naming comes with it.
+
+Where this differs from the silicon
+-----------------------------------
+
+These are real divergences, recorded rather than papered over.
+
+The control path
+   On hardware the Ethernet path is ``ionic`` and the control
+   path is ``pds_core``, a separate PCI function on the auxiliary
+   bus, reached from the host through
+   `pds_fwctl <https://docs.kernel.org/userspace-api/fwctl/pds_fwctl.html>`_
+   with an *(endpoint id, operation id, buffers)* RPC whose scope
+   the driver checks. rocm-ernic emulates only ``ionic``, so the
+   host-facing API will first appear as ionic device commands
+   shaped like those RPCs. A faithful emulation eventually means
+   a ``pds_core``-like control device.
+
+The architecture
+   The DPU's P4 architecture is not v1model, and the real
+   architecture file is proprietary. v1model is used here because
+   DASH uses it.
+
+Stateful connection tracking
+   DASH's own roadmap notes that stock bmv2 lacks the stateful
+   processing DASH wants. This engine has the same gap.
+
+Arithmetic width
+   bmv2 evaluates expressions at infinite precision and truncates
+   on assignment to a field. A fixed-width C engine will not
+   always agree. The supported width is documented with the
+   loader, and the conformance tests pin the behaviour for the
+   programs the engine claims to run.
+
+Security
+--------
+
+The guest is untrusted, and so is a program file. Both the
+program and every table entry are validated against the loaded
+program before use: field, header, action and table identifiers
+are range-checked, frame lengths are bounded at both ends of the
+pipeline, and a frame larger than the engine will handle is
+rejected and counted rather than truncated. See ``AGENTS.md`` for
+the rules this code is held to.
+
+Testing
+-------
+
+``tests/test_p4_engine.c`` (CTest ``p4-engine-unit``) covers the
+port model, the input validation, the frame bounds and the
+statistics. The engine is frames-in/frames-out, so the test links
+the engine's translation unit and nothing else: no VM, no RDMA
+hardware and no root, like every other registered test.

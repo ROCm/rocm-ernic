@@ -244,6 +244,20 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     return 0;
 }
 
+int ionic_eth_emu_send_to_net(struct ionic_eth_emu *emu, const void *frame,
+                              size_t len)
+{
+    if (!emu || !frame || len == 0 || len > IONIC_ETH_NET_MTU_MAX)
+        return -EINVAL;
+    if (!emu->net)
+        return -ENODEV;
+
+    int ret = ionic_eth_net_send(emu->net, frame, len);
+    if (ret == 0)
+        pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
+    return ret;
+}
+
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
                                          ionic_rdma_devcmd_fn_t fn,
                                          void *opaque)
@@ -263,6 +277,22 @@ void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
 {
     emu->tx_filter = fn;
     emu->tx_filter_ctx = ctx;
+}
+
+void ionic_eth_emu_get_tx_filter(struct ionic_eth_emu *emu,
+                                 ionic_eth_tx_filter_fn *fn, void **ctx)
+{
+    if (fn)
+        *fn = emu ? emu->tx_filter : NULL;
+    if (ctx)
+        *ctx = emu ? emu->tx_filter_ctx : NULL;
+}
+
+void ionic_eth_emu_register_rx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_rx_filter_fn fn, void *ctx)
+{
+    emu->rx_filter = fn;
+    emu->rx_filter_ctx = ctx;
 }
 
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
@@ -1770,6 +1800,14 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (len <= 0)
             break;
         if (eth_rx_fault(emu, emu->frame, (size_t)len))
+            continue;
+
+        /* A frame the pipeline consumed is neither delivered nor
+         * dropped by the NIC, so it skips both branches below rather
+         * than being counted as either.  Before the steering, because a
+         * frame that never reaches a queue has no business picking one. */
+        if (emu->rx_filter &&
+            emu->rx_filter(emu->rx_filter_ctx, emu->frame, (size_t)len))
             continue;
 
         uint8_t qid =

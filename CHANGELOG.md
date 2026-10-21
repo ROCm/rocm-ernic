@@ -193,6 +193,16 @@
   and `sequence "..."`. The first site is `stats_vals`, which makes the
   guest's `hw_counters` reads fail on demand (`effect fail`). A malformed
   fault stops the server at startup with an error naming the bad token.
+* A P4 match-action engine can be placed between the guest's Ethernet queues
+  and the host network backend, matching the programmable datapath of the
+  silicon the emulated NIC models. Build it with the `ERNIC_BUILD_P4` CMake
+  option, which is off by default, and put it on the wire with `-P` / `--p4`.
+  This first step adds the pipeline stage, the two-port model, and the frame
+  path in both directions; no program can be loaded yet, so every frame is
+  forwarded unchanged and a server started with `--p4` behaves exactly as one
+  started without it. The engine coexists with the in-band S3 control plane,
+  which still sees guest frames addressed to it first. Documented in
+  `docs/p4.rst`; `tests/test_p4_engine.c` (CTest `p4-engine-unit`) covers it.
 
 ### Changed
 

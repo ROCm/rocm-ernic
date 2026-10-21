@@ -49,6 +49,10 @@
 #include "ionic_profile.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
+#ifdef ERNIC_HAVE_P4
+#include "p4_engine.h"
+#include "p4_port.h"
+#endif
 #include "parse_int.h"
 #include "rocm-ernic-warnings.h"
 
@@ -381,6 +385,14 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
  */
 static void ionic_device_fini(rocm_ernic_dev_t *dev)
 {
+#ifdef ERNIC_HAVE_P4
+    /* Before the datapath, which clears the Tx filter slot the P4 port is
+     * holding on the S3 endpoint's behalf. */
+    p4_port_detach(dev->p4_port);
+    dev->p4_port = NULL;
+    p4_engine_destroy(dev->p4_engine);
+    dev->p4_engine = NULL;
+#endif
     ionic_datapath_destroy(dev->ionic_dp);
     dev->ionic_dp = NULL;
     ionic_rdma_devcmd_destroy(dev->ionic_rdma);
@@ -740,6 +752,11 @@ static void usage(const char *progname)
                     "and effects: stats_vals fail\n");
     fprintf(stderr, "                       [status S]; eth_rx drop, nobuf; "
                     "eth_tx drop\n");
+#ifdef ERNIC_HAVE_P4
+    fprintf(stderr, "  -P, --p4             Put the P4 match-action engine on "
+                    "the emulated wire\n");
+    fprintf(stderr, "                       (see docs/p4.rst)\n");
+#endif
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1309,6 +1326,9 @@ int main(int argc, char *argv[])
     const char *socket_path = DEFAULT_SOCKET_PATH;
     const char *log_file_path = NULL;
     const char *tap_ifname = NULL;
+#ifdef ERNIC_HAVE_P4
+    bool p4_enabled = false;
+#endif
     const char *socket_group = NULL;
     gid_t socket_gid = 0;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
@@ -1345,6 +1365,9 @@ int main(int argc, char *argv[])
         {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
         {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
         {"inject", required_argument, NULL, OPT_INJECT},
+#ifdef ERNIC_HAVE_P4
+        {"p4", no_argument, NULL, 'P'},
+#endif
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1379,8 +1402,13 @@ int main(int argc, char *argv[])
      * such as optind, so it isn't thread safe, but no other thread has
      * started yet */
     /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
-    while ((opt = getopt_long(argc, argv, "s:G:b:vL:S:m:l:hT:", long_options,
-                              NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv,
+#ifdef ERNIC_HAVE_P4
+                              "s:G:b:vL:S:m:l:hT:P",
+#else
+                              "s:G:b:vL:S:m:l:hT:",
+#endif
+                              long_options, NULL)) != -1) {
         switch (opt) {
         /* Common options */
         case 's':
@@ -1465,6 +1493,11 @@ int main(int argc, char *argv[])
             }
             break;
         }
+#ifdef ERNIC_HAVE_P4
+        case 'P':
+            p4_enabled = true;
+            break;
+#endif
         case 'h':
             usage(argv[0]);
             dev_free(dev);
@@ -1767,6 +1800,39 @@ int main(int argc, char *argv[])
         ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s",
                              assigned);
     }
+
+#ifdef ERNIC_HAVE_P4
+    /* After the TAP and the S3 endpoint, so the engine sees a complete wire
+     * and can chain to whatever already holds the Tx filter. */
+    if (p4_enabled) {
+        if (!dev->ionic_emu) {
+            fprintf(stderr,
+                    "rocm-ernic: Ethernet emulation is not initialized\n");
+            goto fail;
+        }
+
+        dev->p4_engine = p4_engine_create();
+        if (!dev->p4_engine) {
+            fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
+            goto fail;
+        }
+
+        struct p4_port_upstream upstream;
+        memset(&upstream, 0, sizeof(upstream));
+        ionic_eth_emu_get_tx_filter(dev->ionic_emu, &upstream.fn,
+                                    &upstream.ctx);
+
+        dev->p4_port = p4_port_attach(dev->ionic_emu, dev->p4_engine,
+                                      upstream.fn ? &upstream : NULL);
+        if (!dev->p4_port) {
+            fprintf(stderr, "rocm-ernic: failed to attach the P4 engine\n");
+            goto fail;
+        }
+
+        ernic_startup_report("rocm-ernic: P4 engine attached (no program "
+                             "loaded; frames forwarded unchanged)");
+    }
+#endif
 
     ernic_startup_report("rocm-ernic: Device realized, waiting for client "
                          "connection...");
