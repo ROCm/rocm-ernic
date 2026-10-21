@@ -124,12 +124,29 @@ forwarded unexamined. Failing open would put a frame on the
 wire that the pipeline never saw, which defeats the point of
 having one.
 
-There are no table entries yet: nothing installs them, so
-every lookup misses and takes the table's default action.
-That is enough for a program to forward, drop, or rewrite a
-header, and it is why ``loopback.json`` returns a frame
-unchanged while ``minimal_forward.json`` drops one -- its
-default action is a drop.
+Table entries
+-------------
+
+A loaded program is immutable; its entries are not, so they
+live beside it rather than in it. ``p4_engine_update()``
+takes a record shaped like a P4Runtime update -- insert,
+modify or delete, naming a table and an action by name -- and
+is the single path by which any control plane changes a
+table. A network-facing client and the guest's own device
+commands are both meant to produce one of these, rather than
+each having its own way in.
+
+Exact, longest-prefix and ternary matching all work, and the
+ties are broken as P4 requires: the longest prefix wins for
+LPM, the highest priority for ternary. A table's memory is
+taken when its first entry arrives, not when the program
+loads, so a program declaring large tables and putting
+nothing in them costs nothing.
+
+A table with no entry for a packet takes its default action,
+which is why ``minimal_forward.json`` drops a frame until an
+entry for its destination is installed, and forwards it
+afterwards.
 
 The pipeline graph is checked for cycles at load time, by an
 iterative depth-first search with an explicit stack. A loop

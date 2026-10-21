@@ -9,6 +9,8 @@
 #include <string.h>
 
 #include "p4_exec.h"
+#include "p4_table.h"
+#include "p4_value.h"
 #include "p4_program.h"
 
 /*
@@ -53,115 +55,6 @@ static int phv_init(const struct p4_program *prog, struct p4_phv *phv)
         off += n;
     }
     return 0;
-}
-
-/*
- * A value: big-endian, right-aligned in a fixed-width buffer, so every
- * operand of every width is the same shape.  Two values are therefore
- * comparable with memcmp, and arithmetic is a byte walk from the bottom.
- */
-struct p4_value {
-    uint8_t b[P4_VALUE_BYTES];
-};
-
-static void value_zero(struct p4_value *v)
-{
-    memset(v->b, 0, sizeof(v->b));
-}
-
-/* Read @bits bits starting at @bit_off of @src into a value. */
-static void bits_get(const uint8_t *src, uint32_t bit_off, uint16_t bits,
-                     struct p4_value *out)
-{
-    value_zero(out);
-    for (uint16_t i = 0; i < bits; i++) {
-        uint32_t b = bit_off + i;
-        uint32_t bit = ((uint32_t)src[b / 8u] >> (7u - (b % 8u))) & 1u;
-        /* Bit i from the left of the field is bit (bits-1-i) from the
-         * right of the value, which is right-aligned in the buffer. */
-        uint32_t from_right = (uint32_t)(bits - 1u - i);
-        size_t byte = P4_VALUE_BYTES - 1u - (from_right / 8u);
-
-        if (bit)
-            out->b[byte] |= (uint8_t)(1u << (from_right % 8u));
-    }
-}
-
-/* Write the low @bits bits of @v at @bit_off of @dst. */
-static void bits_set(uint8_t *dst, uint32_t bit_off, uint16_t bits,
-                     const struct p4_value *v)
-{
-    for (uint16_t i = 0; i < bits; i++) {
-        uint32_t b = bit_off + i;
-        const uint8_t mask = (uint8_t)(1u << (7u - (b % 8u)));
-        uint32_t from_right = (uint32_t)(bits - 1u - i);
-        size_t byte = P4_VALUE_BYTES - 1u - (from_right / 8u);
-        uint32_t bit = ((uint32_t)v->b[byte] >> (from_right % 8u)) & 1u;
-
-        if (bit)
-            dst[b / 8u] |= mask;
-        else
-            dst[b / 8u] &= (uint8_t)~mask;
-    }
-}
-
-/* Both operands are right-aligned and the same width, so this orders them. */
-static int value_cmp(const struct p4_value *a, const struct p4_value *b)
-{
-    return memcmp(a->b, b->b, P4_VALUE_BYTES);
-}
-
-static bool value_nonzero(const struct p4_value *v)
-{
-    for (size_t i = 0; i < P4_VALUE_BYTES; i++) {
-        if (v->b[i])
-            return true;
-    }
-    return false;
-}
-
-/* Wrap-around is what a fixed-width field does; the result is truncated to
- * the destination's width when it is stored. */
-static void value_add(const struct p4_value *a, const struct p4_value *b,
-                      struct p4_value *out)
-{
-    unsigned carry = 0;
-
-    for (size_t i = P4_VALUE_BYTES; i-- > 0;) {
-        unsigned sum = (unsigned)a->b[i] + b->b[i] + carry;
-
-        out->b[i] = (uint8_t)(sum & 0xFFu);
-        carry = sum >> 8;
-    }
-}
-
-static void value_sub(const struct p4_value *a, const struct p4_value *b,
-                      struct p4_value *out)
-{
-    unsigned borrow = 0;
-
-    for (size_t i = P4_VALUE_BYTES; i-- > 0;) {
-        unsigned d = (unsigned)a->b[i] - b->b[i] - borrow;
-
-        out->b[i] = (uint8_t)(d & 0xFFu);
-        borrow = (d >> 8) & 1u;
-    }
-}
-
-static uint32_t value_u32(const struct p4_value *v)
-{
-    uint32_t x = 0;
-
-    for (size_t i = P4_VALUE_BYTES - 4u; i < P4_VALUE_BYTES; i++)
-        x = (x << 8) | v->b[i];
-    return x;
-}
-
-static void value_set_u32(struct p4_value *v, uint32_t x)
-{
-    value_zero(v);
-    for (size_t i = 0; i < 4u; i++)
-        v->b[P4_VALUE_BYTES - 1u - i] = (uint8_t)(x >> (8u * i));
 }
 
 static const struct p4_field *field_of(const struct p4_program *prog,
@@ -463,6 +356,7 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
 /* ---- the pipeline ------------------------------------------------------ */
 
 static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
+                        const struct p4_entries *ent, p4_idx_t pipe,
                         const struct p4_pipeline *pl, bool *dropped)
 {
     p4_idx_t node = pl->init_node;
@@ -485,16 +379,36 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
         }
 
         const struct p4_table *t = &pl->tables[n->index];
+        struct p4_value keys[P4_MAX_TABLE_KEY];
+        const struct p4_entry *hit = NULL;
+        struct p4_args args;
 
-        /*
-         * Every lookup misses: there is no control plane, so no table has
-         * entries. A miss runs the default action, if the program named
-         * one, and goes to the miss target.
-         */
+        for (uint16_t i = 0; i < t->nkey; i++)
+            phv_get(prog, phv, t->key[i].field, &keys[i]);
+        hit = p4_entries_lookup(ent, prog, pipe, n->index, keys);
+
+        memset(&args, 0, sizeof(args));
+        if (hit) {
+            args.n = hit->nparams;
+            for (uint16_t i = 0; i < hit->nparams; i++) {
+                args.val[i] = hit->params[i].value;
+                args.len[i] = hit->params[i].len;
+            }
+            run_action(prog, phv, &prog->actions[hit->action], &args, dropped);
+            /* A hit follows the edge for the action that matched. */
+            node = P4_IDX_NONE;
+            for (uint16_t i = 0; i < t->nactions; i++) {
+                if (t->actions[i] == hit->action) {
+                    node = t->next[i];
+                    break;
+                }
+            }
+            continue;
+        }
+
+        /* A miss runs the default action, if the program named one, and
+         * takes the miss edge. */
         if (t->default_action != P4_IDX_NONE) {
-            struct p4_args args;
-
-            memset(&args, 0, sizeof(args));
             args.n = t->ndefault_data;
             for (uint16_t i = 0; i < t->ndefault_data; i++) {
                 args.val[i] = t->default_data[i];
@@ -557,9 +471,9 @@ static size_t parsed_bytes(const struct p4_program *prog,
     return n;
 }
 
-int p4_exec_run(const struct p4_program *prog, uint32_t ingress_port,
-                const void *frame, size_t len, void *out, size_t out_cap,
-                struct p4_exec_result *res)
+int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
+                uint32_t ingress_port, const void *frame, size_t len, void *out,
+                size_t out_cap, struct p4_exec_result *res)
 {
     struct p4_phv phv;
     bool dropped = false;
@@ -591,7 +505,8 @@ int p4_exec_run(const struct p4_program *prog, uint32_t ingress_port,
         return rc;
 
     for (uint16_t p = 0; p < prog->npipelines; p++) {
-        rc = run_pipeline(prog, &phv, &prog->pipelines[p], &dropped);
+        rc = run_pipeline(prog, &phv, ent, (p4_idx_t)p, &prog->pipelines[p],
+                          &dropped);
         if (rc)
             return rc;
     }

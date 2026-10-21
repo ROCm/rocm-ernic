@@ -17,6 +17,7 @@
  */
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,6 +25,7 @@
 #include <string.h>
 
 #include "p4_engine.h"
+#include "p4_table.h"
 
 static int failures;
 
@@ -33,6 +35,24 @@ static void check(bool cond, const char *what)
         printf("p4_engine: FAIL %s\n", what);
         failures++;
     }
+}
+
+/* For a failure whose reason the code under test produced. */
+static void checkf(bool cond, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void checkf(bool cond, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (cond)
+        return;
+    printf("p4_engine: FAIL ");
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf("\n");
+    failures++;
 }
 
 /* A frame that is distinguishable from an all-zero buffer. */
@@ -1010,6 +1030,160 @@ static void test_execute_wide_field(void)
     p4_engine_destroy(eng);
 }
 
+/* Fill in a match spec from a big-endian value, right-aligned. */
+static void set_spec(struct p4_match_spec *m, const uint8_t *v, uint16_t len)
+{
+    memset(m, 0, sizeof(*m));
+    m->len = len;
+    memcpy(m->value + (P4_MATCH_BYTES - len), v, len);
+}
+
+/*
+ * Table entries. Until now every lookup missed, so a table could only ever
+ * do one thing. This is what makes the engine programmable rather than
+ * merely loadable: the same program, the same frame, a different answer
+ * because of an entry.
+ */
+static void test_table_entries(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+    struct p4_update up;
+    char err[160];
+
+    for (size_t i = 0; i < sizeof(in); i++)
+        in[i] = (uint8_t)i;
+
+    /* minimal_forward's table has one exact key on ethernet.dstAddr and a
+     * default action that drops. */
+    check(load_fixture(eng, "minimal_forward.json") == 0, "the program loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame runs");
+    check(res.verdict == P4_VERDICT_DROP,
+          "with no entries the default action drops");
+
+    /* An entry for this frame's destination MAC, sending it to port 1. */
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "forward");
+    (void)snprintf(up.action, sizeof(up.action), "set_egress");
+    up.nmatch = 1;
+    set_spec(&up.match[0], in, 6); /* the first six bytes are dstAddr */
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = 1;
+
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not installed: %s", err);
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the same frame runs again");
+    check(res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_UPLINK,
+          "the entry forwarded a frame the default action would have "
+          "dropped");
+
+    /* A frame whose destination is not in the table still misses. */
+    {
+        uint8_t other[64];
+
+        memcpy(other, in, sizeof(other));
+        other[0] ^= 0xFFu;
+        check(p4_engine_process(eng, P4_PORT_HOST, other, sizeof(other), out,
+                                sizeof(out), &res) == 0,
+              "another frame runs");
+        check(res.verdict == P4_VERDICT_DROP,
+              "a destination with no entry still takes the default action");
+    }
+
+    /* Inserting the same key twice is a conflict, not a silent overwrite. */
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EEXIST,
+          "a duplicate insert is refused");
+
+    /* Modify changes where it goes. */
+    up.type = P4_UPDATE_MODIFY;
+    up.params[0].value[P4_MATCH_BYTES - 1] = 0;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not modified: %s", err);
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs again");
+    check(res.verdict == P4_VERDICT_FORWARD && res.egress_port == P4_PORT_HOST,
+          "the modified entry sends it back to the host port");
+
+    /* Delete restores the default. */
+    up.type = P4_UPDATE_DELETE;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not deleted: %s", err);
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -ENOENT,
+          "deleting it twice is refused");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs once more");
+    check(res.verdict == P4_VERDICT_DROP,
+          "with the entry gone the default action drops again");
+
+    p4_engine_destroy(eng);
+}
+
+static void test_table_entry_errors(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    char err[160];
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "forward");
+    (void)snprintf(up.action, sizeof(up.action), "set_egress");
+    up.nmatch = 1;
+    up.nparams = 1;
+    up.params[0].len = 1;
+
+    /* Nothing can be installed before a program says what a table is. */
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -ENOENT,
+          "an update with no program loaded is refused");
+
+    check(load_fixture(eng, "minimal_forward.json") == 0, "the program loads");
+
+    (void)snprintf(up.table, sizeof(up.table), "ghost");
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+          "an entry for a table that does not exist is refused");
+    check(strstr(err, "ghost") != NULL, "the error names the table");
+
+    (void)snprintf(up.table, sizeof(up.table), "forward");
+    (void)snprintf(up.action, sizeof(up.action), "ghost");
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+          "an entry naming an action the table cannot run is refused");
+
+    (void)snprintf(up.action, sizeof(up.action), "set_egress");
+    up.nmatch = 0;
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+          "an entry with the wrong number of key fields is refused");
+
+    up.nmatch = 1;
+    up.nparams = 0;
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+          "an entry with the wrong number of arguments is refused");
+
+    /* A key wider than the field it matches would be truncated on use,
+     * which is a different entry from the one asked for. */
+    up.nparams = 1;
+    up.match[0].len = P4_MATCH_BYTES;
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+          "a key field wider than the field it matches is refused");
+
+    /* Likewise an argument wider than its parameter. */
+    up.match[0].len = 6;
+    up.params[0].len = P4_MATCH_BYTES;
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+          "an argument wider than its parameter is refused");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
@@ -1018,6 +1192,8 @@ int main(void)
     test_execute();
     test_execute_egress();
     test_execute_wide_field();
+    test_table_entries();
+    test_table_entry_errors();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

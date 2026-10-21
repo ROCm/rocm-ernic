@@ -20,6 +20,7 @@
 #include "p4_exec.h"
 #include "p4_json.h"
 #include "p4_program.h"
+#include "p4_table.h"
 
 struct p4_engine {
     /*
@@ -29,6 +30,8 @@ struct p4_engine {
      * use to re-check.
      */
     struct p4_program *prog;
+    /* Entries for @prog's tables; replaced whenever @prog is. */
+    struct p4_entries *entries;
 
     /*
      * The program being loaded, if one is.  @load_got is both how much has
@@ -55,8 +58,32 @@ void p4_engine_destroy(struct p4_engine *eng)
     if (!eng)
         return;
     p4_engine_load_abort(eng);
+    p4_entries_destroy(eng->entries);
     p4_json_free(eng->prog);
     free(eng);
+}
+
+int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,
+                     char *err, size_t err_len)
+{
+    if (!eng || !up)
+        return -EINVAL;
+    if (!eng->prog) {
+        if (err && err_len) {
+            /* Copied rather than printed: the caller's buffer may be
+             * shorter than the message, and a truncating snprintf of a
+             * literal is a build warning. */
+            static const char msg[] = "no program is loaded";
+            size_t n = sizeof(msg) - 1u;
+
+            if (n >= err_len)
+                n = err_len - 1u;
+            memcpy(err, msg, n);
+            err[n] = '\0';
+        }
+        return -ENOENT;
+    }
+    return p4_entries_update(eng->entries, eng->prog, up, err, err_len);
 }
 
 const char *p4_engine_load_error(const struct p4_engine *eng)
@@ -145,8 +172,19 @@ int p4_engine_load_commit(struct p4_engine *eng)
 
     /* A program that replaces a running one only does so once it has been
      * accepted in full, so a bad load cannot leave the pipeline empty. */
+    struct p4_entries *entries = p4_entries_create(prog);
+
+    if (!entries) {
+        p4_json_free(prog);
+        return -ENOMEM;
+    }
+
+    /* A new program invalidates every entry: the tables it names are not
+     * the tables the old entries were written for. */
+    p4_entries_destroy(eng->entries);
     p4_json_free(eng->prog);
     eng->prog = prog;
+    eng->entries = entries;
     return 0;
 }
 
@@ -186,7 +224,8 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
 
     if (eng->prog) {
         struct p4_exec_result er;
-        int rc = p4_exec_run(eng->prog, in_port, frame, len, out, out_cap, &er);
+        int rc = p4_exec_run(eng->prog, eng->entries, in_port, frame, len, out,
+                             out_cap, &er);
 
         if (rc != 0) {
             /* A frame the program could not be run over is dropped rather

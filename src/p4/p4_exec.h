@@ -24,13 +24,6 @@
 /* Total storage for extracted headers and metadata, in bytes. */
 #define P4_PHV_BYTES 1024
 
-/*
- * Values are carried in a fixed-width big-endian buffer wide enough for
- * any field the loader accepts, so a 128-bit address is compared, assigned
- * and added exactly like a 9-bit port number.  Nothing here is limited to
- * what fits in a machine word.
- */
-#define P4_VALUE_BYTES ((P4_MAX_FIELD_BITS + 7) / 8)
 
 /* What running the pipeline decided. */
 struct p4_exec_result {
@@ -48,8 +41,10 @@ struct p4_exec_result {
  * @res.  -EMSGSIZE means the frame did not hold the headers the parser
  * wanted, or the result did not fit @out_cap.
  */
-int p4_exec_run(const struct p4_program *prog, uint32_t ingress_port,
-                const void *frame, size_t len, void *out, size_t out_cap,
-                struct p4_exec_result *res);
+struct p4_entries;
+
+int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
+                uint32_t ingress_port, const void *frame, size_t len, void *out,
+                size_t out_cap, struct p4_exec_result *res);
 
 #endif /* P4_EXEC_H */

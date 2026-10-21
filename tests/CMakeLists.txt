@@ -153,6 +153,7 @@ if(ERNIC_BUILD_P4)
         ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
         ${PROJECT_SOURCE_DIR}/src/p4/p4_exec.c
         ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_table.c
     )
     target_include_directories(ernic-test-p4-engine PRIVATE
         ${PROJECT_SOURCE_DIR}/src

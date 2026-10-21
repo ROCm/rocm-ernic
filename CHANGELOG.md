@@ -256,10 +256,19 @@
   program, where a frame goes is decided by the program's `egress_spec`
   rather than by the emulator, including sending it back to the port it
   arrived on -- which is what makes a guest frame answerable without a TAP.
-  Tables have no entries yet, so every lookup misses and takes the table's
-  default action. Fields of any width the loader accepts, up to 512 bits,
-  are compared, assigned and added correctly, so an IPv6 address behaves
-  like any other field.
+  Fields of any width the loader accepts, up to 512 bits, are compared,
+  assigned and added correctly, so an IPv6 address behaves like any other
+  field.
+* Table entries can be installed, changed and removed, so the same program
+  and the same frame can be made to take a different path.
+  `p4_engine_update()` takes a record shaped like a P4Runtime update --
+  insert, modify or delete, naming a table and an action -- and is the
+  single path by which any control plane changes a table, so a
+  network-facing client and the guest's own device commands produce the
+  same record rather than each having its own way in. Exact, longest-prefix
+  and ternary matching are all supported, with the ties broken as P4
+  requires. A table's memory is taken on its first entry, not when the
+  program loads.
 * `ernic_parse_hexstr()` in `src/parse_int.h` parses a bmv2 hexstr: a
   `0x`-prefixed, variable-width hexadecimal value that may be negative and
   may have an odd number of digits, none of which the existing helpers

@@ -102,6 +102,21 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
 int p4_engine_load_commit(struct p4_engine *eng);
 void p4_engine_load_abort(struct p4_engine *eng);
 
+struct p4_update;
+
+/*
+ * Install, change or remove one table entry.
+ *
+ * The record is shaped like a P4Runtime update, and is the single path by
+ * which any control plane changes a table: a network-facing client and the
+ * guest's own device commands both produce one of these rather than each
+ * having its own way in.  @err, when given, receives a one-line reason.
+ *
+ * Returns 0, or a negative errno -- -ENOENT when no program is loaded.
+ */
+int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,
+                     char *err, size_t err_len);
+
 /*
  * Why the last load was refused, or NULL if none has been.  The string
  * names the offending construct where it can, so a caller can tell a user
