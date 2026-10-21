@@ -375,6 +375,69 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
     return 0;
 }
 
+#ifdef ERNIC_HAVE_P4
+/*
+ * Read a compiled P4 program off disk and hand it to the engine.
+ *
+ * It goes in through the same chunked path a control plane uses rather
+ * than a shortcut of its own, so the one route into the engine is
+ * exercised by every caller and there is no second way for a program to
+ * arrive.
+ */
+static int p4_load_program_file(struct p4_engine *eng, const char *path)
+{
+    uint8_t buf[65536];
+    FILE *f = fopen(path, "rbe");
+    size_t total = 0;
+    long size;
+    int rc;
+
+    if (!f) {
+        fprintf(stderr, "rocm-ernic: cannot open P4 program '%s': %s\n", path,
+                strerror(errno));
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "rocm-ernic: cannot size P4 program '%s'\n", path);
+        fclose(f);
+        return -1;
+    }
+    if ((uint64_t)size == 0 || (uint64_t)size > P4_PROGRAM_MAX) {
+        fprintf(stderr,
+                "rocm-ernic: P4 program '%s' is %ld bytes; the limit is %u\n",
+                path, size, P4_PROGRAM_MAX);
+        fclose(f);
+        return -1;
+    }
+
+    rc = p4_engine_load_begin(eng, (size_t)size);
+    while (rc == 0 && total < (size_t)size) {
+        size_t n = fread(buf, 1, sizeof(buf), f);
+
+        if (n == 0) {
+            rc = -EIO;
+            break;
+        }
+        rc = p4_engine_load_chunk(eng, total, buf, n);
+        total += n;
+    }
+    fclose(f);
+
+    if (rc == 0)
+        rc = p4_engine_load_commit(eng);
+
+    if (rc != 0) {
+        const char *why = p4_engine_load_error(eng);
+
+        fprintf(stderr, "rocm-ernic: P4 program '%s' was refused: %s\n", path,
+                why ? why : strerror(-rc));
+        return -1;
+    }
+    return 0;
+}
+#endif /* ERNIC_HAVE_P4 */
+
 /**
  * Tear down the ionic emulation layer built by ionic_device_init().
  *
@@ -779,6 +842,12 @@ static void usage(const char *progname)
     fprintf(stderr, "  -P, --p4             Put the P4 match-action engine on "
                     "the emulated wire\n");
     fprintf(stderr, "                       (see docs/p4.rst)\n");
+    fprintf(stderr,
+            "  -J, --p4-program PATH Load a compiled P4 program (the JSON "
+            "that\n");
+    fprintf(stderr, "                       p4c --target bmv2 --arch v1model "
+                    "emits).\n");
+    fprintf(stderr, "                       Implies --p4.\n");
 #endif
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
@@ -1351,6 +1420,7 @@ int main(int argc, char *argv[])
     const char *tap_ifname = NULL;
 #ifdef ERNIC_HAVE_P4
     bool p4_enabled = false;
+    const char *p4_program = NULL;
 #endif
     const char *socket_group = NULL;
     gid_t socket_gid = 0;
@@ -1390,6 +1460,7 @@ int main(int argc, char *argv[])
         {"inject", required_argument, NULL, OPT_INJECT},
 #ifdef ERNIC_HAVE_P4
         {"p4", no_argument, NULL, 'P'},
+        {"p4-program", required_argument, NULL, 'J'},
 #endif
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
@@ -1427,7 +1498,7 @@ int main(int argc, char *argv[])
     /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
     while ((opt = getopt_long(argc, argv,
 #ifdef ERNIC_HAVE_P4
-                              "s:G:b:vL:S:m:l:hT:P",
+                              "s:G:b:vL:S:m:l:hT:PJ:",
 #else
                               "s:G:b:vL:S:m:l:hT:",
 #endif
@@ -1518,6 +1589,12 @@ int main(int argc, char *argv[])
         }
 #ifdef ERNIC_HAVE_P4
         case 'P':
+            p4_enabled = true;
+            break;
+        case 'J':
+            p4_program = optarg;
+            /* A program is useless without the engine on the wire, and
+             * asking for one plainly means wanting the other. */
             p4_enabled = true;
             break;
 #endif
@@ -1852,8 +1929,16 @@ int main(int argc, char *argv[])
             goto fail;
         }
 
-        ernic_startup_report("rocm-ernic: P4 engine attached (no program "
-                             "loaded; frames forwarded unchanged)");
+        if (p4_program) {
+            if (p4_load_program_file(dev->p4_engine, p4_program) != 0)
+                goto fail;
+            ernic_startup_report("rocm-ernic: P4 engine attached, running "
+                                 "'%s'",
+                                 p4_program);
+        } else {
+            ernic_startup_report("rocm-ernic: P4 engine attached (no program "
+                                 "loaded; frames forwarded unchanged)");
+        }
     }
 #endif
 

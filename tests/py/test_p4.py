@@ -113,6 +113,82 @@ def test_disabled_by_default(suite, server_factory):
     suite.check(stats is None, "no P4 statistics without --p4")
 
 
+def test_round_trip(suite, server_factory):
+    """A frame goes out of the Tx ring and comes back on the Rx ring.
+
+    This is the whole path: the guest transmits, the P4 program sets
+    egress_spec back to the host port, and the frame is injected into the
+    guest's receive ring. No TAP, no peer, no second VM -- the pipeline
+    itself is the loop. It is what a VM test does, without the VM.
+    """
+    prog = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "p4", "loopback.json"
+    )
+    with server_factory(["--p4-program", prog]) as server:
+        fix = Fixture(server)
+        try:
+            fix.driver.eth_q_init(eth.QTYPE_ETH_RXQ, depth_log2=3)
+            fix.driver.post_rx_buffers(count=4, size=2048)
+
+            sent = bytes([0xDE, 0xAD, 0xBE, 0xEF]) + bytes(range(60))
+            fix.driver.post_tx(sent)
+            fix.driver.wait_tx()
+
+            got = fix.driver.wait_rx(timeout=5.0)
+            suite.check(got is not None, "a frame came back")
+            suite.check_eq(len(got), len(sent), "it is the length that was sent")
+            suite.check(got == sent, "it is the frame that was sent, byte for byte")
+        finally:
+            fix.close()
+        stats = stop_server(server)
+
+    suite.check_eq(stats["host_in"], 1, "one frame entered the pipeline")
+    suite.check_eq(stats["host_out"], 1, "the program sent it to the host port")
+    suite.check_eq(stats["to_guest"], 1, "it was injected into the guest ring")
+
+
+def test_program_loaded(suite, server_factory):
+    """A compiled program loads at startup and then decides where frames go."""
+    prog = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "p4", "loopback.json"
+    )
+    with server_factory(["--p4-program", prog]) as server:
+        run_frames(server, [(bytes([0x44]) * 128, None)] * 2)
+        log = server.log_text()
+        stats = stop_server(server)
+
+    suite.check("running" in log, "the server reported the program it loaded")
+    suite.check_eq(stats["host_in"], 2, "both frames reached the engine")
+    # loopback.json leaves egress_spec at 0, which is the host port, so the
+    # frames go back to the guest rather than out of an absent uplink.
+    suite.check_eq(stats["host_out"], 2, "the program sent them to the host port")
+    suite.check_eq(stats["to_guest"], 2, "they were injected into the guest ring")
+    suite.check_eq(stats["egress_errors"], 0, "no frame needed an absent backend")
+
+
+def test_bad_program_refused(suite, server_factory):
+    """A program using a feature the engine lacks stops the server starting."""
+    prog = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "data",
+        "p4",
+        "simple_router.json",
+    )
+    ctx = server_factory(["--p4-program", prog])
+    try:
+        with ctx:
+            pass
+        started = True
+    except Exception:  # pylint: disable=broad-except
+        started = False
+    suite.check(not started, "the server refused to start")
+    suite.check(
+        "checksums" in ctx.server.log_text(),
+        "it said which feature the program used",
+    )
+
+
 def test_tx_completions(suite, server_factory):
     """The Tx ring completes with the engine attached, as it does without."""
     with server_factory(["--p4"]) as server:
@@ -132,6 +208,9 @@ TESTS = (
     ("a scatter/gather frame is one frame", test_scatter_gather_frame),
     ("the engine is off without --p4", test_disabled_by_default),
     ("Tx completes with the engine attached", test_tx_completions),
+    ("a frame makes the round trip through the pipeline", test_round_trip),
+    ("a compiled program decides where frames go", test_program_loaded),
+    ("a program using an absent feature is refused", test_bad_program_refused),
 )
 
 

@@ -259,6 +259,14 @@
   Fields of any width the loader accepts, up to 512 bits, are compared,
   assigned and added correctly, so an IPv6 address behaves like any other
   field.
+* `-J` / `--p4-program PATH` loads a compiled P4 program when the server
+  starts, so the engine can be given one without a guest or a control
+  plane. It implies `--p4`. A program the engine will not run stops the
+  server from starting, naming the feature that was used rather than
+  reporting that the file was bad, so a bad program is a startup failure
+  and never a silently inert pipeline. The file goes in through the same
+  chunked path a control plane uses, so there is one route into the engine
+  rather than two.
 * Table entries can be installed, changed and removed, so the same program
   and the same frame can be made to take a different path.
   `p4_engine_update()` takes a record shaped like a P4Runtime update --

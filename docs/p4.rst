@@ -24,6 +24,25 @@ which it is not by default:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0 --p4
 
+Give it a program with ``--p4-program``, which implies
+``--p4``:
+
+.. code-block:: bash
+
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback \
+     --p4-program tests/data/p4/loopback.json
+
+A program the engine will not run stops the server starting,
+and says which feature it used. A bad program is a startup
+failure, never a silently inert pipeline.
+
+The RDMA backend is unrelated to any of this. The engine is
+on the Ethernet path, and the RDMA backends never touch it,
+so ``--backend`` makes no difference to what the pipeline
+sees.
+
 Status
 ------
 
