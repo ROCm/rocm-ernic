@@ -211,6 +211,15 @@
   vfio-user, with no VM and no root. The server reports the engine's frame
   counters in a `P4 stats:` line at shutdown, which is what that test
   asserts on.
+* The P4 engine accepts a program in pieces, ready for a transport to carry
+  one in: `p4_engine_load_begin()`, `p4_engine_load_chunk()` and
+  `p4_engine_load_commit()` accumulate up to `P4_PROGRAM_MAX` bytes, which
+  is 4 MiB. Pieces must cover the program in order and without gaps, and
+  anything else -- a chunk running past the declared length, one that skips
+  forward or rewrites what already arrived, or a commit before the whole
+  program has -- abandons the load rather than leaving a partly filled
+  buffer. Nothing parses the bytes yet, so a complete load reports
+  `ENOSYS`; no program can be run.
 
 ### Changed
 

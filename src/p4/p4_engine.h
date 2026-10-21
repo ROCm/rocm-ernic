@@ -44,6 +44,13 @@ struct p4_engine;
 /* Largest frame the engine will accept or produce. */
 #define P4_FRAME_MAX 9216u
 
+/*
+ * Largest program the engine will accept.  A bmv2 JSON for a pipeline the
+ * size of DASH is a few hundred kilobytes; this is well clear of that and
+ * bounds what a guest can make the server allocate.
+ */
+#define P4_PROGRAM_MAX (4u * 1024u * 1024u)
+
 enum p4_verdict {
     P4_VERDICT_DROP = 0,
     P4_VERDICT_FORWARD,
@@ -68,6 +75,36 @@ void p4_engine_destroy(struct p4_engine *eng);
 
 /* True once a program has been loaded and accepted. */
 bool p4_engine_has_program(const struct p4_engine *eng);
+
+/*
+ * Loading a program.
+ *
+ * A program arrives in pieces, because it is far larger than any single
+ * command carries, and every piece comes from outside the process -- in the
+ * guest-facing case, from the guest itself.  The transport is separate from
+ * this: whatever carries the bytes calls these, and nothing here knows how
+ * they arrived.
+ *
+ * The sequence is begin, then chunks covering [0, total) exactly once each
+ * in increasing order, then commit.  Anything else fails.  Pieces are
+ * required to arrive in order and without gaps rather than being reassembled
+ * from arbitrary offsets: a sparse accumulator would have to track which
+ * ranges had been filled, and the only caller that needs it is one trying to
+ * find a hole in the bookkeeping.
+ *
+ * A begin while another load is in progress abandons that one.  A failed
+ * chunk or commit abandons the load, so a caller cannot retry into a
+ * half-filled buffer.
+ */
+int p4_engine_load_begin(struct p4_engine *eng, size_t total_len);
+int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
+                         const void *data, size_t len);
+int p4_engine_load_commit(struct p4_engine *eng);
+void p4_engine_load_abort(struct p4_engine *eng);
+
+/* Bytes accepted so far, and the total expected; both 0 when idle. */
+void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,
+                             size_t *total);
 
 /*
  * Run one frame through the pipeline.

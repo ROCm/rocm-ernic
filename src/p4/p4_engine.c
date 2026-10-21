@@ -27,6 +27,15 @@ struct p4_engine {
      */
     struct p4_program *prog;
 
+    /*
+     * The program being loaded, if one is.  @load_got is both how much has
+     * arrived and the only offset the next chunk may name, which is what
+     * keeps the buffer free of holes without a range map.
+     */
+    uint8_t *load_buf;
+    size_t load_total;
+    size_t load_got;
+
     struct p4_stats stats;
 };
 
@@ -40,12 +49,99 @@ void p4_engine_destroy(struct p4_engine *eng)
 {
     if (!eng)
         return;
+    p4_engine_load_abort(eng);
     free(eng);
 }
 
 bool p4_engine_has_program(const struct p4_engine *eng)
 {
     return eng != NULL && eng->prog != NULL;
+}
+
+void p4_engine_load_abort(struct p4_engine *eng)
+{
+    if (!eng)
+        return;
+    free(eng->load_buf);
+    eng->load_buf = NULL;
+    eng->load_total = 0;
+    eng->load_got = 0;
+}
+
+int p4_engine_load_begin(struct p4_engine *eng, size_t total_len)
+{
+    if (!eng)
+        return -EINVAL;
+    if (total_len == 0 || total_len > P4_PROGRAM_MAX)
+        return -EINVAL;
+
+    /* Whatever was part-way through is gone; this is the only place a
+     * second load is allowed to disturb a first. */
+    p4_engine_load_abort(eng);
+
+    eng->load_buf = malloc(total_len);
+    if (!eng->load_buf)
+        return -ENOMEM;
+    eng->load_total = total_len;
+    eng->load_got = 0;
+    return 0;
+}
+
+int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
+                         const void *data, size_t len)
+{
+    if (!eng || !data)
+        return -EINVAL;
+    if (!eng->load_buf)
+        return -EINVAL; /* no load in progress */
+
+    if (len == 0 || offset != eng->load_got) {
+        p4_engine_load_abort(eng);
+        return -EINVAL;
+    }
+
+    /*
+     * Compare against what is left rather than forming offset + len, which
+     * would wrap.  offset is already known to equal load_got, and load_got
+     * never exceeds load_total, so the subtraction cannot underflow.
+     */
+    if (len > eng->load_total - eng->load_got) {
+        p4_engine_load_abort(eng);
+        return -EINVAL;
+    }
+
+    memcpy(eng->load_buf + eng->load_got, data, len);
+    eng->load_got += len;
+    return 0;
+}
+
+int p4_engine_load_commit(struct p4_engine *eng)
+{
+    if (!eng)
+        return -EINVAL;
+    if (!eng->load_buf || eng->load_got != eng->load_total) {
+        p4_engine_load_abort(eng);
+        return -EINVAL;
+    }
+
+    /*
+     * Where the bmv2 JSON will be parsed and a p4_program built.  Until
+     * that exists there is nothing to install, so the bytes are accepted,
+     * validated as far as they can be, and discarded: a caller can tell a
+     * transport that works from one that does not without the engine
+     * pretending to run a program it cannot execute.
+     */
+    p4_engine_load_abort(eng);
+    return -ENOSYS;
+}
+
+void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,
+                             size_t *total)
+{
+    if (got)
+        *got = eng ? eng->load_got : 0;
+    if (total)
+        *total = eng ? eng->load_total : 0;
 }
 
 /* The other end of a two-port device. */
