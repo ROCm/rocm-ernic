@@ -827,7 +827,7 @@ jobs:
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
-          tests/test_write_imm.c tests/ernic_device.h \
+          tests/test_write_imm.c tests/ernic_device.h src/parse_int.h \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
 
         # $RDMA_DEVICE is passed in rather than rediscovered: "Verify
@@ -888,7 +888,7 @@ jobs:
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/srq-smoke"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
-          tests/test_srq.c tests/ernic_device.h \
+          tests/test_srq.c tests/ernic_device.h src/parse_int.h \
           "${VM_USER}@localhost:/tmp/srq-smoke/"
 
         set +e
@@ -942,7 +942,7 @@ jobs:
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_data_transfer.c tests/test_rdma_cm.c \
           tests/test_ud_transfer.c tests/test_ud_sq_reclaim.c \
-          tests/ernic_device.h \
+          tests/ernic_device.h src/parse_int.h \
           "${VM_USER}@localhost:/tmp/guest-rdma-tests/"
 
         FAILED=0
@@ -1299,6 +1299,7 @@ jobs:
           "mkdir -p /tmp/srq-test"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_srq.c tests/test_srq_transfer.c tests/ernic_device.h \
+          src/parse_int.h \
           "${VM_USER}@localhost:/tmp/srq-test/"
 
         # test_srq first, then test_srq_transfer: the first says the verbs

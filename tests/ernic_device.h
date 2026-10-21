@@ -27,11 +27,14 @@
 #define ERNIC_TESTS_DEVICE_H
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <infiniband/verbs.h>
+
+#include "parse_int.h"
 
 #define ERNIC_PCI_VENDOR_ID           0x1dd8u
 #define ERNIC_PCI_DEVICE_ID           0x1002u
@@ -55,9 +58,11 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
     /* PATH_MAX, not a guess at the sysfs path: a fixture tree under a deep
      * build directory is much longer than /sys/class/infiniband. */
     char path[PATH_MAX];
+    char line[16];
     FILE *attr;
     int length;
-    int fields;
+    char *got;
+    uint32_t parsed;
 
     if (!name || !suffix || !value)
         return 0;
@@ -70,10 +75,17 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
     attr = fopen(path, "re");
     if (!attr)
         return 0;
-    fields = fscanf(attr, "%x", value);
+    got = fgets(line, sizeof(line), attr);
     fclose(attr);
+    if (!got)
+        return 0;
 
-    return fields == 1;
+    /* sysfs writes these as 0x%04x and a newline. */
+    line[strcspn(line, "\n")] = '\0';
+    if (strncmp(line, "0x", 2) != 0 || !ernic_parse_hex_u32(line + 2, &parsed))
+        return 0;
+    *value = parsed;
+    return 1;
 }
 
 static inline int ernic_device_tuple_matches(const char *name)

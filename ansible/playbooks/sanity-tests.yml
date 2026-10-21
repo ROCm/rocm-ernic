@@ -376,8 +376,9 @@
         cmd: >-
           set -o pipefail;
           {{ item }} 'mkdir -p /tmp/ud-mesh' &&
-          tar -C {{ ernic_project_root }}/tests -cf -
-          test_ud_mesh.c ernic_device.h |
+          tar -cf -
+          -C {{ ernic_project_root }}/tests test_ud_mesh.c ernic_device.h
+          -C {{ ernic_project_root }}/src parse_int.h |
           {{ item }} 'tar -C /tmp/ud-mesh -xf -'
       loop:
         - "{{ vm1_ssh }}"

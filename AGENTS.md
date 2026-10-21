@@ -138,12 +138,14 @@ Notes:
   `ato*` family, the `strto*` family, or `sscanf()`. The `ato*` functions
   can't report an error, `sscanf()` doesn't say whether it consumed all the
   text, and the `strto*` functions report errors only through `errno` and
-  an end pointer that are easy to get wrong. Use `ernic_parse_int()` and
-  `ernic_parse_port()` from [`src/parse_int.h`](src/parse_int.h), which
-  reject empty text, trailing characters, and out-of-range values. For
-  another type, add a helper there, with tests in
-  `tests/test_parse_int.c`. Some existing code still calls `strto*`
-  directly; don't copy it.
+  an end pointer that are easy to get wrong. Use the helpers in
+  [`src/parse_int.h`](src/parse_int.h), such as `ernic_parse_int()`,
+  `ernic_parse_u64()`, `ernic_parse_size()`, and `ernic_parse_port()`,
+  which reject empty text, trailing characters, and out-of-range values.
+  `ernic_parse_u64_span()` reads a number that is part of a longer string.
+  For another type, add a helper there, with tests in
+  `tests/test_parse_int.c`. The guest-side test programs include it too, so
+  a VM that builds one has to be given a copy.
 
 ## Thread safety
 

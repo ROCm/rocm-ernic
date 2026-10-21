@@ -32,6 +32,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "parse_int.h"
 #include "s3_http.h"
 #include "s3_target.h"
 #include "s3_token.h"
@@ -332,11 +333,21 @@ static void test_cfg_parse(void)
             fail(name, "objects %u", cfg.max_objects);
     }
 
+    /* size= takes the same multipliers as the nvmeof backend's. */
+    s3_target_cfg_defaults(&cfg);
+    if (!s3_target_cfg_parse(&cfg, "size=1T", err, sizeof(err)))
+        fail(name, "rejected size=1T: %s", err);
+    else if (cfg.capacity != 1ull << 40)
+        fail(name, "size=1T gave capacity %llu",
+             (unsigned long long)cfg.capacity);
+
     static const char *bad[] = {
         "bucket=",      "bucket=No_Caps_Allowed",
         "ip=256.1.1.1", "ip=not-an-address",
-        "port=0",       "port=99999",
-        "size=12Q",     "nosuchoption=1",
+        "ip=10.0.0.5x", "port=0",
+        "port=99999",   "port=0x1f90",
+        "size=12Q",     "size=0x400000",
+        "objects=-1",   "nosuchoption=1",
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         s3_target_cfg_defaults(&cfg);
@@ -408,7 +419,8 @@ static void test_body_put_get(void)
     if (r.resp.body_len != 0)
         fail(name, "HEAD returned a %zu byte body", r.resp.body_len);
     const char *clen = hdr(&r, "x-amz-content-length");
-    if (clen == NULL || atoi(clen) != (int)strlen(payload))
+    uint64_t clen_val;
+    if (!ernic_parse_u64(clen, &clen_val) || clen_val != strlen(payload))
         fail(name, "HEAD length header \"%s\"", clen ? clen : "(absent)");
     reply_free(&r);
 
@@ -494,7 +506,8 @@ static void test_rdma_put_get(void)
                  peer.qp_num);
     }
     const char *bytes = hdr(&r, "x-amz-rdma-bytes");
-    if (bytes == NULL || strtoull(bytes, NULL, 10) != len)
+    uint64_t bytes_val;
+    if (!ernic_parse_u64(bytes, &bytes_val) || bytes_val != len)
         fail(name, "x-amz-rdma-bytes \"%s\"", bytes ? bytes : "(absent)");
     reply_free(&r);
 
@@ -615,6 +628,13 @@ static void test_rdma_ranged_get(void)
         {"bytes=9999-10000", 0, 0, 416},  /* starts past the end */
         {"bytes=200-100", 0, 0, 416},     /* inverted */
         {"chunks=0-99", 0, 0, 416},       /* unsupported unit */
+        {"bytes=--64", 0, 0, 416},        /* a sign, which wrapped */
+        {"bytes=+0-99", 0, 0, 416},
+        {"bytes=0-+99", 0, 0, 416},
+        {"bytes=0x0-99", 0, 0, 416},
+        {"bytes=0-99x", 0, 0, 416},
+        {"bytes=-", 0, 0, 416},
+        {"bytes=0-18446744073709551616", 0, 0, 416}, /* past UINT64_MAX */
     };
 
     const uint64_t dst = 512u * 1024;
@@ -1337,7 +1357,8 @@ static void test_overlong_upload_id(void)
     if (exec_req(t, &r, NULL, NULL, "HEAD", "/ernic/fox.txt", NULL, NULL, NULL,
                  0)) {
         const char *clen = hdr(&r, "x-amz-content-length");
-        if (clen == NULL || atoi(clen) != (int)strlen(payload))
+        uint64_t clen_val;
+        if (!ernic_parse_u64(clen, &clen_val) || clen_val != strlen(payload))
             fail(name, "the object is now %s bytes, want %zu",
                  clen ? clen : "(absent)", strlen(payload));
         reply_free(&r);

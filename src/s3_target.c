@@ -30,15 +30,18 @@
 #define _GNU_SOURCE
 #endif
 
-#include <errno.h>
+#include <arpa/inet.h>
 #include <inttypes.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/socket.h>
 #include <time.h>
 
+#include "parse_int.h"
 #include "s3_http.h"
 #include "s3_target.h"
 #include "s3_token.h"
@@ -283,86 +286,14 @@ void s3_target_cfg_defaults(struct s3_target_cfg *cfg)
     cfg->max_part = S3_DEFAULT_MAX_PART;
 }
 
-static bool parse_size(const char *s, uint64_t *out)
-{
-    char *end = NULL;
-    unsigned long long v;
-
-    if (*s == '\0' || *s == '-') {
-        return false;
-    }
-    errno = 0;
-    v = strtoull(s, &end, 0);
-    if (errno != 0 || end == s) {
-        return false;
-    }
-
-    uint64_t mult = 1;
-    switch (*end) {
-    case 'k':
-    case 'K':
-        mult = 1ull << 10;
-        end++;
-        break;
-    case 'm':
-    case 'M':
-        mult = 1ull << 20;
-        end++;
-        break;
-    case 'g':
-    case 'G':
-        mult = 1ull << 30;
-        end++;
-        break;
-    default:
-        break;
-    }
-    if (mult != 1) {
-        if (*end == 'i' || *end == 'I') {
-            end++;
-        }
-        if (*end == 'b' || *end == 'B') {
-            end++;
-        }
-    }
-    if (*end != '\0') {
-        return false;
-    }
-    if (v != 0 && v > UINT64_MAX / mult) {
-        return false;
-    }
-    *out = (uint64_t)v * mult;
-    return true;
-}
-
 static bool parse_ipv4(const char *s, uint32_t *out)
 {
-    unsigned o[4];
-    char extra;
+    struct in_addr a;
 
-    if (sscanf(s, "%u.%u.%u.%u%c", &o[0], &o[1], &o[2], &o[3], &extra) != 4) {
+    if (inet_pton(AF_INET, s, &a) != 1) {
         return false;
     }
-    for (int i = 0; i < 4; i++) {
-        if (o[i] > 255) {
-            return false;
-        }
-    }
-    *out = (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
-    return true;
-}
-
-static bool parse_u32(const char *s, uint32_t *out)
-{
-    char *end = NULL;
-    unsigned long v;
-
-    errno = 0;
-    v = strtoul(s, &end, 0);
-    if (errno != 0 || end == s || *end != '\0' || v > UINT32_MAX) {
-        return false;
-    }
-    *out = (uint32_t)v;
+    *out = ntohl(a.s_addr);
     return true;
 }
 
@@ -436,13 +367,13 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
                 snprintf(cfg->bucket, sizeof(cfg->bucket), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
-            if (!parse_size(val, &cfg->capacity) || cfg->capacity == 0) {
+            if (!ernic_parse_size(val, &cfg->capacity) || cfg->capacity == 0) {
                 set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
             }
         } else if (strcmp(key, "objects") == 0) {
             uint32_t v;
-            if (!parse_u32(val, &v) || v == 0 || v > 65536) {
+            if (!ernic_parse_u32(val, &v) || v == 0 || v > 65536) {
                 set_err(err, errlen, "objects must be 1..65536 (got '%s')",
                         val);
                 ok = false;
@@ -456,7 +387,7 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
             }
         } else if (strcmp(key, "port") == 0) {
             uint32_t v;
-            if (!parse_u32(val, &v) || v == 0 || v > 65535) {
+            if (!ernic_parse_u32(val, &v) || v == 0 || v > 65535) {
                 set_err(err, errlen, "bad port '%s'", val);
                 ok = false;
             } else {
@@ -464,7 +395,7 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
             }
         } else if (strcmp(key, "maxpart") == 0) {
             uint64_t v;
-            if (!parse_size(val, &v) || v == 0 || v > UINT32_MAX) {
+            if (!ernic_parse_size(val, &v) || v == 0 || v > UINT32_MAX) {
                 set_err(err, errlen, "bad maxpart '%s'", val);
                 ok = false;
             } else {
@@ -821,18 +752,21 @@ static void split_path(const char *path, char *bucket, size_t bucketlen,
 /* "bytes=<first>-<last>", the only Range form S3 answers. */
 static bool parse_range(const char *v, size_t size, size_t *off, size_t *len)
 {
-    unsigned long long first, last;
-    char *end;
+    uint64_t first, last;
 
     if (strncasecmp(v, "bytes=", 6) != 0) {
         return false;
     }
     v += 6;
 
-    if (*v == '-') { /* suffix range: the final N bytes */
-        errno = 0;
-        last = strtoull(v + 1, &end, 10);
-        if (errno != 0 || end == v + 1 || *end != '\0' || last == 0) {
+    const char *dash = strchr(v, '-');
+    if (dash == NULL) {
+        return false;
+    }
+    const char *tail = dash + 1;
+
+    if (dash == v) { /* suffix range: the final N bytes */
+        if (!ernic_parse_u64(tail, &last) || last == 0) {
             return false;
         }
         if (last > size) {
@@ -846,21 +780,16 @@ static bool parse_range(const char *v, size_t size, size_t *off, size_t *len)
         return true;
     }
 
-    errno = 0;
-    first = strtoull(v, &end, 10);
-    if (errno != 0 || end == v || *end != '-') {
+    if (!ernic_parse_u64_span(v, (size_t)(dash - v), &first)) {
         return false;
     }
     if (first >= size) {
         return false;
     }
-    v = end + 1;
-    if (*v == '\0') {
+    if (*tail == '\0') {
         last = size - 1;
     } else {
-        errno = 0;
-        last = strtoull(v, &end, 10);
-        if (errno != 0 || end == v || *end != '\0') {
+        if (!ernic_parse_u64(tail, &last)) {
             return false;
         }
         if (last >= size) {
@@ -915,14 +844,12 @@ static void handle_list_objects(struct s3_target *t,
 {
     char prefix[S3_KEY_MAX] = "";
     char maxkeys[24] = "";
-    unsigned long limit = S3_LIST_MAX_KEYS;
+    uint32_t limit = S3_LIST_MAX_KEYS;
 
     s3_http_query_get(req, "prefix", prefix, sizeof(prefix));
-    if (s3_http_query_get(req, "max-keys", maxkeys, sizeof(maxkeys)) &&
-        maxkeys[0] != '\0') {
-        char *end;
-        unsigned long v = strtoul(maxkeys, &end, 10);
-        if (*end == '\0' && v < limit) {
+    if (s3_http_query_get(req, "max-keys", maxkeys, sizeof(maxkeys))) {
+        uint32_t v;
+        if (ernic_parse_u32(maxkeys, &v) && v < limit) {
             limit = v;
         }
     }
@@ -947,7 +874,7 @@ static void handle_list_objects(struct s3_target *t,
     xml_escape(resp, prefix);
     s3_http_response_printf(resp,
                             "</Prefix><KeyCount>%u</KeyCount>"
-                            "<MaxKeys>%lu</MaxKeys>"
+                            "<MaxKeys>%" PRIu32 "</MaxKeys>"
                             "<IsTruncated>%s</IsTruncated>",
                             listed, limit, matched > listed ? "true" : "false");
 
@@ -1173,7 +1100,7 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
         uint32_t number = 0;
 
         if (!s3_http_query_get(req, "partNumber", part_str, sizeof(part_str)) ||
-            !parse_u32(part_str, &number) || number == 0 ||
+            !ernic_parse_u32(part_str, &number) || number == 0 ||
             number > S3_MAX_PARTS) {
             free(buf);
             s3_error(t, resp, 400, "InvalidPart", "partNumber must be 1..1024.",

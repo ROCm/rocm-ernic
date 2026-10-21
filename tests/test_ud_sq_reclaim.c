@@ -28,7 +28,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +37,7 @@
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
+#include "parse_int.h"
 
 #define GRH_LEN      40
 #define MSG_LEN      64
@@ -214,7 +215,12 @@ int main(void)
 
     /* Overridable so the unsignalled run length can be bisected. */
     const char *se = getenv("ERNIC_SIGNAL_EVERY");
-    int signal_every = se ? atoi(se) : SIGNAL_EVERY;
+    int signal_every = SIGNAL_EVERY;
+    if (se && !ernic_parse_int(se, &signal_every)) {
+        fprintf(stderr, "FAIL: ERNIC_SIGNAL_EVERY=\"%s\" is not a number\n",
+                se);
+        goto out;
+    }
     if (signal_every < 1)
         signal_every = 1;
     printf("signalling every %d sends\n", signal_every);
