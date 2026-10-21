@@ -4,15 +4,13 @@
 [codespell]
 check-hidden = true
 
-# third-party holds QEMU-derived code that is exempt from this and the
-# other checks until it's cleaned up and moved into src/.
 # ansible/.ansible is a local collection install, not ours and not in git;
 # CI never sees it, so skipping keeps a local run honest.
 # *.patch are verbatim upstream commits under patches/: correcting a typo
 # in one would make it stop matching the series it was exported from, and
 # every later rebase would have to carry the correction forward. The
 # READMEs beside them are ours and stay checked.
-skip = ./.git,./third-party,./.claude/settings.local.json,./ansible/.ansible,*.patch
+skip = ./.git,./.claude/settings.local.json,./ansible/.ansible,*.patch
 
 # AER is the NVMe Asynchronous Event Request, not a misspelling of "are".
 ignore-words-list = clen,VAs,TRIMed,AER

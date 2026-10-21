@@ -1,9 +1,7 @@
 # nix/analysis/semgrep.nix
 #
 # semgrep pattern-based scan with the project's C ruleset
-# (semgrep-rules.yaml). Scans raw source under src/ and third-party/, so
-# it covers the vendored QEMU sources as well as our own code. Runs fully
-# offline.
+# (semgrep-rules.yaml). Scans raw source under src/. Runs fully offline.
 #
 # Before scanning, each rule fixture in semgrep-tests/ is run with
 # `semgrep --test` (a `ruleid:` line must be reported, an `ok:` line must
@@ -53,7 +51,6 @@ let
         --metrics=off \
         --no-git-ignore \
         "$source_dir/src" \
-        "$source_dir/third-party" \
         > "$output_dir/report.json" 2> "$output_dir/scan-errors.txt" || {
           cat "$output_dir/scan-errors.txt" >&2
           echo "semgrep: scan failed" >&2

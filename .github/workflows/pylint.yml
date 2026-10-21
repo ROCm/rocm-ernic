@@ -49,15 +49,13 @@ jobs:
           python -m pip install -r prometheus/requirements-exporter.txt
 
       # *.py plus extension-less scripts with a python shebang
-      # (service/ernicctl, prometheus/ernic-exporter). third-party/ is
-      # exempt until its QEMU code moves into src/,
+      # (service/ernicctl, prometheus/ernic-exporter).
       # nix/analysis/triage/ (adapted from xdp2) is vendored, and
       # .cmake-format.py is cmakelang configuration that is only valid
       # Python inside cmakelang's own evaluator.
       - name: Find Python files
         run: |
-          git ls-files -- ':!:third-party/' ':!:nix/analysis/triage/' \
-            ':!:.cmake-format.py' |
+          git ls-files -- ':!:nix/analysis/triage/' ':!:.cmake-format.py' |
             while IFS= read -r file; do
               if [[ "$file" == *.py ]]; then
                 echo "$file"

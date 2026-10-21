@@ -17,10 +17,7 @@
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
-/*
- * QEMU headers. The vendored header trees are SYSTEM include directories,
- * so the compiler already keeps their warnings quiet.
- */
+/* QEMU-derived headers, from src/qemu/ */
 #include "vmw/pvrdma.h"
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"

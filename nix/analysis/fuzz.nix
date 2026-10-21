@@ -26,7 +26,7 @@ let
     "-Isrc"
     "-Isrc/net"
     "-Isrc/qemu-compat/include"
-    "-Ithird-party/qemu/hw/rdma"
+    "-Isrc/qemu/hw/rdma"
   ];
   sanFlags = "-fsanitize=fuzzer,address,undefined -g -O1 -fno-omit-frame-pointer";
 

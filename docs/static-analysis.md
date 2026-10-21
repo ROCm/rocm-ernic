@@ -21,9 +21,10 @@
 > operations the analyzer rejected, has been removed.
 >
 > **Paths.** File paths and line numbers are as of that commit. The
-> `src/from-qemu/` tree has since been split up: the vendored QEMU files
+> `src/from-qemu/` tree has since been split up: the QEMU-derived files
 > (`rdma_backend.c`, `pvrdma_qp_ops.c` and the `standard-headers/` uAPI
-> headers among them) are under `third-party/qemu/`; the DHCP, rdma_cm and
+> headers among them) went to `third-party/qemu/` and are now in
+> `src/qemu/`; the DHCP, rdma_cm and
 > Ethernet RX code and `net_headers.h` are in `src/net/`; the RDMA backends
 > (`rdma_backend_loopback.c`, `rdma_backend_tcp.c`) are in `src/rdma/`; and
 > the QEMU stubs and shim headers are in `src/qemu-compat/`.

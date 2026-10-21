@@ -43,10 +43,11 @@ function(ernic_add_fuzz_replay harness)
         ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/src/net
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+        ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
     )
-    # Vendored header trees are SYSTEM includes so their warnings stay quiet.
+    # Headers from outside the project are SYSTEM includes so their warnings
+    # stay quiet.
     target_include_directories(${target} SYSTEM PRIVATE
-        ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
         ${GLIB2_INCLUDE_DIRS}
     )
     target_compile_definitions(${target} PRIVATE _GNU_SOURCE)

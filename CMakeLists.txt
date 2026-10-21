@@ -147,23 +147,20 @@ endif()
 # Source file groups
 # ---------------------------------------------------------------
 
-# rocm-ernic's fork of QEMU's PVRDMA code, under Oracle / Red Hat
-# copyright. Treated as vendored, and exempt from the warning and lint
-# checks, until it's cleaned up and moved into src/ (see
-# third-party/README.md)
-set(ERNIC_VENDORED_SOURCES
-    third-party/qemu/hw/rdma/rdma_backend.c
-    third-party/qemu/hw/rdma/rdma_rm.c
+# rocm-ernic's fork of QEMU's PVRDMA resource manager and backend device,
+# under Oracle / Red Hat copyright (see src/qemu/README.md)
+set(QEMU_SOURCES
+    src/qemu/hw/rdma/rdma_backend.c
+    src/qemu/hw/rdma/rdma_rm.c
 )
 
-# The QEMU APIs the vendored code calls, implemented for a standalone
-# process
+# The QEMU APIs that code calls, implemented for a standalone process
 set(QEMU_COMPAT_SOURCES
     src/qemu-compat/error-report.c
     src/qemu-compat/qemu_stubs.c
 )
 
-# RDMA backends (none, loopback, TCP mesh) behind the vendored device model
+# RDMA backends (none, loopback, TCP mesh) behind the PVRDMA device model
 set(RDMA_BACKEND_SOURCES
     src/rdma/rdma_backend_core.c
     src/rdma/rdma_backend_none.c
@@ -219,7 +216,7 @@ set(ALL_SOURCES
     ${RDMA_BACKEND_SOURCES}
     ${NET_SOURCES}
     ${QEMU_COMPAT_SOURCES}
-    ${ERNIC_VENDORED_SOURCES}
+    ${QEMU_SOURCES}
 )
 
 # ---------------------------------------------------------------
@@ -237,20 +234,20 @@ else()
     set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDE_DIRS}")
 endif()
 
-# src/rdma is searched directly because the vendored sources include
-# rdma_backend_ops.h by bare name.
+# src/rdma and src/qemu/hw/rdma are searched directly because the QEMU
+# sources include their headers, and rdma_backend_ops.h, by bare name.
 target_include_directories(rocm-ernic PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu/include
+    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
 )
 
-# The vendored header trees are SYSTEM includes so their warnings stay
-# quiet
+# Headers from outside the project are SYSTEM includes so their warnings
+# stay quiet
 target_include_directories(rocm-ernic SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -265,14 +262,6 @@ target_compile_definitions(rocm-ernic PRIVATE
 target_compile_options(rocm-ernic PRIVATE
     ${GLIB2_CFLAGS_OTHER}
     -g
-)
-
-# Suppress strict warnings under third-party/
-#
-# Until the code there is cleaned up and moved into src/.
-set_source_files_properties(
-    ${ERNIC_VENDORED_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-w"
 )
 
 target_link_directories(rocm-ernic PRIVATE
