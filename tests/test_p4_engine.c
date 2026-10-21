@@ -324,6 +324,32 @@ static void test_load_whole_program_in_one_chunk(void)
     p4_engine_destroy(eng);
 }
 
+/*
+ * A header section, a parser over it, and a whole program, as text. Built
+ * up in pieces so a case can introduce exactly one defect into one of them.
+ */
+#define P4_HDRS                                             \
+    "{\"__meta__\":{\"version\":[2,24]},"                   \
+    "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"       \
+    "\"fields\":[[\"dst\",48],[\"src\",48],[\"ty\",16]]}]," \
+    "\"headers\":[{\"name\":\"eth\",\"id\":0,"              \
+    "\"header_type\":\"eth_t\",\"metadata\":false}],"
+
+#define P4_PARSER                                                    \
+    P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"                 \
+            "\"init_state\":\"start\",\"parse_states\":["            \
+            "{\"name\":\"start\",\"id\":0,"                          \
+            "\"parser_ops\":[{\"op\":\"extract\","                   \
+            "\"parameters\":[{\"type\":\"regular\","                 \
+            "\"value\":\"eth\"}]}],"                                 \
+            "\"transition_key\":[],"                                 \
+            "\"transitions\":[{\"value\":\"default\",\"mask\":null," \
+            "\"next_state\":null}]}]}],"
+
+#define P4_SKELETON                                      \
+    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0," \
+              "\"order\":[\"eth\"]}]}"
+
 /* Push a complete document through the engine's load path. */
 static int load_text(struct p4_engine *eng, const char *json)
 {
@@ -373,27 +399,74 @@ static void test_load_parses(void)
           "the error names the feature that was used");
 
     /* ...but mentioning it empty is fine, which is how p4c emits it for a
-     * program that does not use one. */
+     * program that does not use one. The walk then stops at the first
+     * section this document is missing. */
     check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},\"checksums\":[],"
-                         "\"header_types\":[],\"headers\":[]}") == -ENOSYS,
+                         "\"header_types\":[],\"headers\":[]}") == -EINVAL,
           "an empty checksums list is accepted");
-    check(strstr(p4_engine_load_error(eng), "not finished") != NULL,
-          "the walk got past the feature check");
+    check(strstr(p4_engine_load_error(eng), "parsers") != NULL,
+          "the walk got past the feature check, to the missing parser");
 
-    /* Header types and their fields. */
+    /* Header types and their fields, with a parser and deparser so the
+     * walk reaches the part that is not written yet. */
     {
-        const char *ok = "{\"__meta__\":{\"version\":[2,24]},"
-                         "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"
-                         "\"fields\":[[\"dst\",48],[\"src\",48],"
-                         "[\"ty\",16]]}],"
-                         "\"headers\":[{\"name\":\"eth\",\"id\":0,"
-                         "\"header_type\":\"eth_t\","
-                         "\"metadata\":false}]}";
-        check(load_text(eng, ok) == -ENOSYS,
-              "a well-formed header section is walked");
+        check(load_text(eng, P4_SKELETON) == -ENOSYS,
+              "a well-formed program is walked to the end of what exists");
         check(strstr(p4_engine_load_error(eng), "not finished") != NULL,
-              "the walk got past the headers");
+              "the walk got past the parser and deparser");
     }
+
+    /* The parser. */
+    check(load_text(eng, P4_HDRS "\"parsers\":[],\"deparsers\":[]}") == -ENOSYS,
+          "a program with no parser is refused");
+    check(load_text(eng, P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"
+                                 "\"init_state\":\"nope\",\"parse_states\":["
+                                 "{\"name\":\"start\",\"id\":0,"
+                                 "\"parser_ops\":[],\"transition_key\":[],"
+                                 "\"transitions\":[{\"value\":\"default\","
+                                 "\"mask\":null,\"next_state\":null}]}]}],"
+                                 "\"deparsers\":[]}") == -EINVAL,
+          "an init_state that is not a parse state is refused");
+    check(load_text(eng, P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"
+                                 "\"init_state\":\"start\",\"parse_states\":["
+                                 "{\"name\":\"start\",\"id\":0,"
+                                 "\"parser_ops\":[],\"transition_key\":[],"
+                                 "\"transitions\":[{\"value\":\"default\","
+                                 "\"mask\":null,"
+                                 "\"next_state\":\"nowhere\"}]}]}],"
+                                 "\"deparsers\":[]}") == -EINVAL,
+          "a transition to a state that does not exist is refused");
+    check(load_text(eng, P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"
+                                 "\"init_state\":\"start\",\"parse_states\":["
+                                 "{\"name\":\"start\",\"id\":0,"
+                                 "\"parser_ops\":[{\"op\":\"extract_VL\","
+                                 "\"parameters\":[]}],"
+                                 "\"transition_key\":[],"
+                                 "\"transitions\":[]}]}],"
+                                 "\"deparsers\":[]}") == -ENOSYS,
+          "a parser operation we do not implement is named");
+    check(strstr(p4_engine_load_error(eng), "extract_VL") != NULL,
+          "the error names the parser operation");
+    check(load_text(eng, P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"
+                                 "\"init_state\":\"start\",\"parse_states\":["
+                                 "{\"name\":\"start\",\"id\":0,"
+                                 "\"parser_ops\":[{\"op\":\"extract\","
+                                 "\"parameters\":[{\"type\":\"regular\","
+                                 "\"value\":\"ghost\"}]}],"
+                                 "\"transition_key\":[],"
+                                 "\"transitions\":[]}]}],"
+                                 "\"deparsers\":[]}") == -EINVAL,
+          "extracting a header that does not exist is refused");
+
+    /* The deparser. */
+    check(load_text(eng, P4_PARSER "\"deparsers\":[{\"name\":\"d\","
+                                   "\"id\":0,"
+                                   "\"order\":[\"ghost\"]}]}") == -EINVAL,
+          "a deparser emitting a header that does not exist is refused");
+    check(load_text(eng, P4_PARSER "\"deparsers\":[{\"name\":\"d\","
+                                   "\"id\":0,"
+                                   "\"order\":[\"eth\",\"eth\"]}]}") == -EINVAL,
+          "a deparser emitting one header twice is refused");
 
     /* A variable-width field is named rather than called malformed. */
     check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
@@ -530,6 +603,18 @@ static void test_load_real_artifacts(void)
     check(why != NULL && (strstr(why, "checksums") != NULL ||
                           strstr(why, "calculations") != NULL),
           "simple_router.json is refused by name, for the checksum");
+
+    /*
+     * The hand-written fixture: a program small enough to reason about
+     * that is nonetheless meant to forward a frame. It must walk as far as
+     * loopback.json does, which is what proves the subset is expressible
+     * rather than merely tolerant of what p4c happens to emit.
+     */
+    check(load_fixture(eng, "minimal_forward.json") == -ENOSYS,
+          "the minimal forwarding program is walked");
+    why = p4_engine_load_error(eng);
+    check(why != NULL && strstr(why, "not finished") != NULL,
+          "minimal_forward.json stopped only where the walk is unfinished");
 
     p4_engine_destroy(eng);
 }

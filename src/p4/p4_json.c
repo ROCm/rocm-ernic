@@ -19,6 +19,7 @@
 #include "p4_engine.h"
 #include "p4_json.h"
 #include "p4_program.h"
+#include "parse_int.h"
 
 /*
  * The whole document is handed to json-c in one call, so the input cap is
@@ -457,6 +458,456 @@ static int p4_walk_headers(struct p4_walk *w, struct json_object *root)
     return 0;
 }
 
+/* Resolve a header instance name to its index, or P4_IDX_NONE. */
+static p4_idx_t p4_find_header(const struct p4_program *prog, const char *name)
+{
+    for (uint16_t i = 0; i < prog->nheaders; i++) {
+        if (strcmp(prog->headers[i].name, name) == 0)
+            return (p4_idx_t)i;
+    }
+    return P4_IDX_NONE;
+}
+
+/* Resolve ["header", "field"] to a reference, checking both halves. */
+static bool p4_resolve_field(const struct p4_program *prog, const char *hname,
+                             const char *fname, struct p4_field_ref *out)
+{
+    p4_idx_t h = p4_find_header(prog, hname);
+    const struct p4_header_type *ht;
+
+    if (h == P4_IDX_NONE)
+        return false;
+    ht = &prog->header_types[prog->headers[h].header_type];
+    for (uint16_t f = 0; f < ht->nfields; f++) {
+        if (strcmp(ht->fields[f].name, fname) == 0) {
+            out->header = h;
+            out->field = (p4_idx_t)f;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Read a two-element ["header", "field"] array into names. */
+static bool p4_pair_strings(struct json_object *arr, char *a, size_t acap,
+                            char *b, size_t bcap)
+{
+    struct json_object *e;
+    const char *s;
+    int n;
+
+    if (!arr || !json_object_is_type(arr, json_type_array) ||
+        json_object_array_length(arr) != 2)
+        return false;
+
+    for (int i = 0; i < 2; i++) {
+        char *dst = (i == 0) ? a : b;
+        size_t cap = (i == 0) ? acap : bcap;
+
+        e = json_object_array_get_idx(arr, (size_t)i);
+        if (!e || !json_object_is_type(e, json_type_string))
+            return false;
+        n = json_object_get_string_len(e);
+        s = json_object_get_string(e);
+        if (n <= 0 || (size_t)n >= cap || !s || strlen(s) != (size_t)n)
+            return false;
+        memcpy(dst, s, (size_t)n);
+        dst[n] = '\0';
+    }
+    return true;
+}
+
+/*
+ * One parse state's operations. Only extract is supported, and only with a
+ * "regular" parameter: extract_VL takes a computed length, which needs the
+ * expression machinery this does not have.
+ */
+static int p4_walk_parser_ops(struct p4_walk *w, struct json_object *st,
+                              struct p4_parse_state *dst)
+{
+    struct json_object *ops;
+    size_t n;
+
+    if (!p4_get_array(st, "parser_ops", &ops, P4_MAX_PARSER_OPS, &n))
+        return p4_fail(w, -EINVAL,
+                       "state '%s' has bad or oversized parser_ops "
+                       "(at most %d)",
+                       dst->name, P4_MAX_PARSER_OPS);
+
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *op = json_object_array_get_idx(ops, i);
+        struct json_object *params, *p0;
+        char opname[P4_MAX_NAME + 1];
+        char ptype[P4_MAX_NAME + 1];
+        char pval[P4_MAX_NAME + 1];
+        size_t np;
+
+        if (!op || !json_object_is_type(op, json_type_object))
+            return p4_fail(w, -EINVAL, "state '%s' op %zu is not an object",
+                           dst->name, i);
+        if (!p4_get_str(op, "op", opname, sizeof(opname)))
+            return p4_fail(w, -EINVAL, "state '%s' op %zu has no name",
+                           dst->name, i);
+        if (strcmp(opname, "extract") != 0)
+            return p4_fail(w, -ENOSYS,
+                           "parser operation '%s' in state '%s' is not "
+                           "supported",
+                           opname, dst->name);
+
+        if (!p4_get_array(op, "parameters", &params, 2, &np) || np != 1)
+            return p4_fail(w, -EINVAL,
+                           "extract in state '%s' wants exactly one "
+                           "parameter",
+                           dst->name);
+        p0 = json_object_array_get_idx(params, 0);
+        if (!p0 || !json_object_is_type(p0, json_type_object) ||
+            !p4_get_str(p0, "type", ptype, sizeof(ptype)) ||
+            !p4_get_str(p0, "value", pval, sizeof(pval)))
+            return p4_fail(w, -EINVAL,
+                           "extract in state '%s' has a bad parameter",
+                           dst->name);
+        if (strcmp(ptype, "regular") != 0)
+            return p4_fail(w, -ENOSYS,
+                           "extract of a '%s' parameter in state '%s' is "
+                           "not supported",
+                           ptype, dst->name);
+
+        dst->ops[i].kind = P4_POP_EXTRACT;
+        dst->ops[i].header = p4_find_header(w->prog, pval);
+        if (dst->ops[i].header == P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "state '%s' extracts '%s', which is not a header",
+                           dst->name, pval);
+    }
+    dst->nops = (uint16_t)n;
+    return 0;
+}
+
+/* The select key: a list of field references whose widths give its width. */
+static int p4_walk_transition_key(struct p4_walk *w, struct json_object *st,
+                                  struct p4_parse_state *dst)
+{
+    struct json_object *keys;
+    size_t n;
+    uint32_t bits = 0;
+
+    if (!p4_get_array(st, "transition_key", &keys, P4_MAX_TRANSITION_KEY, &n))
+        return p4_fail(w, -EINVAL,
+                       "state '%s' has a bad or oversized transition_key "
+                       "(at most %d)",
+                       dst->name, P4_MAX_TRANSITION_KEY);
+
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *k = json_object_array_get_idx(keys, i);
+        struct json_object *val;
+        char ktype[P4_MAX_NAME + 1];
+        char hname[P4_MAX_NAME + 1], fname[P4_MAX_NAME + 1];
+        const struct p4_header_type *ht;
+
+        if (!k || !json_object_is_type(k, json_type_object) ||
+            !p4_get_str(k, "type", ktype, sizeof(ktype)))
+            return p4_fail(w, -EINVAL, "state '%s' key %zu is malformed",
+                           dst->name, i);
+        if (strcmp(ktype, "field") != 0)
+            return p4_fail(w, -ENOSYS,
+                           "select on a '%s' in state '%s' is not supported",
+                           ktype, dst->name);
+
+        if (!json_object_object_get_ex(k, "value", &val) ||
+            !p4_pair_strings(val, hname, sizeof(hname), fname, sizeof(fname)))
+            return p4_fail(w, -EINVAL,
+                           "state '%s' key %zu is not [header, field]",
+                           dst->name, i);
+        if (!p4_resolve_field(w->prog, hname, fname, &dst->key[i]))
+            return p4_fail(w, -EINVAL,
+                           "state '%s' selects on '%s.%s', which does not "
+                           "exist",
+                           dst->name, hname, fname);
+
+        ht = &w->prog->header_types[w->prog->headers[dst->key[i].header]
+                                        .header_type];
+        bits += ht->fields[dst->key[i].field].bits;
+    }
+
+    /* The arms are compared against this many bytes, so a key wider than
+     * the buffer they are stored in cannot be represented. */
+    if (bits > (uint32_t)P4_MAX_KEY_BYTES * 8)
+        return p4_fail(w, -EINVAL, "state '%s' selects on %u bits, at most %d",
+                       dst->name, bits, P4_MAX_KEY_BYTES * 8);
+
+    dst->nkey = (uint16_t)n;
+    dst->key_bytes = (uint16_t)((bits + 7) / 8);
+    return 0;
+}
+
+/*
+ * The arms. Two encodings of a default arm are in the wild and both are
+ * accepted: {"value": "default"} with no type, which bmv2's own
+ * loopback.json emits, and {"type": "default", "value": null}, which p4c
+ * emits for a program with a select.
+ */
+static int p4_walk_transitions(struct p4_walk *w, struct json_object *st,
+                               struct p4_parse_state *dst)
+{
+    struct json_object *arr;
+    size_t n;
+
+    if (!p4_get_array(st, "transitions", &arr, P4_MAX_TRANSITIONS, &n))
+        return p4_fail(w, -EINVAL,
+                       "state '%s' has bad or oversized transitions "
+                       "(at most %d)",
+                       dst->name, P4_MAX_TRANSITIONS);
+
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *t = json_object_array_get_idx(arr, i);
+        struct p4_transition *td = &dst->transitions[i];
+        struct json_object *val, *mask, *next;
+        char type[P4_MAX_NAME + 1];
+        bool has_type;
+
+        if (!t || !json_object_is_type(t, json_type_object))
+            return p4_fail(w, -EINVAL,
+                           "state '%s' transition %zu is not an object",
+                           dst->name, i);
+
+        has_type = p4_get_str(t, "type", type, sizeof(type));
+        if (!json_object_object_get_ex(t, "value", &val))
+            return p4_fail(w, -EINVAL, "state '%s' transition %zu has no value",
+                           dst->name, i);
+
+        if (has_type && strcmp(type, "default") == 0) {
+            td->is_default = true;
+        } else if (!has_type && json_object_is_type(val, json_type_string) &&
+                   strcmp(json_object_get_string(val), "default") == 0) {
+            td->is_default = true;
+        } else if (has_type && strcmp(type, "hexstr") != 0) {
+            return p4_fail(w, -ENOSYS,
+                           "transition of type '%s' in state '%s' is not "
+                           "supported",
+                           type, dst->name);
+        } else {
+            size_t vlen = 0;
+            bool neg = false;
+            const char *vs;
+
+            if (!json_object_is_type(val, json_type_string))
+                return p4_fail(w, -EINVAL,
+                               "state '%s' transition %zu has a non-string "
+                               "value",
+                               dst->name, i);
+            vs = json_object_get_string(val);
+            if (!vs ||
+                !ernic_parse_hexstr(vs, td->value, sizeof(td->value), &vlen,
+                                    &neg) ||
+                neg)
+                return p4_fail(w, -EINVAL,
+                               "state '%s' transition %zu has a bad value",
+                               dst->name, i);
+            if (vlen > dst->key_bytes)
+                return p4_fail(w, -EINVAL,
+                               "state '%s' transition %zu is wider than its "
+                               "select key",
+                               dst->name, i);
+
+            if (json_object_object_get_ex(t, "mask", &mask) &&
+                !json_object_is_type(mask, json_type_null)) {
+                const char *ms;
+
+                if (!json_object_is_type(mask, json_type_string))
+                    return p4_fail(w, -EINVAL,
+                                   "state '%s' transition %zu has a bad mask",
+                                   dst->name, i);
+                ms = json_object_get_string(mask);
+                if (!ms ||
+                    !ernic_parse_hexstr(ms, td->mask, sizeof(td->mask), &vlen,
+                                        &neg) ||
+                    neg || vlen > dst->key_bytes)
+                    return p4_fail(w, -EINVAL,
+                                   "state '%s' transition %zu has a bad mask",
+                                   dst->name, i);
+                td->has_mask = true;
+            }
+        }
+
+        /* next_state is resolved in a second pass: a state may transition
+         * to one that has not been read yet. */
+        if (!json_object_object_get_ex(t, "next_state", &next))
+            return p4_fail(w, -EINVAL,
+                           "state '%s' transition %zu has no next_state",
+                           dst->name, i);
+        td->next_state = P4_IDX_NONE;
+    }
+
+    dst->ntransitions = (uint16_t)n;
+    return 0;
+}
+
+/*
+ * parsers: exactly one, whose states are read in two passes so a forward
+ * reference resolves. Pass one fills each state and leaves every
+ * next_state unset; pass two resolves them against the complete set of
+ * names, so nothing in pass one can fail on a name it has not seen.
+ */
+static int p4_walk_parser(struct p4_walk *w, struct json_object *root)
+{
+    struct json_object *arr, *parser, *states;
+    char init[P4_MAX_NAME + 1];
+    size_t n, ns;
+
+    if (!p4_get_array(root, "parsers", &arr, 2, &n))
+        return p4_fail(w, -EINVAL, "missing or malformed 'parsers'");
+    if (n != 1)
+        return p4_fail(w, -ENOSYS, "%zu parsers; exactly one is supported", n);
+
+    parser = json_object_array_get_idx(arr, 0);
+    if (!parser || !json_object_is_type(parser, json_type_object))
+        return p4_fail(w, -EINVAL, "parsers[0] is not an object");
+    if (!p4_get_str(parser, "init_state", init, sizeof(init)))
+        return p4_fail(w, -EINVAL, "the parser has no init_state");
+
+    if (!p4_get_array(parser, "parse_states", &states, P4_MAX_PARSE_STATES,
+                      &ns))
+        return p4_fail(w, -EINVAL, "bad or oversized parse_states (at most %d)",
+                       P4_MAX_PARSE_STATES);
+    if (ns == 0)
+        return p4_fail(w, -EINVAL, "the parser has no states");
+
+    for (size_t i = 0; i < ns; i++) {
+        struct json_object *st = json_object_array_get_idx(states, i);
+        struct p4_parse_state *dst = &w->prog->parse_states[i];
+        int rc;
+
+        if (!st || !json_object_is_type(st, json_type_object))
+            return p4_fail(w, -EINVAL, "parse_states[%zu] is not an object", i);
+        if (!p4_get_str(st, "name", dst->name, sizeof(dst->name)))
+            return p4_fail(w, -EINVAL, "parse_states[%zu] has a bad name", i);
+
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(w->prog->parse_states[j].name, dst->name) == 0)
+                return p4_fail(w, -EINVAL, "duplicate parse state '%s'",
+                               dst->name);
+        }
+
+        rc = p4_walk_parser_ops(w, st, dst);
+        if (rc)
+            return rc;
+        rc = p4_walk_transition_key(w, st, dst);
+        if (rc)
+            return rc;
+        rc = p4_walk_transitions(w, st, dst);
+        if (rc)
+            return rc;
+    }
+    w->prog->nparse_states = (uint16_t)ns;
+
+    /* Pass two: resolve next_state now every name is known. */
+    for (size_t i = 0; i < ns; i++) {
+        struct json_object *st = json_object_array_get_idx(states, i);
+        struct json_object *tarr;
+        struct p4_parse_state *dst = &w->prog->parse_states[i];
+        size_t nt;
+
+        if (!p4_get_array(st, "transitions", &tarr, P4_MAX_TRANSITIONS, &nt))
+            return p4_fail(w, -EINVAL, "state '%s' changed shape", dst->name);
+
+        for (size_t t = 0; t < nt; t++) {
+            struct json_object *tr = json_object_array_get_idx(tarr, t);
+            struct json_object *next;
+            const char *name;
+            p4_idx_t idx;
+
+            if (!tr || !json_object_object_get_ex(tr, "next_state", &next))
+                return p4_fail(w, -EINVAL, "state '%s' changed shape",
+                               dst->name);
+            /* null means the parser accepts on this arm. */
+            if (json_object_is_type(next, json_type_null))
+                continue;
+            if (!json_object_is_type(next, json_type_string))
+                return p4_fail(w, -EINVAL,
+                               "state '%s' arm %zu has a bad next_state",
+                               dst->name, t);
+            name = json_object_get_string(next);
+            idx = P4_IDX_NONE;
+            for (uint16_t j = 0; j < w->prog->nparse_states; j++) {
+                if (strcmp(w->prog->parse_states[j].name, name) == 0) {
+                    idx = (p4_idx_t)j;
+                    break;
+                }
+            }
+            if (idx == P4_IDX_NONE)
+                return p4_fail(w, -EINVAL,
+                               "state '%s' transitions to '%s', which does "
+                               "not exist",
+                               dst->name, name);
+            dst->transitions[t].next_state = idx;
+        }
+    }
+
+    w->prog->init_state = P4_IDX_NONE;
+    for (uint16_t j = 0; j < w->prog->nparse_states; j++) {
+        if (strcmp(w->prog->parse_states[j].name, init) == 0) {
+            w->prog->init_state = j;
+            break;
+        }
+    }
+    if (w->prog->init_state == P4_IDX_NONE)
+        return p4_fail(w, -EINVAL,
+                       "init_state '%s' is not one of the parse states", init);
+
+    return 0;
+}
+
+/* deparsers: exactly one, naming the header instances it emits in order. */
+static int p4_walk_deparser(struct p4_walk *w, struct json_object *root)
+{
+    struct json_object *arr, *dep, *order;
+    size_t n, no;
+
+    if (!p4_get_array(root, "deparsers", &arr, 2, &n))
+        return p4_fail(w, -EINVAL, "missing or malformed 'deparsers'");
+    if (n != 1)
+        return p4_fail(w, -ENOSYS, "%zu deparsers; exactly one is supported",
+                       n);
+
+    dep = json_object_array_get_idx(arr, 0);
+    if (!dep || !json_object_is_type(dep, json_type_object))
+        return p4_fail(w, -EINVAL, "deparsers[0] is not an object");
+
+    if (!p4_get_array(dep, "order", &order, P4_MAX_DEPARSE_ORDER, &no))
+        return p4_fail(w, -EINVAL,
+                       "bad or oversized deparser order (at most %d)",
+                       P4_MAX_DEPARSE_ORDER);
+
+    for (size_t i = 0; i < no; i++) {
+        struct json_object *e = json_object_array_get_idx(order, i);
+        const char *name;
+        p4_idx_t h;
+        int sl;
+
+        if (!e || !json_object_is_type(e, json_type_string))
+            return p4_fail(w, -EINVAL, "deparser order %zu is not a name", i);
+        sl = json_object_get_string_len(e);
+        name = json_object_get_string(e);
+        if (sl <= 0 || sl > P4_MAX_NAME || !name || strlen(name) != (size_t)sl)
+            return p4_fail(w, -EINVAL, "deparser order %zu has a bad name", i);
+
+        h = p4_find_header(w->prog, name);
+        if (h == P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "the deparser emits '%s', which is not a header",
+                           name);
+        /* Emitting one header twice would duplicate it on the wire. */
+        for (size_t j = 0; j < i; j++) {
+            if (w->prog->deparse_order[j] == h)
+                return p4_fail(w, -EINVAL,
+                               "the deparser emits '%s' more than once", name);
+        }
+        w->prog->deparse_order[i] = h;
+    }
+    w->prog->ndeparse_order = (uint16_t)no;
+    return 0;
+}
+
 int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
                   char *err, size_t err_len)
 {
@@ -524,9 +975,15 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     rc = p4_walk_headers(&w, root);
     if (rc)
         goto out;
+    rc = p4_walk_parser(&w, root);
+    if (rc)
+        goto out;
+    rc = p4_walk_deparser(&w, root);
+    if (rc)
+        goto out;
 
     /*
-     * Parsers, actions and pipelines come next.  Until they do, a document
+     * Actions and pipelines come next.  Until they do, a document
      * that gets this far is well formed, uses nothing unsupported, and has
      * a consistent header layout -- but there is still nothing to run.
      */

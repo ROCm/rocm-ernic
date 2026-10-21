@@ -154,6 +154,7 @@ if(ERNIC_BUILD_P4)
         ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
     )
     target_include_directories(ernic-test-p4-engine PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/src/p4
     )
     target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)

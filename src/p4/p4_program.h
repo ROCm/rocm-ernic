@@ -61,11 +61,65 @@ struct p4_header {
     bool metadata;
 };
 
+#define P4_MAX_PARSE_STATES   64
+#define P4_MAX_PARSER_OPS     16 /* per state */
+#define P4_MAX_TRANSITIONS    32 /* per state */
+#define P4_MAX_TRANSITION_KEY 8  /* fields per select */
+#define P4_MAX_KEY_BYTES      16 /* total width of a select key */
+#define P4_MAX_DEPARSE_ORDER  64
+
+/* A reference to one field of one header instance, resolved at load. */
+struct p4_field_ref {
+    p4_idx_t header;
+    p4_idx_t field;
+};
+
+/* Parser operations. Only extract is supported; the rest are named in the
+ * rejection so a user learns which one they used. */
+enum p4_parser_op_kind {
+    P4_POP_EXTRACT = 0,
+};
+
+struct p4_parser_op {
+    uint8_t kind;
+    p4_idx_t header;
+};
+
+/*
+ * One arm of a select. A default arm matches anything; the rest compare
+ * the select key against @value, under @mask when the program gave one.
+ * @next_state of P4_IDX_NONE means the parser accepts here.
+ */
+struct p4_transition {
+    bool is_default;
+    bool has_mask;
+    uint8_t value[P4_MAX_KEY_BYTES];
+    uint8_t mask[P4_MAX_KEY_BYTES];
+    p4_idx_t next_state;
+};
+
+struct p4_parse_state {
+    char name[P4_MAX_NAME + 1];
+    uint16_t nops;
+    uint16_t nkey;
+    uint16_t ntransitions;
+    uint16_t key_bytes; /* width of the select key, from its fields */
+    struct p4_parser_op ops[P4_MAX_PARSER_OPS];
+    struct p4_field_ref key[P4_MAX_TRANSITION_KEY];
+    struct p4_transition transitions[P4_MAX_TRANSITIONS];
+};
+
 struct p4_program {
     uint16_t nheader_types;
     uint16_t nheaders;
+    uint16_t nparse_states;
+    uint16_t ndeparse_order;
+    p4_idx_t init_state;
     struct p4_header_type header_types[P4_MAX_HEADER_TYPES];
     struct p4_header headers[P4_MAX_HEADERS];
+    struct p4_parse_state parse_states[P4_MAX_PARSE_STATES];
+    /* Header instances the deparser emits, in order. */
+    p4_idx_t deparse_order[P4_MAX_DEPARSE_ORDER];
 };
 
 #endif /* P4_PROGRAM_H */
