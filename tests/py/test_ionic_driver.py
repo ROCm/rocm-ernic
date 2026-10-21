@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -37,6 +38,20 @@ MR_B = 0x0200_0002
 VA_A = 0x0000_7F00_0000_0100
 VA_B = 0x0000_7F10_0000_0000
 MR_LEN = 3 * ionic.PAGE_SIZE
+
+
+def no_completion(driver, cq, settle=1.0):
+    """Whether @cq stays empty, after giving the device time to fill it.
+
+    A completion that should not exist cannot be waited for, so this
+    waits out a settle period instead and reports what it found.
+    """
+    deadline = time.monotonic() + settle
+    while time.monotonic() < deadline:
+        if driver.poll_cq(cq) is not None:
+            return False
+        time.sleep(0.01)
+    return True
 
 
 class Fixture:
@@ -254,12 +269,9 @@ def test_write_past_mr(suite, fix):
 def test_bad_lkey(suite, fix):
     """A SEND gathering from a key nothing registered.
 
-    What must hold is that no bytes move and that the failure is
-    reported. Which side reports it is not asserted: today the receive
-    completion carries the error and the sender is told its send
-    succeeded, which is the wrong way round for a local protection
-    error, but pinning that down here would make the test fail when it
-    is put right.
+    It is a local protection error: the sender's own memory refused the
+    gather, so the sender's send completion carries the failure, nothing
+    is delivered, and the peer's receive stays posted.
     """
     marker = b"\xa5" * 64
     fix.driver.mr_write(fix.mr_b, VA_B, marker)
@@ -271,15 +283,37 @@ def test_bad_lkey(suite, fix):
         sge=[ionic.Sge(VA_A, 64, 0xBAD0_0000)],
     )
     send = fix.driver.wait_cq(fix.cq_a)
-    recv = fix.driver.wait_cq(fix.cq_b)
+    suite.check(send.error, "the sender's completion carries the error")
+    suite.check_eq(
+        send.status, ionic.STS_LOCAL_PROT_ERR, "the status is a local protection error"
+    )
     suite.check(
-        send.error or recv.error,
-        "a send gathering from an unregistered lkey is reported as an error",
+        no_completion(fix.driver, fix.cq_b),
+        "nothing was delivered to the peer",
     )
     suite.check_eq(
         fix.driver.mr_read(fix.mr_b, VA_B, 64),
         marker,
         "the receive buffer is untouched",
+    )
+
+
+def test_bad_lkey_length(suite, fix):
+    """A SEND whose SGE runs past the end of the region it names."""
+    fix.driver.post_recv(fix.qp_b, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+    fix.driver.post_send(
+        fix.qp_a,
+        ionic.OP_SEND,
+        flags=ionic.WQE_SIGNALLED,
+        sge=[ionic.Sge(VA_A + MR_LEN - 64, 4096, MR_A)],
+    )
+    send = fix.driver.wait_cq(fix.cq_a)
+    suite.check(send.error, "the sender's completion carries the error")
+    suite.check_eq(
+        send.status, ionic.STS_LOCAL_PROT_ERR, "the status is a local protection error"
+    )
+    suite.check(
+        no_completion(fix.driver, fix.cq_b), "nothing was delivered to the peer"
     )
 
 
@@ -336,6 +370,7 @@ TESTS = (
     ("WRITE with an unregistered rkey", test_bad_rkey),
     ("WRITE past the end of a region", test_write_past_mr),
     ("SEND from an unregistered lkey", test_bad_lkey),
+    ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
     ("teardown", test_teardown),
 )

@@ -126,6 +126,14 @@ CQE_TYPE_RECV = 1
 CQE_TYPE_SEND_MSN = 2
 CQE_TYPE_SEND_NPG = 3
 
+# enum ionic_status, as a completion's status_length carries it
+STS_OK = 0
+STS_LOCAL_LEN_ERR = 1
+STS_LOCAL_QP_OPER_ERR = 2
+STS_LOCAL_PROT_ERR = 3
+STS_LOCAL_ACC_ERR = 7
+STS_REMOTE_ACC_ERR = 9
+
 RECV_OP_SEND = 0
 RECV_OP_SEND_INV = 1
 RECV_OP_SEND_IMM = 2
@@ -272,7 +280,11 @@ class Cqe:
         self.error = (qtf & 2) != 0
         self.qid = qtf >> 8
         self.status_len = struct.unpack_from(">I", raw, 24)[0]
-        self.status = self.status_len >> 24 if self.error else 0
+        # One field doing two jobs: a byte count, or the status when the
+        # error bit is set. The whole word carries the status here, unlike
+        # an admin completion, where it sits in bits[31:24]; the two paths
+        # differ and tests/test_ionic_harness.c encodes the same reading.
+        self.status = self.status_len if self.error else 0
         self.wqe_id = 0
         self.msn = 0
         self.recv_op = 0
