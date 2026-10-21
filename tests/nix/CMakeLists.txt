@@ -43,7 +43,7 @@ function(ernic_add_fuzz_replay harness)
         ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/src/net
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-        ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+        ${PROJECT_SOURCE_DIR}/src/qemu
     )
     # Headers from outside the project are SYSTEM includes so their warnings
     # stay quiet.

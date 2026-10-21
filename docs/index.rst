@@ -96,9 +96,8 @@ The emulator itself is ``GPL-2.0-or-later``:
 
 - Everything under ``src/`` and ``tests/``, and the fuzz harnesses in
   ``nix/analysis/fuzz/``, which build against ``src/``.
-- The VMware/Linux uAPI headers under
-  ``src/qemu/include/standard-headers/`` are instead
-  dual ``GPL-2.0`` / ``BSD-2-Clause``.
+- The VMware/Linux uAPI header ``src/qemu/vmw_pvrdma-abi.h`` is
+  instead dual ``GPL-2.0`` / ``BSD-2-Clause``.
 
 The patches under ``patches/`` modify the Linux ionic drivers and
 rdma-core's ionic provider, and are licensed under the terms of the files

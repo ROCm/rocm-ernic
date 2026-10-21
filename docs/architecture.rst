@@ -327,7 +327,7 @@ Inside the Server
         sees QEMU types)
               │
               ▼
-       src/qemu/hw/rdma           resource manager (rdma_rm)
+       src/qemu/                  resource manager (rdma_rm)
        src/rdma/                  backend vtable: none,
                                   loopback, tcp mesh
        src/qemu-compat/           the QEMU APIs the QEMU-derived
@@ -1143,7 +1143,7 @@ Where to Look in the Source
    * - ``src/rocm_ernic_compat.c``, ``.h``
      - Bridge to the QEMU-derived core; guest-memory mapping for
        it; mesh wrappers; shared limits
-   * - ``src/qemu/hw/rdma/``
+   * - ``src/qemu/``
      - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
      - Backend registry; none, loopback, and TCP mesh backends

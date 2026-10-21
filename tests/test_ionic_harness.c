@@ -38,10 +38,10 @@
 #include "ionic_harness.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
+#include "pvrdma.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
-#include "vmw/pvrdma.h"
 
 static int failures;
 

@@ -127,7 +127,8 @@
 ### Changed
 
 * The QEMU-derived PVRDMA resource manager and backend device moved from
-  `third-party/qemu/` to `src/qemu/`, and `third-party/` is gone. The code
+  `third-party/qemu/` to `src/qemu/`, with its `hw/rdma/` and `include/`
+  subdirectories flattened into it, and `third-party/` is gone. The code
   is no longer treated as vendored: it's compiled with the project's
   warnings, so `ERNIC_WERROR` covers it, clang-tidy, IWYU and codespell
   check it, and it counts toward the coverage floor. Local branches and

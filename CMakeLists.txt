@@ -150,8 +150,8 @@ endif()
 # rocm-ernic's fork of QEMU's PVRDMA resource manager and backend device,
 # under Oracle / Red Hat copyright (see src/qemu/README.md)
 set(QEMU_SOURCES
-    src/qemu/hw/rdma/rdma_backend.c
-    src/qemu/hw/rdma/rdma_rm.c
+    src/qemu/rdma_backend.c
+    src/qemu/rdma_rm.c
 )
 
 # The QEMU APIs that code calls, implemented for a standalone process
@@ -234,13 +234,12 @@ else()
     set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDE_DIRS}")
 endif()
 
-# src/rdma and src/qemu/hw/rdma are searched directly because the QEMU
+# src/rdma and src/qemu are searched directly because the QEMU
 # sources include their headers, and rdma_backend_ops.h, by bare name.
 target_include_directories(rocm-ernic PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
-    ${PROJECT_SOURCE_DIR}/src/qemu/include
-    ${PROJECT_SOURCE_DIR}/src/qemu/hw/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
 )
