@@ -60,6 +60,55 @@ struct ionic_dp_ring_desc {
     uint8_t stride_log2;
 };
 
+/*
+ * Bounds on the ring geometry a guest may ask for.
+ *
+ * The driver sends each ring's depth and stride as log2 exponents, and the
+ * device works with 1u << depth_log2 and 1u << stride_log2. Shifting a
+ * 32-bit value by 32 or more is undefined, so every exponent from the guest
+ * is checked against these before anything shifts by it, and a command
+ * asking for more is refused rather than clamped: a ring of a size the
+ * driver didn't ask for is one neither side agrees about. SRQs have tighter
+ * bounds of their own (IONIC_SRQ_* in rocm_ernic_compat.h).
+ *
+ * DEPTH: 2^24 entries. The Linux driver's admin and event queues are 2^6
+ * and 2^9 (IONIC_AQ_DEPTH and IONIC_EQ_DEPTH, rounded up to a power of
+ * two), and the data path has always refused a deeper CQ.
+ *
+ * STRIDE: 2^16 bytes for the rings of fixed-size entries, the largest CQ
+ * stride the data path has accepted. A send or receive queue's stride is
+ * held to the max_stride the device advertises in its LIF identity
+ * (IONIC_MAX_STRIDE in ionic_eth_emu_priv.h), 2^9, and the data path reads
+ * a whole WQE of that size, so it never sees part of one.
+ *
+ * The floors are the size of what each ring holds, since entries any
+ * smaller would overlap: a CQE is 32 bytes, and so is the part of a send or
+ * receive WQE ahead of its payload (WQE_PLD_OFF in ionic_datapath.c), which
+ * the data path reads from every WQE.
+ */
+#define IONIC_RING_MAX_DEPTH_LOG2  24u
+#define IONIC_RING_MAX_STRIDE_LOG2 16u
+#define IONIC_CQ_MIN_STRIDE_LOG2   5u
+#define IONIC_WQE_MIN_STRIDE_LOG2  5u
+#define IONIC_WQE_MAX_STRIDE_LOG2  9u
+
+/* True if a ring's exponents are within the bounds above. */
+static inline bool ionic_dp_ring_geometry_ok(uint8_t depth_log2,
+                                             uint8_t stride_log2,
+                                             uint8_t min_stride_log2,
+                                             uint8_t max_stride_log2)
+{
+    return depth_log2 <= IONIC_RING_MAX_DEPTH_LOG2 &&
+           stride_log2 >= min_stride_log2 && stride_log2 <= max_stride_log2;
+}
+
+/* A CQ's stride; the driver may leave it 0 for the size of one CQE. */
+static inline uint8_t ionic_dp_cq_stride_log2(
+    const struct ionic_dp_ring_desc *ring)
+{
+    return ring->stride_log2 ? ring->stride_log2 : IONIC_CQ_MIN_STRIDE_LOG2;
+}
+
 /* Raised once completions have been written to a CQ. */
 typedef void (*ionic_dp_cq_event_fn_t)(void *opaque, uint32_t eq_id,
                                        uint32_t cq_id);

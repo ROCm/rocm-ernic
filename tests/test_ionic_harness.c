@@ -412,6 +412,93 @@ static void build_unknown_id(uint8_t *body)
     put_le32(body + 56, 0x00777777u);
 }
 
+/*
+ * Ring geometry the device must refuse. The exponents are guest bytes the
+ * device shifts by, so 32 is undefined behavior if it gets through (UBSan
+ * reports it); the others are just outside the bounds, which a build
+ * without sanitizers sees as the command succeeding.
+ */
+
+/* CREATE_CQ for CQ 2, on the group's EQ */
+static void build_cq(uint8_t *body, uint8_t depth_log2, uint8_t stride_log2)
+{
+    body[4] = depth_log2;
+    body[5] = stride_log2;
+    body[7] = 12;
+    put_le32(body + 12, 2);
+    put_le32(body + 20, 1);
+}
+
+static void build_cq_depth_32(uint8_t *body)
+{
+    build_cq(body, 32, 5);
+}
+
+static void build_cq_depth_25(uint8_t *body)
+{
+    build_cq(body, 25, 5);
+}
+
+static void build_cq_stride_4(uint8_t *body)
+{
+    build_cq(body, 4, 4);
+}
+
+static void build_cq_stride_17(uint8_t *body)
+{
+    build_cq(body, 4, 17);
+}
+
+/* CREATE_QP for QP 3 on CQ 1, with an RQ of its own */
+static void build_qp(uint8_t *body, uint8_t sq_depth_log2,
+                     uint8_t sq_stride_log2, uint8_t rq_depth_log2,
+                     uint8_t rq_stride_log2)
+{
+    put_le32(body + 8, 1);
+    body[12] = sq_depth_log2;
+    body[13] = sq_stride_log2;
+    put_le32(body + 32, 1);
+    body[36] = rq_depth_log2;
+    body[37] = rq_stride_log2;
+    put_le32(body + 40, 0xffffffffu);
+    put_le32(body + 56, 3);
+}
+
+static void build_qp_sq_depth_32(uint8_t *body)
+{
+    build_qp(body, 32, 7, 4, 7);
+}
+
+static void build_qp_sq_stride_32(uint8_t *body)
+{
+    build_qp(body, 4, 32, 4, 7);
+}
+
+static void build_qp_sq_stride_4(uint8_t *body)
+{
+    build_qp(body, 4, 4, 4, 7);
+}
+
+static void build_qp_sq_stride_10(uint8_t *body)
+{
+    build_qp(body, 4, 10, 4, 7);
+}
+
+static void build_qp_rq_stride_10(uint8_t *body)
+{
+    build_qp(body, 4, 7, 4, 10);
+}
+
+static void build_qp_rq_depth_32(uint8_t *body)
+{
+    build_qp(body, 4, 7, 32, 7);
+}
+
+static void build_qp_rq_stride_4(uint8_t *body)
+{
+    build_qp(body, 4, 7, 4, 4);
+}
+
 static void build_srq_too_deep(uint8_t *body)
 {
     body[26] = 20;
@@ -432,6 +519,27 @@ static const struct bad_admin bad_admins[] = {
      1},
     {"CREATE_QP on an unknown SRQ", IH_ADMIN_CREATE_QP, 64,
      build_qp_unknown_srq, 1},
+    {"CREATE_CQ 2^32 deep", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_32, 1},
+    {"CREATE_CQ deeper than 2^24", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_25,
+     1},
+    {"CREATE_CQ with a stride below a CQE", IH_ADMIN_CREATE_CQ, 34,
+     build_cq_stride_4, 1},
+    {"CREATE_CQ with a stride above 2^16", IH_ADMIN_CREATE_CQ, 34,
+     build_cq_stride_17, 1},
+    {"CREATE_QP with an SQ 2^32 deep", IH_ADMIN_CREATE_QP, 64,
+     build_qp_sq_depth_32, 1},
+    {"CREATE_QP with an SQ stride of 2^32", IH_ADMIN_CREATE_QP, 64,
+     build_qp_sq_stride_32, 1},
+    {"CREATE_QP with an SQ stride below a WQE header", IH_ADMIN_CREATE_QP, 64,
+     build_qp_sq_stride_4, 1},
+    {"CREATE_QP with an SQ stride above the advertised 2^9", IH_ADMIN_CREATE_QP,
+     64, build_qp_sq_stride_10, 1},
+    {"CREATE_QP with an RQ stride above the advertised 2^9", IH_ADMIN_CREATE_QP,
+     64, build_qp_rq_stride_10, 1},
+    {"CREATE_QP with an RQ 2^32 deep", IH_ADMIN_CREATE_QP, 64,
+     build_qp_rq_depth_32, 1},
+    {"CREATE_QP with an RQ stride below a WQE header", IH_ADMIN_CREATE_QP, 64,
+     build_qp_rq_stride_4, 1},
     {"DESTROY_MR of an unknown MR", IH_ADMIN_DESTROY_MR, 4, build_unknown_id,
      1},
     {"MODIFY_QP of an unknown QP", IH_ADMIN_MODIFY_QP, 60, build_unknown_id, 1},
@@ -461,6 +569,57 @@ static const struct bad_admin bad_admins[] = {
     {"QUERY_AH", IH_ADMIN_QUERY_AH, 0, build_none, 0},
 };
 
+/* RDMA queue devcmds, sent over the Ethernet admin queue, whose geometry
+ * must be refused */
+struct bad_queue {
+    const char *what;
+    uint8_t op;
+    uint8_t depth_log2, stride_log2;
+};
+
+static const struct bad_queue bad_queues[] = {
+    {"CREATE_EQ 2^32 deep", IH_CMD_RDMA_EQ, 32, 2},
+    {"CREATE_EQ deeper than 2^24", IH_CMD_RDMA_EQ, 25, 2},
+    {"CREATE_EQ with a stride below an EQE", IH_CMD_RDMA_EQ, 4, 1},
+    {"CREATE_EQ with a stride above 2^16", IH_CMD_RDMA_EQ, 4, 17},
+    {"admin CREATE_CQ 2^32 deep", IH_CMD_RDMA_CQ, 32, 5},
+    /* Sent after a good admin CREATE_CQ, so only its depth is wrong */
+    {"CREATE_ADMINQ 2^32 deep", IH_CMD_RDMA_ADMINQ, 32, 6},
+};
+
+/* Queue id 5 is clear of the harness's own EQ and admin queues. */
+static int rdma_queue_cmd(struct ih *h, uint8_t op, uint8_t depth_log2,
+                          uint8_t stride_log2)
+{
+    uint8_t cmd[64] = {0}, comp[16];
+
+    cmd[0] = op;
+    put_le32(cmd + 4, 5u | 1u << 24);
+    put_le32(cmd + 8, IH_EQ_ID);
+    cmd[14] = depth_log2;
+    cmd[15] = stride_log2;
+    return ih_eth_admin(h, cmd, comp);
+}
+
+static void test_queue_geometry_errors(const char *T, struct ih *h)
+{
+    for (size_t i = 0; i < sizeof(bad_queues) / sizeof(bad_queues[0]); i++) {
+        const struct bad_queue *c = &bad_queues[i];
+
+        if (c->op == IH_CMD_RDMA_ADMINQ)
+            check(T, rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5) == 0,
+                  "admin CREATE_CQ failed");
+        int rc = rdma_queue_cmd(h, c->op, c->depth_log2, c->stride_log2);
+        check(T, rc == 1, "%s: status %d, expected 1", c->what, rc);
+    }
+
+    /* A refused CREATE_EQ takes none of the device's 32 EQ slots */
+    for (int i = 0; i < 40; i++)
+        (void)rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 32, 2);
+    check(T, rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2) == 0,
+          "CREATE_EQ failed after refused ones");
+}
+
 static void test_admin_errors(void)
 {
     const char *T = "admin";
@@ -483,6 +642,8 @@ static void test_admin_errors(void)
         check(T, rc == c->want, "%s: status %d, expected %d", c->what, rc,
               c->want);
     }
+
+    test_queue_geometry_errors(T, &h);
 
     /* A WQE the device can't read stays queued and runs on the next poll,
      * rather than being skipped */
@@ -723,6 +884,65 @@ static void run_rc_case(const char *test, struct rc *r, const struct rc_case *c,
           c->what);
 }
 
+/*
+ * A SEND from an SQ with the largest stride the device advertises, 2^9,
+ * gathering from as many SGEs as that holds, 30, one byte from each. It
+ * arrives whole only if the device reads the whole WQE. It used to read 256
+ * bytes of it and then walk SGEs as far as the stride went, past the end of
+ * the buffer it had read into.
+ */
+#define WIDE_CQ_C 3
+#define WIDE_CQ_D 4
+#define WIDE_QP_C 12
+#define WIDE_QP_D 13
+#define WIDE_NSGE (((1u << IH_WQE_MAX_STRIDE_LOG2) - 32u) / 16u)
+
+static void widest_wqe_send(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    struct ih_cq cqc, cqd;
+    struct ih_qp c, d;
+    struct ih_cqe e;
+
+    memset(&e, 0, sizeof(e));
+    bool ok = ih_cq_create(h, &cqc, WIDE_CQ_C, 6) &&
+              ih_cq_create(h, &cqd, WIDE_CQ_D, 6) &&
+              ih_qp_create_stride(h, &c, WIDE_QP_C, IH_QPT_RC, &cqc, &cqc, NULL,
+                                  IH_WQE_MAX_STRIDE_LOG2) &&
+              ih_qp_create(h, &d, WIDE_QP_D, IH_QPT_RC, &cqd, &cqd, NULL) &&
+              ih_qp_connect(h, &c, &d);
+    if (!check(T, ok, "widest-WQE setup failed"))
+        return;
+
+    uint8_t want[WIDE_NSGE], got[WIDE_NSGE];
+    struct ih_sge sge[WIDE_NSGE];
+    fill(want, sizeof(want), 0x77);
+    memset(got, 0, sizeof(got));
+    ih_mr_write(h, &r->mra, VA_A, want, sizeof(want));
+    ih_mr_write(h, &r->mrb, VA_B, got, sizeof(got));
+    for (uint32_t i = 0; i < WIDE_NSGE; i++)
+        sge[i] = (struct ih_sge){.va = VA_A + i, .len = 1, .lkey = MR_A};
+
+    struct ih_sge into = {.va = VA_B, .len = sizeof(got), .lkey = MR_B};
+    ih_post_recv(h, &d, &into, 1);
+    struct ih_send s = {.op = IH_OP_SEND, .sge = sge, .nsge = WIDE_NSGE};
+    ih_post_send(h, &c, &s);
+
+    check(T, ih_cq_poll(h, &cqc, &e) && !e.error,
+          "a SEND of %u SGEs did not complete", WIDE_NSGE);
+    check(T, ih_cq_poll(h, &cqd, &e) && !e.error && e.status_len == WIDE_NSGE,
+          "a SEND of %u SGEs was received as %u bytes", WIDE_NSGE,
+          e.status_len);
+    ih_mr_read(h, &r->mrb, VA_B, got, sizeof(got));
+    check(T, memcmp(got, want, sizeof(got)) == 0,
+          "a SEND of %u SGEs did not arrive whole", WIDE_NSGE);
+
+    check(T, ih_qp_destroy(h, &c) == 0, "DESTROY_QP C failed");
+    check(T, ih_qp_destroy(h, &d) == 0, "DESTROY_QP D failed");
+    check(T, ih_cq_destroy(h, &cqc) == 0, "DESTROY_CQ C failed");
+    check(T, ih_cq_destroy(h, &cqd) == 0, "DESTROY_CQ D failed");
+}
+
 static void test_rc(void)
 {
     const char *T = "rc";
@@ -803,6 +1023,7 @@ static void test_rc(void)
             break;
     }
 
+    widest_wqe_send(T, &r);
     rc_teardown(T, &r);
 }
 
@@ -1287,6 +1508,10 @@ static void test_eth(void)
     const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t bufs = fake_vfu_alloc(h.vfu, 8 * 2048, 4096);
+    /* A ring size the device can't shift by: UBSan reports a Q_INIT that
+     * does. The status isn't checked, since the device doesn't yet refuse
+     * a Q_INIT it can't set up. */
+    (void)q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 32, txr, txc, txsg);
     check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg),
           "Q_INIT of the Tx queue failed");
     check(T, q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0),

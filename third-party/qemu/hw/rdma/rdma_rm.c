@@ -524,16 +524,21 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                 /* Get backend gid index if backend supports it */
                 if (backend_dev &&
                     qp->backend_qp.backend_ops->get_backend_gid_index) {
-                    sgid_idx =
+                    int backend_idx =
                         qp->backend_qp.backend_ops->get_backend_gid_index(
                             backend_dev, sgid_idx);
-                    if ((int8_t)sgid_idx <
-                        0) { /* GID index 0 is valid, only negative is error */
-                        rdma_error_report(
-                            "Failed to get backend sgid_idx for sgid_idx %d",
-                            sgid_idx);
+                    /*
+                     * Negative is the backend's error. Above UINT8_MAX can't
+                     * be passed on in the uint8_t qp_state_rtr() takes, and
+                     * truncating it would pick another GID.
+                     */
+                    if (backend_idx < 0 || backend_idx > UINT8_MAX) {
+                        rdma_error_report("Failed to get backend sgid_idx for "
+                                          "sgid_idx %u (got %d)",
+                                          sgid_idx, backend_idx);
                         return -EIO;
                     }
+                    sgid_idx = (uint8_t)backend_idx;
                 }
 
                 ret = qp->backend_qp.backend_ops->qp_state_rtr(

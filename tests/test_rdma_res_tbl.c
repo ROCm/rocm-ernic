@@ -63,6 +63,11 @@
  * backend must be given none, and freeing the MR, once or twice, must
  * destroy the backend's MR exactly once and free its slot.
  *
+ * The gid-index-* cases cover the GID index used at RTR, which the backend
+ * maps from the guest's and returns as an int. It must be range-checked
+ * before it is narrowed to the uint8_t qp_state_rtr() takes, so 200 is
+ * passed on, and 256 and an error are refused.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -802,6 +807,129 @@ static bool test_mr_backend_fails(void)
     return ok;
 }
 
+/* ---- GID index cases ---------------------------------------------------
+ *
+ * Moving a QP to RTR asks the backend to map the guest's GID index to its
+ * own, as an int, and passes the result on to qp_state_rtr() as a uint8_t.
+ * The result has to be range-checked before it is narrowed: an index of 128
+ * or more is valid, and one above UINT8_MAX would otherwise be truncated to
+ * a different GID.
+ */
+
+/* What get_backend_gid_index returns, and what qp_state_rtr was given. */
+static int gid_index_result;
+static uint32_t rtr_calls;
+static uint8_t rtr_sgid_idx;
+
+static int gid_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
+                         RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
+                         RdmaBackendSRQ *srq, uint32_t max_send_wr,
+                         uint32_t max_recv_wr, uint32_t max_send_sge,
+                         uint32_t max_recv_sge)
+{
+    (void)qp;
+    (void)qp_type;
+    (void)pd;
+    (void)scq;
+    (void)rcq;
+    (void)srq;
+    (void)max_send_wr;
+    (void)max_recv_wr;
+    (void)max_send_sge;
+    (void)max_recv_sge;
+    return 0;
+}
+
+static int gid_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
+{
+    (void)backend_dev;
+    (void)sgid_idx;
+    return gid_index_result;
+}
+
+static int gid_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
+                            uint8_t qp_type, uint8_t sgid_idx,
+                            union ibv_gid *dgid, uint32_t dqpn, uint32_t rq_psn,
+                            uint32_t qkey, bool qkey_set)
+{
+    (void)backend_dev;
+    (void)qp;
+    (void)qp_type;
+    (void)dgid;
+    (void)dqpn;
+    (void)rq_psn;
+    (void)qkey;
+    (void)qkey_set;
+    rtr_calls++;
+    rtr_sgid_idx = sgid_idx;
+    return 0;
+}
+
+static const RdmaBackendOps gid_ops = {
+    .name = "gid-index",
+    .create_pd = rec_create_pd,
+    .create_qp = gid_create_qp,
+    .get_backend_gid_index = gid_get_backend_gid_index,
+    .qp_state_rtr = gid_qp_state_rtr,
+};
+
+/*
+ * Move a fresh RC QP to RTR with the backend mapping its GID index to
+ * backend_idx. RTR must succeed and pass backend_idx on when it fits a
+ * uint8_t, and fail with -EIO, never reaching qp_state_rtr(), when it
+ * doesn't.
+ */
+static bool test_gid_index(const char *name, int backend_idx)
+{
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+    struct ibv_device_attr a = one_each;
+    union ibv_gid dgid;
+    uint32_t pd_handle, cq_handle, qpn;
+    const bool fits = backend_idx >= 0 && backend_idx <= UINT8_MAX;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &gid_ops;
+    memset(&dgid, 0, sizeof(dgid));
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    gid_index_result = backend_idx;
+    rtr_calls = 0;
+    rtr_sgid_idx = 0;
+
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                         cq_handle, &qpn, 0, 0, NULL) != 0) {
+        abort();
+    }
+
+    int rc = rdma_rm_modify_qp(&dev_res, &backend_dev, qpn, IBV_QP_STATE, 3,
+                               &dgid, 0, IBV_QPS_RTR, 0, 0, 0);
+
+    if (fits) {
+        if (rc != 0 || rtr_calls != 1 || rtr_sgid_idx != backend_idx) {
+            printf("FAIL %-18s: RTR returned %d with qp_state_rtr called %u "
+                   "time(s) with sgid_idx %u, expected 0, once, with %d\n",
+                   name, rc, rtr_calls, rtr_sgid_idx, backend_idx);
+            ok = false;
+        }
+    } else if (rc != -EIO || rtr_calls != 0) {
+        printf("FAIL %-18s: RTR returned %d with qp_state_rtr called %u "
+               "time(s) (sgid_idx %u), expected %d and never\n",
+               name, rc, rtr_calls, rtr_sgid_idx, -EIO);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -845,6 +973,16 @@ int main(void)
         failures++;
     }
     if (!test_mr_backend_fails()) {
+        failures++;
+    }
+
+    if (!test_gid_index("gid-index-200", 200)) {
+        failures++;
+    }
+    if (!test_gid_index("gid-index-256", 256)) {
+        failures++;
+    }
+    if (!test_gid_index("gid-index-error", -EINVAL)) {
         failures++;
     }
 

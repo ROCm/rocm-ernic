@@ -904,7 +904,15 @@ static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id,
 
     memset(body, 0, 64);
     memcpy(body + 8, &cq_le, 4);  /* sq_cq_id */
+    body[12] = 4;                 /* sq_depth_log2 */
+    body[13] = 7;                 /* sq_stride_log2 */
     memcpy(body + 32, &cq_le, 4); /* rq_cq_id */
+    /* A QP bound to an SRQ has no RQ, and the driver leaves its geometry
+     * zero. */
+    if (srq_id == 0xffffffffu) {
+        body[36] = 4; /* rq_depth_log2 */
+        body[37] = 7; /* rq_stride_log2 */
+    }
     memcpy(body + 40, &srq_le, 4);
     memcpy(body + 56, &id_ver_le, 4);
     body[62] = 0; /* ionic qp type 0 -> IB_QPT_RC */

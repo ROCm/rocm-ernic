@@ -19,8 +19,8 @@
 #include "rdma_utils.h"
 #include "qemu/thread.h"
 #include <errno.h>
+#include <inttypes.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <string.h>
 #include <glib.h>
 #include <stdlib.h>
@@ -237,7 +237,7 @@ static uint32_t loopback_mr_rkey(const RdmaBackendMR *mr)
  */
 
 static int loopback_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
-                              int cqe)
+                              uint32_t cqe)
 {
     LoopbackBackendPrivate *priv = get_private(backend_dev);
     uint32_t handle;
@@ -253,8 +253,8 @@ static int loopback_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
     cq->backend_dev = backend_dev;
     cq->ibcq = (struct ibv_cq *)(uintptr_t)handle;
 
-    rdma_info_report("Loopback: Created CQ handle %u with %d entries", handle,
-                     cqe);
+    rdma_info_report("Loopback: Created CQ handle %u with %" PRIu32 " entries",
+                     handle, cqe);
     return 0;
 }
 

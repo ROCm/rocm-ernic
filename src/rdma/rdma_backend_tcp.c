@@ -4012,7 +4012,7 @@ static uint32_t tcp_mr_rkey(const RdmaBackendMR *mr)
  */
 
 static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
-                         int cqe)
+                         uint32_t cqe)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     uint32_t handle;
@@ -4028,7 +4028,7 @@ static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
     cq->backend_dev = backend_dev;
     cq->ibcq = (struct ibv_cq *)(uintptr_t)handle;
 
-    rdma_info_report("TCP: Created CQ handle %u, cqe=%d", handle, cqe);
+    rdma_info_report("TCP: Created CQ handle %u, cqe=%" PRIu32, handle, cqe);
     return 0;
 }
 

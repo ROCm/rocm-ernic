@@ -295,13 +295,24 @@ void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx)
     free(ctx);
 }
 
-void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
+bool ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
                                  uint64_t aq_dma, uint8_t aq_depth_log2,
                                  uint64_t cq_dma, uint8_t cq_depth_log2,
                                  uint32_t cq_id, uint32_t eq_id)
 {
     if (!ctx || aq_idx < 0 || aq_idx >= MAX_AQ)
-        return;
+        return false;
+    /* Guest exponents, shifted below. The strides aren't used: admin WQEs
+     * and CQEs have fixed sizes. */
+    if (aq_depth_log2 > IONIC_RING_MAX_DEPTH_LOG2 ||
+        cq_depth_log2 > IONIC_RING_MAX_DEPTH_LOG2) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq: refusing AQ[%d] depth=2^%u cq_depth=2^%u "
+                "(max 2^%u)",
+                aq_idx, aq_depth_log2, cq_depth_log2,
+                IONIC_RING_MAX_DEPTH_LOG2);
+        return false;
+    }
 
     struct ionic_aq_ring *r = &ctx->aq[aq_idx];
     r->valid = true;
@@ -324,6 +335,7 @@ void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
             "ionic_adminq: registered AQ[%d] aq_dma=%#lx depth=%u "
             "cq_dma=%#lx cq_depth=%u cq_id=%u eq_id=%u",
             aq_idx, aq_dma, r->aq_depth, cq_dma, r->cq_depth, cq_id, eq_id);
+    return true;
 }
 
 void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
@@ -609,19 +621,6 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
     id_ver = le32toh(id_ver);
     uint32_t cq_id = id_ver & 0x00ffffffu;
 
-    uint32_t cq_handle;
-    int ret = ionic_rm_alloc_cq(ctx->pvrdma_handle,
-                                1u << body[4], /* cqe count = 2^depth */
-                                &cq_handle);
-    if (ret) {
-        vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_CQ %u: rdma_rm_alloc_cq failed (%d)",
-                cq_id, ret);
-        return 1;
-    }
-
-    adminq_map_cq(ctx, cq_id, cq_handle);
-
     /* ionic_admin_create_cq: eq_id[0:3], depth_log2[4], stride_log2[5],
      * dir_size_log2[6], page_size_log2[7], cq_flags[8:11], id_ver[12:15],
      * tbl_index[16:19], map_count[20:23], dma_addr[24:31], dbid_flags[32:33] */
@@ -638,11 +637,41 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         .depth_log2 = body[4],
         .stride_log2 = body[5],
     };
+
+    /*
+     * The depth is a guest exponent, and the CQ is sized by shifting by it,
+     * so it is checked first, along with the stride the data path would
+     * otherwise refuse after the CQ had been allocated and reported created.
+     */
+    if (!ionic_dp_ring_geometry_ok(
+            ring.depth_log2, ionic_dp_cq_stride_log2(&ring),
+            IONIC_CQ_MIN_STRIDE_LOG2, IONIC_RING_MAX_STRIDE_LOG2)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_CQ %u: refusing depth_log2=%u "
+                "stride_log2=%u (depth max %u, stride %u..%u)",
+                cq_id, ring.depth_log2, ring.stride_log2,
+                IONIC_RING_MAX_DEPTH_LOG2, IONIC_CQ_MIN_STRIDE_LOG2,
+                IONIC_RING_MAX_STRIDE_LOG2);
+        return 1;
+    }
+
+    uint32_t cq_handle;
+    int ret = ionic_rm_alloc_cq(ctx->pvrdma_handle, 1u << ring.depth_log2,
+                                &cq_handle);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_CQ %u: rdma_rm_alloc_cq failed (%d)",
+                cq_id, ret);
+        return 1;
+    }
+
+    adminq_map_cq(ctx, cq_id, cq_handle);
+
     ionic_datapath_register_cq(ctx->dp, cq_id, le32toh(eq_id), &ring);
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_CQ cq_id=%u handle=%u depth=2^%u", cq_id,
-            cq_handle, body[4]);
+            cq_handle, ring.depth_log2);
     return 0;
 }
 
@@ -1076,29 +1105,6 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t pd_handle;
-    int ret = adminq_get_pd(ctx, &pd_handle);
-    if (ret) {
-        vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_QP %u: rdma_rm_alloc_pd failed (%d)",
-                qp_id, ret);
-        return 1;
-    }
-
-    uint32_t qpn;
-    ret = ionic_rm_alloc_qp(ctx->pvrdma_handle, pd_handle, ib_qp_type,
-                            (uint32_t)(1u << body[12]), /* max_send_wr */
-                            (uint32_t)(1u << body[36]), /* max_recv_wr */
-                            send_cq, recv_cq, &qpn);
-    if (ret) {
-        vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_QP %u: rdma_rm_alloc_qp failed (%d)",
-                qp_id, ret);
-        return 1;
-    }
-
-    adminq_map_qp(ctx, qp_id, qpn);
-
     uint32_t sq_map_count, rq_map_count;
     uint64_t sq_dma, rq_dma;
     memcpy(&sq_map_count, body + 20, 4);
@@ -1120,6 +1126,54 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         .depth_log2 = body[36],
         .stride_log2 = body[37],
     };
+
+    /*
+     * The ring geometry is guest exponents, and the work request counts
+     * below are shifts by them, so it is checked here too, before anything
+     * is allocated. A QP bound to an SRQ has no receive ring and leaves its
+     * geometry zero, so its RQ is held only to the ceilings.
+     */
+    uint8_t rq_min_stride_log2 =
+        rq_tbl_index_srq_id == 0xffffffffu ? IONIC_WQE_MIN_STRIDE_LOG2 : 0;
+    if (!ionic_dp_ring_geometry_ok(sq.depth_log2, sq.stride_log2,
+                                   IONIC_WQE_MIN_STRIDE_LOG2,
+                                   IONIC_WQE_MAX_STRIDE_LOG2) ||
+        !ionic_dp_ring_geometry_ok(rq.depth_log2, rq.stride_log2,
+                                   rq_min_stride_log2,
+                                   IONIC_WQE_MAX_STRIDE_LOG2)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: refusing sq(depth_log2=%u "
+                "stride_log2=%u) rq(depth_log2=%u stride_log2=%u) (depth max "
+                "%u, stride %u..%u)",
+                qp_id, sq.depth_log2, sq.stride_log2, rq.depth_log2,
+                rq.stride_log2, IONIC_RING_MAX_DEPTH_LOG2,
+                IONIC_WQE_MIN_STRIDE_LOG2, IONIC_WQE_MAX_STRIDE_LOG2);
+        return 1;
+    }
+
+    uint32_t pd_handle;
+    int ret = adminq_get_pd(ctx, &pd_handle);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: rdma_rm_alloc_pd failed (%d)",
+                qp_id, ret);
+        return 1;
+    }
+
+    uint32_t qpn;
+    ret = ionic_rm_alloc_qp(ctx->pvrdma_handle, pd_handle, ib_qp_type,
+                            1u << sq.depth_log2, /* max_send_wr */
+                            1u << rq.depth_log2, /* max_recv_wr */
+                            send_cq, recv_cq, &qpn);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: rdma_rm_alloc_qp failed (%d)",
+                qp_id, ret);
+        return 1;
+    }
+
+    adminq_map_qp(ctx, qp_id, qpn);
+
     ionic_datapath_register_qp(ctx->dp, qp_id, ib_qp_type, sq_cq_id, &sq,
                                rq_cq_id, &rq);
 
