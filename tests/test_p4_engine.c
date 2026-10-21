@@ -346,9 +346,11 @@ static void test_load_whole_program_in_one_chunk(void)
             "\"transitions\":[{\"value\":\"default\",\"mask\":null," \
             "\"next_state\":null}]}]}],"
 
-#define P4_SKELETON                                      \
+#define P4_FRONT                                         \
     P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0," \
-              "\"order\":[\"eth\"]}]}"
+              "\"order\":[\"eth\"]}],"
+
+#define P4_SKELETON P4_FRONT "\"actions\":[]}"
 
 /* Push a complete document through the engine's load path. */
 static int load_text(struct p4_engine *eng, const char *json)
@@ -413,7 +415,7 @@ static void test_load_parses(void)
         check(load_text(eng, P4_SKELETON) == -ENOSYS,
               "a well-formed program is walked to the end of what exists");
         check(strstr(p4_engine_load_error(eng), "not finished") != NULL,
-              "the walk got past the parser and deparser");
+              "the walk got past the parser, deparser and actions");
     }
 
     /* The parser. */
@@ -457,6 +459,105 @@ static void test_load_parses(void)
                                  "\"transitions\":[]}]}],"
                                  "\"deparsers\":[]}") == -EINVAL,
           "extracting a header that does not exist is refused");
+
+    /* Actions. */
+#define P4_ACT(body) P4_FRONT "\"actions\":[" body "]}"
+
+    /* The shapes p4c really emits, including both drop arities. */
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[{\"name\":\"p\","
+                                "\"bitwidth\":48}],"
+                                "\"primitives\":[{\"op\":\"modify_field\","
+                                "\"parameters\":["
+                                "{\"type\":\"field\","
+                                "\"value\":[\"eth\",\"src\"]},"
+                                "{\"type\":\"runtime_data\","
+                                "\"value\":0}]}]}")) == -ENOSYS,
+          "modify_field from a runtime argument is walked");
+    check(load_text(eng, P4_ACT("{\"name\":\"d\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"drop\","
+                                "\"parameters\":[]}]}")) == -ENOSYS,
+          "drop with no parameter is walked");
+    check(load_text(eng, P4_ACT("{\"name\":\"d\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"mark_to_drop\","
+                                "\"parameters\":[{\"type\":\"header\","
+                                "\"value\":\"standard_metadata\"}]}]}")) ==
+              -ENOSYS,
+          "mark_to_drop with its metadata parameter is walked");
+    /* A negative literal, which simple_router.json uses to decrement a
+     * TTL and which neither older hexstr helper accepted. */
+    check(load_text(eng, P4_ACT("{\"name\":\"t\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"add_to_field\","
+                                "\"parameters\":["
+                                "{\"type\":\"field\","
+                                "\"value\":[\"eth\",\"ty\"]},"
+                                "{\"type\":\"hexstr\","
+                                "\"value\":\"-0x1\"}]}]}")) == -ENOSYS,
+          "a negative literal is walked");
+
+    /* Rejections. */
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"push\","
+                                "\"parameters\":[]}]}")) == -ENOSYS,
+          "an unsupported primitive is refused");
+    check(strstr(p4_engine_load_error(eng), "push") != NULL,
+          "the error names the primitive");
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"modify_field\","
+                                "\"parameters\":[{\"type\":\"field\","
+                                "\"value\":[\"eth\",\"src\"]}]}]}")) == -EINVAL,
+          "a primitive with too few parameters is refused");
+    /* An index past the end would read an argument no entry supplies. */
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[{\"name\":\"p\","
+                                "\"bitwidth\":8}],"
+                                "\"primitives\":[{\"op\":\"modify_field\","
+                                "\"parameters\":["
+                                "{\"type\":\"field\","
+                                "\"value\":[\"eth\",\"src\"]},"
+                                "{\"type\":\"runtime_data\","
+                                "\"value\":1}]}]}")) == -EINVAL,
+          "a runtime argument index past the end is refused");
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"modify_field\","
+                                "\"parameters\":["
+                                "{\"type\":\"field\","
+                                "\"value\":[\"eth\",\"ghost\"]},"
+                                "{\"type\":\"hexstr\","
+                                "\"value\":\"0x1\"}]}]}")) == -EINVAL,
+          "writing to a field that does not exist is refused");
+    /* An expression operand needs machinery this does not have. */
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"modify_field\","
+                                "\"parameters\":["
+                                "{\"type\":\"field\","
+                                "\"value\":[\"eth\",\"src\"]},"
+                                "{\"type\":\"register\","
+                                "\"value\":[\"r\",0]}]}]}")) == -ENOSYS,
+          "a register operand is refused by name");
+    /* Assigning into a literal is not a place a value can go. */
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[{\"op\":\"modify_field\","
+                                "\"parameters\":["
+                                "{\"type\":\"hexstr\",\"value\":\"0x1\"},"
+                                "{\"type\":\"hexstr\","
+                                "\"value\":\"0x2\"}]}]}")) == -EINVAL,
+          "assigning to a literal is refused");
+    check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[]},"
+                                "{\"name\":\"a\",\"id\":1,"
+                                "\"runtime_data\":[],"
+                                "\"primitives\":[]}")) == -EINVAL,
+          "two actions with one name are refused");
 
     /* The deparser. */
     check(load_text(eng, P4_PARSER "\"deparsers\":[{\"name\":\"d\","

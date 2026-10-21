@@ -109,7 +109,59 @@ struct p4_parse_state {
     struct p4_transition transitions[P4_MAX_TRANSITIONS];
 };
 
+#define P4_MAX_ACTIONS      64
+#define P4_MAX_RUNTIME_ARGS 8  /* per action */
+#define P4_MAX_PRIMITIVES   32 /* per action */
+#define P4_MAX_PRIM_PARAMS  4  /* per primitive */
+#define P4_MAX_IMM_BYTES    16 /* widest literal an operand may carry */
+
+/*
+ * The primitives an action may use.  The list is an allow-list rather than
+ * a deny-list: bmv2 has dozens, several of which abort the switch when they
+ * fail, so anything not named here is refused by name.
+ */
+enum p4_prim_kind {
+    P4_PRIM_ASSIGN = 0, /* assign, modify_field */
+    P4_PRIM_ADD,        /* add, add_to_field */
+    P4_PRIM_SUB,        /* subtract, subtract_from_field */
+    P4_PRIM_DROP,       /* drop, mark_to_drop */
+    P4_PRIM_NOP,        /* no_op */
+};
+
+enum p4_operand_kind {
+    P4_OPD_FIELD = 0,
+    P4_OPD_HEXSTR,
+    P4_OPD_RUNTIME, /* an argument supplied with the table entry */
+};
+
+struct p4_operand {
+    uint8_t kind;
+    struct p4_field_ref field; /* P4_OPD_FIELD */
+    p4_idx_t runtime;          /* P4_OPD_RUNTIME: index into runtime args */
+    uint16_t imm_len;          /* P4_OPD_HEXSTR: bytes the digits needed */
+    bool imm_negative;
+    uint8_t imm[P4_MAX_IMM_BYTES];
+};
+
+struct p4_primitive {
+    uint8_t kind;
+    uint8_t nparams;
+    struct p4_operand params[P4_MAX_PRIM_PARAMS];
+};
+
+struct p4_action {
+    char name[P4_MAX_NAME + 1];
+    uint32_t id;
+    uint16_t nruntime;
+    uint16_t nprimitives;
+    /* Width of each runtime argument, so an entry's data can be checked. */
+    uint16_t runtime_bits[P4_MAX_RUNTIME_ARGS];
+    struct p4_primitive primitives[P4_MAX_PRIMITIVES];
+};
+
 struct p4_program {
+    uint16_t nactions;
+    struct p4_action actions[P4_MAX_ACTIONS];
     uint16_t nheader_types;
     uint16_t nheaders;
     uint16_t nparse_states;

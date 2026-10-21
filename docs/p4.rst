@@ -99,8 +99,9 @@ dependency is taken only when ``ERNIC_BUILD_P4`` is on, so a
 build without the engine -- which is what a superproject sees
 first -- keeps the dependency set it had before.
 
-What is parsed so far is ``__meta__`` and the header
-definitions. A program that gets that far is well formed,
+What is parsed so far is ``__meta__``, the header
+definitions, the parse state machine, the deparser's emit
+order, and the actions. A program that gets that far is well formed,
 uses nothing unsupported, and has a consistent header layout,
 and is then refused with ``ENOSYS`` because the rest of the
 walk does not exist yet.

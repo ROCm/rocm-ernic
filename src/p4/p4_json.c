@@ -908,6 +908,241 @@ static int p4_walk_deparser(struct p4_walk *w, struct json_object *root)
     return 0;
 }
 
+/*
+ * The primitives an action may use, and how many parameters each takes.
+ * bmv2 names several of these two ways, so both spellings map to one kind.
+ *
+ * drop takes no parameter in older output and one -- standard_metadata --
+ * in newer, where p4c emits mark_to_drop(standard_metadata). Both arities
+ * are accepted and the parameter ignored, because the drop is expressed by
+ * the primitive, not by what it is handed.
+ */
+static const struct {
+    const char *name;
+    uint8_t kind;
+    uint8_t min_params;
+    uint8_t max_params;
+} p4_primitives[] = {
+    {"assign", P4_PRIM_ASSIGN, 2, 2},
+    {"modify_field", P4_PRIM_ASSIGN, 2, 2},
+    {"add", P4_PRIM_ADD, 3, 3},
+    {"add_to_field", P4_PRIM_ADD, 2, 2},
+    {"subtract", P4_PRIM_SUB, 3, 3},
+    {"subtract_from_field", P4_PRIM_SUB, 2, 2},
+    {"drop", P4_PRIM_DROP, 0, 1},
+    {"mark_to_drop", P4_PRIM_DROP, 0, 1},
+    {"no_op", P4_PRIM_NOP, 0, 0},
+};
+
+/* One operand of a primitive. */
+static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
+                           const struct p4_action *act, struct p4_operand *dst,
+                           const char *where)
+{
+    struct json_object *val;
+    char type[P4_MAX_NAME + 1];
+
+    if (!p || !json_object_is_type(p, json_type_object) ||
+        !p4_get_str(p, "type", type, sizeof(type)))
+        return p4_fail(w, -EINVAL, "%s has a malformed parameter", where);
+    if (!json_object_object_get_ex(p, "value", &val))
+        return p4_fail(w, -EINVAL, "%s has a parameter with no value", where);
+
+    if (strcmp(type, "field") == 0) {
+        char hname[P4_MAX_NAME + 1], fname[P4_MAX_NAME + 1];
+
+        if (!p4_pair_strings(val, hname, sizeof(hname), fname, sizeof(fname)))
+            return p4_fail(w, -EINVAL, "%s names a field as %s", where,
+                           "something other than [header, field]");
+        if (!p4_resolve_field(w->prog, hname, fname, &dst->field))
+            return p4_fail(w, -EINVAL, "%s uses '%s.%s', which does not exist",
+                           where, hname, fname);
+        dst->kind = P4_OPD_FIELD;
+        return 0;
+    }
+
+    if (strcmp(type, "hexstr") == 0) {
+        size_t n = 0;
+        bool neg = false;
+        const char *vs;
+
+        if (!json_object_is_type(val, json_type_string))
+            return p4_fail(w, -EINVAL, "%s has a non-string literal", where);
+        vs = json_object_get_string(val);
+        if (!vs ||
+            !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg))
+            return p4_fail(w, -EINVAL, "%s has a malformed literal", where);
+        dst->kind = P4_OPD_HEXSTR;
+        dst->imm_len = (uint16_t)n;
+        dst->imm_negative = neg;
+        return 0;
+    }
+
+    if (strcmp(type, "runtime_data") == 0) {
+        int64_t idx;
+
+        if (!json_object_is_type(val, json_type_int))
+            return p4_fail(w, -EINVAL,
+                           "%s names a runtime argument by something other "
+                           "than an index",
+                           where);
+        idx = json_object_get_int64(val);
+        /* An index at or past the count would read an argument the table
+         * entry never supplies. */
+        if (idx < 0 || idx >= act->nruntime)
+            return p4_fail(w, -EINVAL, "%s uses runtime argument %lld of %u",
+                           where, (long long)idx, act->nruntime);
+        dst->kind = P4_OPD_RUNTIME;
+        dst->runtime = (p4_idx_t)idx;
+        return 0;
+    }
+
+    /* register, expression, extern, header, calculation, ... */
+    return p4_fail(w, -ENOSYS,
+                   "%s uses a '%s' parameter, which is not "
+                   "supported",
+                   where, type);
+}
+
+/* actions: runtime arguments first, since a primitive may name one. */
+static int p4_walk_actions(struct p4_walk *w, struct json_object *root)
+{
+    struct json_object *arr;
+    size_t n;
+
+    if (!p4_get_array(root, "actions", &arr, P4_MAX_ACTIONS, &n))
+        return p4_fail(w, -EINVAL,
+                       "missing, malformed, or oversized 'actions' "
+                       "(at most %d)",
+                       P4_MAX_ACTIONS);
+
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *a = json_object_array_get_idx(arr, i);
+        struct p4_action *dst = &w->prog->actions[i];
+        struct json_object *rt, *prims;
+        size_t nrt, np;
+        uint32_t id;
+
+        if (!a || !json_object_is_type(a, json_type_object))
+            return p4_fail(w, -EINVAL, "actions[%zu] is not an object", i);
+        if (!p4_get_str(a, "name", dst->name, sizeof(dst->name)))
+            return p4_fail(w, -EINVAL, "actions[%zu] has a bad name", i);
+        if (!p4_get_u32(a, "id", 0, P4_MAX_ID, &id))
+            return p4_fail(w, -EINVAL, "action '%s' has a bad id", dst->name);
+        dst->id = id;
+
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(w->prog->actions[j].name, dst->name) == 0)
+                return p4_fail(w, -EINVAL, "duplicate action '%s'", dst->name);
+            if (w->prog->actions[j].id == dst->id)
+                return p4_fail(w, -EINVAL, "actions '%s' and '%s' share id %u",
+                               w->prog->actions[j].name, dst->name, dst->id);
+        }
+
+        if (!p4_get_array(a, "runtime_data", &rt, P4_MAX_RUNTIME_ARGS, &nrt))
+            return p4_fail(w, -EINVAL,
+                           "action '%s' has bad or oversized runtime_data "
+                           "(at most %d)",
+                           dst->name, P4_MAX_RUNTIME_ARGS);
+        for (size_t r = 0; r < nrt; r++) {
+            struct json_object *e = json_object_array_get_idx(rt, r);
+            uint32_t bits;
+
+            if (!e || !json_object_is_type(e, json_type_object) ||
+                !p4_get_u32(e, "bitwidth", 1, P4_MAX_FIELD_BITS, &bits))
+                return p4_fail(w, -EINVAL,
+                               "action '%s' argument %zu has a bad width",
+                               dst->name, r);
+            dst->runtime_bits[r] = (uint16_t)bits;
+        }
+        dst->nruntime = (uint16_t)nrt;
+
+        if (!p4_get_array(a, "primitives", &prims, P4_MAX_PRIMITIVES, &np))
+            return p4_fail(w, -EINVAL,
+                           "action '%s' has bad or oversized primitives "
+                           "(at most %d)",
+                           dst->name, P4_MAX_PRIMITIVES);
+
+        for (size_t k = 0; k < np; k++) {
+            struct json_object *pr = json_object_array_get_idx(prims, k);
+            struct p4_primitive *pd = &dst->primitives[k];
+            struct json_object *params;
+            char opname[P4_MAX_NAME + 1];
+            char where[2 * P4_MAX_NAME + 64];
+            size_t nparams;
+            size_t which;
+            bool known = false;
+
+            if (!pr || !json_object_is_type(pr, json_type_object))
+                return p4_fail(w, -EINVAL,
+                               "action '%s' primitive %zu is not an object",
+                               dst->name, k);
+            if (!p4_get_str(pr, "op", opname, sizeof(opname)))
+                return p4_fail(w, -EINVAL,
+                               "action '%s' primitive %zu has no op", dst->name,
+                               k);
+
+            for (which = 0;
+                 which < sizeof(p4_primitives) / sizeof(p4_primitives[0]);
+                 which++) {
+                if (strcmp(p4_primitives[which].name, opname) == 0) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known)
+                return p4_fail(w, -ENOSYS,
+                               "primitive '%s' in action '%s' is not "
+                               "supported",
+                               opname, dst->name);
+
+            if (!p4_get_array(pr, "parameters", &params, P4_MAX_PRIM_PARAMS,
+                              &nparams))
+                return p4_fail(w, -EINVAL,
+                               "'%s' in action '%s' has bad parameters", opname,
+                               dst->name);
+            if (nparams < p4_primitives[which].min_params ||
+                nparams > p4_primitives[which].max_params)
+                return p4_fail(w, -EINVAL,
+                               "'%s' in action '%s' takes %zu parameters, "
+                               "want %u to %u",
+                               opname, dst->name, nparams,
+                               p4_primitives[which].min_params,
+                               p4_primitives[which].max_params);
+
+            pd->kind = p4_primitives[which].kind;
+
+            /* drop's parameter, where there is one, says nothing the
+             * primitive does not already say. */
+            if (pd->kind == P4_PRIM_DROP || pd->kind == P4_PRIM_NOP) {
+                pd->nparams = 0;
+                continue;
+            }
+
+            (void)snprintf(where, sizeof(where), "'%s' in action '%s'", opname,
+                           dst->name);
+            for (size_t q = 0; q < nparams; q++) {
+                int rc =
+                    p4_walk_operand(w, json_object_array_get_idx(params, q),
+                                    dst, &pd->params[q], where);
+                if (rc)
+                    return rc;
+            }
+            /* The destination of an assignment has to be somewhere a value
+             * can be put. */
+            if (pd->params[0].kind != P4_OPD_FIELD)
+                return p4_fail(w, -EINVAL,
+                               "%s writes to something that is not a field",
+                               where);
+            pd->nparams = (uint8_t)nparams;
+        }
+        dst->nprimitives = (uint16_t)np;
+    }
+
+    w->prog->nactions = (uint16_t)n;
+    return 0;
+}
+
 int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
                   char *err, size_t err_len)
 {
@@ -981,9 +1216,12 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     rc = p4_walk_deparser(&w, root);
     if (rc)
         goto out;
+    rc = p4_walk_actions(&w, root);
+    if (rc)
+        goto out;
 
     /*
-     * Actions and pipelines come next.  Until they do, a document
+     * The pipelines come next.  Until they do, a document
      * that gets this far is well formed, uses nothing unsupported, and has
      * a consistent header layout -- but there is still nothing to run.
      */
