@@ -1067,8 +1067,10 @@ static void test_table_entries(void)
     /* An entry for this frame's destination MAC, sending it to port 1. */
     memset(&up, 0, sizeof(up));
     up.type = P4_UPDATE_INSERT;
-    (void)snprintf(up.table, sizeof(up.table), "forward");
-    (void)snprintf(up.action, sizeof(up.action), "set_egress");
+    /* p4c qualifies every name with its control, so real compiler
+     * output never carries a bare "forward". */
+    (void)snprintf(up.table, sizeof(up.table), "IngressImpl.forward");
+    (void)snprintf(up.action, sizeof(up.action), "IngressImpl.set_egress");
     up.nmatch = 1;
     set_spec(&up.match[0], in, 6); /* the first six bytes are dstAddr */
     up.nparams = 1;
@@ -1136,8 +1138,10 @@ static void test_table_entry_errors(void)
 
     memset(&up, 0, sizeof(up));
     up.type = P4_UPDATE_INSERT;
-    (void)snprintf(up.table, sizeof(up.table), "forward");
-    (void)snprintf(up.action, sizeof(up.action), "set_egress");
+    /* p4c qualifies every name with its control, so real compiler
+     * output never carries a bare "forward". */
+    (void)snprintf(up.table, sizeof(up.table), "IngressImpl.forward");
+    (void)snprintf(up.action, sizeof(up.action), "IngressImpl.set_egress");
     up.nmatch = 1;
     up.nparams = 1;
     up.params[0].len = 1;
@@ -1153,12 +1157,14 @@ static void test_table_entry_errors(void)
           "an entry for a table that does not exist is refused");
     check(strstr(err, "ghost") != NULL, "the error names the table");
 
-    (void)snprintf(up.table, sizeof(up.table), "forward");
+    /* p4c qualifies every name with its control, so real compiler
+     * output never carries a bare "forward". */
+    (void)snprintf(up.table, sizeof(up.table), "IngressImpl.forward");
     (void)snprintf(up.action, sizeof(up.action), "ghost");
     check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
           "an entry naming an action the table cannot run is refused");
 
-    (void)snprintf(up.action, sizeof(up.action), "set_egress");
+    (void)snprintf(up.action, sizeof(up.action), "IngressImpl.set_egress");
     up.nmatch = 0;
     check(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
           "an entry with the wrong number of key fields is refused");

@@ -102,6 +102,21 @@ already that thread. No lock is taken and no thread is started.
 Programs
 --------
 
+``scripts/fetch-p4c.sh`` puts a working p4c under ``build-p4c``
+without installing anything, so a program can be compiled
+rather than written by hand:
+
+.. code-block:: bash
+
+   scripts/fetch-p4c.sh
+   build-p4c/bin/p4c-bm2-ss --std p4-16 -I build-p4c/p4include \
+       -o program.json program.p4
+
+Add ``--emit-externs`` for a program that calls a
+target-specific extern; without it p4c refuses one it does
+not know.
+
+
 A program will be supplied as a **bmv2 JSON file**: the
 target-independent artifact that
 

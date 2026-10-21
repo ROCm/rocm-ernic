@@ -115,3 +115,23 @@ field would see zero, answer true, and drop.
 
 It is the discriminating case for that bug: both branches are reachable,
 both are observable from outside, and the two differ only above bit 64.
+
+## minimal_forward.json
+
+**Compiled, not hand written.** The source is `src/minimal_forward.p4`
+and the compiler is the one `scripts/fetch-p4c.sh` fetches:
+
+```
+scripts/fetch-p4c.sh
+build-p4c/bin/p4c-bm2-ss --std p4-16 -I build-p4c/p4include \
+    -o tests/data/p4/minimal_forward.json \
+    tests/data/p4/src/minimal_forward.p4
+```
+
+Regenerate and diff after touching the loader, so the subset is held to
+what p4c emits rather than to what the format documentation says.
+
+One thing it pins that a hand-written fixture did not: p4c qualifies every
+table and action name with the control it was declared in, so this program
+has `IngressImpl.forward` and not `forward`. A control plane written
+against unqualified names works on no real artifact at all.

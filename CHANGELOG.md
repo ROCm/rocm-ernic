@@ -261,6 +261,20 @@
   Fields of any width the loader accepts, up to 512 bits, are compared,
   assigned and added correctly, so an IPv6 address behaves like any other
   field.
+* `scripts/fetch-p4c.sh` puts a working p4c in a private directory, so the
+  P4 programs under `tests/data/p4/` are compiled from their `.p4` sources
+  rather than written by hand. Nothing is installed and nothing on the
+  system changes. p4lang publishes p4c for Ubuntu up to 23.04 and the
+  binary wants a boost library a current Ubuntu no longer carries, so that
+  one library is fetched beside it; both artifacts are pinned by SHA-256,
+  which is what establishes they are the right ones, since one of the two
+  hosts redirects to a mirror a TLS-inspecting proxy will not validate.
+* `tests/data/p4/minimal_forward.json` is now compiler output rather than
+  hand-written, with its source in `tests/data/p4/src/`. That changed the
+  names it carries: p4c qualifies every table and action with the control
+  it was declared in, so the program has `IngressImpl.forward` and not
+  `forward`. A control plane written against unqualified names matches no
+  real artifact.
 * `-J` / `--p4-program PATH` loads a compiled P4 program when the server
   starts, so the engine can be given one without a guest or a control
   plane. It implies `--p4`. A program the engine will not run stops the
