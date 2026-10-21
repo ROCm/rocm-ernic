@@ -182,6 +182,8 @@ void ionic_eth_emu_write_stats(FILE *fp, void *opaque);
 /* Count one RDMA message of @bytes in the LIF's tx/rx_rdma_ucast_* stats. */
 void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
                               bool is_tx);
+
+/*
  * Send a frame out of the host network backend.
  *
  * The Tx path reaches the backend by itself; this is for an in-process

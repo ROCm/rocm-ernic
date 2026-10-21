@@ -230,6 +230,7 @@ jobs:
             "${build_type_flags[@]}" \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DERNIC_WERROR=ON \
+            -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_SANITIZERS=$asan \
             -DERNIC_USE_THREAD_SANITIZER=$tsan \
             -DERNIC_USE_CODE_COVERAGE=$coverage

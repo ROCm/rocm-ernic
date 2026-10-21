@@ -12,6 +12,9 @@ hardware, and no root:
   * :mod:`ernic.ionic` -- the ionic driver, as the guest kernel runs it:
     device bring-up, the admin queues, queue pairs, memory regions, work
     requests, and completions.
+  * :mod:`ernic.eth` -- the Ethernet data queues of that driver: posting
+    frames on the Tx ring, posting receive buffers, and reaping both
+    completion rings.
   * :mod:`ernic.mesh` -- the TCP mesh wire protocol, for standing in for
     a peer node or for a manager.
 

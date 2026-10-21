@@ -23,6 +23,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 import struct
 import time
 
+from .errors import DeviceError
+from .eth import CMD_Q_INIT, EthQueueMixin
 from .vfu import VFU_PCI_DEV_BAR0_REGION_IDX, VFU_PCI_DEV_BAR2_REGION_IDX
 
 # BAR0 register map (union ionic_dev_regs)
@@ -37,12 +39,9 @@ BAR0_INTR_MASK = 4
 
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 DEVCMD_DATA_BYTES = 1912
-
 # BAR2 doorbell qtypes: the Ethernet logical queues, then the RDMA
 # hardware qtypes the LIF identity advertises.
 QTYPE_ETH_ADMINQ = 0
-QTYPE_ETH_RXQ = 2
-QTYPE_ETH_TXQ = 3
 QTYPE_AQ = 5
 QTYPE_SQ = 6
 QTYPE_RQ = 7
@@ -56,7 +55,6 @@ CMD_PORT_IDENTIFY = 10
 CMD_PORT_INIT = 11
 CMD_LIF_IDENTIFY = 20
 CMD_LIF_INIT = 21
-CMD_Q_INIT = 40
 CMD_RDMA_RESET = 50
 CMD_RDMA_EQ = 51
 CMD_RDMA_CQ = 52
@@ -173,10 +171,6 @@ ACQ_ID = 0
 # How long the device gets to answer, by default. Generous: a sanitizer
 # or valgrind build is slow, and a mesh hop crosses two processes.
 DEFAULT_TIMEOUT = 10.0
-
-
-class DeviceError(Exception):
-    """The device refused a command or never answered one."""
 
 
 class Ring:
@@ -351,7 +345,7 @@ def gid_v4(text):
     return f"::ffff:{text}"
 
 
-class IonicDriver:
+class IonicDriver(EthQueueMixin):
     """The guest driver for one device.
 
     Construct with a connected VfioUserClient and the GuestMemory that
@@ -368,6 +362,9 @@ class IonicDriver:
         self.timeout = timeout
         self.eth_aq = None
         self.eth_acq = None
+        self.eth_tx = None
+        self.eth_rx = None
+        self.rx_buffers = []
         self.eq = None
         self.aq = None
         self.acq = None

@@ -386,6 +386,29 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
 static void ionic_device_fini(rocm_ernic_dev_t *dev)
 {
 #ifdef ERNIC_HAVE_P4
+    /*
+     * One machine-parseable line, so a black-box test can tell a frame the
+     * pipeline forwarded from one it dropped.  The counters live inside the
+     * process and have no other way out.
+     */
+    if (dev->p4_port || dev->p4_engine) {
+        struct p4_stats es;
+        struct p4_port_stats ps;
+
+        p4_engine_get_stats(dev->p4_engine, &es);
+        p4_port_get_stats(dev->p4_port, &ps);
+        ernic_startup_report(
+            "rocm-ernic: P4 stats: host_in=%" PRIu64 " host_out=%" PRIu64
+            " uplink_in=%" PRIu64 " uplink_out=%" PRIu64 " dropped=%" PRIu64
+            " too_big=%" PRIu64 " parse_errors=%" PRIu64 " to_guest=%" PRIu64
+            " to_net=%" PRIu64 " to_upstream=%" PRIu64
+            " egress_errors=%" PRIu64,
+            es.frames_in[P4_PORT_HOST], es.frames_out[P4_PORT_HOST],
+            es.frames_in[P4_PORT_UPLINK], es.frames_out[P4_PORT_UPLINK],
+            es.frames_dropped, es.frames_too_big, es.parse_errors, ps.to_guest,
+            ps.to_net, ps.to_upstream, ps.egress_errors);
+    }
+
     /* Before the datapath, which clears the Tx filter slot the P4 port is
      * holding on the S3 endpoint's behalf. */
     p4_port_detach(dev->p4_port);

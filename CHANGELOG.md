@@ -203,6 +203,14 @@
   started without it. The engine coexists with the in-band S3 control plane,
   which still sees guest frames addressed to it first. Documented in
   `docs/p4.rst`; `tests/test_p4_engine.c` (CTest `p4-engine-unit`) covers it.
+* The Python test harness can now drive the emulated NIC's Ethernet data
+  queues, not just its admin queues: `ernic.eth` posts frames on the Tx
+  ring, posts receive buffers, and reaps both completion rings, including
+  scatter/gather frames. `tests/py/test_p4.py` (CTest `ernic-p4-driver`)
+  uses it to put guest frames through the P4 engine on a real server over
+  vfio-user, with no VM and no root. The server reports the engine's frame
+  counters in a `P4 stats:` line at shutdown, which is what that test
+  asserts on.
 
 ### Changed
 
@@ -445,6 +453,21 @@
   more is undefined behaviour. A completion queue the data path refused
   was also reported to the guest as created. The Linux driver asks for
   nothing outside these bounds.
+* A guest could provoke undefined behaviour in the server with one device
+  command. `Q_INIT` logged the queue depth as `1 << ring_size` before
+  range-checking `ring_size`, which comes straight from the guest's 64-byte
+  command, so any value at or above 32 shifted a 32-bit unsigned by more
+  than its width. The log line now reports `depth_log2` instead and no
+  longer shifts.
+* A received frame larger than the receive buffer the guest had posted used
+  to wedge the Ethernet receive path permanently. The frame was put back at
+  the head of the queue, but the descriptor it did not fit was never
+  consumed, so every later pass read the same descriptor, failed the same
+  way, and delivered nothing behind it; when the failure was the completion
+  write, the payload was also re-DMAed into guest memory on every pass. Such
+  a frame is now dropped, as one arriving from the host network backend
+  already was, and only a genuinely transient failure -- the guest having
+  posted no buffer at all -- is retried.
 * A TCP mesh node that was restarted used to be unreachable for the rest of
   the mesh's life. The manager allocates node ids monotonically and never
   evicts a dead node, so the restarted process registered under a new id

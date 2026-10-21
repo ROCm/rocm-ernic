@@ -157,8 +157,55 @@ the rules this code is held to.
 Testing
 -------
 
-``tests/test_p4_engine.c`` (CTest ``p4-engine-unit``) covers the
-port model, the input validation, the frame bounds and the
-statistics. The engine is frames-in/frames-out, so the test links
-the engine's translation unit and nothing else: no VM, no RDMA
-hardware and no root, like every other registered test.
+Three tiers, none of which needs a VM, RDMA hardware or root.
+
+``p4-engine-unit`` (``tests/test_p4_engine.c``)
+   The engine as a function: the port model, the input validation,
+   the frame bounds and the statistics. Links the engine's
+   translation unit and nothing else.
+
+``ionic-harness-p4-port`` (``tests/test_ionic_harness.c``)
+   The engine attached to the whole in-process device, with
+   libvfio-user replaced by a fake. Covers the transmit filter
+   chain: a frame claimed by the endpoint that already held the
+   slot must not reach the pipeline, one it declines must, and
+   detaching must hand the slot back rather than leave it empty.
+
+``ernic-p4-driver`` (``tests/py/test_p4.py``)
+   The engine on a **real server process**, reached over a real
+   vfio-user socket with real DMA. ``ernic.eth`` drives the
+   emulated NIC's Ethernet transmit ring the way the guest driver
+   does, so the frames the pipeline sees are gathered out of guest
+   memory rather than handed over in-process. This is the tier that
+   tests the server rather than the emulator.
+
+Reading the counters
+^^^^^^^^^^^^^^^^^^^^
+
+The engine's counters live inside the process. The server prints
+them as one line at shutdown, at the default log level:
+
+.. code-block:: text
+
+   rocm-ernic: P4 stats: host_in=3 host_out=0 uplink_in=0 uplink_out=3 \
+     dropped=0 too_big=0 parse_errors=0 to_guest=0 to_net=0 \
+     to_upstream=0 egress_errors=3
+
+With no TAP attached, a frame forwarded to the uplink port has
+nowhere to go, so ``egress_errors`` counts it. That is the expected
+result today and is what the Python test asserts on.
+
+What cannot be tested without privilege
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Creating a TAP needs ``CAP_NET_ADMIN``, so **ingress on the uplink
+port is unreachable in a registered test**: the receive filter is
+applied only to frames read from the host backend. Attaching to a
+pre-created, user-owned persistent TAP does not need privilege, and
+is the pattern ``tests/test_ionic_ci.sh`` already uses for its
+optional checks.
+
+The other gap is the round trip. Sending a frame back to the port
+it arrived on needs a table entry that sets ``egress_spec``, which
+needs a loaded program, so until then a guest frame can only be
+observed leaving towards the uplink.

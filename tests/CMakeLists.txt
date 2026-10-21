@@ -726,6 +726,9 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${QEMU_COMPAT_SOURCES}
     ${QEMU_SOURCES}
 )
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_HARNESS_DEVICE_SOURCES ${P4_SOURCES})
+endif()
 list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 add_executable(ernic-test-ionic-harness
     test_ionic_harness.c
@@ -737,6 +740,7 @@ target_include_directories(ernic-test-ionic-harness PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
     ${PROJECT_SOURCE_DIR}/src/qemu
 )
@@ -747,7 +751,10 @@ target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(ernic-test-ionic-harness PRIVATE _GNU_SOURCE)
+target_compile_definitions(ernic-test-ionic-harness PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
 target_compile_options(ernic-test-ionic-harness PRIVATE
     ${GLIB2_CFLAGS_OTHER})
 # No libvfio-user: fake_vfu.c defines the entry points the device calls.
@@ -1170,9 +1177,13 @@ set_tests_properties(log-level-unit PROPERTIES TIMEOUT 60)
 # fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
 # CM handshake and Connect over the GSI QP, and the flush a QP entering the
 # Error state owes its outstanding work requests.
-foreach(ernic_harness_group
-        devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
-        ud srq eth nvmeof teardown)
+set(ERNIC_HARNESS_GROUPS
+    devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
+    ud srq eth nvmeof teardown)
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port)
+endif()
+foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(
         NAME ionic-harness-${ernic_harness_group}
         COMMAND $<TARGET_FILE:ernic-test-ionic-harness>
@@ -1349,6 +1360,22 @@ set_tests_properties(ernic-ionic-driver PROPERTIES
     TIMEOUT 300
     RUN_SERIAL TRUE
 )
+
+# The P4 engine on the live device: guest frames out of the Ethernet Tx
+# ring, through the pipeline, and out the far side. Starts a server per
+# case because the statistics it asserts on are reported at shutdown.
+if(ERNIC_BUILD_P4)
+    add_test(
+        NAME ernic-p4-driver
+        COMMAND ${ERNIC_PY_RUN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_p4.py
+            --server $<TARGET_FILE:rocm-ernic>
+    )
+    set_tests_properties(ernic-p4-driver PROPERTIES
+        TIMEOUT 300
+        RUN_SERIAL TRUE
+    )
+endif()
 
 # A three-node mesh under traffic, malformed peers, and churn.
 # Generous timeout: it starts and restarts several servers and waits

@@ -38,6 +38,10 @@
 #include "ionic_status.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
+#ifdef ERNIC_HAVE_P4
+#include "p4_engine.h"
+#include "p4_port.h"
+#endif
 #include "pvrdma.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
@@ -1781,8 +1785,12 @@ static void test_eth(void)
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1, "Rx raised %u interrupts",
           fake_vfu_irq_count(h.vfu, RX_INTR));
 
-    /* A frame too big for the next buffer waits rather than being cut, and
-     * is freed with the device */
+    /*
+     * A frame too big for the next buffer is dropped, not cut and not held.
+     * Holding it would wedge the queue: head does not advance, so every
+     * later pass reads the same descriptor and fails the same way, and no
+     * frame behind it is ever delivered.
+     */
     check(T,
           ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame,
                                        sizeof(frame)) == 0,
@@ -1790,6 +1798,21 @@ static void test_eth(void)
     ih_poll(&h);
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1,
           "a frame that does not fit was delivered");
+
+    /* ...and the next frame that does fit still gets through. */
+    uint8_t small[64];
+    fill(small, sizeof(small), 0x77);
+    check(T,
+          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, small,
+                                       sizeof(small)) == 0,
+          "queueing a second Rx frame failed");
+    ih_poll(&h);
+    check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 2,
+          "an oversized frame wedged the Rx queue behind it");
+    uint8_t got_small[64];
+    fake_vfu_read(h.vfu, bufs + 2048 * 2, got_small, sizeof(got_small));
+    check(T, memcmp(got_small, small, sizeof(small)) == 0,
+          "the frame behind the oversized one is wrong");
 
     /* Tx without a filter is a sink, and a doorbell for a queue that was
      * never initialized is ignored */
@@ -1966,6 +1989,139 @@ static void capsule_init(uint8_t *c, uint8_t opcode, uint16_t cid,
     nvme_put_le32(d + 11, key);
     d[15] = NVME_SGL_TYPE_KEYED_DATA << 4;
 }
+
+#ifdef ERNIC_HAVE_P4
+
+/* ---- The P4 port's place in the Tx filter chain ------------------------- */
+
+struct p4_upstream {
+    unsigned offered;
+    unsigned claimed;
+};
+
+/*
+ * Claims only frames carrying the magic first byte, so one test exercises
+ * both branches of the chain: a frame the previous filter holder consumes,
+ * which must never reach the pipeline, and one it declines, which must.
+ */
+#define P4_UPSTREAM_MAGIC 0xAAu
+
+static bool p4_upstream_filter(void *ctx, const void *frame, size_t len)
+{
+    struct p4_upstream *u = ctx;
+    const uint8_t *bytes = frame;
+
+    u->offered++;
+    if (len == 0 || bytes[0] != P4_UPSTREAM_MAGIC)
+        return false;
+    u->claimed++;
+    return true;
+}
+
+/* Put one frame on the Tx ring and ring the doorbell for it. */
+static void p4_tx_one(struct ih *h, uint64_t txr, uint64_t buf, uint8_t first,
+                      uint16_t index)
+{
+    uint8_t frame[64];
+    uint8_t desc[16] = {0};
+
+    fill(frame, sizeof(frame), 0x55);
+    frame[0] = first;
+    fake_vfu_write(h->vfu, buf, frame, sizeof(frame));
+
+    put_le64(desc, buf << 12);
+    put_le16(desc + 8, (uint16_t)sizeof(frame));
+    fake_vfu_write(h->vfu, txr + (uint64_t)index * 16u, desc, sizeof(desc));
+    ih_doorbell(h, IH_QTYPE_ETH_TXQ, 0, 0, (uint16_t)(index + 1));
+}
+
+static void test_p4_port(void)
+{
+    const char *T = "p4-port";
+    struct ih h;
+    struct p4_upstream up;
+    struct p4_port_upstream chain;
+    struct p4_stats estats;
+    struct p4_port_stats pstats;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
+    check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, 0),
+          "Q_INIT of the Tx queue failed");
+    ih_intr_mask(&h, TX_INTR, false);
+
+    /* Stand in for the S3 control plane, which really does hold this slot. */
+    memset(&up, 0, sizeof(up));
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, p4_upstream_filter, &up);
+
+    memset(&chain, 0, sizeof(chain));
+    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &chain.fn, &chain.ctx);
+    check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
+          "the registered Tx filter did not read back");
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        teardown(T, &h);
+        return;
+    }
+    struct p4_port *port = p4_port_attach(h.dev->ionic_emu, eng, &chain);
+    if (!check(T, port != NULL, "p4_port_attach failed")) {
+        p4_engine_destroy(eng);
+        teardown(T, &h);
+        return;
+    }
+
+    /* A frame the previous holder claims must not reach the pipeline. */
+    p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 0);
+    p4_engine_get_stats(eng, &estats);
+    p4_port_get_stats(port, &pstats);
+    check(T, up.claimed == 1, "the chained filter claimed %u frames",
+          up.claimed);
+    check(T, estats.frames_in[P4_PORT_HOST] == 0,
+          "a claimed frame reached the pipeline");
+    check(T, pstats.to_upstream == 1, "the claimed frame was not counted");
+
+    /* One it declines must, and with no backend attached its forward to the
+     * uplink fails, which is the only observable the engine has today. */
+    p4_tx_one(&h, txr, buf, 0xBBu, 1);
+    p4_engine_get_stats(eng, &estats);
+    p4_port_get_stats(port, &pstats);
+    check(T, up.offered == 2, "the chained filter saw %u frames", up.offered);
+    check(T, up.claimed == 1,
+          "the chained filter claimed a frame it should "
+          "have declined");
+    check(T, estats.frames_in[P4_PORT_HOST] == 1,
+          "the declined frame did not reach the pipeline");
+    check(T, estats.frames_out[P4_PORT_UPLINK] == 1,
+          "the pipeline did not forward to the uplink");
+    check(T, pstats.egress_errors == 1,
+          "a forward with no host backend should fail, egress_errors=%llu",
+          (unsigned long long)pstats.egress_errors);
+    check(T, pstats.to_net == 0,
+          "a frame left through a backend that is not "
+          "attached");
+
+    /* Detaching must hand the slot back, not leave it empty. */
+    p4_port_detach(port);
+    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &chain.fn, &chain.ctx);
+    check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
+          "detach did not restore the previous Tx filter");
+
+    p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 2);
+    check(T, up.claimed == 2, "the restored filter did not claim after detach");
+    p4_engine_get_stats(eng, &estats);
+    check(T, estats.frames_in[P4_PORT_HOST] == 1,
+          "the pipeline ran after it was detached");
+
+    p4_engine_destroy(eng);
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, NULL, NULL);
+    teardown(T, &h);
+}
+#endif /* ERNIC_HAVE_P4 */
 
 static void test_nvmeof(void)
 {
@@ -2146,6 +2302,9 @@ static const struct {
     {"ud", test_ud},
     {"srq", test_srq},
     {"eth", test_eth},
+#ifdef ERNIC_HAVE_P4
+    {"p4-port", test_p4_port},
+#endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},
 };
