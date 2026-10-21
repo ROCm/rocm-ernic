@@ -151,11 +151,17 @@ if(ERNIC_BUILD_P4)
     add_executable(ernic-test-p4-engine
         test_p4_engine.c
         ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
     )
     target_include_directories(ernic-test-p4-engine PRIVATE
         ${PROJECT_SOURCE_DIR}/src/p4
     )
     target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)
+    target_link_libraries(ernic-test-p4-engine PRIVATE PkgConfig::JSONC)
+    # Real p4c artifacts, so the loader is held to what the compiler
+    # actually emits rather than to what the format documentation says.
+    target_compile_definitions(ernic-test-p4-engine PRIVATE
+        P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
 
     # OCP FP8 E4M3 arithmetic: the extern the pipeline calls, since P4
     # itself has no floating-point type. Pure computation, no device.
@@ -773,6 +779,9 @@ target_link_directories(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+if(ERNIC_BUILD_P4)
+    target_link_libraries(ernic-test-ionic-harness PRIVATE PkgConfig::JSONC)
+endif()
 
 # Two whole devices in one process, meshed over loopback TCP: the GSI/CM
 # path that rdma_cm depends on, which test_ud_mesh can only cover with two

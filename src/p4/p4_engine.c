@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "p4_engine.h"
+#include "p4_json.h"
 
 struct p4_engine {
     /*
@@ -35,6 +36,8 @@ struct p4_engine {
     uint8_t *load_buf;
     size_t load_total;
     size_t load_got;
+    /* Why the last load was refused, for a caller to report onwards. */
+    char load_err[160];
 
     struct p4_stats stats;
 };
@@ -50,7 +53,13 @@ void p4_engine_destroy(struct p4_engine *eng)
     if (!eng)
         return;
     p4_engine_load_abort(eng);
+    p4_json_free(eng->prog);
     free(eng);
+}
+
+const char *p4_engine_load_error(const struct p4_engine *eng)
+{
+    return (eng && eng->load_err[0]) ? eng->load_err : NULL;
 }
 
 bool p4_engine_has_program(const struct p4_engine *eng)
@@ -124,15 +133,19 @@ int p4_engine_load_commit(struct p4_engine *eng)
         return -EINVAL;
     }
 
-    /*
-     * Where the bmv2 JSON will be parsed and a p4_program built.  Until
-     * that exists there is nothing to install, so the bytes are accepted,
-     * validated as far as they can be, and discarded: a caller can tell a
-     * transport that works from one that does not without the engine
-     * pretending to run a program it cannot execute.
-     */
+    struct p4_program *prog = NULL;
+    int rc = p4_json_parse(eng->load_buf, eng->load_got, &prog, eng->load_err,
+                           sizeof(eng->load_err));
+
     p4_engine_load_abort(eng);
-    return -ENOSYS;
+    if (rc != 0)
+        return rc;
+
+    /* A program that replaces a running one only does so once it has been
+     * accepted in full, so a bad load cannot leave the pipeline empty. */
+    p4_json_free(eng->prog);
+    eng->prog = prog;
+    return 0;
 }
 
 void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,

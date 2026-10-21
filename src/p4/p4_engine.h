@@ -102,6 +102,13 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
 int p4_engine_load_commit(struct p4_engine *eng);
 void p4_engine_load_abort(struct p4_engine *eng);
 
+/*
+ * Why the last load was refused, or NULL if none has been.  The string
+ * names the offending construct where it can, so a caller can tell a user
+ * which P4 feature they used rather than that the file was bad.
+ */
+const char *p4_engine_load_error(const struct p4_engine *eng);
+
 /* Bytes accepted so far, and the total expected; both 0 when idle. */
 void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,
                              size_t *total);

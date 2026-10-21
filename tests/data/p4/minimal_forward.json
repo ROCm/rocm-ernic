@@ -1,0 +1,183 @@
+{
+  "program": "minimal_forward.p4",
+  "__meta__": {
+    "version": [2, 24],
+    "compiler": "hand-written for rocm-ernic; not p4c output"
+  },
+  "header_types": [
+    {
+      "name": "standard_metadata",
+      "id": 0,
+      "fields": [
+        ["ingress_port", 9, false],
+        ["egress_spec", 9, false],
+        ["egress_port", 9, false],
+        ["clone_spec", 32, false],
+        ["instance_type", 32, false],
+        ["drop", 1, false],
+        ["recirculate_port", 16, false],
+        ["packet_length", 32, false],
+        ["checksum_error", 1, false],
+        ["parser_error", 32, false],
+        ["_padding", 3, false]
+      ]
+    },
+    {
+      "name": "ethernet_t",
+      "id": 1,
+      "fields": [
+        ["dstAddr", 48, false],
+        ["srcAddr", 48, false],
+        ["etherType", 16, false]
+      ]
+    }
+  ],
+  "headers": [
+    {
+      "name": "standard_metadata",
+      "id": 0,
+      "header_type": "standard_metadata",
+      "metadata": true,
+      "pi_omit": true
+    },
+    {
+      "name": "ethernet",
+      "id": 1,
+      "header_type": "ethernet_t",
+      "metadata": false
+    }
+  ],
+  "header_stacks": [],
+  "header_union_types": [],
+  "header_unions": [],
+  "header_union_stacks": [],
+  "field_lists": [],
+  "errors": [],
+  "enums": [],
+  "parsers": [
+    {
+      "name": "parser",
+      "id": 0,
+      "init_state": "start",
+      "parse_states": [
+        {
+          "name": "start",
+          "id": 0,
+          "parser_ops": [
+            {
+              "op": "extract",
+              "parameters": [
+                { "type": "regular", "value": "ethernet" }
+              ]
+            }
+          ],
+          "transition_key": [],
+          "transitions": [
+            {
+              "type": "default",
+              "value": null,
+              "mask": null,
+              "next_state": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "parse_vsets": [],
+  "deparsers": [
+    {
+      "name": "deparser",
+      "id": 0,
+      "order": ["ethernet"]
+    }
+  ],
+  "meter_arrays": [],
+  "counter_arrays": [],
+  "register_arrays": [],
+  "calculations": [],
+  "learn_lists": [],
+  "actions": [
+    {
+      "name": "set_egress",
+      "id": 0,
+      "runtime_data": [
+        { "name": "port", "bitwidth": 9 }
+      ],
+      "primitives": [
+        {
+          "op": "assign",
+          "parameters": [
+            { "type": "field", "value": ["standard_metadata", "egress_spec"] },
+            { "type": "runtime_data", "value": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "drop_pkt",
+      "id": 1,
+      "runtime_data": [],
+      "primitives": [
+        {
+          "op": "drop",
+          "parameters": []
+        }
+      ]
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "ingress",
+      "id": 0,
+      "init_table": "forward",
+      "tables": [
+        {
+          "name": "forward",
+          "id": 0,
+          "key": [
+            {
+              "match_type": "exact",
+              "name": "ethernet.dstAddr",
+              "target": ["ethernet", "dstAddr"],
+              "mask": null
+            }
+          ],
+          "match_type": "exact",
+          "type": "simple",
+          "max_size": 1024,
+          "with_counters": false,
+          "support_timeout": false,
+          "direct_meters": null,
+          "action_ids": [0, 1],
+          "actions": ["set_egress", "drop_pkt"],
+          "base_default_next": null,
+          "next_tables": {
+            "set_egress": null,
+            "drop_pkt": null
+          },
+          "default_entry": {
+            "action_id": 1,
+            "action_const": false,
+            "action_data": [],
+            "action_entry_const": false
+          }
+        }
+      ],
+      "action_profiles": [],
+      "conditionals": []
+    },
+    {
+      "name": "egress",
+      "id": 1,
+      "init_table": null,
+      "tables": [],
+      "action_profiles": [],
+      "conditionals": []
+    }
+  ],
+  "checksums": [],
+  "force_arith": [],
+  "extern_instances": [],
+  "field_aliases": []
+}

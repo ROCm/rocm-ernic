@@ -90,6 +90,43 @@ oracle, and the conformance tests run the same program and the
 same frames through stock bmv2 to generate what the engine is
 expected to produce.
 
+Loading a program
+-----------------
+
+A program is loaded in pieces, because it is far larger than
+any one device command carries, and parsed with json-c. The
+dependency is taken only when ``ERNIC_BUILD_P4`` is on, so a
+build without the engine -- which is what a superproject sees
+first -- keeps the dependency set it had before.
+
+What is parsed so far is ``__meta__`` and the header
+definitions. A program that gets that far is well formed,
+uses nothing unsupported, and has a consistent header layout,
+and is then refused with ``ENOSYS`` because the rest of the
+walk does not exist yet.
+
+Unknown keys are ignored, not rejected. That is deliberate:
+``p4c`` emits ``program``, ``source_info``, ``action_ids`` and
+``force_arith``, none of which appear in bmv2's own
+``JSON_format.md``, so a loader strict about unknown keys
+refuses every real artifact. A feature that *is* known and not
+implemented is a different case, and is refused by name --
+``p4_engine_load_error()`` returns something like
+``'checksums' is not supported yet`` -- so a user learns which
+P4 feature they used.
+
+One consequence worth stating: ``simple_router.json``, the
+example bmv2's own format documentation links to, does **not**
+load. Its ``calculations`` and ``checksums`` carry the IPv4
+checksum, which is not implemented. ``loopback.json`` has both
+empty and gets as far as the walker does.
+
+Every document is untrusted, so there is no clamping and no
+truncation anywhere in the loader: an oversized array, a name
+with a newline in it, a width given as a floating-point
+number, a duplicate name or id, and a reference to something
+that does not exist are each a rejection.
+
 Alignment with AMD Pensando silicon
 -----------------------------------
 
@@ -131,6 +168,20 @@ The architecture
    The DPU's P4 architecture is not v1model, and the real
    architecture file is proprietary. v1model is used here because
    DASH uses it.
+
+Port numbering
+   ``P4_PORT_HOST`` is 0 and ``P4_PORT_UPLINK`` is 1, and that is
+   our convention rather than one inherited from DASH. DASH's two
+   bmv2 ports are both underlay-facing, and its pipeline derives
+   direction from the outer VXLAN VNI
+   (``stages/direction_lookup.p4``), never from an ingress port --
+   ``standard_metadata.ingress_port`` appears once in its whole
+   bmv2 tree, as a default echo. Two consequences for a ported
+   DASH program: it will drop every frame arriving on
+   ``P4_PORT_HOST``, because guest traffic has no underlay encap
+   for the ``vip`` table to match, and it can set an
+   ``egress_spec`` of 2, which this two-port model must reject
+   rather than index.
 
 Stateful connection tracking
    DASH's own roadmap notes that stock bmv2 lacks the stateful

@@ -243,6 +243,21 @@
   across three regions, including the pages of the destination being
   registered out of order.
 
+* A compiled P4 program can now be loaded, as far as its header definitions.
+  `p4_engine_load_commit()` parses the accumulated bytes as bmv2 JSON --
+  the artifact `p4c --target bmv2 --arch v1model` emits -- using json-c,
+  which becomes a dependency only when `ERNIC_BUILD_P4` is on. A program
+  that uses a feature the engine does not have yet is refused by name, so
+  `p4_engine_load_error()` reports which one rather than that the file was
+  bad. Parsing is not finished: a well-formed program still ends in
+  `ENOSYS` once its headers are read, and nothing can be run.
+* `ernic_parse_hexstr()` in `src/parse_int.h` parses a bmv2 hexstr: a
+  `0x`-prefixed, variable-width hexadecimal value that may be negative and
+  may have an odd number of digits, none of which the existing helpers
+  accept. The value is decoded big-endian and right-aligned, and the caller
+  is told how many bytes the digits needed so it can refuse one wider than
+  the field it is destined for instead of truncating it.
+
 ### Changed
 
 * **Breaking:** the ionic driver patch series and the two scripts that build

@@ -208,8 +208,17 @@ option(ERNIC_BUILD_P4
 set(P4_SOURCES
     src/p4/p4_engine.c
     src/p4/p4_fp8.c
+    src/p4/p4_json.c
     src/p4/p4_port.c
 )
+
+# json-c, for the bmv2 program loader. Scoped to this option deliberately:
+# an ERNIC_BUILD_P4=OFF build -- which is what a superproject sees first --
+# keeps the dependency set it has today. libvfio-user already requires
+# json-c, so any host that built it has one.
+if(ERNIC_BUILD_P4)
+    pkg_check_modules(JSONC REQUIRED IMPORTED_TARGET json-c)
+endif()
 
 # In-process S3-over-RDMA object store, reached in-band over the emulated NIC
 set(S3_SOURCES
@@ -297,6 +306,10 @@ target_link_libraries(rocm-ernic PRIVATE
     ${GLIB2_LIBRARIES}
     ${IBVERBS_LIBRARIES}
 )
+
+if(ERNIC_BUILD_P4)
+    target_link_libraries(rocm-ernic PRIVATE PkgConfig::JSONC)
+endif()
 
 ernic_set_compiler_flags(rocm-ernic)
 

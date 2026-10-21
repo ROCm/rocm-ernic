@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "p4_engine.h"
@@ -290,11 +291,11 @@ static void test_load_sequence(void)
           "chunk 3 accepted");
 
     /* The loader is complete, so this is the parser's answer, not the
-     * transport's: there is no parser yet. */
-    check(p4_engine_load_commit(eng) == -ENOSYS,
-          "a complete program reaches the parser");
-    check(!p4_engine_has_program(eng),
-          "no program is installed while the parser is absent");
+     * transport's. These bytes are not JSON at all. */
+    check(p4_engine_load_commit(eng) == -EINVAL,
+          "a complete load reaches the parser, which refuses non-JSON");
+    check(!p4_engine_has_program(eng), "no program after a refused parse");
+    check(p4_engine_load_error(eng) != NULL, "the parser said why it refused");
 
     /* A begin abandons whatever was part-way through. */
     check(p4_engine_load_begin(eng, 64) == 0, "begin accepted");
@@ -316,16 +317,228 @@ static void test_load_whole_program_in_one_chunk(void)
     check(p4_engine_load_begin(eng, sizeof(big)) == 0, "a large begin works");
     check(p4_engine_load_chunk(eng, 0, big, sizeof(big)) == 0,
           "a single chunk covering the program works");
-    check(p4_engine_load_commit(eng) == -ENOSYS, "commit reaches the parser");
+    check(p4_engine_load_commit(eng) == -EINVAL, "commit reaches the parser");
 
     p4_engine_load_abort(eng);
     p4_engine_load_abort(NULL);
     p4_engine_destroy(eng);
 }
 
+/* Push a complete document through the engine's load path. */
+static int load_text(struct p4_engine *eng, const char *json)
+{
+    size_t n = strlen(json);
+    int rc = p4_engine_load_begin(eng, n);
+
+    if (rc != 0)
+        return rc;
+    rc = p4_engine_load_chunk(eng, 0, json, n);
+    if (rc != 0)
+        return rc;
+    return p4_engine_load_commit(eng);
+}
+
+/*
+ * The loader, through the transport that will really carry a program. Only
+ * the sections that are implemented are exercised here; the walker's own
+ * test covers the rest.
+ */
+static void test_load_parses(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+
+    /* A bare value at the top level: json-c's STRICT flag accepts this, so
+     * our own type check is what has to refuse it. */
+    check(load_text(eng, "\"hello\"") == -EINVAL,
+          "a bare string at the top level is refused");
+    check(load_text(eng, "[1,2]") == -EINVAL,
+          "a bare array at the top level is refused");
+    check(load_text(eng, "{") == -EINVAL, "an unterminated object is refused");
+
+    /* __meta__ gates the format. */
+    check(load_text(eng, "{}") == -EINVAL, "a document with no __meta__");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[1,0]}}") == -ENOSYS,
+          "an unreadable major version is reported as unsupported");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2]}}") == -EINVAL,
+          "a one-element version is refused");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[\"2\",0]}}") == -EINVAL,
+          "a stringly-typed version is refused, not coerced");
+
+    /* A feature we understand and have not built is named, not lumped in
+     * with a malformed file. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"checksums\":[{\"name\":\"x\"}]}") == -ENOSYS,
+          "a non-empty checksums list is unsupported, not invalid");
+    check(strstr(p4_engine_load_error(eng), "checksums") != NULL,
+          "the error names the feature that was used");
+
+    /* ...but mentioning it empty is fine, which is how p4c emits it for a
+     * program that does not use one. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},\"checksums\":[],"
+                         "\"header_types\":[],\"headers\":[]}") == -ENOSYS,
+          "an empty checksums list is accepted");
+    check(strstr(p4_engine_load_error(eng), "not finished") != NULL,
+          "the walk got past the feature check");
+
+    /* Header types and their fields. */
+    {
+        const char *ok = "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"
+                         "\"fields\":[[\"dst\",48],[\"src\",48],"
+                         "[\"ty\",16]]}],"
+                         "\"headers\":[{\"name\":\"eth\",\"id\":0,"
+                         "\"header_type\":\"eth_t\","
+                         "\"metadata\":false}]}";
+        check(load_text(eng, ok) == -ENOSYS,
+              "a well-formed header section is walked");
+        check(strstr(p4_engine_load_error(eng), "not finished") != NULL,
+              "the walk got past the headers");
+    }
+
+    /* A variable-width field is named rather than called malformed. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"opts\",\"*\"]]}]}") == -ENOSYS,
+          "a variable-length field is unsupported, not invalid");
+    check(strstr(p4_engine_load_error(eng), "variable length") != NULL,
+          "the error says the field is variable length");
+
+    /* Integer edges on a field width. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"f\",0]]}]}") == -EINVAL,
+          "a zero-width field is refused");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"f\",513]]}]}") == -EINVAL,
+          "an over-wide field is refused");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"f\",1.0]]}]}") == -EINVAL,
+          "a field width given as a double is refused, not rounded");
+
+    /* Duplicates make every later reference ambiguous. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"f\",8]]},"
+                         "{\"name\":\"t\",\"id\":1,"
+                         "\"fields\":[[\"f\",8]]}]}") == -EINVAL,
+          "two header types with one name are refused");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"a\",\"id\":7,"
+                         "\"fields\":[[\"f\",8]]},"
+                         "{\"name\":\"b\",\"id\":7,"
+                         "\"fields\":[[\"f\",8]]}]}") == -EINVAL,
+          "two header types with one id are refused");
+
+    /* A header naming a type that does not exist. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[],"
+                         "\"headers\":[{\"name\":\"h\",\"id\":0,"
+                         "\"header_type\":\"nope\","
+                         "\"metadata\":false}]}") == -EINVAL,
+          "a dangling header_type reference is refused");
+
+    /* A name that would inject into the log it is reported in. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"a\\nb\",\"id\":0,"
+                         "\"fields\":[[\"f\",8]]}]}") == -EINVAL,
+          "a name containing a newline is refused");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * The loader against real compiler output. This is the regression test for
+ * two findings that a hand-written fixture would never have caught: p4c
+ * emits keys the format documentation does not mention, and it emits a
+ * non-empty 'errors' table into every artifact. A loader strict about
+ * either refuses everything p4c produces.
+ */
+static char *read_fixture(const char *name, size_t *len)
+{
+    char path[512];
+    FILE *f;
+    char *buf;
+    long n;
+
+    (void)snprintf(path, sizeof(path), "%s/%s", P4_FIXTURE_DIR, name);
+    f = fopen(path, "rbe"); /* e: O_CLOEXEC */
+    if (!f)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    buf = malloc((size_t)n);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    *len = (size_t)n;
+    return buf;
+}
+
+static int load_fixture(struct p4_engine *eng, const char *name)
+{
+    size_t n = 0;
+    char *buf = read_fixture(name, &n);
+    int rc;
+
+    if (!buf)
+        return -ENOENT;
+    rc = p4_engine_load_begin(eng, n);
+    if (rc == 0)
+        rc = p4_engine_load_chunk(eng, 0, buf, n);
+    if (rc == 0)
+        rc = p4_engine_load_commit(eng);
+    free(buf);
+    return rc;
+}
+
+static void test_load_real_artifacts(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    const char *why;
+
+    /*
+     * loopback.json carries program, force_arith, source_info and pi_omit,
+     * none of which the format documentation mentions, and six entries in
+     * 'errors'. It must get all the way to the unfinished part of the walk.
+     */
+    check(load_fixture(eng, "loopback.json") == -ENOSYS,
+          "bmv2's own loopback.json is walked, not rejected");
+    why = p4_engine_load_error(eng);
+    check(why != NULL && strstr(why, "not finished") != NULL,
+          "loopback.json stopped only where the walk is unfinished");
+
+    /*
+     * simple_router.json is the negative fixture: its calculations and
+     * checksums carry the IPv4 checksum, which is not implemented. It
+     * becomes a positive fixture when checksums land.
+     */
+    check(load_fixture(eng, "simple_router.json") == -ENOSYS,
+          "simple_router.json is refused");
+    why = p4_engine_load_error(eng);
+    check(why != NULL && (strstr(why, "checksums") != NULL ||
+                          strstr(why, "calculations") != NULL),
+          "simple_router.json is refused by name, for the checksum");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
+    test_load_parses();
+    test_load_real_artifacts();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();
