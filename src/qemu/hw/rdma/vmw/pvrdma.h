@@ -24,8 +24,8 @@
 
 #include "hw/pci/pci_device.h"
 
-#include "../rdma_backend_defs.h"
-#include "../rdma_rm_defs.h"
+#include "rdma_backend_defs.h"
+#include "rdma_rm_defs.h"
 
 /* Per-QP statistics */
 typedef struct PVRDMAQPStats {
