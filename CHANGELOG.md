@@ -220,6 +220,17 @@
   program has -- abandons the load rather than leaving a partly filled
   buffer. Nothing parses the bytes yet, so a complete load reports
   `ENOSYS`; no program can be run.
+* OCP FP8 E4M3 arithmetic for the P4 pipeline, in `src/p4/p4_fp8.c`. P4 has
+  no floating-point type -- its base types are bit-vectors -- so fp8 cannot
+  be expressed in a P4 program and is provided as an extern the program
+  calls, which is how P4 targets implement in-network reduction. It converts
+  in both directions and reduces two operand buffers to a single value with
+  `add`, `multiply` (a dot product) or `max`, accumulating in float and
+  rounding once at the end, as fp8 hardware does. Overflow saturates to
+  +/-448 rather than becoming NaN, which differs deliberately from
+  `ml_dtypes.float8_e4m3fn`: one overflowed term must not turn a whole
+  reduction into NaN. `tests/test_p4_fp8.c` (CTest `p4-fp8-unit`) checks
+  every one of the 256 encodings.
 
 ### Changed
 

@@ -156,6 +156,17 @@ if(ERNIC_BUILD_P4)
         ${PROJECT_SOURCE_DIR}/src/p4
     )
     target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)
+
+    # OCP FP8 E4M3 arithmetic: the extern the pipeline calls, since P4
+    # itself has no floating-point type. Pure computation, no device.
+    add_executable(ernic-test-p4-fp8
+        test_p4_fp8.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_fp8.c
+    )
+    target_include_directories(ernic-test-p4-fp8 PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-fp8 PRIVATE _GNU_SOURCE)
 endif()
 
 # NVMe-oF controller test. The controller core takes its DMA through a
@@ -844,7 +855,7 @@ set(ERNIC_TEST_TARGETS
 )
 
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_TEST_TARGETS ernic-test-p4-engine)
+    list(APPEND ERNIC_TEST_TARGETS ernic-test-p4-engine ernic-test-p4-fp8)
 endif()
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
@@ -930,6 +941,12 @@ if(ERNIC_BUILD_P4)
         COMMAND $<TARGET_FILE:ernic-test-p4-engine>
     )
     set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME p4-fp8-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-fp8>
+    )
+    set_tests_properties(p4-fp8-unit PROPERTIES TIMEOUT 30)
 endif()
 
 # NVMe-oF controller unit test: drives the capsule sequence a real

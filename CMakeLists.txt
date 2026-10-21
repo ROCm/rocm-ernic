@@ -207,6 +207,7 @@ option(ERNIC_BUILD_P4
 
 set(P4_SOURCES
     src/p4/p4_engine.c
+    src/p4/p4_fp8.c
     src/p4/p4_port.c
 )
 
