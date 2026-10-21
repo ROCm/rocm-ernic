@@ -124,6 +124,13 @@ target_include_directories(test_net_checksum PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+# The bounds check every guest DMA address and length passes before it
+# reaches vfu_addr_to_sgl(). Header-only, so it links nothing.
+add_executable(test_dma_range test_dma_range.c)
+target_include_directories(test_dma_range PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
 # -- Parser unit tests -------------------------------------------
 # These link the wire parsers in src/net directly.
 add_executable(test_rdma_cm_proto
@@ -589,6 +596,7 @@ set(ERNIC_TEST_TARGETS
     test_ernic_device
     test_write_imm
     test_net_checksum
+    test_dma_range
     test_rdma_cm_proto
     test_parse_int
     test_nvmeof_target
@@ -666,6 +674,13 @@ add_test(
     COMMAND $<TARGET_FILE:test_net_checksum>
 )
 set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# Guest DMA range check unit test (table-driven)
+add_test(
+    NAME dma-range-unit
+    COMMAND $<TARGET_FILE:test_dma_range>
+)
+set_tests_properties(dma-range-unit PROPERTIES TIMEOUT 30)
 
 # rdma_cm protocol parser unit test (table-driven)
 add_test(
@@ -948,60 +963,59 @@ set_tests_properties(s3-ci PROPERTIES
 # maps too, and plays the ionic driver against it. None of it needs a VM,
 # RDMA hardware, or root. See docs/testing.rst.
 #
-# python3 is already a run-time dependency of the shell suites, so a build
-# host without it cannot run the test suite either way; registering these
-# only when it is present keeps the failure a clear one.
-find_package(Python3 COMPONENTS Interpreter)
-if(Python3_Interpreter_FOUND)
-    # -I keeps the interpreter from picking up anything outside the tree:
-    # the suites put tests/py on sys.path themselves.
-    set(ERNIC_PY_RUN ${Python3_EXECUTABLE} -I)
+# REQUIRED: python3 is already a run-time dependency of the shell suites
+# (test_tcp_mesh_ci.sh and the CI job scripts), so a host that builds the
+# tests without it cannot run them. Registering these only when it happens
+# to be found would let CI pass with three fewer tests and no sign of it,
+# and a skipped or missing test is exactly what must not pass quietly.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-    # The vfio-user protocol itself: version negotiation, regions, DMA
-    # mapping, interrupts, and the offsets, counts and ranges a client
-    # must not get away with.
-    add_test(
-        NAME ernic-vfu-client
-        COMMAND ${ERNIC_PY_RUN}
-            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_vfu_client.py
-            --server $<TARGET_FILE:rocm-ernic>
-    )
-    set_tests_properties(ernic-vfu-client PROPERTIES
-        TIMEOUT 180
-        RUN_SERIAL TRUE
-    )
+# -I keeps the interpreter from picking up anything outside the tree: the
+# suites put tests/py on sys.path themselves.
+set(ERNIC_PY_RUN ${Python3_EXECUTABLE} -I)
 
-    # The ionic driver over that protocol: bring-up, queue pairs, memory
-    # regions, work requests and completions, through a server process
-    # rather than the in-process harness in ionic_harness.c.
-    add_test(
-        NAME ernic-ionic-driver
-        COMMAND ${ERNIC_PY_RUN}
-            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_driver.py
-            --server $<TARGET_FILE:rocm-ernic>
-    )
-    set_tests_properties(ernic-ionic-driver PROPERTIES
-        TIMEOUT 300
-        RUN_SERIAL TRUE
-    )
+# The vfio-user protocol itself: version negotiation, regions, DMA
+# mapping, interrupts, and the offsets, counts and ranges a client
+# must not get away with.
+add_test(
+    NAME ernic-vfu-client
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_vfu_client.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-vfu-client PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+)
 
-    # A three-node mesh under traffic, malformed peers, and churn.
-    # Generous timeout: it starts and restarts several servers and waits
-    # on mesh convergence, in every build leg including thread-sanitizer
-    # Release, where that chain is slow.
-    add_test(
-        NAME ernic-mesh-stress
-        COMMAND ${ERNIC_PY_RUN}
-            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_mesh_stress.py
-            --server $<TARGET_FILE:rocm-ernic>
-    )
-    set_tests_properties(ernic-mesh-stress PROPERTIES
-        TIMEOUT 600
-        RUN_SERIAL TRUE
-    )
-else()
-    message(WARNING "python3 not found: the tests/py suites are not registered")
-endif()
+# The ionic driver over that protocol: bring-up, queue pairs, memory
+# regions, work requests and completions, through a server process
+# rather than the in-process harness in ionic_harness.c.
+add_test(
+    NAME ernic-ionic-driver
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_driver.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-ionic-driver PROPERTIES
+    TIMEOUT 300
+    RUN_SERIAL TRUE
+)
+
+# A three-node mesh under traffic, malformed peers, and churn.
+# Generous timeout: it starts and restarts several servers and waits
+# on mesh convergence, in every build leg including thread-sanitizer
+# Release, where that chain is slow.
+add_test(
+    NAME ernic-mesh-stress
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_mesh_stress.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-mesh-stress PROPERTIES
+    TIMEOUT 600
+    RUN_SERIAL TRUE
+)
 
 # ---------------------------------------------------------------
 # Compile checks for the Nix fuzz harnesses
