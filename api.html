@@ -455,6 +455,8 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv421pvrdma_device_destroy15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_device_destroy()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv421pvrdma_device_realize15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_device_realize()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422pvrdma_eth_bytes_count15pvrdma_handle_t8uint64_tb"><code class="docutils literal notranslate"><span class="pre">pvrdma_eth_bytes_count()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423pvrdma_get_dev_counters15pvrdma_handle_tP19pvrdma_dev_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_get_dev_counters()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422pvrdma_get_qp_counters15pvrdma_handle_t8uint32_tP18pvrdma_qp_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_get_qp_counters()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428pvrdma_inc_stats_reset_count15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_inc_stats_reset_count()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv416pvrdma_irq_count15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_irq_count()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419pvrdma_qp_cqe_count15pvrdma_handle_t8uint32_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_qp_cqe_count()</span></code></a></li>
@@ -468,6 +470,25 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv424pvrdma_set_stats_pci_ids15pvrdma_handle_t8uint16_t8uint16_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_set_stats_pci_ids()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv421pvrdma_uar_mmio_count15pvrdma_handle_tb"><code class="docutils literal notranslate"><span class="pre">pvrdma_uar_mmio_count()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv418pvrdma_write_stats15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_write_stats()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419pvrdma_dev_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_dev_counters</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters8commandsE"><code class="docutils literal notranslate"><span class="pre">commands</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters21total_bytes_rdma_readE"><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_read</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters22total_bytes_rdma_writeE"><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_write</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters20total_bytes_receivedE"><code class="docutils literal notranslate"><span class="pre">total_bytes_received</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters16total_bytes_sentE"><code class="docutils literal notranslate"><span class="pre">total_bytes_sent</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv418pvrdma_qp_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_qp_counters</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters15bytes_rdma_readE"><code class="docutils literal notranslate"><span class="pre">bytes_rdma_read</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters16bytes_rdma_writeE"><code class="docutils literal notranslate"><span class="pre">bytes_rdma_write</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters14bytes_receivedE"><code class="docutils literal notranslate"><span class="pre">bytes_received</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters10bytes_sentE"><code class="docutils literal notranslate"><span class="pre">bytes_sent</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters11cqes_postedE"><code class="docutils literal notranslate"><span class="pre">cqes_posted</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters13doorbell_recvE"><code class="docutils literal notranslate"><span class="pre">doorbell_recv</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters13doorbell_sendE"><code class="docutils literal notranslate"><span class="pre">doorbell_send</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters14wqes_processedE"><code class="docutils literal notranslate"><span class="pre">wqes_processed</span></code></a></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>
@@ -1010,6 +1031,20 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 </dd></dl>
 
 <dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv423pvrdma_get_dev_counters15pvrdma_handle_tP19pvrdma_dev_counters">
+<span id="_CPPv323pvrdma_get_dev_counters15pvrdma_handle_tP19pvrdma_dev_counters"></span><span id="_CPPv223pvrdma_get_dev_counters15pvrdma_handle_tP19pvrdma_dev_counters"></span><span id="pvrdma_get_dev_counters__pvrdma_handle_t.pvrdma_dev_countersP"></span><span class="target" id="rocm__ernic__compat_8h_1a0f11b1323344414d5215166d7beb0770"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_get_dev_counters</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv419pvrdma_dev_counters" title="pvrdma_dev_counters"><span class="n"><span class="pre">pvrdma_dev_counters</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423pvrdma_get_dev_counters15pvrdma_handle_tP19pvrdma_dev_counters" title="Link to this definition">#</a><br /></dt>
+<dd><p>pvrdma_get_dev_counters - Snapshot the device totals &#64;handle: Device handle &#64;out: Filled on success, zeroed on failure</p>
+<p>Returns 0, or -EINVAL for a NULL handle or &#64;out. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv422pvrdma_get_qp_counters15pvrdma_handle_t8uint32_tP18pvrdma_qp_counters">
+<span id="_CPPv322pvrdma_get_qp_counters15pvrdma_handle_t8uint32_tP18pvrdma_qp_counters"></span><span id="_CPPv222pvrdma_get_qp_counters15pvrdma_handle_t8uint32_tP18pvrdma_qp_counters"></span><span id="pvrdma_get_qp_counters__pvrdma_handle_t.uint32_t.pvrdma_qp_countersP"></span><span class="target" id="rocm__ernic__compat_8h_1af3db38b36d0abe53fc49273697f67577"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_get_qp_counters</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span>, <span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv418pvrdma_qp_counters" title="pvrdma_qp_counters"><span class="n"><span class="pre">pvrdma_qp_counters</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv422pvrdma_get_qp_counters15pvrdma_handle_t8uint32_tP18pvrdma_qp_counters" title="Link to this definition">#</a><br /></dt>
+<dd><p>pvrdma_get_qp_counters - Snapshot one QP’s counters &#64;handle: Device handle &#64;qp_id: QP to read &#64;out: Filled on success, zeroed on failure</p>
+<p>A QP that has not counted anything yet reads as all zeros; this does not create an entry for it. Returns 0, or -EINVAL for a NULL handle or &#64;out. </p>
+</dd></dl>
+
+<dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv428pvrdma_inc_stats_reset_count15pvrdma_handle_t">
 <span id="_CPPv328pvrdma_inc_stats_reset_count15pvrdma_handle_t"></span><span id="_CPPv228pvrdma_inc_stats_reset_count15pvrdma_handle_t"></span><span id="pvrdma_inc_stats_reset_count__pvrdma_handle_t"></span><span class="target" id="rocm__ernic__compat_8h_1a96e27491998598dc66ae025992910cb9"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_inc_stats_reset_count</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv428pvrdma_inc_stats_reset_count15pvrdma_handle_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>pvrdma_inc_stats_reset_count - Increment device reset count for stats &#64;handle: Device handle </p>
@@ -1093,6 +1128,91 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 </dd></dl>
 
 </div>
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv419pvrdma_dev_counters">
+<span id="_CPPv319pvrdma_dev_counters"></span><span id="_CPPv219pvrdma_dev_counters"></span><span id="pvrdma_dev_counters"></span><span class="target" id="structpvrdma__dev__counters"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_dev_counters</span></span></span><a class="headerlink" href="#_CPPv419pvrdma_dev_counters" title="Link to this definition">#</a><br /></dt>
+<dd><div class="docutils container">
+<em>#include &lt;rocm_ernic_compat.h&gt;</em></div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N19pvrdma_dev_counters8commandsE">
+<span id="_CPPv3N19pvrdma_dev_counters8commandsE"></span><span id="_CPPv2N19pvrdma_dev_counters8commandsE"></span><span id="pvrdma_dev_counters::commands__uint64_t"></span><span class="target" id="structpvrdma__dev__counters_1a40fff6387a30754a13b6e39cedcec81b"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">commands</span></span></span><a class="headerlink" href="#_CPPv4N19pvrdma_dev_counters8commandsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N19pvrdma_dev_counters21total_bytes_rdma_readE">
+<span id="_CPPv3N19pvrdma_dev_counters21total_bytes_rdma_readE"></span><span id="_CPPv2N19pvrdma_dev_counters21total_bytes_rdma_readE"></span><span id="pvrdma_dev_counters::total_bytes_rdma_read__uint64_t"></span><span class="target" id="structpvrdma__dev__counters_1a75baae1d24cec40a0a82ff6a0b7d339f"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">total_bytes_rdma_read</span></span></span><a class="headerlink" href="#_CPPv4N19pvrdma_dev_counters21total_bytes_rdma_readE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N19pvrdma_dev_counters22total_bytes_rdma_writeE">
+<span id="_CPPv3N19pvrdma_dev_counters22total_bytes_rdma_writeE"></span><span id="_CPPv2N19pvrdma_dev_counters22total_bytes_rdma_writeE"></span><span id="pvrdma_dev_counters::total_bytes_rdma_write__uint64_t"></span><span class="target" id="structpvrdma__dev__counters_1a424a038606c4572fdec9aeb16b3905f6"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">total_bytes_rdma_write</span></span></span><a class="headerlink" href="#_CPPv4N19pvrdma_dev_counters22total_bytes_rdma_writeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N19pvrdma_dev_counters20total_bytes_receivedE">
+<span id="_CPPv3N19pvrdma_dev_counters20total_bytes_receivedE"></span><span id="_CPPv2N19pvrdma_dev_counters20total_bytes_receivedE"></span><span id="pvrdma_dev_counters::total_bytes_received__uint64_t"></span><span class="target" id="structpvrdma__dev__counters_1acf3bbf2005fb4e0c47c20026811980aa"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">total_bytes_received</span></span></span><a class="headerlink" href="#_CPPv4N19pvrdma_dev_counters20total_bytes_receivedE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N19pvrdma_dev_counters16total_bytes_sentE">
+<span id="_CPPv3N19pvrdma_dev_counters16total_bytes_sentE"></span><span id="_CPPv2N19pvrdma_dev_counters16total_bytes_sentE"></span><span id="pvrdma_dev_counters::total_bytes_sent__uint64_t"></span><span class="target" id="structpvrdma__dev__counters_1aad97134270f973e36d2e3c83fcb456fc"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">total_bytes_sent</span></span></span><a class="headerlink" href="#_CPPv4N19pvrdma_dev_counters16total_bytes_sentE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv418pvrdma_qp_counters">
+<span id="_CPPv318pvrdma_qp_counters"></span><span id="_CPPv218pvrdma_qp_counters"></span><span id="pvrdma_qp_counters"></span><span class="target" id="structpvrdma__qp__counters"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_qp_counters</span></span></span><a class="headerlink" href="#_CPPv418pvrdma_qp_counters" title="Link to this definition">#</a><br /></dt>
+<dd><div class="docutils container">
+<em>#include &lt;rocm_ernic_compat.h&gt;</em></div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters15bytes_rdma_readE">
+<span id="_CPPv3N18pvrdma_qp_counters15bytes_rdma_readE"></span><span id="_CPPv2N18pvrdma_qp_counters15bytes_rdma_readE"></span><span id="pvrdma_qp_counters::bytes_rdma_read__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a993d2217046c3a647a84f21c0b6bb10b"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">bytes_rdma_read</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters15bytes_rdma_readE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters16bytes_rdma_writeE">
+<span id="_CPPv3N18pvrdma_qp_counters16bytes_rdma_writeE"></span><span id="_CPPv2N18pvrdma_qp_counters16bytes_rdma_writeE"></span><span id="pvrdma_qp_counters::bytes_rdma_write__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a353414bb3d993e72c3c26d038b06eb8f"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">bytes_rdma_write</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters16bytes_rdma_writeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters14bytes_receivedE">
+<span id="_CPPv3N18pvrdma_qp_counters14bytes_receivedE"></span><span id="_CPPv2N18pvrdma_qp_counters14bytes_receivedE"></span><span id="pvrdma_qp_counters::bytes_received__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a13b609328a80f02b5581e0aa4c06fb75"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">bytes_received</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters14bytes_receivedE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters10bytes_sentE">
+<span id="_CPPv3N18pvrdma_qp_counters10bytes_sentE"></span><span id="_CPPv2N18pvrdma_qp_counters10bytes_sentE"></span><span id="pvrdma_qp_counters::bytes_sent__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a222ae1090f5d679dfed1c0fc927d5ade"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">bytes_sent</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters10bytes_sentE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters11cqes_postedE">
+<span id="_CPPv3N18pvrdma_qp_counters11cqes_postedE"></span><span id="_CPPv2N18pvrdma_qp_counters11cqes_postedE"></span><span id="pvrdma_qp_counters::cqes_posted__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a2825108e90d67238d54dd2b612e0e83a"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">cqes_posted</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters11cqes_postedE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters13doorbell_recvE">
+<span id="_CPPv3N18pvrdma_qp_counters13doorbell_recvE"></span><span id="_CPPv2N18pvrdma_qp_counters13doorbell_recvE"></span><span id="pvrdma_qp_counters::doorbell_recv__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a1e7b644e64a06d8b0d8708e491e0c9a3"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">doorbell_recv</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters13doorbell_recvE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters13doorbell_sendE">
+<span id="_CPPv3N18pvrdma_qp_counters13doorbell_sendE"></span><span id="_CPPv2N18pvrdma_qp_counters13doorbell_sendE"></span><span id="pvrdma_qp_counters::doorbell_send__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1a806028fa0534587e0f2fc9d26521db73"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">doorbell_send</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters13doorbell_sendE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N18pvrdma_qp_counters14wqes_processedE">
+<span id="_CPPv3N18pvrdma_qp_counters14wqes_processedE"></span><span id="_CPPv2N18pvrdma_qp_counters14wqes_processedE"></span><span id="pvrdma_qp_counters::wqes_processed__uint64_t"></span><span class="target" id="structpvrdma__qp__counters_1aa273dbfc514aaa1fda9e8f1b18335c1e"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">wqes_processed</span></span></span><a class="headerlink" href="#_CPPv4N18pvrdma_qp_counters14wqes_processedE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
 </section>
 </section>
 <section id="ionic-emulation">
@@ -1650,6 +1770,8 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv421pvrdma_device_destroy15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_device_destroy()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv421pvrdma_device_realize15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_device_realize()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422pvrdma_eth_bytes_count15pvrdma_handle_t8uint64_tb"><code class="docutils literal notranslate"><span class="pre">pvrdma_eth_bytes_count()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423pvrdma_get_dev_counters15pvrdma_handle_tP19pvrdma_dev_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_get_dev_counters()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422pvrdma_get_qp_counters15pvrdma_handle_t8uint32_tP18pvrdma_qp_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_get_qp_counters()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428pvrdma_inc_stats_reset_count15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_inc_stats_reset_count()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv416pvrdma_irq_count15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_irq_count()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419pvrdma_qp_cqe_count15pvrdma_handle_t8uint32_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_qp_cqe_count()</span></code></a></li>
@@ -1663,6 +1785,25 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv424pvrdma_set_stats_pci_ids15pvrdma_handle_t8uint16_t8uint16_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_set_stats_pci_ids()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv421pvrdma_uar_mmio_count15pvrdma_handle_tb"><code class="docutils literal notranslate"><span class="pre">pvrdma_uar_mmio_count()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv418pvrdma_write_stats15pvrdma_handle_t"><code class="docutils literal notranslate"><span class="pre">pvrdma_write_stats()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419pvrdma_dev_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_dev_counters</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters8commandsE"><code class="docutils literal notranslate"><span class="pre">commands</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters21total_bytes_rdma_readE"><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_read</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters22total_bytes_rdma_writeE"><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_write</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters20total_bytes_receivedE"><code class="docutils literal notranslate"><span class="pre">total_bytes_received</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N19pvrdma_dev_counters16total_bytes_sentE"><code class="docutils literal notranslate"><span class="pre">total_bytes_sent</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv418pvrdma_qp_counters"><code class="docutils literal notranslate"><span class="pre">pvrdma_qp_counters</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters15bytes_rdma_readE"><code class="docutils literal notranslate"><span class="pre">bytes_rdma_read</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters16bytes_rdma_writeE"><code class="docutils literal notranslate"><span class="pre">bytes_rdma_write</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters14bytes_receivedE"><code class="docutils literal notranslate"><span class="pre">bytes_received</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters10bytes_sentE"><code class="docutils literal notranslate"><span class="pre">bytes_sent</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters11cqes_postedE"><code class="docutils literal notranslate"><span class="pre">cqes_posted</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters13doorbell_recvE"><code class="docutils literal notranslate"><span class="pre">doorbell_recv</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters13doorbell_sendE"><code class="docutils literal notranslate"><span class="pre">doorbell_send</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N18pvrdma_qp_counters14wqes_processedE"><code class="docutils literal notranslate"><span class="pre">wqes_processed</span></code></a></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>
