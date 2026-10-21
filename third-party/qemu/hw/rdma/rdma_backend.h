@@ -38,11 +38,9 @@ void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
 /*
  * Opaque node-to-node transport for the ionic data path.
  *
- * ionic cannot ride the RDMA_WRITE/READ messages above: those resolve rkeys
- * with rdma_rm_get_mr() and write through RdmaRmMR::virt, a host pointer,
- * while ionic MRs are guest-physical page tables reached over vfio-user DMA.
- * So the mesh carries ionic's own protocol as an opaque payload, exactly as
- * it already carries raw Ethernet frames.
+ * ionic MRs are guest-physical page tables reached over vfio-user DMA, which
+ * only the ionic data path can resolve, so the mesh carries ionic's own
+ * protocol as an opaque payload rather than RDMA operations of its own.
  */
 typedef void (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node,
                                   const void *buf, size_t len);
