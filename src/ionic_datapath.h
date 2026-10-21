@@ -290,25 +290,32 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp);
  * third.
  *
  * This is in-network compute: the emulated NIC reads both operand buffers,
- * applies the P4 pipeline's fp8 extern, and writes the single result out to
- * the destination region, instead of the host reading two buffers and
- * writing a third.  The destination is named by an rkey, so the result
- * travels the same path an RDMA WRITE takes -- over the loopback backend,
- * that is the local memory region the rkey resolves to.
+ * applies the fp8 arithmetic, and writes the single result out to the
+ * destination region, instead of the host reading two buffers and writing
+ * a third.
+ *
+ * Note what this is NOT, yet: it calls the arithmetic directly and no P4
+ * program is involved, so which reduction happens is fixed by the caller
+ * rather than decided by a table.  Wiring the pipeline into this path and
+ * making the arithmetic an extern a program calls is what turns it into
+ * something P4 governs; this function is then the extern's implementation
+ * rather than the whole story.  The destination is named by an rkey, so the
+ * result travels the same path an RDMA WRITE takes -- over the loopback
+ * backend, that is the local memory region the rkey resolves to.
  *
  * @op is an enum p4_fp8_op.  @len is the length of each operand buffer in
- * bytes, one fp8 value per byte, capped at IONIC_P4_REDUCE_MAX.  The result
+ * bytes, one fp8 value per byte, capped at IONIC_FP8_REDUCE_MAX.  The result
  * is one byte.
  *
  * Returns 0, or a negative errno: -EINVAL for an argument out of range,
  * -EFAULT when a region could not be read or written in full.
  */
-#define IONIC_P4_REDUCE_MAX 4096u
+#define IONIC_FP8_REDUCE_MAX 4096u
 
-int ionic_datapath_p4_reduce(struct ionic_datapath *dp, uint8_t op,
-                             uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
-                             uint64_t b_va, uint32_t len, uint32_t c_rkey,
-                             uint64_t c_va);
+int ionic_datapath_fp8_reduce(struct ionic_datapath *dp, uint8_t op,
+                              uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                              uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                              uint64_t c_va);
 
 #endif /* ERNIC_HAVE_P4 */
 

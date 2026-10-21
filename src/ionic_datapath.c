@@ -1264,10 +1264,10 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
 }
 
 #ifdef ERNIC_HAVE_P4
-int ionic_datapath_p4_reduce(struct ionic_datapath *dp, uint8_t op,
-                             uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
-                             uint64_t b_va, uint32_t len, uint32_t c_rkey,
-                             uint64_t c_va)
+int ionic_datapath_fp8_reduce(struct ionic_datapath *dp, uint8_t op,
+                              uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                              uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                              uint64_t c_va)
 {
     /*
      * Both operands are staged in host memory rather than reduced in place.
@@ -1275,11 +1275,11 @@ int ionic_datapath_p4_reduce(struct ionic_datapath *dp, uint8_t op,
      * matching elements of each, which a page-at-a-time walk of two
      * independently scattered regions does not give without this.
      */
-    uint8_t a[IONIC_P4_REDUCE_MAX];
-    uint8_t b[IONIC_P4_REDUCE_MAX];
+    uint8_t a[IONIC_FP8_REDUCE_MAX];
+    uint8_t b[IONIC_FP8_REDUCE_MAX];
     uint8_t result;
 
-    if (!dp || len == 0 || len > IONIC_P4_REDUCE_MAX)
+    if (!dp || len == 0 || len > IONIC_FP8_REDUCE_MAX)
         return -EINVAL;
 
     if (dp_sge_to_host(dp, a_lkey, a_va, a, len) != len ||

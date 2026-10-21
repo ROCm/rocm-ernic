@@ -2125,13 +2125,13 @@ static void test_p4_port(void)
 }
 /* ---- In-network reduction across three memory regions ------------------ */
 
-#define P4R_MR_A   0x03000001u
-#define P4R_MR_B   0x03000002u
-#define P4R_MR_C   0x03000003u
-#define P4R_VA_A   UINT64_C(0x7F2000000000)
-#define P4R_VA_B   UINT64_C(0x7F3000000000)
-#define P4R_VA_C   UINT64_C(0x7F4000000000)
-#define P4R_MR_LEN (2u * IH_PAGE_SIZE)
+#define FP8R_MR_A   0x03000001u
+#define FP8R_MR_B   0x03000002u
+#define FP8R_MR_C   0x03000003u
+#define FP8R_VA_A   UINT64_C(0x7F2000000000)
+#define FP8R_VA_B   UINT64_C(0x7F3000000000)
+#define FP8R_VA_C   UINT64_C(0x7F4000000000)
+#define FP8R_MR_LEN (2u * IH_PAGE_SIZE)
 
 /*
  * The worked example: the NIC reads two operand regions, reduces them with
@@ -2140,9 +2140,9 @@ static void test_p4_port(void)
  * this is the RDMA plane, where the loopback backend resolves an rkey to a
  * local region.
  */
-static void test_p4_reduce(void)
+static void test_fp8_reduce(void)
 {
-    const char *T = "p4-reduce";
+    const char *T = "fp8-reduce";
     struct ih h;
     struct ih_mr mra, mrb, mrc;
     uint8_t a[64], b[64], got;
@@ -2151,13 +2151,13 @@ static void test_p4_reduce(void)
         return;
 
     if (!check(T,
-               ih_mr_create(&h, &mra, P4R_MR_A, P4R_VA_A, P4R_MR_LEN,
+               ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, FP8R_MR_LEN,
                             IH_ACCESS_ALL, false) &&
-                   ih_mr_create(&h, &mrb, P4R_MR_B, P4R_VA_B, P4R_MR_LEN,
+                   ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, FP8R_MR_LEN,
                                 IH_ACCESS_ALL, false) &&
                    /* C's pages are reversed, so a write that ignores the
                     * page table lands in the wrong place and shows up. */
-                   ih_mr_create(&h, &mrc, P4R_MR_C, P4R_VA_C, P4R_MR_LEN,
+                   ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, FP8R_MR_LEN,
                                 IH_ACCESS_ALL, true),
                "the three memory regions were not registered")) {
         teardown(T, &h);
@@ -2167,67 +2167,69 @@ static void test_p4_reduce(void)
     /* 1.0 in every element of both operands: 0x38 is E4M3 1.0. */
     memset(a, 0x38, sizeof(a));
     memset(b, 0x38, sizeof(b));
-    check(T, ih_mr_write(&h, &mra, P4R_VA_A, a, sizeof(a)), "write to A");
-    check(T, ih_mr_write(&h, &mrb, P4R_VA_B, b, sizeof(b)), "write to B");
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
 
     /* ADD reduces both regions: 64 elements of 1.0 + 1.0 is 128.0, which
      * E4M3 encodes as 0x70 -- exponent field 14, mantissa 0. */
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                   P4R_VA_A, mrb.lkey, P4R_VA_B, sizeof(a),
-                                   mrc.lkey, P4R_VA_C) == 0,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, sizeof(a),
+                                    mrc.lkey, FP8R_VA_C) == 0,
           "the reduction failed");
-    check(T, ih_mr_read(&h, &mrc, P4R_VA_C, &got, 1), "read back from C");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, &got, 1), "read back from C");
     check(T, got == 0x70, "ADD over 64 pairs of 1.0 gave 0x%02X, want 0x70",
           got);
 
     /* MUL is a dot product: 2.0 . 3.0 over 4 elements is 24.0, 0x5C. */
     memset(a, 0x40, 4); /* 2.0 */
     memset(b, 0x44, 4); /* 3.0 */
-    check(T, ih_mr_write(&h, &mra, P4R_VA_A, a, 4), "write to A");
-    check(T, ih_mr_write(&h, &mrb, P4R_VA_B, b, 4), "write to B");
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, 4), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, 4), "write to B");
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, P4_FP8_OP_MUL, mra.lkey,
-                                   P4R_VA_A, mrb.lkey, P4R_VA_B, 4, mrc.lkey,
-                                   P4R_VA_C) == 0,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_MUL, mra.lkey,
+                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 4, mrc.lkey,
+                                    FP8R_VA_C) == 0,
           "the dot product failed");
-    check(T, ih_mr_read(&h, &mrc, P4R_VA_C, &got, 1), "read back from C");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, &got, 1), "read back from C");
     check(T, got == 0x5C, "the dot product gave 0x%02X, want 0x5C (24.0)", got);
 
     /* A key that was never registered must fault, not read host memory. */
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, 0xDEADBEEFu,
-                                   P4R_VA_A, mrb.lkey, P4R_VA_B, 4, mrc.lkey,
-                                   P4R_VA_C) == -EFAULT,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, 0xDEADBEEFu,
+                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 4, mrc.lkey,
+                                    FP8R_VA_C) == -EFAULT,
           "an unregistered operand key was accepted");
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                   P4R_VA_A, mrb.lkey, P4R_VA_B, 4, 0xDEADBEEFu,
-                                   P4R_VA_C) == -EFAULT,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 4,
+                                    0xDEADBEEFu, FP8R_VA_C) == -EFAULT,
           "an unregistered destination key was accepted");
 
     /* A length past the end of a region must fault rather than run off it. */
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                   P4R_VA_A + P4R_MR_LEN - 8, mrb.lkey,
-                                   P4R_VA_B, 64, mrc.lkey, P4R_VA_C) == -EFAULT,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                    FP8R_VA_A + FP8R_MR_LEN - 8, mrb.lkey,
+                                    FP8R_VA_B, 64, mrc.lkey,
+                                    FP8R_VA_C) == -EFAULT,
           "a read past the end of a region was accepted");
 
     /* Bounds on the request itself. */
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                   P4R_VA_A, mrb.lkey, P4R_VA_B, 0, mrc.lkey,
-                                   P4R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B, 0, mrc.lkey,
+                                    FP8R_VA_C) == -EINVAL,
           "a zero length was accepted");
     check(T,
-          ionic_datapath_p4_reduce(
-              h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, P4R_VA_A, mrb.lkey,
-              P4R_VA_B, IONIC_P4_REDUCE_MAX + 1, mrc.lkey, P4R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                    FP8R_VA_A, mrb.lkey, FP8R_VA_B,
+                                    IONIC_FP8_REDUCE_MAX + 1, mrc.lkey,
+                                    FP8R_VA_C) == -EINVAL,
           "a length over the cap was accepted");
     check(T,
-          ionic_datapath_p4_reduce(h.dev->ionic_dp, 99, mra.lkey, P4R_VA_A,
-                                   mrb.lkey, P4R_VA_B, 4, mrc.lkey,
-                                   P4R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_reduce(h.dev->ionic_dp, 99, mra.lkey, FP8R_VA_A,
+                                    mrb.lkey, FP8R_VA_B, 4, mrc.lkey,
+                                    FP8R_VA_C) == -EINVAL,
           "an unknown operation was accepted");
 
     check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
@@ -2423,7 +2425,7 @@ static const struct {
     {"eth", test_eth},
 #ifdef ERNIC_HAVE_P4
     {"p4-port", test_p4_port},
-    {"p4-reduce", test_p4_reduce},
+    {"fp8-reduce", test_fp8_reduce},
 #endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},

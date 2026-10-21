@@ -233,15 +233,17 @@
   every one of the 256 encodings.
 * The emulated NIC can reduce two registered memory regions to a single
   value and deliver it to a third, instead of the host reading two buffers
-  and writing one. `ionic_datapath_p4_reduce()` reads both operand regions,
+  and writing one. `ionic_datapath_fp8_reduce()` reads both operand regions,
   applies the fp8 extern, and writes the one-byte result out through the
   same path an RDMA WRITE takes, so over the loopback backend it lands in
   whatever region the destination key resolves to. Operand length is capped
   at 4096 bytes, and an unregistered key or a length running past the end of
   a region faults rather than reaching host memory.
-  `tests/test_ionic_harness.c` (CTest `ionic-harness-p4-reduce`) covers it
+  `tests/test_ionic_harness.c` (CTest `ionic-harness-fp8-reduce`) covers it
   across three regions, including the pages of the destination being
-  registered out of order.
+  registered out of order. Note that no P4 program is involved yet: the
+  reduction calls the arithmetic directly, so which one happens is fixed by
+  the caller rather than chosen by a table.
 
 * A compiled P4 program can now be loaded, as far as its header definitions.
   `p4_engine_load_commit()` parses the accumulated bytes as bmv2 JSON --

@@ -46,19 +46,27 @@ sees.
 Status
 ------
 
-**This is the first step and the pipeline is not loaded yet.**
-The port model, the frame path in both directions, the frame
-bounds and the statistics are real; there is no way to load a
-program, so every frame takes the no-program path and is
-forwarded unchanged to the other port. A server started with
-``--p4`` therefore behaves exactly as one started without it.
-That is deliberate: attaching the engine cannot change behaviour
-until a program is actually loaded.
+The engine loads a compiled P4 program and runs it. bmv2's
+own ``loopback.json`` forwards a frame unchanged;
+``simple_router.json`` loads once its checksum section is
+removed. Table entries can be installed, changed and removed,
+so the same program and the same frame can be made to take a
+different path.
 
-Still to come, in order: the program loader, the parser and
-deparser, exact and LPM tables, the control plane, the
-host-facing device API, the remaining match kinds, and then the
-DASH pipeline.
+The pipeline is on the Ethernet path only. RDMA traffic does
+not reach it, so the fp8 reduction in the RDMA data path
+(``ionic_datapath_fp8_reduce()``) calls the arithmetic
+directly rather than through a program -- which reduction
+happens is fixed by the caller, not chosen by a table. Wiring
+the pipeline into the RDMA path and making that arithmetic an
+extern a program calls is what will make it P4-governed.
+
+What is not built yet: checksums and calculations, which is
+the one thing keeping ``simple_router.json`` from loading
+unmodified; counters, meters, registers and action profiles,
+each of which is refused by name rather than ignored; and any
+way for a guest to reach the engine, so a program and its
+entries come from the host today.
 
 The port model
 --------------
