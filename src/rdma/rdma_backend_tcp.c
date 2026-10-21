@@ -337,6 +337,18 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
         uint32_t node_id = GPOINTER_TO_UINT(key);
         const TcpNodeGids *claims = value;
 
+        /*
+         * A node the manager has declared dead keeps its claims but takes
+         * no part in resolution, so its addresses are unreachable rather
+         * than wrong. It also stops contesting them, which is what lets a
+         * node that is restarted -- and so registers under a new id, since
+         * ids are allocated monotonically and a dead node is never evicted
+         * -- own its guest's GID instead of deadlocking against the id it
+         * used to have.
+         */
+        if (!claims->alive)
+            continue;
+
         for (uint32_t i = 0; i < claims->num_gids; i++) {
             GBytes *gid = g_bytes_new(claims->gids[i], 16);
             gpointer held;
@@ -373,6 +385,7 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
         TcpNodeGids *claims = g_new0(TcpNodeGids, 1);
 
         claims->num_gids = num_gids;
+        claims->alive = true; /* it just advertised, so it is answering */
         for (uint32_t i = 0; i < num_gids; i++)
             memcpy(claims->gids[i], gids[i], 16);
         g_hash_table_insert(priv->node_gids, GUINT_TO_POINTER(node_id), claims);
@@ -412,6 +425,32 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                               tcp_gid_str(gids[i], buf), node_id);
         }
     }
+}
+
+void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
+                              bool alive)
+{
+    bool changed = false;
+
+    if (!priv || !priv->node_gids)
+        return;
+
+    qemu_mutex_lock(&priv->gid_table_lock);
+
+    TcpNodeGids *claims =
+        g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(node_id));
+    if (claims && claims->alive != alive) {
+        claims->alive = alive;
+        tcp_gid_index_rebuild(priv);
+        changed = true;
+    }
+
+    qemu_mutex_unlock(&priv->gid_table_lock);
+
+    /* Logged outside the lock: rdma_info_report() can block on stderr. */
+    if (changed)
+        rdma_info_report("TCP: node %u's GIDs are %s", node_id,
+                         alive ? "live again" : "unreachable while it is away");
 }
 
 /*
@@ -2166,7 +2205,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     if (revived) {
                         rdma_info_report("TCP: Node %u is answering again",
                                          conn->node_id);
+                        tcp_gid_claims_set_alive(priv, conn->node_id, true);
                         tcp_broadcast_mesh_topology(priv);
+                        tcp_broadcast_gid_table(priv);
                     }
                 } else {
                     /* Worker received heartbeat probe from manager —
@@ -2767,7 +2808,15 @@ static void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
             g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(nid));
 
         per_node[nodes].node_id = nid;
-        per_node[nodes].num_gids = claims ? claims->num_gids : 0;
+        /*
+         * A dead node is advertised as owning nothing. Workers keep no
+         * liveness of their own -- they take the manager's word for who
+         * owns what -- so this is how they stop resolving a node that is
+         * away, and how they stop seeing its claims contest those of the
+         * same guest returning under a new node id.
+         */
+        per_node[nodes].num_gids =
+            claims && claims->alive ? claims->num_gids : 0;
         for (uint32_t i = 0; i < per_node[nodes].num_gids; i++)
             memcpy(per_node[nodes].gids[i], claims->gids[i], 16);
         nodes++;
@@ -2882,6 +2931,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u disconnected", node->node_id);
                 node->is_alive = false;
+                tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
             }
             item.disconnected = true;
@@ -2893,6 +2943,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                                  "heartbeat: %ld seconds ago)",
                                  node->node_id, (long)dead_sec);
                 node->is_alive = false;
+                tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
             }
 
@@ -3184,8 +3235,10 @@ void *tcp_manager_health_check_thread(void *opaque)
             qemu_mutex_unlock(&conn->lock);
         }
 
-        if (newly_dead)
+        if (newly_dead) {
             tcp_broadcast_mesh_topology(priv);
+            tcp_broadcast_gid_table(priv);
+        }
 
         /*
          * All of the pass's reconnects share one interval.  No heartbeat

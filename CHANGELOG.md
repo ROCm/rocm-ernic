@@ -108,6 +108,21 @@
   The tests that only run a script or CMake are left out.
   `tcp-thread-stop-unit` skips its out-of-descriptors row under valgrind,
   which it detects with `<valgrind/valgrind.h>` when that's installed.
+* `tests/py/` drives real server processes over the vfio-user socket from
+  Python, the way a VMM does, with no VM, RDMA hardware, root, or package
+  outside the standard library. Guest memory is a `memfd` the client maps and
+  the server maps too, so the real DMA path runs. Three suites are registered
+  with CTest: `ernic-vfu-client` (the vfio-user protocol, and the offsets,
+  counts, addresses and interrupt ranges a client must not get away with),
+  `ernic-ionic-driver` (device bring-up, queue pairs, memory regions, work
+  requests and completions, through a server process rather than the
+  in-process harness) and `ernic-mesh-stress` (a three-node mesh under
+  traffic between every pair of nodes, peers sending frames no real node
+  sends, the protocol version gate in both directions, and nodes killed and
+  restarted while the manager's descriptors are counted). They honour
+  `ERNIC_TEST_SERVER_WRAPPER`, so the valgrind leg covers them too, and
+  `test_mesh_stress.py --size N` varies the mesh. They need python3, which
+  the shell suites already needed. Documented in `docs/testing.rst`.
 
 ### Changed
 
@@ -284,6 +299,42 @@
   that layer read it, so it already had no effect.
 
 ### Fixed
+
+* A TCP mesh node that was restarted used to be unreachable for the rest of
+  the mesh's life. The manager allocates node ids monotonically and never
+  evicts a dead node, so the restarted process registered under a new id
+  while the dead one kept its claim on the guest's GID; both ids then
+  claimed the same address and the duplicate-claim rule resolved it to
+  neither, so peers failed `MODIFY_QP` for that destination with "claimed by
+  more than one node". A node the manager has declared dead now keeps its
+  claims but stops owning them, so it neither answers for its addresses nor
+  contests them, and the same guest returning under a new id owns them. A
+  node that is merely late gets its claims back when it answers again,
+  without having to advertise them, and two *live* claimants still contest
+  as before. Restarting one node of a mesh no longer means restarting all of
+  them.
+* The emulated device now refuses a work request whose address and length
+  wrap around the end of the address space before it asks libvfio-user to
+  translate them. libvfio-user's fast path adds the two and compares the
+  sum against the end of the mapped region, so a large enough length wrapped
+  that addition into a small number, which a legitimately mapped region
+  passed; the translation that came back then described the full length.
+  Unsigned wrap-around is defined behaviour, so no sanitizer reported it.
+* An RDMA read or write whose length runs past the end of the region its
+  key names is now refused before anything is transferred. The transfer
+  walked until it ran out of region and only then reported the overrun, so
+  a rejected write had already left its first bytes in the tail of the
+  target region and a rejected read had already copied them out. Both
+  stayed inside the registered region, so neither reached memory the key
+  did not cover. Zero-length operations are still exempt, as the key in one
+  is not required to be valid.
+* A work request naming memory the guest has not registered now fails on
+  the queue pair that posted it, with a local protection error, as InfiniBand
+  requires. A SEND whose gather failed used to complete successfully for the
+  sender and put the error on the peer's receive completion, so the guest
+  was told the wrong thing and the wrong queue pair was blamed; one crossing
+  the mesh sent the peer a request it could not satisfy. No data was
+  transferred in either case, and none is now.
 
 * A server that shut down cleanly removed its socket's path a second time
   after closing the socket, so it could remove the socket of another server

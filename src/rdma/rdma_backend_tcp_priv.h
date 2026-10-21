@@ -215,6 +215,17 @@ _Static_assert(sizeof(TcpNodeGidsPayload) == 8 + TCP_MAX_NODE_GIDS * 16,
 typedef struct {
     uint32_t num_gids;
     uint8_t gids[TCP_MAX_NODE_GIDS][16];
+    /*
+     * Whether the claimant is answering. A dead node's claims are kept but
+     * take no part in resolution, so the node's addresses are unreachable
+     * rather than contested while it is away, and come back with it
+     * without it having to advertise them again. Protected by
+     * gid_table_lock, like the rest of this structure, and deliberately
+     * not read from mesh_nodes: that would mean taking mesh_table_lock
+     * under gid_table_lock, the reverse of the order everything else
+     * takes them in.
+     */
+    bool alive;
 } TcpNodeGids;
 
 /*
@@ -560,6 +571,14 @@ char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN]);
 uint32_t tcp_parse_guest_gids(const char *val,
                               uint8_t out[TCP_MAX_NODE_GIDS][16]);
 void tcp_gid_key_free(gpointer key);
+/*
+ * Mark @node_id's claims live or dead. A node the manager has declared
+ * dead keeps its claims but resolves to nothing; see TcpNodeGids.alive.
+ * Does nothing if the node has no claims.
+ */
+void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
+                              bool alive);
+
 void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids);
 void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,

@@ -116,6 +116,63 @@ To run one group directly, pass its name, for example
 ``ERNIC_FAKE_VFU_LOG_LEVEL`` to a syslog level (``7`` for
 everything) prints the device's ``vfu_log()`` messages.
 
+Driving a server from Python
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``tests/py/`` stands in for a guest VM. Where the harness
+above replaces libvfio-user, these suites keep it: they speak
+the vfio-user protocol to a real ``rocm-ernic`` process over
+its Unix socket, as a VMM does. Guest memory is a ``memfd``
+that the client mmaps and hands to the server in a
+``DMA_MAP``, so the server maps the same pages and the real
+DMA path runs. Nothing here needs a VM, RDMA hardware, root,
+or any package outside the standard library.
+
+The modules under ``tests/py/ernic/`` are:
+
+- ``vfu.py`` -- the vfio-user client and ``GuestMemory``
+- ``server.py`` -- starting server processes, holding them to
+  a shutdown deadline, and counting the descriptors they hold
+- ``ionic.py`` -- the ionic driver, the Python counterpart of
+  ``tests/ionic_harness.c``
+- ``mesh.py`` -- the TCP mesh wire protocol, a fake manager,
+  and a fixture that starts a manager and some workers
+- ``check.py`` -- the small test runner the suites report
+  through
+
+Three suites are registered with CTest:
+
+- ``ernic-vfu-client``: version negotiation, device and
+  region info, PCI configuration space, BAR access, DMA
+  mapping, interrupts, reset and reconnect -- and the
+  offsets, counts, addresses and vector ranges a client must
+  not get away with
+- ``ernic-ionic-driver``: bring-up, connected queue pairs,
+  memory regions whose pages are deliberately out of order,
+  sends with several SGEs or an inline payload, RDMA reads
+  and writes, shared receive queues, and the keys and lengths
+  that must fail
+- ``ernic-mesh-stress``: a three-node mesh under traffic
+  between every pair of nodes, peers that send frames no real
+  node sends, the protocol version gate in both directions,
+  and nodes killed and restarted while the manager's
+  descriptors are counted
+
+.. code-block:: bash
+
+   ctest --test-dir build -R '^ernic-(vfu|ionic-driver|mesh)'
+
+To run one directly, and to vary the mesh:
+
+.. code-block:: bash
+
+   python3 -I tests/py/test_mesh_stress.py \
+       --server build/rocm-ernic --size 5
+
+Like the shell suites, they run the server under the command
+in ``ERNIC_TEST_SERVER_WRAPPER``, so CI's valgrind leg
+covers them too.
+
 NVMe-oF tests
 ^^^^^^^^^^^^^
 

@@ -41,6 +41,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "dma_range.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
@@ -277,6 +278,9 @@ static int dp_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
 
     if (!len)
         return 0;
+
+    if (!ernic_dma_range_ok(gpa, len))
+        return -EINVAL;
 
     sg = malloc(dma_sg_size() * DP_DMA_SGL_MAX);
     if (!sg)
@@ -1385,6 +1389,31 @@ static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
     }
 }
 
+/*
+ * Does every SGE of a work request name memory this guest registered?
+ *
+ * The SGEs of a send queue WQE are always local: the gather source of a
+ * SEND or an RDMA WRITE, the scatter destination of an RDMA READ, the
+ * result buffer of an atomic. So a key that resolves to nothing, or a
+ * length that runs past the region it names, is a local protection error
+ * and belongs on this QP's own send completion.
+ *
+ * A zero-length SGE is skipped rather than checked. It accesses nothing,
+ * and the key in one is not required to be valid -- UCX's rc_verbs flush
+ * posts exactly that.
+ */
+static bool dp_local_sges_ok(struct ionic_datapath *dp,
+                             const struct dp_sge_list *l)
+{
+    for (uint32_t i = 0; i < l->count; i++) {
+        if (l->len[i] == 0)
+            continue;
+        if (!mr_covers(dp, l->lkey[i], l->va[i], l->len[i]))
+            return false;
+    }
+    return true;
+}
+
 /* Walk an SGE list into or out of a linear host buffer. */
 static uint32_t dp_gather(struct ionic_datapath *dp,
                           const struct dp_sge_list *l, uint8_t *dst,
@@ -2291,6 +2320,44 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
     return NULL;
 }
 
+/*
+ * Send-side completion. RC/UC "remote" work requests are retired by a
+ * running MSN sequence; everything else by the SQ index (NPG). Both are
+ * needed for EVERY WQE, signalled or not.
+ *
+ * The signalled-only version of the NPG case was a deadlock. The driver
+ * retires its send queue in ionic_poll_send() by walking sq_meta from
+ * sq.cons and refusing to step over an entry that has no completion:
+ *
+ *     if (!meta->remote && !meta->local_comp)
+ *             goto out_empty;
+ *
+ * local_comp is set by ionic_comp_npg() for the one index a CQE names, and
+ * whether a user-visible work completion is produced is decided after
+ * that, by meta->signal. So the signal flag selects what the driver
+ * reports; it does not select what the device must report. Skip an
+ * unsignalled WQE here and sq.cons stops at it forever: the queue fills,
+ * post_send starts refusing, and the guest goes quiet with nothing dropped
+ * and nothing logged.
+ *
+ * UCX's ud_verbs is the consumer that finds this -- it posts a 256-deep
+ * send queue mostly unsignalled, so it ran to about 243 round trips at
+ * full speed and then both peers parked waiting for each other. The REG_MR
+ * and LOCAL_INV path in process_sq_wqe() completes unconditionally for the
+ * same reason.
+ */
+static void dp_complete_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                             uint32_t qp_id, uint64_t wqe_id, bool remote,
+                             uint32_t status)
+{
+    if (remote) {
+        q->msn++;
+        cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
+    } else {
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+    }
+}
+
 static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
@@ -2356,6 +2423,30 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     bool remote = q->ib_qp_type != 1 /* GSI */ && q->ib_qp_type != 4 /* UD */;
     uint32_t status = IONIC_STS_OK;
+
+    /*
+     * Every SGE above names this guest's own memory, so a key it never
+     * registered, or a length running past the region it names, is a local
+     * protection error and belongs on this QP's send completion.
+     *
+     * Checked here, before the work request is dispatched either way,
+     * because each operation's own failure path reports on whichever side
+     * noticed. A local SEND whose gather failed completed successfully for
+     * the sender and put the error on the peer's receive completion, which
+     * told the sender nothing and blamed a QP that did nothing wrong; a
+     * remote one sent the peer a request it could not satisfy. Nothing is
+     * transferred in either case -- that part was always true -- but the
+     * guest is now told whose fault it was, as IB requires.
+     */
+    if (!dp_local_sges_ok(dp, &src)) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u op %u names memory it has not "
+                "registered",
+                qp_id, op);
+        dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                         IONIC_STS_LOCAL_PROT_ERR);
+        return;
+    }
 
     /*
      * The peer QP lives in another instance: hand the request to the mesh and
@@ -2561,6 +2652,32 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         length = be32toh(length);
 
         bool to_remote = op != IONIC_V1_OP_RDMA_READ;
+
+        /*
+         * Check the far end's range before moving anything, not after.
+         * rdma_xfer() walks until it runs out of region, so an
+         * over-long length used to transfer everything that fitted and
+         * only then report the overrun: a write left its first bytes in
+         * the tail of the peer's region, and a read had already copied
+         * them out. Both stay inside the registered region, so neither
+         * reaches memory the key does not cover, but an operation the
+         * device rejects should not have moved anything.
+         *
+         * Zero length is exempt, and has to be: it accesses nothing, the
+         * spec does not require the R_Key to be validated for one, and
+         * UCX's rc_verbs flush is a zero-length RDMA_WRITE with rkey 0.
+         * The mesh responder path exempts it for the same reason.
+         */
+        if (length != 0 && !mr_covers(dp, rkey, remote_va, length)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#" PRIx64
+                    " len=%u is outside the region",
+                    qp_id, to_remote ? "write" : "read", rkey, remote_va,
+                    length);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+            break;
+        }
+
         uint32_t moved =
             rdma_xfer(dp, &src, rkey, remote_va, length, to_remote);
         if (moved != length) {
@@ -2618,38 +2735,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         break;
     }
 
-    /*
-     * Send-side completion. RC/UC "remote" work requests are retired by a
-     * running MSN sequence; everything else by the SQ index (NPG). Both are
-     * needed for EVERY WQE, signalled or not.
-     *
-     * The signalled-only version of the NPG case was a deadlock. The driver
-     * retires its send queue in ionic_poll_send() by walking sq_meta from
-     * sq.cons and refusing to step over an entry that has no completion:
-     *
-     *     if (!meta->remote && !meta->local_comp)
-     *             goto out_empty;
-     *
-     * local_comp is set by ionic_comp_npg() for the one index a CQE names,
-     * and whether a user-visible work completion is produced is decided
-     * after that, by meta->signal. So the signal flag selects what the
-     * driver reports; it does not select what the device must report. Skip
-     * an unsignalled WQE here and sq.cons stops at it forever: the queue
-     * fills, post_send starts refusing, and the guest goes quiet with
-     * nothing dropped and nothing logged.
-     *
-     * UCX's ud_verbs is the consumer that finds this -- it posts a 256-deep
-     * send queue mostly unsignalled, so it ran to about 243 round trips at
-     * full speed and then both peers parked waiting for each other. The
-     * REG_MR and LOCAL_INV path above already completes unconditionally for
-     * this reason.
-     */
-    if (remote) {
-        q->msn++;
-        cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
-    } else {
-        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
-    }
+    dp_complete_send(dp, q, qp_id, wqe_id, remote, status);
 }
 
 /* -------------------------------------------------------------------------

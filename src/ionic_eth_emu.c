@@ -42,6 +42,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "dma_range.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_priv.h"
 #include "ionic_eth_net.h"
@@ -1129,6 +1130,11 @@ static int eth_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
 
     if (!sg)
         return -ENOMEM;
+
+    if (!ernic_dma_range_ok(gpa, len)) {
+        free(sg);
+        return -EINVAL;
+    }
 
     ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
                           is_write ? PROT_WRITE : PROT_READ);
