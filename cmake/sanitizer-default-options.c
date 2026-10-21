@@ -44,7 +44,17 @@ const char *__asan_default_options(void)
 const char *__ubsan_default_options(void);
 const char *__ubsan_default_options(void)
 {
-    return "print_stacktrace=1";
+    /*
+     * halt_on_error: without it UndefinedBehaviorSanitizer prints a report
+     * and carries on, so the program exits zero and the test it was
+     * running passes.  Every other sanitizer here aborts, and AGENTS.md
+     * says a report is fatal; this is what makes that true of this one
+     * too.  A guest-reachable shift past the width of its type sat in
+     * CREATE_QP while the sanitizer leg was green, because the report went
+     * to stderr and nothing read it.
+     */
+    return "halt_on_error=1:"
+           "print_stacktrace=1";
 }
 
 /* ThreadSanitizer
