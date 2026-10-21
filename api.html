@@ -516,9 +516,14 @@
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#datapath">Datapath</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_CQ_MIN_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_CQ_MIN_STRIDE_LOG2</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_MAX_MR"><code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_MAX_MR_QUEUES"><code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR_QUEUES</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_MR_PER_QUEUE"><code class="docutils literal notranslate"><span class="pre">IONIC_MR_PER_QUEUE</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_RING_MAX_DEPTH_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_RING_MAX_DEPTH_LOG2</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_RING_MAX_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_RING_MAX_STRIDE_LOG2</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_WQE_MAX_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_WQE_MAX_STRIDE_LOG2</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_WQE_MIN_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_WQE_MIN_STRIDE_LOG2</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422ionic_dp_cq_event_fn_t"><code class="docutils literal notranslate"><span class="pre">ionic_dp_cq_event_fn_t</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_datapath_attach_nvmeofP14ionic_datapathPK17nvmeof_target_cfgPc6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_attach_nvmeof()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv424ionic_datapath_attach_s3P14ionic_datapathPK13s3_target_cfgPc6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_attach_s3()</span></code></a></li>
@@ -542,8 +547,10 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_datapath_unregister_mrP14ionic_datapath8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_unregister_mr()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_datapath_unregister_qpP14ionic_datapath8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_unregister_qp()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv429ionic_datapath_unregister_srqP14ionic_datapath8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_unregister_srq()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc"><code class="docutils literal notranslate"><span class="pre">ionic_dp_cq_stride_log2()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419ionic_dp_local_nodeP14ionic_datapath"><code class="docutils literal notranslate"><span class="pre">ionic_dp_local_node()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t"><code class="docutils literal notranslate"><span class="pre">ionic_dp_node_from_gid()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv425ionic_dp_ring_geometry_ok7uint8_t7uint8_t7uint8_t7uint8_t"><code class="docutils literal notranslate"><span class="pre">ionic_dp_ring_geometry_ok()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv417ionic_dp_buf_desc"><code class="docutils literal notranslate"><span class="pre">ionic_dp_buf_desc</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N17ionic_dp_buf_desc8dma_addrE"><code class="docutils literal notranslate"><span class="pre">dma_addr</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N17ionic_dp_buf_desc9map_countE"><code class="docutils literal notranslate"><span class="pre">map_count</span></code></a></li>
@@ -1257,7 +1264,7 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv427ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t">
-<span id="_CPPv327ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t"></span><span id="_CPPv227ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t"></span><span id="ionic_adminq_register_queue__ionic_adminq_ctxP.i.uint64_t.uint8_t.uint64_t.uint8_t.uint32_t.uint32_t"></span><span class="target" id="ionic__adminq_8h_1af40c32f85287ede340e21970588dbfbd"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_adminq_register_queue</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_adminq_ctx</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ctx</span></span>, <span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">aq_idx</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">aq_dma</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">aq_depth_log2</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cq_dma</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cq_depth_log2</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cq_id</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">eq_id</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv427ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv327ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t"></span><span id="_CPPv227ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t"></span><span id="ionic_adminq_register_queue__ionic_adminq_ctxP.i.uint64_t.uint8_t.uint64_t.uint8_t.uint32_t.uint32_t"></span><span class="target" id="ionic__adminq_8h_1a3c4071e63b9c5ef54a5297f210e0a9d0"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_adminq_register_queue</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_adminq_ctx</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ctx</span></span>, <span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">aq_idx</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">aq_dma</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">aq_depth_log2</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cq_dma</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cq_depth_log2</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cq_id</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">eq_id</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv427ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp function">
@@ -1287,6 +1294,11 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-defines">Defines</p>
 <dl class="cpp macro">
+<dt class="sig sig-object cpp" id="c.IONIC_CQ_MIN_STRIDE_LOG2">
+<span class="target" id="ionic__datapath_8h_1ae0a527a68b4e1c2bbef01feeaf0a9df9"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_CQ_MIN_STRIDE_LOG2</span></span></span><a class="headerlink" href="#c.IONIC_CQ_MIN_STRIDE_LOG2" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp macro">
 <dt class="sig sig-object cpp" id="c.IONIC_MAX_MR">
 <span class="target" id="ionic__datapath_8h_1a8e0977827f45f9d18a9bdeeac78186df"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_MAX_MR</span></span></span><a class="headerlink" href="#c.IONIC_MAX_MR" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
@@ -1299,6 +1311,26 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp macro">
 <dt class="sig sig-object cpp" id="c.IONIC_MR_PER_QUEUE">
 <span class="target" id="ionic__datapath_8h_1a0820cd1bc3f23ff50ac9107e6f2c70d1"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_MR_PER_QUEUE</span></span></span><a class="headerlink" href="#c.IONIC_MR_PER_QUEUE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp macro">
+<dt class="sig sig-object cpp" id="c.IONIC_RING_MAX_DEPTH_LOG2">
+<span class="target" id="ionic__datapath_8h_1a6d8cdeaa579f2cc3de0de415eb7c4dd7"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_RING_MAX_DEPTH_LOG2</span></span></span><a class="headerlink" href="#c.IONIC_RING_MAX_DEPTH_LOG2" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp macro">
+<dt class="sig sig-object cpp" id="c.IONIC_RING_MAX_STRIDE_LOG2">
+<span class="target" id="ionic__datapath_8h_1a90b57ebcb42bebc520dbad96f256f8b1"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_RING_MAX_STRIDE_LOG2</span></span></span><a class="headerlink" href="#c.IONIC_RING_MAX_STRIDE_LOG2" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp macro">
+<dt class="sig sig-object cpp" id="c.IONIC_WQE_MAX_STRIDE_LOG2">
+<span class="target" id="ionic__datapath_8h_1af49439d75ce02dd7eafab9fd7da1f61f"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_WQE_MAX_STRIDE_LOG2</span></span></span><a class="headerlink" href="#c.IONIC_WQE_MAX_STRIDE_LOG2" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp macro">
+<dt class="sig sig-object cpp" id="c.IONIC_WQE_MIN_STRIDE_LOG2">
+<span class="target" id="ionic__datapath_8h_1ad7d8d6aa360c0a6aa2e6fa9ec6b9fefd"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_WQE_MIN_STRIDE_LOG2</span></span></span><a class="headerlink" href="#c.IONIC_WQE_MIN_STRIDE_LOG2" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 </div>
@@ -1423,6 +1455,11 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dd></dd></dl>
 
 <dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv423ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc">
+<span id="_CPPv323ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc"></span><span id="_CPPv223ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc"></span><span id="ionic_dp_cq_stride_log2__ionic_dp_ring_descCP"></span><span class="target" id="ionic__datapath_8h_1a72ce349364843df745647184b64ea7dc"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_dp_cq_stride_log2</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv418ionic_dp_ring_desc" title="ionic_dp_ring_desc"><span class="n"><span class="pre">ionic_dp_ring_desc</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ring</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv419ionic_dp_local_nodeP14ionic_datapath">
 <span id="_CPPv319ionic_dp_local_nodeP14ionic_datapath"></span><span id="_CPPv219ionic_dp_local_nodeP14ionic_datapath"></span><span id="ionic_dp_local_node__ionic_datapathP"></span><span class="target" id="ionic__datapath_8h_1af2108d8559a6a328adfe7f4ca8230cf0"></span><span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_dp_local_node</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_datapath</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dp</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv419ionic_dp_local_nodeP14ionic_datapath" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
@@ -1430,6 +1467,11 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv422ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t">
 <span id="_CPPv322ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t"></span><span id="_CPPv222ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t"></span><span id="ionic_dp_node_from_gid__ionic_datapathP.uint8_tCP"></span><span class="target" id="ionic__datapath_8h_1a26dbd6ce7c961f33d5d0731ece90af39"></span><span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_dp_node_from_gid</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_datapath</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dp</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dgid</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv422ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv425ionic_dp_ring_geometry_ok7uint8_t7uint8_t7uint8_t7uint8_t">
+<span id="_CPPv325ionic_dp_ring_geometry_ok7uint8_t7uint8_t7uint8_t7uint8_t"></span><span id="_CPPv225ionic_dp_ring_geometry_ok7uint8_t7uint8_t7uint8_t7uint8_t"></span><span id="ionic_dp_ring_geometry_ok__uint8_t.uint8_t.uint8_t.uint8_t"></span><span class="target" id="ionic__datapath_8h_1ac6903b8127a7145ed410cc4d38e1051e"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_dp_ring_geometry_ok</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">depth_log2</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stride_log2</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">min_stride_log2</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">max_stride_log2</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv425ionic_dp_ring_geometry_ok7uint8_t7uint8_t7uint8_t7uint8_t" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 </div>
@@ -1669,9 +1711,14 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#datapath">Datapath</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_CQ_MIN_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_CQ_MIN_STRIDE_LOG2</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_MAX_MR"><code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_MAX_MR_QUEUES"><code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR_QUEUES</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_MR_PER_QUEUE"><code class="docutils literal notranslate"><span class="pre">IONIC_MR_PER_QUEUE</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_RING_MAX_DEPTH_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_RING_MAX_DEPTH_LOG2</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_RING_MAX_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_RING_MAX_STRIDE_LOG2</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_WQE_MAX_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_WQE_MAX_STRIDE_LOG2</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_WQE_MIN_STRIDE_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_WQE_MIN_STRIDE_LOG2</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422ionic_dp_cq_event_fn_t"><code class="docutils literal notranslate"><span class="pre">ionic_dp_cq_event_fn_t</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_datapath_attach_nvmeofP14ionic_datapathPK17nvmeof_target_cfgPc6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_attach_nvmeof()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv424ionic_datapath_attach_s3P14ionic_datapathPK13s3_target_cfgPc6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_attach_s3()</span></code></a></li>
@@ -1695,8 +1742,10 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_datapath_unregister_mrP14ionic_datapath8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_unregister_mr()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_datapath_unregister_qpP14ionic_datapath8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_unregister_qp()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv429ionic_datapath_unregister_srqP14ionic_datapath8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_datapath_unregister_srq()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc"><code class="docutils literal notranslate"><span class="pre">ionic_dp_cq_stride_log2()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419ionic_dp_local_nodeP14ionic_datapath"><code class="docutils literal notranslate"><span class="pre">ionic_dp_local_node()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv422ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t"><code class="docutils literal notranslate"><span class="pre">ionic_dp_node_from_gid()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv425ionic_dp_ring_geometry_ok7uint8_t7uint8_t7uint8_t7uint8_t"><code class="docutils literal notranslate"><span class="pre">ionic_dp_ring_geometry_ok()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv417ionic_dp_buf_desc"><code class="docutils literal notranslate"><span class="pre">ionic_dp_buf_desc</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N17ionic_dp_buf_desc8dma_addrE"><code class="docutils literal notranslate"><span class="pre">dma_addr</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N17ionic_dp_buf_desc9map_countE"><code class="docutils literal notranslate"><span class="pre">map_count</span></code></a></li>
