@@ -266,6 +266,62 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 `rocm-ernic:<version>`, so a local `docker load` of one overwrites the others
 — push per-arch tags or a manifest list to keep them side by side.
 
+## Using the emulated NIC from another flake
+
+`nixosModules.ernic-guest` adds the emulated ionic NIC to any `qemu-vm.nix`
+guest, and `packages.ernic-run` starts the server around the VM launcher:
+
+```
+# guest configuration
+modules = [
+  "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+  rocm-ernic.nixosModules.ernic-guest
+  { virtualisation.ernic.enable = true; virtualisation.cores = 4; }
+];
+
+# host: start the server, export ERNIC_SOCKET, run the VM, stop the server
+ernic-run --backend loopback -- ./result/bin/run-<host>-vm
+```
+
+The module sets shared memfd guest RAM, q35 with a `pcie-root-port` (`rp0`)
+so QMP `device_del`/`device_add ernic0` can hot-unplug and replug the NIC, and
+the JSON-form `vfio-user-pci` device. It asserts at least 4 vCPUs and a guest
+kernel of 6.18 or newer. Its `ernic-rdma-up` service opens the ionic netdev
+*before* loading `ionic_rdma`. Loaded first, `ionic_rdma` takes every spare
+interrupt for EQs, and `ip link set up` then fails with
+`qcq alloc of rx0 failed -28`.
+
+```
+nix run .#run-ionic-guest-test              # KVM if usable, else TCG
+nix run .#run-ionic-guest-test -- --accel=tcg
+```
+
+This boots a guest on the loopback backend and checks `lspci 1dd8:1002`,
+`rdma link` ACTIVE and `ibv_devinfo` PORT_ACTIVE, with the serial log kept in a
+mktemp evidence directory. It uses the stock nixpkgs QEMU and kernel and needs
+no root, `/dev/vfio` or RDMA hardware.
+
+## Trying the emulated NIC interactively
+
+```
+nix run github:ROCm/rocm-ernic#ionic-vm
+nix run .#ionic-vm -- --ssh-port 2222       # then: ssh -p 2222 root@127.0.0.1
+nix run .#ionic-vm -- --accel=tcg --backend loopback
+```
+
+`ionic-vm` starts the server and boots a NixOS guest (nixpkgs
+`linuxPackages_latest`, 4 vCPUs, 4 GiB) to an autologin root shell on the
+serial console, with `ionic`/`ionic_rdma` bound and the RDMA port ACTIVE. The
+login message lists things to try (`rdma link`, `ibv_devinfo -v`,
+`ethtool -i`, `lspci -nn -d 1dd8:`). Quit with `Ctrl-a x` or `poweroff`.
+
+The guest root is a tmpfs, so each run starts clean. The server log and socket
+live in a mktemp run directory printed at start. `--ssh-port` forwards the
+guest's sshd to `127.0.0.1:PORT` only and hands the host user's
+`~/.ssh/*.pub` keys to the guest through the qemu-vm.nix shared directory;
+root login is key-only. Like `run-ionic-guest-test`, it needs no root,
+`/dev/vfio` or RDMA hardware, and uses KVM when it is usable.
+
 ## Module map
 
 | Path | Purpose |
@@ -276,9 +332,26 @@ inspect as `Architecture: arm64` / `riscv64` and the server ELF inside is
 | `nix/packages.nix` | dependency / tool sets |
 | `nix/derivation.nix` | CMake build of rocm-ernic |
 | `nix/cross.nix` | cross-compile the server for a target arch (crossSystem pkgs) |
+| `nix/guest-module.nix` | `nixosModules.ernic-guest`: emulated NIC for a qemu-vm.nix guest |
+| `nix/ernic-run.nix` | `ernic-run`: start the server around a command, export `ERNIC_SOCKET` |
+| `nix/ionic-guest-test.nix` | `run-ionic-guest-test`: guest reaches PORT_ACTIVE on the in-tree drivers |
+| `nix/ionic-vm.nix` | `ionic-vm`: interactive guest with the emulated NIC, root shell, optional ssh forward |
 | `nix/oci.nix` | OCI image (minimal/debug variants) via dockerTools.streamLayeredImage |
 | `nix/microvms/` | per-arch run layer: TCG microvm + loopback self-test + lifecycle driver (VM arches), qemu-user smoke (armv7l/ppc64le) |
 | `nix/devshell.nix`, `nix/shell-functions/` | dev shell + helpers |
 | `nix/compat-cflags.nix` | gcc-15 C99-error downgrade (build + shell) |
 | `nix/analysis/` | static + dynamic + fuzz analysis modules |
 | `nix/analysis/triage/` | finding prioritiser (Python) |
+
+### Launcher regression checks
+
+`nix build .#checks.x86_64-linux.launchers --no-link -L` exercises the
+packaged `ernic-run` with controlled servers and commands, including
+failed startup, server death, command failures, ignored TERM, interrupted
+launchers, and interactive input. It also checks guest module assertion
+boundaries and JSON encoding of runtime socket paths. No VM is required.
+
+The launcher preserves command exit codes, stops a waiting command when
+its server dies, and gives owned process groups ten seconds to stop before
+using KILL. Caller-owned paths are preserved on rejected startup; temporary
+socket directories created by the launcher are removed when empty.
