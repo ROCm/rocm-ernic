@@ -100,7 +100,7 @@ static uint32_t none_mr_rkey(const RdmaBackendMR *mr)
 
 /* CQ operations - stub implementations */
 static int none_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
-                          int cqe)
+                          uint32_t cqe)
 {
     cq->backend_dev = backend_dev;
     cq->ibcq = NULL;

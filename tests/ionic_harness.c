@@ -659,13 +659,24 @@ bool ih_qp_create(struct ih *h, struct ih_qp *qp, uint32_t id, uint8_t type,
                   const struct ih_cq *scq, const struct ih_cq *rcq,
                   const struct ih_srq *srq)
 {
+    return ih_qp_create_stride(h, qp, id, type, scq, rcq, srq, WQE_STRIDE_LOG2);
+}
+
+bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
+                         uint8_t type, const struct ih_cq *scq,
+                         const struct ih_cq *rcq, const struct ih_srq *srq,
+                         uint8_t sq_stride_log2)
+{
     uint8_t body[64] = {0};
 
+    if (sq_stride_log2 > IH_WQE_MAX_STRIDE_LOG2)
+        return fail("SQ stride 2^%u is above 2^%u", sq_stride_log2,
+                    IH_WQE_MAX_STRIDE_LOG2);
     memset(qp, 0, sizeof(*qp));
     qp->id = id;
     qp->type = type;
     qp->next_wqe_id = 1;
-    if (!ring_alloc(h, &qp->sq, QP_DEPTH_LOG2, WQE_STRIDE_LOG2))
+    if (!ring_alloc(h, &qp->sq, QP_DEPTH_LOG2, sq_stride_log2))
         return false;
     if (!srq && !ring_alloc(h, &qp->rq, QP_DEPTH_LOG2, WQE_STRIDE_LOG2))
         return false;
@@ -673,7 +684,7 @@ bool ih_qp_create(struct ih *h, struct ih_qp *qp, uint32_t id, uint8_t type,
     /* struct ionic_admin_create_qp */
     put_le32(body + 8, scq->id);
     body[12] = QP_DEPTH_LOG2;
-    body[13] = WQE_STRIDE_LOG2;
+    body[13] = sq_stride_log2;
     body[15] = 12;
     put_le32(body + 20, 1);
     put_le64(body + 24, qp->sq.gpa);
@@ -983,8 +994,8 @@ static void put_sges(uint8_t *wqe, const struct ih_sge *sge, uint8_t nsge)
 
 uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
 {
-    const uint32_t stride = 1u << WQE_STRIDE_LOG2;
-    uint8_t wqe[1u << WQE_STRIDE_LOG2];
+    const uint32_t stride = 1u << qp->sq.stride_log2;
+    uint8_t wqe[1u << IH_WQE_MAX_STRIDE_LOG2];
     uint64_t wqe_id = qp->next_wqe_id++;
     uint32_t total = 0;
 
@@ -1064,8 +1075,7 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
         }
     }
 
-    if (!fake_vfu_write(h->vfu, ring_slot(&qp->sq, qp->sq.prod), wqe,
-                        sizeof(wqe))) {
+    if (!fake_vfu_write(h->vfu, ring_slot(&qp->sq, qp->sq.prod), wqe, stride)) {
         fail("SQ write failed");
         return 0;
     }

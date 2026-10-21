@@ -412,9 +412,10 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  * DEPTH: 2^16 entries matches the max_srq_wr the device advertises (0xffff),
  * so no legitimate driver asks for more.
  *
- * STRIDE: 2^8 is the WQE buffer the receive path reads into -- see the
- * rwqe[256] in deliver_recv(). The driver's SRQ WQE is 64 bytes, so this is
- * two doublings of headroom above anything real.
+ * STRIDE: 2^8. The driver's SRQ WQE is 64 bytes, so this is two doublings
+ * of headroom above anything real, and it fits the WQE buffer the receive
+ * path reads into (rwqe in deliver_recv(), which ionic_datapath.c
+ * static-asserts).
  *
  * The stride needs a floor as well as a ceiling, and for a different
  * reason. deliver_recv() reads min(stride, sizeof rwqe) bytes and then

@@ -365,6 +365,21 @@ int ih_cq_destroy(struct ih *h, struct ih_cq *cq);
 bool ih_qp_create(struct ih *h, struct ih_qp *qp, uint32_t id, uint8_t type,
                   const struct ih_cq *scq, const struct ih_cq *rcq,
                   const struct ih_srq *srq);
+
+/*
+ * The largest send WQE stride the device advertises (max_stride in the LIF
+ * identity), as log2 bytes.
+ */
+#define IH_WQE_MAX_STRIDE_LOG2 9u
+
+/*
+ * ih_qp_create(), with a send queue stride of 2^@sq_stride_log2 bytes rather
+ * than the 128 every other QP uses, up to IH_WQE_MAX_STRIDE_LOG2.
+ */
+bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
+                         uint8_t type, const struct ih_cq *scq,
+                         const struct ih_cq *rcq, const struct ih_srq *srq,
+                         uint8_t sq_stride_log2);
 int ih_qp_destroy(struct ih *h, struct ih_qp *qp);
 
 /*

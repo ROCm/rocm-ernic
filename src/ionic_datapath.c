@@ -122,6 +122,11 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
  * a 5 and a 32 to drift apart in separate headers. */
 _Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
                "SRQ stride floor must cover the WQE header");
+_Static_assert((1u << IONIC_WQE_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
+               "WQE stride floor must cover the WQE header");
+/* deliver_recv() reads an SRQ's WQEs into a buffer sized for a QP's. */
+_Static_assert(IONIC_SRQ_MAX_STRIDE_LOG2 <= IONIC_WQE_MAX_STRIDE_LOG2,
+               "SRQ stride ceiling must fit the receive WQE buffer");
 
 /* The datagram half of the send body: which address handle, and which
  * remote QPN. Connected sends ignore both. */
@@ -158,6 +163,9 @@ _Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
 #define CQE_TYPE_RECV     (1u << 5)
 #define CQE_TYPE_SEND_MSN (2u << 5)
 #define CQE_TYPE_SEND_NPG (3u << 5)
+
+_Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
+               "CQ stride floor must be one CQE");
 
 /* enum ionic_v1_cqe_src_qpn_bits */
 #define CQE_RECV_OP_SHIFT    24
@@ -643,15 +651,18 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
         return;
 
     struct ionic_cq_ring *c = &dp->cq[cq_id];
-    uint8_t stride_log2 = ring->stride_log2 ? ring->stride_log2 : 5;
+    uint8_t stride_log2 = ionic_dp_cq_stride_log2(ring);
 
     /*
      * The guest picks this geometry, so it has to be checked before it is
      * used: a stride below CQE_SIZE would make each completion overwrite the
      * one after it, and the shifts are undefined once the exponent reaches the
-     * width of the type.
+     * width of the type. The admin queue refuses such a CQ before this is
+     * called; this keeps the shifts below defined whoever the caller is.
      */
-    if (stride_log2 < 5 || stride_log2 > 16 || ring->depth_log2 > 24) {
+    if (!ionic_dp_ring_geometry_ok(ring->depth_log2, stride_log2,
+                                   IONIC_CQ_MIN_STRIDE_LOG2,
+                                   IONIC_RING_MAX_STRIDE_LOG2)) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u bad geometry depth=2^%u stride=2^%u",
                 cq_id, ring->depth_log2, stride_log2);
@@ -706,6 +717,28 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
         return;
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
+
+    /*
+     * The depths and strides are guest bytes, shifted below. The admin queue
+     * refuses a QP whose rings are out of bounds before this is called; this
+     * keeps the shifts defined whoever the caller is. The RQ has no stride
+     * floor here because a QP bound to an SRQ has no ring of its own and
+     * leaves its geometry zero; the admin queue checks the floor when it
+     * does have one.
+     */
+    if (!ionic_dp_ring_geometry_ok(sq->depth_log2, sq->stride_log2,
+                                   IONIC_WQE_MIN_STRIDE_LOG2,
+                                   IONIC_WQE_MAX_STRIDE_LOG2) ||
+        !ionic_dp_ring_geometry_ok(rq->depth_log2, rq->stride_log2, 0,
+                                   IONIC_WQE_MAX_STRIDE_LOG2)) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: QP %u bad geometry sq(depth=2^%u stride=2^%u) "
+                "rq(depth=2^%u stride=2^%u)",
+                qp_id, sq->depth_log2, sq->stride_log2, rq->depth_log2,
+                rq->stride_log2);
+        return;
+    }
+
     if (ionic_dp_buf_init(
             dp, &q->sq_buf, &sq->buf, 0,
             ionic_dp_ring_span_bytes(sq->depth_log2, sq->stride_log2)) < 0 ||
@@ -1531,7 +1564,9 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     uint64_t run;
     uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
 
-    uint8_t rwqe[256];
+    /* Big enough for the largest stride a QP's RQ or an SRQ can have, so
+     * the whole WQE is read. */
+    uint8_t rwqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
     if (!run || run < read_sz ||
         dp_dma_read(dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
@@ -1547,11 +1582,11 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     /*
      * read_sz, not stride: parse_sges() derives how many SGEs it may walk
      * from the size it is given, and only read_sz bytes were read. Passing
-     * the full stride let a guest-chosen stride_log2 >= 9 authorise walking
-     * up to MAX_SGE entries -- byte 543 of this 256-byte buffer -- because
-     * parse_sges() caps on MAX_SGE and avail/16 but has no idea how much of
-     * the WQE actually arrived. The two agree for every real stride; they
-     * differ only in the case that reads off the end.
+     * a stride larger than the buffer would authorise walking up to
+     * MAX_SGE entries -- byte 543 -- because parse_sges() caps on MAX_SGE
+     * and avail/16 but has no idea how much of the WQE actually arrived.
+     * The ring geometry checks keep the two equal; read_sz is what keeps
+     * the walk inside rwqe if they ever aren't.
      */
     parse_sges(rwqe, read_sz, rwqe[9], &dst);
 
@@ -2365,7 +2400,9 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     uint64_t run;
     uint64_t gpa = buf_gpa(&q->sq_buf, (uint64_t)slot * stride, &run);
 
-    uint8_t wqe[256];
+    /* Big enough for the largest stride an SQ can have, so the whole WQE is
+     * read. */
+    uint8_t wqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
     if (!run || run < read_sz ||
         dp_dma_read(dp->vfu_ctx, gpa, wqe, read_sz) < 0)
@@ -2418,7 +2455,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         src.lkey[0] = 0;
         src.total = inl_len;
     } else {
-        parse_sges(wqe, stride, wqe[9], &src);
+        /* read_sz, not stride, for the reason given in deliver_recv(). */
+        parse_sges(wqe, read_sz, wqe[9], &src);
     }
 
     bool remote = q->ib_qp_type != 1 /* GSI */ && q->ib_qp_type != 4 /* UD */;

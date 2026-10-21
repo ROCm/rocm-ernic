@@ -69,6 +69,12 @@
 #define IONIC_MAX_EQ 32
 #define IONIC_MAX_AQ 4
 
+/* An EQE (struct ionic_v1_eqe) is one be32, so an EQ's stride is at least
+ * 2^2: anything smaller and each event would overwrite part of the next. */
+#define EQ_MIN_STRIDE_LOG2 2u
+_Static_assert((1u << EQ_MIN_STRIDE_LOG2) == sizeof(uint32_t),
+               "EQ stride floor must be one EQE");
+
 /* -------------------------------------------------------------------------
  * State
  * -------------------------------------------------------------------------
@@ -226,14 +232,29 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
     dma_addr = le64toh(dma_addr);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
+    uint8_t depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
+    uint8_t stride_log2 = cmd[RDMA_QUEUE_STRIDE_OFF];
+
+    /* Guest exponents: each event's address is a shift by both. */
+    if (!ionic_dp_ring_geometry_ok(depth_log2, stride_log2, EQ_MIN_STRIDE_LOG2,
+                                   IONIC_RING_MAX_STRIDE_LOG2)) {
+        vfu_log(s->vfu_ctx, LOG_ERR,
+                "ionic_rdma_devcmd: CREATE_EQ qid=%u: refusing depth_log2=%u "
+                "stride_log2=%u (depth max %u, stride %u..%u)",
+                qid, depth_log2, stride_log2, IONIC_RING_MAX_DEPTH_LOG2,
+                EQ_MIN_STRIDE_LOG2, IONIC_RING_MAX_STRIDE_LOG2);
+        comp[0] = 1;
+        return;
+    }
+
     int idx = s->eq_count++;
 
     s->eq[idx].valid = true;
     s->eq[idx].qid = qid;
     s->eq[idx].intr_index = cid;
     s->eq[idx].dma_addr = dma_addr;
-    s->eq[idx].depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
-    s->eq[idx].stride_log2 = cmd[RDMA_QUEUE_STRIDE_OFF];
+    s->eq[idx].depth_log2 = depth_log2;
+    s->eq[idx].stride_log2 = stride_log2;
     s->eq[idx].prod = 0;
     s->eq[idx].color = 1;
 
@@ -258,6 +279,18 @@ static void handle_create_cq(struct ionic_rdma_devcmd_state *s,
     dma_addr = le64toh(dma_addr);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
+
+    /* A guest exponent, which the admin queue sizes the CQ by shifting by.
+     * Refused here, where the guest sent it, rather than at CREATE_ADMINQ.
+     * The stride isn't used: admin CQEs have a fixed size. */
+    if (cmd[RDMA_QUEUE_DEPTH_OFF] > IONIC_RING_MAX_DEPTH_LOG2) {
+        vfu_log(s->vfu_ctx, LOG_ERR,
+                "ionic_rdma_devcmd: CREATE_CQ (admin) qid=%u: refusing "
+                "depth_log2=%u (max %u)",
+                qid, cmd[RDMA_QUEUE_DEPTH_OFF], IONIC_RING_MAX_DEPTH_LOG2);
+        comp[0] = 1;
+        return;
+    }
 
     /* Store as pending; the next CREATE_ADMINQ will consume it.  For a CQ,
      * cid is the id of the EQ that carries its notifications. */
@@ -300,6 +333,18 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
     dma_addr = le64toh(dma_addr);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
+
+    /* A guest exponent, which the admin queue sizes the AQ by shifting by.
+     * The stride isn't used: admin WQEs have a fixed size. */
+    if (cmd[RDMA_QUEUE_DEPTH_OFF] > IONIC_RING_MAX_DEPTH_LOG2) {
+        vfu_log(s->vfu_ctx, LOG_ERR,
+                "ionic_rdma_devcmd: CREATE_ADMINQ qid=%u: refusing "
+                "depth_log2=%u (max %u)",
+                qid, cmd[RDMA_QUEUE_DEPTH_OFF], IONIC_RING_MAX_DEPTH_LOG2);
+        comp[0] = 1;
+        return;
+    }
+
     int idx = s->aq_count++;
 
     s->aq[idx].valid = true;
@@ -331,9 +376,15 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
         }
     }
     ionic_adminq_set_cq_event_cb(s->adminq_ctx, rdma_cq_event_cb, s);
-    ionic_adminq_register_queue(
-        s->adminq_ctx, idx, dma_addr, s->aq[idx].depth_log2, s->pending_cq_dma,
-        s->pending_cq_depth_log2, s->aq[idx].cq_id, s->aq[idx].eq_id);
+    if (!ionic_adminq_register_queue(s->adminq_ctx, idx, dma_addr,
+                                     s->aq[idx].depth_log2, s->pending_cq_dma,
+                                     s->pending_cq_depth_log2, s->aq[idx].cq_id,
+                                     s->aq[idx].eq_id)) {
+        memset(&s->aq[idx], 0, sizeof(s->aq[idx]));
+        s->aq_count = idx;
+        comp[0] = 1;
+        return;
+    }
 
     comp[0] = 0;
 }
@@ -422,6 +473,8 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
     uint32_t evt = (cq_id << 8) | (eq->color ? 1u : 0u);
     uint32_t be_evt = htobe32(evt);
 
+    /* Both exponents were bounded at CREATE_EQ, so the shifts are defined
+     * and prod * stride < 2^(24 + 16) fits a uint64_t. */
     uint32_t depth = 1u << eq->depth_log2;
     uint64_t gpa = eq->dma_addr + (uint64_t)eq->prod * (1u << eq->stride_log2);
 

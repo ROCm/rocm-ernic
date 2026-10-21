@@ -51,6 +51,11 @@
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
+/* The data path refuses a WQE stride above the max_stride advertised here,
+ * and sizes its WQE buffers for it. */
+_Static_assert(IONIC_MAX_STRIDE == IONIC_WQE_MAX_STRIDE_LOG2,
+               "advertised max_stride must match the data path's");
+
 /* -------------------------------------------------------------------------
  * Inline helpers matching linux/byteorder conventions (host = little-endian
  * on x86; ionic wire format is little-endian for most fields).
@@ -1064,10 +1069,12 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(&cq_ring_base, cmd + 28, 8);
     memcpy(&sg_ring_base, cmd + 36, 8);
 
+    /* ring_size is the guest's exponent, and isn't checked until further
+     * down, so it is logged as one rather than shifted by. */
     vfu_log(emu->vfu_ctx, LOG_INFO,
-            "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=%u "
+            "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=2^%u "
             "ring=%#lx cq=%#lx",
-            qtype, index, intr_index, 1u << ring_size,
+            qtype, index, intr_index, ring_size,
             (unsigned long)le64toh(ring_base),
             (unsigned long)le64toh(cq_ring_base));
 

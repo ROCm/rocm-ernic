@@ -300,6 +300,22 @@
 
 ### Fixed
 
+* A send work request with more than 14 SGEs, which the 512-byte WQE
+  stride the device advertises has room for, is now read whole. The device
+  read the first 256 bytes of the WQE and then walked its SGE list as far as
+  the stride reached, past the end of the buffer it had read into, so it
+  gathered from addresses it took from its own stack. A receive WQE that
+  size had the SGEs after its 14th ignored.
+* The emulated device now refuses a queue whose geometry it can't honor,
+  failing the command that creates it: an event, completion or admin queue,
+  or a queue pair's send or receive queue, deeper than 2^24 entries; a send
+  or receive queue with a stride outside 2^5 to 2^9 bytes, the largest being
+  what the device advertises; and a completion or event queue with a stride
+  too small for one entry or above 2^16 bytes. The guest gives these as
+  exponents, which the device shifted by unchecked, and a shift by 32 or
+  more is undefined behaviour. A completion queue the data path refused
+  was also reported to the guest as created. The Linux driver asks for
+  nothing outside these bounds.
 * A TCP mesh node that was restarted used to be unreachable for the rest of
   the mesh's life. The manager allocates node ids monotonically and never
   evicts a dead node, so the restarted process registered under a new id

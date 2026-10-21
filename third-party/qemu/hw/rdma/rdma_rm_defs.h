@@ -85,7 +85,7 @@ typedef struct RdmaRmMR {
 
 typedef struct RdmaRmQP {
     RdmaBackendQP backend_qp;
-    uint32_t qp_type;
+    uint8_t qp_type; /* as rdma_rm_alloc_qp() and the backends take it */
     uint32_t qpn;
     enum ibv_qp_state qp_state;
     /* The backends do not model PSNs, so the values the guest set are only

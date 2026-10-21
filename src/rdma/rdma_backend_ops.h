@@ -56,7 +56,8 @@ struct RdmaBackendOps {
     uint32_t (*mr_rkey)(const RdmaBackendMR *mr);
 
     /* Completion Queue operations */
-    int (*create_cq)(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq, int cqe);
+    int (*create_cq)(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
+                     uint32_t cqe);
     void (*destroy_cq)(RdmaBackendCQ *cq);
 
     /* Queue Pair operations */

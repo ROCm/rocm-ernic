@@ -135,9 +135,7 @@ through its public functions, and `ernic-test-ionic-harness` links all
 of it into the emulated device it drives.
 
 Moving it means taking it out of each of those exemptions and fixing
-what they then report. Built with the compilers' warnings on, it still
-has implicit integer conversions in `rdma_rm.c` that `-Wconversion` and
-`-Wsign-conversion` report, among them the CQ size passed as an `int` to
-a backend's `create_cq()`.
-
-clang-tidy and IWYU haven't been run on it yet.
+what they then report. It already builds without a warning, with GCC and
+Clang in Debug and Release, when its `.c` files are built without `-w`
+and its headers aren't SYSTEM includes. clang-tidy and IWYU haven't been
+run on it yet.
