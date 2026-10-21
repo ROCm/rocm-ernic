@@ -103,6 +103,23 @@ int p4_engine_load_commit(struct p4_engine *eng);
 void p4_engine_load_abort(struct p4_engine *eng);
 
 struct p4_update;
+struct p4_rdma_meta;
+
+/*
+ * Run the loaded program over an RDMA operation.
+ *
+ * Nothing is parsed and nothing is deparsed: the pipeline sees the
+ * operation's metadata and the program's own, and decides only whether to
+ * suppress it.  *@suppress is set accordingly.
+ *
+ * Returns 0, -ENOENT when no program is loaded or the loaded one declares
+ * no rdma_metadata and so was never meant for this path, or another
+ * negative errno when the pipeline could not be run.  A caller that gets
+ * an error must fail the operation rather than carry on: the pipeline is
+ * the policy, and proceeding past a failed one bypasses it.
+ */
+int p4_engine_process_rdma(struct p4_engine *eng,
+                           const struct p4_rdma_meta *meta, bool *suppress);
 
 /*
  * Install, change or remove one table entry.

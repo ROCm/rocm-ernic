@@ -25,6 +25,25 @@
 #define P4_PHV_BYTES 1024
 
 
+/*
+ * The ingress_port an RDMA operation arrives on.
+ *
+ * A VALUE, never an index.  P4_PORT_COUNT stays 2: it bounds the egress
+ * arrays and the drop check in p4_engine_process(), and raising it would
+ * turn an Ethernet frame whose program set egress_spec to 2 from a drop
+ * into a send out of the host backend.
+ */
+#define P4_PORT_RDMA 2u
+
+/* One RDMA operation, as the pipeline sees it. */
+struct p4_rdma_meta {
+    uint8_t opcode;
+    uint32_t qp_num;
+    uint32_t length;
+    uint32_t imm_data;
+    uint32_t rkey;
+};
+
 /* What running the pipeline decided. */
 struct p4_exec_result {
     bool dropped;
@@ -46,5 +65,29 @@ struct p4_entries;
 int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
                 uint32_t ingress_port, const void *frame, size_t len, void *out,
                 size_t out_cap, struct p4_exec_result *res);
+
+/*
+ * Run @prog over an RDMA operation rather than a frame.
+ *
+ * There is nothing to parse -- an RDMA payload is application data, not a
+ * header stack -- so no parser runs, no deparser runs, and the only state
+ * the pipeline sees is @meta plus whatever the program's own metadata
+ * headers hold.  Non-metadata headers stay invalid, so `valid(ethernet)`
+ * is false and reads of its fields give zero, which is what lets one
+ * program serve both planes.
+ *
+ * The verdict is @res->dropped alone.  egress_spec is meaningless here and
+ * is deliberately not read: it is zero in a freshly initialised packet,
+ * zero is a legitimate port, and a table with no entries runs no action at
+ * all -- so keying the verdict on it would suppress every operation on a
+ * device whose tables are empty.
+ *
+ * Returns 0, -EINVAL on a bad argument, or -ENOENT when the program
+ * declares no rdma_metadata and so was never meant for this path.
+ */
+int p4_exec_run_meta(const struct p4_program *prog,
+                     const struct p4_entries *ent,
+                     const struct p4_rdma_meta *meta,
+                     struct p4_exec_result *res);
 
 #endif /* P4_EXEC_H */

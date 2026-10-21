@@ -25,6 +25,8 @@
 #include <string.h>
 
 #include "p4_engine.h"
+#include "p4_exec.h"
+#include "p4_program.h"
 #include "p4_table.h"
 
 static int failures;
@@ -1190,6 +1192,155 @@ static void test_table_entry_errors(void)
     p4_engine_destroy(eng);
 }
 
+/*
+ * A program that matches on an RDMA operation rather than a frame. It
+ * declares rdma_metadata and no parser operations, so it never touches a
+ * packet.
+ */
+#define P4_RDMA_HDRS                                                    \
+    "{\"__meta__\":{\"version\":[2,24]},"                               \
+    "\"header_types\":[{\"name\":\"std_t\",\"id\":0,"                   \
+    "\"fields\":[[\"ingress_port\",9],[\"egress_spec\",9]]},"           \
+    "{\"name\":\"rdma_t\",\"id\":1,"                                    \
+    "\"fields\":[[\"opcode\",8],[\"qp_num\",24],[\"length\",32],"       \
+    "[\"imm_data\",32],[\"rkey\",32]]}],"                               \
+    "\"headers\":[{\"name\":\"standard_metadata\",\"id\":0,"            \
+    "\"header_type\":\"std_t\",\"metadata\":true},"                     \
+    "{\"name\":\"rdma_metadata\",\"id\":1,"                             \
+    "\"header_type\":\"rdma_t\",\"metadata\":true}],"                   \
+    "\"parsers\":[{\"name\":\"p\",\"id\":0,\"init_state\":\"start\","   \
+    "\"parse_states\":[{\"name\":\"start\",\"id\":0,\"parser_ops\":[]," \
+    "\"transition_key\":[],\"transitions\":[{\"value\":\"default\","    \
+    "\"mask\":null,\"next_state\":null}]}]}],"                          \
+    "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[]}],"
+
+/* One table keyed on the operation's opcode, whose action drops. */
+#define P4_RDMA_PROG                                                  \
+    P4_RDMA_HDRS "\"actions\":[{\"name\":\"nope\",\"id\":0,"          \
+                 "\"runtime_data\":[],"                               \
+                 "\"primitives\":[{\"op\":\"drop\","                  \
+                 "\"parameters\":[]}]}],"                             \
+                 "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"     \
+                 "\"init_table\":\"t\",\"tables\":["                  \
+                 "{\"name\":\"t\",\"id\":0,\"match_type\":\"exact\"," \
+                 "\"type\":\"simple\",\"max_size\":16,"               \
+                 "\"with_counters\":false,\"direct_meters\":null,"    \
+                 "\"support_timeout\":false,"                         \
+                 "\"key\":[{\"match_type\":\"exact\","                \
+                 "\"target\":[\"rdma_metadata\",\"opcode\"],"         \
+                 "\"mask\":null}],"                                   \
+                 "\"actions\":[\"nope\"],"                            \
+                 "\"next_tables\":{\"nope\":null}}],"                 \
+                 "\"action_profiles\":[],\"conditionals\":[]}]}"
+
+static void test_rdma_metadata(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    char err[160];
+
+    /* An Ethernet-only program declares no rdma_metadata, and is simply
+     * never run on that path. */
+    check(load_fixture(eng, "loopback.json") == 0, "an Ethernet program "
+                                                   "loads");
+
+    /* Declared at the wrong width, the field would silently carry only
+     * part of every opcode. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"std_t\",\"id\":0,"
+                         "\"fields\":[[\"egress_spec\",9]]},"
+                         "{\"name\":\"rdma_t\",\"id\":1,"
+                         "\"fields\":[[\"opcode\",4]]}],"
+                         "\"headers\":[{\"name\":\"standard_metadata\","
+                         "\"id\":0,\"header_type\":\"std_t\","
+                         "\"metadata\":true},"
+                         "{\"name\":\"rdma_metadata\",\"id\":1,"
+                         "\"header_type\":\"rdma_t\","
+                         "\"metadata\":true}]}") == -EINVAL,
+          "an architecture field at the wrong width is refused");
+    check(strstr(p4_engine_load_error(eng), "must be 8") != NULL,
+          "the error says what the width must be");
+
+    /* Declared as a real header, the architecture's own state could be
+     * put on the wire by the deparser. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"std_t\",\"id\":0,"
+                         "\"fields\":[[\"egress_spec\",9]]},"
+                         "{\"name\":\"rdma_t\",\"id\":1,"
+                         "\"fields\":[[\"opcode\",8]]}],"
+                         "\"headers\":[{\"name\":\"standard_metadata\","
+                         "\"id\":0,\"header_type\":\"std_t\","
+                         "\"metadata\":true},"
+                         "{\"name\":\"rdma_metadata\",\"id\":1,"
+                         "\"header_type\":\"rdma_t\","
+                         "\"metadata\":false}]}") == -EINVAL,
+          "rdma_metadata declared as a wire header is refused");
+
+    (void)err;
+    p4_engine_destroy(eng);
+}
+
+/*
+ * Running the pipeline over an operation. The trap guarded here is the
+ * one that would have bricked the device: a table with no entries runs no
+ * action, egress_spec stays zero, and zero is a real port -- so a verdict
+ * keyed on egress_spec would suppress every operation on a device whose
+ * tables are empty, which is every device until a control plane runs.
+ */
+static void test_rdma_execute(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    bool suppress = false;
+    char err[160];
+
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = 4; /* an RDMA WRITE, say */
+    meta.length = 4096;
+
+    check(load_text(eng, P4_RDMA_PROG) == 0, "the RDMA program loads");
+
+    /* No entries: nothing matches, no action runs, nothing is suppressed. */
+    check(p4_engine_process_rdma(eng, &meta, &suppress) == 0,
+          "the pipeline runs over an operation");
+    check(!suppress,
+          "an empty table suppresses nothing, which is what keeps a device "
+          "with no control plane working");
+
+    /* An entry for this opcode, whose action drops. */
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "t");
+    (void)snprintf(up.action, sizeof(up.action), "nope");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = 4;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not installed: %s", err);
+
+    check(p4_engine_process_rdma(eng, &meta, &suppress) == 0,
+          "the pipeline runs again");
+    check(suppress, "the entry's action suppressed the operation");
+
+    /* An operation whose opcode is not in the table is untouched. */
+    meta.opcode = 5;
+    check(p4_engine_process_rdma(eng, &meta, &suppress) == 0,
+          "another operation runs");
+    check(!suppress, "an opcode with no entry is not suppressed");
+
+    /* An Ethernet-only program is not for this path at all. */
+    check(load_fixture(eng, "loopback.json") == 0, "an Ethernet program "
+                                                   "loads");
+    check(p4_engine_process_rdma(eng, &meta, &suppress) == -ENOENT,
+          "a program with no rdma_metadata is refused on the RDMA path");
+    check(!suppress, "a refused run suppresses nothing");
+
+    check(p4_engine_process_rdma(NULL, &meta, &suppress) == -EINVAL,
+          "a NULL engine is refused");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
@@ -1200,6 +1351,8 @@ int main(void)
     test_execute_wide_field();
     test_table_entries();
     test_table_entry_errors();
+    test_rdma_metadata();
+    test_rdma_execute();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

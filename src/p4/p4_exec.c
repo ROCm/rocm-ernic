@@ -226,9 +226,19 @@ static void operand_value(const struct p4_program *prog,
     }
 }
 
-static void run_action(const struct p4_program *prog, struct p4_phv *phv,
-                       const struct p4_action *act, const struct p4_args *args,
-                       bool *dropped)
+/*
+ * Run one action's primitives.
+ *
+ * Returns 0, or a negative errno when a primitive could not be carried
+ * out.  Nothing that runs here can fail today -- every supported
+ * primitive is total -- but an extern will be able to: it reaches outside
+ * the pipeline, and a failure there has to reach the caller rather than
+ * leaving the operation silently not done while the work request that
+ * asked for it completes successfully.
+ */
+static int run_action(const struct p4_program *prog, struct p4_phv *phv,
+                      const struct p4_action *act, const struct p4_args *args,
+                      bool *dropped)
 {
     for (uint16_t i = 0; i < act->nprimitives; i++) {
         const struct p4_primitive *p = &act->primitives[i];
@@ -264,9 +274,14 @@ static void run_action(const struct p4_program *prog, struct p4_phv *phv,
             phv_set(prog, phv, p->params[0].field, &r);
             break;
         default:
-            break;
+            /* The loader accepts only the primitives above, so reaching
+             * here means the program and the executor disagree about what
+             * was loaded.  Failing the packet is the only honest answer;
+             * carrying on would run some of an action and not the rest. */
+            return -ENOSYS;
         }
     }
+    return 0;
 }
 
 /* ---- conditionals ------------------------------------------------------ */
@@ -361,6 +376,7 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
 {
     p4_idx_t node = pl->init_node;
     unsigned steps = 0;
+    int rc;
     /* The graph was shown acyclic at load; this bounds it anyway, because
      * the thread running it also services the vfio-user poll loop. */
     const unsigned max_steps = (unsigned)pl->nnodes + 1u;
@@ -414,8 +430,10 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
                 args.val[i] = t->default_data[i];
                 args.len[i] = t->default_data_len[i];
             }
-            run_action(prog, phv, &prog->actions[t->default_action], &args,
-                       dropped);
+            rc = run_action(prog, phv, &prog->actions[t->default_action], &args,
+                            dropped);
+            if (rc)
+                return rc;
         }
         node = t->base_default_next;
     }
@@ -469,6 +487,72 @@ static size_t parsed_bytes(const struct p4_program *prog,
             n += hdr_bytes(prog, h);
     }
     return n;
+}
+
+/*
+ * Write an architecture field, if the program declared it.
+ *
+ * The guard is not a nicety: phv_set() indexes prog->headers[ref.header]
+ * without checking, so a write through a reference left at P4_IDX_NONE
+ * would read far past the end of that array.
+ */
+static void meta_set(const struct p4_program *prog, struct p4_phv *phv,
+                     struct p4_field_ref ref, uint32_t v)
+{
+    struct p4_value val;
+
+    if (ref.header == P4_IDX_NONE)
+        return;
+    value_set_u32(&val, v);
+    phv_set(prog, phv, ref, &val);
+}
+
+int p4_exec_run_meta(const struct p4_program *prog,
+                     const struct p4_entries *ent,
+                     const struct p4_rdma_meta *meta,
+                     struct p4_exec_result *res)
+{
+    struct p4_phv phv;
+    bool dropped = false;
+    int rc;
+
+    if (!prog || !meta || !res)
+        return -EINVAL;
+    if (!prog->has_rdma_metadata)
+        return -ENOENT;
+
+    memset(res, 0, sizeof(*res));
+
+    rc = phv_init(prog, &phv);
+    if (rc)
+        return rc;
+
+    /* Metadata is not on a wire, so it is valid from the start. Every
+     * other header stays invalid, which is what makes valid() false and
+     * field reads zero for a program that also serves Ethernet. */
+    for (uint16_t h = 0; h < prog->nheaders; h++) {
+        if (prog->headers[h].metadata)
+            phv.valid[h] = true;
+    }
+
+    meta_set(prog, &phv, prog->ingress_port, P4_PORT_RDMA);
+    meta_set(prog, &phv, prog->rdma_opcode, meta->opcode);
+    meta_set(prog, &phv, prog->rdma_qp_num, meta->qp_num);
+    meta_set(prog, &phv, prog->rdma_length, meta->length);
+    meta_set(prog, &phv, prog->rdma_imm_data, meta->imm_data);
+    meta_set(prog, &phv, prog->rdma_rkey, meta->rkey);
+
+    for (uint16_t p = 0; p < prog->npipelines; p++) {
+        rc = run_pipeline(prog, &phv, ent, (p4_idx_t)p, &prog->pipelines[p],
+                          &dropped);
+        if (rc)
+            return rc;
+    }
+
+    /* egress_spec is deliberately not read; see the header. */
+    res->dropped = dropped;
+    res->len = 0;
+    return 0;
 }
 
 int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,

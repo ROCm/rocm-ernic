@@ -496,6 +496,84 @@ static bool p4_resolve_field(const struct p4_program *prog, const char *hname,
  * program addresses them like any other field, so they are found once here
  * rather than searched for on every packet.
  */
+/*
+ * Resolve one architecture field, requiring the width the architecture
+ * gives it.
+ *
+ * p4_resolve_field() matches on name alone, so a program declaring
+ * `bit<4> opcode` would resolve and then silently carry the low nibble of
+ * every opcode.  A field the architecture defines has a width as much as
+ * it has a name.
+ */
+static bool p4_resolve_arch_field(struct p4_walk *w, const char *hdr,
+                                  const char *field, uint16_t bits,
+                                  struct p4_field_ref *out)
+{
+    const struct p4_header_type *ht;
+
+    out->header = P4_IDX_NONE;
+    out->field = P4_IDX_NONE;
+
+    if (!p4_resolve_field(w->prog, hdr, field, out))
+        return false;
+
+    ht = &w->prog->header_types[w->prog->headers[out->header].header_type];
+    if (ht->fields[out->field].bits != bits) {
+        /* Read the width before clearing the reference, not after: the
+         * message needs the field this used to point at. */
+        uint16_t found = ht->fields[out->field].bits;
+
+        out->header = P4_IDX_NONE;
+        out->field = P4_IDX_NONE;
+        (void)p4_fail(w, -EINVAL, "'%s.%s' is %u bits; it must be %u", hdr,
+                      field, found, bits);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * The RDMA operation, for a program that wants to match on one.
+ *
+ * Entirely optional: a program with no rdma_metadata header is an
+ * Ethernet program and the RDMA path never runs it.  The header must be
+ * declared metadata, because it is architecture state rather than
+ * anything that came off a wire -- a program that declared it otherwise
+ * and listed it in the deparser would put that state on the wire.
+ */
+static int p4_resolve_rdma_metadata(struct p4_walk *w)
+{
+    static const char *const md = "rdma_metadata";
+    static const char *const names[] = {"opcode", "qp_num", "length",
+                                        "imm_data", "rkey"};
+    static const uint16_t widths[] = {8, 24, 32, 32, 32};
+    struct p4_field_ref *const refs[] = {
+        &w->prog->rdma_opcode,   &w->prog->rdma_qp_num, &w->prog->rdma_length,
+        &w->prog->rdma_imm_data, &w->prog->rdma_rkey,
+    };
+    p4_idx_t h = p4_find_header(w->prog, md);
+
+    if (h == P4_IDX_NONE)
+        return 0;
+
+    if (!w->prog->headers[h].metadata)
+        return p4_fail(w, -EINVAL,
+                       "'%s' must be declared metadata; it is architecture "
+                       "state, not something off a wire",
+                       md);
+
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        /* A field the program did not declare is simply one it never
+         * reads; a field it declared at the wrong width is an error. */
+        if (!p4_resolve_arch_field(w, md, names[i], widths[i], refs[i]) &&
+            w->failed)
+            return -EINVAL;
+    }
+
+    w->prog->has_rdma_metadata = true;
+    return 0;
+}
+
 static int p4_resolve_std_metadata(struct p4_walk *w)
 {
     static const char *const std = "standard_metadata";
@@ -2022,6 +2100,9 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (rc)
         goto out;
     rc = p4_resolve_std_metadata(&w);
+    if (rc)
+        goto out;
+    rc = p4_resolve_rdma_metadata(&w);
     if (rc)
         goto out;
     rc = p4_walk_parser(&w, root);

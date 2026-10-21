@@ -297,6 +297,21 @@ struct p4_program {
     struct p4_field_ref egress_spec;
     struct p4_field_ref ingress_port;
 
+    /*
+     * The RDMA operation a program may match on, when it declares a
+     * header called rdma_metadata.  Every field is optional and any the
+     * program does not declare stays P4_IDX_NONE, so a program reads only
+     * what it asked for.  @has_rdma_metadata gates the whole RDMA path:
+     * without the header the pipeline is never run for an operation, and
+     * a program written only for Ethernet costs that path nothing.
+     */
+    bool has_rdma_metadata;
+    struct p4_field_ref rdma_opcode;
+    struct p4_field_ref rdma_qp_num;
+    struct p4_field_ref rdma_length;
+    struct p4_field_ref rdma_imm_data;
+    struct p4_field_ref rdma_rkey;
+
     uint16_t npipelines;
     struct p4_pipeline pipelines[P4_MAX_PIPELINES];
     uint16_t nactions;

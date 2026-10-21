@@ -283,6 +283,21 @@
   and never a silently inert pipeline. The file goes in through the same
   chunked path a control plane uses, so there is one route into the engine
   rather than two.
+* The P4 pipeline can be run over an RDMA operation rather than a frame,
+  which is the first half of putting it on the RDMA path. A program that
+  declares a header called `rdma_metadata` can match on the operation's
+  opcode, queue pair, length, immediate data and destination key; one that
+  does not is an Ethernet program and that path never runs it, so it costs
+  nothing. Nothing is parsed and nothing is deparsed, and the only thing
+  the pipeline decides is whether to suppress the operation. An
+  architecture field declared at the wrong width, or `rdma_metadata`
+  declared as a wire header rather than metadata, is refused at load.
+  `p4_engine_process_rdma()` is the entry point; nothing calls it yet.
+* An action that cannot be carried out now fails the packet instead of
+  being skipped. Nothing that runs today can fail, but an extern reaches
+  outside the pipeline and will be able to, and a failure there must not
+  leave the work silently not done while the request that asked for it
+  completes successfully.
 * Table entries can be installed, changed and removed, so the same program
   and the same frame can be made to take a different path.
   `p4_engine_update()` takes a record shaped like a P4Runtime update --
