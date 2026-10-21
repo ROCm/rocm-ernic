@@ -99,9 +99,29 @@ dependency is taken only when ``ERNIC_BUILD_P4`` is on, so a
 build without the engine -- which is what a superproject sees
 first -- keeps the dependency set it had before.
 
-What is parsed so far is ``__meta__``, the header
-definitions, the parse state machine, the deparser's emit
-order, and the actions. A program that gets that far is well formed,
+A program now loads completely: the header definitions, the
+parse state machine, the deparser's emit order, the actions,
+and the pipelines with their tables and conditionals.
+Executing one is separate and does not exist yet, so a loaded
+program still forwards nothing.
+
+The pipeline graph is checked for cycles at load time, by an
+iterative depth-first search with an explicit stack. A loop
+there would spin the thread that also services the vfio-user
+poll loop, and it is reachable through four different kinds
+of edge -- an action's next table, a table's miss target, and
+either arm of a condition -- so the check covers all of them
+rather than the obvious one.
+
+Two bmv2 behaviours are worth knowing because they are not in
+the format documentation. A table carrying an ``entries`` key
+is immutable in bmv2 *and* takes its size from that list, so
+an empty one is a permanently empty table rather than a
+harmless default; it is refused. And ``max_size`` is the only
+number in the document that names a large allocation without
+the document's own size bounding it, so the entries all
+tables ask for between them are budgeted against a single
+ceiling. A program that gets that far is well formed,
 uses nothing unsupported, and has a consistent header layout,
 and is then refused with ``ENOSYS`` because the rest of the
 walk does not exist yet.

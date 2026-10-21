@@ -250,8 +250,10 @@
   that uses a feature the engine does not have yet is refused by name, so
   `p4_engine_load_error()` reports which one rather than that the file was
   bad. Parsing is not finished: a well-formed program still ends in
-  `ENOSYS` once its headers, parser, deparser and actions are read, and
-  nothing can be run.
+  `ENOSYS`. A program now loads completely -- bmv2's own `loopback.json`
+  does, as does a `simple_router.json` with only its checksum section
+  removed -- but nothing executes one yet, so a loaded program still
+  forwards nothing.
 * `ernic_parse_hexstr()` in `src/parse_int.h` parses a bmv2 hexstr: a
   `0x`-prefixed, variable-width hexadecimal value that may be negative and
   may have an odd number of digits, none of which the existing helpers

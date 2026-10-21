@@ -159,7 +159,132 @@ struct p4_action {
     struct p4_primitive primitives[P4_MAX_PRIMITIVES];
 };
 
+#define P4_MAX_PIPELINES     2
+#define P4_MAX_TABLES        32 /* per pipeline */
+#define P4_MAX_CONDITIONALS  32 /* per pipeline */
+#define P4_MAX_NODES         (P4_MAX_TABLES + P4_MAX_CONDITIONALS)
+#define P4_MAX_TABLE_KEY     8  /* key fields per table */
+#define P4_MAX_TABLE_ACTIONS 16 /* actions per table */
+#define P4_MAX_EXPR_NODES    64 /* per conditional */
+#define P4_MAX_EXPR_DEPTH    8
+
+/*
+ * An aggregate ceiling on the entries all tables together may claim.
+ * max_size is the one number in the document that names a large allocation
+ * without being bounded by the size of the document: a few kilobytes of
+ * JSON can otherwise ask for a gigabyte of host heap.
+ */
+#define P4_MAX_TOTAL_ENTRIES 65536u
+
+enum p4_match_kind {
+    P4_MATCH_EXACT = 0,
+    P4_MATCH_LPM,
+    P4_MATCH_TERNARY,
+};
+
+struct p4_table_key {
+    uint8_t match_type;
+    struct p4_field_ref field;
+};
+
+/*
+ * A table.  @next is the node each action leads to, in the same order as
+ * @actions; @base_default_next is where a miss goes.  That last one is
+ * undocumented and load-bearing: without it a miss falls off the end of
+ * the pipeline, which is a wrong forwarding decision rather than a crash.
+ */
+struct p4_table {
+    char name[P4_MAX_NAME + 1];
+    uint32_t id;
+    uint32_t max_size;
+    uint8_t match_type;
+    uint16_t nkey;
+    uint16_t nactions;
+    struct p4_table_key key[P4_MAX_TABLE_KEY];
+    p4_idx_t actions[P4_MAX_TABLE_ACTIONS]; /* into program actions */
+    p4_idx_t next[P4_MAX_TABLE_ACTIONS];    /* into pipeline nodes */
+    p4_idx_t base_default_next;
+    p4_idx_t default_action; /* P4_IDX_NONE when the program gave none */
+};
+
+enum p4_expr_op {
+    P4_EXPR_VALID = 0,
+    P4_EXPR_EQ,
+    P4_EXPR_NE,
+    P4_EXPR_LT,
+    P4_EXPR_LE,
+    P4_EXPR_GT,
+    P4_EXPR_GE,
+    P4_EXPR_AND,
+    P4_EXPR_OR,
+    P4_EXPR_NOT,
+};
+
+enum p4_expr_operand_kind {
+    P4_EO_NONE = 0, /* a unary operator's absent side */
+    P4_EO_EXPR,
+    P4_EO_FIELD,
+    P4_EO_HEXSTR,
+    P4_EO_HEADER,
+    P4_EO_BOOL,
+};
+
+struct p4_expr_operand {
+    uint8_t kind;
+    bool bval;
+    p4_idx_t expr;   /* P4_EO_EXPR: strictly greater than its parent */
+    p4_idx_t header; /* P4_EO_HEADER */
+    struct p4_field_ref field;
+    uint16_t imm_len;
+    uint8_t imm[P4_MAX_IMM_BYTES];
+};
+
+struct p4_expr_node {
+    uint8_t op;
+    struct p4_expr_operand left;
+    struct p4_expr_operand right;
+};
+
+/*
+ * A conditional.  The expression is a flat array whose root is index 0 and
+ * in which a child's index is always greater than its parent's, so the
+ * tree cannot contain a cycle and can be evaluated without recursion.
+ */
+struct p4_conditional {
+    char name[P4_MAX_NAME + 1];
+    uint32_t id;
+    uint16_t nexpr;
+    p4_idx_t true_next;
+    p4_idx_t false_next;
+    struct p4_expr_node expr[P4_MAX_EXPR_NODES];
+};
+
+enum p4_node_kind {
+    P4_NODE_TABLE = 0,
+    P4_NODE_CONDITIONAL,
+};
+
+/* One step of a pipeline: a table to apply or a condition to test. */
+struct p4_node {
+    uint8_t kind;
+    p4_idx_t index; /* into tables[] or conditionals[] */
+};
+
+struct p4_pipeline {
+    char name[P4_MAX_NAME + 1];
+    uint32_t id;
+    uint16_t ntables;
+    uint16_t nconditionals;
+    uint16_t nnodes;
+    p4_idx_t init_node;
+    struct p4_node nodes[P4_MAX_NODES];
+    struct p4_table tables[P4_MAX_TABLES];
+    struct p4_conditional conditionals[P4_MAX_CONDITIONALS];
+};
+
 struct p4_program {
+    uint16_t npipelines;
+    struct p4_pipeline pipelines[P4_MAX_PIPELINES];
     uint16_t nactions;
     struct p4_action actions[P4_MAX_ACTIONS];
     uint16_t nheader_types;

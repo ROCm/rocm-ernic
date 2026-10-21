@@ -14,6 +14,8 @@
 #include <string.h>
 
 #include <json-c/json_object.h>
+/* json_object_object_foreach expands to the link-hash walkers. */
+#include <json-c/linkhash.h>
 #include <json-c/json_tokener.h>
 
 #include "p4_engine.h"
@@ -1143,6 +1145,716 @@ static int p4_walk_actions(struct p4_walk *w, struct json_object *root)
     return 0;
 }
 
+static const struct {
+    const char *name;
+    uint8_t op;
+    bool unary;
+} p4_expr_ops[] = {
+    {"valid", P4_EXPR_VALID, true}, {"not", P4_EXPR_NOT, true},
+    {"==", P4_EXPR_EQ, false},      {"!=", P4_EXPR_NE, false},
+    {"<", P4_EXPR_LT, false},       {"<=", P4_EXPR_LE, false},
+    {">", P4_EXPR_GT, false},       {">=", P4_EXPR_GE, false},
+    {"and", P4_EXPR_AND, false},    {"or", P4_EXPR_OR, false},
+};
+
+static int p4_walk_expr(struct p4_walk *w, struct json_object *tv,
+                        struct p4_conditional *cond, p4_idx_t *slot,
+                        unsigned depth, const char *where);
+
+/*
+ * One side of an operator. A nested expression is allocated a node of its
+ * own, which always lands after this one, keeping a child's index greater
+ * than its parent's.
+ */
+static int p4_walk_expr_operand(struct p4_walk *w, struct json_object *tv,
+                                struct p4_conditional *cond,
+                                struct p4_expr_operand *dst, unsigned depth,
+                                const char *where)
+{
+    struct json_object *val;
+    char type[P4_MAX_NAME + 1];
+
+    /* null is how a unary operator writes the side it does not use. */
+    if (!tv || json_object_is_type(tv, json_type_null)) {
+        dst->kind = P4_EO_NONE;
+        return 0;
+    }
+    if (!json_object_is_type(tv, json_type_object) ||
+        !p4_get_str(tv, "type", type, sizeof(type)))
+        return p4_fail(w, -EINVAL, "%s has a malformed operand", where);
+    if (!json_object_object_get_ex(tv, "value", &val))
+        return p4_fail(w, -EINVAL, "%s has an operand with no value", where);
+
+    if (strcmp(type, "expression") == 0) {
+        dst->kind = P4_EO_EXPR;
+        return p4_walk_expr(w, tv, cond, &dst->expr, depth + 1, where);
+    }
+    if (strcmp(type, "field") == 0) {
+        char h[P4_MAX_NAME + 1], f[P4_MAX_NAME + 1];
+
+        if (!p4_pair_strings(val, h, sizeof(h), f, sizeof(f)))
+            return p4_fail(w, -EINVAL, "%s names a field badly", where);
+        if (!p4_resolve_field(w->prog, h, f, &dst->field))
+            return p4_fail(w, -EINVAL, "%s uses '%s.%s', which does not exist",
+                           where, h, f);
+        dst->kind = P4_EO_FIELD;
+        return 0;
+    }
+    if (strcmp(type, "header") == 0) {
+        const char *hn;
+
+        if (!json_object_is_type(val, json_type_string))
+            return p4_fail(w, -EINVAL, "%s names a header badly", where);
+        hn = json_object_get_string(val);
+        dst->header = hn ? p4_find_header(w->prog, hn) : P4_IDX_NONE;
+        if (dst->header == P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "%s uses header '%s', which does not "
+                           "exist",
+                           where, hn ? hn : "");
+        dst->kind = P4_EO_HEADER;
+        return 0;
+    }
+    if (strcmp(type, "hexstr") == 0) {
+        size_t n = 0;
+        bool neg = false;
+        const char *vs;
+
+        if (!json_object_is_type(val, json_type_string))
+            return p4_fail(w, -EINVAL, "%s has a non-string literal", where);
+        vs = json_object_get_string(val);
+        if (!vs ||
+            !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg) ||
+            neg)
+            return p4_fail(w, -EINVAL, "%s has a bad literal", where);
+        dst->kind = P4_EO_HEXSTR;
+        dst->imm_len = (uint16_t)n;
+        return 0;
+    }
+    if (strcmp(type, "bool") == 0) {
+        if (!json_object_is_type(val, json_type_boolean))
+            return p4_fail(w, -EINVAL, "%s has a bad boolean", where);
+        dst->kind = P4_EO_BOOL;
+        dst->bval = json_object_get_boolean(val) != 0;
+        return 0;
+    }
+
+    return p4_fail(w, -ENOSYS,
+                   "%s uses a '%s' operand, which is not "
+                   "supported",
+                   where, type);
+}
+
+/*
+ * An expression node. Depth is carried explicitly and bounded here: the
+ * tokener's own depth limit bounds the document, but nothing bounds how
+ * deep this walk recurses except this.
+ */
+static int p4_walk_expr(struct p4_walk *w, struct json_object *tv,
+                        struct p4_conditional *cond, p4_idx_t *slot,
+                        unsigned depth, const char *where)
+{
+    struct json_object *val, *left, *right, *opobj;
+    struct p4_expr_node *node;
+    const char *opname;
+    p4_idx_t self;
+    size_t which;
+    bool known = false;
+    int rc;
+
+    if (depth > P4_MAX_EXPR_DEPTH)
+        return p4_fail(w, -EINVAL, "%s nests more than %d deep", where,
+                       P4_MAX_EXPR_DEPTH);
+    if (cond->nexpr >= P4_MAX_EXPR_NODES)
+        return p4_fail(w, -EINVAL, "%s has more than %d operators", where,
+                       P4_MAX_EXPR_NODES);
+
+    if (!json_object_object_get_ex(tv, "value", &val) ||
+        !json_object_is_type(val, json_type_object))
+        return p4_fail(w, -EINVAL, "%s is malformed", where);
+    if (!json_object_object_get_ex(val, "op", &opobj) ||
+        !json_object_is_type(opobj, json_type_string))
+        return p4_fail(w, -EINVAL, "%s has no operator", where);
+    opname = json_object_get_string(opobj);
+    if (!opname)
+        return p4_fail(w, -EINVAL, "%s has no operator", where);
+
+    for (which = 0; which < sizeof(p4_expr_ops) / sizeof(p4_expr_ops[0]);
+         which++) {
+        if (strcmp(p4_expr_ops[which].name, opname) == 0) {
+            known = true;
+            break;
+        }
+    }
+    if (!known)
+        return p4_fail(w, -ENOSYS,
+                       "%s uses operator '%s', which is not "
+                       "supported",
+                       where, opname);
+
+    /* Claim this node before walking the children, so they land after it. */
+    self = (p4_idx_t)cond->nexpr;
+    cond->nexpr++;
+    *slot = self;
+    node = &cond->expr[self];
+    node->op = p4_expr_ops[which].op;
+
+    left = NULL;
+    right = NULL;
+    (void)json_object_object_get_ex(val, "left", &left);
+    (void)json_object_object_get_ex(val, "right", &right);
+
+    rc = p4_walk_expr_operand(w, left, cond, &node->left, depth, where);
+    if (rc)
+        return rc;
+    rc = p4_walk_expr_operand(w, right, cond, &node->right, depth, where);
+    if (rc)
+        return rc;
+
+    /* A unary operator carries its operand on the right and nothing on the
+     * left; a binary one needs both. Either way round, a missing side
+     * would be read as a value at evaluation time. */
+    if (p4_expr_ops[which].unary) {
+        if (node->left.kind != P4_EO_NONE || node->right.kind == P4_EO_NONE)
+            return p4_fail(w, -EINVAL,
+                           "%s: '%s' takes one operand, on the "
+                           "right",
+                           where, opname);
+    } else if (node->left.kind == P4_EO_NONE ||
+               node->right.kind == P4_EO_NONE) {
+        return p4_fail(w, -EINVAL, "%s: '%s' takes two operands", where,
+                       opname);
+    }
+
+    return 0;
+}
+
+static uint8_t p4_match_kind(const char *s, bool *ok)
+{
+    *ok = true;
+    if (strcmp(s, "exact") == 0)
+        return P4_MATCH_EXACT;
+    if (strcmp(s, "lpm") == 0)
+        return P4_MATCH_LPM;
+    if (strcmp(s, "ternary") == 0)
+        return P4_MATCH_TERNARY;
+    *ok = false;
+    return 0;
+}
+
+/* Find a pipeline node by name, over both tables and conditionals. */
+static p4_idx_t p4_find_node(const struct p4_pipeline *pl, const char *name)
+{
+    for (uint16_t i = 0; i < pl->nnodes; i++) {
+        const struct p4_node *n = &pl->nodes[i];
+        const char *nm = (n->kind == P4_NODE_TABLE)
+                             ? pl->tables[n->index].name
+                             : pl->conditionals[n->index].name;
+
+        if (strcmp(nm, name) == 0)
+            return (p4_idx_t)i;
+    }
+    return P4_IDX_NONE;
+}
+
+/*
+ * Resolve a "next" name to a node. A JSON null means the pipeline ends
+ * here, which is P4_IDX_NONE -- distinct from a name that does not
+ * resolve, which is an error.
+ */
+static int p4_resolve_next(struct p4_walk *w, const struct p4_pipeline *pl,
+                           struct json_object *v, p4_idx_t *out,
+                           const char *where)
+{
+    const char *name;
+
+    if (!v || json_object_is_type(v, json_type_null)) {
+        *out = P4_IDX_NONE;
+        return 0;
+    }
+    if (!json_object_is_type(v, json_type_string))
+        return p4_fail(w, -EINVAL, "%s has a bad next", where);
+    name = json_object_get_string(v);
+    *out = name ? p4_find_node(pl, name) : P4_IDX_NONE;
+    if (*out == P4_IDX_NONE)
+        return p4_fail(w, -EINVAL,
+                       "%s points at '%s', which is not a table "
+                       "or condition",
+                       where, name ? name : "");
+    return 0;
+}
+
+/* One table's key, actions and size. The next pointers come later. */
+static int p4_walk_table(struct p4_walk *w, struct json_object *t,
+                         struct p4_pipeline *pl, struct p4_table *dst,
+                         uint32_t *total_entries)
+{
+    struct json_object *key, *acts, *v;
+    char mt[P4_MAX_NAME + 1];
+    size_t nk, na;
+    uint32_t id, max_size;
+    bool ok, flag;
+
+    if (!p4_get_str(t, "name", dst->name, sizeof(dst->name)))
+        return p4_fail(w, -EINVAL, "a table has a bad name");
+    if (!p4_get_u32(t, "id", 0, P4_MAX_ID, &id))
+        return p4_fail(w, -EINVAL, "table '%s' has a bad id", dst->name);
+    dst->id = id;
+
+    if (!p4_get_str(t, "type", mt, sizeof(mt)))
+        return p4_fail(w, -EINVAL, "table '%s' has no type", dst->name);
+    if (strcmp(mt, "simple") != 0)
+        return p4_fail(w, -ENOSYS,
+                       "table '%s' is of type '%s', which is not "
+                       "supported",
+                       dst->name, mt);
+
+    if (!p4_get_str(t, "match_type", mt, sizeof(mt)))
+        return p4_fail(w, -EINVAL, "table '%s' has no match_type", dst->name);
+    dst->match_type = p4_match_kind(mt, &ok);
+    if (!ok)
+        return p4_fail(w, -ENOSYS,
+                       "table '%s' matches '%s', which is not "
+                       "supported",
+                       dst->name, mt);
+
+    /*
+     * The mere presence of "entries" makes a table immutable in bmv2 and
+     * makes its size the number of entries given, so an empty array is a
+     * permanently empty table rather than a harmless default. Refuse it
+     * either way: there is no control plane to populate one yet.
+     */
+    if (json_object_object_get_ex(t, "entries", &v) &&
+        !json_object_is_type(v, json_type_null))
+        return p4_fail(w, -ENOSYS,
+                       "table '%s' has const entries, which are "
+                       "not supported",
+                       dst->name);
+
+    /* Features that change what a match means, or what happens after it. */
+    if (p4_get_bool(t, "with_counters", &flag) && flag)
+        return p4_fail(w, -ENOSYS, "table '%s' has direct counters", dst->name);
+    if (p4_get_bool(t, "support_timeout", &flag) && flag)
+        return p4_fail(w, -ENOSYS, "table '%s' ages its entries", dst->name);
+    if (json_object_object_get_ex(t, "direct_meters", &v) &&
+        !json_object_is_type(v, json_type_null))
+        return p4_fail(w, -ENOSYS, "table '%s' has a direct meter", dst->name);
+
+    if (!p4_get_u32(t, "max_size", 0, P4_MAX_TOTAL_ENTRIES, &max_size))
+        return p4_fail(w, -EINVAL,
+                       "table '%s' has a bad max_size (at most "
+                       "%u)",
+                       dst->name, P4_MAX_TOTAL_ENTRIES);
+    /*
+     * Subtraction first. max_size is the one number here that names a
+     * large allocation without the document's own size bounding it.
+     */
+    if (max_size > P4_MAX_TOTAL_ENTRIES - *total_entries)
+        return p4_fail(w, -EINVAL,
+                       "the tables ask for more than %u entries between them",
+                       P4_MAX_TOTAL_ENTRIES);
+    *total_entries += max_size;
+    dst->max_size = max_size;
+
+    if (!p4_get_array(t, "key", &key, P4_MAX_TABLE_KEY, &nk))
+        return p4_fail(w, -EINVAL,
+                       "table '%s' has a bad or oversized key "
+                       "(at most %d)",
+                       dst->name, P4_MAX_TABLE_KEY);
+    for (size_t i = 0; i < nk; i++) {
+        struct json_object *kf = json_object_array_get_idx(key, i);
+        struct json_object *tgt;
+        char h[P4_MAX_NAME + 1], f[P4_MAX_NAME + 1];
+
+        if (!kf || !json_object_is_type(kf, json_type_object) ||
+            !p4_get_str(kf, "match_type", mt, sizeof(mt)))
+            return p4_fail(w, -EINVAL, "table '%s' key %zu is malformed",
+                           dst->name, i);
+        dst->key[i].match_type = p4_match_kind(mt, &ok);
+        if (!ok)
+            return p4_fail(w, -ENOSYS,
+                           "table '%s' key %zu matches '%s', which is not "
+                           "supported",
+                           dst->name, i, mt);
+        if (!json_object_object_get_ex(kf, "target", &tgt) ||
+            !p4_pair_strings(tgt, h, sizeof(h), f, sizeof(f)))
+            return p4_fail(w, -EINVAL, "table '%s' key %zu has a bad target",
+                           dst->name, i);
+        if (!p4_resolve_field(w->prog, h, f, &dst->key[i].field))
+            return p4_fail(w, -EINVAL,
+                           "table '%s' matches on '%s.%s', which does not "
+                           "exist",
+                           dst->name, h, f);
+    }
+    dst->nkey = (uint16_t)nk;
+
+    if (!p4_get_array(t, "actions", &acts, P4_MAX_TABLE_ACTIONS, &na))
+        return p4_fail(w, -EINVAL,
+                       "table '%s' has bad or oversized actions (at most %d)",
+                       dst->name, P4_MAX_TABLE_ACTIONS);
+    if (na == 0)
+        return p4_fail(w, -EINVAL, "table '%s' has no actions", dst->name);
+    for (size_t i = 0; i < na; i++) {
+        struct json_object *e = json_object_array_get_idx(acts, i);
+        const char *name;
+
+        if (!e || !json_object_is_type(e, json_type_string))
+            return p4_fail(w, -EINVAL, "table '%s' action %zu is not a name",
+                           dst->name, i);
+        name = json_object_get_string(e);
+        dst->actions[i] = P4_IDX_NONE;
+        for (uint16_t a = 0; name && a < w->prog->nactions; a++) {
+            if (strcmp(w->prog->actions[a].name, name) == 0) {
+                dst->actions[i] = (p4_idx_t)a;
+                break;
+            }
+        }
+        if (dst->actions[i] == P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "table '%s' names action '%s', which does not "
+                           "exist",
+                           dst->name, name ? name : "");
+        dst->next[i] = P4_IDX_NONE;
+    }
+    dst->nactions = (uint16_t)na;
+    dst->base_default_next = P4_IDX_NONE;
+    dst->default_action = P4_IDX_NONE;
+
+    (void)pl;
+    return 0;
+}
+
+/*
+ * next_tables is keyed either by action name or by __HIT__/__MISS__, never
+ * both: a map carrying each would say two different things about where a
+ * hit goes.
+ */
+static int p4_walk_next_tables(struct p4_walk *w, struct json_object *t,
+                               struct p4_pipeline *pl, struct p4_table *dst)
+{
+    struct json_object *nt, *v;
+    bool by_hit = false, by_action = false;
+    char where[P4_MAX_NAME + 48];
+
+    (void)snprintf(where, sizeof(where), "table '%s' next_tables", dst->name);
+
+    if (!p4_get_obj(t, "next_tables", &nt))
+        return p4_fail(w, -EINVAL, "%s is missing or malformed", where);
+
+    json_object_object_foreach(nt, key, val)
+    {
+        if (strcmp(key, "__HIT__") == 0 || strcmp(key, "__MISS__") == 0)
+            by_hit = true;
+        else
+            by_action = true;
+        (void)val;
+    }
+    if (by_hit && by_action)
+        return p4_fail(w, -EINVAL,
+                       "%s mixes __HIT__/__MISS__ with action "
+                       "names",
+                       where);
+
+    if (by_hit) {
+        p4_idx_t hit = P4_IDX_NONE, miss = P4_IDX_NONE;
+        int rc;
+
+        if (json_object_object_get_ex(nt, "__HIT__", &v)) {
+            rc = p4_resolve_next(w, pl, v, &hit, where);
+            if (rc)
+                return rc;
+        }
+        if (json_object_object_get_ex(nt, "__MISS__", &v)) {
+            rc = p4_resolve_next(w, pl, v, &miss, where);
+            if (rc)
+                return rc;
+        }
+        /* Every action goes the same way on a hit. */
+        for (uint16_t i = 0; i < dst->nactions; i++)
+            dst->next[i] = hit;
+        dst->base_default_next = miss;
+        return 0;
+    }
+
+    for (uint16_t i = 0; i < dst->nactions; i++) {
+        const char *aname = w->prog->actions[dst->actions[i]].name;
+        int rc;
+
+        if (!json_object_object_get_ex(nt, aname, &v))
+            return p4_fail(w, -EINVAL, "%s does not say where '%s' goes", where,
+                           aname);
+        rc = p4_resolve_next(w, pl, v, &dst->next[i], where);
+        if (rc)
+            return rc;
+    }
+    /* Any key that is not one of the table's actions names something that
+     * will never be consulted, which is a program that does not mean what
+     * it says. */
+    json_object_object_foreach(nt, key2, val2)
+    {
+        bool found = false;
+
+        (void)val2;
+        for (uint16_t i = 0; i < dst->nactions; i++) {
+            if (strcmp(w->prog->actions[dst->actions[i]].name, key2) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return p4_fail(w, -EINVAL,
+                           "%s names '%s', which is not one of "
+                           "the table's actions",
+                           where, key2);
+    }
+
+    if (json_object_object_get_ex(t, "base_default_next", &v))
+        return p4_resolve_next(w, pl, v, &dst->base_default_next, where);
+    return 0;
+}
+
+/*
+ * The pipeline graph must be acyclic: a cycle would be an infinite loop on
+ * the thread that also services the vfio-user poll loop. Iterative
+ * depth-first search with an explicit stack and colours, so a deep graph
+ * cannot overflow the C stack either.
+ */
+static int p4_check_acyclic(struct p4_walk *w, const struct p4_pipeline *pl)
+{
+    enum { WHITE = 0, GREY, BLACK };
+    uint8_t colour[P4_MAX_NODES];
+    p4_idx_t stack[P4_MAX_NODES + 1];
+    uint16_t edge[P4_MAX_NODES + 1];
+    int sp;
+
+    memset(colour, WHITE, sizeof(colour));
+
+    for (uint16_t start = 0; start < pl->nnodes; start++) {
+        if (colour[start] != WHITE)
+            continue;
+        sp = 0;
+        stack[0] = start;
+        edge[0] = 0;
+        colour[start] = GREY;
+
+        while (sp >= 0) {
+            p4_idx_t cur = stack[sp];
+            const struct p4_node *n = &pl->nodes[cur];
+            p4_idx_t next = P4_IDX_NONE;
+            uint16_t nedges;
+            bool have = false;
+
+            if (n->kind == P4_NODE_TABLE) {
+                const struct p4_table *tb = &pl->tables[n->index];
+
+                nedges = (uint16_t)(tb->nactions + 1);
+                while (edge[sp] < nedges && !have) {
+                    next = (edge[sp] < tb->nactions) ? tb->next[edge[sp]]
+                                                     : tb->base_default_next;
+                    edge[sp]++;
+                    have = (next != P4_IDX_NONE);
+                }
+            } else {
+                const struct p4_conditional *c = &pl->conditionals[n->index];
+
+                nedges = 2;
+                while (edge[sp] < nedges && !have) {
+                    next = (edge[sp] == 0) ? c->true_next : c->false_next;
+                    edge[sp]++;
+                    have = (next != P4_IDX_NONE);
+                }
+            }
+
+            if (!have) {
+                colour[cur] = BLACK;
+                sp--;
+                continue;
+            }
+            if (colour[next] == GREY) {
+                const struct p4_node *bad = &pl->nodes[next];
+
+                return p4_fail(w, -EINVAL, "pipeline '%s' loops back to '%s'",
+                               pl->name,
+                               bad->kind == P4_NODE_TABLE
+                                   ? pl->tables[bad->index].name
+                                   : pl->conditionals[bad->index].name);
+            }
+            if (colour[next] == WHITE) {
+                colour[next] = GREY;
+                sp++;
+                stack[sp] = next;
+                edge[sp] = 0;
+            }
+        }
+    }
+    return 0;
+}
+
+/* One pipeline: its tables and conditionals, then the graph between them. */
+static int p4_walk_pipeline(struct p4_walk *w, struct json_object *p,
+                            struct p4_pipeline *pl)
+{
+    struct json_object *tables, *conds, *v;
+    char init[P4_MAX_NAME + 1];
+    size_t nt, nc;
+    uint32_t id, total_entries = 0;
+    int rc;
+
+    if (!p4_get_str(p, "name", pl->name, sizeof(pl->name)))
+        return p4_fail(w, -EINVAL, "a pipeline has a bad name");
+    if (!p4_get_u32(p, "id", 0, P4_MAX_ID, &id))
+        return p4_fail(w, -EINVAL, "pipeline '%s' has a bad id", pl->name);
+    pl->id = id;
+
+    if (!p4_absent_or_empty(p, "action_profiles"))
+        return p4_fail(w, -ENOSYS, "pipeline '%s' uses an action profile",
+                       pl->name);
+
+    if (!p4_get_array(p, "tables", &tables, P4_MAX_TABLES, &nt))
+        return p4_fail(w, -EINVAL,
+                       "pipeline '%s' has bad or oversized tables (at most "
+                       "%d)",
+                       pl->name, P4_MAX_TABLES);
+    if (!p4_get_array(p, "conditionals", &conds, P4_MAX_CONDITIONALS, &nc))
+        return p4_fail(w, -EINVAL,
+                       "pipeline '%s' has bad or oversized conditionals (at "
+                       "most %d)",
+                       pl->name, P4_MAX_CONDITIONALS);
+
+    for (size_t i = 0; i < nt; i++) {
+        struct json_object *t = json_object_array_get_idx(tables, i);
+
+        if (!t || !json_object_is_type(t, json_type_object))
+            return p4_fail(w, -EINVAL,
+                           "pipeline '%s' table %zu is not an "
+                           "object",
+                           pl->name, i);
+        rc = p4_walk_table(w, t, pl, &pl->tables[i], &total_entries);
+        if (rc)
+            return rc;
+        pl->nodes[pl->nnodes].kind = P4_NODE_TABLE;
+        pl->nodes[pl->nnodes].index = (p4_idx_t)i;
+        pl->nnodes++;
+    }
+    pl->ntables = (uint16_t)nt;
+
+    for (size_t i = 0; i < nc; i++) {
+        struct json_object *c = json_object_array_get_idx(conds, i);
+        struct p4_conditional *cd = &pl->conditionals[i];
+        struct json_object *expr;
+        char where[P4_MAX_NAME + 48];
+        p4_idx_t root = P4_IDX_NONE;
+
+        if (!c || !json_object_is_type(c, json_type_object))
+            return p4_fail(w, -EINVAL,
+                           "pipeline '%s' conditional %zu is not an object",
+                           pl->name, i);
+        if (!p4_get_str(c, "name", cd->name, sizeof(cd->name)))
+            return p4_fail(w, -EINVAL, "a conditional has a bad name");
+        if (!p4_get_u32(c, "id", 0, P4_MAX_ID, &id))
+            return p4_fail(w, -EINVAL, "conditional '%s' has a bad id",
+                           cd->name);
+        cd->id = id;
+
+        (void)snprintf(where, sizeof(where), "condition '%s'", cd->name);
+        if (!json_object_object_get_ex(c, "expression", &expr))
+            return p4_fail(w, -EINVAL, "%s has no expression", where);
+        rc = p4_walk_expr(w, expr, cd, &root, 0, where);
+        if (rc)
+            return rc;
+        if (root != 0)
+            return p4_fail(w, -EINVAL, "%s has a misplaced root", where);
+
+        pl->nodes[pl->nnodes].kind = P4_NODE_CONDITIONAL;
+        pl->nodes[pl->nnodes].index = (p4_idx_t)i;
+        pl->nnodes++;
+    }
+    pl->nconditionals = (uint16_t)nc;
+
+    /* Every node is named now, so forward references resolve. */
+    for (size_t i = 0; i < nt; i++) {
+        rc = p4_walk_next_tables(w, json_object_array_get_idx(tables, i), pl,
+                                 &pl->tables[i]);
+        if (rc)
+            return rc;
+    }
+    for (size_t i = 0; i < nc; i++) {
+        struct json_object *c = json_object_array_get_idx(conds, i);
+        struct p4_conditional *cd = &pl->conditionals[i];
+        char where[P4_MAX_NAME + 48];
+
+        (void)snprintf(where, sizeof(where), "condition '%s'", cd->name);
+        /* json_object_object_get_ex() writes its output only when it finds
+         * the key, so each lookup starts from NULL -- which is also how an
+         * absent next is meant to read: the pipeline ends there. */
+        v = NULL;
+        (void)json_object_object_get_ex(c, "true_next", &v);
+        rc = p4_resolve_next(w, pl, v, &cd->true_next, where);
+        if (rc)
+            return rc;
+        v = NULL;
+        (void)json_object_object_get_ex(c, "false_next", &v);
+        rc = p4_resolve_next(w, pl, v, &cd->false_next, where);
+        if (rc)
+            return rc;
+    }
+
+    if (!p4_get_str(p, "init_table", init, sizeof(init))) {
+        /* A pipeline with nothing in it has no entry point, which is how
+         * p4c writes an empty egress. */
+        if (pl->nnodes == 0) {
+            pl->init_node = P4_IDX_NONE;
+            return 0;
+        }
+        return p4_fail(w, -EINVAL, "pipeline '%s' has no init_table", pl->name);
+    }
+    pl->init_node = p4_find_node(pl, init);
+    if (pl->init_node == P4_IDX_NONE)
+        return p4_fail(w, -EINVAL,
+                       "pipeline '%s' starts at '%s', which is not one of "
+                       "its nodes",
+                       pl->name, init);
+
+    return p4_check_acyclic(w, pl);
+}
+
+static int p4_walk_pipelines(struct p4_walk *w, struct json_object *root)
+{
+    struct json_object *arr;
+    size_t n;
+    bool have_ingress = false;
+
+    if (!p4_get_array(root, "pipelines", &arr, P4_MAX_PIPELINES, &n))
+        return p4_fail(w, -EINVAL,
+                       "missing, malformed, or oversized 'pipelines' (at "
+                       "most %d)",
+                       P4_MAX_PIPELINES);
+
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *p = json_object_array_get_idx(arr, i);
+        int rc;
+
+        if (!p || !json_object_is_type(p, json_type_object))
+            return p4_fail(w, -EINVAL, "pipelines[%zu] is not an object", i);
+        rc = p4_walk_pipeline(w, p, &w->prog->pipelines[i]);
+        if (rc)
+            return rc;
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(w->prog->pipelines[j].name,
+                       w->prog->pipelines[i].name) == 0)
+                return p4_fail(w, -EINVAL, "duplicate pipeline '%s'",
+                               w->prog->pipelines[i].name);
+        }
+        if (strcmp(w->prog->pipelines[i].name, "ingress") == 0)
+            have_ingress = true;
+    }
+    w->prog->npipelines = (uint16_t)n;
+
+    if (!have_ingress)
+        return p4_fail(w, -EINVAL, "no 'ingress' pipeline");
+    return 0;
+}
+
 int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
                   char *err, size_t err_len)
 {
@@ -1219,13 +1931,15 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     rc = p4_walk_actions(&w, root);
     if (rc)
         goto out;
+    rc = p4_walk_pipelines(&w, root);
+    if (rc)
+        goto out;
 
     /*
-     * The pipelines come next.  Until they do, a document
-     * that gets this far is well formed, uses nothing unsupported, and has
-     * a consistent header layout -- but there is still nothing to run.
+     * The program is loaded.  Executing it is a separate matter: nothing
+     * runs a pipeline yet, so a loaded program still forwards nothing.
      */
-    rc = p4_fail(&w, -ENOSYS, "the program walker is not finished yet");
+    rc = 0;
 
 out:
     if (rc != 0) {

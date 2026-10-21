@@ -412,9 +412,9 @@ static void test_load_parses(void)
     /* Header types and their fields, with a parser and deparser so the
      * walk reaches the part that is not written yet. */
     {
-        check(load_text(eng, P4_SKELETON) == -ENOSYS,
-              "a well-formed program is walked to the end of what exists");
-        check(strstr(p4_engine_load_error(eng), "not finished") != NULL,
+        check(load_text(eng, P4_SKELETON) == -EINVAL,
+              "a program with no pipelines is refused");
+        check(strstr(p4_engine_load_error(eng), "pipelines") != NULL,
               "the walk got past the parser, deparser and actions");
     }
 
@@ -472,19 +472,19 @@ static void test_load_parses(void)
                                 "{\"type\":\"field\","
                                 "\"value\":[\"eth\",\"src\"]},"
                                 "{\"type\":\"runtime_data\","
-                                "\"value\":0}]}]}")) == -ENOSYS,
+                                "\"value\":0}]}]}")) == -EINVAL,
           "modify_field from a runtime argument is walked");
     check(load_text(eng, P4_ACT("{\"name\":\"d\",\"id\":0,"
                                 "\"runtime_data\":[],"
                                 "\"primitives\":[{\"op\":\"drop\","
-                                "\"parameters\":[]}]}")) == -ENOSYS,
+                                "\"parameters\":[]}]}")) == -EINVAL,
           "drop with no parameter is walked");
     check(load_text(eng, P4_ACT("{\"name\":\"d\",\"id\":0,"
                                 "\"runtime_data\":[],"
                                 "\"primitives\":[{\"op\":\"mark_to_drop\","
                                 "\"parameters\":[{\"type\":\"header\","
                                 "\"value\":\"standard_metadata\"}]}]}")) ==
-              -ENOSYS,
+              -EINVAL,
           "mark_to_drop with its metadata parameter is walked");
     /* A negative literal, which simple_router.json uses to decrement a
      * TTL and which neither older hexstr helper accepted. */
@@ -495,7 +495,7 @@ static void test_load_parses(void)
                                 "{\"type\":\"field\","
                                 "\"value\":[\"eth\",\"ty\"]},"
                                 "{\"type\":\"hexstr\","
-                                "\"value\":\"-0x1\"}]}]}")) == -ENOSYS,
+                                "\"value\":\"-0x1\"}]}]}")) == -EINVAL,
           "a negative literal is walked");
 
     /* Rejections. */
@@ -619,6 +619,147 @@ static void test_load_parses(void)
                          "\"fields\":[[\"f\",8]]}]}") == -EINVAL,
           "a name containing a newline is refused");
 
+    /* Pipelines, tables and conditionals. */
+#define P4_PIPE(body)                                   \
+    P4_FRONT "\"actions\":[{\"name\":\"a\",\"id\":0,"   \
+             "\"runtime_data\":[],\"primitives\":[]}]," \
+             "\"pipelines\":[" body "]}"
+
+#define P4_TBL(name, nextbody)                                  \
+    "{\"name\":\"" name "\",\"id\":0,\"match_type\":\"exact\"," \
+    "\"type\":\"simple\",\"max_size\":16,"                      \
+    "\"with_counters\":false,\"direct_meters\":null,"           \
+    "\"support_timeout\":false,"                                \
+    "\"key\":[{\"match_type\":\"exact\","                       \
+    "\"target\":[\"eth\",\"dst\"],\"mask\":null}],"             \
+    "\"actions\":[\"a\"],\"next_tables\":" nextbody "}"
+
+    check(load_text(eng,
+                    P4_PIPE("{\"name\":\"ingress\",\"id\":0,"
+                            "\"init_table\":\"t\",\"tables\":[" P4_TBL(
+                                "t", "{\"a\":null}") "],\"action_profiles\":[],"
+                                                     "\"conditionals\":[]}")) ==
+              0,
+          "a one-table pipeline loads");
+
+    /* A table that leads back to itself is an infinite loop on the thread
+     * that also services the vfio-user poll loop. */
+    check(load_text(
+              eng, P4_PIPE("{\"name\":\"ingress\",\"id\":0,"
+                           "\"init_table\":\"t\",\"tables\":[" P4_TBL(
+                               "t", "{\"a\":\"t\"}") "],\"action_profiles\":[],"
+                                                     "\"conditionals\":[]}")) ==
+              -EINVAL,
+          "a self-looping table is refused");
+    check(strstr(p4_engine_load_error(eng), "loops back") != NULL,
+          "the error says the pipeline loops");
+
+    /* A two-table cycle, which a single-node check would miss. */
+    check(
+        load_text(
+            eng,
+            P4_PIPE(
+                "{\"name\":\"ingress\",\"id\":0,"
+                "\"init_table\":\"t\",\"tables\":[" P4_TBL(
+                    "t",
+                    "{\"a\":\"u\"}") "," P4_TBL("u",
+                                                "{\"a\":\"t\"}") "],\"action_"
+                                                                 "profiles\":[]"
+                                                                 ","
+                                                                 "\"conditional"
+                                                                 "s\":[]}")) ==
+            -EINVAL,
+        "a two-table cycle is refused");
+
+    /* A cycle reachable only through the miss path. */
+    check(load_text(eng, P4_PIPE("{\"name\":\"ingress\",\"id\":0,"
+                                 "\"init_table\":\"t\",\"tables\":["
+                                 "{\"name\":\"t\",\"id\":0,"
+                                 "\"match_type\":\"exact\","
+                                 "\"type\":\"simple\",\"max_size\":16,"
+                                 "\"with_counters\":false,"
+                                 "\"direct_meters\":null,"
+                                 "\"support_timeout\":false,"
+                                 "\"key\":[],\"actions\":[\"a\"],"
+                                 "\"next_tables\":{\"a\":null},"
+                                 "\"base_default_next\":\"t\"}"
+                                 "],\"action_profiles\":[],"
+                                 "\"conditionals\":[]}")) == -EINVAL,
+          "a cycle through base_default_next is refused");
+
+    /* next_tables may key by action name or by hit/miss, never both. */
+    check(load_text(
+              eng,
+              P4_PIPE("{\"name\":\"ingress\",\"id\":0,"
+                      "\"init_table\":\"t\",\"tables\":[" P4_TBL(
+                          "t", "{\"a\":null,"
+                               "\"__HIT__\":null}") "],\"action_profiles\":[],"
+                                                    "\"conditionals\":[]}")) ==
+              -EINVAL,
+          "next_tables mixing __HIT__ with an action name is refused");
+
+    /* A next_tables key that is not one of the table's actions would
+     * never be consulted. */
+    check(load_text(
+              eng,
+              P4_PIPE(
+                  "{\"name\":\"ingress\",\"id\":0,"
+                  "\"init_table\":\"t\",\"tables\":[" P4_TBL(
+                      "t",
+                      "{\"a\":null,\"ghost\":null}") "],\"action_profiles\":[],"
+                                                     "\"conditionals\":[]}")) ==
+              -EINVAL,
+          "a next_tables key that is not an action is refused");
+
+    /* const entries make a table immutable and size-zero in bmv2, so an
+     * empty array is not the harmless default it looks like. */
+    check(load_text(eng, P4_PIPE("{\"name\":\"ingress\",\"id\":0,"
+                                 "\"init_table\":\"t\",\"tables\":["
+                                 "{\"name\":\"t\",\"id\":0,"
+                                 "\"match_type\":\"exact\","
+                                 "\"type\":\"simple\",\"max_size\":16,"
+                                 "\"with_counters\":false,"
+                                 "\"direct_meters\":null,"
+                                 "\"support_timeout\":false,\"entries\":[],"
+                                 "\"key\":[],\"actions\":[\"a\"],"
+                                 "\"next_tables\":{\"a\":null}}"
+                                 "],\"action_profiles\":[],"
+                                 "\"conditionals\":[]}")) == -ENOSYS,
+          "a table with const entries is refused, even an empty list");
+
+    /* The aggregate entry budget: max_size is the one number that names a
+     * large allocation without the document's size bounding it. */
+    check(load_text(eng, P4_PIPE("{\"name\":\"ingress\",\"id\":0,"
+                                 "\"init_table\":\"t\",\"tables\":["
+                                 "{\"name\":\"t\",\"id\":0,"
+                                 "\"match_type\":\"exact\","
+                                 "\"type\":\"simple\","
+                                 "\"max_size\":65535,"
+                                 "\"with_counters\":false,"
+                                 "\"direct_meters\":null,"
+                                 "\"support_timeout\":false,"
+                                 "\"key\":[],\"actions\":[\"a\"],"
+                                 "\"next_tables\":{\"a\":null}},"
+                                 "{\"name\":\"u\",\"id\":1,"
+                                 "\"match_type\":\"exact\","
+                                 "\"type\":\"simple\","
+                                 "\"max_size\":65535,"
+                                 "\"with_counters\":false,"
+                                 "\"direct_meters\":null,"
+                                 "\"support_timeout\":false,"
+                                 "\"key\":[],\"actions\":[\"a\"],"
+                                 "\"next_tables\":{\"a\":null}}"
+                                 "],\"action_profiles\":[],"
+                                 "\"conditionals\":[]}")) == -EINVAL,
+          "two tables that together exceed the entry budget are refused");
+
+    /* A pipeline must have an ingress. */
+    check(load_text(eng, P4_PIPE("{\"name\":\"egress\",\"id\":0,"
+                                 "\"init_table\":null,\"tables\":[],"
+                                 "\"action_profiles\":[],"
+                                 "\"conditionals\":[]}")) == -EINVAL,
+          "a program with no ingress pipeline is refused");
+
     p4_engine_destroy(eng);
 }
 
@@ -687,11 +828,9 @@ static void test_load_real_artifacts(void)
      * none of which the format documentation mentions, and six entries in
      * 'errors'. It must get all the way to the unfinished part of the walk.
      */
-    check(load_fixture(eng, "loopback.json") == -ENOSYS,
-          "bmv2's own loopback.json is walked, not rejected");
-    why = p4_engine_load_error(eng);
-    check(why != NULL && strstr(why, "not finished") != NULL,
-          "loopback.json stopped only where the walk is unfinished");
+    check(load_fixture(eng, "loopback.json") == 0,
+          "bmv2's own loopback.json loads");
+    check(p4_engine_has_program(eng), "a program is installed");
 
     /*
      * simple_router.json is the negative fixture: its calculations and
@@ -711,11 +850,9 @@ static void test_load_real_artifacts(void)
      * loopback.json does, which is what proves the subset is expressible
      * rather than merely tolerant of what p4c happens to emit.
      */
-    check(load_fixture(eng, "minimal_forward.json") == -ENOSYS,
-          "the minimal forwarding program is walked");
-    why = p4_engine_load_error(eng);
-    check(why != NULL && strstr(why, "not finished") != NULL,
-          "minimal_forward.json stopped only where the walk is unfinished");
+    check(load_fixture(eng, "minimal_forward.json") == 0,
+          "the minimal forwarding program loads");
+    check(p4_engine_has_program(eng), "a program is installed");
 
     p4_engine_destroy(eng);
 }
