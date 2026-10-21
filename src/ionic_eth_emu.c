@@ -759,6 +759,11 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     u = le32(0);
     memcpy(eq + 8, &u, 4);
 
+    /* stats_type (le16), straight after eq_qtype. */
+    uint16_t stats_type =
+        le16((uint16_t)(IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP));
+    memcpy(rdma + LIF_ID_RDMA_STATS_TYPE_OFF, &stats_type, 2);
+
     /*
      * srq_qtype, and NOT at rdma+32+5*QTYPE_SZ. The five qtypes above are
      * contiguous, but srq_qtype is not the sixth: union ionic_lif_identity

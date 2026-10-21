@@ -1,10 +1,11 @@
 /*
  * ionic_adminq_priv.h — ionic admin queue internals, for its unit tests
  *
- * The admin queue context and the opcode and command-length constants that
- * ionic_adminq.c works with. Only ionic_adminq.c and its unit tests include
- * this; the rest of the device sees struct ionic_adminq_ctx only through
- * the opaque declaration in ionic_adminq.h.
+ * The admin queue context, the opcode and command-length constants, and the
+ * hardware statistics tables that ionic_adminq.c works with. Only
+ * ionic_adminq.c and its unit tests include this; the rest of the device sees
+ * struct ionic_adminq_ctx only through the opaque declaration in
+ * ionic_adminq.h.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -14,6 +15,7 @@
 #define IONIC_ADMINQ_PRIV_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -177,6 +179,54 @@ struct ionic_adminq_ctx {
     /* Data path that owns the SQ/RQ/CQ rings these commands describe. */
     struct ionic_datapath *dp;
 };
+
+/* -------------------------------------------------------------------------
+ * Hardware statistics: the STATS_HDRS / STATS_VALS / QP_STATS_HDRS /
+ * QP_STATS_VALS wire layout (see handle_stats_op() in ionic_adminq.c) and
+ * the counters each table reports.
+ * -------------------------------------------------------------------------
+ */
+#define STATS_BODY_LEN  17
+#define STAT_HDR_SIZE   32
+#define STAT_NAME_LEN   28
+#define STAT_TYPE_SHIFT 28
+#define STAT_TYPE_LE64  4u
+#define STAT_VAL_SIZE   8
+#define STATS_MAX_COUNT 8
+
+struct adminq_stat {
+    const char *name;
+    size_t off; /* of the uint64_t in the counters struct */
+};
+
+/* The names match the --stats-file labels, so the two views line up. */
+static const struct adminq_stat dev_stats[] = {
+    {"commands", offsetof(struct pvrdma_dev_counters, commands)},
+    {"total_bytes_sent",
+     offsetof(struct pvrdma_dev_counters, total_bytes_sent)},
+    {"total_bytes_received",
+     offsetof(struct pvrdma_dev_counters, total_bytes_received)},
+    {"total_bytes_rdma_read",
+     offsetof(struct pvrdma_dev_counters, total_bytes_rdma_read)},
+    {"total_bytes_rdma_write",
+     offsetof(struct pvrdma_dev_counters, total_bytes_rdma_write)},
+};
+#define DEV_STATS_COUNT (sizeof(dev_stats) / sizeof(dev_stats[0]))
+
+static const struct adminq_stat qp_stats[] = {
+    {"doorbell_send", offsetof(struct pvrdma_qp_counters, doorbell_send)},
+    {"doorbell_recv", offsetof(struct pvrdma_qp_counters, doorbell_recv)},
+    {"wqes_processed", offsetof(struct pvrdma_qp_counters, wqes_processed)},
+    {"cqes_posted", offsetof(struct pvrdma_qp_counters, cqes_posted)},
+    {"bytes_sent", offsetof(struct pvrdma_qp_counters, bytes_sent)},
+    {"bytes_received", offsetof(struct pvrdma_qp_counters, bytes_received)},
+    {"bytes_rdma_read", offsetof(struct pvrdma_qp_counters, bytes_rdma_read)},
+    {"bytes_rdma_write", offsetof(struct pvrdma_qp_counters, bytes_rdma_write)},
+};
+#define QP_STATS_COUNT (sizeof(qp_stats) / sizeof(qp_stats[0]))
+
+_Static_assert(DEV_STATS_COUNT <= STATS_MAX_COUNT, "dev_stats too long");
+_Static_assert(QP_STATS_COUNT <= STATS_MAX_COUNT, "qp_stats too long");
 
 /*
  * Run one admin WQE: @op from its header and the @len-byte command @body

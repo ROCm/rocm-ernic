@@ -383,6 +383,32 @@ static void test_write_stays_within_the_published_window(void)
     ionic_eth_emu_destroy(emu);
 }
 
+/*
+ * rdma.stats_type gates the driver's whole hw stats setup: with it zero,
+ * ionic_stats_init() never sends STATS_HDRS and the guest has no
+ * hw_counters directory.  It is the le16 straight after eq_qtype, 92 bytes
+ * into the rdma block.
+ */
+static void test_lif_identity_advertises_rdma_stats(void)
+{
+    struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
+    static uint8_t data[DEVCMD_DATA_SIZE];
+    uint8_t cmd[64] = {0}, comp[16] = {0};
+    uint16_t le;
+
+    CHECK(LIF_ID_RDMA_STATS_TYPE_OFF == 92u,
+          "stats_type offset drifted from the ionic_if.h layout");
+
+    ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
+    memcpy(&le, data + LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF, 2);
+    CHECK(le16toh(le) == (IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP),
+          "stats_type is %#x, want GLOBAL|QP", (unsigned)le16toh(le));
+    CHECK(data[LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF + 2] == 0,
+          "the byte after stats_type (rsvd) was written");
+
+    ionic_eth_emu_destroy(emu);
+}
+
 /* ---- SRQ capability in LIF_IDENTIFY ------------------------------------ */
 
 /*
@@ -480,6 +506,7 @@ static void test_admin_opcode_watermark_covers_srq(void)
 int main(void)
 {
     test_published_offsets_match_the_driver_layout();
+    test_lif_identity_advertises_rdma_stats();
     test_srq_qtype_is_not_the_sixth_qtype();
     test_srq_capability_is_published();
     test_srq_gate_needs_count_and_alloc_bit();

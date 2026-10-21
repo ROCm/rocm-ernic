@@ -161,13 +161,20 @@
 /* Byte offsets within the rdma section of union ionic_lif_identity. Literal
  * because srq_qtype does not follow the other qtypes contiguously -- see the
  * comment at the write site. */
-#define LIF_ID_SRQ_QTYPE_OFF     96
-#define LIF_ID_ALLOC_QID_CAP_OFF 113
+#define LIF_ID_RDMA_STATS_TYPE_OFF 92
+#define LIF_ID_SRQ_QTYPE_OFF       96
+#define LIF_ID_ALLOC_QID_CAP_OFF   113
 
 /* enum ionic_lif_rdma_alloc_qid: which queue types firmware allocates qids
  * for. CQ is BIT(0) and is not claimed here -- CREATE_CQ still takes the
  * driver's cqid. */
 #define IONIC_LIF_RDMA_ALLOC_QID_SRQ (1u << 1)
+
+/* rdma.stats_type: enum ionic_lif_rdma_stat_type in ionic_if.h.  Without a
+ * bit set the driver never sends STATS_HDRS / QP_STATS_HDRS, so the guest
+ * gets no hw_counters directory and no rdma statistic qp counters. */
+#define IONIC_LIF_RDMA_STAT_GLOBAL 0x1u
+#define IONIC_LIF_RDMA_STAT_QP     0x2u
 
 /* Emulated RDMA capability version (must match ionic_fw.h expectations) */
 #define IONIC_RDMA_VERSION    1
