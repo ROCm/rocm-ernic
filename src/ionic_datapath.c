@@ -1327,6 +1327,21 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     qtf = htobe32(qtf);
     memcpy(cqe + 28, &qtf, 4);
 
+    /*
+     * No error completion goes out unannounced. One of these ends the queue
+     * pair for the consumer -- a provider that polls one stops polling
+     * normally and flushes everything behind it, so every later request
+     * comes back IB_WC_WR_FLUSH_ERR and the thing that actually went wrong
+     * is no longer visible from outside. Saying it here is the difference
+     * between a named fault and a consumer that reports only that its work
+     * was flushed.
+     */
+    if (error && status_len != IONIC_STS_WQE_FLUSHED_ERR)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: CQ %u completing QP %u in error: status %u, "
+                "cqe type %u",
+                cq_id, qid, status_len, type >> 5);
+
     uint32_t stride = 1u << c->stride_log2;
     uint64_t base = (uint64_t)(c->prod % c->depth) * stride;
 
@@ -1838,6 +1853,22 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
      * message it merely truncated.
      */
     bool truncated = copied < src->total;
+
+    /*
+     * A truncated receive completes in error, and that error is the end of
+     * the queue pair as far as a consumer is concerned: a provider that
+     * sees one stops polling normally and flushes the rest, so every
+     * request after it comes back as IB_WC_WR_FLUSH_ERR and the original
+     * cause is nowhere in sight. Saying so here is the difference between
+     * "the receive buffer was too small" and a consumer reporting only
+     * that its work requests were flushed, which is what libfabric's rxm
+     * does and what made this expensive to find.
+     */
+    if (truncated)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u receive truncated: %u bytes posted, "
+                "%u arrived from QP %u; completing LOCAL_LEN_ERR",
+                dst_qp_id, copied, src->total, src_qp_id);
 
     ionic_dp_rdma_bytes(dp, dst_qp_id, copied, PVRDMA_STAT_RECV, DP_RDMA_RX);
 
