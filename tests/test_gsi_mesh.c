@@ -351,12 +351,69 @@ int main(void)
                  "the MAD is not behind the 40-byte header");
     }
 
+    /*
+     * 8. The worker restarts, and its address has to come back with it.
+     *
+     * It returns as a brand new node -- it asks for an id of 0xFFFFFFFF
+     * every time, and its listening port is ephemeral, so nothing in the
+     * registration says which node it used to be. Its old registration is
+     * still standing and still claiming the guest's GIDs, and a GID that
+     * two nodes claim resolves to neither. So without the manager
+     * withdrawing what an unreachable node claimed, the address stops
+     * working at the moment the guest comes back, and never recovers:
+     * nothing else retires a claim.
+     */
+    ih_mr_free(&eb.mr);
+    ih_mr_free(&ea.mr);
+    ih_destroy(&b);
+
+    struct ih b2;
+
+    if (!gm_check(ih_create(&b2, wrk), "the worker could not be recreated"))
+        goto out_a;
+    if (!gm_check(ih_bringup(&b2), "the restarted worker did not come up")) {
+        ih_destroy(&b2);
+        goto out_a;
+    }
+
+    uint32_t node_b2 = UINT32_MAX;
+
+    for (unsigned i = 0; i < 400; i++) {
+        node_b2 = ionic_mesh_local_node(b2.dev->pvrdma_handle);
+        if (node_b2 != UINT32_MAX && node_b2 != 0)
+            break;
+        gm_pump(&a, &b2, 1);
+    }
+    gm_check(node_b2 != UINT32_MAX && node_b2 != 0,
+             "the restarted worker never registered (node id %u)", node_b2);
+    gm_check(node_b2 != node_b,
+             "the restarted worker reused node %u, so this proves nothing",
+             node_b2);
+
+    gm_check(ionic_mesh_claim_gid(b2.dev->pvrdma_handle, gid_b, true) == 0,
+             "the restarted worker could not claim its GID");
+
+    uint32_t seen_b2 = gm_wait_resolve(&a, &b2, &a, gid_b);
+
+    gm_check(seen_b2 == node_b2,
+             "after the restart the worker's GID resolves to node %u, want "
+             "%u -- %s",
+             seen_b2, node_b2,
+             seen_b2 == UINT32_MAX
+                 ? "the dead node's claim was never withdrawn, so the GID is "
+                   "contested and routes nowhere"
+                 : "it resolves to the wrong node");
+
+    ih_destroy(&b2);
+    goto out_a;
+
 out_ep:
     ih_mr_free(&eb.mr);
     ih_mr_free(&ea.mr);
 
 out:
     ih_destroy(&b);
+out_a:
     ih_destroy(&a);
     if (failures)
         fprintf(stderr, "%d check(s) failed\n", failures);

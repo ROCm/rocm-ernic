@@ -504,6 +504,17 @@ Working:
   A QP bound to an SRQ flushes its send queue only, because
   the receives in an SRQ belong to the SRQ and other QPs are
   still drawing from them
+- restarting a mesh worker. It comes back as a new node --
+  it asks for an id of ``0xFFFFFFFF`` every time, and its
+  listening port is ephemeral, so nothing in the
+  registration says which node it used to be -- and the GIDs
+  it claimed before are withdrawn so that they follow it to
+  its new id rather than being claimed by two nodes at once
+  and resolving to neither. The manager withdraws what an
+  unreachable node claimed both when its health check
+  notices one has died and when any worker registers, the
+  second being what covers a worker that comes back inside
+  the health-check interval
 
 Not yet working:
 
@@ -544,15 +555,6 @@ Not yet working:
   routing it to a peer, so ``nvme connect -t rdma`` has
   always had a responder (see :doc:`nvmeof`)
 
-- restarting a mesh worker strands the GIDs it had claimed.
-  The manager gives the restarted node a new id while the
-  old id still holds its claims, so every GID it owns
-  resolves to "more than one node" and therefore to none,
-  and a peer addressing that guest gets ``no mesh node owns
-  destination gid``. The claims are not retired by the
-  health check and a manager restart does not clear them, so
-  the guest stays unreachable over RDMA until the whole mesh
-  is rebuilt
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
 - The PCI Express capability is not advertised, so the guest

@@ -430,6 +430,25 @@
   was told the wrong thing and the wrong queue pair was blamed; one crossing
   the mesh sent the peer a request it could not satisfy. No data was
   transferred in either case, and none is now.
+* A mesh worker that restarts gets its GIDs back. It returns as a brand new
+  node -- it asks for an id of `0xFFFFFFFF` every time, and its listening
+  port is ephemeral, so nothing in the registration says which node it used
+  to be -- while its old registration still stood and still claimed the
+  guest's addresses. A GID two nodes claim resolves to neither, so the guest
+  came back unreachable and stayed that way: peers addressing it got `no
+  mesh node owns destination gid`, nothing retired the stale claim, and a
+  manager restart did not clear it either. Rebuilding the whole mesh was the
+  only way out.
+  The manager now withdraws what an unreachable node claimed, at two points:
+  when the health check notices a node has died, which covers one that never
+  comes back, and when any worker registers, which covers one that returns
+  inside the health-check interval -- the case seen in practice, since a
+  restarting container is back long before the five seconds are up. The rule
+  is that a node with no live connection cannot be answering for an address,
+  rather than any attempt to recognise the returning worker; two *live*
+  nodes claiming one GID still contest it, as before. `gsi-mesh` covers the
+  restart end to end by destroying the worker device, recreating it, and
+  checking its GID follows it to the new node id.
 * A QP entering the Error state now flushes its queues, so a work request
   still outstanding is completed with `IBV_WC_WR_FLUSH_ERR` instead of left
   for a consumer that waits on it forever. `MODIFY_QP` recorded the new state

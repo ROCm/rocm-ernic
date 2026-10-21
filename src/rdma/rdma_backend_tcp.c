@@ -683,6 +683,49 @@ static bool tcp_node_id_taken(TcpBackendPrivate *priv, uint32_t node_id)
            g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id));
 }
 
+/*
+ * Collect the nodes whose connection has gone, so the caller can withdraw
+ * what they claimed once it has dropped mesh_table_lock.
+ *
+ * A worker that restarts registers again as a brand new node -- it asks for
+ * an id of 0xFFFFFFFF every time, and the address it registers from is no
+ * help either, since its listening port is ephemeral and changes with it.
+ * So rather than try to recognise it, drop the claims of whoever can no
+ * longer be reached: a node with no live connection cannot be the one
+ * answering for an address, whether or not it is the same guest coming
+ * back. Left standing, its claims contest the ones the returning worker is
+ * about to make, and a contested GID resolves to neither -- so the guest
+ * would come back unreachable, and stay that way.
+ *
+ * Caller holds mesh_table_lock; tcp_connection_lookup() takes
+ * conn_table_lock under it, which is the documented order.
+ */
+static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
+                                           uint32_t out[TCP_MAX_MESH_NODES])
+{
+    GHashTableIter iter;
+    gpointer value;
+    uint32_t n = 0;
+
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, &value) &&
+           n < TCP_MAX_MESH_NODES) {
+        const MeshNodeInfo *node = value;
+        uint32_t node_id = node->node_id;
+        TcpConnection *conn;
+
+        if (node_id == tcp_local_node(priv))
+            continue;
+
+        conn = tcp_connection_lookup(priv, node_id);
+        if (!conn || tcp_conn_dead(conn))
+            out[n++] = node_id;
+        if (conn)
+            tcp_connection_unref(conn);
+    }
+    return n;
+}
+
 /* Parse manager config: "manager:<ip>:<port>" or "manager:listen:<port>" */
 static int parse_tcp_config_manager(const char *config, char **manager_host,
                                     uint16_t *manager_port, bool *listen_mode)
@@ -1836,7 +1879,23 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 memcpy(worker_host, reg->hostname, host_len);
                 worker_host[host_len] = '\0';
 
+                /* Nodes gone from the mesh, withdrawn after the unlock */
+                uint32_t stale[TCP_MAX_MESH_NODES];
+                uint32_t num_stale = 0;
+
                 qemu_mutex_lock(&priv->mesh_table_lock);
+
+                /*
+                 * Nodes that can no longer be reached, whose GIDs are
+                 * withdrawn once the tables are unlocked. A worker that
+                 * restarted is among them, under the id it had before, and
+                 * it is about to claim those GIDs again under its new one.
+                 *
+                 * Before conn_table_lock, not under it: the lookups inside
+                 * take that lock themselves.
+                 */
+                num_stale = tcp_collect_dead_claimants(priv, stale);
+
                 qemu_mutex_lock(&priv->conn_table_lock);
 
                 /*
@@ -1855,6 +1914,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                         conn->node_id);
                     break;
                 }
+
 
                 /* Assign node ID */
                 uint32_t assigned_id = requested_id;
@@ -1899,6 +1959,23 @@ void *tcp_recv_thread_per_conn(void *opaque)
 
                 rdma_info_report("TCP: Registered node %u at %s:%u",
                                  assigned_id, worker_host, worker_port);
+
+                /*
+                 * With no lock held: tcp_gid_claims_set() takes
+                 * gid_table_lock, which nothing else in this handler holds.
+                 * The whole table is broadcast below, so the withdrawal
+                 * reaches the other workers with the rest of it.
+                 */
+                for (uint32_t i = 0; i < num_stale; i++) {
+                    uint32_t id = stale[i];
+
+                    if (id == assigned_id)
+                        continue;
+                    rdma_info_report("TCP: node %u is gone; withdrawing its "
+                                     "GIDs as node %u registers",
+                                     id, assigned_id);
+                    tcp_gid_claims_set(priv, id, NULL, 0);
+                }
 
                 /* Send registration response.  Zeroed first: the whole
                  * struct goes on the wire, so any field not assigned below
@@ -2939,8 +3016,22 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
  * the ones due a reconnect attempt.  Returns true if a node was newly
  * declared dead, which the rest of the mesh has to be told.
  */
+/*
+ * Note the node as having just died, for the caller to withdraw its GIDs
+ * once it has dropped mesh_table_lock. Collected rather than withdrawn here
+ * because tcp_gid_claims_set() takes gid_table_lock, and taking that under
+ * mesh_table_lock would be the only place in the backend that orders the
+ * two -- gid_table_lock is deliberately independent, since the data path
+ * takes it on every RTR and UD send.
+ */
+static void tcp_health_check_note_died(GArray *died, uint32_t node_id)
+{
+    if (died)
+        g_array_append_val(died, node_id);
+}
+
 static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
-                                  time_t now)
+                                  GArray *died, time_t now)
 {
     bool newly_dead = false;
     GHashTableIter iter;
@@ -2970,6 +3061,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                 node->is_alive = false;
                 tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
+                tcp_health_check_note_died(died, node->node_id);
             }
             item.disconnected = true;
         }
@@ -2982,6 +3074,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                 node->is_alive = false;
                 tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
+                tcp_health_check_note_died(died, node->node_id);
             }
 
             /* Attempt reconnection with exponential backoff (max 60 s) */
@@ -3244,6 +3337,8 @@ void *tcp_manager_health_check_thread(void *opaque)
 {
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
     GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
+    /* Nodes this pass declared dead, whose GIDs it has to withdraw */
+    GArray *died = g_array_new(FALSE, FALSE, sizeof(uint32_t));
 
     rdma_info_report("TCP: Manager health check thread started");
 
@@ -3251,8 +3346,25 @@ void *tcp_manager_health_check_thread(void *opaque)
         /* The accept thread reaps too, but only when a peer connects */
         tcp_reap_pending_conns(priv);
 
-        bool newly_dead = tcp_health_check_scan(priv, items, time(NULL));
+        bool newly_dead = tcp_health_check_scan(priv, items, died, time(NULL));
         tcp_health_check_retire(priv, items);
+
+        /*
+         * A dead node's GIDs are not its own any more. Left standing they
+         * are worse than absent: when the guest behind it comes back it
+         * registers as a new node and claims them again, both nodes are
+         * then seen to claim them, and a contested GID resolves to neither
+         * -- so the address stops working at the moment it should start.
+         *
+         * Withdrawn here, with no lock held, because tcp_gid_claims_set()
+         * takes gid_table_lock and the scan above runs under
+         * mesh_table_lock.
+         */
+        for (guint i = 0; i < died->len; i++)
+            tcp_gid_claims_set(priv, g_array_index(died, uint32_t, i), NULL, 0);
+        if (died->len && priv->is_manager)
+            tcp_broadcast_gid_table(priv);
+        g_array_set_size(died, 0);
 
         for (guint i = 0; i < items->len; i++) {
             const TcpHealthCheckItem *item =
@@ -3313,6 +3425,7 @@ void *tcp_manager_health_check_thread(void *opaque)
     }
 
     g_array_free(items, TRUE);
+    g_array_free(died, TRUE);
     rdma_info_report("TCP: Manager health check thread exiting");
     return NULL;
 }

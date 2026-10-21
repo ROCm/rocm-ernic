@@ -189,9 +189,13 @@ typedef struct {
     uint8_t reserved[3];
 } __attribute__((packed)) TcpMeshNodeInfo;
 
+/* As many nodes as a topology broadcast can carry, and so as many as the
+ * mesh can hold. */
+#define TCP_MAX_MESH_NODES 64u
+
 typedef struct {
     uint32_t num_nodes;
-    TcpMeshNodeInfo nodes[64]; /* Max 64 nodes */
+    TcpMeshNodeInfo nodes[TCP_MAX_MESH_NODES];
 } __attribute__((packed)) TcpMeshTopologyPayload;
 
 /*
