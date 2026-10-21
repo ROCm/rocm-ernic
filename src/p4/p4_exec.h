@@ -19,18 +19,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct p4_program;
+#include "p4_program.h"
 
 /* Total storage for extracted headers and metadata, in bytes. */
 #define P4_PHV_BYTES 1024
 
 /*
- * Widest field this can read or write as a value.  A wider one can still
- * be parsed, carried and deparsed -- it is just bytes -- but cannot be
- * compared, assigned or used in arithmetic, which is what a 128-bit
- * address would need.
+ * Values are carried in a fixed-width big-endian buffer wide enough for
+ * any field the loader accepts, so a 128-bit address is compared, assigned
+ * and added exactly like a 9-bit port number.  Nothing here is limited to
+ * what fits in a machine word.
  */
-#define P4_FIELD_VALUE_BITS 64
+#define P4_VALUE_BYTES ((P4_MAX_FIELD_BITS + 7) / 8)
 
 /* What running the pipeline decided. */
 struct p4_exec_result {

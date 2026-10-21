@@ -112,6 +112,13 @@ say where a packet goes and is refused at load. An
 have is a drop, never an index -- a ported program may well
 name one.
 
+Values are carried in a fixed-width big-endian buffer wide
+enough for any field the loader accepts, so a 128-bit address
+is compared, assigned and added exactly like a nine-bit port
+number. Nothing is limited to what fits in a machine word,
+and two values are comparable with one ``memcmp`` because
+both are right-aligned in the same width.
+
 A frame the program cannot be run over is dropped rather than
 forwarded unexamined. Failing open would put a frame on the
 wire that the pipeline never saw, which defeats the point of

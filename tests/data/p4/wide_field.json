@@ -1,0 +1,273 @@
+{
+  "__meta__": {
+    "version": [
+      2,
+      24
+    ]
+  },
+  "header_types": [
+    {
+      "name": "eth_t",
+      "id": 0,
+      "fields": [
+        [
+          "dst",
+          48
+        ],
+        [
+          "src",
+          48
+        ],
+        [
+          "ty",
+          16
+        ]
+      ]
+    },
+    {
+      "name": "std_t",
+      "id": 1,
+      "fields": [
+        [
+          "ingress_port",
+          9
+        ],
+        [
+          "egress_spec",
+          9
+        ]
+      ]
+    },
+    {
+      "name": "wide_t",
+      "id": 2,
+      "fields": [
+        [
+          "w",
+          128
+        ]
+      ]
+    }
+  ],
+  "headers": [
+    {
+      "name": "eth",
+      "id": 0,
+      "header_type": "eth_t",
+      "metadata": false
+    },
+    {
+      "name": "standard_metadata",
+      "id": 1,
+      "header_type": "std_t",
+      "metadata": true
+    },
+    {
+      "name": "wide",
+      "id": 2,
+      "header_type": "wide_t",
+      "metadata": true
+    }
+  ],
+  "parsers": [
+    {
+      "name": "p",
+      "id": 0,
+      "init_state": "start",
+      "parse_states": [
+        {
+          "name": "start",
+          "id": 0,
+          "parser_ops": [
+            {
+              "op": "extract",
+              "parameters": [
+                {
+                  "type": "regular",
+                  "value": "eth"
+                }
+              ]
+            }
+          ],
+          "transition_key": [],
+          "transitions": [
+            {
+              "value": "default",
+              "mask": null,
+              "next_state": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "deparsers": [
+    {
+      "name": "d",
+      "id": 0,
+      "order": [
+        "eth"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "name": "setw",
+      "id": 0,
+      "runtime_data": [],
+      "primitives": [
+        {
+          "op": "assign",
+          "parameters": [
+            {
+              "type": "field",
+              "value": [
+                "wide",
+                "w"
+              ]
+            },
+            {
+              "type": "hexstr",
+              "value": "0x10000000000000000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fwd",
+      "id": 1,
+      "runtime_data": [],
+      "primitives": [
+        {
+          "op": "assign",
+          "parameters": [
+            {
+              "type": "field",
+              "value": [
+                "standard_metadata",
+                "egress_spec"
+              ]
+            },
+            {
+              "type": "hexstr",
+              "value": "0x1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "drp",
+      "id": 2,
+      "runtime_data": [],
+      "primitives": [
+        {
+          "op": "drop",
+          "parameters": []
+        }
+      ]
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "ingress",
+      "id": 0,
+      "init_table": "t_set",
+      "action_profiles": [],
+      "tables": [
+        {
+          "name": "t_set",
+          "id": 0,
+          "match_type": "exact",
+          "type": "simple",
+          "max_size": 16,
+          "with_counters": false,
+          "direct_meters": null,
+          "support_timeout": false,
+          "key": [],
+          "actions": [
+            "setw"
+          ],
+          "next_tables": {
+            "setw": "_c0"
+          },
+          "default_entry": {
+            "action_id": 0,
+            "action_data": []
+          },
+          "base_default_next": "_c0"
+        },
+        {
+          "name": "t_fwd",
+          "id": 1,
+          "match_type": "exact",
+          "type": "simple",
+          "max_size": 16,
+          "with_counters": false,
+          "direct_meters": null,
+          "support_timeout": false,
+          "key": [],
+          "actions": [
+            "fwd"
+          ],
+          "next_tables": {
+            "fwd": null
+          },
+          "default_entry": {
+            "action_id": 1,
+            "action_data": []
+          },
+          "base_default_next": null
+        },
+        {
+          "name": "t_drp",
+          "id": 2,
+          "match_type": "exact",
+          "type": "simple",
+          "max_size": 16,
+          "with_counters": false,
+          "direct_meters": null,
+          "support_timeout": false,
+          "key": [],
+          "actions": [
+            "drp"
+          ],
+          "next_tables": {
+            "drp": null
+          },
+          "default_entry": {
+            "action_id": 2,
+            "action_data": []
+          },
+          "base_default_next": null
+        }
+      ],
+      "conditionals": [
+        {
+          "name": "_c0",
+          "id": 0,
+          "expression": {
+            "type": "expression",
+            "value": {
+              "op": "==",
+              "left": {
+                "type": "field",
+                "value": [
+                  "wide",
+                  "w"
+                ]
+              },
+              "right": {
+                "type": "hexstr",
+                "value": "0x0"
+              }
+            }
+          },
+          "true_next": "t_drp",
+          "false_next": "t_fwd"
+        }
+      ]
+    }
+  ]
+}

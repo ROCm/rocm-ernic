@@ -982,6 +982,34 @@ static void test_execute_egress(void)
     p4_engine_destroy(eng);
 }
 
+/*
+ * Fields wider than a machine word. The program sets a 128-bit field to
+ * 2^64 -- zero in every bit below 64 -- and tests it against zero. An
+ * executor that read only the low 64 bits would see zero, take the true
+ * branch and drop, so the two branches tell the implementations apart.
+ */
+static void test_execute_wide_field(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+
+    for (size_t i = 0; i < sizeof(in); i++)
+        in[i] = (uint8_t)i;
+
+    check(load_fixture(eng, "wide_field.json") == 0,
+          "the 128-bit field program loads");
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_FORWARD,
+          "2^64 is not zero, so the frame is forwarded");
+    check(res.egress_port == P4_PORT_UPLINK,
+          "the false branch chose the uplink");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
@@ -989,6 +1017,7 @@ int main(void)
     test_load_real_artifacts();
     test_execute();
     test_execute_egress();
+    test_execute_wide_field();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

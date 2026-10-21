@@ -101,3 +101,17 @@ key is not present at all.
 | `field_lists` | empty | empty |
 
 [bmv2]: https://github.com/p4lang/behavioral-model
+
+## wide_field.json
+
+Hand written, to pin down arithmetic and comparison on fields wider than a
+machine word.
+
+The program sets a 128-bit metadata field to 2^64 -- a value that is zero
+in every bit below 64 -- and then tests it against zero. A true answer
+sends the frame to a table that drops it; a false answer to one that
+forwards it to port 1. An executor that read only the low 64 bits of a
+field would see zero, answer true, and drop.
+
+It is the discriminating case for that bug: both branches are reachable,
+both are observable from outside, and the two differ only above bit 64.

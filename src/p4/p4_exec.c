@@ -55,32 +55,113 @@ static int phv_init(const struct p4_program *prog, struct p4_phv *phv)
     return 0;
 }
 
-/* Read @bits starting at @bit_off of @src, big-endian, as a value. */
-static uint64_t bits_get(const uint8_t *src, uint32_t bit_off, uint16_t bits)
+/*
+ * A value: big-endian, right-aligned in a fixed-width buffer, so every
+ * operand of every width is the same shape.  Two values are therefore
+ * comparable with memcmp, and arithmetic is a byte walk from the bottom.
+ */
+struct p4_value {
+    uint8_t b[P4_VALUE_BYTES];
+};
+
+static void value_zero(struct p4_value *v)
 {
-    uint64_t v = 0;
-
-    for (uint16_t i = 0; i < bits; i++) {
-        uint32_t b = bit_off + i;
-
-        v = (v << 1) | (((uint32_t)src[b / 8u] >> (7u - (b % 8u))) & 1u);
-    }
-    return v;
+    memset(v->b, 0, sizeof(v->b));
 }
 
-/* Write the low @bits of @v at @bit_off of @dst, big-endian. */
-static void bits_set(uint8_t *dst, uint32_t bit_off, uint16_t bits, uint64_t v)
+/* Read @bits bits starting at @bit_off of @src into a value. */
+static void bits_get(const uint8_t *src, uint32_t bit_off, uint16_t bits,
+                     struct p4_value *out)
+{
+    value_zero(out);
+    for (uint16_t i = 0; i < bits; i++) {
+        uint32_t b = bit_off + i;
+        uint32_t bit = ((uint32_t)src[b / 8u] >> (7u - (b % 8u))) & 1u;
+        /* Bit i from the left of the field is bit (bits-1-i) from the
+         * right of the value, which is right-aligned in the buffer. */
+        uint32_t from_right = (uint32_t)(bits - 1u - i);
+        size_t byte = P4_VALUE_BYTES - 1u - (from_right / 8u);
+
+        if (bit)
+            out->b[byte] |= (uint8_t)(1u << (from_right % 8u));
+    }
+}
+
+/* Write the low @bits bits of @v at @bit_off of @dst. */
+static void bits_set(uint8_t *dst, uint32_t bit_off, uint16_t bits,
+                     const struct p4_value *v)
 {
     for (uint16_t i = 0; i < bits; i++) {
         uint32_t b = bit_off + i;
         const uint8_t mask = (uint8_t)(1u << (7u - (b % 8u)));
-        uint64_t bit = (v >> (bits - 1u - i)) & 1u;
+        uint32_t from_right = (uint32_t)(bits - 1u - i);
+        size_t byte = P4_VALUE_BYTES - 1u - (from_right / 8u);
+        uint32_t bit = ((uint32_t)v->b[byte] >> (from_right % 8u)) & 1u;
 
         if (bit)
             dst[b / 8u] |= mask;
         else
             dst[b / 8u] &= (uint8_t)~mask;
     }
+}
+
+/* Both operands are right-aligned and the same width, so this orders them. */
+static int value_cmp(const struct p4_value *a, const struct p4_value *b)
+{
+    return memcmp(a->b, b->b, P4_VALUE_BYTES);
+}
+
+static bool value_nonzero(const struct p4_value *v)
+{
+    for (size_t i = 0; i < P4_VALUE_BYTES; i++) {
+        if (v->b[i])
+            return true;
+    }
+    return false;
+}
+
+/* Wrap-around is what a fixed-width field does; the result is truncated to
+ * the destination's width when it is stored. */
+static void value_add(const struct p4_value *a, const struct p4_value *b,
+                      struct p4_value *out)
+{
+    unsigned carry = 0;
+
+    for (size_t i = P4_VALUE_BYTES; i-- > 0;) {
+        unsigned sum = (unsigned)a->b[i] + b->b[i] + carry;
+
+        out->b[i] = (uint8_t)(sum & 0xFFu);
+        carry = sum >> 8;
+    }
+}
+
+static void value_sub(const struct p4_value *a, const struct p4_value *b,
+                      struct p4_value *out)
+{
+    unsigned borrow = 0;
+
+    for (size_t i = P4_VALUE_BYTES; i-- > 0;) {
+        unsigned d = (unsigned)a->b[i] - b->b[i] - borrow;
+
+        out->b[i] = (uint8_t)(d & 0xFFu);
+        borrow = (d >> 8) & 1u;
+    }
+}
+
+static uint32_t value_u32(const struct p4_value *v)
+{
+    uint32_t x = 0;
+
+    for (size_t i = P4_VALUE_BYTES - 4u; i < P4_VALUE_BYTES; i++)
+        x = (x << 8) | v->b[i];
+    return x;
+}
+
+static void value_set_u32(struct p4_value *v, uint32_t x)
+{
+    value_zero(v);
+    for (size_t i = 0; i < 4u; i++)
+        v->b[P4_VALUE_BYTES - 1u - i] = (uint8_t)(x >> (8u * i));
 }
 
 static const struct p4_field *field_of(const struct p4_program *prog,
@@ -90,25 +171,20 @@ static const struct p4_field *field_of(const struct p4_program *prog,
                 .fields[ref.field];
 }
 
-static uint64_t phv_get(const struct p4_program *prog, const struct p4_phv *phv,
-                        struct p4_field_ref ref)
+static void phv_get(const struct p4_program *prog, const struct p4_phv *phv,
+                    struct p4_field_ref ref, struct p4_value *out)
 {
     const struct p4_field *f = field_of(prog, ref);
 
-    if (f->bits > P4_FIELD_VALUE_BITS)
-        return 0;
-    return bits_get(phv->data,
-                    (uint32_t)phv->offset[ref.header] * 8u + f->offset_bits,
-                    f->bits);
+    bits_get(phv->data, (uint32_t)phv->offset[ref.header] * 8u + f->offset_bits,
+             f->bits, out);
 }
 
 static void phv_set(const struct p4_program *prog, struct p4_phv *phv,
-                    struct p4_field_ref ref, uint64_t v)
+                    struct p4_field_ref ref, const struct p4_value *v)
 {
     const struct p4_field *f = field_of(prog, ref);
 
-    if (f->bits > P4_FIELD_VALUE_BITS)
-        return;
     bits_set(phv->data, (uint32_t)phv->offset[ref.header] * 8u + f->offset_bits,
              f->bits, v);
 }
@@ -118,19 +194,20 @@ static void phv_set(const struct p4_program *prog, struct p4_phv *phv,
  *
  * ernic_parse_hexstr() stores a value right-aligned in the whole buffer it
  * was given and reports separately how many bytes the digits needed, so
- * the significant bytes are the LAST @len of @cap -- not the first. Reading
- * from the front yields zero for every literal narrower than the buffer.
+ * the significant bytes are the LAST @len of @cap -- not the first.
+ * Reading from the front yields zero for every literal narrower than the
+ * buffer.
  */
-static uint64_t imm_value(const uint8_t *imm, uint16_t cap, uint16_t len)
+static void imm_value(const uint8_t *imm, uint16_t cap, uint16_t len,
+                      struct p4_value *out)
 {
-    uint64_t v = 0;
-    uint16_t n = (len > 8u) ? 8u : len;
+    uint16_t n = (len > cap) ? cap : len;
 
-    if (n > cap)
-        n = cap;
-    for (uint16_t i = (uint16_t)(cap - n); i < cap; i++)
-        v = (v << 8) | imm[i];
-    return v;
+    value_zero(out);
+    if (n > P4_VALUE_BYTES)
+        n = P4_VALUE_BYTES;
+    for (uint16_t i = 0; i < n; i++)
+        out->b[P4_VALUE_BYTES - 1u - i] = imm[cap - 1u - i];
 }
 
 /* ---- the parser -------------------------------------------------------- */
@@ -175,15 +252,15 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
             continue;
         }
 
-        /* Build the select key by concatenating its fields. */
+        /* Build the select key by concatenating its fields. Any width
+         * works: a value is the same shape whatever the field. */
         memset(key, 0, sizeof(key));
         for (uint16_t i = 0; i < st->nkey; i++) {
             const struct p4_field *f = field_of(prog, st->key[i]);
-            uint64_t v = phv_get(prog, phv, st->key[i]);
+            struct p4_value v;
 
-            if (f->bits > P4_FIELD_VALUE_BITS)
-                return -ENOTSUP;
-            bits_set(key, key_bits, f->bits, v);
+            phv_get(prog, phv, st->key[i], &v);
+            bits_set(key, key_bits, f->bits, &v);
             key_bits += f->bits;
         }
 
@@ -231,23 +308,28 @@ struct p4_args {
     uint16_t len[P4_MAX_RUNTIME_ARGS];
 };
 
-static uint64_t operand_value(const struct p4_program *prog,
-                              const struct p4_phv *phv,
-                              const struct p4_operand *op,
-                              const struct p4_args *args)
+static void operand_value(const struct p4_program *prog,
+                          const struct p4_phv *phv, const struct p4_operand *op,
+                          const struct p4_args *args, struct p4_value *out)
 {
     switch (op->kind) {
     case P4_OPD_FIELD:
-        return phv_get(prog, phv, op->field);
+        phv_get(prog, phv, op->field, out);
+        return;
     case P4_OPD_HEXSTR:
-        return imm_value(op->imm, P4_MAX_IMM_BYTES, op->imm_len);
+        imm_value(op->imm, P4_MAX_IMM_BYTES, op->imm_len, out);
+        return;
     case P4_OPD_RUNTIME:
-        if (op->runtime < args->n)
-            return imm_value(args->val[op->runtime], P4_MAX_IMM_BYTES,
-                             args->len[op->runtime]);
-        return 0;
+        if (op->runtime < args->n) {
+            imm_value(args->val[op->runtime], P4_MAX_IMM_BYTES,
+                      args->len[op->runtime], out);
+            return;
+        }
+        value_zero(out);
+        return;
     default:
-        return 0;
+        value_zero(out);
+        return;
     }
 }
 
@@ -257,7 +339,7 @@ static void run_action(const struct p4_program *prog, struct p4_phv *phv,
 {
     for (uint16_t i = 0; i < act->nprimitives; i++) {
         const struct p4_primitive *p = &act->primitives[i];
-        uint64_t a, b;
+        struct p4_value a, b, r;
 
         switch (p->kind) {
         case P4_PRIM_DROP:
@@ -266,24 +348,27 @@ static void run_action(const struct p4_program *prog, struct p4_phv *phv,
         case P4_PRIM_NOP:
             break;
         case P4_PRIM_ASSIGN:
-            phv_set(prog, phv, p->params[0].field,
-                    operand_value(prog, phv, &p->params[1], args));
+            operand_value(prog, phv, &p->params[1], args, &b);
+            phv_set(prog, phv, p->params[0].field, &b);
             break;
         case P4_PRIM_ADD:
         case P4_PRIM_SUB:
             /* Two parameters means the destination is also the first
              * operand, which is what add_to_field spells. */
             if (p->nparams == 2) {
-                a = phv_get(prog, phv, p->params[0].field);
-                b = operand_value(prog, phv, &p->params[1], args);
+                phv_get(prog, phv, p->params[0].field, &a);
+                operand_value(prog, phv, &p->params[1], args, &b);
             } else {
-                a = operand_value(prog, phv, &p->params[1], args);
-                b = operand_value(prog, phv, &p->params[2], args);
+                operand_value(prog, phv, &p->params[1], args, &a);
+                operand_value(prog, phv, &p->params[2], args, &b);
             }
-            /* Unsigned wrap-around is what a fixed-width field does, and
-             * phv_set truncates to the field's width. */
-            phv_set(prog, phv, p->params[0].field,
-                    (p->kind == P4_PRIM_ADD) ? a + b : a - b);
+            /* Wrap-around is what a fixed-width field does, and phv_set
+             * truncates the result to the destination's width. */
+            if (p->kind == P4_PRIM_ADD)
+                value_add(&a, &b, &r);
+            else
+                value_sub(&a, &b, &r);
+            phv_set(prog, phv, p->params[0].field, &r);
             break;
         default:
             break;
@@ -297,30 +382,33 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
                       const struct p4_conditional *c, p4_idx_t idx,
                       unsigned depth);
 
-static uint64_t eval_operand(const struct p4_program *prog,
-                             const struct p4_phv *phv,
-                             const struct p4_conditional *c,
-                             const struct p4_expr_operand *o, unsigned depth,
-                             bool *as_bool)
+static void eval_operand(const struct p4_program *prog,
+                         const struct p4_phv *phv,
+                         const struct p4_conditional *c,
+                         const struct p4_expr_operand *o, unsigned depth,
+                         struct p4_value *out)
 {
-    *as_bool = false;
     switch (o->kind) {
     case P4_EO_FIELD:
-        return phv_get(prog, phv, o->field);
+        phv_get(prog, phv, o->field, out);
+        return;
     case P4_EO_HEXSTR:
-        return imm_value(o->imm, P4_MAX_IMM_BYTES, o->imm_len);
+        imm_value(o->imm, P4_MAX_IMM_BYTES, o->imm_len, out);
+        return;
     case P4_EO_HEADER:
         /* Only valid() takes a header, and it reads the validity bit. */
-        *as_bool = true;
-        return phv->valid[o->header] ? 1u : 0u;
+        value_set_u32(out, phv->valid[o->header] ? 1u : 0u);
+        return;
     case P4_EO_BOOL:
-        *as_bool = true;
-        return o->bval ? 1u : 0u;
+        value_set_u32(out, o->bval ? 1u : 0u);
+        return;
     case P4_EO_EXPR:
-        *as_bool = true;
-        return eval_node(prog, phv, c, o->expr, depth + 1) ? 1u : 0u;
+        value_set_u32(out,
+                      eval_node(prog, phv, c, o->expr, depth + 1) ? 1u : 0u);
+        return;
     default:
-        return 0;
+        value_zero(out);
+        return;
     }
 }
 
@@ -329,8 +417,8 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
                       unsigned depth)
 {
     const struct p4_expr_node *n;
-    uint64_t l, r;
-    bool lb, rb;
+    struct p4_value l, r;
+    int cmp;
 
     /* A child's index is always greater than its parent's, so this cannot
      * recurse forever; the bound is belt and braces against a later edit. */
@@ -339,31 +427,34 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
     n = &c->expr[idx];
 
     if (n->op == P4_EXPR_VALID || n->op == P4_EXPR_NOT) {
-        r = eval_operand(prog, phv, c, &n->right, depth, &rb);
-        (void)rb;
-        return (n->op == P4_EXPR_VALID) ? (r != 0) : (r == 0);
+        eval_operand(prog, phv, c, &n->right, depth, &r);
+        return (n->op == P4_EXPR_VALID) ? value_nonzero(&r)
+                                        : !value_nonzero(&r);
     }
 
-    l = eval_operand(prog, phv, c, &n->left, depth, &lb);
-    r = eval_operand(prog, phv, c, &n->right, depth, &rb);
+    eval_operand(prog, phv, c, &n->left, depth, &l);
+    eval_operand(prog, phv, c, &n->right, depth, &r);
+    /* Both are right-aligned in the same width, so one memcmp orders
+     * them whatever the fields' widths are. */
+    cmp = value_cmp(&l, &r);
 
     switch (n->op) {
     case P4_EXPR_EQ:
-        return l == r;
+        return cmp == 0;
     case P4_EXPR_NE:
-        return l != r;
+        return cmp != 0;
     case P4_EXPR_LT:
-        return l < r;
+        return cmp < 0;
     case P4_EXPR_LE:
-        return l <= r;
+        return cmp <= 0;
     case P4_EXPR_GT:
-        return l > r;
+        return cmp > 0;
     case P4_EXPR_GE:
-        return l >= r;
+        return cmp >= 0;
     case P4_EXPR_AND:
-        return (l != 0) && (r != 0);
+        return value_nonzero(&l) && value_nonzero(&r);
     case P4_EXPR_OR:
-        return (l != 0) || (r != 0);
+        return value_nonzero(&l) || value_nonzero(&r);
     default:
         return false;
     }
@@ -488,8 +579,12 @@ int p4_exec_run(const struct p4_program *prog, uint32_t ingress_port,
         if (prog->headers[h].metadata)
             phv.valid[h] = true;
     }
-    if (prog->ingress_port.header != P4_IDX_NONE)
-        phv_set(prog, &phv, prog->ingress_port, ingress_port);
+    if (prog->ingress_port.header != P4_IDX_NONE) {
+        struct p4_value v;
+
+        value_set_u32(&v, ingress_port);
+        phv_set(prog, &phv, prog->ingress_port, &v);
+    }
 
     rc = run_parser(prog, &phv, frame, len);
     if (rc)
@@ -502,7 +597,12 @@ int p4_exec_run(const struct p4_program *prog, uint32_t ingress_port,
     }
 
     res->dropped = dropped;
-    res->egress_spec = (uint32_t)phv_get(prog, &phv, prog->egress_spec);
+    {
+        struct p4_value v;
+
+        phv_get(prog, &phv, prog->egress_spec, &v);
+        res->egress_spec = value_u32(&v);
+    }
     if (dropped)
         return 0;
 

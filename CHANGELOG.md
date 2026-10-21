@@ -257,7 +257,9 @@
   rather than by the emulator, including sending it back to the port it
   arrived on -- which is what makes a guest frame answerable without a TAP.
   Tables have no entries yet, so every lookup misses and takes the table's
-  default action.
+  default action. Fields of any width the loader accepts, up to 512 bits,
+  are compared, assigned and added correctly, so an IPv6 address behaves
+  like any other field.
 * `ernic_parse_hexstr()` in `src/parse_int.h` parses a bmv2 hexstr: a
   `0x`-prefixed, variable-width hexadecimal value that may be negative and
   may have an odd number of digits, none of which the existing helpers
