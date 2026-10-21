@@ -766,7 +766,7 @@ rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
  sees QEMU types)
        │
        ▼
-src/qemu/hw/rdma           resource manager (rdma_rm)
+src/qemu/                  resource manager (rdma_rm)
 src/rdma/                  backend vtable: none,
                            loopback, tcp mesh
 src/qemu-compat/           the QEMU APIs the QEMU-derived
@@ -1653,7 +1653,7 @@ interrupt controller, doorbell decode</p></td>
 <td><p>Bridge to the QEMU-derived core; guest-memory mapping for
 it; mesh wrappers; shared limits</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/hw/rdma/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
