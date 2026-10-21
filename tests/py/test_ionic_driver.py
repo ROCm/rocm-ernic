@@ -252,18 +252,38 @@ def test_bad_rkey(suite, fix):
 
 
 def test_write_past_mr(suite, fix):
-    """A WRITE whose length runs past the end of the region it names."""
+    """A WRITE whose length runs past the end of the region it names.
+
+    The local side supplies all 4096 bytes, so the only thing wrong with
+    this work request is that the destination runs off the end of the
+    peer's region. With a short local SGE the transfer would come up
+    short anyway and the test would pass whether or not the remote bound
+    was enforced at all.
+    """
+    local_len = 4096
+    remote_va = VA_B + MR_LEN - 64
+    tail = fix.driver.mr_read(fix.mr_b, remote_va, 64)
     fix.driver.post_send(
         fix.qp_a,
         ionic.OP_RDMA_WRITE,
         flags=ionic.WQE_SIGNALLED,
-        remote_va=VA_B + MR_LEN - 64,
+        remote_va=remote_va,
         rkey=MR_B,
-        length=4096,
-        sge=[ionic.Sge(VA_A, 64, MR_A)],
+        length=local_len,
+        sge=[ionic.Sge(VA_A, local_len, MR_A)],
     )
     send = fix.driver.wait_cq(fix.cq_a)
     suite.check(send.error, "a write running past the end of the region fails")
+    suite.check_eq(
+        send.status,
+        ionic.STS_REMOTE_ACC_ERR,
+        "the end that was out of bounds is the one blamed",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, remote_va, 64),
+        tail,
+        "the bytes that would have fitted were not written either",
+    )
 
 
 def test_bad_lkey(suite, fix):

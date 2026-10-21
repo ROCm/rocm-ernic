@@ -2652,6 +2652,32 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         length = be32toh(length);
 
         bool to_remote = op != IONIC_V1_OP_RDMA_READ;
+
+        /*
+         * Check the far end's range before moving anything, not after.
+         * rdma_xfer() walks until it runs out of region, so an
+         * over-long length used to transfer everything that fitted and
+         * only then report the overrun: a write left its first bytes in
+         * the tail of the peer's region, and a read had already copied
+         * them out. Both stay inside the registered region, so neither
+         * reaches memory the key does not cover, but an operation the
+         * device rejects should not have moved anything.
+         *
+         * Zero length is exempt, and has to be: it accesses nothing, the
+         * spec does not require the R_Key to be validated for one, and
+         * UCX's rc_verbs flush is a zero-length RDMA_WRITE with rkey 0.
+         * The mesh responder path exempts it for the same reason.
+         */
+        if (length != 0 && !mr_covers(dp, rkey, remote_va, length)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#" PRIx64
+                    " len=%u is outside the region",
+                    qp_id, to_remote ? "write" : "read", rkey, remote_va,
+                    length);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+            break;
+        }
+
         uint32_t moved =
             rdma_xfer(dp, &src, rkey, remote_va, length, to_remote);
         if (moved != length) {

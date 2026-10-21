@@ -205,28 +205,46 @@ def test_unknown_gid(suite, mesh_, state):
 
 
 def test_malformed_peers(suite, mesh_):
-    """Frames no real node sends, and peers that never finish registering."""
+    """Frames no real node sends, and peers that never finish registering.
+
+    Each row checks what the manager did about the frame, not just that
+    it is still running: a manager that ignored the payload cap, or that
+    never reaped a peer which connected and said nothing, would survive
+    all of this.
+    """
     port = mesh_.port
+    manager = mesh_.nodes[0].server
 
     with mesh.MeshPeer(port=port) as peer:
         peer.send_raw(struct.pack(mesh.HEADER_FMT, 0xDEADBEEF, 12, 0, 1, 0, 0, 0, 0))
-        time.sleep(0.2)
-        suite.check(True, "a frame with a bad magic did not take the manager down")
+        suite.check(
+            peer.wait_closed(10.0),
+            "a frame with a bad magic gets the connection closed",
+        )
 
     with mesh.MeshPeer(port=port) as peer:
-        # A length past the 16 MiB cap, with nothing behind it.
+        # A length past the 16 MiB cap, with nothing behind it. The
+        # manager must reject it on the header alone rather than waiting
+        # for a gigabyte that is never coming.
         peer.send_raw(
             struct.pack(
                 mesh.HEADER_FMT, mesh.MAGIC, mesh.MSG_IONIC, 1 << 30, 1, 0, 0, 0, 0
             )
         )
-        time.sleep(0.2)
-        suite.check(True, "a payload length past the cap was refused")
+        suite.check(
+            manager.wait_for_log(f"payload too large: {1 << 30}", 10),
+            "the payload cap is enforced on the header, and says so",
+        )
+        suite.check(
+            peer.wait_closed(10.0), "the oversized frame gets the connection closed"
+        )
 
     with mesh.MeshPeer(port=port) as peer:
         peer.send_raw(b"\x00" * (mesh.HEADER_SIZE - 1))
-        time.sleep(0.2)
-        suite.check(True, "a truncated header did not wedge the manager")
+        suite.check(
+            peer.wait_closed(mesh.REGISTER_TIMEOUT_MS / 1000.0 + 10.0),
+            "a truncated header does not hold a connection open forever",
+        )
 
     with mesh.MeshPeer(port=port) as peer:
         body = mesh.register_payload()
@@ -239,16 +257,54 @@ def test_malformed_peers(suite, mesh_):
             "a registration delivered a few bytes at a time is still parsed",
         )
 
-    # A peer that connects and says nothing. The manager gives it five
-    # seconds to register and then reaps it.
-    silent = mesh.MeshPeer(port=port).connect()
+    # A peer that connects and says nothing. The manager gives it
+    # TCP_REGISTER_TIMEOUT_MS to register and then reaps it, so this one
+    # is left connected rather than closed from here -- closing it would
+    # pass whether or not the reaper works.
+    with mesh.MeshPeer(port=port) as peer:
+        suite.check(
+            manager.wait_for_log("which didn't register", 30),
+            "a peer that never registers is reaped",
+        )
+        suite.check(
+            peer.wait_closed(10.0),
+            "the reaped peer's connection is closed from the manager's end",
+        )
+
+    suite.check(manager.is_running(), "the manager survived every malformed peer")
+
+
+def test_peer_advertisement(suite, mesh_):
+    """A peer that registers and advertises a GID owns it, and loses it.
+
+    Exercises the advertisement from the outside, which is the only way
+    to check the encoding: the payload's node id and count are network
+    byte order, and a little-endian one decodes as sixteen million GIDs
+    and is refused.
+
+    The second half is the liveness rule end to end: when the peer hangs
+    up, the manager declares it dead and stops it owning the address, so
+    the same address can be claimed again by whoever comes back with it.
+    """
+    manager = mesh_.nodes[0].server
+    claimed = "10.0.99.7"
+    wanted = f"owns GID {mesh.gid_log_form(claimed)}"
+
+    peer = mesh.MeshPeer(port=mesh_.port).connect()
     try:
-        suite.check(True, "a peer that connects and never registers is tolerated")
+        _node_id, _num, result, _version = peer.register(hostname=b"advertiser")
+        suite.check_eq(result, 0, "the peer registered")
+        peer.advertise_gids([claimed])
+        suite.check(
+            manager.wait_for_log(wanted, 15),
+            "the manager accepted the advertisement and recorded the owner",
+        )
     finally:
-        silent.close()
+        peer.close()
 
     suite.check(
-        mesh_.nodes[0].server.is_running(), "the manager survived every malformed peer"
+        manager.wait_for_log("unreachable while it is away", 60),
+        "the manager stops a hung-up node owning its GIDs",
     )
 
 
@@ -324,27 +380,37 @@ def test_worker_refuses_old_manager(suite, binary, run_dir):
 def test_churn(suite, mesh_, rounds=3):
     """Kill and restart a worker, and watch the manager's descriptors.
 
-    The counts are taken after each round has settled. A climb across
-    rounds is the socket leak; sockets left in CLOSE_WAIT name it.
+    Each sample is taken after something observable has happened, not
+    after a fixed sleep: the manager retires a dead connection on its
+    next health-check pass, which is up to an interval away, so a sleep
+    shorter than that samples before the sweep and a sleep longer than
+    it is a guess that will be wrong on a slow runner. A count that
+    climbs across rounds is the socket leak; sockets left in CLOSE_WAIT
+    name it.
     """
     manager = mesh_.nodes[0].server
     victim = mesh_.size - 1
     counts = []
     for round_index in range(rounds):
+        registrations = mesh_.registrations()
+        disconnects = manager.log_text().count("disconnected")
+
         mesh_.nodes[victim].detach()
         mesh_.nodes[victim].server.kill()
         suite.check(
             not mesh_.nodes[victim].server.is_running(),
             f"round {round_index}: node {victim} killed",
         )
-        # Let the manager notice and reap before counting.
-        time.sleep(2.0)
+        suite.check(
+            manager.wait_for_count("disconnected", disconnects + 1, 60),
+            f"round {round_index}: the manager noticed and retired the connection",
+        )
+
         mesh_.start_node(victim, timeout=60)
         suite.check(
-            mesh_.nodes[victim].server.is_running(),
-            f"round {round_index}: node {victim} restarted",
+            mesh_.wait_registrations(registrations + 1, 60),
+            f"round {round_index}: node {victim} restarted and re-registered",
         )
-        time.sleep(2.0)
         counts.append(manager.fd_count())
 
     suite.check(manager.is_running(), f"the manager survived {rounds} rounds of churn")
@@ -377,7 +443,6 @@ def test_traffic_after_churn(suite, mesh_):
     the unresolved-GID test -- an address with two claimants must refuse,
     never pick one.
     """
-    suite.check(mesh_.wait_formed(60), "the restarted node re-registered")
     peers = list(range(mesh_.size))
     drivers, cqs, mrs, qps = {}, {}, {}, {}
     for index in peers:
@@ -440,12 +505,16 @@ def main():
 
     suite = Suite("rocm-ernic TCP mesh stress tests")
     with tempfile.TemporaryDirectory(prefix="ernic-mesh-") as run_dir:
+        # Inside the try: a mesh whose third node fails to start still
+        # has two running servers that the finally has to stop, or they
+        # outlive the temporary directory being removed.
         mesh_ = mesh.Mesh(args.server, run_dir, size=args.size)
-        mesh_.start(timeout=60)
         try:
+            mesh_.start(timeout=60)
             suite.run("mesh formation", test_formation, mesh_)
             run_traffic_tests(suite, mesh_)
             suite.run("malformed peers", test_malformed_peers, mesh_)
+            suite.run("a peer's GID advertisement", test_peer_advertisement, mesh_)
             suite.run("the protocol version gate", test_version_gate, mesh_)
             suite.run(
                 "a worker refuses a pre-v4 manager",

@@ -136,11 +136,33 @@ class Server:
         return self.proc is not None and self.proc.poll() is None
 
     def kill(self):
-        """SIGKILL, for simulating a node that dies without cleaning up."""
-        if self.is_running():
-            self.proc.send_signal(signal.SIGKILL)
-            self.proc.wait()
+        """SIGKILL, for simulating a node that dies without cleaning up.
+
+        Raises ServerFailed if the process was already gone, and if what
+        it died of was not the signal sent here. A test that kills a
+        server on purpose cannot otherwise tell that outcome from a
+        server that had already aborted -- which is exactly what a
+        sanitizer report looks like, since the sanitizers run with
+        halt_on_error. Accepting a corpse would let that report vanish.
+        """
+        if self.proc is None:
+            raise ServerFailed(f"server {self.socket_path} was never started")
+        if not self.is_running():
+            status = self.proc.returncode
+            self._close_log()
+            raise ServerFailed(
+                f"server {self.socket_path} had already exited with status "
+                f"{status} before it was killed: {self.tail_log()}"
+            )
+        self.proc.send_signal(signal.SIGKILL)
+        self.proc.wait()
+        status = self.proc.returncode
         self._close_log()
+        if status != -signal.SIGKILL:
+            raise ServerFailed(
+                f"server {self.socket_path} exited with status {status}, "
+                f"not the SIGKILL it was sent: {self.tail_log()}"
+            )
 
     def stop(self, timeout=DEFAULT_STOP_TIMEOUT, check=True):
         """SIGTERM the server and wait for it, holding it to the deadline.
@@ -204,6 +226,20 @@ class Server:
                 return needle in self.log_text()
             time.sleep(0.05)
         return False
+
+    def wait_for_count(self, needle, wanted, timeout=10.0):
+        """Wait for @needle to appear at least @wanted times. True if it did.
+
+        A log is cumulative, so waiting for a line to appear at all says
+        nothing about whether it appeared *this* time round; a test that
+        repeats something has to count against a mark it took first.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.log_text().count(needle) >= wanted:
+                return True
+            time.sleep(0.05)
+        return self.log_text().count(needle) >= wanted
 
     def fd_count(self):
         """How many descriptors the process holds, or -1 if it is gone."""

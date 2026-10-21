@@ -24,7 +24,7 @@ import struct
 import threading
 import time
 
-from .server import Server
+from .server import Server, ServerFailed
 
 MAGIC = 0x52444D41  # "RDMA"
 PROTOCOL_VERSION = 4
@@ -123,10 +123,15 @@ def parse_register_resp(payload):
 
 
 def gids_payload(node_id, gids):
-    """A TCP_MSG_NODE_GIDS payload: le32 node id, le32 count, 8 x 16 bytes."""
+    """A TCP_MSG_NODE_GIDS payload: be32 node id, be32 count, 8 x 16 bytes.
+
+    Both counts are network byte order, as tcp_fill_node_gids() writes
+    them with htonl() and the receive path reads them with ntohl(). The
+    GIDs themselves are 16 opaque bytes and are not swapped.
+    """
     if len(gids) > MAX_NODE_GIDS:
         raise ValueError(f"a node advertises at most {MAX_NODE_GIDS} GIDs")
-    body = struct.pack("<II", node_id, len(gids))
+    body = struct.pack("!II", node_id, len(gids))
     for gid in gids:
         if len(gid) != 16:
             raise ValueError("a GID is 16 bytes")
@@ -203,6 +208,27 @@ class MeshPeer:
             self.sock.sendall(data[off : off + chunk])
             if delay:
                 time.sleep(delay)
+
+    def wait_closed(self, timeout=10.0):
+        """Wait for the peer to close the connection. True if it did.
+
+        What a node does with a frame it refuses is close the connection,
+        so this is how a test sees the refusal from the outside rather
+        than only in a log.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self.sock.settimeout(min(remaining, 0.5))
+            try:
+                if self.sock.recv(4096) == b"":
+                    return True
+            except socket.timeout:
+                continue
+            except OSError:
+                return True
 
     def recv_exact(self, length):
         """Read exactly @length bytes, or None at end of stream.
@@ -353,6 +379,7 @@ class MeshNode:
         self.log_path = log_path
         self.client = None
         self.driver = None
+        self.mem = None
 
     def attach(self, mem_size=32 << 20, timeout=30.0):
         """Connect a vfio-user client, map guest memory, and bring the LIF up."""
@@ -364,17 +391,26 @@ class MeshNode:
         self.client = vfu.VfioUserClient(self.server.socket_path).connect(
             timeout=timeout
         )
-        mem = vfu.GuestMemory(size=mem_size)
-        self.client.dma_map(mem)
-        self.driver = ionic.IonicDriver(self.client, mem)
+        self.mem = vfu.GuestMemory(size=mem_size)
+        self.client.dma_map(self.mem)
+        self.driver = ionic.IonicDriver(self.client, self.mem)
         self.driver.bringup()
         return self.driver
 
     def detach(self):
-        """Drop the client, as a VM shutting down does."""
+        """Drop the client and the guest memory, as a VM shutting down does.
+
+        The memory has to be closed explicitly: its memfd is a raw
+        descriptor, which nothing collects, so a churn loop that attaches
+        and detaches would leak one per round -- in the suite that exists
+        to count the server's descriptors.
+        """
         if self.client is not None:
             self.client.close()
             self.client = None
+        if self.mem is not None:
+            self.mem.close()
+            self.mem = None
         self.driver = None
 
 
@@ -407,8 +443,22 @@ class Mesh:
         return f"tcp:worker:127.0.0.1:{self.port}"
 
     def start(self, timeout=60.0):
-        """Start every node, the manager first."""
-        for index in range(self.size):
+        """Start every node, the manager first.
+
+        A worker is not started until the manager is listening on its
+        mesh port. The vfio-user socket is not that barrier: the server
+        binds it in vfu_create_ctx() and only starts the backend, and so
+        the listen, in ionic_device_init() afterwards. A worker that
+        connects in between fails with ECONNREFUSED, and its first
+        connection to the manager is not retried.
+        """
+        manager = self.start_node(0, timeout)
+        if not manager.server.wait_for_log("TCP: Listening on port", timeout):
+            raise ServerFailed(
+                "the manager never listened on its mesh port: "
+                f"{manager.server.tail_log()}"
+            )
+        for index in range(1, self.size):
             self.start_node(index, timeout)
         return self
 
@@ -432,20 +482,35 @@ class Mesh:
         self.nodes[index] = node
         return node
 
-    def wait_formed(self, timeout=60.0):
-        """Wait until every worker has registered with the manager.
+    def registrations(self):
+        """How many workers the manager has registered since it started.
 
-        Node ids are assigned in connection order, so this counts
-        registrations rather than naming them.
+        Cumulative, because the manager's log is: a node that dies and
+        restarts registers again and the count goes up rather than being
+        replaced. That is why wait_formed() takes a mark.
+        """
+        return self.nodes[0].server.log_text().count("Registered node")
+
+    def wait_registrations(self, wanted, timeout=60.0):
+        """Wait until the manager has registered @wanted workers in total.
+
+        A total rather than an increment, because the manager's log is
+        cumulative and the caller knows what it is waiting for: the whole
+        mesh forming is ``size - 1``, and one node rejoining is whatever
+        registrations() said before it was killed, plus one. Waiting for
+        a fixed ``size - 1`` after the mesh has already formed asserts
+        nothing -- the threshold is satisfied before the wait starts.
         """
         deadline = time.monotonic() + timeout
-        manager = self.nodes[0].server
-        wanted = self.size - 1
         while time.monotonic() < deadline:
-            if manager.log_text().count("Registered node") >= wanted:
+            if self.registrations() >= wanted:
                 return True
             time.sleep(0.1)
-        return False
+        return self.registrations() >= wanted
+
+    def wait_formed(self, timeout=60.0):
+        """Wait for every worker of a freshly started mesh to register."""
+        return self.wait_registrations(self.size - 1, timeout)
 
     def wait_gids(self, timeout=60.0):
         """Wait until every node has learned every other node's GID.

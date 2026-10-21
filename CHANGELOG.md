@@ -320,6 +320,14 @@
   that addition into a small number, which a legitimately mapped region
   passed; the translation that came back then described the full length.
   Unsigned wrap-around is defined behaviour, so no sanitizer reported it.
+* An RDMA read or write whose length runs past the end of the region its
+  key names is now refused before anything is transferred. The transfer
+  walked until it ran out of region and only then reported the overrun, so
+  a rejected write had already left its first bytes in the tail of the
+  target region and a rejected read had already copied them out. Both
+  stayed inside the registered region, so neither reached memory the key
+  did not cover. Zero-length operations are still exempt, as the key in one
+  is not required to be valid.
 * A work request naming memory the guest has not registered now fails on
   the queue pair that posted it, with a local protection error, as InfiniBand
   requires. A SEND whose gather failed used to complete successfully for the
