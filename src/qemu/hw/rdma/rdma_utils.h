@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2018 Oracle
  * Copyright (C) 2018 Red Hat Inc
- *
+ * Copyright (C) Advanced Micro Devices, Inc.
  *
  * Authors:
  *     Yuval Shaia <yuval.shaia@oracle.com>
