@@ -754,6 +754,52 @@ The Ansible collection is versioned separately and has its own changelog.
 For a change to it, add a fragment to `ansible/changelogs/fragments/`, using
 the sections in `ansible/changelogs/config.yaml`, instead.
 
+## Review your change before you finish
+
+**When you have modified the repository, step back and review the whole
+change as a reviewer would before you call it done.** Every PR gets a
+Copilot review, and most of what it asks for could have been caught
+first. Read all of `git diff`, and any new files, from start to finish,
+not just the lines you meant to change, and check it against the list
+below, which comes from what Copilot has asked for on past PRs. Fix what
+you find, then run the
+[checks](#linters-warnings-and-sanitizers-mandatory) again.
+
+- **Is there a changelog entry?** The request Copilot makes most often.
+  See [Changelog](#changelog): file permissions, a test program's
+  arguments, and a fix to a flaky CI test all count.
+- **Is the fix complete?** Search for every other place with the same
+  pattern or the same state, and fix them too or say why not. Copilot
+  regularly finds the bug left in a sibling path: liveness restored when
+  a heartbeat revives a node but not when the manager reconnects it, a
+  socket's mode tightened in the server but set back to `0666` by
+  `ernicctl hot-reload`.
+- **Does each new test fail without the fix?** Revert the fix in a
+  scratch copy and check. Copilot reports tests that pass either way: a
+  dropped packet "rejected" by a receive queue that was empty anyway, a
+  transfer too short to reach the boundary under test, a log count that
+  an earlier phase already satisfied.
+- **Does every error path work?** Follow each failure branch. Is
+  everything it frees or closes initialized on that path? Does a
+  partially started setup still get torn down, and every descriptor
+  closed? A setup failure in a test is a failure, not a skip (exit 77);
+  see [Tests](#tests). Cover new error paths with tests, for the
+  [coverage floor](#tests).
+- **Does a test wait for events, not time?** A fixed sleep that is long
+  enough here is too short on a slow runner. Wait, with a deadline, for
+  something observable: a log line, a counter, a registration. See
+  [Thread safety](#thread-safety) for tests of background threads.
+- **Is every shared field read under its lock?** That includes reads that
+  build a message sent after the lock is dropped.
+- **Does it follow the rules above?** Copilot checks the code against
+  this file: number parsing through `parse_int.h`, with a helper whose
+  range fits the value; byte order that matches the other end of the
+  wire; `sh`-compatible `run:` blocks in container jobs.
+- **Do the words match the code?** Comments, documentation, changelog
+  entries, and the PR description must claim only what the diff does.
+  Don't describe a check as stronger than it is, or a guarantee that
+  holds on one path as holding on all of them.
+
 ## Lab provisioning
 
 To set up guests and hosts, use the Ansible collection; see
