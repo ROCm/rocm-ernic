@@ -32,7 +32,7 @@
  * negative, boundary and corner -- through the same checks plus the
  * status each one expects, so the oracle itself is tested on every run;
  * a failing seed aborts before any fuzzing starts.
- * With FUZZ_EMIT_SEEDS=<dir> it also writes them there as a seed corpus.
+ * With FUZZ_EMIT_SEEDS=1 it writes a seed corpus in the current directory.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -49,6 +49,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ionic_adminq_priv.h"
 
@@ -331,30 +332,36 @@ static size_t encode_seed(const struct seed *s, uint8_t *out)
     return IN_HDR + s->body_len;
 }
 
-/*
- * The seed directory comes from the environment, so it must not climb out
- * of where the build asked for it, and the files are private to the user.
- */
-static void emit_seed(const char *dir, size_t i, const uint8_t *buf, size_t len)
+/* Seed names are generated locally; environment data never becomes a path. */
+static void emit_seed(size_t i, const uint8_t *buf, size_t len)
 {
-    char path[512];
+    char path[32];
     int fd;
     FILE *f;
+    bool ok;
 
-    if (strstr(dir, "..") != NULL) {
-        fprintf(stderr,
-                "fuzz_ionic_stats: FUZZ_EMIT_SEEDS must not contain ..\n");
-        exit(EXIT_FAILURE);
-    }
-    snprintf(path, sizeof(path), "%s/seed-%02zu", dir, i);
-    /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+    snprintf(path, sizeof(path), "seed-%02zu", i);
+    /* Never overwrite an existing file or follow a planted symlink.  With
+     * _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
      * open(path, flags, mode) overload, and android-cloexec-open looks for
      * O_CLOEXEC in its mode */
     /* NOLINTBEGIN(android-cloexec-open) */
-    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     /* NOLINTEND(android-cloexec-open) */
-    f = fd < 0 ? NULL : fdopen(fd, "wb");
-    if (!f || fwrite(buf, 1, len, f) != len || fclose(f) != 0) {
+    if (fd < 0) {
+        fprintf(stderr, "fuzz_ionic_stats: cannot create %s\n", path);
+        exit(EXIT_FAILURE);
+    }
+    f = fdopen(fd, "wb");
+    if (!f) {
+        close(fd);
+        fprintf(stderr, "fuzz_ionic_stats: cannot open %s as a stream\n", path);
+        exit(EXIT_FAILURE);
+    }
+    ok = fwrite(buf, 1, len, f) == len;
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok) {
         fprintf(stderr, "fuzz_ionic_stats: cannot write %s\n", path);
         exit(EXIT_FAILURE);
     }
@@ -362,7 +369,8 @@ static void emit_seed(const char *dir, size_t i, const uint8_t *buf, size_t len)
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-    const char *dir = getenv("FUZZ_EMIT_SEEDS");
+    const char *emit = getenv("FUZZ_EMIT_SEEDS");
+    bool emit_seeds = emit && strcmp(emit, "1") == 0;
     int failures = 0;
 
     (void)argc;
@@ -382,8 +390,8 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
                    why ? ": " : "", why ? why : "");
             failures++;
         }
-        if (dir)
-            emit_seed(dir, i, buf, len);
+        if (emit_seeds)
+            emit_seed(i, buf, len);
     }
     fflush(stdout);
     if (failures) {
