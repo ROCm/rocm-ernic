@@ -460,6 +460,62 @@ static void test_empty_advertisement_withdraws(void)
     priv_free(priv);
 }
 
+/*
+ * A node the manager has declared dead keeps its claims but stops owning
+ * them, and takes them up again when it answers.
+ *
+ * This is what makes a restart survivable. A restarted node registers
+ * under a new id -- ids are allocated monotonically and a dead node is
+ * never evicted -- so without this its guest's GID is claimed by the id
+ * it had and the id it now has, the duplicate rule resolves it to
+ * neither, and the address stays unreachable for the rest of the mesh's
+ * life.
+ */
+static void test_dead_node_stops_owning_its_gids(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t g[1][16];
+
+    printf("  a dead node stops owning its GIDs\n");
+
+    gid_v4(g[0], 70);
+    tcp_gid_claims_set(priv, 5, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 5, "claim did not take effect");
+
+    tcp_gid_claims_set_alive(priv, 5, false);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "a dead node still owns its GID (node %u)", resolve(priv, g[0]));
+
+    /* The claims are kept, so answering again is enough to get them back:
+     * a node that is merely late never re-advertises. */
+    tcp_gid_claims_set_alive(priv, 5, true);
+    CHECK(resolve(priv, g[0]) == 5,
+          "a revived node did not get its GID back (got %u)",
+          resolve(priv, g[0]));
+
+    /* The same guest returning under a new id owns the address, rather
+     * than deadlocking against the id it used to have. */
+    tcp_gid_claims_set_alive(priv, 5, false);
+    tcp_gid_claims_set(priv, 6, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 6,
+          "a restarted node did not take its own GID (got %u)",
+          resolve(priv, g[0]));
+
+    /* Two live claimants are still a contest; death is not a way to win
+     * one. */
+    tcp_gid_claims_set_alive(priv, 5, true);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "two live claimants resolved to node %u", resolve(priv, g[0]));
+
+    /* Marking a node with no claims live or dead does nothing. */
+    tcp_gid_claims_set_alive(priv, 99, false);
+    tcp_gid_claims_set_alive(priv, 99, true);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "a node with no claims changed the table");
+
+    priv_free(priv);
+}
+
 /* ---- Entry points on every backend ------------------------------------- */
 
 /*
@@ -694,6 +750,7 @@ int main(void)
     test_ud_rtr_needs_no_destination();
     test_contested_gid_stays_contested();
     test_empty_advertisement_withdraws();
+    test_dead_node_stops_owning_its_gids();
     test_hooks_refuse_other_backends();
     test_hooks_refuse_missing_backend();
     test_hooks_on_tcp();

@@ -889,10 +889,33 @@ the source; the rest have not:
 - Node ids are assigned monotonically, so they are not stable across
   runs.
 
-Note that nodes are never evicted from `mesh_nodes` — a dead node is
-marked `is_alive = false` and reconnects under the same id — so the GID
-table has no removal path by design. A returning node re-advertises and
-replaces its own entries.
+Note that nodes are never evicted from `mesh_nodes`: a dead node is
+marked `is_alive = false` and keeps its entry. A node that merely went
+quiet comes back under the same id, but a node that was **restarted** is
+a new process, so it registers again and the manager gives it a new id —
+ids are allocated monotonically. Both ids then exist, and both claim the
+same guest GID.
+
+So the GID table does not resolve on claims alone. `TcpNodeGids` carries
+an `alive` flag, which the manager clears when it declares a node dead
+and sets when the node answers again, and
+`tcp_gid_index_rebuild()` skips a claimant that isn't alive. A dead node
+therefore neither answers for its addresses nor contests them, and the
+same guest returning under a new id owns them; a node that was only late
+gets them back without re-advertising. Two *live* claimants are still a
+contest and still resolve to nothing.
+
+Workers keep no liveness of their own. The manager advertises a dead
+node as owning nothing (`tcp_broadcast_gid_table()`), which is also what
+makes an empty advertisement meaningful on the wire.
+
+Don't make the index read `is_alive` out of `mesh_nodes` instead: that
+would take `mesh_table_lock` under `gid_table_lock`, the reverse of the
+order everything else takes them in.
+
+Covered by `test_dead_node_stops_owning_its_gids()` in
+`tests/test_tcp_gid_resolve.c` and by the churn rounds in
+`tests/py/test_mesh_stress.py`.
 
 [resolve]: src/rdma/rdma_backend_tcp.c
 [rtr]: src/rdma/rdma_backend_tcp.c

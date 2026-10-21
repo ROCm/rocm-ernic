@@ -300,6 +300,34 @@
 
 ### Fixed
 
+* A TCP mesh node that was restarted used to be unreachable for the rest of
+  the mesh's life. The manager allocates node ids monotonically and never
+  evicts a dead node, so the restarted process registered under a new id
+  while the dead one kept its claim on the guest's GID; both ids then
+  claimed the same address and the duplicate-claim rule resolved it to
+  neither, so peers failed `MODIFY_QP` for that destination with "claimed by
+  more than one node". A node the manager has declared dead now keeps its
+  claims but stops owning them, so it neither answers for its addresses nor
+  contests them, and the same guest returning under a new id owns them. A
+  node that is merely late gets its claims back when it answers again,
+  without having to advertise them, and two *live* claimants still contest
+  as before. Restarting one node of a mesh no longer means restarting all of
+  them.
+* The emulated device now refuses a work request whose address and length
+  wrap around the end of the address space before it asks libvfio-user to
+  translate them. libvfio-user's fast path adds the two and compares the
+  sum against the end of the mapped region, so a large enough length wrapped
+  that addition into a small number, which a legitimately mapped region
+  passed; the translation that came back then described the full length.
+  Unsigned wrap-around is defined behaviour, so no sanitizer reported it.
+* A work request naming memory the guest has not registered now fails on
+  the queue pair that posted it, with a local protection error, as InfiniBand
+  requires. A SEND whose gather failed used to complete successfully for the
+  sender and put the error on the peer's receive completion, so the guest
+  was told the wrong thing and the wrong queue pair was blamed; one crossing
+  the mesh sent the peer a request it could not satisfy. No data was
+  transferred in either case, and none is now.
+
 * A server that shut down cleanly removed its socket's path a second time
   after closing the socket, so it could remove the socket of another server
   started at the same path in between.
@@ -621,16 +649,6 @@
   resolver to give up, which its configured timeouts and retries bound. A
   hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
   wait.
-* A TCP mesh node that is restarted becomes unreachable for the rest of the
-  mesh's life. The manager allocates node ids monotonically and never evicts
-  a dead node, so the restarted process registers under a new id while the
-  dead one keeps its claim on the guest's GID. Both ids then claim the same
-  address, and the duplicate-claim rule resolves it to neither, so peers fail
-  `MODIFY_QP` for that destination with "claimed by more than one node".
-  Traffic is not misrouted -- the point of that rule is that it refuses
-  rather than guessing -- but the node can only be reached again by
-  restarting the whole mesh. Covered by `ernic-mesh-stress`, which asserts
-  the refusal.
 * A TCP mesh worker whose connection to the manager drops doesn't connect to
   it again. The manager connects to the worker instead, but the worker takes
   topology updates and GID tables only on the connection it opened itself, so
