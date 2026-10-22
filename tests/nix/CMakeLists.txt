@@ -86,3 +86,22 @@ target_include_directories(fuzz_replay_ionic_stats SYSTEM PRIVATE
 target_compile_definitions(fuzz_replay_ionic_stats PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE
 )
+
+# The NIC profile loader is pure text handling. Like the parsers above it
+# needs no device, and it checks a seed table in LLVMFuzzerInitialize()
+# before replaying.
+ernic_add_fuzz_replay(profile_parse
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_compile_definitions(fuzz_replay_profile_parse PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# Check private seed files and rejection of existing filesystem entries.
+add_test(
+    NAME fuzz-seed-files-profile_parse
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_fuzz_seed_files.sh
+        $<TARGET_FILE:fuzz_replay_profile_parse>
+)
+set_tests_properties(fuzz-seed-files-profile_parse PROPERTIES TIMEOUT 30)

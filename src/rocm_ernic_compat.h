@@ -243,6 +243,14 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
                                        const char *connection_str);
 
 /**
+ * pvrdma_set_stats_nic_profile - Set the NIC profile for stats display
+ * @handle:  Device handle
+ * @profile: the profile chain and hash, e.g. "compat (hash 0x...)" (may be
+ *           NULL; shown as "(not set)" in stats file)
+ */
+void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile);
+
+/**
  * pvrdma_inc_stats_reset_count - Increment device reset count for stats
  * @handle: Device handle
  */

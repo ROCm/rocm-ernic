@@ -14,6 +14,8 @@
 #                        ionic_adminq_dispatch_wqe() over the fake device
 #                        shared with tests/test_ionic_stats.c
 #                        (tests/ionic_adminq_fakes.h)
+#   fuzz_profile_parse   ionic_profile_apply_text() — the --nic-profile ini
+#                        loader
 #
 # Not fuzzed yet: the rest of the ionic devcmd and datapath handlers. They
 # manipulate the RDMA resource manager and the rings, so they need more of
@@ -53,6 +55,9 @@ let
     { name = "ionic_stats";
       extra = [ "src/ionic_adminq.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
+      seeds = true; }
+    { name = "profile_parse";
+      extra = [ "src/ionic_profile.c" "src/ionic_profiles.c" ];
       seeds = true; }
   ];
 
