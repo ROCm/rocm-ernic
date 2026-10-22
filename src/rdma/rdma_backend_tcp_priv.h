@@ -189,9 +189,13 @@ typedef struct {
     uint8_t reserved[3];
 } __attribute__((packed)) TcpMeshNodeInfo;
 
+/* As many nodes as a topology broadcast can carry, and so as many as the
+ * mesh can hold. */
+#define TCP_MAX_MESH_NODES 64u
+
 typedef struct {
     uint32_t num_nodes;
-    TcpMeshNodeInfo nodes[64]; /* Max 64 nodes */
+    TcpMeshNodeInfo nodes[TCP_MAX_MESH_NODES];
 } __attribute__((packed)) TcpMeshTopologyPayload;
 
 /*
@@ -410,7 +414,24 @@ struct TcpBackendPrivate {
      */
     QemuMutex gid_broadcast_lock;
 
-    /* This node's own GIDs, from ERNIC_TCP_GUEST_GIDS. */
+    /*
+     * Serialises a whole advertisement of this node's own claims -- snapshot
+     * and send together -- for the same reason gid_broadcast_lock serialises
+     * a broadcast.  The snapshot is taken under lock, which has to be dropped
+     * before sending, so without this an advertisement from the main thread
+     * (a guest adding or removing an address) and one from a receive thread
+     * (registration completing) could land out of order, leaving the manager
+     * holding a claim set this node has already replaced.
+     *
+     * Taken before lock, before gid_broadcast_lock, and before a connection
+     * lock; nothing takes it while holding any of them.
+     */
+    QemuMutex gid_advertise_lock;
+
+    /*
+     * This node's own GIDs, seeded from ERNIC_TCP_GUEST_GIDS and then changed
+     * by the guest through tcp_claim_gid().  Both are protected by lock.
+     */
     uint8_t local_gids[TCP_MAX_NODE_GIDS][16];
     uint32_t num_local_gids;
 
@@ -630,6 +651,12 @@ void *tcp_worker_peer_thread(void *opaque);
 bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
                              const TcpPeerTarget *target, TcpConnection *conn);
 void *tcp_manager_health_check_thread(void *opaque);
+/*
+ * Withdraw a node's GID claims only if it is still unreachable; false when
+ * it has a live connection again, which a stale list cannot be trusted for.
+ */
+bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
+                                       uint32_t node_id);
 bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
                                 const TcpHealthCheckItem *item,
                                 uint64_t deadline_ms);

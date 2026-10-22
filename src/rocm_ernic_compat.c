@@ -809,6 +809,19 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
     return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
 }
 
+int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
+                         bool add)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    union ibv_gid gid;
+
+    if (!pvrdma || !gid_16bytes)
+        return -EINVAL;
+
+    memcpy(&gid, gid_16bytes, sizeof(gid));
+    return tcp_backend_claim_gid(&pvrdma->backend_dev, &gid, add);
+}
+
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len)
 {

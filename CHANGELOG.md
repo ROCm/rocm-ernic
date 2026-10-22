@@ -4,6 +4,28 @@
 
 ### Added
 
+* The mesh backend can claim and withdraw a node's GIDs while it is running,
+  rather than only announcing the set `ERNIC_TCP_GUEST_GIDS` named at
+  startup: the claim is recorded locally and re-advertised to the mesh, and
+  peers resolve the address from then on. The mesh protocol is unchanged --
+  `TCP_MSG_NODE_GIDS` already carried "this node's current set" and its
+  handler replaces rather than merges -- so a node doing this interoperates
+  with one that does not.
+  **This is an internal entry point, not yet a guest-visible feature.**
+  Nothing dispatches a guest's GID-table change to it, so configuring an
+  address inside a guest after the mesh has formed still does not advertise
+  it. `ERNIC_TCP_GUEST_GIDS` remains the only way to declare a guest's
+  addresses, and an address not listed there is still unreachable. What this
+  adds is the mesh half of the lifecycle, and a test that exercises it; the
+  dispatch from a guest GID update is still to come.
+* `ernic-test-gsi-mesh` (CTest `gsi-mesh`) runs two whole devices in one
+  process, joined over loopback TCP by the real mesh backend, and checks
+  that a GID claimed after the mesh formed resolves to the peer's node from
+  both sides. It needs no VM, no RDMA device and no root, so it runs in
+  every CI build leg. `ERNIC_TEST_MESH_PORT` moves its listening port, and
+  is rejected with a failure if it is not a port number. The test never
+  skips: needing nothing optional, every way it can fail to start is a
+  regression.
 * `-L` / `--log-level` and the `ERNIC_LOG_LEVEL` environment variable select
   the server log verbosity (`none`, `error`, `warn`, `info`, `debug`).
 * `-G` / `--socket-group GROUP` lets the members of a group, given by name
@@ -423,7 +445,83 @@
   was told the wrong thing and the wrong queue pair was blamed; one crossing
   the mesh sent the peer a request it could not satisfy. No data was
   transferred in either case, and none is now.
-
+* A mesh worker that restarts gets its GIDs back. It returns as a brand new
+  node -- it asks for an id of `0xFFFFFFFF` every time, and its listening
+  port is ephemeral, so nothing in the registration says which node it used
+  to be -- while its old registration still stood and still claimed the
+  guest's addresses. A GID two nodes claim resolves to neither, so the guest
+  came back unreachable and stayed that way: peers addressing it got `no
+  mesh node owns destination gid`, nothing retired the stale claim, and a
+  manager restart did not clear it either. Rebuilding the whole mesh was the
+  only way out.
+  The manager now withdraws what an unreachable node claimed, at two points:
+  when the health check notices a node has died, which covers one that never
+  comes back, and when any worker registers, which covers one that returns
+  inside the health-check interval -- the case seen in practice, since a
+  restarting container is back long before the five seconds are up. The rule
+  is that a node with no live connection cannot be answering for an address,
+  rather than any attempt to recognise the returning worker; two *live*
+  nodes claiming one GID still contest it, as before. `gsi-mesh` covers the
+  restart end to end by destroying the worker device, recreating it, and
+  checking its GID follows it to the new node id.
+  The withdrawal is reversible: the claims are kept and only stop counting
+  towards resolution, so a node that was merely silent for three health-check
+  intervals and then answers a heartbeat, or that the health check reconnects
+  to, owns its addresses again. Only a node that restarted registers afresh
+  and re-advertises; one that did not would otherwise have come back live and
+  permanently unreachable.
+* A QP entering the Error state now flushes its queues, so a work request
+  still outstanding is completed with `IBV_WC_WR_FLUSH_ERR` instead of left
+  for a consumer that waits on it forever. `MODIFY_QP` recorded the new state
+  and left the send and receive queues alone, and the device had no flush
+  path at all; `rping` between two guests therefore exchanged its payloads
+  correctly and then hung instead of exiting, because it keeps a receive
+  posted and its completion thread sat in `ibv_get_cq_event()` while the main
+  thread waited on `pthread_join`. Anything that drains its CQ on teardown
+  was exposed to the same hang. It now exits 0 in under a second.
+  The device posts one completion per queue rather than one per work request,
+  which is the division of labour the driver expects -- the completion names
+  no work request, and the driver completes what it has posted from its own
+  records, which the device never sees. It goes through the normal CQ path so
+  that it raises the CQ event too; the event is the half that unwedges a
+  blocked consumer. A QP bound to an SRQ flushes only its send queue, because
+  the receives in an SRQ belong to the SRQ and other QPs are still drawing
+  from them. Covered by the `qp-flush` and `qp-flush-srq` CTests.
+  The flush also cancels the QP's deferred requests -- a READ or atomic sent
+  to another instance and waiting on its answer -- before it is published. A
+  pending request holds the guest memory its response is to land in, and the
+  flush is what lets the consumer complete the work request and reuse that
+  memory; the peer is a separate process and nothing here can stop it
+  answering late. Without this a response arriving after the flush wrote into
+  a buffer that was no longer the request's and posted a second completion for
+  a work request the driver had already flushed. Covered by
+  `ionic-rq-wrap-unit`.
+  The flush is driven only by a `MODIFY_QP` that carries `IB_QP_STATE`,
+  matching `rdma_rm_modify_qp()`, so a command changing some other attribute
+  no longer flushes a live queue pair on the strength of a state byte the
+  driver did not mean.
+* A UD or GSI receive is now reported as RoCEv2 over IPv4 when the addresses
+  are v4-mapped, instead of being flagged IPv4 while carrying an IPv6 GRH.
+  The two disagreed: `IONIC_V1_CQE_RECV_IS_IPV4` was set on every receive
+  that carried a source MAC, and the driver turns it into
+  `wc->network_hdr_type`, which is the only thing telling a receiver where
+  the datagram's addresses are. The kernel reads the 40-byte field through
+  `union rdma_network_hdr`, so under that flag the source address is at
+  offset 32 and the destination at 36 -- but the GRH kept its GIDs at 8 and
+  24. The destination still resolved, by coincidence, because a v4-mapped
+  GID carries its IPv4 bytes in its own tail; the source came out as
+  `0.0.255.255`, the middle of the destination GID.
+  `ib_init_ah_attr_from_wc()` resolves that address with ARP to build the
+  reply's address handle, so `cm_req_handler()` blocked for a second,
+  returned `-ETIMEDOUT` and dropped the CM REQ without even a reject, and
+  guest-to-guest `rdma_connect()` retried forever with nothing logged at
+  either end. The device now builds the IPv4 header real hardware delivers
+  -- 20 reserved bytes, then an IPv4 header with a valid checksum naming
+  UDP -- and derives the completion flag from the bytes it is about to
+  deliver, so a locally built header and one forwarded from another mesh
+  instance are flagged by the same rule. Datagrams whose GIDs are not
+  v4-mapped, such as link-local ones, keep the IPv6 GRH. `ionic-harness-ud`
+  and `gsi-mesh` pin the IPv4 form, `ionic-harness-nvmeof` the IPv6 one.
 * A server that shut down cleanly removed its socket's path a second time
   after closing the socket, so it could remove the socket of another server
   started at the same path in between.

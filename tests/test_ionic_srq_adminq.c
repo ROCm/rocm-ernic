@@ -316,6 +316,12 @@ void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
     (void)qkey;
 }
 
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    (void)dp;
+    (void)qp_id;
+}
+
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)
 {

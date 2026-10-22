@@ -434,7 +434,13 @@ int ih_eth_admin(struct ih *h, const uint8_t cmd[64], uint8_t comp[16])
     return comp[0];
 }
 
-bool ih_eq_next(struct ih *h, uint32_t *cq_id)
+/*
+ * The next event off the EQ ring itself, ignoring anything an admin wait
+ * has already stepped over. The admin wait uses this rather than
+ * ih_eq_next(), which would hand back the events it is holding and leave it
+ * stepping over the same ones forever.
+ */
+static bool eq_next_ring(struct ih *h, uint32_t *cq_id)
 {
     uint8_t b[4];
 
@@ -447,6 +453,18 @@ bool ih_eq_next(struct ih *h, uint32_t *cq_id)
     h->eq.cons++;
     *cq_id = evt >> 8;
     return true;
+}
+
+bool ih_eq_next(struct ih *h, uint32_t *cq_id)
+{
+    /* Anything an admin wait stepped over comes back first, in order. */
+    if (h->eq_held_n) {
+        *cq_id = h->eq_held[0];
+        memmove(h->eq_held, h->eq_held + 1,
+                (--h->eq_held_n) * sizeof(h->eq_held[0]));
+        return true;
+    }
+    return eq_next_ring(h, cq_id);
 }
 
 int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
@@ -518,9 +536,29 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
         return -1;
     }
 
-    /* The driver only looks at the admin CQ when the EQ says to. */
+    /*
+     * The driver only looks at the admin CQ when the EQ says to. Other CQs'
+     * events may be queued ahead of it -- an admin command can complete work
+     * on a data CQ, which MODIFY_QP to Error does when it flushes -- so step
+     * over them and hold them for ih_eq_next() rather than requiring the
+     * admin event to be first.
+     */
     uint32_t ev_cq;
-    if (!ih_eq_next(h, &ev_cq) || ev_cq != IH_ACQ_ID) {
+    bool saw_admin = false;
+
+    while (eq_next_ring(h, &ev_cq)) {
+        if (ev_cq == IH_ACQ_ID) {
+            saw_admin = true;
+            break;
+        }
+        if (h->eq_held_n == IH_EQ_HELD_MAX) {
+            fail("more than %u EQ events ahead of admin op %u's",
+                 IH_EQ_HELD_MAX, op);
+            return -1;
+        }
+        h->eq_held[h->eq_held_n++] = ev_cq;
+    }
+    if (!saw_admin) {
         fail("admin op %u completed with no event on the EQ", op);
         return -1;
     }
@@ -1147,10 +1185,22 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
         uint32_t qpn_op = get_be32(b + 8);
 
         memcpy(&cqe->wqe_id, b, 8);
-        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x7fu);
+        /* 0x1f, as the driver masks it: bits 30 and 31 of src_qpn_op are
+         * IS_VLAN and IS_IPV4, not part of the opcode. */
+        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x1fu);
         cqe->src_qpn = qpn_op & 0xffffffu;
-        cqe->has_smac = (qpn_op & 0x80000000u) != 0;
+        cqe->is_ipv4 = (qpn_op & 0x80000000u) != 0;
         memcpy(cqe->smac, b + 12, 6);
+        /*
+         * There is no SMAC-valid bit on the wire: the driver sets
+         * IB_WC_WITH_SMAC for every UD/GSI completion and copies the field
+         * unconditionally. Presence is therefore inferred from the field
+         * itself, which the device only fills in for a datagram. This used
+         * to read IS_IPV4 instead, which held only while the device set
+         * that bit on every receive that carried a MAC.
+         */
+        static const uint8_t no_mac[6] = {0};
+        cqe->has_smac = memcmp(cqe->smac, no_mac, sizeof(no_mac)) != 0;
         memcpy(&cqe->imm_be, b + 20, 4);
         break;
     }

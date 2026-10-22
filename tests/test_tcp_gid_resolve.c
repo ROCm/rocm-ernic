@@ -440,6 +440,63 @@ static void test_contested_gid_stays_contested(void)
     priv_free(priv);
 }
 
+/*
+ * A worker that restarts comes back as a new node, and the manager has to
+ * recognise it and withdraw what it claimed before.
+ *
+ * It asks for an id of 0xFFFFFFFF every time, so there is nothing in the
+ * registration that says "I was node 1", and its listening port is
+ * ephemeral so the address it registers from is no help either. What marks
+ * the old node is that it can no longer be reached. Without the withdrawal
+ * both ids claim the guest's
+ * GIDs, a contested GID resolves to neither, and the guest becomes
+ * unreachable at the moment it came back -- which is worse than it having
+ * stayed away, and does not heal, because nothing retires a claim.
+ */
+static void test_returning_worker_reclaims_its_gids(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t g[1][16];
+
+    printf("  a restarted worker's GIDs follow it to its new node id\n");
+
+    priv->mesh_nodes = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
+    qemu_mutex_init(&priv->mesh_table_lock);
+
+    /* The worker's first registration, and the GIDs it then advertised. */
+    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1u),
+                        tcp_mesh_node_info_new(1, "10.0.0.5", 6320));
+
+    gid_v4(g[0], 70);
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 1, "the first registration did not resolve");
+
+    /* It restarts. Node 1's connection is gone, so its claims are
+     * withdrawn -- which is what the manager does for every unreachable
+     * node when any worker registers, and what the health check does when
+     * it notices one has died. */
+    tcp_gid_claims_set(priv, 1, NULL, 0);
+    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(2u),
+                        tcp_mesh_node_info_new(2, "10.0.0.5", 6320));
+
+    /* It advertises the same GIDs again under the new id. */
+    tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 2,
+          "the GID did not follow the worker to node 2 (got %u)",
+          resolve(priv, g[0]));
+
+    /* Without the withdrawal this is what would have happened instead. */
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "a stale claim left alongside the new one still resolved");
+
+    g_hash_table_destroy(priv->mesh_nodes);
+    qemu_mutex_destroy(&priv->mesh_table_lock);
+    priv->mesh_nodes = NULL;
+    priv_free(priv);
+}
+
 /* An empty advertisement withdraws a node's claims -- how the manager
  * revokes, and the case a broadcast of surviving entries could not express. */
 static void test_empty_advertisement_withdraws(void)
@@ -749,6 +806,7 @@ int main(void)
     test_gid_formatting();
     test_ud_rtr_needs_no_destination();
     test_contested_gid_stays_contested();
+    test_returning_worker_reclaims_its_gids();
     test_empty_advertisement_withdraws();
     test_dead_node_stops_owning_its_gids();
     test_hooks_refuse_other_backends();

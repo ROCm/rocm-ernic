@@ -96,6 +96,13 @@
 #define IH_QPS_INIT  1
 #define IH_QPS_RTR   2
 #define IH_QPS_RTS   3
+#define IH_QPS_SQD   4
+#define IH_QPS_SQE   5
+#define IH_QPS_ERR   6
+
+/* The completion status a flushed work request carries, IONIC_STS_* in the
+ * device and IB_WC_WR_FLUSH_ERR by the time a consumer sees it. */
+#define IH_STS_WQE_FLUSHED_ERR 4u
 
 #define IH_QP_STATE    (1u << 0)
 #define IH_QP_QKEY     (1u << 6)
@@ -170,6 +177,9 @@ struct ih_ring {
     uint32_t cons; /* free-running */
 };
 
+/* How many non-admin EQ events an admin wait will step over and hold. */
+#define IH_EQ_HELD_MAX 16u
+
 struct ih {
     vfu_ctx_t *vfu;
     rocm_ernic_dev_t *dev;
@@ -189,6 +199,18 @@ struct ih {
 
     /* A page for RoCE header templates and side buffers */
     uint64_t scratch;
+
+    /*
+     * EQ events stepped over while looking for an admin completion's.
+     * Waiting on the admin CQ has to tolerate other CQs' events arriving
+     * first -- an admin command can complete work on a data CQ, as
+     * MODIFY_QP to Error does when it flushes -- and the real driver copes
+     * because it drains the EQ and dispatches on the qid rather than
+     * assuming the order. Holding them here keeps them visible to
+     * ih_eq_next() instead of dropping them on the floor.
+     */
+    uint32_t eq_held[IH_EQ_HELD_MAX];
+    unsigned eq_held_n;
 };
 
 struct ih_cq {
@@ -216,6 +238,7 @@ struct ih_qp {
  * any order in guest memory.
  */
 #define IH_PAGE_SIZE 4096u
+
 
 struct ih_mr {
     uint32_t lkey; /* the driver's full mrid: index | key << 24 */
@@ -276,6 +299,14 @@ struct ih_cqe {
     uint32_t imm_be;
     bool has_smac;
     uint8_t smac[6];
+    /*
+     * IONIC_V1_CQE_RECV_IS_IPV4. The driver reports this as
+     * wc->network_hdr_type, which is the only thing that tells a receiver
+     * whether the 40-byte header in front of the payload is an IPv6 GRH or
+     * a RoCEv2 IPv4 header -- so a test that checks the header's shape has
+     * to check this with it.
+     */
+    bool is_ipv4;
 };
 
 /* ---- Device lifecycle -------------------------------------------------- */

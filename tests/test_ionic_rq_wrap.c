@@ -597,8 +597,49 @@ static void test_registration_accepts_an_ordinary_ring(void)
     check(dp->srq[SRQ_SLOT].valid, "and is left valid");
 }
 
+/*
+ * A QP going to Error must take its deferred requests with it.
+ *
+ * A pending entry is a READ or atomic sent to another instance, holding the
+ * SGE list the response is to land in. The flush CQE tells the driver to
+ * complete everything still outstanding on the queue, so the consumer gets
+ * those buffers back and is free to reuse them. The peer is a separate
+ * process and nothing here can stop it answering: a response that arrives
+ * after the flush would find the entry still valid, scatter into memory that
+ * is no longer the request's, and post a second completion for a work
+ * request the driver has already flushed.
+ *
+ * Other QPs' entries are untouched -- one QP's error says nothing about
+ * another's requests, and the pending table is shared by the whole device.
+ */
+static void test_flush_cancels_the_qps_deferred_requests(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+    const uint32_t other_qp = RQ_QP_ID - 1;
+
+    /* No CQ is registered, so cq_post() returns without a DMA; what is
+     * under test is the pending table, not the completions. */
+    dp->pending[0] = (struct dp_pending){
+        .valid = true, .req_id = 11, .qp_id = RQ_QP_ID, .length = 64};
+    dp->pending[1] = (struct dp_pending){
+        .valid = true, .req_id = 12, .qp_id = other_qp, .length = 64};
+    dp->pending[2] = (struct dp_pending){
+        .valid = true, .req_id = 13, .qp_id = RQ_QP_ID, .length = 8};
+
+    ionic_datapath_flush_qp(dp, RQ_QP_ID);
+
+    check(!dp->pending[0].valid,
+          "a flushed QP's deferred request is still outstanding, so a late "
+          "response would scatter into a reused buffer");
+    check(!dp->pending[2].valid,
+          "a flushed QP's second deferred request is still outstanding");
+    check(dp->pending[1].valid,
+          "flushing one QP cancelled another QP's deferred request");
+}
+
 int main(void)
 {
+    test_flush_cancels_the_qps_deferred_requests();
     test_registration_accepts_an_ordinary_ring();
     test_ud_delivery_is_refused_to_the_wrong_queue();
     test_page_table_is_bounded_by_the_region();

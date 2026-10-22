@@ -65,6 +65,13 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
 uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev);
 uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
                                    const union ibv_gid *dgid);
+/*
+ * Claim a GID for this node, or withdraw it, and re-advertise.  What would
+ * make a guest address that appears after the mesh formed resolvable by a
+ * peer -- nothing calls it yet outside the tests; see rdma_backend_tcp.c.
+ */
+int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
+                          bool add);
 
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,

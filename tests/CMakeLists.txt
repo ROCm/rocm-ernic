@@ -692,10 +692,42 @@ target_link_directories(ernic-test-ionic-harness PRIVATE
 target_link_libraries(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# Two whole devices in one process, meshed over loopback TCP: the GSI/CM
+# path that rdma_cm depends on, which test_ud_mesh can only cover with two
+# VMs. Same sources as the harness above -- it is the harness, twice.
+add_executable(ernic-test-gsi-mesh
+    test_gsi_mesh.c
+    ionic_harness.c
+    fake_vfu.c
+    ${ERNIC_HARNESS_DEVICE_SOURCES}
+    ${ERNIC_HARNESS_VENDORED_SOURCES}
+)
+target_include_directories(ernic-test-gsi-mesh PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
+)
+# Headers from outside the project are SYSTEM includes, matching the main
+# target.
+target_include_directories(ernic-test-gsi-mesh SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-gsi-mesh PRIVATE _GNU_SOURCE)
+target_compile_options(ernic-test-gsi-mesh PRIVATE ${GLIB2_CFLAGS_OTHER})
+target_link_directories(ernic-test-gsi-mesh PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(ernic-test-gsi-mesh PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
 # ---------------------------------------------------------------
 set(ERNIC_TEST_TARGETS
+    ernic-test-gsi-mesh
     test_pci_client
     test_data_transfer
     test_rdma_cm
@@ -1031,9 +1063,11 @@ set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
 # driver drives it, one CTest test per group so a failure names its area.
 # Bring-up and devcmds, refused admin commands, RC transfers, atomics and
 # fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
-# CM handshake and Connect over the GSI QP.
+# CM handshake and Connect over the GSI QP, and the flush a QP entering the
+# Error state owes its outstanding work requests.
 foreach(ernic_harness_group
-        devcmds bringup admin rc atomic cq-events ud srq eth nvmeof teardown)
+        devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
+        ud srq eth nvmeof teardown)
     add_test(
         NAME ionic-harness-${ernic_harness_group}
         COMMAND $<TARGET_FILE:ernic-test-ionic-harness>
@@ -1042,6 +1076,23 @@ foreach(ernic_harness_group
     set_tests_properties(ionic-harness-${ernic_harness_group} PROPERTIES
         TIMEOUT 60)
 endforeach()
+
+# The GSI/CM mesh path: two devices in one process over loopback TCP.
+# RUN_SERIAL because it binds a fixed port; ERNIC_TEST_MESH_PORT moves it.
+add_test(
+    NAME gsi-mesh
+    COMMAND $<TARGET_FILE:ernic-test-gsi-mesh>
+)
+# 180s, not the 60 the harness groups use: this one waits on a real TCP
+# registration handshake between two devices, and the memcheck lane runs it
+# under valgrind, where that handshake is far slower than the work itself.
+#
+# No SKIP_RETURN_CODE: the test needs no VM, no RDMA device and no root, so
+# every way it can fail to start is a regression that has to be red.
+set_tests_properties(gsi-mesh PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+)
 
 # ionic server smoke test: start the server, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.

@@ -192,6 +192,7 @@ static bool tcp_worker_registration_done(TcpBackendPrivate *priv,
 
 /* Forward declarations */
 static void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
+static void tcp_advertise_local_gids(TcpBackendPrivate *priv);
 static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                                const TcpNodeGidsPayload *payload);
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
@@ -680,6 +681,88 @@ static bool tcp_node_id_taken(TcpBackendPrivate *priv, uint32_t node_id)
 {
     return g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id)) ||
            g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id));
+}
+
+/*
+ * Collect the nodes whose connection has gone, so the caller can withdraw
+ * what they claimed once it has dropped mesh_table_lock.
+ *
+ * A worker that restarts registers again as a brand new node -- it asks for
+ * an id of 0xFFFFFFFF every time, and the address it registers from is no
+ * help either, since its listening port is ephemeral and changes with it.
+ * So rather than try to recognise it, drop the claims of whoever can no
+ * longer be reached: a node with no live connection cannot be the one
+ * answering for an address, whether or not it is the same guest coming
+ * back. Left standing, its claims contest the ones the returning worker is
+ * about to make, and a contested GID resolves to neither -- so the guest
+ * would come back unreachable, and stay that way.
+ *
+ * Caller holds mesh_table_lock; tcp_connection_lookup() takes
+ * conn_table_lock under it, which is the documented order.
+ */
+static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
+                                           uint32_t out[TCP_MAX_MESH_NODES])
+{
+    GHashTableIter iter;
+    gpointer value;
+    uint32_t n = 0;
+
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, &value) &&
+           n < TCP_MAX_MESH_NODES) {
+        const MeshNodeInfo *node = value;
+        uint32_t node_id = node->node_id;
+        TcpConnection *conn;
+
+        if (node_id == tcp_local_node(priv))
+            continue;
+
+        conn = tcp_connection_lookup(priv, node_id);
+        if (!conn || tcp_conn_dead(conn))
+            out[n++] = node_id;
+        if (conn)
+            tcp_connection_unref(conn);
+    }
+    return n;
+}
+
+/*
+ * Take @node_id out of resolution if it is still unreachable, and say
+ * whether it was.  Returns false when the node has a live connection again,
+ * leaving its claims alone.
+ *
+ * The re-check is the point.  tcp_collect_dead_claimants() runs under
+ * mesh_table_lock and the caller then drops it, and in that window the
+ * health check can reconnect to one of the nodes it collected: that
+ * publishes a connection and restores the node's claims
+ * (tcp_health_check_reconnect()).  Withdrawing on the strength of the stale
+ * list would undo the revival and leave the node is_alive with claims that
+ * are not, which nothing recovers from -- the heartbeat handler only
+ * restores claims on the transition out of dead, and the node never makes
+ * it again.  So the connection is looked at again here, under the lock
+ * reconnect publishes beneath, which makes the two atomic with respect to
+ * each other.
+ *
+ * Lock order: conn_table_lock and gid_table_lock under mesh_table_lock,
+ * both as documented; see tcp_health_check_scan(), which does the same.
+ */
+bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
+                                       uint32_t node_id)
+{
+    TcpConnection *conn;
+    bool withdrawn = false;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    conn = tcp_connection_lookup(priv, node_id);
+    if (!conn || tcp_conn_dead(conn)) {
+        tcp_gid_claims_set_alive(priv, node_id, false);
+        withdrawn = true;
+    }
+    if (conn)
+        tcp_connection_unref(conn);
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    return withdrawn;
 }
 
 /* Parse manager config: "manager:<ip>:<port>" or "manager:listen:<port>" */
@@ -1835,7 +1918,23 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 memcpy(worker_host, reg->hostname, host_len);
                 worker_host[host_len] = '\0';
 
+                /* Nodes gone from the mesh, withdrawn after the unlock */
+                uint32_t stale[TCP_MAX_MESH_NODES];
+                uint32_t num_stale = 0;
+
                 qemu_mutex_lock(&priv->mesh_table_lock);
+
+                /*
+                 * Nodes that can no longer be reached, whose GIDs are
+                 * withdrawn once the tables are unlocked. A worker that
+                 * restarted is among them, under the id it had before, and
+                 * it is about to claim those GIDs again under its new one.
+                 *
+                 * Before conn_table_lock, not under it: the lookups inside
+                 * take that lock themselves.
+                 */
+                num_stale = tcp_collect_dead_claimants(priv, stale);
+
                 qemu_mutex_lock(&priv->conn_table_lock);
 
                 /*
@@ -1854,6 +1953,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                         conn->node_id);
                     break;
                 }
+
 
                 /* Assign node ID */
                 uint32_t assigned_id = requested_id;
@@ -1898,6 +1998,27 @@ void *tcp_recv_thread_per_conn(void *opaque)
 
                 rdma_info_report("TCP: Registered node %u at %s:%u",
                                  assigned_id, worker_host, worker_port);
+
+                /*
+                 * Marked not-alive rather than discarded: that is enough to
+                 * take the node out of resolution, so it stops contesting
+                 * the GIDs the registering node is about to claim, and it
+                 * leaves the claims to restore if the health check later
+                 * reconnects to the node rather than it having restarted.
+                 *
+                 * The whole table is broadcast below, so the withdrawal
+                 * reaches the other workers with the rest of it.
+                 */
+                for (uint32_t i = 0; i < num_stale; i++) {
+                    uint32_t id = stale[i];
+
+                    if (id == assigned_id)
+                        continue;
+                    if (tcp_withdraw_if_still_unreachable(priv, id))
+                        rdma_info_report("TCP: node %u is gone; withdrawing "
+                                         "its GIDs as node %u registers",
+                                         id, assigned_id);
+                }
 
                 /* Send registration response.  Zeroed first: the whole
                  * struct goes on the wire, so any field not assigned below
@@ -2029,19 +2150,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
 
                 /*
                  * The node id is only known now, so this is the first point
-                 * at which this node can say which GIDs are its own.  Record
-                 * them locally too: a QP whose destination is this node's own
-                 * guest has to resolve to the local node, not fail.
+                 * at which this node can say which GIDs are its own.
                  */
-                tcp_gid_claims_set(priv, assigned_id,
-                                   tcp_const_gids(priv->local_gids),
-                                   priv->num_local_gids);
-
-                TcpNodeGidsPayload mine;
-                tcp_fill_node_gids(&mine, assigned_id,
-                                   tcp_const_gids(priv->local_gids),
-                                   priv->num_local_gids);
-                tcp_send_node_gids(priv, conn, &mine);
+                tcp_advertise_local_gids(priv);
                 break;
             }
 
@@ -2743,6 +2854,71 @@ void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
         memcpy(out->gids[i], gids[i], 16);
 }
 
+/*
+ * Record this node's own GIDs and tell the mesh about them.
+ *
+ * Called at registration, and again whenever the set changes -- a guest that
+ * brings its RDMA device up after the mesh has formed, or that is given an
+ * address later, has GIDs nobody has heard of, and a peer cannot resolve what
+ * was never advertised.  TCP_MSG_NODE_GIDS already means "node N's current
+ * set" and its handler replaces rather than merges, so re-advertising is the
+ * whole update protocol: no new message type, no version bump.
+ *
+ * Claims are recorded locally as well as sent.  A QP whose destination is this
+ * node's own guest has to resolve to the local node rather than fail, and on
+ * the manager nothing else would record them at all.
+ *
+ * Silent on a worker before registration: tcp_local_node() is 0 until the
+ * manager answers, and node 0 is the manager's own id, so claiming under it
+ * would collide with the manager's claims and leave both contested.
+ * Registration calls this again, so nothing is lost.  The manager's id is
+ * fixed at 0 from tcp_init(), so it never waits.
+ */
+static void tcp_advertise_local_gids(TcpBackendPrivate *priv)
+{
+    if (!priv)
+        return;
+    if (!priv->is_manager && !tcp_worker_registered(priv))
+        return;
+
+    uint32_t node = tcp_local_node(priv);
+
+    /* Held across both the snapshot and the send; see the field's comment. */
+    qemu_mutex_lock(&priv->gid_advertise_lock);
+
+    /*
+     * local_gids is read on the main thread and on a receive thread, so copy
+     * it under the lock that guards it.  The copy, not the field, is what the
+     * rest of this function uses: tcp_broadcast_gid_table() and
+     * tcp_send_node_gids() take connection locks that the data path holds
+     * across multi-megabyte writes, so lock cannot be held that long.
+     */
+    uint8_t gids[TCP_MAX_NODE_GIDS][16];
+    uint32_t num_gids;
+
+    qemu_mutex_lock(&priv->lock);
+    num_gids = priv->num_local_gids;
+    memcpy(gids, priv->local_gids, sizeof(gids));
+    qemu_mutex_unlock(&priv->lock);
+
+    tcp_gid_claims_set(priv, node, tcp_const_gids(gids), num_gids);
+
+    if (priv->is_manager) {
+        /* The manager is the authority: push the whole table, which is also
+         * how a claimant learns its advertisement was rejected. */
+        tcp_broadcast_gid_table(priv);
+        qemu_mutex_unlock(&priv->gid_advertise_lock);
+        return;
+    }
+
+    TcpNodeGidsPayload mine;
+
+    tcp_fill_node_gids(&mine, node, tcp_const_gids(gids), num_gids);
+    tcp_send_node_gids(priv, priv->manager_conn, &mine);
+
+    qemu_mutex_unlock(&priv->gid_advertise_lock);
+}
+
 /* Send one advertisement on an already-locked-free connection. */
 static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                                const TcpNodeGidsPayload *payload)
@@ -3144,6 +3320,14 @@ bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
     qemu_mutex_unlock(&priv->conn_table_lock);
     node->is_alive = true;
     node->last_heartbeat = time(NULL);
+    /*
+     * The node is reachable again, so its addresses are its own again. The
+     * same restoration the heartbeat-revival path does, for the other way a
+     * node comes back: without it a reconnected node is live and unreachable
+     * until it registers afresh, which a node that never restarted will not
+     * do. gid_table_lock under mesh_table_lock is the documented order.
+     */
+    tcp_gid_claims_set_alive(priv, node->node_id, true);
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
     rdma_info_report("TCP: Reconnected to node %u", node->node_id);
@@ -3235,6 +3419,15 @@ void *tcp_manager_health_check_thread(void *opaque)
             qemu_mutex_unlock(&conn->lock);
         }
 
+        /*
+         * A node the scan declared dead had its claims marked not-alive,
+         * which takes it out of resolution without discarding what it
+         * claimed. Discarding would be a one-way door: the node has no way
+         * to re-advertise except by registering again, so a node that is
+         * merely silent for three intervals and then answers, or that this
+         * pass reconnects to, would come back live and unreachable. The
+         * broadcast tells the workers, who keep no liveness of their own.
+         */
         if (newly_dead) {
             tcp_broadcast_mesh_topology(priv);
             tcp_broadcast_gid_table(priv);
@@ -3251,8 +3444,12 @@ void *tcp_manager_health_check_thread(void *opaque)
         if (tcp_health_check_reconnects(
                 priv, items,
                 tcp_monotonic_ms() +
-                    (uint64_t)priv->health_check_interval_sec * 1000u))
+                    (uint64_t)priv->health_check_interval_sec * 1000u)) {
             tcp_broadcast_mesh_topology(priv);
+            /* A reconnected node owns its GIDs again; the workers took the
+             * manager's word for it owning nothing. */
+            tcp_broadcast_gid_table(priv);
+        }
         tcp_health_check_release(items);
 
         /*
@@ -3572,6 +3769,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_init(&priv->gid_table_lock);
     qemu_mutex_init(&priv->gid_broadcast_lock);
+    qemu_mutex_init(&priv->gid_advertise_lock);
     qemu_mutex_init(&priv->topology_broadcast_lock);
 
     priv->num_local_gids =
@@ -3808,6 +4006,7 @@ error:
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->gid_broadcast_lock);
+    qemu_mutex_destroy(&priv->gid_advertise_lock);
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
     g_free(priv);
     return -1;
@@ -3871,6 +4070,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->gid_broadcast_lock);
+    qemu_mutex_destroy(&priv->gid_advertise_lock);
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
 
     g_free(priv);
@@ -4208,24 +4408,84 @@ static int tcp_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
  * GID Management
  */
 
+/*
+ * Claim @gid for this node, or withdraw it, and re-advertise.
+ *
+ * This used to overwrite the caller's GID with a synthetic one holding only
+ * the local node id, which claimed nothing: tcp_gid_claims_set() was never
+ * called and the mesh's only GID source was ERNIC_TCP_GUEST_GIDS, read once
+ * at startup.  A guest address that appeared later resolved nowhere, so a
+ * peer-addressed datagram could not find its node.
+ */
+static int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid,
+                         bool add)
+{
+    uint32_t i;
+    bool changed = false;
+
+    if (!priv || !gid)
+        return -EINVAL;
+
+    qemu_mutex_lock(&priv->lock);
+
+    for (i = 0; i < priv->num_local_gids; i++) {
+        if (memcmp(priv->local_gids[i], gid->raw, 16) == 0)
+            break;
+    }
+
+    if (add) {
+        if (i == priv->num_local_gids) {
+            if (priv->num_local_gids >= TCP_MAX_NODE_GIDS) {
+                qemu_mutex_unlock(&priv->lock);
+                rdma_error_report(
+                    "TCP: cannot claim another GID, the %d-entry table is full",
+                    TCP_MAX_NODE_GIDS);
+                return -ENOSPC;
+            }
+            memcpy(priv->local_gids[priv->num_local_gids++], gid->raw, 16);
+            changed = true;
+        }
+    } else if (i < priv->num_local_gids) {
+        /* Order does not matter to a claim set, so close the hole with the
+         * last entry rather than shifting the tail. */
+        priv->num_local_gids--;
+        memcpy(priv->local_gids[i], priv->local_gids[priv->num_local_gids], 16);
+        memset(priv->local_gids[priv->num_local_gids], 0, 16);
+        changed = true;
+    }
+
+    qemu_mutex_unlock(&priv->lock);
+
+    if (changed)
+        tcp_advertise_local_gids(priv);
+
+    return 0;
+}
+
 static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
                        union ibv_gid *gid)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (priv) {
-        uint32_t local = tcp_local_node(priv);
-
-        memset(gid, 0, sizeof(*gid));
-        gid->raw[15] = (uint8_t)local;
-        rdma_info_report("TCP: Added GID with node_id=%u", local);
-    } else {
+    if (!priv) {
         rdma_info_report("TCP: Added GID (no priv)");
+        return 0;
     }
 
-    return 0;
+    return tcp_claim_gid(priv, gid, true);
 }
 
+/*
+ * The ops signature gives an index into the device's GID table, not the GID
+ * itself, and this backend keeps no index-to-GID map -- the table belongs to
+ * the guest kernel.  Withdrawal therefore goes through
+ * tcp_backend_claim_gid(), which takes the GID itself.
+ *
+ * Nothing dispatches to these ops today, here or in any other backend, and
+ * tcp_backend_claim_gid() has no caller outside the tests: a guest's
+ * addresses reach the mesh through ERNIC_TCP_GUEST_GIDS at startup.  Wiring
+ * a guest GID-table update to the claim is what would make these live.
+ */
 static int tcp_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
                        int gid_idx)
 {
@@ -4365,6 +4625,29 @@ uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
     /* UINT32_MAX on a miss, with no default peer: see
      * tcp_resolve_node_from_gid(). The caller fails the command. */
     return tcp_resolve_node_from_gid(priv, dgid);
+}
+
+/*
+ * Claim @gid for this node (@add) or withdraw it, and re-advertise to the
+ * mesh, so that a peer can resolve an address that did not exist when the
+ * mesh formed.
+ *
+ * No production caller yet: a guest's addresses still reach the mesh only
+ * through ERNIC_TCP_GUEST_GIDS, read once at startup.  What is missing is
+ * the dispatch from a guest GID-table update to here; the mesh side of it
+ * works and is covered by the gsi-mesh test, which is the only caller.
+ *
+ * Harmless on a non-mesh backend: loopback and none have no peers to tell.
+ */
+int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
+                          bool add)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+        return 0;
+
+    return tcp_claim_gid(priv, gid, add);
 }
 
 void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
