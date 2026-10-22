@@ -329,6 +329,25 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
                            uint64_t b_va, uint32_t len, uint32_t c_rkey,
                            uint64_t c_va);
 
+struct p4_engine;
+
+/*
+ * Give the data path the pipeline that governs RDMA operations, or NULL to
+ * take it away.
+ *
+ * Borrowed, not owned: the engine outlives nothing here, and the caller
+ * must clear it before destroying the engine.  Until one is set, and for a
+ * program that declares no rdma_metadata, the data path behaves exactly as
+ * it does without P4 built at all.
+ *
+ * What the pipeline may do to an operation is decide: it runs after the
+ * operation's own memory has been checked, so a program never sees a
+ * request that is already a protection error, and it cannot name memory --
+ * an extern it calls is given the regions the work request itself named.
+ */
+void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
+                                  struct p4_engine *eng);
+
 #endif /* ERNIC_HAVE_P4 */
 
 #endif /* IONIC_DATAPATH_H */

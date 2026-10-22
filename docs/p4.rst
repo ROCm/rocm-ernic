@@ -82,8 +82,26 @@ table-driven selection over an architecture-fixed operand
 convention, which is a real thing but less than
 "programmable" might suggest.
 
-What is not built yet: the data path does not call the
-pipeline, so nothing reaches the extern in a running server;
+The RDMA data path runs the pipeline for every send work
+request, after the request's own memory has been checked and
+before it is dispatched, so a program never sees an operation
+that is already a protection error. The operand convention is
+fixed by the architecture: an RDMA write whose gather list is
+exactly two equal-length entries supplies the two operands,
+the work request's rkey and address are the destination, and
+the length applies to all three. An action that calls the
+extern must also ``mark_to_drop()``, since the extern writes
+the destination itself and the ordinary transfer would land
+on top of the result; an operation whose program does not is
+failed rather than allowed to do that.
+
+``tests/data/p4/fp8_policy.p4`` is the worked example. A
+table keyed on the opcode turns an ordinary RDMA write into
+an elementwise fp8 add across three memory regions, and
+changing the one table entry changes the arithmetic with no
+change to the device.
+
+What is not built yet:
 checksums and calculations, which is
 the one thing keeping ``simple_router.json`` from loading
 unmodified; counters, meters, registers and action profiles,

@@ -774,6 +774,9 @@ target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
 target_compile_definitions(ernic-test-ionic-harness PRIVATE
     _GNU_SOURCE
     $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+    # Real p4c artifacts, so the RDMA path is held to what the compiler
+    # emits rather than to a fixture written to suit it.
+    $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4">
 )
 target_compile_options(ernic-test-ionic-harness PRIVATE
     ${GLIB2_CFLAGS_OTHER})
@@ -1210,7 +1213,7 @@ set(ERNIC_HARNESS_GROUPS
     devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
     ud srq eth nvmeof teardown)
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(

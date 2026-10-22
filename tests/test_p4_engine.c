@@ -1426,6 +1426,9 @@ static void test_extern_call(void)
     check(log.nargs == 1, "it was given one argument");
     check(log.op == P4_FP8_OP_MUL,
           "the argument is the operation the table entry chose");
+    /* The extern wrote the destination, so the operation must not also
+     * transfer; the action marks the drop and this is where that shows. */
+    check(suppress, "an action that called the extern did not suppress");
 
     /* An opcode with no entry still does nothing. */
     log.calls = 0;

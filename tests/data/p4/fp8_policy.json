@@ -108,7 +108,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "tests/data/p4/src/fp8_policy.p4",
-        "line" : 61,
+        "line" : 68,
         "column" : 8,
         "source_fragment" : "D"
       },
@@ -146,9 +146,24 @@
           ],
           "source_info" : {
             "filename" : "tests/data/p4/src/fp8_policy.p4",
-            "line" : 49,
+            "line" : 56,
             "column" : 36,
             "source_fragment" : "fp8.map(op)"
+          }
+        },
+        {
+          "op" : "mark_to_drop",
+          "parameters" : [
+            {
+              "type" : "header",
+              "value" : "standard_metadata"
+            }
+          ],
+          "source_info" : {
+            "filename" : "tests/data/p4/src/fp8_policy.p4",
+            "line" : 56,
+            "column" : 49,
+            "source_fragment" : "mark_to_drop(s)"
           }
         }
       ]
@@ -177,7 +192,7 @@
           "id" : 0,
           "source_info" : {
             "filename" : "tests/data/p4/src/fp8_policy.p4",
-            "line" : 51,
+            "line" : 58,
             "column" : 10,
             "source_fragment" : "policy"
           },
@@ -218,7 +233,7 @@
       "id" : 1,
       "source_info" : {
         "filename" : "tests/data/p4/src/fp8_policy.p4",
-        "line" : 59,
+        "line" : 66,
         "column" : 8,
         "source_fragment" : "Eg"
       },

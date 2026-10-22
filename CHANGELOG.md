@@ -305,7 +305,30 @@
   architecture field declared at the wrong width, or `rdma_metadata`
   declared such that the deparser would put it on a wire, is refused at
   load.
-  `p4_engine_process_rdma()` is the entry point; nothing calls it yet.
+  `p4_engine_process_rdma()` is the entry point.
+* The RDMA data path now runs the pipeline, so a loaded P4 program governs
+  RDMA operations and the fp8 extern does real work. The pipeline runs
+  after the operation's own memory has been checked and before it is
+  dispatched, so a program never sees a request that is already a
+  protection error.
+
+  The operand convention is the architecture's, not the program's: an RDMA
+  write whose gather list is exactly two equal-length entries supplies the
+  two operands, the work request's rkey and address are the destination,
+  and the length applies to all three. A table entry chooses the
+  arithmetic and nothing else -- it cannot name a key or an address.
+
+  An action that calls the extern must also `mark_to_drop()`, because the
+  extern writes the destination itself and the ordinary transfer would
+  land on top of the result. A program that does not is refused with
+  `IONIC_STS_LOCAL_QP_OPER_ERR` rather than quietly producing that.
+
+  With no program loaded, or with one that declares no `rdma_metadata`,
+  the data path behaves exactly as it does without P4 built at all.
+  `tests/data/p4/fp8_policy.p4` is the worked example: a table keyed on
+  the opcode turns an ordinary RDMA write into an elementwise fp8 add
+  across three memory regions, and changing the one table entry changes
+  the arithmetic.
 * An action that cannot be carried out now fails the packet instead of
   being skipped. Nothing that runs today can fail, but an extern reaches
   outside the pipeline and will be able to, and a failure there must not

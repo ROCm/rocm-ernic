@@ -46,7 +46,14 @@ parser P(packet_in p, out headers_t h, inout metadata_t m,
 control VC(inout headers_t h, inout metadata_t m) { apply { } }
 control Ing(inout headers_t h, inout metadata_t m, inout standard_metadata_t s) {
     Fp8() fp8;
-    action reduce_with(bit<8> op) { fp8.map(op); }
+    /*
+     * The extern writes the destination itself, so the operation must not
+     * also transfer: the ordinary RDMA write would land second and put the
+     * raw payload where the result belongs.  The device refuses an
+     * operation whose program called the extern without dropping, rather
+     * than letting that happen quietly.
+     */
+    action reduce_with(bit<8> op) { fp8.map(op); mark_to_drop(s); }
     action passthrough() { }
     table policy {
         key = { m.rdma_metadata.opcode : exact; }

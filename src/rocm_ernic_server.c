@@ -476,6 +476,8 @@ static void ionic_device_fini(rocm_ernic_dev_t *dev)
      * holding on the S3 endpoint's behalf. */
     p4_port_detach(dev->p4_port);
     dev->p4_port = NULL;
+    /* And before the engine, which the data path only borrowed. */
+    ionic_datapath_set_p4_engine(dev->ionic_dp, NULL);
     p4_engine_destroy(dev->p4_engine);
     dev->p4_engine = NULL;
 #endif
@@ -1928,6 +1930,10 @@ int main(int argc, char *argv[])
             fprintf(stderr, "rocm-ernic: failed to attach the P4 engine\n");
             goto fail;
         }
+
+        /* The RDMA path shares the same engine, so one program governs
+         * both planes; it borrows the pointer and is given it back below. */
+        ionic_datapath_set_p4_engine(dev->ionic_dp, dev->p4_engine);
 
         if (p4_program) {
             if (p4_load_program_file(dev->p4_engine, p4_program) != 0)

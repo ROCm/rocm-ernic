@@ -43,6 +43,7 @@
 #include "p4_engine.h"
 #include "p4_fp8.h"
 #include "p4_port.h"
+#include "p4_table.h"
 #endif
 #include "pvrdma.h"
 #include "rdma_rm.h"
@@ -2307,6 +2308,263 @@ static void test_fp8_map(void)
     teardown(T, &h);
 }
 
+/* ---- A P4 program governing an RDMA operation -------------------------- */
+
+#define P4R_CQ     7
+#define P4R_QP_A   40
+#define P4R_QP_B   41
+#define P4R_N      3000u
+#define P4R_MR_LEN (4u * IH_PAGE_SIZE)
+
+static int p4r_load(struct p4_engine *eng, const char *name)
+{
+    char path[512];
+    FILE *f;
+    long n;
+    char *buf;
+    int rc;
+
+    (void)snprintf(path, sizeof(path), "%s/%s", P4_FIXTURE_DIR, name);
+    f = fopen(path, "rbe"); /* e: O_CLOEXEC */
+    if (!f)
+        return -ENOENT;
+    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return -EIO;
+    }
+    buf = malloc((size_t)n);
+    if (!buf) {
+        fclose(f);
+        return -ENOMEM;
+    }
+    rc = fread(buf, 1, (size_t)n, f) == (size_t)n ? 0 : -EIO;
+    fclose(f);
+    if (rc == 0) {
+        rc = p4_engine_load_begin(eng, (size_t)n);
+        if (rc == 0)
+            rc = p4_engine_load_chunk(eng, 0, buf, (size_t)n);
+        if (rc == 0)
+            rc = p4_engine_load_commit(eng);
+    }
+    free(buf);
+    return rc;
+}
+
+/*
+ * The whole of what was asked for, in one path: a compiled P4 program
+ * decides, from an RDMA operation's opcode, that an elementwise fp8 add
+ * happens, and the result lands in a third region.
+ *
+ * What makes this P4 rather than a hard-coded offload is that the same
+ * operation does an ordinary RDMA write when the table says nothing, and
+ * the arithmetic changes when the table entry changes -- with no change
+ * here, and with the program never naming a key or an address.
+ */
+static void test_p4_rdma(void)
+{
+    const char *T = "p4-rdma";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra, mrb, mrc;
+    struct ih_cqe e;
+    struct p4_update up;
+    char err[160];
+    static uint8_t opa[P4R_N], opb[P4R_N], got[P4R_N];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              /* Reversed pages again: a write that ignores the page table
+               * lands somewhere else and the comparison says so. */
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "P4 RDMA setup failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrb);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrb);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+    check(T, p4r_load(eng, "fp8_policy.json") == 0,
+          "the compiled policy program did not load");
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+
+    /* 1.0 in A, 2.0 in B, with one element of A at 4.0 so a result that
+     * ignored position could not pass. */
+    memset(opa, 0x38, sizeof(opa));
+    memset(opb, 0x40, sizeof(opb));
+    opa[777] = 0x48;
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, opa, sizeof(opa)), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, opb, sizeof(opb)), "write to B");
+
+    struct ih_sge sge[2] = {
+        {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey},
+        {.va = FP8R_VA_B, .len = P4R_N, .lkey = mrb.lkey},
+    };
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        .length = P4R_N,
+        .sge = sge,
+        .nsge = 2,
+    };
+
+    /*
+     * With the table empty this is just an RDMA write, so the two operand
+     * regions arrive in C one after the other. That is the baseline the
+     * entry has to change: without it, "the result is right" could be true
+     * of a device that ignored the pipeline entirely.
+     */
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the plain write did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T, memcmp(got, opa, sizeof(got)) == 0,
+          "with no entry the operation was not an ordinary write");
+
+    /* Now the entry: for an RDMA write, add the two operands elementwise. */
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.reduce_with");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_ADD;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry was not installed: %s", err);
+
+    memset(got, 0, sizeof(got));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "clear C");
+
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the governed operation did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the result");
+    {
+        unsigned wrong = 0, first = 0;
+
+        for (unsigned i = 0; i < P4R_N; i++) {
+            uint8_t want = (i == 777) ? 0x4Cu : 0x44u; /* 4+2=6, else 1+2=3 */
+
+            if (got[i] != want) {
+                if (!wrong)
+                    first = i;
+                wrong++;
+            }
+        }
+        check(T, wrong == 0,
+              "%u of %u elements are wrong, the first at %u -- the program "
+              "did not govern the operation",
+              wrong, P4R_N, first);
+    }
+
+    /*
+     * Change only the table entry and the arithmetic changes: 1*2 is 2
+     * (0x40) and 4*2 is 8 (0x50). Nothing in the device was told.
+     */
+    up.type = P4_UPDATE_MODIFY;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_MUL;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry was not modified: %s", err);
+
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the multiply did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the product");
+    check(T, got[0] == 0x40u && got[777] == 0x50u,
+          "changing the entry did not change the arithmetic: got %#x, %#x",
+          got[0], got[777]);
+
+    /*
+     * The operand convention is the architecture's, not the program's. A
+     * gather list that is not two equal-length entries is not a compute
+     * operation, and the extern refuses it rather than inventing one -- so
+     * the operation fails instead of silently doing an ordinary write over
+     * a destination the guest expected a result in.
+     */
+    struct ih_send one = w;
+    one.nsge = 1;
+    one.length = P4R_N;
+    ih_post_send(&h, &a, &one);
+    check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+          "a one-SGE write under the same entry completed successfully");
+
+    /*
+     * A program whose action calls the extern but does not drop would have
+     * the ordinary transfer land on top of the result. There is nothing
+     * downstream to notice that, so the operation is refused here instead.
+     */
+    {
+        struct p4_engine *nodrop = p4_engine_create();
+
+        if (check(T, nodrop != NULL, "p4_engine_create failed")) {
+            check(T, p4r_load(nodrop, "fp8_nodrop.json") == 0,
+                  "the no-drop program did not load");
+            up.type = P4_UPDATE_INSERT;
+            check(T, p4_engine_update(nodrop, &up, err, sizeof(err)) == 0,
+                  "the entry was not installed: %s", err);
+            ionic_datapath_set_p4_engine(h.dev->ionic_dp, nodrop);
+            ih_post_send(&h, &a, &w);
+            check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+                  "an extern call without a drop was allowed to transfer "
+                  "over its own result");
+            ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+            p4_engine_destroy(nodrop);
+        }
+    }
+
+    /* Taking the engine away restores the device's own behaviour. */
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    memset(got, 0, sizeof(got));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "clear C");
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the write did not complete with the engine detached");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T, memcmp(got, opa, sizeof(got)) == 0,
+          "detaching the engine did not restore the ordinary write");
+
+    p4_engine_destroy(eng);
+
+    check(T, ih_qp_destroy(&h, &a) == 0, "DESTROY_QP A failed");
+    check(T, ih_qp_destroy(&h, &b) == 0, "DESTROY_QP B failed");
+    check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
+    check(T, ih_mr_destroy(&h, &mrb) == 0, "DESTROY_MR B failed");
+    check(T, ih_mr_destroy(&h, &mrc) == 0, "DESTROY_MR C failed");
+    ih_mr_free(&mra);
+    ih_mr_free(&mrb);
+    ih_mr_free(&mrc);
+    check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+
+    teardown(T, &h);
+}
+
 #endif /* ERNIC_HAVE_P4 */
 
 static void test_nvmeof(void)
@@ -2491,6 +2749,7 @@ static const struct {
 #ifdef ERNIC_HAVE_P4
     {"p4-port", test_p4_port},
     {"fp8-map", test_fp8_map},
+    {"p4-rdma", test_p4_rdma},
 #endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},

@@ -162,3 +162,15 @@ have made a hand-written fixture wrong:
   has a validity bit. The loader therefore checks that the deparser does
   not emit architecture state, which is the property actually wanted,
   rather than checking the metadata flag.
+
+## fp8_nodrop.json
+
+**Compiled, not hand written**, from `src/fp8_nodrop.p4` with the same
+command. It is `fp8_policy.p4` with the `mark_to_drop()` left out of the
+action that calls the extern, which is how one would plausibly write the
+program on the first attempt.
+
+It exists to be rejected. The extern writes the destination region itself,
+so an operation that then also transfers would overwrite the result with
+the raw payload; `ionic_datapath.c` refuses such an operation rather than
+letting that happen quietly, and this is the program that makes it do so.
