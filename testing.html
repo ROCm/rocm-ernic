@@ -477,7 +477,8 @@ CTest as <code class="docutils literal notranslate"><span class="pre">ionic-ci</
 and with no extra flags at all</p></li>
 <li><p>PCI identity is <code class="docutils literal notranslate"><span class="pre">0x1dd8:0x1002</span></code></p></li>
 <li><p>BAR geometry is 64 KB BAR0 (32 KB register window) and
-4 MB BAR2, with 32 MSI-X vectors</p></li>
+4 MB BAR2, with 32 MSI-X vectors under <code class="docutils literal notranslate"><span class="pre">compat</span></code> and 97
+under <code class="docutils literal notranslate"><span class="pre">generic-400g</span></code></p></li>
 <li><p>Clean shutdown on <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code></p></li>
 <li><p>The stats file carries the full counter set</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--tap</span></code> attaches to an existing host TAP</p></li>
@@ -657,7 +658,8 @@ out the tests that start the server or run a script, which
 valgrind would only check the script for:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|server-lifecycle'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
-<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|cmake-subproject'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject'</span>
 <span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
 <span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
 ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-T<span class="w"> </span>memcheck<span class="w"> </span>--output-on-failure<span class="w"> </span><span class="se">\</span>
@@ -680,7 +682,7 @@ the scripts don’t all check how the server exited. With <code class="docutils 
 as above:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">srv</span><span class="o">=</span><span class="s1">'pci-config-test|ionic-server-smoke'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
-<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli'</span>
+<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">logs</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/valgrind-server"</span>
 rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>
 mkdir<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>
