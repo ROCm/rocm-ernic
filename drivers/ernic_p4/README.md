@@ -58,8 +58,24 @@ refuses rather than building a module that could never bind — a module
 that loads and silently never probes is a much harder thing to diagnose
 than a build that stops.
 
-`dkms.conf` builds it the same way and needs `IONIC_SRC` in the
-environment for the same reason.
+## Installing it
+
+The `ernic_p4_dkms` Ansible role registers the module with DKMS rather
+than copying a built `.ko` into `/lib/modules`, because it has to be
+rebuilt whenever the kernel changes: it is pinned to the genksyms CRCs
+of an out-of-tree ionic that is itself DKMS-built and rebuilt on the
+same upgrade. A module left behind by a hand-installed build survives
+the upgrade and then will not insert.
+
+[`dkms.conf`](dkms.conf) therefore has to find both inputs again from a
+context that has none of the role's variables. It reads the source tree
+from `/etc/ernic-p4-ionic-src`, which the role writes, and resolves the
+ionic symbols through
+[`find-ionic-symvers.sh`](find-ionic-symvers.sh) **for the kernel being
+built for** -- not for whatever is on disk, which after an upgrade
+belongs to the previous one. Either can be overridden by setting
+`IONIC_SRC` or `IONIC_SYMVERS` in the environment, which is what the
+role does for the build it drives itself.
 
 ## When the device appears
 

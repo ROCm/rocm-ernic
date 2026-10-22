@@ -131,56 +131,18 @@
     mode: "0644"
 
 # The ionic the guest runs is DKMS-built, so its exported symbols are
-# not in the kernel's Module.symvers. Find the one that actually exports
-# what this module calls, rather than guessing a package name and
-# version: a wrong guess here is a module that builds and then will not
-# insert, which is a much worse symptom than a missing file.
-- name: Find an existing ionic Module.symvers
+# not in the kernel's Module.symvers. Finding the right ones is the same
+# problem dkms autoinstall has on a later kernel upgrade, so it is solved
+# once, in the script both call, rather than twice.
+- name: Find the ionic symbols to build against
   become: true
   when: not ernic_p4_dkms_ionic_symvers
-  ansible.builtin.shell:
-    # pipefail is lint's requirement, not a behaviour change: finding
-    # nothing is an ordinary outcome here, which failed_when covers.
+  ansible.builtin.command:
     cmd: >-
-      set -o pipefail &&
-      grep -l ionic_adminq_post_wait
-      /var/lib/dkms/*/*/build/Module.symvers
-      /usr/src/ionic-ernic-*/Module.symvers 2>/dev/null | head -1
-    executable: /bin/bash
+      {{ ernic_p4_dkms_module_dir }}/find-ionic-symvers.sh
+      {{ ansible_kernel }}
   register: ernic_p4_symvers_found
   changed_when: false
-  failed_when: false
-
-# dkms clears its build directory after installing, so after a normal
-# guest provision there is no Module.symvers anywhere -- which is how
-# the first attempt at this silently fell back to the kernel's own and
-# produced a module that would not insert.
-#
-# Rebuild it from the sources dkms itself staged, rather than from this
-# role's own checkout: same tree, same kernel, so the CRCs are the ones
-# the running ionic.ko actually exports. Nothing is installed; only
-# Module.symvers is wanted.
-- name: Regenerate the ionic symbols when dkms has cleaned them away
-  become: true
-  when:
-    - not ernic_p4_dkms_ionic_symvers
-    - not (ernic_p4_symvers_found.stdout | default('') | trim)
-  ansible.builtin.shell:
-    cmd: |
-      set -euo pipefail
-      src=""
-      for d in /usr/src/ionic-ernic-*/; do
-          [ -d "$d" ] || continue
-          src="${d%/}"
-          break
-      done
-      test -n "$src"
-      make -C /lib/modules/{{ ansible_kernel }}/build M="$src" modules \
-          >/dev/null 2>&1
-      grep -l ionic_adminq_post_wait "$src/Module.symvers"
-    executable: /bin/bash
-  register: ernic_p4_symvers_built
-  changed_when: ernic_p4_symvers_built.rc == 0
   failed_when: false
 
 - name: Settle on the Module.symvers to build against
@@ -188,8 +150,7 @@
     ernic_p4_symvers: >-
       {{ ernic_p4_dkms_ionic_symvers
          if ernic_p4_dkms_ionic_symvers
-         else ((ernic_p4_symvers_found.stdout | default('') | trim)
-               or (ernic_p4_symvers_built.stdout | default('') | trim)) }}
+         else (ernic_p4_symvers_found.stdout | default('') | trim) }}
 
 - name: Report which symbols the module will be built against
   vars:
@@ -208,36 +169,110 @@
   ansible.builtin.assert:
     that: ernic_p4_symvers | length > 0
     fail_msg: >-
-      No Module.symvers exporting ionic_adminq_post_wait was found, and
-      one could not be rebuilt from /usr/src/ionic-ernic-*. Building
-      against the kernel's own symbols would produce a module that
-      cannot insert against a patched ionic.
+      No Module.symvers exporting ionic_adminq_post_wait could be found
+      or rebuilt for {{ ansible_kernel }}. Building against the kernel's
+      own symbols would produce a module that cannot insert against a
+      patched ionic. Stderr:
+      {{ ernic_p4_symvers_found.stderr | default('(none)') }}
 
-- name: Build the module
+# The version is read out of dkms.conf rather than repeated here, for the
+# reason the kernel ref is: two copies of a version are one bump away
+# from registering a package under a name nothing else uses.
+- name: Read the packaged module version
+  ansible.builtin.slurp:
+    src: "{{ ernic_p4_dkms_module_dir }}/dkms.conf"
+  register: ernic_p4_dkms_conf
+
+- name: Settle on the package name and version
+  ansible.builtin.set_fact:
+    ernic_p4_pkg: >-
+      {{ ernic_p4_dkms_conf.content | b64decode
+         | regex_search('PACKAGE_NAME="([^"]+)"', '\\1')
+         | first | default('', true) }}
+    ernic_p4_ver: >-
+      {{ ernic_p4_dkms_conf.content | b64decode
+         | regex_search('PACKAGE_VERSION="([^"]+)"', '\\1')
+         | first | default('', true) }}
+
+- name: Fail clearly when dkms.conf names no package
+  ansible.builtin.assert:
+    that:
+      - ernic_p4_pkg | length > 0
+      - ernic_p4_ver | length > 0
+    fail_msg: >-
+      {{ ernic_p4_dkms_module_dir }}/dkms.conf declares no PACKAGE_NAME
+      or PACKAGE_VERSION, so there is nothing to register with dkms.
+
+# An earlier version of this role put the module here by hand. depmod
+# prefers updates/ over updates/dkms/, so a guest provisioned by both
+# would keep loading the stale one and the dkms rebuild would have no
+# effect -- the failure this change exists to remove, arrived at from
+# the other side.
+#
+# Removed before the install, and the handler flushed straight after,
+# because the task that inserts the module is in this same play: left to
+# run at the end of it, depmod would rebuild the map only after modprobe
+# had already loaded the stale module it was meant to hide.
+- name: Remove a hand-installed module from an earlier run
   become: true
-  environment:
-    IONIC_SRC: "{{ ernic_p4_dkms_source_dir }}"
-  community.general.make:
-    chdir: "{{ ernic_p4_dkms_module_dir }}"
-    params:
-      KDIR: "/lib/modules/{{ ansible_kernel }}/build"
-      IONIC_SRC: "{{ ernic_p4_dkms_source_dir }}"
-      IONIC_SYMVERS: "{{ ernic_p4_symvers }}"
+  ansible.builtin.file:
+    path: "/lib/modules/{{ ansible_kernel }}/updates/ernic_p4.ko"
+    state: absent
+  notify: Rebuild the module dependency map
 
-- name: Install the module where modprobe will find it
+- name: Apply the removal before anything builds on it
+  ansible.builtin.meta: flush_handlers
+
+# Built through dkms rather than with a bare make and a copy into
+# /lib/modules.
+#
+# The module has to be rebuilt on a kernel upgrade -- it is pinned to the
+# CRCs of an out-of-tree ionic that is itself DKMS-built and will be
+# rebuilt too -- and a hand-copied .ko is not, so after the first upgrade
+# the guest had a module that would no longer insert and nothing that
+# would notice. dkms.conf carried AUTOINSTALL="yes" the whole time; the
+# package was simply never registered for it to apply to.
+- name: Stage the module sources where dkms expects them
   become: true
   ansible.builtin.copy:
-    src: "{{ ernic_p4_dkms_module_dir }}/ernic_p4.ko"
-    dest: "/lib/modules/{{ ansible_kernel }}/updates/ernic_p4.ko"
+    src: "{{ ernic_p4_dkms_module_dir }}/"
+    dest: "/usr/src/{{ ernic_p4_pkg }}-{{ ernic_p4_ver }}/"
     remote_src: true
     owner: root
     group: root
-    mode: "0644"
+    mode: preserve
+    directory_mode: "0755"
 
-- name: Make the new module visible to modprobe
+# Re-registering over an existing build is how a changed source tree gets
+# ignored: dkms keeps the version it already has. Removing first makes
+# this role rebuild what is in the checkout, which is the only thing it
+# is here to prove.
+- name: Drop any previous registration
   become: true
   ansible.builtin.command:
-    cmd: "depmod -a {{ ansible_kernel }}"
+    cmd: "dkms remove {{ ernic_p4_pkg }}/{{ ernic_p4_ver }} --all"
+  register: ernic_p4_dkms_removed
+  changed_when: ernic_p4_dkms_removed.rc == 0
+  failed_when: false
+
+- name: Register the module with dkms
+  become: true
+  ansible.builtin.command:
+    cmd: "dkms add {{ ernic_p4_pkg }}/{{ ernic_p4_ver }}"
+  changed_when: true
+
+- name: Build and install the module
+  become: true
+  environment:
+    IONIC_SRC: "{{ ernic_p4_dkms_source_dir }}"
+    IONIC_SYMVERS: "{{ ernic_p4_symvers }}"
+  ansible.builtin.command:
+    cmd: >-
+      dkms {{ item }} {{ ernic_p4_pkg }}/{{ ernic_p4_ver }}
+      -k {{ ansible_kernel }}
+  loop:
+    - build
+    - install
   changed_when: true
 
 # A failed insert says only "Invalid argument"; the reason is in the

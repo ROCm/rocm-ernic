@@ -1,0 +1,32 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``ernic_p4_dkms`` now registers ``ernic-p4`` with DKMS (``dkms
+    add``/``build``/``install``) instead of running ``make`` and copying
+    the module into ``/lib/modules``.  The module is pinned to the
+    symbol CRCs of an out-of-tree ionic that is itself DKMS-built, so
+    the two must be rebuilt together on a kernel upgrade; a hand-copied
+    module was not rebuilt and would no longer insert after the first
+    one.  ``dkms.conf`` had carried ``AUTOINSTALL="yes"`` all along ---
+    the package was never registered for it to apply to.
+  - >-
+    ``ernic_p4_dkms`` removes a module left in
+    ``/lib/modules/<kernel>/updates/`` by an earlier version of the
+    role, and reruns ``depmod`` before loading anything.  ``depmod``
+    prefers ``updates/`` over ``updates/dkms/``, so on a guest
+    provisioned by both the stale module would keep being loaded and the
+    DKMS build would have no effect.
+  - >-
+    ``ernic_p4_dkms`` and ``dkms.conf`` resolve the ionic
+    ``Module.symvers`` for the kernel being built for, through the new
+    ``drivers/ernic_p4/find-ionic-symvers.sh``, rather than taking the
+    first one found anywhere under ``/var/lib/dkms``.  On an upgrade
+    that file belongs to the previous kernel and its CRCs match nothing,
+    which produces the same non-insertable module as using no symbols at
+    all.  The script also skips source trees with no ``dkms.conf``, so
+    the full kernel checkout the role leaves in ``/usr/src`` is no
+    longer a candidate to run ``make M=`` against.

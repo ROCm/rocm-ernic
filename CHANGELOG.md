@@ -679,6 +679,25 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* The `ernic_p4_dkms` role now registers `ernic-p4` with DKMS instead of
+  building the module by hand and copying it into `/lib/modules`. The
+  module is pinned to the symbol CRCs of an out-of-tree ionic that is
+  itself DKMS-built, so both must be rebuilt together on a kernel
+  upgrade; a hand-copied module was not rebuilt, and after the first
+  upgrade it would no longer insert. `dkms.conf` had carried
+  `AUTOINSTALL="yes"` all along -- the package was simply never
+  registered for it to apply to. The role also removes a module left in
+  `/lib/modules/<kernel>/updates/` by an earlier run, which `depmod`
+  would otherwise keep preferring over the DKMS one.
+
+  The ionic symbols are now resolved for the kernel being built for,
+  rather than by taking the first `Module.symvers` found anywhere under
+  `/var/lib/dkms`. On an upgrade that file belongs to the previous
+  kernel and its CRCs match nothing, which produces the same
+  non-insertable module as using no symbols at all. The lookup lives in
+  the new `drivers/ernic_p4/find-ionic-symvers.sh`, which the role and
+  `dkms.conf` share.
+
 * `fetch-ionic-sources.sh` now applies patch series given by relative
   path. It changes into the source directory partway through, so a
   relative `--patches-dir` was checked in the caller's directory and
