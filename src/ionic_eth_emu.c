@@ -111,6 +111,8 @@ static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
                              uint8_t *comp);
 static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
                             uint8_t *comp);
+static void handle_p4_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                          uint8_t *comp);
 static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index);
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index);
@@ -264,6 +266,13 @@ void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
 {
     emu->rdma_devcmd_fn = fn;
     emu->rdma_devcmd_opaque = opaque;
+}
+
+void ionic_eth_emu_register_p4_handler(struct ionic_eth_emu *emu,
+                                       ionic_rdma_devcmd_fn_t fn, void *opaque)
+{
+    emu->p4_devcmd_fn = fn;
+    emu->p4_devcmd_opaque = opaque;
 }
 
 void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
@@ -674,6 +683,13 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         handle_rdma_cmd(emu, cmd, comp);
         break;
 
+    /* P4 devcmds 70-72 forwarded to p4_devcmd.c */
+    case 70:
+    case 71:
+    case 72:
+        handle_p4_cmd(emu, cmd, comp);
+        break;
+
     default:
         vfu_log(emu->vfu_ctx, LOG_WARNING, "ionic_eth_emu: unknown opcode=%u",
                 opcode);
@@ -771,8 +787,17 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     /* ionic_lif_identity: 478 * 4 = 1912 bytes, fills the data area. */
     memset(data, 0, DEVCMD_DATA_SIZE);
 
-    /* capabilities: ETH | RDMA */
-    uint64_t caps = le64((uint64_t)(IONIC_LIF_CAP_ETH | IONIC_LIF_CAP_RDMA));
+    /*
+     * capabilities: ETH | RDMA, plus P4 when there is a P4 control
+     * surface to find.  Keyed on the handler rather than on a separate
+     * flag so the bit and the surface cannot disagree: a guest told it
+     * has the capability and then refused every command would have no
+     * way to tell that from a broken device.
+     */
+    uint64_t cap_bits = IONIC_LIF_CAP_ETH | IONIC_LIF_CAP_RDMA;
+    if (emu->p4_devcmd_fn)
+        cap_bits |= IONIC_LIF_CAP_P4;
+    uint64_t caps = le64(cap_bits);
     memcpy(data, &caps, 8);
 
     /* Absolute offsets into union ionic_lif_identity, from offsetof() against
@@ -1437,6 +1462,13 @@ void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
         handle_rdma_cmd(emu, cmd, comp);
         break;
 
+    /* P4 devcmds, which reach the engine the same two ways. */
+    case 70:
+    case 71:
+    case 72:
+        handle_p4_cmd(emu, cmd, comp);
+        break;
+
     /* The station MAC does not come from LIF_IDENTIFY: ionic_lif_alloc()
      * asks for it here, and reads an all-zero answer as "nothing
      * programmed", generating a random address instead.  Two bridged
@@ -1908,6 +1940,28 @@ static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
         return;
     }
     emu->rdma_devcmd_fn(emu->rdma_devcmd_opaque, cmd, comp);
+}
+
+/*
+ * P4 devcmds (opcodes 70-72) -> p4_devcmd.c.
+ *
+ * With no handler the opcode is unknown, which is the truth: the engine
+ * is not built, or the operator granted the guest nothing. That is
+ * deliberately NOT the silent success handle_rdma_cmd() returns -- a
+ * driver probing for the control surface has to be able to tell that it
+ * is absent, and a success with an unfilled completion would read as a
+ * device that identified as having no capabilities.
+ */
+static void handle_p4_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                          uint8_t *comp)
+{
+    if (!emu->p4_devcmd_fn) {
+        vfu_log(emu->vfu_ctx, LOG_DEBUG,
+                "ionic_eth_emu: P4 devcmd opcode=%u but no handler", cmd[0]);
+        comp[0] = IONIC_RC_EOPCODE;
+        return;
+    }
+    emu->p4_devcmd_fn(emu->p4_devcmd_opaque, cmd, comp);
 }
 
 /* -------------------------------------------------------------------------

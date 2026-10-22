@@ -40,6 +40,7 @@
 #include "nvmeof_cm.h"
 #ifdef ERNIC_HAVE_P4
 #include "ionic_datapath.h"
+#include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_fp8.h"
 #include "p4_port.h"
@@ -2316,37 +2317,51 @@ static void test_fp8_map(void)
 #define P4R_N      3000u
 #define P4R_MR_LEN (4u * IH_PAGE_SIZE)
 
-static int p4r_load(struct p4_engine *eng, const char *name)
+/* The bytes of a compiled fixture, or NULL. The caller frees them. */
+static char *p4d_read_file(const char *name, size_t *out_len)
 {
     char path[512];
     FILE *f;
     long n;
     char *buf;
-    int rc;
 
     (void)snprintf(path, sizeof(path), "%s/%s", P4_FIXTURE_DIR, name);
     f = fopen(path, "rbe"); /* e: O_CLOEXEC */
     if (!f)
-        return -ENOENT;
+        return NULL;
     if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
         fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
-        return -EIO;
+        return NULL;
     }
     buf = malloc((size_t)n);
     if (!buf) {
         fclose(f);
-        return -ENOMEM;
+        return NULL;
     }
-    rc = fread(buf, 1, (size_t)n, f) == (size_t)n ? 0 : -EIO;
+    if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
     fclose(f);
-    if (rc == 0) {
-        rc = p4_engine_load_begin(eng, (size_t)n);
-        if (rc == 0)
-            rc = p4_engine_load_chunk(eng, 0, buf, (size_t)n);
-        if (rc == 0)
-            rc = p4_engine_load_commit(eng);
-    }
+    *out_len = (size_t)n;
+    return buf;
+}
+
+static int p4r_load(struct p4_engine *eng, const char *name)
+{
+    size_t n = 0;
+    char *buf = p4d_read_file(name, &n);
+    int rc;
+
+    if (!buf)
+        return -ENOENT;
+    rc = p4_engine_load_begin(eng, n);
+    if (rc == 0)
+        rc = p4_engine_load_chunk(eng, 0, buf, n);
+    if (rc == 0)
+        rc = p4_engine_load_commit(eng);
     free(buf);
     return rc;
 }
@@ -2565,6 +2580,354 @@ static void test_p4_rdma(void)
     teardown(T, &h);
 }
 
+
+/* ---- The guest's own way in to the engine ------------------------------ */
+
+/*
+ * Build a devcmd in the 64-byte buffer the BAR0 window takes.  Everything
+ * the guest sends is little-endian, which on this host is a memcpy, but
+ * going through htole32/htole64 is what makes that an assumption the
+ * compiler checks rather than one the test embeds.
+ */
+static void p4d_put32(uint8_t *p, uint32_t v)
+{
+    uint32_t le = htole32(v);
+    memcpy(p, &le, 4);
+}
+
+static void p4d_put64(uint8_t *p, uint64_t v)
+{
+    uint64_t le = htole64(v);
+    memcpy(p, &le, 8);
+}
+
+/* One RPC, with no request or response buffer unless given. */
+static int p4d_rpc(struct ih *h, uint8_t scope, uint32_t ep, uint32_t op,
+                   uint64_t req_pa, uint32_t req_len, uint64_t resp_pa,
+                   uint32_t resp_len, uint8_t comp[16])
+{
+    uint8_t cmd[64] = {0};
+
+    cmd[0] = IONIC_CMD_P4_RPC;
+    cmd[1] = scope;
+    p4d_put32(cmd + 4, ep);
+    p4d_put32(cmd + 8, op);
+    p4d_put32(cmd + 12, req_len);
+    p4d_put64(cmd + 16, req_pa);
+    p4d_put32(cmd + 24, resp_len);
+    p4d_put64(cmd + 32, resp_pa);
+    return ih_devcmd(h, cmd, comp, NULL, 0);
+}
+
+/*
+ * The whole guest-facing story: a guest identifies the control surface,
+ * enumerates what it may do, pushes a compiled P4 program down in chunks,
+ * installs a table entry, and then sees an ordinary RDMA write become an
+ * elementwise fp8 add.
+ *
+ * Every step goes through the BAR0 devcmd window, which is the same path
+ * a driver in a VM uses -- nothing here calls the engine's C API, which
+ * is exactly what made the existing coverage unable to speak for a guest.
+ */
+static void test_p4_devcmd(void)
+{
+    const char *T = "p4-devcmd";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra, mrb, mrc;
+    struct ih_cqe e;
+    uint8_t comp[16];
+    static uint8_t opa[P4R_N], opb[P4R_N], got[P4R_N];
+    size_t prog_len = 0;
+    char *prog;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        teardown(T, &h);
+        return;
+    }
+    struct p4_devcmd *pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_LOAD);
+    if (!check(T, pd != NULL, "p4_devcmd_create failed")) {
+        p4_engine_destroy(eng);
+        teardown(T, &h);
+        return;
+    }
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+
+    const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
+
+    /* IDENT: what the device is, and what this guest may do with it. */
+    {
+        uint8_t cmd[64] = {0};
+        struct p4_devcmd_ident id;
+
+        cmd[0] = IONIC_CMD_P4_IDENT;
+        p4d_put32(cmd + 4, (uint32_t)sizeof(id));
+        p4d_put64(cmd + 8, buf);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "IDENT failed");
+        fake_vfu_read(h.vfu, buf, &id, sizeof(id));
+        check(T, le32toh(id.abi_version) == 1, "IDENT reported ABI %u",
+              le32toh(id.abi_version));
+        check(T, le32toh(id.scope) == P4_SCOPE_LOAD,
+              "IDENT reported scope %u, not the one granted",
+              le32toh(id.scope));
+        check(T, le32toh(id.max_program) == P4_PROGRAM_MAX,
+              "IDENT reported a program limit of %u", le32toh(id.max_program));
+        check(T, le32toh(id.endpoints) == 3, "IDENT reported %u endpoints",
+              le32toh(id.endpoints));
+    }
+
+    /* QUERY(ROOT): the endpoints, and QUERY(ENDPOINT): their operations. */
+    {
+        uint8_t cmd[64] = {0};
+        struct p4_devcmd_query_data qd;
+
+        cmd[0] = IONIC_CMD_P4_QUERY;
+        cmd[1] = P4_QUERY_ROOT;
+        p4d_put32(cmd + 4, 4096);
+        p4d_put64(cmd + 8, buf);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "QUERY(ROOT) failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        check(T, le32toh(qd.num_entries) == 3 && le32toh(qd.total) == 3,
+              "QUERY(ROOT) returned %u of %u", le32toh(qd.num_entries),
+              le32toh(qd.total));
+
+        /*
+         * A buffer too small for everything must report what fits AND what
+         * exists, so the guest can retry rather than walk off its own
+         * buffer trusting a count the device chose.
+         */
+        p4d_put32(cmd + 4, (uint32_t)(sizeof(qd) + 4));
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "QUERY(ROOT) with a small buffer failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        check(T, le32toh(qd.num_entries) == 1 && le32toh(qd.total) == 3,
+              "a truncated QUERY reported %u of %u, not 1 of 3",
+              le32toh(qd.num_entries), le32toh(qd.total));
+
+        cmd[1] = P4_QUERY_ENDPOINT;
+        p4d_put32(cmd + 4, 4096);
+        p4d_put32(cmd + 16, P4_EP_PROGRAM);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "QUERY(PROGRAM) failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        check(T, le32toh(qd.num_entries) == 4,
+              "the program endpoint offers %u operations, not 4",
+              le32toh(qd.num_entries));
+
+        /* An endpoint the device does not have is named as such. */
+        p4d_put32(cmd + 16, 0x5eu);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_EOPCODE,
+              "a query for an absent endpoint was not refused");
+    }
+
+    /* Push the compiled program down, in chunks, as a driver would. */
+    prog = p4d_read_file("fp8_policy.json", &prog_len);
+    if (!check(T, prog != NULL, "could not read the program fixture")) {
+        goto out;
+    }
+    {
+        uint8_t body[8] = {0};
+        const uint64_t req = fake_vfu_alloc(h.vfu, 65536, 4096);
+        size_t off = 0;
+
+        p4d_put32(body, (uint32_t)prog_len);
+        fake_vfu_write(h.vfu, req, body, sizeof(body));
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req,
+                      (uint32_t)sizeof(struct p4_rpc_load_begin), 0, 0,
+                      comp) == P4_STS_OK,
+              "LOAD_BEGIN failed");
+
+        while (off < prog_len) {
+            uint8_t hdr[16] = {0};
+            size_t n = prog_len - off;
+
+            if (n > 4096)
+                n = 4096;
+            p4d_put64(hdr, off);
+            p4d_put32(hdr + 8, (uint32_t)n);
+            fake_vfu_write(h.vfu, req, hdr, sizeof(hdr));
+            fake_vfu_write(h.vfu, req + sizeof(hdr), prog + off, n);
+            if (!check(T,
+                       p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM,
+                               P4_OP_LOAD_CHUNK, req,
+                               (uint32_t)(sizeof(hdr) + n), 0, 0,
+                               comp) == P4_STS_OK,
+                       "LOAD_CHUNK at %zu failed", off))
+                break;
+            off += n;
+        }
+
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_COMMIT, 0, 0,
+                      0, 0, comp) == P4_STS_OK,
+              "LOAD_COMMIT failed");
+        check(T, p4_engine_has_program(eng),
+              "the engine has no program after a guest loaded one");
+    }
+    free(prog);
+
+    /* Install the table entry that turns the write into a reduction. */
+    {
+        const uint64_t req = fake_vfu_alloc(h.vfu, 4096, 4096);
+        uint8_t body[sizeof(struct p4_rpc_entry_update) +
+                     sizeof(struct p4_rpc_entry_match) +
+                     sizeof(struct p4_rpc_entry_param)] = {0};
+        struct p4_rpc_entry_update u;
+        struct p4_rpc_entry_match m;
+        struct p4_rpc_entry_param pa;
+
+        memset(&u, 0, sizeof(u));
+        memset(&m, 0, sizeof(m));
+        memset(&pa, 0, sizeof(pa));
+        u.type = P4_UPDATE_INSERT;
+        u.nmatch = htole16(1);
+        u.nparams = htole16(1);
+        (void)snprintf(u.table, sizeof(u.table), "Ing.policy");
+        (void)snprintf(u.action, sizeof(u.action), "Ing.reduce_with");
+        m.len = htole16(1);
+        m.value[P4_DEVCMD_VALUE_MAX - 1] = IH_OP_RDMA_WRITE;
+        pa.len = htole16(1);
+        pa.value[P4_DEVCMD_VALUE_MAX - 1] = P4_FP8_OP_ADD;
+
+        memcpy(body, &u, sizeof(u));
+        memcpy(body + sizeof(u), &m, sizeof(m));
+        memcpy(body + sizeof(u) + sizeof(m), &pa, sizeof(pa));
+        fake_vfu_write(h.vfu, req, body, sizeof(body));
+
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, req,
+                      (uint32_t)sizeof(body), 0, 0, comp) == P4_STS_OK,
+              "the guest could not install a table entry");
+        /* Installing it twice is how the test knows the first one is
+         * really there, rather than having been accepted and dropped. */
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, req,
+                      (uint32_t)sizeof(body), 0, 0, comp) == P4_STS_EEXIST,
+              "a duplicate entry was not refused");
+    }
+
+    /* And now the point of all of it: the guest's own RDMA write becomes
+     * an elementwise fp8 add, because of an entry the guest installed. */
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "RDMA setup failed"))
+        goto out_mr;
+
+    memset(opa, 0x38, sizeof(opa)); /* 1.0 */
+    memset(opb, 0x40, sizeof(opb)); /* 2.0 */
+    opa[321] = 0x48;                /* 4.0, so position matters */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, opa, sizeof(opa)), "write A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, opb, sizeof(opb)), "write B");
+
+    struct ih_sge sge[2] = {
+        {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey},
+        {.va = FP8R_VA_B, .len = P4R_N, .lkey = mrb.lkey},
+    };
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        .length = P4R_N,
+        .sge = sge,
+        .nsge = 2,
+    };
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the governed operation did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the result");
+    {
+        unsigned wrong = 0, first = 0;
+
+        for (unsigned i = 0; i < P4R_N; i++) {
+            uint8_t want = (i == 321) ? 0x4Cu : 0x44u;
+
+            if (got[i] != want) {
+                if (!wrong)
+                    first = i;
+                wrong++;
+            }
+        }
+        check(T, wrong == 0,
+              "%u of %u elements wrong, first at %u -- a guest-installed "
+              "entry did not govern the operation",
+              wrong, P4R_N, first);
+    }
+
+    /* Counters come back the same way, which is the only runtime read of
+     * them there has ever been. */
+    {
+        const uint64_t rb = fake_vfu_alloc(h.vfu, 4096, 4096);
+        struct p4_rpc_stats st;
+
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0,
+                      rb, (uint32_t)sizeof(st), comp) == P4_STS_OK,
+              "STATS_READ failed");
+        fake_vfu_read(h.vfu, rb, &st, sizeof(st));
+        check(T, le64toh(st.frames_in[P4_PORT_HOST]) == 0,
+              "the Ethernet plane saw %" PRIu64 " frames in an RDMA test",
+              le64toh(st.frames_in[P4_PORT_HOST]));
+    }
+
+out_mr:
+    ih_mr_destroy(&h, &mra);
+    ih_mr_destroy(&h, &mrb);
+    ih_mr_destroy(&h, &mrc);
+    ih_mr_free(&mra);
+    ih_mr_free(&mrb);
+    ih_mr_free(&mrc);
+out:
+    /*
+     * A narrower grant refuses the wide operations and keeps the narrow
+     * ones, and the refusal does not depend on what the caller claims:
+     * the operator's grant is checked before the caller's own scope.
+     */
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    p4_devcmd_destroy(pd);
+    pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_READ);
+    if (check(T, pd != NULL, "p4_devcmd_create failed")) {
+        ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch,
+                                          pd);
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, 0, 8,
+                      0, 0, comp) == P4_STS_EPERM,
+              "a read-only guest was allowed to begin a program load");
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, 0,
+                      200, 0, 0, comp) == P4_STS_EPERM,
+              "a read-only guest was allowed to change a table");
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0,
+                      buf, (uint32_t)sizeof(struct p4_rpc_stats),
+                      comp) == P4_STS_OK,
+              "a read-only guest could not read the counters");
+    }
+
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+    p4_devcmd_destroy(pd);
+    p4_engine_destroy(eng);
+    teardown(T, &h);
+}
+
 #endif /* ERNIC_HAVE_P4 */
 
 static void test_nvmeof(void)
@@ -2750,6 +3113,7 @@ static const struct {
     {"p4-port", test_p4_port},
     {"fp8-map", test_fp8_map},
     {"p4-rdma", test_p4_rdma},
+    {"p4-devcmd", test_p4_devcmd},
 #endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},

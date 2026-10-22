@@ -306,6 +306,32 @@
   declared such that the deparser would put it on a wire, is refused at
   load.
   `p4_engine_process_rdma()` is the entry point.
+* A guest can now program the P4 engine itself, through ionic device
+  commands 70, 71 and 72. Until now a program could only be loaded by the
+  operator on the command line, and a table entry could not be installed
+  by anyone at all, so the fp8 reduction was unreachable outside a unit
+  test. `--p4-guest-scope` is the operator's grant and decides what the
+  guest may do: `none` (the default), `read` (identify, enumerate, read
+  counters), `write` (also install, modify and delete table entries), or
+  `load` (also replace the running program). A guest granted `load`
+  decides where every frame goes and which RDMA operations become fp8
+  reductions, which is why nothing is granted unless it is asked for.
+
+  The surface is shaped like upstream's `pds_fwctl` -- an endpoint, an
+  operation, a scope the device checks, and in/out buffers -- and keeps
+  its opcode numbers, but it is not wire-identical: `pds_fwctl` binds to a
+  `pds_core.fwctl.N` auxiliary device and wraps each command in
+  `PDS_AQ_CMD_CLIENT_CMD`, and rocm-ernic emulates ionic, not pds_core.
+  See docs/p4.rst.
+
+  The LIF capability word gains bit 2, `IONIC_LIF_CAP_P4`, advertised
+  only when the engine is on and the operator granted a scope, so a guest
+  driver can tell whether there is a control surface before it probes
+  for one. Bits 0 and 1 (ETH, RDMA) are unchanged, and real hardware
+  never sets bit 2.
+
+  Engine counters can also be read at runtime for the first time; until
+  now the only way out of the process was one line printed at shutdown.
 * The RDMA data path now runs the pipeline, so a loaded P4 program governs
   RDMA operations and the fp8 extern does real work. The pipeline runs
   after the operation's own memory has been checked and before it is

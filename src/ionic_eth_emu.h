@@ -20,11 +20,11 @@
 struct ionic_eth_emu;
 
 /*
- * Callback type for RDMA devcmds (opcodes 50-53) forwarded from the
- * Ethernet admin queue to the RDMA emulation layer.
+ * Callback type for a devcmd this layer does not implement itself and
+ * forwards to the module that does: the RDMA opcodes 50-53, and the P4
+ * opcodes 70-72.
  *
- * @opaque: caller-supplied pointer (set via
- * ionic_eth_emu_register_rdma_handler)
+ * @opaque: caller-supplied pointer (set via the matching register call)
  * @cmd:    64-byte command buffer (opcode in cmd[0])
  * @comp:   16-byte completion buffer to fill on return
  */
@@ -58,6 +58,19 @@ void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
                                          ionic_rdma_devcmd_fn_t fn,
                                          void *opaque);
+
+/*
+ * Register the P4 devcmd handler (opcodes 70-72), likewise before any
+ * client connects.  A separate slot from the RDMA one rather than a
+ * shared dispatcher: there is exactly one of each, and a single slot
+ * registered twice would silently drop whichever registered first.
+ *
+ * Leaving it unset is the ordinary case -- a build without P4, or one
+ * where the operator granted the guest nothing -- and the opcodes then
+ * answer as any other unimplemented opcode does.
+ */
+void ionic_eth_emu_register_p4_handler(struct ionic_eth_emu *emu,
+                                       ionic_rdma_devcmd_fn_t fn, void *opaque);
 
 /* BAR access callbacks — wire these up in rocm_ernic_server.c. */
 ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,

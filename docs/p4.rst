@@ -104,10 +104,91 @@ change to the device.
 What is not built yet:
 checksums and calculations, which is
 the one thing keeping ``simple_router.json`` from loading
-unmodified; counters, meters, registers and action profiles,
-each of which is refused by name rather than ignored; and any
-way for a guest to reach the engine, so a program and its
-entries come from the host today.
+unmodified; and counters, meters, registers and action
+profiles, each of which is refused by name rather than
+ignored.
+
+The guest's control surface
+---------------------------
+
+A guest reaches the engine through ionic device commands 70,
+71 and 72 -- identify, RPC and query -- which arrive both
+through the BAR0 devcmd window and over the Ethernet admin
+queue, as the RDMA commands do. Through them a driver can
+push a compiled program down in chunks, install, modify and
+delete table entries, and read the engine's counters.
+
+What the guest may do is the operator's decision, not the
+guest's. ``--p4-guest-scope`` takes one of:
+
+``none``
+   The default. The surface answers nothing, not even
+   identify, and the P4 capability bit is not advertised.
+
+``read``
+   Identify the surface, enumerate its endpoints and
+   operations, and read counters.
+
+``write``
+   Also install, modify and delete table entries.
+
+``load``
+   Also replace the running program.
+
+The grades are ordered and a wider one includes the narrower
+ones. Nothing is granted by default because a guest that can
+replace the program decides where every frame goes and which
+RDMA operations become fp8 reductions; that is not a
+capability to hand out as a side effect of the operator
+enabling the engine for their own use. Each operation
+declares the scope it needs, ``query`` advertises that scope,
+and the device refuses a request for which either the
+operator's grant or the caller's own claim is too narrow --
+the operator's grant first, so that probing cannot reveal
+which operations exist.
+
+Shaped like pds_fwctl, not pds_fwctl
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The opcode numbers are upstream's
+(``PDS_FWCTL_CMD_IDENT`` = 70, ``_RPC`` = 71, ``_QUERY`` = 72,
+from ``include/linux/pds/pds_adminq.h``) and so is the shape:
+an endpoint id, an operation id, a scope the device checks,
+and request and response buffers named by guest address.
+
+The wire format is not. Upstream's ``pds_fwctl`` binds to a
+``pds_core.fwctl.N`` auxiliary device and never sends those
+opcodes as a top-level command: the driver registers for a
+client id and wraps each one in ``PDS_AQ_CMD_CLIENT_CMD``
+with a 60-byte inner payload. rocm-ernic emulates ionic, not
+pds_core, so there is no pds_core admin queue to wrap into
+and the commands travel on their own. A pds_core-like control
+device, if one is ever emulated, can present the same
+operations without renumbering them.
+
+One upstream behaviour is deliberately not copied. Its driver
+walks the entry count a device reports in a query straight
+out of the DMA buffer, without checking it against the length
+it asked for, so an over-reporting device walks the host off
+the end of a page. A query here reports both what fitted the
+buffer and how many entries exist, so a guest can retry with
+a larger one.
+
+The capability bit
+^^^^^^^^^^^^^^^^^^
+
+``ionic_if.h`` defines two LIF capability bits, ``ETH`` and
+``RDMA``, so bit 2 is free and is used here as
+``IONIC_LIF_CAP_P4``. It is advertised in ``LIF_IDENTIFY``
+only when the engine is on and the operator granted a scope,
+which is how a patched guest driver decides whether to create
+a P4 auxiliary device. It is keyed on the command surface
+actually being registered rather than on a separate flag, so
+the bit and the surface cannot disagree: a guest told it has
+the capability and then refused every command would have no
+way to tell that from a broken device. Real hardware never
+sets the bit, so a driver carrying the patch is unaffected by
+it.
 
 The port model
 --------------

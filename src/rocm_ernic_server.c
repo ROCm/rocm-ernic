@@ -50,6 +50,7 @@
 #include "nvmeof_target.h"
 #include "s3_target.h"
 #ifdef ERNIC_HAVE_P4
+#include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_port.h"
 #endif
@@ -476,8 +477,12 @@ static void ionic_device_fini(rocm_ernic_dev_t *dev)
      * holding on the S3 endpoint's behalf. */
     p4_port_detach(dev->p4_port);
     dev->p4_port = NULL;
-    /* And before the engine, which the data path only borrowed. */
+    /* And before the engine, which both of these borrowed. */
     ionic_datapath_set_p4_engine(dev->ionic_dp, NULL);
+    if (dev->ionic_emu)
+        ionic_eth_emu_register_p4_handler(dev->ionic_emu, NULL, NULL);
+    p4_devcmd_destroy(dev->p4_devcmd);
+    dev->p4_devcmd = NULL;
     p4_engine_destroy(dev->p4_engine);
     dev->p4_engine = NULL;
 #endif
@@ -849,6 +854,15 @@ static void usage(const char *progname)
             "that\n");
     fprintf(stderr, "                       p4c --target bmv2 --arch v1model "
                     "emits).\n");
+    fprintf(stderr, "                       Implies --p4.\n");
+    fprintf(stderr, "  -Y, --p4-guest-scope SCOPE  What the GUEST may do to "
+                    "the engine:\n");
+    fprintf(stderr, "                       none (default), read, write, "
+                    "load.\n");
+    fprintf(stderr, "                       'load' lets the guest replace the "
+                    "program,\n");
+    fprintf(stderr, "                       and so decide where every frame "
+                    "goes.\n");
     fprintf(stderr, "                       Implies --p4.\n");
 #endif
     fprintf(stderr, "  -h, --help           Show this help message\n");
@@ -1422,6 +1436,14 @@ int main(int argc, char *argv[])
     const char *tap_ifname = NULL;
 #ifdef ERNIC_HAVE_P4
     bool p4_enabled = false;
+    /*
+     * What the guest may do with the engine.  NONE by default: a guest
+     * that can replace the P4 program decides where every frame goes and
+     * which RDMA operations become fp8 reductions, and that is not a
+     * capability to hand out because the operator happened to turn the
+     * engine on for their own use.
+     */
+    enum p4_scope p4_guest_scope = P4_SCOPE_NONE;
     const char *p4_program = NULL;
 #endif
     const char *socket_group = NULL;
@@ -1463,6 +1485,7 @@ int main(int argc, char *argv[])
 #ifdef ERNIC_HAVE_P4
         {"p4", no_argument, NULL, 'P'},
         {"p4-program", required_argument, NULL, 'J'},
+        {"p4-guest-scope", required_argument, NULL, 'Y'},
 #endif
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
@@ -1500,7 +1523,7 @@ int main(int argc, char *argv[])
     /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
     while ((opt = getopt_long(argc, argv,
 #ifdef ERNIC_HAVE_P4
-                              "s:G:b:vL:S:m:l:hT:PJ:",
+                              "s:G:b:vL:S:m:l:hT:PJ:Y:",
 #else
                               "s:G:b:vL:S:m:l:hT:",
 #endif
@@ -1597,6 +1620,19 @@ int main(int argc, char *argv[])
             p4_program = optarg;
             /* A program is useless without the engine on the wire, and
              * asking for one plainly means wanting the other. */
+            p4_enabled = true;
+            break;
+        case 'Y':
+            if (!p4_scope_parse(optarg, &p4_guest_scope)) {
+                fprintf(stderr,
+                        "rocm-ernic: --p4-guest-scope must be one of "
+                        "none, read, write, load (got '%s')\n",
+                        optarg);
+                dev_free(dev);
+                return EXIT_FAILURE;
+            }
+            /* Granting the guest a scope without the engine would be a
+             * surface onto nothing, and plainly means wanting both. */
             p4_enabled = true;
             break;
 #endif
@@ -1958,6 +1994,25 @@ int main(int argc, char *argv[])
          * both planes; it borrows the pointer and is given it back below. */
         ionic_datapath_set_p4_engine(dev->ionic_dp, dev->p4_engine);
 
+        /*
+         * The guest's way in, when the operator granted one.  Here and
+         * not with the engine above, because it DMAs into guest memory
+         * and so needs the vfio-user context, which does not exist until
+         * the socket is created.  The program is still read before the
+         * socket; only the surface onto it waits.
+         */
+        if (p4_guest_scope != P4_SCOPE_NONE) {
+            dev->p4_devcmd =
+                p4_devcmd_create(dev->vfu_ctx, dev->p4_engine, p4_guest_scope);
+            if (!dev->p4_devcmd) {
+                fprintf(stderr, "rocm-ernic: failed to create the P4 command "
+                                "surface\n");
+                goto fail;
+            }
+            ionic_eth_emu_register_p4_handler(
+                dev->ionic_emu, p4_devcmd_dispatch, dev->p4_devcmd);
+        }
+
         if (p4_program) {
             ernic_startup_report("rocm-ernic: P4 engine attached, running "
                                  "'%s'",
@@ -1966,6 +2021,8 @@ int main(int argc, char *argv[])
             ernic_startup_report("rocm-ernic: P4 engine attached (no program "
                                  "loaded; frames forwarded unchanged)");
         }
+        ernic_startup_report("rocm-ernic: P4 guest scope: %s",
+                             p4_scope_name(p4_guest_scope));
     }
 #endif
 

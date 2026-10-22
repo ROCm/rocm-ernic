@@ -132,6 +132,9 @@ struct rocm_ernic_dev {
 #ifdef ERNIC_HAVE_P4
     /* P4 match-action stage between the guest and the host network */
     struct p4_engine *p4_engine;
+    /* The guest's command surface onto it, NULL unless the operator
+     * granted the guest a scope with --p4-guest-scope. */
+    struct p4_devcmd *p4_devcmd;
     struct p4_port *p4_port;
 #endif
 

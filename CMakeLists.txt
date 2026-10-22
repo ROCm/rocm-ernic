@@ -206,6 +206,7 @@ option(ERNIC_BUILD_P4
   OFF)
 
 set(P4_SOURCES
+    src/p4/p4_devcmd.c
     src/p4/p4_engine.c
     src/p4/p4_exec.c
     src/p4/p4_fp8.c
