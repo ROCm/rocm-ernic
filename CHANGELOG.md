@@ -306,6 +306,24 @@
   declared such that the deparser would put it on a wire, is refused at
   load.
   `p4_engine_process_rdma()` is the entry point.
+* A guest kernel module, `drivers/ernic_p4/`, binds to that auxiliary
+  device and exposes `/dev/ernic-p4`. Through it a program in the guest
+  loads a compiled P4 program, installs table entries, and reads the
+  engine's counters, with three ioctls that each become exactly one ionic
+  admin-queue command. `drivers/ernic_p4/uapi/ernic_p4.h` is the
+  userspace header.
+
+  It is a pipe, not a policy: what a guest may do is still the operator's
+  decision, made with `--p4-guest-scope` and enforced by the device, and
+  a refusal comes back as the device's own status code rather than being
+  flattened into an errno. The node is mode 0600, and a host running more
+  than one emulated NIC gets `/dev/ernic-p4.N` for the others.
+
+  It builds against a prepared ionic source tree rather than against
+  kernel headers alone, because it uses the ionic driver's private
+  headers, which no `linux-headers` package ships. Both patch series are
+  required and the Makefile refuses a tree lacking `patches/p4` rather
+  than building a module that could never bind.
 * An optional ionic driver patch series, `patches/p4/`, gives a guest an
   auxiliary device to bind a P4 control driver to. Upstream's
   `ionic_auxbus_register()` creates exactly one auxiliary device, for

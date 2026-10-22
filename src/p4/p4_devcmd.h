@@ -25,6 +25,16 @@
  * control device can present the same operations without renumbering.
  * docs/p4.rst records the divergence.
  *
+ * These travel as the OUTER admin-queue command, not wrapped inside
+ * another one, so bytes 2-3 of each are the `lif_index` that
+ * struct ionic_admin_cmd puts there and that every other ionic command
+ * sets.  Nothing in the driver stamps it on a caller's behalf, so
+ * leaving it out would work today -- but every adminq command in that
+ * tree has it there, and a device that one day routes by LIF would find
+ * ours saying something else.  Upstream's pds_fwctl structures put a
+ * version byte at offset 2 and get away with it only because they ride
+ * inside client_cmd[], four bytes further in.
+ *
  * Everything here crosses the guest boundary, so every field is
  * explicitly sized and little-endian on the wire, every structure has a
  * _Static_assert on its size so that padding introduced by a later edit
@@ -131,13 +141,12 @@ enum p4_devcmd_status {
  * device fills with a struct p4_devcmd_ident.
  */
 struct p4_devcmd_ident_cmd {
-    uint8_t opcode; /* IONIC_CMD_P4_IDENT */
-    uint8_t rsvd;
+    uint8_t opcode;  /* IONIC_CMD_P4_IDENT */
     uint8_t version; /* the ABI the driver speaks; 0 today */
-    uint8_t rsvd2;
+    uint16_t lif_index;
     uint32_t len; /* little-endian */
     uint64_t ident_pa;
-    uint8_t rsvd3[48];
+    uint8_t rsvd[48];
 };
 _Static_assert(sizeof(struct p4_devcmd_ident_cmd) == 64,
                "P4 IDENT command must fill the 64-byte devcmd buffer");
@@ -173,12 +182,13 @@ enum p4_query_entity {
 struct p4_devcmd_query_cmd {
     uint8_t opcode; /* IONIC_CMD_P4_QUERY */
     uint8_t entity; /* enum p4_query_entity */
-    uint8_t version;
-    uint8_t rsvd;
+    uint16_t lif_index;
     uint32_t buf_len;
     uint64_t buf_pa;
     uint32_t ep; /* when @entity is P4_QUERY_ENDPOINT */
-    uint8_t rsvd2[44];
+    uint8_t version;
+    uint8_t rsvd[3];
+    uint8_t rsvd2[40];
 };
 _Static_assert(sizeof(struct p4_devcmd_query_cmd) == 64,
                "P4 QUERY command must fill the 64-byte devcmd buffer");
@@ -233,7 +243,7 @@ _Static_assert(sizeof(struct p4_query_operation) == 8,
 struct p4_devcmd_rpc_cmd {
     uint8_t opcode; /* IONIC_CMD_P4_RPC */
     uint8_t scope;  /* enum p4_scope: what the caller is asking for */
-    uint8_t rsvd[2];
+    uint16_t lif_index;
     uint32_t ep;
     uint32_t op;
     uint32_t req_len;
