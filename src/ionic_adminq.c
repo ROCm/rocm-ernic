@@ -20,7 +20,6 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <errno.h>
 #include <syslog.h>
 #include <endian.h>
@@ -44,6 +43,10 @@
 #define ADMIN_WQE_STRIDE  64
 #define ADMIN_WQE_HDR_LEN 4
 
+/* The most strides a WQE may span. The longest body the driver sends,
+ * CREATE_QP's, takes two. */
+#define ADMIN_WQE_MAX_STRIDES 4u
+
 /*
  * ionic_v1_admin_wqe header (4 bytes):
  *   u8  op
@@ -51,7 +54,9 @@
  *   le16 len   (total byte length of cmd body)
  *
  * Followed by the opcode-specific command body.  A WQE may span multiple
- * 64-byte strides if len+4 > 64.
+ * 64-byte strides if len+4 > 64.  The driver produces each stride as its own
+ * ring entry (ionic_admin_poll_locked()), so a WQE that reaches the end of
+ * the ring continues at its start.
  *
  * ionic_v1_cqe (32 bytes, big-endian):
  *   For admin CQE type (IONIC_V1_CQE_TYPE_ADMIN = 0):
@@ -1859,6 +1864,35 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
  * -------------------------------------------------------------------------
  */
 
+/*
+ * Read the strides after the first of the @strides-stride WQE at @slot into
+ * @buf, after the first; none when @strides is 1. They are the next ring
+ * entries, so a WQE that reaches the end of the ring continues at slot 0;
+ * reading on past the end would take guest memory that isn't the ring.
+ * Returns 0 or the failed dma_read()'s error.
+ */
+static int read_wqe_tail(vfu_ctx_t *vfu_ctx, const struct ionic_aq_ring *r,
+                         uint32_t slot, uint32_t strides, uint8_t *buf)
+{
+    uint32_t next = (slot + 1u) % r->aq_depth;
+    uint32_t left = strides - 1u;
+    uint8_t *dst = buf + ADMIN_WQE_STRIDE;
+
+    while (left > 0) {
+        uint32_t run = r->aq_depth - next;
+        if (run > left)
+            run = left;
+        uint64_t gpa = r->aq_dma + (uint64_t)next * ADMIN_WQE_STRIDE;
+        int ret = dma_read(vfu_ctx, gpa, dst, (size_t)run * ADMIN_WQE_STRIDE);
+        if (ret < 0)
+            return ret;
+        dst += (size_t)run * ADMIN_WQE_STRIDE;
+        left -= run;
+        next = 0; /* anything left wrapped */
+    }
+    return 0;
+}
+
 void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
 {
     if (!ctx)
@@ -1885,11 +1919,14 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             uint32_t slot = r->aq_cons % r->aq_depth;
             uint64_t wqe_gpa = r->aq_dma + (uint64_t)slot * ADMIN_WQE_STRIDE;
 
-            /* Single full-stride read (64 bytes covers all current admin ops).
-             * The header is [0:3] and the body occupies [4:63].
-             * Ops with body > 60 bytes span 2 strides; read the second stride
-             * only when needed to avoid an extra DMA round-trip. */
-            uint8_t wqe_buf[4 * ADMIN_WQE_STRIDE]; /* 256 bytes, no VLA */
+            /* The header is [0:3] and the body follows it. Most ops fit in
+             * one stride, so read the rest only when the WQE has more, to
+             * avoid an extra DMA round-trip.
+             *
+             * Zeroed as defense in depth only: the length check below is
+             * what keeps a handler from seeing bytes that weren't read, but
+             * if that ever breaks, it sees zeros rather than host stack. */
+            uint8_t wqe_buf[ADMIN_WQE_MAX_STRIDES * ADMIN_WQE_STRIDE] = {0};
             if (dma_read(vfu_ctx, wqe_gpa, wqe_buf, ADMIN_WQE_STRIDE) < 0)
                 break;
 
@@ -1898,26 +1935,39 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
             memcpy(&len, wqe_buf + 2, 2);
             len = le16toh(len);
 
-            /* Read additional strides for large WQEs (e.g. CREATE_QP = 64 bytes
-             * body + 4 header = 68 bytes = 2 strides). */
+            /* Counted as the driver counts them: CREATE_QP's 64-byte body
+             * and the header are 68 bytes, so 2 strides. */
             uint32_t total_bytes = ADMIN_WQE_HDR_LEN + (uint32_t)len;
             uint32_t strides =
                 (total_bytes + ADMIN_WQE_STRIDE - 1u) / ADMIN_WQE_STRIDE;
-            if (strides > 4)
-                strides = 4;
-            /* Never step past the producer index, even if len is garbage. */
-            if (strides > pending - processed)
-                strides = pending - processed;
-            if (strides > 1) {
-                uint64_t extra_gpa = wqe_gpa + ADMIN_WQE_STRIDE;
-                if (dma_read(vfu_ctx, extra_gpa, wqe_buf + ADMIN_WQE_STRIDE,
-                             (strides - 1u) * ADMIN_WQE_STRIDE) < 0)
+            uint32_t avail = pending - processed;
+
+            /*
+             * The handlers take len as the size of the body, so all of it
+             * has to have been read. Refuse a WQE longer than wqe_buf, or
+             * one that runs past the producer index (the driver rings the
+             * doorbell only once a WQE's last stride is written), rather
+             * than run it on bytes the guest never wrote there. Skip the
+             * strides len claims, as the driver does when it completes, but
+             * never past the producer index.
+             */
+            uint8_t status;
+            if (strides > ADMIN_WQE_MAX_STRIDES || strides > avail) {
+                vfu_log(ctx->vfu_ctx, LOG_ERR,
+                        "ionic_adminq: refusing WQE op=%u len=%u at slot %u: "
+                        "%u strides, %u produced (max %u)",
+                        op, len, slot, strides, avail, ADMIN_WQE_MAX_STRIDES);
+                status = 1;
+                if (strides > avail)
+                    strides = avail;
+            } else {
+                if (read_wqe_tail(vfu_ctx, r, slot, strides, wqe_buf) < 0)
                     break;
+                status = ionic_adminq_dispatch_wqe(
+                    ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
             }
 
             uint16_t cmd_idx = (uint16_t)slot;
-            uint8_t status = ionic_adminq_dispatch_wqe(
-                ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
             post_admin_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
             pvrdma_adminq_count(ctx->pvrdma_handle);
 

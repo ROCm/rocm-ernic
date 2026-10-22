@@ -372,6 +372,17 @@
 
 ### Fixed
 
+* An RDMA admin command longer than one 64-byte ring entry is now read from
+  the entries that follow it in the ring, wrapping to the start of the
+  admin queue as the Linux driver writes it. The device read on past the
+  end of the ring instead, so a `CREATE_QP` posted in the last slot took its
+  QP type from whatever guest memory followed the ring. An admin command
+  whose length needs more entries than the driver has posted, or more than
+  four, now fails instead of running. The device ran the first kind with
+  the end of its body taken from its own stack, and took the second kind as
+  four entries long, so it read the next command from the middle of it. The
+  Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
+  `ionic-adminq-poll-unit`) covers both fixes.
 * A send work request with more than 14 SGEs, which the 512-byte WQE
   stride the device advertises has room for, is now read whole. The device
   read the first 256 bytes of the WQE and then walked its SGE list as far as

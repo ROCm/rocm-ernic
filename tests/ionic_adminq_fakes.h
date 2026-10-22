@@ -9,8 +9,9 @@
  *
  * Shared by tests/test_ionic_stats.c and the fuzz harness
  * nix/analysis/fuzz/fuzz_ionic_stats.c, so the table and the fuzzer run
- * the handler against the same fake device.  It defines functions, so
- * include it once, in one translation unit.
+ * the handler against the same fake device, and by
+ * tests/test_ionic_adminq_poll.c.  It defines functions, so include it once,
+ * in one translation unit.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -183,6 +184,10 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     (void)handle;
     (void)cq_handle;
 }
+/* How many QPs were allocated, and the IB type of the last one. */
+static unsigned g_alloc_qp_calls;
+static uint8_t g_alloc_qp_type;
+
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
@@ -190,7 +195,8 @@ int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
 {
     (void)handle;
     (void)pd_handle;
-    (void)qp_type;
+    g_alloc_qp_calls++;
+    g_alloc_qp_type = qp_type;
     (void)max_send_wr;
     (void)max_recv_wr;
     (void)send_cq_handle;
@@ -472,6 +478,8 @@ static void ctx_reset(void)
     g_max = false;
     g_counters_qp_id = UINT32_MAX;
     g_nwrites = 0;
+    g_alloc_qp_calls = 0;
+    g_alloc_qp_type = 0;
 }
 
 #endif /* IONIC_ADMINQ_FAKES_H */

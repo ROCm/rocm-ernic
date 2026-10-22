@@ -458,13 +458,6 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
     if (strides > 4)
         return fail_rc("admin body of %u bytes is too long", len);
 
-    /* The device reads a multi-stride WQE linearly, so don't let one wrap:
-     * pad to the end of the ring with NOOPs, as a driver would have to. */
-    while (q->prod % ring_depth(q) + strides > ring_depth(q)) {
-        if (ih_admin(h, IH_ADMIN_NOOP, NULL, 0, NULL) != 0)
-            return -1;
-    }
-
     uint32_t slot = q->prod % ring_depth(q);
 
     memset(buf, 0, sizeof(buf));
@@ -472,9 +465,13 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
     put_le16(buf + 2, len);
     if (len)
         memcpy(buf + ADMIN_HDR_LEN, body, len);
-    if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod), buf,
-                        strides * ADMIN_STRIDE))
-        return fail_rc("admin WQE write failed");
+    /* ionic_admin_poll_locked() produces each stride as its own ring entry,
+     * so a WQE that reaches the end of the ring continues at its start. */
+    for (uint32_t i = 0; i < strides; i++) {
+        if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod + i),
+                            buf + i * ADMIN_STRIDE, ADMIN_STRIDE))
+            return fail_rc("admin WQE write failed");
+    }
     q->prod += strides;
     ih_doorbell(h, IH_QTYPE_AQ, 0, 0, (uint16_t)(q->prod % ring_depth(q)));
     return (int)slot;

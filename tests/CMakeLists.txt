@@ -429,6 +429,24 @@ target_include_directories(ernic-test-ionic-stats SYSTEM PRIVATE
 target_compile_definitions(ernic-test-ionic-stats PRIVATE
     _GNU_SOURCE)
 
+# ionic admin queue poll test. It links the admin queue, stubs the rest with
+# ionic_adminq_fakes.h, and writes WQEs into a ring in fake guest memory, so
+# what ionic_adminq_poll() reads off the ring for each one can be checked.
+add_executable(ernic-test-ionic-adminq-poll
+    test_ionic_adminq_poll.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+)
+target_include_directories(ernic-test-ionic-adminq-poll PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(ernic-test-ionic-adminq-poll SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
+    _GNU_SOURCE)
+
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
 # ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
 # response buffer AND the reported length can both be inspected -- the pair
@@ -725,6 +743,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_queues
     test_ionic_query_qp
     ernic-test-ionic-stats
+    ernic-test-ionic-adminq-poll
     test_server_lifecycle
     test_ionic_srq_adminq
     test_ionic_cq_arm
@@ -953,6 +972,15 @@ add_test(
     COMMAND $<TARGET_FILE:ernic-test-ionic-stats>
 )
 set_tests_properties(ionic-stats-unit PROPERTIES TIMEOUT 30)
+
+# ionic admin queue poll unit test: asserts a WQE runs only on bytes read
+# from its own ring entries, so one claiming more strides than were produced
+# or than fit is refused, and one that wraps is finished from slot 0.
+add_test(
+    NAME ionic-adminq-poll-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-adminq-poll>
+)
+set_tests_properties(ionic-adminq-poll-unit PROPERTIES TIMEOUT 30)
 
 # ionic SRQ adminq unit test: the four SRQ handlers had no in-process
 # coverage, which is how CREATE_SRQ shipped writing its id into a response
