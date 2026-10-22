@@ -15,7 +15,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
 import argparse
 import os
 import sys
-import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ernic import ionic
 from ernic.check import Suite
 from ernic.fixture import BaseFixture
-from ernic.server import Server, stop_and_check
+from ernic.server import run_vfu_suite
 
 # QP ids 0 and 1 are the device's own: a QP created as id 1 comes up as
 # GSI, whose sends are routed by the destination in the WQE rather than
@@ -39,6 +38,37 @@ MR_B = 0x0200_0002
 VA_A = 0x0000_7F00_0000_0100
 VA_B = 0x0000_7F10_0000_0000
 MR_LEN = 3 * ionic.PAGE_SIZE
+
+
+def send_a_to_b(fix, length):
+    """Post a signalled RC SEND of @length bytes from A's region.
+
+    The three posting idioms below are shared with
+    tests/py/test_ionic_hw_stats.py, which drives the same transfers to
+    watch the counters move.
+    """
+    fix.driver.post_send(
+        fix.qp_a,
+        ionic.OP_SEND,
+        flags=ionic.WQE_SIGNALLED,
+        sge=[ionic.Sge(VA_A, length, MR_A)],
+    )
+
+
+def rdma_a_to_b(fix, op, length):
+    """Post a signalled RDMA @op of @length bytes between A's and B's regions.
+
+    WRITE and READ differ only in the opcode: both name B's region by
+    rkey and gather from, or scatter into, A's.
+    """
+    fix.driver.post_send(
+        fix.qp_a,
+        op,
+        flags=ionic.WQE_SIGNALLED,
+        remote_va=VA_B,
+        rkey=MR_B,
+        sge=[ionic.Sge(VA_A, length, MR_A)],
+    )
 
 
 def no_completion(driver, cq, settle=1.0):
@@ -93,12 +123,7 @@ def test_send(suite, fix):
     payload = bytes(range(256)) * 4
     fix.driver.mr_write(fix.mr_a, VA_A, payload)
     fix.driver.post_recv(fix.qp_b, [ionic.Sge(VA_B, MR_LEN, MR_B)])
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_SEND,
-        flags=ionic.WQE_SIGNALLED,
-        sge=[ionic.Sge(VA_A, len(payload), MR_A)],
-    )
+    send_a_to_b(fix, len(payload))
     recv = fix.driver.wait_cq(fix.cq_b)
     send = fix.driver.wait_cq(fix.cq_a)
     suite.check_eq(recv.type, ionic.CQE_TYPE_RECV, "B gets a receive completion")
@@ -184,14 +209,7 @@ def test_rdma_write(suite, fix):
     payload = b"written straight in, no receive" * 8
     fix.driver.mr_write(fix.mr_a, VA_A, payload)
     fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_RDMA_WRITE,
-        flags=ionic.WQE_SIGNALLED,
-        remote_va=VA_B,
-        rkey=MR_B,
-        sge=[ionic.Sge(VA_A, len(payload), MR_A)],
-    )
+    rdma_a_to_b(fix, ionic.OP_RDMA_WRITE, len(payload))
     send = fix.driver.wait_cq(fix.cq_a)
     suite.check(not send.error, "the write completed without error")
     suite.check_eq(
@@ -206,14 +224,7 @@ def test_rdma_read(suite, fix):
     payload = b"read me back" * 16
     fix.driver.mr_write(fix.mr_b, VA_B, payload)
     fix.driver.mr_write(fix.mr_a, VA_A, b"\0" * len(payload))
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_RDMA_READ,
-        flags=ionic.WQE_SIGNALLED,
-        remote_va=VA_B,
-        rkey=MR_B,
-        sge=[ionic.Sge(VA_A, len(payload), MR_A)],
-    )
+    rdma_a_to_b(fix, ionic.OP_RDMA_READ, len(payload))
     send = fix.driver.wait_cq(fix.cq_a)
     suite.check(not send.error, "the read completed without error")
     suite.check_eq(
@@ -394,24 +405,11 @@ def main():
     parser.add_argument("--server", required=True, help="path to the rocm-ernic binary")
     args = parser.parse_args()
 
+    def make_fixture(server, _run_dir):
+        return Fixture(server)
+
     suite = Suite("rocm-ernic ionic driver tests over vfio-user")
-    with tempfile.TemporaryDirectory(prefix="ernic-ionic-") as run_dir:
-        server = Server(
-            args.server,
-            os.path.join(run_dir, "ionic.sock"),
-            log_path=os.path.join(run_dir, "server.log"),
-        )
-        server.start(timeout=60)
-        fix = None
-        try:
-            fix = Fixture(server)
-            for name, func in TESTS:
-                suite.run(name, func, fix)
-        finally:
-            if fix is not None:
-                fix.close()
-            stop_and_check(suite, server)
-    suite.finish()
+    run_vfu_suite(suite, args.server, TESTS, make_fixture)
 
 
 if __name__ == "__main__":

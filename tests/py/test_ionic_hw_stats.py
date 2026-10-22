@@ -28,7 +28,6 @@ import collections
 import os
 import struct
 import sys
-import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,12 +35,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # pylint: disable=wrong-import-position
 from ernic import ionic
 from ernic.check import Suite
-from ernic.server import Server, stop_and_check
+from ernic.server import run_vfu_suite
 
 # The fixture is the same pair of connected QPs the driver suite builds,
 # and keeping one copy of it means a change to bring-up cannot leave the
 # two suites disagreeing about what a working device looks like.
-from test_ionic_driver import MR_A, MR_B, MR_LEN, QP_A, QP_B, VA_A, VA_B, Fixture
+from test_ionic_driver import (
+    MR_B,
+    MR_LEN,
+    QP_A,
+    QP_B,
+    VA_A,
+    VA_B,
+    Fixture,
+    rdma_a_to_b,
+    send_a_to_b,
+)
 
 # struct ionic_v1_stat: a big-endian type_off, then a NUL-terminated name.
 STAT_HDR_SIZE = 32
@@ -234,33 +243,14 @@ def drive_burst(fix):
     """
     fix.driver.mr_write(fix.mr_a, VA_A, bytes(range(256)) * 3)
     fix.driver.post_recv(fix.qp_b, [ionic.Sge(VA_B, MR_LEN, MR_B)])
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_SEND,
-        flags=ionic.WQE_SIGNALLED,
-        sge=[ionic.Sge(VA_A, BURST_SEND, MR_A)],
-    )
+    send_a_to_b(fix, BURST_SEND)
     fix.driver.wait_cq(fix.cq_b)
     fix.driver.wait_cq(fix.cq_a)
 
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_RDMA_WRITE,
-        flags=ionic.WQE_SIGNALLED,
-        remote_va=VA_B,
-        rkey=MR_B,
-        sge=[ionic.Sge(VA_A, BURST_WRITE, MR_A)],
-    )
+    rdma_a_to_b(fix, ionic.OP_RDMA_WRITE, BURST_WRITE)
     fix.driver.wait_cq(fix.cq_a)
 
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_RDMA_READ,
-        flags=ionic.WQE_SIGNALLED,
-        remote_va=VA_B,
-        rkey=MR_B,
-        sge=[ionic.Sge(VA_A, BURST_READ, MR_A)],
-    )
+    rdma_a_to_b(fix, ionic.OP_RDMA_READ, BURST_READ)
     fix.driver.wait_cq(fix.cq_a)
 
 
@@ -487,28 +477,18 @@ def main():
     parser.add_argument("--server", required=True, help="path to the rocm-ernic binary")
     args = parser.parse_args()
 
+    def stats_args(run_dir):
+        return ("--stats-file", os.path.join(run_dir, "ionic.stats"))
+
+    def make_fixture(server, run_dir):
+        """The tests read the same file the server was told to write."""
+        fix = Fixture(server)
+        fix.stats_path = os.path.join(run_dir, "ionic.stats")
+        fix.stats_buf = fix.mem.alloc(BUF_LEN)
+        return fix
+
     suite = Suite("rocm-ernic ionic hardware statistics over vfio-user")
-    with tempfile.TemporaryDirectory(prefix="ernic-hwstats-") as run_dir:
-        stats_path = os.path.join(run_dir, "ionic.stats")
-        server = Server(
-            args.server,
-            os.path.join(run_dir, "ionic.sock"),
-            log_path=os.path.join(run_dir, "server.log"),
-            extra_args=("--stats-file", stats_path),
-        )
-        server.start(timeout=60)
-        fix = None
-        try:
-            fix = Fixture(server)
-            fix.stats_path = stats_path
-            fix.stats_buf = fix.mem.alloc(BUF_LEN)
-            for name, func in TESTS:
-                suite.run(name, func, fix)
-        finally:
-            if fix is not None:
-                fix.close()
-            stop_and_check(suite, server)
-    suite.finish()
+    run_vfu_suite(suite, args.server, TESTS, make_fixture, stats_args)
 
 
 if __name__ == "__main__":
