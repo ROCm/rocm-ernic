@@ -8,8 +8,8 @@ an auxiliary device to bind a P4 control driver to.
 Generated against **`v7.2.4`** of
 `https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git`, which is
 the ref `IONIC_KERNEL_REF` pins in
-[`cmake/ErnicKernelModule.cmake`](../../cmake/ErnicKernelModule.cmake). That
-is the same base the series in [`patches/`](../) uses, and the two are
+[`cmake/ErnicKernelModule.cmake`](../../../../cmake/ErnicKernelModule.cmake). That
+is the same base the series in [`../`](../) uses, and the two are
 applied to one tree, base series first.
 
 | File | Touches | Upstream? |
@@ -38,7 +38,7 @@ allocating anything when the capability is absent.
 rocm-ernic advertises the bit in `LIF_IDENTIFY` only when the P4 engine is
 enabled **and** the operator granted the guest a scope with
 `--p4-guest-scope`, so the device appears exactly when there is a control
-surface behind it. See [`docs/p4.rst`](../../docs/p4.rst).
+surface behind it. See [`docs/p4.rst`](../../../../docs/p4.rst).
 
 A failure to add the P4 device is warned about and swallowed rather than
 returned. The two devices are independent, and failing the whole
@@ -53,11 +53,11 @@ needs it — so it is not in `patches/` where
 base series up by default. Name both:
 
 ```bash
-scripts/fetch-ionic-sources.sh \
+ansible/files/scripts/fetch-ionic-sources.sh \
     --source-dir /path/to/ionic-src \
     --kernel-ref v7.2.4 \
-    --patches-dir patches \
-    --patches-dir patches/p4
+    --patches-dir ansible/files/patches \
+    --patches-dir ansible/files/patches/p4
 ```
 
 `--patches-dir` may be repeated and the series are applied in the order
@@ -65,7 +65,7 @@ given. Giving it at all replaces the default, so the base series has to be
 named too.
 
 The script's sentinel covers the directory names as well as the patch
-contents, so dropping `patches/p4` from a later run is seen as a change and
+contents, so dropping the p4 series from a later run is seen as a change and
 the tree is rebuilt rather than reported as already up to date.
 
 ## Retiring this directory

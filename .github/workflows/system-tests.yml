@@ -39,7 +39,7 @@ on:
       # and each is useless without the others: the engine, the patch
       # that creates the device, and the module that binds to it.
       - 'src/p4/**'
-      - 'patches/p4/**'
+      - 'ansible/files/patches/p4/**'
       - 'drivers/ernic_p4/**'       # the s3 job's body
       - '.github/actions/fetch-guest-vm/**'
   schedule:

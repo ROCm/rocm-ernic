@@ -324,7 +324,7 @@
   `-DERNIC_BUILD_P4=ON` and boots a guest; without that flag the server
   has no P4 code and no `--p4*` options at all.
 * CI checks the P4 driver patch series. `driver-build.yml` gains a `p4`
-  leg alongside `base` and `srq`, which applies `patches/p4` to the pinned
+  leg alongside `base` and `srq`, which applies the p4 series to the pinned
   kernel ref and then checks it did what it exists to do: the capability
   bit is defined, an auxiliary device named `p4` is created, the lif
   carries a slot for it, and `drivers/ernic_p4` still binds to the
@@ -347,14 +347,15 @@
   It builds against a prepared ionic source tree rather than against
   kernel headers alone, because it uses the ionic driver's private
   headers, which no `linux-headers` package ships. Both patch series are
-  required and the Makefile refuses a tree lacking `patches/p4` rather
+  required and the Makefile refuses a tree lacking the p4 series rather
   than building a module that could never bind. Its `dkms.conf` falls
   back to a path recorded at install time when `IONIC_SRC` is not in the
   environment, so that a DKMS autoinstall on a later kernel upgrade --
   which runs with none of the variables the original install had -- can
   still find the sources instead of failing at exactly the moment the
   module needed rebuilding.
-* An optional ionic driver patch series, `patches/p4/`, gives a guest an
+* An optional ionic driver patch series, `ansible/files/patches/p4/`,
+  gives a guest an
   auxiliary device to bind a P4 control driver to. Upstream's
   `ionic_auxbus_register()` creates exactly one auxiliary device, for
   RDMA; the patch factors it so a second, named `p4`, is created when the
@@ -365,11 +366,13 @@
   driver with it by naming both series:
 
   ```
-  scripts/fetch-ionic-sources.sh --source-dir DIR --kernel-ref v7.2.4 \
-      --patches-dir patches --patches-dir patches/p4
+  ansible/files/scripts/fetch-ionic-sources.sh \
+      --source-dir DIR --kernel-ref v7.2.4 \
+      --patches-dir ansible/files/patches \
+      --patches-dir ansible/files/patches/p4
   ```
 
-  `scripts/fetch-ionic-sources.sh --patches-dir` can now be given more
+  `fetch-ionic-sources.sh --patches-dir` can now be given more
   than once, and applies the series in the order given. Giving it at all
   still replaces the default rather than adding to it, so an existing
   caller that names one directory is unaffected. A directory that does

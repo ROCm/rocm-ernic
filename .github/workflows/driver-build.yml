@@ -66,7 +66,7 @@ jobs:
           - series: srq
             patches: ansible/files/patches/srq
           - series: p4
-            patches: patches/p4
+            patches: ansible/files/patches/p4
 
     steps:
     - name: Checkout code
@@ -93,7 +93,7 @@ jobs:
           WHERE=ansible/roles/ernic_srq_dkms/defaults/main.yml
           ;;
         p4)
-          # Same base as the shipping series: patches/p4 is applied on top
+          # Same base as the shipping series: the p4 patches are applied on top
           # of patches/ to one tree, so a ref of its own would mean the
           # two were checked against trees that are never combined.
           REF=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \

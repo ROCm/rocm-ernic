@@ -13,7 +13,8 @@
 
 # Where the rocm-ernic checkout is on the target.
 ernic_p4_dkms_repo_dir: /opt/rocm-ernic
-ernic_p4_dkms_scripts_dir: "{{ ernic_p4_dkms_repo_dir }}/scripts"
+ernic_p4_dkms_scripts_dir: >-
+  {{ ernic_p4_dkms_repo_dir }}/ansible/files/scripts
 ernic_p4_dkms_module_dir: "{{ ernic_p4_dkms_repo_dir }}/drivers/ernic_p4"
 
 # Both series are required and neither is optional here: the base series
@@ -21,8 +22,8 @@ ernic_p4_dkms_module_dir: "{{ ernic_p4_dkms_repo_dir }}/drivers/ernic_p4"
 # the device the module binds to. Naming --patches-dir at all replaces
 # the script's default, so both have to be listed.
 ernic_p4_dkms_patches_dirs:
-  - "{{ ernic_p4_dkms_repo_dir }}/patches"
-  - "{{ ernic_p4_dkms_repo_dir }}/patches/p4"
+  - "{{ ernic_p4_dkms_repo_dir }}/ansible/files/patches"
+  - "{{ ernic_p4_dkms_repo_dir }}/ansible/files/patches/p4"
 
 # The kernel ref the ionic sources are fetched at. Empty means read
 # IONIC_KERNEL_REF out of cmake/ErnicKernelModule.cmake on the target, so

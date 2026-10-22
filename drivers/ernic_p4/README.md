@@ -5,7 +5,7 @@ puts `/dev/ernic-p4` in front of the emulated NIC's P4 control surface.
 Through it a program in the guest can load a compiled P4 program, install
 table entries, and read the engine's counters.
 
-Unlike everything in [`patches/`](../../patches/), this is **our** module,
+Unlike everything in [`patches/`](../../ansible/files/patches/), this is **our** module,
 not a modification of an upstream one, so it lives here as source rather
 than as a patch against someone else's tree.
 
@@ -40,9 +40,10 @@ live in the driver's own directory in the kernel tree. So it builds
 against a prepared ionic source tree, not just against kernel headers:
 
 ```bash
-scripts/fetch-ionic-sources.sh \
+ansible/files/scripts/fetch-ionic-sources.sh \
     --source-dir /tmp/ionic-src --kernel-ref v7.2.4 \
-    --patches-dir patches --patches-dir patches/p4
+    --patches-dir ansible/files/patches \
+    --patches-dir ansible/files/patches/p4
 
 make -C drivers/ernic_p4 \
     KDIR=/lib/modules/$(uname -r)/build \
@@ -50,7 +51,7 @@ make -C drivers/ernic_p4 \
 ```
 
 Both series are required. The base series is what the rest of the stack
-expects, and [`patches/p4`](../../patches/p4/) is what defines
+expects, and [`patches/p4`](../../ansible/files/patches/p4/) is what defines
 `IONIC_LIF_CAP_P4` and creates the `ionic.p4` device this binds to. The
 `Makefile` checks for `IONIC_LIF_CAP_P4` in the tree it is given and
 refuses rather than building a module that could never bind — a module

@@ -30,8 +30,8 @@
         group: root
         mode: "0755"
       loop:
-        - scripts
-        - patches/p4
+        - ansible/files/scripts
+        - ansible/files/patches/p4
         - cmake
         - drivers/ernic_p4/uapi
 
@@ -41,8 +41,9 @@
     - name: Stage the fetch script
       become: true
       ansible.builtin.copy:
-        src: "{{ ernic_project_root }}/scripts/fetch-ionic-sources.sh"
-        dest: "{{ ernic_p4_stage_root }}/scripts/fetch-ionic-sources.sh"
+        src: "{{ ernic_project_root }}/ansible/files/scripts/fetch-ionic-sources.sh"
+        dest: >-
+          {{ ernic_p4_stage_root }}/ansible/files/scripts/fetch-ionic-sources.sh
         owner: root
         group: root
         mode: "0755"
@@ -51,23 +52,23 @@
       become: true
       ansible.builtin.copy:
         src: "{{ item }}"
-        dest: "{{ ernic_p4_stage_root }}/patches/"
+        dest: "{{ ernic_p4_stage_root }}/ansible/files/patches/"
         owner: root
         group: root
         mode: "0644"
       with_fileglob:
-        - "{{ ernic_project_root }}/patches/*.patch"
+        - "{{ ernic_project_root }}/ansible/files/patches/*.patch"
 
     - name: Stage the P4 patch series
       become: true
       ansible.builtin.copy:
         src: "{{ item }}"
-        dest: "{{ ernic_p4_stage_root }}/patches/p4/"
+        dest: "{{ ernic_p4_stage_root }}/ansible/files/patches/p4/"
         owner: root
         group: root
         mode: "0644"
       with_fileglob:
-        - "{{ ernic_project_root }}/patches/p4/*.patch"
+        - "{{ ernic_project_root }}/ansible/files/patches/p4/*.patch"
 
     # The kernel ref pin. Staged rather than passed as a variable so the
     # role reads it from the same file the host build does, and a bump
