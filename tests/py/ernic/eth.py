@@ -21,6 +21,9 @@ QTYPE_ETH_RXQ = 2
 QTYPE_ETH_TXQ = 3
 
 CMD_Q_INIT = 40
+CMD_Q_CONTROL = 41
+Q_DISABLE = 0
+Q_ENABLE = 1
 
 # Emulated Ethernet queue geometry (src/ionic_eth_emu_priv.h).
 ETH_DESC_SIZE = 16
@@ -108,9 +111,6 @@ class EthQueueMixin:
             raise ValueError(f"queue index {index} is outside the emulator")
         if not 0 <= depth_log2 <= ETH_MAX_DEPTH_LOG2:
             raise ValueError(f"depth_log2 {depth_log2} is out of range")
-        # Received frames are only ever delivered to Rx queue 0.
-        if qtype == QTYPE_ETH_RXQ and index != 0:
-            raise ValueError("only Rx queue 0 is delivered to")
 
         depth = 1 << depth_log2
         ring = self.mem.alloc(depth * ETH_DESC_SIZE)
@@ -128,12 +128,31 @@ class EthQueueMixin:
         struct.pack_into("<Q", cmd, 36, sg_ring)
         self.devcmd_ok(bytes(cmd))
 
+        # ionic_qcq_enable() sends this once a queue is initialised, and
+        # the emulator serves Rx only on enabled queues: without it
+        # poll_rx() sees no active queue, returns before either of its
+        # loops, and nothing is ever delivered -- including frames the P4
+        # port injected, which never touch an Rx ring of their own.
+        self.eth_q_control(qtype, index, Q_ENABLE)
+
         queue = EthQueue(qtype, index, depth_log2, ring, cq_ring, sg_ring)
         if qtype == QTYPE_ETH_TXQ:
             self.eth_tx = queue
         else:
             self.eth_rx = queue
         return queue
+
+    def eth_q_control(self, qtype, index, oper):
+        """Enable or disable a queue. struct ionic_q_control_cmd.
+
+        opcode@0, type@1, lif_index le16 @2, index le32 @4, oper@8.
+        """
+        cmd = bytearray(64)
+        cmd[0] = CMD_Q_CONTROL
+        cmd[1] = qtype
+        struct.pack_into("<I", cmd, 4, index)
+        cmd[8] = oper
+        self.devcmd_ok(bytes(cmd))
 
     def post_tx(self, frame, split=None):
         """Transmit @frame as the guest driver would.
