@@ -679,6 +679,18 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* `fetch-ionic-sources.sh` now applies patch series given by relative
+  path. It changes into the source directory partway through, so a
+  relative `--patches-dir` was checked in the caller's directory and
+  then matched nothing when the series was applied: the script applied
+  no patches at all and reported success. The relative form is what both
+  the driver README and this file document, so following either produced
+  an unpatched tree and a clean exit. A relative `--source-dir` had the
+  same split, writing its sentinel somewhere other than where it had
+  looked for it. Both are resolved to absolute paths before anything
+  uses them. Callers passing absolute paths, which is what the roles and
+  CI do, are unaffected.
+
 * A P4 program declaring a signed field is now refused at load rather
   than loaded as unsigned. Nothing in the engine carries signedness:
   field values are zero-extended and compared with a byte comparison, so

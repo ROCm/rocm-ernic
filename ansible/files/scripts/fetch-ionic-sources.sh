@@ -62,13 +62,32 @@ if [ ${#PATCHES_DIRS[@]} -eq 0 ]; then
     PATCHES_DIRS=("${SCRIPT_DIR}/../patches")
 fi
 
-# A directory that is not there is a caller naming the wrong one, which
-# would otherwise apply nothing and look like success.
-for d in "${PATCHES_DIRS[@]}"; do
+# Every path is made absolute before anything uses it, because this
+# script changes into SOURCE_DIR partway through and every relative path
+# then means somewhere else.
+#
+# That is not hypothetical: a relative --patches-dir passed the check
+# below, which runs in the caller's directory, and then matched nothing
+# in the glob that applies the series, which runs after the cd. With
+# nullglob that loop simply does not execute, so the script applied no
+# patches and reported success -- the exact silent no-op the check was
+# added to prevent, and the form both READMEs document.
+#
+# SOURCE_DIR need not exist yet (it is recreated below), so it is
+# resolved textually; the patch directories must, so they are resolved
+# and validated at once.
+case "${SOURCE_DIR}" in
+    /*) ;;
+    *)  SOURCE_DIR="${PWD}/${SOURCE_DIR}" ;;
+esac
+
+for i in "${!PATCHES_DIRS[@]}"; do
+    d="${PATCHES_DIRS[i]}"
     if [ ! -d "${d}" ]; then
         echo "ERROR: --patches-dir ${d} is not a directory" >&2
         exit 1
     fi
+    PATCHES_DIRS[i]="$(cd "${d}" && pwd)"
 done
 
 # The sentinel names the ref AND the series, because the ref alone does not
